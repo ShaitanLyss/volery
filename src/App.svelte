@@ -67,6 +67,8 @@
   import Import from "./lib/Import.svelte";
   import Themes from "./lib/Themes.svelte";
   import Accounts from "./lib/Accounts.svelte";
+  import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
+  import { foldChrome, type Fold, type Measured } from "./lib/chrome";
   import { waterfall } from "./lib/waterfall.svelte";
   import {
     completionFor,
@@ -2007,6 +2009,255 @@
     },
     shellCwd,
   });
+
+  /* ── The header at narrow widths ──────────────────────────────────────────
+     This bar is the title bar, and it used to be a flex row with no floor: it
+     asks for about 1250px and the window may be 720, at which point every item
+     shrank to its min-content and then spilled straight past the right edge.
+     Losing `themes` off the end is a nuisance. Losing the window controls is a
+     trap, because maximising is the gesture that would give you the room back,
+     and it went over the edge with everything else.
+
+     Two halves, and the order matters. The stylesheet holds the *guarantee*:
+     `.cluster` may shrink to nothing and clip what does not fit, and nothing
+     else in the bar may shrink at all — so the window controls stay reachable
+     even on the first frame, before anything has been measured, and on a build
+     where every line of measurement below is wrong. This is the *behaviour* on
+     top of it: what to give up, and in what order, so that narrowing the window
+     reads as the header getting shorter rather than as the header being cut
+     off.
+
+     It lives down here, past the surfaces it reads, only because `control` is
+     one of them — the fold has to know how wide the control-surface note is.
+
+     `chrome.ts` has the arithmetic and the tests. */
+
+  /** Left to right as they are drawn, which is exactly the arrangement at full
+   *  screen — the one the bar has always had. Fold order is a different list on
+   *  purpose; nothing may reorder as the window narrows. */
+  const BAR_ORDER = [
+    "spend",
+    "live",
+    "zoom",
+    "fit",
+    "servers",
+    "shell",
+    "ambience",
+    "read",
+    "adopt",
+    "themes",
+    "accounts",
+    "chime",
+  ];
+
+  /** Most important first: the order these are given up in.
+   *
+   *  Verbs before readings, because a reading is the one thing here you can
+   *  also get by looking at the wall — the zoom is written on the cards, what
+   *  is live is the cards that are moving, and the count is the cards
+   *  themselves. `adopt` is kept longest of the verbs partly because it is the
+   *  control surface's only handle on this bar (`data-adopt`), and a test
+   *  driving a narrow window should not have to widen it first.
+   *
+   *  Three things in the bar are deliberately absent from this list and never
+   *  fold. The update offer, because an offer nobody is shown is not an offer.
+   *  The control-surface note, because a surface that can drive the app must
+   *  never be quietly on and a note inside a shut panel is quiet. And `open`,
+   *  the one way into the app, which is why `minWidth` in `tauri.conf.json` is
+   *  the floor it is. */
+  const FOLD_ORDER = [
+    "adopt",
+    "read",
+    "servers",
+    "shell",
+    "fit",
+    "themes",
+    "ambience",
+    "accounts",
+    "chime",
+    "zoom",
+    "live",
+    "spend",
+    "tag",
+  ];
+
+  /** The bar's `gap`, in px. Duplicated from the `.bar` rule below because the
+   *  arithmetic needs a number and CSS is where the truth is; keep them in
+   *  step. 0.7rem at the app's root size. */
+  const BAR_GAP = 11.2;
+
+  let bar: HTMLElement | undefined = $state();
+  /** The bar's content width — inside its padding, which is what the items
+   *  actually have. Zero until the observer's first callback. */
+  let barW = $state(0);
+  let folding = $state<Fold>({ shown: [], folded: [] });
+  /** Nothing is given up before anything has been measured. The first paint
+   *  therefore draws the full bar, which is right on a wide window and is
+   *  corrected within a frame on a narrow one — where the clusters' own
+   *  overflow is what stops it looking broken in the meantime. */
+  let measured = $state(false);
+
+  /** The foldable items that are in the bar at all right now — `spend` and
+   *  `live` come and go with the wall. Decided in one place, because the ruler
+   *  and the bar disagreeing about what exists is a measurement of something
+   *  that is not there. */
+  const barPresent = $derived(
+    new Set(
+      FOLD_ORDER.filter((k) =>
+        k === "spend" ? skein.spend > 0 : k === "live" ? skein.live > 0 : true,
+      ),
+    ),
+  );
+
+  const shows = (key: string) =>
+    barPresent.has(key) && (!measured || folding.shown.includes(key));
+
+  /** Where an item sits in the bar, left to right. `tag` is the one foldable
+   *  item drawn on the left of the drag region, so it is ahead of everything. */
+  const drawAt = (key: string) => (key === "tag" ? -1 : BAR_ORDER.indexOf(key));
+
+  /* Sorted back into drawing order for the panel, which is *not* the order the
+     fold hands them over in — that is priority, and priority is nearly the
+     reverse. The panel is a continuation of the bar rather than a list about
+     it, so it should read in the same direction; an item does not change which
+     side of the header it belongs to by being folded away. */
+  const folded = $derived(
+    measured
+      ? folding.folded.filter((k) => barPresent.has(k)).sort((a, b) => drawAt(a) - drawAt(b))
+      : [],
+  );
+
+  /** Every text in the bar that has a width, joined — so the fold is recomputed
+   *  when a label changes and not only when the window is dragged. None of
+   *  these change the bar's own size, so the observer below would never hear
+   *  about them. */
+  const barSig = $derived(
+    [
+      studio.lod,
+      skein.convs.length,
+      skein.projects.length,
+      skein.live,
+      skein.spend.toFixed(2),
+      releases.stage,
+      releases.offer?.version ?? "",
+      releases.note ?? "",
+      control.endpoint?.port ?? 0,
+      spawning,
+    ].join("|"),
+  );
+
+  $effect(() => {
+    const el = bar;
+    if (!el) return;
+    const ro = new ResizeObserver((es) => {
+      const w = es[0]?.contentRect.width;
+      if (typeof w === "number") barW = w;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
+  $effect(() => {
+    /* Both of the things that can change the answer, read for the dependency
+       rather than for the value — the widths themselves come off the DOM. */
+    void barSig;
+    const width = barW;
+    const el = bar;
+    if (!el || width <= 0) return;
+
+    /* A frame later, so the ruler has been laid out with whatever `barSig` just
+       changed. Measuring in the same tick reads the previous paint's widths,
+       which is a fold one keystroke behind. */
+    const raf = requestAnimationFrame(() => {
+      /* The ruler holds every foldable item at its natural width, always, and
+         is never drawn — measuring the real ones would mean measuring the thing
+         the measurement is about to change, which is how a fold flickers. The
+         fixed items are measured from the bar itself, since those never fold
+         and so cannot feed back. */
+      const nat = new Map<string, number>();
+      for (const n of el.querySelectorAll<HTMLElement>("[data-rule]")) {
+        nat.set(n.dataset.rule ?? "", n.offsetWidth);
+      }
+      const fixed: Measured[] = [
+        ...el.querySelectorAll<HTMLElement>("[data-fixed]"),
+      ].map((n, i) => ({ key: `fixed${i}`, width: n.offsetWidth }));
+
+      let room = width;
+      for (const f of fixed) room -= f.width + BAR_GAP;
+
+      const items: Measured[] = FOLD_ORDER.filter((k) => nat.has(k)).map((k) => ({
+        key: k,
+        width: nat.get(k) ?? 0,
+      }));
+
+      folding = foldChrome(room, items, BAR_GAP, MORE_WIDTH);
+      measured = true;
+    });
+    return () => cancelAnimationFrame(raf);
+  });
+
+  /** The chrome toggles as data, so one description of each can be drawn in the
+   *  bar, in the overflow panel, or into the ruler to be measured. Three copies
+   *  of the same button in the markup would be three places for one of them to
+   *  drift. */
+  const barButtons = $derived(
+    [
+      { key: "fit", label: "fit", title: "Fit everything (Home)", press: () => canvas?.fitAll() },
+      {
+        key: "servers",
+        label: "servers",
+        on: showServers,
+        press: () => (showServers = !showServers),
+      },
+      {
+        key: "shell",
+        label: "shell",
+        title: "A shell over the middle of the wall (alt+I)",
+        on: shell.open,
+        press: () => shell.toggle(shellCwd()),
+      },
+      {
+        key: "ambience",
+        label: "ambience",
+        title: "What the wall does when nobody is asking it anything",
+        on: showEffects,
+        press: () => (showEffects = !showEffects),
+      },
+      { key: "read", label: "read", on: showDetail, press: () => (showDetail = !showDetail) },
+      {
+        key: "adopt",
+        label: "adopt",
+        title: "Put a conversation started elsewhere on the wall",
+        on: showImport,
+        /* `data-adopt` is the control surface's only handle on this button; the
+           other chrome buttons are reachable by the panel they open. */
+        adopt: true,
+        press: () => void openImport(),
+      },
+      {
+        key: "themes",
+        label: "themes",
+        title: "How the transcript is set — ctrl+shift+T cycles without opening this",
+        on: showThemes,
+        press: () => (showThemes = !showThemes),
+      },
+      {
+        key: "accounts",
+        label: "accounts",
+        title: "Which Claude subscriptions this wall spends, and in what order",
+        on: showAccounts,
+        press: () => (showAccounts = !showAccounts),
+      },
+      {
+        key: "chime",
+        label: "chime",
+        title: "Play a soft chime when a card wants you and Skein isn't focused",
+        on: attention.chime,
+        press: () => (attention.chime = !attention.chime),
+      },
+    ] as { key: string; label: string; title?: string; on?: boolean; adopt?: boolean; press: () => void }[],
+  );
+
 </script>
 
 <svelte:window
@@ -2022,14 +2273,68 @@
   oncontextmenu={onContextMenu}
   role="presentation"
 >
+  <!--
+    One description of each foldable item, drawn in three places: across the bar
+    when there is room, inside the overflow panel when there is not, and into
+    the ruler below to be measured. Three copies in the markup would be three
+    places for one of them to drift.
+
+    `mute` is the ruler's copy — same element, same classes, therefore the same
+    width, but no handler and no `data-adopt`, because the control surface finds
+    its button by selector and must not find a hidden one.
+  -->
+  {#snippet chromeItem(key: string, mute: boolean)}
+    {#if key === "tag"}
+      <span class="tag" data-tauri-drag-region>
+        {skein.convs.length} card{skein.convs.length === 1 ? "" : "s"} ·
+        {skein.projects.length} project{skein.projects.length === 1 ? "" : "s"}
+      </span>
+    {:else if key === "spend"}
+      <!-- Dated in the tooltip, because a day's spend and a session's are the
+           same six characters and only one of them survives a restart. -->
+      <span
+        class="spend"
+        title="spent today · {skein.heldTokens.toLocaleString()} tokens held across the wall"
+        >${skein.spend.toFixed(2)}</span
+      >
+    {:else if key === "live"}
+      <span class="livecount">{skein.live} live</span>
+    {:else if key === "zoom"}
+      <span class="zoom" title="Semantic zoom — wheel; shift+wheel pans">{studio.lod}</span>
+    {:else}
+      {@const b = barButtons.find((x) => x.key === key)}
+      {#if b}
+        <button
+          class="ghost"
+          class:on={b.on}
+          data-adopt={b.adopt && !mute ? true : undefined}
+          title={b.title}
+          onclick={mute ? undefined : b.press}>{b.label}</button
+        >
+      {/if}
+    {/if}
+  {/snippet}
+
   <!-- This bar IS the title bar. Undecorated window, so dragging, double-click
        to maximise, and the window buttons all live here. -->
-  <header class="bar" data-tauri-drag-region>
-    <span class="wordmark" data-tauri-drag-region>Volery</span>
-    <span class="tag" data-tauri-drag-region>
-      {skein.convs.length} card{skein.convs.length === 1 ? "" : "s"} ·
-      {skein.projects.length} project{skein.projects.length === 1 ? "" : "s"}
-    </span>
+  <header class="bar" data-tauri-drag-region bind:this={bar}>
+    <!-- Never drawn, never reachable, and the only honest place to read a
+         natural width from: measuring the real items would mean measuring the
+         thing the measurement is about to change, which is how a fold gets into
+         a loop with itself. `inert` so nothing in here can be tabbed to or
+         clicked, and absolutely placed so it costs the bar no room. -->
+    <div class="ruler" aria-hidden="true" inert>
+      {#each FOLD_ORDER as key (key)}
+        {#if barPresent.has(key)}
+          <span class="rule" data-rule={key}>{@render chromeItem(key, true)}</span>
+        {/if}
+      {/each}
+    </div>
+
+    <span class="wordmark" data-tauri-drag-region data-fixed>Volery</span>
+    {#if shows("tag")}
+      {@render chromeItem("tag", false)}
+    {/if}
     <span class="grow" data-tauri-drag-region></span>
     <!--
       A newer Volery. Quiet until there is one, and then one button rather than a
@@ -2041,7 +2346,7 @@
       what happens when it is pressed is `release.svelte.ts` and `update.rs`.
     -->
     {#if releases.stage !== "quiet" && releases.offer}
-      <span class="uproll">
+      <span class="uproll" data-fixed>
         {#if releases.stage === "offered"}
           <button
             class="ghost up"
@@ -2061,78 +2366,47 @@
         {/if}
       </span>
     {/if}
-    <!-- A surface that can drive the app must never be quietly on. -->
+    <!-- A surface that can drive the app must never be quietly on — which is
+         also why this is not in `FOLD_ORDER`: a note inside a shut panel is
+         quiet. -->
     {#if control.endpoint}
-      <span class="ctl" title="External control is listening on 127.0.0.1:{control.endpoint.port}"
+      <span
+        class="ctl"
+        data-fixed
+        title="External control is listening on 127.0.0.1:{control.endpoint.port}"
         >control :{control.endpoint.port}</span
       >
     {/if}
-    {#if skein.spend > 0}
-      <!-- Dated in the tooltip, because a day's spend and a session's are the
-           same six characters and only one of them survives a restart. -->
-      <span
-        class="spend"
-        title="spent today · {skein.heldTokens.toLocaleString()} tokens held across the wall"
-        >${skein.spend.toFixed(2)}</span
-      >
-    {/if}
-    {#if skein.live > 0}
-      <span class="livecount">{skein.live} live</span>
-    {/if}
-    <span class="zoom" title="Semantic zoom — wheel; shift+wheel pans">{studio.lod}</span>
-    <button class="ghost" onclick={() => canvas?.fitAll()} title="Fit everything (Home)">fit</button>
-    <button
-      class="ghost"
-      class:on={showServers}
-      onclick={() => (showServers = !showServers)}>servers</button
-    >
-    <button
-      class="ghost"
-      class:on={shell.open}
-      onclick={() => shell.toggle(shellCwd())}
-      title="A shell over the middle of the wall (alt+I)">shell</button
-    >
-    <button
-      class="ghost"
-      class:on={showEffects}
-      onclick={() => (showEffects = !showEffects)}
-      title="What the wall does when nobody is asking it anything">ambience</button
-    >
-    <button class="ghost" class:on={showDetail} onclick={() => (showDetail = !showDetail)}>read</button>
-    <!-- `data-adopt` is the control surface's only handle on this button; the
-         other chrome buttons are reachable by the panel they open. -->
-    <button
-      class="ghost"
-      class:on={showImport}
-      data-adopt
-      onclick={() => openImport()}
-      title="Put a conversation started elsewhere on the wall">adopt</button
-    >
-    <button
-      class="ghost"
-      class:on={showThemes}
-      onclick={() => (showThemes = !showThemes)}
-      title="How the transcript is set — ctrl+shift+T cycles without opening this"
-      >themes</button
-    >
-    <button
-      class="ghost"
-      class:on={showAccounts}
-      onclick={() => (showAccounts = !showAccounts)}
-      title="Which Claude subscriptions this wall spends, and in what order"
-      >accounts</button
-    >
-    <button
-      class="ghost"
-      class:on={attention.chime}
-      onclick={() => (attention.chime = !attention.chime)}
-      title="Play a soft chime when a card wants you and Skein isn't focused"
-      >chime</button
-    >
-    <button class="open" onclick={pickFolder} disabled={spawning}>
+    <!-- The cluster that gives way. `min-width: 0` and its own `overflow` are
+         the guarantee: whatever the measurement below decides, this is the only
+         thing in the bar that may shrink, so the open button and the window
+         controls cannot be pushed off the edge. The fold is what makes that
+         graceful rather than a clipped word. -->
+    <!-- The drag region is repeated here because the gaps between these buttons
+         used to belong to the bar itself, and the bar is how an undecorated
+         window is moved. A new wrapper that swallows a strip of draggable title
+         bar is a window that is slightly harder to pick up than it was. -->
+    <div class="cluster" data-tauri-drag-region>
+      {#each BAR_ORDER as key (key)}
+        {#if shows(key)}
+          {@render chromeItem(key, false)}
+        {/if}
+      {/each}
+    </div>
+    <Overflow count={folded.length}>
+      {#each folded as key (key)}
+        {@render chromeItem(key, false)}
+      {/each}
+    </Overflow>
+    <button class="open" onclick={pickFolder} disabled={spawning} data-fixed>
       {spawning ? "opening…" : "Open a folder…"}
     </button>
-    <WindowControls />
+    <!-- Wrapped so its footprint can be measured with everything else that does
+         not fold. The wrapper is transparent to the layout: `.controls` keeps
+         the negative margins that carry it out to the true window corner, and
+         `align-self: stretch` here is what lets it fill the bar's height the
+         way it did as a direct child. -->
+    <span class="anchor" data-fixed><WindowControls /></span>
   </header>
 
   {#if skein.fault}
@@ -2399,6 +2673,16 @@
     flex: 0 0 auto;
     user-select: none;
   }
+  /* Nothing in the bar shrinks except the cluster. This is the floor the whole
+     header rests on, and it is stated here rather than left to the fold
+     arithmetic on purpose: the window controls have to stay reachable even on a
+     frame where nothing has been measured yet, or on a build where the
+     measurement is wrong. Losing a button off the end is a nuisance; losing the
+     maximise button is a trap, because maximising is the gesture that gives the
+     room back. */
+  .bar > :global(*) {
+    flex: 0 0 auto;
+  }
   .bar button {
     user-select: auto;
   }
@@ -2414,9 +2698,54 @@
     text-transform: uppercase;
     color: var(--paper-faint);
     white-space: nowrap;
+    min-width: 0;
+    overflow: hidden;
   }
   .grow {
     flex: 1 1 auto;
+    /* Nothing but a drag handle, so it is the first thing to give its width
+       back — and it may reach zero, which is what lets the cluster keep its
+       items for a few hundred pixels longer. */
+    min-width: 0;
+  }
+  /* The one part of the bar that gives way. */
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* And it gives way by clipping, not by squeezing. A row of buttons that
+     narrow until their labels wrap is harder to read at a glance than a shorter
+     row of whole ones — and on the first frame, before anything is measured,
+     clipping is what the fold is about to do properly anyway. */
+  .cluster > :global(*) {
+    flex: 0 0 auto;
+  }
+  .anchor {
+    display: flex;
+    align-self: stretch;
+  }
+  /* The measuring copy. Absolutely placed so it takes no room, invisible rather
+     than `display: none` because a thing with no box has no width to read, and
+     `inert` in the markup so it cannot be reached. Deliberately outside the
+     "nothing on the wall may be transparent" rule — this is not on the wall,
+     and it is never drawn at all. */
+  .ruler {
+    position: absolute;
+    top: 0;
+    left: 0;
+    visibility: hidden;
+    pointer-events: none;
+    display: flex;
+    gap: 0.7rem;
+    white-space: nowrap;
+  }
+  .rule {
+    display: inline-flex;
+    align-items: center;
   }
 
   .open {
