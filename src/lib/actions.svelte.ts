@@ -17,6 +17,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   actionsFor,
   automationStep,
+  folderName,
   liveCodingStep,
   progressFrom,
   tallyNote,
@@ -129,16 +130,6 @@ export class Run {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** What to call a project, out of the only thing this file knows about it.
- *
- *  A root's last segment. Not the wall's own project label, which lives in
- *  `skein.svelte.ts` and is keyed by project id rather than by path — this file
- *  is keyed by root throughout, and reaching across for a nicer word would mean
- *  holding a second registry to do it with. */
-function folderName(root: string): string {
-  return root.split(/[\\/]/).filter(Boolean).pop() ?? root;
-}
 
 /** A promise something else resolves — the shape of every "and now wait for
  *  the world to answer" in this file. */
@@ -271,6 +262,23 @@ export class Actions {
     await this.poll();
   }
 
+  /** Read one project's facts again, overwriting what is held.
+   *
+   *  The deliberate exception to "probing is once per project and never
+   *  repeated". That rule is about the *poll* not having to re-read a
+   *  package.json every eight seconds; it is not a claim that the facts can
+   *  never change. A bump writes a version, so the fact it wrote has to be
+   *  read back — and only for the one project it wrote in. */
+  async reprobe(root: string) {
+    try {
+      const f = await invoke<ProjectFacts>("probe_project", { root });
+      this.facts = { ...this.facts, [root]: f };
+    } catch {
+      /* A folder that has gone away is not a fault worth a red bar, here for
+         the same reason it is not in `sync`. */
+    }
+  }
+
   /** Re-read what every project is doing. Cheap unless an Unreal project has no
    *  editor window to find, which is the one case that reaches for WMI. */
   async poll() {
@@ -363,7 +371,12 @@ export class Actions {
       .sort((a, b) => b.startedAt - a.startedAt);
   }
 
-  /** Everything a territory draws along its bottom edge. */
+  /** Everything a territory draws along its bottom edge.
+   *
+   *  Actions that hang off another chip's arc (`Action.arc`) are not chips: they
+   *  are gathered onto their opener, which is what the arc fans out when it is
+   *  pressed. So the row is what it always was, and the arc is a property of one
+   *  chip on it rather than a second kind of thing in the loop that draws it. */
   chipsFor(root: string): {
     id: string;
     label: string;
@@ -373,24 +386,43 @@ export class Actions {
     note: string | null;
     quiet: boolean;
     idle: boolean;
+    arc: { id: string; label: string; title: string }[];
   }[] {
-    return this.list(root).map((a) => {
-      const run = this.runOf(root, a.id);
-      const state = run?.state ?? "idle";
-      return {
-        id: a.id,
-        label: a.label,
-        /* The tooltip is where the last line of output goes: the chip itself
-           must not resize while a build runs, or the row shuffles under the
-           cursor every few seconds. */
-        title: run?.note ? `${a.title} — ${run.note}` : a.title,
-        state,
-        pct: run?.state === "running" ? run.pct : null,
-        note: run?.note ?? null,
-        quiet: !!a.quiet,
-        idle: !a.steps.length,
-      };
-    });
+    const all = this.list(root);
+    return all
+      .filter((a) => !a.arc)
+      .map((a) => {
+        const arc = all.filter((k) => k.arc === a.id);
+        /* Its own run if it has one, else the most recent of its arc's — a chip
+           whose press is a gesture still has to be able to say how the thing
+           that gesture chose went. */
+        const run = this.runOf(root, a.id) ?? this.#latest(root, arc);
+        const state = run?.state ?? "idle";
+        return {
+          id: a.id,
+          label: a.label,
+          /* The tooltip is where the last line of output goes: the chip itself
+             must not resize while a build runs, or the row shuffles under the
+             cursor every few seconds. */
+          title: run?.note ? `${a.title} — ${run.note}` : a.title,
+          state,
+          pct: run?.state === "running" ? run.pct : null,
+          note: run?.note ?? null,
+          quiet: !!a.quiet,
+          /* An opener has no steps of its own and is still pressable: what it
+             has to do is offer the arc. */
+          idle: !a.steps.length && !arc.length,
+          arc: arc.map((k) => ({ id: k.id, label: k.label, title: k.title })),
+        };
+      });
+  }
+
+  /** The most recently started run among these actions. */
+  #latest(root: string, actions: Action[]): Run | undefined {
+    return actions
+      .map((a) => this.runOf(root, a.id))
+      .filter((r): r is Run => !!r)
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
   }
 
   /* ── what the log widgets read ────────────────────── */
@@ -411,7 +443,11 @@ export class Actions {
     return Object.values(this.facts)
       .map((f) => {
         const last = this.recent(f.root)[0];
-        const runnable = this.list(f.root).filter((a) => a.steps.length);
+        /* `!a.arc` as well as having steps, and that half matters: an arc choice
+           is a real action with real steps, so without it a project whose only
+           verb is `bump` would offer `bump:major` as its again button — a
+           one-click major version bump in a widget, chosen by nothing. */
+        const runnable = this.list(f.root).filter((a) => a.steps.length && !a.arc);
         /* `build` if there is one, else whatever this project leads with. Not
            the *last* thing run, which is the one thing it must not be: the
            button only appears when nothing has run at all, so there is no last
@@ -657,6 +693,23 @@ export class Actions {
             run.note = run.tail(1)[0] ?? `exit ${res.code ?? "?"}`;
           }
         }
+        return;
+      }
+
+      case "bump": {
+        const plan = step.plan;
+        run.note = `${plan.from} → ${plan.to}`;
+        /* No streaming and no exit code to read: `bump_version` either did the
+           whole thing or refused before writing anything, and says which in one
+           sentence. A throw lands in `run`'s catch, which puts it on the chip
+           and on the fault bar. */
+        run.note = await invoke<string>("bump_version", { root: f.root, plan });
+        /* A project's facts are probed once and never again, because what a
+           project *is* changes when you edit package.json rather than while you
+           are looking at it — and this is the one place the app edits it itself.
+           Without the re-probe the whole row goes on offering the bump that has
+           just been made, from the number it has just left. */
+        await this.reprobe(f.root);
         return;
       }
 

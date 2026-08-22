@@ -77,6 +77,10 @@ pub struct ProjectFacts {
     pub cargo: bool,
     pub git: bool,
     pub unreal: Option<UnrealFacts>,
+    /// Every file at or under the root that declares this project's version.
+    /// Whether any of it adds up to a project worth offering a bump to is
+    /// decided in `actions.ts`, not here.
+    pub versions: Vec<VersionFile>,
 }
 
 /// Which package manager this repo is written for.
@@ -243,6 +247,368 @@ fn mcp_port(root: &Path) -> Option<u16> {
     None
 }
 
+/* ── what version a project is on ──────────────────────────────────────────
+ *
+ * Four shapes, and a version lives in a different place in each. This is the
+ * one thing in this file that both reads *and* writes, which looks like the
+ * "facts, never verbs" rule being broken and is not: where a version lives in a
+ * file of a given shape is a single fact, and reading it and setting it are that
+ * fact expressed twice. Splitting them would put the same format knowledge in
+ * two files, which is the worse trade. What *level* to bump to, what the commit
+ * says and what the tag is called are decided in `actions.ts`; whether it is
+ * allowed to happen at all is `actions.rs`. Nothing here decides anything.
+ *
+ * Every write is a **line-based text edit**, never a re-serialize. Round-tripping
+ * a package.json through serde_json reorders its keys and reformats every line
+ * of it, so a two-character version bump would arrive as a diff of the whole
+ * file — and `serde_json`'s map is a `BTreeMap` unless the `preserve_order`
+ * feature is on, so the reordering is not even avoidable. Replacing the value in
+ * place leaves a one-line diff, which is what the log already has for every
+ * release this repo has made.
+ *
+ * "vite" is deliberately not one of the shapes. A Vite app's version *is* its
+ * package.json's — `vite.config.ts` has no version field, and the
+ * `__APP_VERSION__` define people write there reads package.json at build time. */
+
+/// One file that declares this project's version.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionFile {
+    /// Relative to the root, forward-slashed. This is what a tooltip names and
+    /// what `git commit --` is handed, so it has to be a path git accepts —
+    /// which rules out anything above the root, and is why nothing here looks
+    /// upwards the way `find_uproject` does.
+    pub path: String,
+    /// The shape, not the filename: "json" | "toml" | "ini" | "lock". The
+    /// writer switches on this and the reader already has.
+    pub kind: String,
+    /// What it says now, verbatim — including things that are not versions at
+    /// all. Tauri lets `version` be a *path* to a package.json, and a Cargo
+    /// crate can inherit one from its workspace; neither is a number, and
+    /// deciding that is `actions.ts`'s job rather than this file's.
+    pub version: String,
+}
+
+/// A top-level `"version"` in a JSON file, at brace depth 1.
+///
+/// Depth-tracked rather than handed to `serde_json`, so that the reader and the
+/// writer below agree by construction: a `"version"` nested inside some other
+/// object is not this project's version, and if the two disagreed about which
+/// one they had found a bump would rewrite a field nobody asked about.
+fn json_version(text: &str) -> Option<String> {
+    json_line(text).map(|(_, v)| v)
+}
+
+/// `(line index, value)` of the top-level `"version"`.
+///
+/// Braces inside strings are skipped, which is not fussiness: `package.json`'s
+/// own `test` script in this repository is a single line naming fifty files, and
+/// a brace anywhere in a script value would put the depth count out for every
+/// line after it. Cheaper to count correctly than to rely on `version` always
+/// appearing near the top.
+fn json_line(text: &str) -> Option<(usize, String)> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, line) in text.lines().enumerate() {
+        /* The key is looked for at the depth this line *opens* at, so the
+           `{` of the root object does not have to be on a line of its own. */
+        let at_root = depth == 1 && !in_string;
+        if at_root {
+            if let Some(value) = quoted_value(line, "\"version\"") {
+                return Some((i, value));
+            }
+        }
+        for c in line.chars() {
+            if escaped {
+                escaped = false;
+            } else if in_string {
+                match c {
+                    '\\' => escaped = true,
+                    '"' => in_string = false,
+                    _ => {}
+                }
+            } else {
+                match c {
+                    '"' => in_string = true,
+                    '{' | '[' => depth += 1,
+                    '}' | ']' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+        }
+        /* A newline ends any string JSON allows, so a stray quote cannot make
+           the rest of the file invisible. */
+        in_string = false;
+        escaped = false;
+    }
+    None
+}
+
+/// `"version": "0.7.0",` → `0.7.0`, given the key. `None` if this line is not
+/// that key, or carries something other than a quoted string.
+fn quoted_value(line: &str, key: &str) -> Option<String> {
+    let rest = line.trim_start().strip_prefix(key)?;
+    let rest = rest.trim_start().strip_prefix(':')?;
+    let rest = rest.trim_start();
+    let inner = rest.strip_prefix('"')?;
+    let end = inner.find('"')?;
+    Some(inner[..end].to_string())
+}
+
+/// A `[package]` section's `version = "…"`.
+///
+/// Only inside `[package]`: `[package.metadata.…]` is a different section and a
+/// `[dependencies]` entry's version is somebody else's crate. A
+/// `version.workspace = true` carries no quoted string and so is not found,
+/// which is the right answer — a version inherited from a workspace is not
+/// this file's to set.
+fn toml_package_version(text: &str) -> Option<String> {
+    toml_line(text, "version").map(|(_, v)| v)
+}
+
+fn toml_line(text: &str, key: &str) -> Option<(usize, String)> {
+    let mut in_package = false;
+    for (i, line) in text.lines().enumerate() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_package = t == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some(value) = bare_value(t, key) {
+            return Some((i, value));
+        }
+    }
+    None
+}
+
+/// `version = "0.7.0"` → `0.7.0`. TOML and ini both, since `=` is `=`.
+fn bare_value(line: &str, key: &str) -> Option<String> {
+    let rest = line.strip_prefix(key)?;
+    let rest = rest.trim_start().strip_prefix('=')?.trim();
+    match rest.strip_prefix('"') {
+        Some(inner) => inner.find('"').map(|end| inner[..end].to_string()),
+        /* An ini value is unquoted: `ProjectVersion=1.0.0.0`. Anything after a
+           `;` on the line is a comment. */
+        None => {
+            let value = rest.split(';').next()?.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        }
+    }
+}
+
+/// `ProjectVersion=1.0.0.0` out of an Unreal `DefaultGame.ini`.
+///
+/// Not section-scoped. The key belongs to
+/// `[/Script/EngineSettings.GeneralProjectSettings]` and appears nowhere else in
+/// any ini Unreal ships, and matching on the section name would mean carrying
+/// that string here to no purpose.
+fn ini_project_version(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|line| bare_value(line.trim(), "ProjectVersion"))
+}
+
+/// A `[[package]]` entry's version in a `Cargo.lock`, found by crate name.
+///
+/// Worth mending rather than leaving to the next `cargo build`, which is what
+/// the alternative amounts to: a bump commit that left the lock stale would be
+/// followed immediately by a dirty tree, one line different, on a tag that
+/// claims to be a release. `cargo` writes exactly this line itself.
+fn lock_line(text: &str, crate_name: &str) -> Option<(usize, String)> {
+    let want = format!("name = \"{crate_name}\"");
+    let lines: Vec<&str> = text.lines().collect();
+    let mut found = false;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim();
+        if t == "[[package]]" {
+            found = false;
+            continue;
+        }
+        if t == want {
+            found = true;
+            continue;
+        }
+        if found {
+            if let Some(value) = bare_value(t, "version") {
+                return Some((i, value));
+            }
+            /* The version is written directly under the name by cargo; a block
+               that does not have it there is not one we can mend. */
+            if t.starts_with('[') || t.is_empty() {
+                found = false;
+            }
+        }
+    }
+    None
+}
+
+/// A `[package]` section's `name`.
+fn toml_package_name(text: &str) -> Option<String> {
+    toml_line(text, "name").map(|(_, v)| v)
+}
+
+/// Replace one line's value and leave every other byte of the file alone.
+///
+/// The line's own indentation, its trailing comma, its comment and the file's
+/// line endings all survive, because only the span between the value's quotes
+/// — or between the `=` and the end of the value — is touched.
+fn splice(text: &str, line_no: usize, was: &str, to: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut done = false;
+    /* Split keeping the endings, so a CRLF file stays a CRLF file. */
+    let mut at = 0usize;
+    let mut i = 0usize;
+    while at < text.len() {
+        let end = text[at..].find('\n').map(|n| at + n + 1).unwrap_or(text.len());
+        let line = &text[at..end];
+        if i == line_no {
+            let cut = line.find(was)?;
+            out.push_str(&line[..cut]);
+            out.push_str(to);
+            out.push_str(&line[cut + was.len()..]);
+            done = true;
+        } else {
+            out.push_str(line);
+        }
+        at = end;
+        i += 1;
+    }
+    done.then_some(out)
+}
+
+/// What this file says now and what it would say with its version set to `to`,
+/// or `None` if the field it was found by is no longer there.
+///
+/// Both halves are returned because `actions.rs` needs both. The new text is
+/// obvious; the old value is how a *stale* plan is caught â€” the facts a chip's
+/// tooltip was built from are probed once, when the territory appears, so a
+/// version edited by hand or by another card since then would otherwise be
+/// overwritten by arithmetic done on a number that is no longer there. Going
+/// backwards over an existing tag is the failure that guards against.
+///
+/// Returning `None` rather than writing something is load-bearing for the same
+/// reason: `actions.rs` asks every file *before* writing any of them, so a shape
+/// it cannot edit refuses the whole bump with nothing half-written.
+pub(crate) fn set_version(kind: &str, text: &str, to: &str) -> Option<(String, String)> {
+    let found = match kind {
+        "json" => json_line(text),
+        "toml" => toml_line(text, "version"),
+        "ini" => {
+            let (i, v) = text
+                .lines()
+                .enumerate()
+                .find_map(|(i, l)| bare_value(l.trim(), "ProjectVersion").map(|v| (i, v)))?;
+            Some((i, v))
+        }
+        "lock" => {
+            /* The crate name is not carried in the plan — a lock is mended
+               beside the `Cargo.toml` that names it, and `version_files` is
+               what pairs them up. */
+            return None;
+        }
+        _ => None,
+    }?;
+    let next = splice(text, found.0, &found.1, to)?;
+    Some((found.1, next))
+}
+
+/// The same, for a `Cargo.lock` entry that has to be found by crate name.
+pub(crate) fn set_lock_version(
+    text: &str,
+    crate_name: &str,
+    to: &str,
+) -> Option<(String, String)> {
+    let (line, was) = lock_line(text, crate_name)?;
+    let next = splice(text, line, &was, to)?;
+    Some((was, next))
+}
+
+/// Every version-declaring file at or under `root`.
+///
+/// `src-tauri/Cargo.toml` is read as well as the root's, because for a Tauri app
+/// that is where the crate version lives and it is kept in lockstep with
+/// `tauri.conf.json` — this repository's own `skein: 0.7.0` commit moved
+/// package.json, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and
+/// `src-tauri/tauri.conf.json` together, which is the case this was written
+/// against and tested on.
+///
+/// `unreal_root` is passed in rather than looked up, and only when it is at or
+/// under `root`: `find_uproject` searches *upwards*, since what gets opened on
+/// the wall is often `Source/`, and a `Config/DefaultGame.ini` above the root is
+/// a path `git commit --` cannot be handed from here.
+fn version_files(root: &Path, unreal_root: Option<&Path>) -> Vec<VersionFile> {
+    let mut out: Vec<VersionFile> = Vec::new();
+
+    let read = |rel: &str| -> Option<String> { std::fs::read_to_string(root.join(rel)).ok() };
+
+    for rel in ["package.json", "src-tauri/tauri.conf.json"] {
+        if let Some(v) = read(rel).as_deref().and_then(json_version) {
+            out.push(VersionFile {
+                path: rel.into(),
+                kind: "json".into(),
+                version: v,
+            });
+        }
+    }
+
+    for rel in ["Cargo.toml", "src-tauri/Cargo.toml"] {
+        let Some(text) = read(rel) else { continue };
+        let Some(v) = toml_package_version(&text) else {
+            continue;
+        };
+        out.push(VersionFile {
+            path: rel.into(),
+            kind: "toml".into(),
+            version: v.clone(),
+        });
+        /* And the lock beside it, if it holds an entry for this crate. */
+        let lock = rel.replace("Cargo.toml", "Cargo.lock");
+        let Some(name) = toml_package_name(&text) else {
+            continue;
+        };
+        if let Some(found) = read(&lock)
+            .as_deref()
+            .and_then(|t| lock_line(t, &name))
+        {
+            out.push(VersionFile {
+                path: lock,
+                kind: "lock".into(),
+                version: found.1,
+            });
+        }
+    }
+
+    if let Some(up) = unreal_root {
+        if let Ok(rel) = up.strip_prefix(root) {
+            let ini = if rel.as_os_str().is_empty() {
+                "Config/DefaultGame.ini".to_string()
+            } else {
+                format!("{}/Config/DefaultGame.ini", rel.to_string_lossy().replace('\\', "/"))
+            };
+            if let Some(v) = read(&ini).as_deref().and_then(ini_project_version) {
+                out.push(VersionFile {
+                    path: ini,
+                    kind: "ini".into(),
+                    version: v,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+/// Which crate a `Cargo.lock` entry belongs to, for `bump_version` to mend it
+/// with. Read off the `Cargo.toml` beside it rather than carried through the
+/// plan, since the plan is about versions and this is about the file.
+pub(crate) fn lock_crate(root: &Path, lock_rel: &str) -> Option<String> {
+    let toml = lock_rel.replace("Cargo.lock", "Cargo.toml");
+    toml_package_name(&std::fs::read_to_string(root.join(toml)).ok()?)
+}
+
 #[tauri::command]
 pub async fn probe_project(root: String) -> ProjectFacts {
     let dir = PathBuf::from(&root);
@@ -262,7 +628,12 @@ pub async fn probe_project(root: String) -> ProjectFacts {
     let tauri = dir.join("src-tauri").join("tauri.conf.json").exists()
         || scripts.iter().any(|s| s == "tauri");
 
-    let unreal = find_uproject(&dir).map(|up| {
+    let uproject = find_uproject(&dir);
+    /* Where `Config/DefaultGame.ini` would be, for the version scan. Kept out
+       here because `unreal` moves the path into itself. */
+    let unreal_root = uproject.as_ref().and_then(|up| up.parent()).map(|p| p.to_path_buf());
+
+    let unreal = uproject.map(|up| {
         let name = up
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -294,6 +665,7 @@ pub async fn probe_project(root: String) -> ProjectFacts {
         /* A file, not only a directory: that is what a git worktree has, and
            worktrees are how half the cards on this wall get opened. */
         git: dir.join(".git").exists(),
+        versions: version_files(&dir, unreal_root.as_deref()),
         unreal,
         root,
     }
@@ -440,7 +812,7 @@ fn parse_status(out: &str) -> Git {
 /// The order of the checks is git's own (`wt-status.c`): a rebase that stops on
 /// a conflict can have `MERGE_HEAD` present too, so testing for a merge first
 /// would call every conflicted rebase a merge.
-fn git_operation(root: &str) -> Option<String> {
+pub(crate) fn git_operation(root: &str) -> Option<String> {
     /* `--git-dir` rather than joining `.git` by hand: in a worktree that is a
        *file* pointing elsewhere, and worktrees are how half the cards on this
        wall are opened. */
@@ -832,6 +1204,110 @@ mod tests {
         let _ = std::fs::write(dir.join("bun.lock"), "");
         assert_eq!(manager_for(&dir, None), "bun");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ── versions ──────────────────────────────────────────────────────────
+     *
+     * Every fixture here is the real shape of the file it stands for, taken
+     * off this repository at 0.7.0 — which is the live test case the whole
+     * feature was written against. */
+
+    const PKG: &str = "{\n  \"name\": \"volery\",\n  \"private\": true,\n  \
+                       \"version\": \"0.7.0\",\n  \"type\": \"module\",\n  \
+                       \"scripts\": {\n    \"dev\": \"vite\",\n    \
+                       \"version\": \"never mine\"\n  }\n}\n";
+
+    #[test]
+    fn a_json_version_is_the_top_level_one() {
+        assert_eq!(json_version(PKG).as_deref(), Some("0.7.0"));
+        /* The one inside `scripts` is at depth 2 and is somebody else's. */
+        let (was, out) = set_version("json", PKG, "0.8.0").unwrap();
+        assert_eq!(was, "0.7.0");
+        assert!(out.contains("\"version\": \"0.8.0\","));
+        assert!(out.contains("\"version\": \"never mine\""));
+    }
+
+    /// A brace inside a string must not put the depth count out — this repo's
+    /// own `test` script is one line naming fifty files, and anything with a
+    /// brace in it would hide every line after it.
+    #[test]
+    fn braces_inside_strings_do_not_count() {
+        let text = "{\n  \"scripts\": {\n    \"x\": \"echo {} }}} {\"\n  },\n  \
+                    \"version\": \"1.2.3\"\n}\n";
+        assert_eq!(json_version(text).as_deref(), Some("1.2.3"));
+    }
+
+    /// Tauri lets `version` be a *path* to a package.json. It is read, because
+    /// what a file says is a fact; whether it is a version to bump is decided
+    /// in `actions.ts`, which is where it gets rejected.
+    #[test]
+    fn a_tauri_version_that_is_a_path_is_still_read_verbatim() {
+        let text = "{\n  \"version\": \"../package.json\"\n}\n";
+        assert_eq!(json_version(text).as_deref(), Some("../package.json"));
+    }
+
+    #[test]
+    fn a_toml_version_is_only_the_package_sections() {
+        let text = "[package]\nname = \"skein\"\nversion = \"0.7.0\"\n\n\
+                    [dependencies]\nserde = { version = \"1\" }\n\n\
+                    [package.metadata.bundle]\nversion = \"nope\"\n";
+        assert_eq!(toml_package_version(text).as_deref(), Some("0.7.0"));
+        assert_eq!(toml_package_name(text).as_deref(), Some("skein"));
+        let out = set_version("toml", text, "0.8.0").unwrap().1;
+        assert!(out.contains("version = \"0.8.0\""));
+        assert!(out.contains("serde = { version = \"1\" }"));
+        assert!(out.contains("version = \"nope\""));
+    }
+
+    /// A version inherited from a workspace is not this file's to set, and the
+    /// absence of a quoted string is how that is known.
+    #[test]
+    fn a_workspace_inherited_version_is_not_found() {
+        let text = "[package]\nname = \"member\"\nversion.workspace = true\n";
+        assert_eq!(toml_package_version(text), None);
+        assert_eq!(set_version("toml", text, "0.8.0"), None);
+    }
+
+    #[test]
+    fn an_unreal_project_version_is_unquoted_and_may_have_four_parts() {
+        let text = "[/Script/EngineSettings.GeneralProjectSettings]\n\
+                    ProjectID=ABC\nProjectVersion=1.0.0.4 ; the build number\n";
+        assert_eq!(ini_project_version(text).as_deref(), Some("1.0.0.4"));
+        let out = set_version("ini", text, "1.1.0.0").unwrap().1;
+        assert!(out.contains("ProjectVersion=1.1.0.0 ; the build number"));
+    }
+
+    /// The lock's entry is found by crate name, not by position: a lock holds
+    /// several hundred `[[package]]` blocks and every one of them has a
+    /// `version` line.
+    #[test]
+    fn a_lock_entry_is_found_by_crate_name() {
+        let text = "[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n\n\
+                    [[package]]\nname = \"skein\"\nversion = \"0.7.0\"\n\
+                    dependencies = [\n \"rusqlite\",\n]\n";
+        let out = set_lock_version(text, "skein", "0.8.0").unwrap().1;
+        assert!(out.contains("name = \"serde\"\nversion = \"1.0.0\""));
+        assert!(out.contains("name = \"skein\"\nversion = \"0.8.0\""));
+        assert_eq!(set_lock_version(text, "not-here", "0.8.0"), None);
+    }
+
+    /// Only the value is touched, so indentation, trailing commas, comments and
+    /// CRLF endings all survive — the whole reason this is a text edit and not
+    /// a re-serialize.
+    #[test]
+    fn a_splice_leaves_every_other_byte_alone() {
+        let text = "{\r\n\t\"version\":   \"0.7.0\",   \r\n\t\"x\": 1\r\n}\r\n";
+        let out = set_version("json", text, "0.8.0").unwrap().1;
+        assert_eq!(out, "{\r\n\t\"version\":   \"0.8.0\",   \r\n\t\"x\": 1\r\n}\r\n");
+    }
+
+    /// A shape with nothing to edit refuses, and that refusal is what stops a
+    /// bump half-writing: `actions.rs` asks every file before writing any.
+    #[test]
+    fn a_file_with_no_version_field_refuses() {
+        assert_eq!(set_version("json", "{\n  \"name\": \"x\"\n}\n", "1.0.0"), None);
+        assert_eq!(set_version("ini", "[Section]\nOther=1\n", "1.0.0"), None);
+        assert_eq!(set_version("elvish", PKG, "1.0.0"), None);
     }
 
     #[test]

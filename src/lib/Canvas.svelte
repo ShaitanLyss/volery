@@ -39,6 +39,7 @@
   import Flow from "./Flow.svelte";
   import Lineage from "./Lineage.svelte";
   import type { Kin } from "./lineage";
+  import Bump from "./Bump.svelte";
   import Card from "./Card.svelte";
   import Seats from "./Seats.svelte";
   import ImageNode from "./ImageNode.svelte";
@@ -154,6 +155,9 @@
       pct: number | null;
       quiet: boolean;
       idle: boolean;
+      /** The choices this chip fans out into instead of firing. Empty for all
+       *  but `bump`; see `Bump.svelte`. */
+      arc?: { id: string; label: string; title: string }[];
     }[];
     /** A repo left mid-merge, or null for a whole one. Not one of the actions:
      *  a conflict is not something the project offers to do, it is something
@@ -200,6 +204,23 @@
   /** Which territory is showing its "name a worktree" input. */
   let branching = $state<string | null>(null);
   let branchName = $state("");
+
+  /** Which territory has an action's arc fanned out.
+   *
+   *  Held per territory rather than per chip because only one chip has an arc;
+   *  held here rather than inside the snippet because a snippet has no state,
+   *  and the same shape `branching` has for the same reason. A territory stuck
+   *  to the glass is drawn by both frames off one snippet, so both copies open
+   *  together — which is what `branching` already does and is right: it is one
+   *  territory being asked one question. */
+  let arcOpen = $state<string | null>(null);
+
+  /* Nothing in the acts row is drawn at `field`, so an arc left open through a
+     zoom out would come back when you zoomed in — an answer to a question you
+     have stopped asking. */
+  $effect(() => {
+    if (studio.lod === "field") arcOpen = null;
+  });
 
   let surface: HTMLDivElement | undefined = $state();
 
@@ -1277,17 +1298,40 @@
           style:z-index={Z_CHIP}
         >
           {#each acts as a (a.id)}
-            <button
-              class="chip act"
-              data-run={a.state}
-              class:quiet={a.quiet}
-              disabled={a.idle}
-              style:--p="{a.pct ?? 0}%"
-              title={a.title}
-              onclick={() => onaction?.(r.cwd, a.id)}
-            >
-              <i></i>{a.label}{#if a.pct !== null}<em>{a.pct}%</em>{/if}
-            </button>
+            <!-- Wrapped so an arc can be positioned off the chip it comes out
+                 of, and marked `data-fan` so `Bump.svelte`'s dismiss-on-press
+                 knows the opener is not "somewhere else". A plain inline-flex
+                 span, so the row's own flex layout is unchanged for the chips
+                 that have no arc. -->
+            <span class="fan" data-fan={a.arc?.length ? r.cwd : undefined}>
+              <button
+                class="chip act"
+                data-run={a.state}
+                class:quiet={a.quiet}
+                class:asking={a.arc?.length && arcOpen === r.cwd}
+                disabled={a.idle}
+                style:--p="{a.pct ?? 0}%"
+                title={a.title}
+                onclick={() => {
+                  /* An arc-bearing chip asks rather than does, and a second
+                     press takes the question back. */
+                  if (a.arc?.length) arcOpen = arcOpen === r.cwd ? null : r.cwd;
+                  else onaction?.(r.cwd, a.id);
+                }}
+              >
+                <i></i>{a.label}{#if a.pct !== null}<em>{a.pct}%</em>{/if}
+              </button>
+              {#if a.arc?.length && arcOpen === r.cwd}
+                <Bump
+                  choices={a.arc}
+                  onpick={(id) => {
+                    arcOpen = null;
+                    onaction?.(r.cwd, id);
+                  }}
+                  ondismiss={() => (arcOpen = null)}
+                />
+              {/if}
+            </span>
           {/each}
         </div>
       {/if}
@@ -1809,6 +1853,20 @@
     /* Nothing about the chip may resize while a build runs, or the row shuffles
        under the cursor every few seconds. */
     transition: background 0.4s linear;
+  }
+  /* What an arc comes out of. Zero-cost for the chips that have none: it is an
+     inline-flex box the size of its one child, so the row lays out exactly as
+     it did before there was such a thing as an arc. */
+  .fan {
+    position: relative;
+    display: inline-flex;
+  }
+  /* A chip whose arc is open is holding a question rather than reporting a
+     state, and says so by staying lit — otherwise the only thing on screen
+     saying which chip the arc belongs to is the arithmetic of where it is. */
+  .act.asking {
+    color: var(--paper);
+    border-color: var(--paper-faint);
   }
   .act em {
     font-style: normal;

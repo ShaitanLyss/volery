@@ -51,6 +51,11 @@ export type ProjectFacts = {
   cargo: boolean;
   git: boolean;
   unreal: UnrealFacts | null;
+  /** Every file at or under the root that declares a version, verbatim —
+   *  including things that are not versions at all. Whether any of it adds up
+   *  to a project worth offering a bump to is decided here rather than by
+   *  `project.rs`; see `bumpable`. */
+  versions: VersionFile[];
 };
 
 /** What a project is *doing*, re-read on a slow poll. */
@@ -101,6 +106,9 @@ export type Step =
   | { kind: "live-coding" }
   /** Run automation tests inside the open editor, same way. */
   | { kind: "automation"; filter: string }
+  /** Set the version in every file that declares one, commit it and tag the
+   *  commit. Everything decided is in the plan; see `bumpPlan`. */
+  | { kind: "bump"; plan: BumpPlan }
   | { kind: "launch-editor" }
   | { kind: "focus-editor" }
   /** WM_CLOSE to the editor's own window, then wait for it to go. Graceful on
@@ -116,6 +124,14 @@ export type Action = {
   /** Drawn, but with nothing to do — an Unreal project whose engine would not
    *  resolve, which is worth saying rather than hiding. */
   quiet?: boolean;
+  /** The id of the chip this action hangs off, when it is one choice on that
+   *  chip's arc rather than a chip of its own.
+   *
+   *  The row never draws these — `chipsFor` gathers them onto their opener,
+   *  which is what the arc fans out. They are ordinary actions otherwise: they
+   *  carry steps, they run through the same `run`, they key their own `Run`, and
+   *  so the control surface can press one by id without knowing an arc exists. */
+  arc?: string;
 };
 
 /* ── package managers ──────────────────────────────────────────────────────
@@ -209,6 +225,249 @@ function ueShipArgv(u: UnrealFacts, engine: string, root: string): string[] {
     "-utf8output",
     "-unattended",
   ];
+}
+
+/* ── versions ──────────────────────────────────────────────────────────────
+ *
+ * Bumping a version is arithmetic, and arithmetic belongs here rather than
+ * anywhere that can see a file. `project.rs` reads what each file says and
+ * knows where to write it back; this decides what the new number is, which
+ * files get it, what the commit says and what the tag is called. Everything
+ * below is a pure function of what was read.
+ *
+ * **Vite is not a shape.** A Vite app's version *is* its package.json's — the
+ * config has no version field, and the `__APP_VERSION__` define people write
+ * there reads package.json at build time. So "supports vite" is the package.json
+ * case, and there is nothing else to support.
+ *
+ * **"Actively" is a real qualifier and it is enforced twice.** A project with no
+ * version is offered nothing, obviously. But a project sitting on `0.0.0` is
+ * offered nothing either: that is the value `npm init` writes and the value every
+ * private app that has never released still carries, and it is the one number
+ * that says the field was never used rather than saying anything about a
+ * release. `0.1.0` is not excluded — `cargo new`'s default is also a perfectly
+ * real first release, and there is no telling them apart. The asymmetry is
+ * deliberate: a chip offered to a project that never presses it costs a chip,
+ * where a chip withheld from a project that wants it costs the feature. */
+
+/** Where in a file the version lives — the shape, not the filename. Matches
+ *  `project::VersionFile.kind`, and `project::set_version` switches on it. */
+export type VersionShape = "json" | "toml" | "ini" | "lock";
+
+/** One file that declares a version, and what it says. Verbatim, so it may not
+ *  be a version at all: Tauri lets `version` be a *path* to a package.json, and
+ *  a Cargo crate can inherit one from its workspace. */
+export type VersionFile = { path: string; kind: VersionShape; version: string };
+
+export type BumpLevel = "major" | "minor" | "patch";
+
+/** In the order they read left to right along the arc: biggest step first, the
+ *  way a version number itself reads. */
+export const BUMP_LEVELS: readonly BumpLevel[] = ["major", "minor", "patch"];
+
+/** A version, as three numbers and how many the file wrote.
+ *
+ *  `arity` is 3 everywhere but Unreal, whose `ProjectVersion` is conventionally
+ *  four — `1.0.0.4`, the fourth being a build number. The project's version is
+ *  the first three whatever the file carries; the fourth is *kept* as a position
+ *  and always written as zero, because resetting the build number is what a
+ *  version bump means. */
+export type Version = { major: number; minor: number; patch: number; arity: number };
+
+/* Whole numbers only, three of them or four, and nothing else.
+ *
+ * A prerelease is rejected on purpose. Bumping *from* `1.2.0-rc.1` is a
+ * decision, not an increment — patch could mean `1.2.0`, or `1.2.1-rc.1`, or
+ * `1.2.0-rc.2`, and which one is a release plan rather than arithmetic. A chip
+ * that guessed would be worse than one that is not offered, so a project on a
+ * prerelease simply has no bump verb until it is on a number again. */
+const VERSION = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:\.(\d{1,6}))?$/;
+
+export function parseVersion(text: string): Version | null {
+  const m = text.trim().match(VERSION);
+  if (!m) return null;
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3]),
+    arity: m[4] === undefined ? 3 : 4,
+  };
+}
+
+/** Three numbers, or four when the file it is going into wants four. The tag
+ *  and the commit message always take the three-part form. */
+export function formatVersion(v: Version, arity = 3): string {
+  return [v.major, v.minor, v.patch, 0].slice(0, arity === 4 ? 4 : 3).join(".");
+}
+
+/** One step up, everything to the right of it back to zero. */
+export function bumpedTo(v: Version, level: BumpLevel): Version {
+  const next =
+    level === "major"
+      ? { major: v.major + 1, minor: 0, patch: 0 }
+      : level === "minor"
+        ? { major: v.major, minor: v.minor + 1, patch: 0 }
+        : { major: v.major, minor: v.minor, patch: v.patch + 1 };
+  return { ...next, arity: v.arity };
+}
+
+/** Ordering, ignoring arity — `1.0.0` and `1.0.0.0` are the same version. */
+export function compareVersions(a: Version, b: Version): number {
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+/** What a project's version is, across however many files declare one. */
+export type Bumpable = {
+  /** The highest of them, and what a bump counts from. */
+  from: Version;
+  /** Every file carrying a version that parses, with what it parsed to. */
+  files: { file: VersionFile; parsed: Version }[];
+  /** False when two of them declare different numbers. */
+  agreed: boolean;
+};
+
+/** Whether this project has a version to bump, and what it is.
+ *
+ *  Files can disagree — three files in this very repository declare the same
+ *  number and nothing enforces it — and the **highest** is the one bumped from.
+ *  Not a precedence between shapes, and not a refusal:
+ *
+ *  - A refusal would be a dead end. If package.json says 0.6.1 while
+ *    `tauri.conf.json` says 0.7.0, the only way out of "they disagree" is a
+ *    terminal, and the chip exists precisely to save that.
+ *  - The lowest, or a favoured shape, can go *backwards over a tag that already
+ *    exists*: bumping 0.6.1 by patch gives 0.6.2 while `v0.7.0` is already
+ *    released. The highest can never do that.
+ *
+ *  Every file is written either way, so the disagreement heals on the first
+ *  press — and the chip's tooltip says there was one, because a press that
+ *  silently reconciled two numbers is a press you would want to have been told
+ *  about.
+ *
+ *  `f.git` is required: without a repository there is nothing to commit the
+ *  change into and nothing to hang a tag on, and a verb that wrote three files
+ *  and stopped is not the verb this is. */
+export function bumpable(f: ProjectFacts): Bumpable | null {
+  if (!f.git) return null;
+
+  const files = f.versions.flatMap((file) => {
+    const parsed = parseVersion(file.version);
+    return parsed ? [{ file, parsed }] : [];
+  });
+  if (!files.length) return null;
+
+  const from = files.reduce(
+    (best, x) => (compareVersions(x.parsed, best) > 0 ? x.parsed : best),
+    files[0].parsed,
+  );
+  /* The one value that says the field was never used. See the note above. */
+  if (from.major === 0 && from.minor === 0 && from.patch === 0) return null;
+
+  return {
+    from,
+    files,
+    agreed: files.every((x) => compareVersions(x.parsed, from) === 0),
+  };
+}
+
+/** A root's last segment — what to call the project in a commit message.
+ *
+ *  Not the wall's own project label, which is keyed by project id rather than by
+ *  path; this whole file is keyed by root. */
+export function folderName(root: string): string {
+  return root.split(/[\\/]/).filter(Boolean).pop() ?? root;
+}
+
+/** Everything one press of one arc choice will do.
+ *
+ *  Handed whole to `bump_version`, which decides nothing and only refuses.
+ *
+ *  The message is `<project>: <version>`, which is the shape this repository's
+ *  own log already uses for a release (`skein: 0.7.0`) and reads sensibly
+ *  anywhere else. The folder name is the project's name as far as this file is
+ *  concerned, and a release commit wants to say which product it is releasing —
+ *  a message of just the number is unreadable in a log of anything else.
+ *
+ *  Each file's `to` is rendered at *that file's* arity, so an Unreal
+ *  `ProjectVersion` keeps its fourth number where a package.json beside it has
+ *  three. The tag and the message always take three. */
+export function bumpPlan(b: Bumpable, level: BumpLevel, root: string): BumpPlan {
+  const next = bumpedTo(b.from, level);
+  const to = formatVersion(next);
+  return {
+    level,
+    from: formatVersion(b.from),
+    to,
+    tag: `v${to}`,
+    message: `${folderName(root)}: ${to}`,
+    files: b.files.map(({ file, parsed }) => ({
+      path: file.path,
+      kind: file.kind,
+      /* Verbatim, not the parsed form: this is an identity check against what
+         the file says now, and `project.rs` will compare it byte for byte. A
+         reading that has gone stale must refuse rather than overwrite. */
+      from: file.version,
+      to: formatVersion(next, parsed.arity),
+    })),
+  };
+}
+
+export type VersionEdit = { path: string; kind: VersionShape; from: string; to: string };
+
+export type BumpPlan = {
+  level: BumpLevel;
+  /** Three-part, and what the tag and the message say. */
+  from: string;
+  to: string;
+  tag: string;
+  message: string;
+  files: VersionEdit[];
+};
+
+/** The chip that opens the arc, and the three choices on it.
+ *
+ *  Four actions rather than one, so that a level is an ordinary action with
+ *  ordinary steps: it runs through the same `run`, keys its own `Run` so the
+ *  chip can say how the last bump went, and can be pressed by id from the
+ *  control surface without anything there knowing what an arc is. The opener
+ *  carries no steps because pressing it is a gesture rather than a verb — see
+ *  `chipsFor`, which is what gathers the three onto it. */
+function bumpActions(f: ProjectFacts): Action[] {
+  const b = bumpable(f);
+  if (!b) return [];
+
+  const from = formatVersion(b.from);
+  const paths = b.files.map((x) => x.file.path);
+  const where = paths.length === 1 ? paths[0] : `${paths.length} files — ${paths.join(", ")}`;
+
+  const out: Action[] = [
+    {
+      id: "bump",
+      /* The number is on the chip rather than only in the arc: which version a
+         project is on is worth reading off the wall at rest, and it means the
+         three choices can each be one word. */
+      label: `bump ${from}`,
+      title:
+        (b.agreed
+          ? `${from}, in ${where}`
+          : `${paths.join(", ")} do not agree — ${from} is the highest and is what gets bumped`) +
+        "\npick major, minor or patch — it writes them all, commits and tags. nothing is pushed",
+      steps: [],
+    },
+  ];
+
+  for (const level of BUMP_LEVELS) {
+    const plan = bumpPlan(b, level, f.root);
+    out.push({
+      id: `bump:${level}`,
+      label: level,
+      title: `${plan.from} → ${plan.to} — commit "${plan.message}" and tag ${plan.tag}. nothing is pushed`,
+      steps: [{ kind: "bump", plan }],
+      arc: "bump",
+    });
+  }
+
+  return out;
 }
 
 /* ── the vocabulary ────────────────────────────────────────────────────── */
@@ -349,6 +608,15 @@ export function actionsFor(f: ProjectFacts, s: ProjectStatus = NO_STATUS): Actio
       steps: [{ kind: "run", argv: ["cargo", "build", "--release"] }],
     });
   }
+
+  /* After the toolchain and before the two that leave the machine, which is
+     where it belongs in both readings of the row: cutting a release is the last
+     thing you do to a project rather than part of the loop you run all day, and
+     what it *produces* is the push chip immediately to its right — a bump leaves
+     the branch one commit ahead, so `push ↑1` appears within a tick. That is the
+     whole of how a release leaves this machine, and it stays a separate,
+     deliberate click. */
+  out.push(...bumpActions(f));
 
   if (f.git) {
     /* Both git chips are drawn only when there is something to do, which makes

@@ -26,6 +26,9 @@ const bare: ProjectFacts = {
   cargo: false,
   git: false,
   unreal: null,
+  /* Nothing here declares a version, so no project in this file offers a bump.
+     That verb has its own suite â€” `test/bump.test.ts`. */
+  versions: [],
 };
 
 const node = (over: Partial<ProjectFacts> = {}): ProjectFacts => ({
