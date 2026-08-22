@@ -15,6 +15,7 @@ mod limits;
 mod open;
 mod perf;
 mod pin;
+mod portage;
 mod project;
 mod quit;
 mod relay;
@@ -321,6 +322,7 @@ pub fn run() {
             store::forget_project,
             store::load_studio,
             store::ensure_project,
+            store::reroot_project,
             store::record_conversation,
             store::chat_home,
             store::update_conversation,
@@ -395,6 +397,9 @@ pub fn run() {
             actions::process_alive,
             ask::answer_ask,
             open::open_external,
+            portage::write_layout_file,
+            portage::read_layout_file,
+            portage::missing_roots,
             control::control_endpoint,
             control::control_attach,
             control::control_reply,

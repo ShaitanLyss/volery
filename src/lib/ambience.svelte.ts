@@ -107,6 +107,32 @@ export class Ambience {
     return p;
   }
 
+  /** A profile out of a carried layout — see `portage.ts`.
+   *
+   *  Through `normalizeProfile`, which is the same normalizer `load` runs on a
+   *  row read back: this is data that outlives the build that wrote it and may
+   *  well have been hand-edited, and a layer parameter that arrived as a string
+   *  must degrade rather than reach a frame loop.
+   *
+   *  Fresh layer ids for the reason `duplicate` has them — they key the
+   *  renderer's live state, and two layers sharing one would share a flock of
+   *  leaves between profiles.
+   *
+   *  Deliberately does not `use` it. Whether an imported wall's ambience becomes
+   *  the one showing is the importer's decision to make once, not a side effect
+   *  of each profile arriving — a document carrying four of them would otherwise
+   *  end on whichever happened to be written last. */
+  async adopt(name: string, layers: unknown): Promise<Profile> {
+    const clean = normalizeProfile({ id: uid(), name, layers });
+    const p: Profile = {
+      ...clean,
+      layers: clean.layers.map((l) => ({ ...l, id: uid(), params: { ...l.params } })),
+    };
+    this.profiles = [...this.profiles, p];
+    await this.#write(p);
+    return p;
+  }
+
   rename(id: string, name: string) {
     this.#patch(id, (p) => ({ ...p, name }));
   }

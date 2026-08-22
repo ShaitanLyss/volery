@@ -69,6 +69,10 @@
   import Accounts from "./lib/Accounts.svelte";
   import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
   import { foldChrome, type Fold, type Measured } from "./lib/chrome";
+  /* `Carry` draws `Portage` — the same component/class split `Console` and
+     `Shell` have, for the same case-insensitive-filesystem reason. */
+  import Carry from "./lib/Carry.svelte";
+  import { Portage } from "./lib/portage.svelte";
   import { waterfall } from "./lib/waterfall.svelte";
   import {
     completionFor,
@@ -115,6 +119,13 @@
      to front" would only mean "in front of the other clocks". */
   board.others = () => widgets.items.map((w) => w.z);
   widgets.others = () => board.images.map((i) => i.z);
+  /* And one *selection* for the whole wall, for a related reason: a card, a
+     territory, a widget and an image can all be held at once, so neither of
+     these two registries may keep a selection of its own. `Studio` holds it and
+     these say "what I have just put up is what you are holding" through it —
+     see the note over `Studio.picks`. */
+  board.picks = studio;
+  widgets.picks = studio;
   /* Taking it back. One stack for the whole wall, and it holds no subscriptions
      and no timers, so unlike the four below it needs nothing releasing on
      destroy — its whole state is a plain value it can be handed back. */
@@ -242,8 +253,7 @@
          reached differently: a widget has no transcript to open and is not in
          the layout, so it is selected and panned to rather than focused. */
       if (widgets.items.some((w) => w.id === id)) {
-        widgets.selected = id;
-        board.selected = null;
+        studio.only("widget", id);
         canvas?.revealWidget(id);
         return;
       }
@@ -592,6 +602,49 @@
   let importing = $state(false);
   let sessions = $state<Session[]>([]);
 
+  /* Carrying the wall off and bringing one in. See `.claude/rules` nothing yet —
+     the reasoning is at the top of `portage.ts`, which is where a layout is
+     *defined*; `portage.svelte.ts` is only the hands. */
+  const portage = new Portage({ skein, board, widgets, ambience, ink });
+  let showCarry = $state(false);
+  /** Territory roots that are not directories on this machine. Asked rather than
+   *  derived, because it is a question about a disk.
+   *
+   *  Asked at three moments and on no clock: when the panel opens, after an
+   *  import, and after a territory is rooted. A drive appearing is not something
+   *  this app has to notice within a second, and a poll over `n` filesystem
+   *  stats — one of which may be a share that has to time out — is exactly the
+   *  fourth exception CLAUDE.md says has to earn its place. This does not. */
+  let unrooted = $state<string[]>([]);
+
+  async function askRoots() {
+    try {
+      unrooted = await invoke<string[]>("missing_roots", {
+        paths: skein.projects.map((p) => p.root_path),
+      });
+    } catch {
+      /* A territory wrongly drawn as rooted is the harmless direction: the
+         actions on it fail the way they already do for a folder that has gone. */
+      unrooted = [];
+    }
+  }
+
+  async function openCarry() {
+    showCarry = !showCarry;
+    if (showCarry) await askRoots();
+  }
+
+  /* Re-asked while the panel is up and never otherwise — the same attach/detach
+     bargain the usage widgets strike with `Ledger`. An import adds territories
+     and rooting one changes a path, so the list of roots is the trigger for
+     both; with the panel shut, nothing is asking and nothing is read. */
+  const rootSig = $derived(skein.projects.map((p) => p.root_path).join("|"));
+  $effect(() => {
+    void rootSig;
+    if (!showCarry) return;
+    void askRoots();
+  });
+
   async function openImport(force = false) {
     if (showImport && !force) {
       showImport = false;
@@ -826,8 +879,10 @@
       const id = widgetEl.dataset.widget;
       const w = widgets.items.find((w) => w.id === id);
       if (w) {
-        widgets.selected = id;
-        board.selected = null;
+        /* A right-click aims the menu at exactly one thing, so it replaces the
+           selection rather than adding to it — the same answer a plain left
+           press on something unpicked gives. */
+        studio.only("widget", id);
         const now = w.config[VARIANT];
         target = {
           kind: "widget",
@@ -1864,8 +1919,12 @@
          this card is doing that you might want to take back. */
       if (focused?.bangCmd) void bang.stop(focused);
       else if (focused?.working) void skein.stop(focused);
-      else if (board.selected) board.selected = null;
-      else if (widgets.selected) widgets.selected = null;
+      /* Escape backs out one kind at a time, innermost first, which is what it
+         did while images and widgets each held a selection of their own. There
+         is one selection now, spanning all four kinds, so these ask it rather
+         than two singletons that used to clear each other. */
+      else if (studio.pickedOf("image").length) studio.dropKind("image");
+      else if (studio.pickedOf("widget").length) studio.dropKind("widget");
       else ondeselect();
     } else if (e.key === "Tab" && !isTyping(e.target)) {
       /* Tab means "the next card" everywhere on the wall, not only in the dock
@@ -1882,12 +1941,18 @@
       cycleTab(e.shiftKey ? -1 : 1, e.ctrlKey || e.metaKey);
     } else if (
       (e.key === "Delete" || e.key === "Backspace") &&
-      (board.selected || widgets.selected) &&
+      (studio.pickedOf("image").length || studio.pickedOf("widget").length) &&
       !isTyping(e.target)
     ) {
       e.preventDefault();
-      if (board.selected) void board.remove(board.selected);
-      else if (widgets.selected) void widgets.remove(widgets.selected);
+      /* Everything held of the two kinds this key may take down, not the first
+         of them: with one selection spanning the wall, a Delete that removed one
+         of four picked widgets would be a key that half-worked. Deliberately not
+         cards or territories — closing a card takes an agent down with it, and
+         forgetting a project refuses while anything is open there, so both stay
+         gestures you have to name. */
+      for (const id of studio.pickedOf("image")) void board.remove(id);
+      for (const id of studio.pickedOf("widget")) void widgets.remove(id);
     } else if (
       /* Start typing with a card in hand and the words go to it. The wall has
          no single-letter shortcuts, so a printable key means only one thing —
@@ -2048,6 +2113,7 @@
     "themes",
     "accounts",
     "chime",
+    "layout",
   ];
 
   /** Most important first: the order these are given up in.
@@ -2075,6 +2141,7 @@
     "ambience",
     "accounts",
     "chime",
+    "layout",
     "zoom",
     "live",
     "spend",
@@ -2255,6 +2322,13 @@
         on: attention.chime,
         press: () => (attention.chime = !attention.chime),
       },
+      {
+        key: "layout",
+        label: "layout",
+        title: "Carry this wall off as a file, or bring one in — and root a territory whose folder is not here",
+        on: showCarry,
+        press: () => void openCarry(),
+      },
     ] as { key: string; label: string; title?: string; on?: boolean; adopt?: boolean; press: () => void }[],
   );
 
@@ -2432,6 +2506,15 @@
 
   {#if showThemes}
     <Themes onclose={() => (showThemes = false)} />
+  {/if}
+
+  {#if showCarry}
+    <Carry
+      carry={portage}
+      projects={skein.projects}
+      {unrooted}
+      onclose={() => (showCarry = false)}
+    />
   {/if}
 
   {#if showImport}

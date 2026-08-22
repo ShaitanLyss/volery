@@ -2081,13 +2081,26 @@ export class Skein {
     g.health = {};
   }
 
-  async addGroup(projectId: string, label: string, servers: ServerSpec[]) {
+  /** `was` is for a group being put back rather than made — an imported layout
+   *  (see `portage.ts`). It matters for exactly one reason and it is a safety
+   *  one: `autostart` here has always been hard-coded true, which is right for a
+   *  group you are creating by hand and wrong for one arriving in a document,
+   *  because the load path starts every autostart group at launch. An import
+   *  that quietly armed somebody else's dev servers would be a file that runs
+   *  commands. So a carried group brings its own answer, and only a group made
+   *  by hand gets the optimistic default. */
+  async addGroup(
+    projectId: string,
+    label: string,
+    servers: ServerSpec[],
+    was?: { autostart: boolean; startOrder: number },
+  ) {
     const group: ServerGroup = {
       id: crypto.randomUUID(),
       project_id: projectId,
       label,
-      autostart: true,
-      start_order: this.groups.length,
+      autostart: was?.autostart ?? true,
+      start_order: was?.startOrder ?? this.groups.length,
       servers,
     };
     try {
@@ -2096,6 +2109,36 @@ export class Skein {
     } catch (err) {
       this.fault = String(err);
     }
+  }
+
+  /** New servers under an existing group, same row.
+   *
+   *  For rerooting a territory (`portage.svelte.ts`): a group whose servers
+   *  still start in a folder from another machine is a group that looks right
+   *  and does nothing. `save_server_group` upserts on the id, so this is the
+   *  same row rather than a second one — which matters, because the running
+   *  `GroupRuntime` is keyed on it and a new id would orphan whatever is up. */
+  async reworkGroup(g: GroupRuntime, servers: ServerSpec[]) {
+    const group: ServerGroup = { ...g.group, servers };
+    try {
+      await invoke("save_server_group", { group });
+      this.groups = this.groups.map((x) => (x === g ? new GroupRuntime(group) : x));
+    } catch (err) {
+      this.fault = String(err);
+    }
+  }
+
+  /** Where a territory points, changed.
+   *
+   *  Written through in hand as well as on disk, the same bargain
+   *  `placeProject` strikes — the wall matches cards to territories by path on
+   *  the very next frame. The *name* is deliberately left alone: a territory
+   *  arriving in an imported layout is named for the folder it had where it was
+   *  written, which is nearly always what you want to go on calling it, and a
+   *  rename that happened as a side effect of pointing at a folder would be one
+   *  you had to notice to undo. */
+  rootedAt(id: string, rootPath: string) {
+    this.projects = this.projects.map((p) => (p.id === id ? { ...p, root_path: rootPath } : p));
   }
 
   async removeGroup(g: GroupRuntime) {

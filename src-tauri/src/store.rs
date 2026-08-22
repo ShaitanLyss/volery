@@ -1239,6 +1239,48 @@ fn place_row(
     Ok(())
 }
 
+/// Point a territory at a different folder.
+///
+/// The other half of "a project arrives unrooted" — see `portage.ts`. An
+/// imported layout carries the root its territory had on the machine that wrote
+/// it, which will not exist here, and this is how it is given a real one.
+///
+/// `root_path` is UNIQUE and is the identity the whole app matches on, so the
+/// conflict is the interesting case and it is left to SQLite rather than checked
+/// first: a `SELECT` and then an `UPDATE` is two statements a second writer can
+/// get between, and the constraint is the only thing that cannot be raced. What
+/// comes back is the constraint's own message, which the panel shows.
+///
+/// The name is deliberately not touched, though `ensure_project` derives one
+/// from the path at creation. A territory that arrived in a document is named
+/// for the folder it had where it was written, which is nearly always what you
+/// go on calling it — and a rename as a side effect of pointing at a folder is
+/// one you would have to notice before you could undo it.
+///
+/// Nor are the cards. A card's `cwd` is where its process was actually spawned
+/// and its transcript slug is derived from that path; rewriting it would claim a
+/// conversation happened somewhere it did not. An imported territory has no
+/// cards, and a rerooted one keeps whatever history it has, in the place that
+/// history happened.
+#[tauri::command]
+pub fn reroot_project(
+    store: tauri::State<'_, Store>,
+    id: String,
+    root_path: String,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    let hit = conn
+        .execute(
+            "UPDATE project SET root_path = ?2 WHERE id = ?1",
+            params![id, root_path],
+        )
+        .map_err(|e| e.to_string())?;
+    if hit == 0 {
+        return Err(format!("no territory with id {id}"));
+    }
+    Ok(())
+}
+
 /// Where a territory is drawn when it has been stuck to the glass, or `None`
 /// for one put back on the wall.
 ///
