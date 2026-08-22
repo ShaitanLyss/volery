@@ -47,10 +47,10 @@ nothing, which is worse than a shorter history.
 ### Two ways an act is recorded, and why there are two
 
 - **Where a gesture already has a commit point, the act is recorded there**, once, with every
-  record it touched. `Canvas.cardUp`, `Canvas.terrUp`, `Canvas.toggleGlass`, the menu's
-  `unpin` / `reflow` / `tidy`. This is what makes dragging a territory of five pinned cards
-  *one* press to undo rather than six — recorded from inside `Studio` it would be six, because
-  a territory drag writes a placement per member every frame.
+  record it touched. `Canvas.haulUp`, `Canvas.toggleGlass`, the menu's `unpin` / `reflow` /
+  `tidy`. This is what makes dragging a territory of five pinned cards *one* press to undo
+  rather than six — recorded from inside `Studio` it would be six, because a territory drag
+  writes a placement per member every frame.
 - **Where the mutation *is* the gesture, the act is streamed and fused.** A widget dragged or
   resized writes its box every frame and nothing knows when you will let go; a knob nudged in
   the context menu fires once per click with no bracket around the series. `Widgets` and
@@ -59,6 +59,17 @@ nothing, which is worse than a shorter history.
 So `Widgets` and `Board` hold a `Scribe` and record themselves — every route to one is
 undoable by existing, including the control surface, which is how `wall.test.ts` can drive it.
 `Studio` deliberately holds none.
+
+**A drag across the wall is the one gesture that reaches into both halves of that split**, and
+it is why `quiet` is public rather than an internal of `Undo`. A selection now spans all four
+kinds, so one press can move a card, a territory, a widget and a reference image together
+(`layout.md`). `Canvas.haulMove` wraps its writes in `undo.quiet` — which is what stops
+`Widgets` and `Board` recording their own halves of it — and `haulUp` records once, with every
+record the press touched, in all four realms. Streamed and fused would have made a group drag
+two or three presses to put back, and the wall would come apart in whatever order the fuse
+windows happened to fall: the same argument that made a territory and its cards one act,
+one kind wider. That is not an exception to the rule above, it is the rule choosing the first
+branch: a haul has a commit point, so it is recorded at it.
 
 Three consequences of that split:
 

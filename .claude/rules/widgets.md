@@ -63,8 +63,15 @@ Two things carry over from elsewhere and are load-bearing:
   default and the reason for it; the `frame` knob below is the way to spend it deliberately.
 - **The press is a click until it has travelled.** A widget can hold buttons (a performance
   row goes to the card it names), and capturing the pointer on `pointerdown` retargets the
-  eventual `click` to the wrapper and silently swallows every one of them. Same 4px slop, same
-  bug, as `Canvas.cardDown`.
+  eventual `click` to the wrapper and silently swallows every one of them. That rule now lives
+  in `Canvas` and applies to the whole wall, along with the *move* gesture itself: a widget can
+  be selected beside a card, a project and a reference image, and dragging any member of a
+  selection moves all of it, so moving cannot be something each thing does only to itself. What
+  `WidgetNode` still owns is the resize — the one gesture that is about this widget and cannot
+  mean anything else — and its grip is marked `data-grip`, which is what tells `handleOf` to
+  leave the press alone. Being a `button` is deliberately *not* enough: a card's whole body is
+  one, and a rule that stepped over buttons stepped over every card on the wall. See
+  `layout.md`.
 
 ##### How much of a frame it wears
 

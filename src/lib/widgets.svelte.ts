@@ -23,6 +23,7 @@ import {
 } from "./widgets";
 import { bank, isRunning, settle, type Duo } from "./timing";
 import { NO_SCRIBE, type Scribe } from "./undo";
+import { NO_PICKS, type Picker } from "./pick";
 
 /** How often a running timer's earned seconds are written down. Nothing writes
  *  to a widget's row while it merely runs — the reading is derived from an epoch
@@ -33,8 +34,13 @@ const BEAT_MS = 60_000;
 
 export class Widgets {
   items = $state<Widget[]>([]);
-  selected = $state<string | null>(null);
   fault = $state<string | null>(null);
+
+  /** What is picked on the wall. Injected for the reason `scribe` is: a widget
+   *  you have just hung up is the thing you are holding, and there is one
+   *  selection for the whole wall rather than one per registry â€” see the note
+   *  over `Studio.picks`. */
+  picks: Picker = NO_PICKS;
 
   /** The z of everything else standing on the wall — the reference images.
    *
@@ -125,7 +131,7 @@ export class Widgets {
        The menu's "bring to front" is there for when you mean the opposite. */
     const w = newWidget(kind, atX, atY, nextBackZ(this.#stack()));
     this.items = [...this.items, w];
-    this.selected = w.id;
+    this.picks.only("widget", w.id);
     /* An edit from nothing — see the shape note in `undo.ts`. Recorded before
        the write, so a save that fails still leaves an undoable widget on the
        wall rather than one the stack has never heard of. */
@@ -196,7 +202,7 @@ export class Widgets {
       ]);
     }
     this.items = this.items.filter((w) => w.id !== id);
-    if (this.selected === id) this.selected = null;
+    this.picks.drop("widget", id);
     try {
       await invoke("delete_widget", { id });
     } catch (err) {

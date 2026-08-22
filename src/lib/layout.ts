@@ -320,8 +320,25 @@ function territoryHeight(cards: number): number {
  *  them to hand to `pinSpot`. */
 export type Box = { x: number; y: number; w: number; h: number };
 
-const hits = (a: Box, b: Box) =>
-  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+/** Do two boxes overlap at all? Edges touching is not an overlap: two cards on
+ *  adjacent slots share no area, and a marquee dragged to exactly a card's left
+ *  edge has not reached it yet.
+ *
+ *  Public because the marquee is the other reader — `pick.ts::covered` asks it
+ *  of everything standing on the wall, at boxes this file already defines
+ *  (`CARD_BOX` at the current density, a region's own `w`/`h`). It was private
+ *  while the packing was the only caller. */
+export function touches(a: Box, b: Box): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/** Is `b` wholly inside `a`? The stricter test, for the one thing a marquee
+ *  must not pick up by being drawn *inside* it — see `pick.ts::covered`. */
+export function contains(a: Box, b: Box): boolean {
+  return (
+    b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h
+  );
+}
 
 /** The first free y at or below `from` in a column, given what is already there.
  *
@@ -332,7 +349,7 @@ const hits = (a: Box, b: Box) =>
 function settleY(x: number, from: number, h: number, blocked: Box[]): number {
   let y = from;
   for (;;) {
-    const under = blocked.filter((b) => hits({ x, y, w: REGION_W, h }, b));
+    const under = blocked.filter((b) => touches({ x, y, w: REGION_W, h }, b));
     if (!under.length) return y;
     y = Math.max(...under.map((b) => b.y + b.h)) + REGION_GAP;
   }
@@ -738,7 +755,7 @@ export function pinSpot(
       w: size.w,
       h: size.h,
     };
-    if (!taken.some((t) => hits(box, t))) return at;
+    if (!taken.some((t) => touches(box, t))) return at;
   }
   return last;
 }

@@ -29,6 +29,7 @@ import { stripAnsi } from "./ansi";
 import type { Ambience } from "./ambience.svelte";
 import { living, type EffectKind } from "./ambience";
 import { readingScale } from "./layout";
+import { pressed, type Kind } from "./pick";
 import { spotOf } from "./glass";
 import type { Board } from "./images.svelte";
 import type { Widgets } from "./widgets.svelte";
@@ -569,6 +570,15 @@ export class Control {
     return {
       focusedId: h.focusedId(),
       selected: [...h.studio.selected],
+      /* The whole selection, spanning all four kinds, in the order it was
+         picked. `selected` above is the same fact narrowed to cards, kept
+         because that is what the dock has always meant by the gathering — but a
+         wall where a card, a project, a widget and an image can be held at once
+         needs a reading that can *say* so, or `test:wall` could assert on a
+         box-select without being able to see three quarters of what it caught.
+         Flat strings rather than objects, because a `kind:id` pair is what
+         `pick.ts` keys on and what a test wants to compare. */
+      picks: h.studio.picks.map((p) => `${p.kind}:${p.id}`),
       draft: h.draft(),
       flags: h.flags(),
       loaded: h.skein.loaded,
@@ -799,7 +809,7 @@ export class Control {
         rotation: i.rotation,
         z: i.z,
         glass: spotOf(i),
-        selected: h.board.selected === i.id,
+        selected: h.studio.isPicked("image", i.id),
       })),
       /* The instruments, and whether anything is actually sampling for them.
          `sampling` is reported apart from the widget count for the same reason
@@ -816,7 +826,7 @@ export class Control {
         h: w.h,
         z: w.z,
         glass: spotOf(w),
-        selected: h.widgets.selected === w.id,
+        selected: h.studio.isPicked("widget", w.id),
       })),
       /* What can be taken back, and what it is called. */
       undo: undoSnapshot(h),
@@ -1146,8 +1156,39 @@ export class Control {
       },
 
       select: (op) => {
-        h.studio.selected = this.#cards(op).map((c) => c.id);
+        h.studio.pickCards(this.#cards(op).map((c) => c.id));
         return { selected: [...h.studio.selected] };
+      },
+
+      /** The whole selection, across all four kinds, as `kind:id` strings.
+       *
+       *  `select` above is cards and cards only, which is what it has always
+       *  been and what the dock's gathering means. This is the handle a hand now
+       *  has and that one cannot express: a card, its project, a widget and a
+       *  reference held together, which is what a box-select produces and
+       *  therefore what a test about one has to be able to arrange without
+       *  drawing a rectangle. It replaces the selection rather than adding, the
+       *  way a plain press does; `image.select`/`widget.select` carry the `add`
+       *  modifier for the other half.
+       *
+       *  Anything unparseable is refused rather than dropped: a typo'd kind that
+       *  silently selected nothing would make a passing assertion about an empty
+       *  selection mean nothing at all. */
+      pick: (op) => {
+        const raw = Array.isArray(op.picks) ? (op.picks as unknown[]) : [];
+        const kinds = new Set<Kind>(["card", "image", "widget", "region"]);
+        const picks = raw.map((r) => {
+          const [kind, ...rest] = String(r).split(":");
+          if (!kinds.has(kind as Kind) || !rest.length) {
+            throw new Error(`"${r}" is not a kind:id — one of ${[...kinds].join(", ")}`);
+          }
+          return { kind: kind as Kind, id: rest.join(":") };
+        });
+        h.studio.pick(picks);
+        return {
+          picks: h.studio.picks.map((p) => `${p.kind}:${p.id}`),
+          selected: [...h.studio.selected],
+        };
       },
 
       /** The gathering *and* the focus, because on the wall they are one
@@ -1744,7 +1785,7 @@ export class Control {
       },
 
       "image.update": (op) => {
-        const id = String(op.id ?? h.board.selected ?? "");
+        const id = String(op.id ?? h.studio.pickedOf("image")[0] ?? "");
         const patch: Record<string, number> = {};
         for (const k of ["x", "y", "w", "h", "rotation", "z"]) {
           if (op[k] !== undefined) patch[k] = Number(op[k]);
@@ -1754,14 +1795,22 @@ export class Control {
       },
 
       "image.remove": async (op) => {
-        const id = String(op.id ?? h.board.selected ?? "");
+        const id = String(op.id ?? h.studio.pickedOf("image")[0] ?? "");
         await h.board.remove(id);
         return { id, remaining: h.board.images.length };
       },
 
+      /** Pick an image, or let go of every image with no id.
+       *
+       *  `add` is the modifier a hand holds: without it this replaces the whole
+       *  selection, which is what a plain press does, and with it the image
+       *  joins whatever is already held — the shift-click. Same op on the
+       *  widget side, so the two read alike. */
       "image.select": (op) => {
-        h.board.selected = op.id ? String(op.id) : null;
-        return { selected: h.board.selected };
+        if (!op.id) h.studio.dropKind("image");
+        else if (op.add) h.studio.pick(pressed(h.studio.picks, { kind: "image", id: String(op.id) }, { shift: true }));
+        else h.studio.only("image", String(op.id));
+        return { selected: h.studio.pickedOf("image") };
       },
 
       /* ── the instruments ──────────────────────────────────────────────
@@ -1780,7 +1829,7 @@ export class Control {
       },
 
       "widget.set": (op) => {
-        const id = String(op.id ?? h.widgets.selected ?? "");
+        const id = String(op.id ?? h.studio.pickedOf("widget")[0] ?? "");
         const key = String(op.key ?? "variant");
         h.widgets.set(id, key, op.value as string | number | boolean);
         const w = h.widgets.items.find((w) => w.id === id);
@@ -1791,7 +1840,7 @@ export class Control {
       },
 
       "widget.update": (op) => {
-        const id = String(op.id ?? h.widgets.selected ?? "");
+        const id = String(op.id ?? h.studio.pickedOf("widget")[0] ?? "");
         const patch: Record<string, number> = {};
         for (const k of ["x", "y", "w", "h", "z"]) {
           if (op[k] !== undefined) patch[k] = Number(op[k]);
@@ -1801,14 +1850,16 @@ export class Control {
       },
 
       "widget.remove": async (op) => {
-        const id = String(op.id ?? h.widgets.selected ?? "");
+        const id = String(op.id ?? h.studio.pickedOf("widget")[0] ?? "");
         await h.widgets.remove(id);
         return { id, remaining: h.widgets.items.length };
       },
 
       "widget.select": (op) => {
-        h.widgets.selected = op.id ? String(op.id) : null;
-        return { selected: h.widgets.selected };
+        if (!op.id) h.studio.dropKind("widget");
+        else if (op.add) h.studio.pick(pressed(h.studio.picks, { kind: "widget", id: String(op.id) }, { shift: true }));
+        else h.studio.only("widget", String(op.id));
+        return { selected: h.studio.pickedOf("widget") };
       },
 
       /* ── taking it back ───────────────────────────────────────────────
@@ -1845,7 +1896,7 @@ export class Control {
        *  through the same `Widgets.update` this does, so nothing here is a
        *  parallel path — it is the seam the buttons sit on. */
       "timer.set": (op) => {
-        const id = String(op.id ?? h.widgets.selected ?? "");
+        const id = String(op.id ?? h.studio.pickedOf("widget")[0] ?? "");
         const w = h.widgets.items.find((w) => w.id === id);
         if (!w) throw new Error(`no widget ${id}`);
         const patch: Record<string, number> = {};
@@ -2395,7 +2446,10 @@ export class Control {
           dx: Number(op.dx ?? 0),
           dy: Number(op.dy ?? 0),
           steps: Number(op.steps ?? 12),
-          /** "right" pans the wall too — and must not leave a menu behind. */
+          /** The left button draws a selection band; "right" and "middle" both
+           *  pan, and the right one must not leave a menu behind. All three are
+           *  reachable, because a pan that only a hand can make is a claim no
+           *  run can check — see `control.md`. */
           button: op.button ? String(op.button) : null,
         });
         await settle();

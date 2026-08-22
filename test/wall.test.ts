@@ -1218,15 +1218,143 @@ t("the transformed layer covers the whole wall", async () => {
   await ctl("viewport", was);
 });
 
-ti("pressing the ground pans, wherever on it the press lands", async () => {
+ti("the ground pans on the middle and right buttons, wherever the press lands", async () => {
   /* It read as "dragging works in some places" — the places being wherever the
-     layer had been translated off, which is why it survived so long. */
+     layer had been translated off, which is why the original bug survived so
+     long. `.layer` is the whole viewport, so aiming at it is aiming at the case
+     that used to be inert.
+
+     Both of the buttons that pan, and neither of them is decoration: the left
+     one now draws a selection band, so panning is *only* these two and a run
+     that could make one of the gestures and not the other would be a run that
+     could not tell whether the wall was still readable. The middle button is
+     the harder of the two to be sure of by hand, because Windows also wants it
+     for autoscroll. */
+  const was = (await snapshot()).viewport;
+
+  for (const button of ["right", "middle"]) {
+    await ctl("viewport", { x: 0, y: 0, scale: 1 });
+    await ctl("real.drag", { selector: ".layer", dx: 100, dy: 60, button });
+    expect((await snapshot()).viewport).toMatchObject({ x: 100, y: 60 });
+  }
+
+  /* And the left button does not pan, which is the other half of the same
+     claim — it drew the band instead, and the view has not moved. */
+  await ctl("viewport", { x: 0, y: 0, scale: 1 });
+  await ctl("real.drag", { selector: ".layer", dx: 100, dy: 60 });
+  expect((await snapshot()).viewport).toMatchObject({ x: 0, y: 0 });
+
+  await ctl("deselect", {});
+  await ctl("viewport", was);
+});
+
+ti("a left-drag over a card gathers it, and does not gather its territory", async () => {
+  /* The band, with a real cursor, because everything interesting about it is
+     the timing: it must not exist until the press has travelled 4px, and its
+     moves arrive on window listeners rather than on any one element. */
+  const was = (await snapshot()).viewport;
+  await ctl("viewport", { x: 0, y: 0, scale: 1 });
+  await ctl("deselect", {});
+
+  /* Aimed by measurement. A card is 208×78 in a 248×116 slot, so the point just
+     past its bottom-right corner is bare wall inside its own gutter — which
+     makes the band small enough that it can only reach this one card, whatever
+     else the suite has opened. */
+  const r = (await ctl("dom", { selector: `[data-conv="${card}"]` })).nodes[0].rect;
+  await ctl("real.drag", {
+    x: r.x + r.w + 8,
+    y: r.y + r.h + 8,
+    dx: -(r.w / 2 + 8),
+    dy: -(r.h / 2 + 8),
+  });
+
+  let snap = await snapshot();
+  expect(snap.picks).toContain(`card:${card}`);
+  /* The gathering is the same fact narrowed to cards, so both readings agree. */
+  expect(snap.selected).toContain(card);
+  /* The band began and ended inside the territory without enclosing it, and a
+     territory is an area rather than a thing standing on the wall: one you have
+     merely reached into is one you were reaching into to get at what is standing
+     in it. Held, it would move the whole project on the next drag. */
+  expect(snap.picks).not.toContain(`region:${WALL}`);
+  /* Selecting a card by band does not open it — that is what a click is for. */
+  expect(snap.focusedId).not.toBe(card);
+
+  /* A band that catches nothing replaces the selection with nothing, which is
+     what makes it a selection rather than an accumulation. Drawn in the gutter
+     alone, away from the card. */
+  await ctl("real.drag", {
+    x: r.x + r.w + 8,
+    y: r.y + r.h + 8,
+    dx: 20,
+    dy: 20,
+  });
+  snap = await snapshot();
+  expect(snap.picks).not.toContain(`card:${card}`);
+
+  await ctl("deselect", {});
+  await ctl("viewport", was);
+});
+
+ti("a band with shift held adds, and dragging one member carries the rest", async () => {
+  /* The two halves that make more than one selected thing worth having. */
   const was = (await snapshot()).viewport;
   await ctl("viewport", { x: 0, y: 0, scale: 1 });
 
-  await ctl("real.drag", { selector: ".layer", dx: 100, dy: 60 });
-  expect((await snapshot()).viewport).toMatchObject({ x: 100, y: 60 });
+  const second = await newCard();
+  /* Both cards and a widget, arranged through the surface rather than by
+     drawing three rectangles — `pick` is the handle a hand has and this op does
+     not. The widget is hung on the real wall, so it is remembered for the
+     sweep in afterAll. */
+  const w = (await ctl("widget.add", { kind: "clock", x: 4000, y: 4000 })).id as string;
+  hung.push(w);
+  await ctl("pick", { picks: [`card:${card}`, `card:${second}`, `widget:${w}`] });
 
+  const before = await snapshot();
+  expect(before.picks).toEqual([`card:${card}`, `card:${second}`, `widget:${w}`]);
+  const at = (id: string) =>
+    before.cards.find((c: Reply) => c.id === id).placement ?? null;
+  const box = before.widgets.find((x: Reply) => x.id === w);
+
+  /* Carry the group by one of its cards. Everything held moves by the same
+     delta, in canvas units, which at scale 1 is the screen delta — and the
+     press does not collapse the selection to the card it landed on, which is
+     the subtlety the whole thing rests on. */
+  const r0 = (await ctl("dom", { selector: `[data-conv="${card}"]` })).nodes[0].rect;
+  await ctl("real.drag", {
+    x: r0.x + r0.w / 2,
+    y: r0.y + r0.h / 2,
+    dx: 60,
+    dy: 40,
+  });
+
+  const after = await snapshot();
+  expect(after.picks).toEqual(before.picks);
+  /* Both cards are pinned where they were plus the delta. A flowing card had no
+     placement before, so what is checked is where it ended up against where the
+     layout had drawn it. */
+  for (const id of [card, second]) {
+    const p = at(id);
+    const q = after.cards.find((c: Reply) => c.id === id).placement;
+    expect(q).not.toBeNull();
+    if (p) {
+      expect(Math.abs(q.x - p.x - 60)).toBeLessThan(2);
+      expect(Math.abs(q.y - p.y - 40)).toBeLessThan(2);
+    }
+  }
+  const moved = after.widgets.find((x: Reply) => x.id === w);
+  expect(Math.abs(moved.x - box.x - 60)).toBeLessThan(2);
+  expect(Math.abs(moved.y - box.y - 40)).toBeLessThan(2);
+
+  /* One press, one act — a group that came back in pieces would be a torn wall
+     to put right by hand with the same key that tore it. */
+  expect(after.undo.acts.at(-1)).toBe("moving 3 things");
+  await ctl("undo", {});
+  const back = await snapshot();
+  expect(Math.abs(back.widgets.find((x: Reply) => x.id === w).x - box.x)).toBeLessThan(2);
+
+  await ctl("widget.remove", { id: w });
+  await ctl("deselect", {});
   await ctl("viewport", was);
 });
 
@@ -1265,7 +1393,7 @@ ti("a click on the ground lets go of the card; a drag across it does not", async
   await ctl("select", { ids });
   expect((await snapshot()).selected).toEqual(ids);
 
-  /* Somewhere on the surface that is bare wall — everything `isGround` rules
+  /* Somewhere on the surface that is bare wall — everything `handleOf` rules
      out, avoided by measurement rather than by hope, since where the cards and
      the territory handles are depends on what the suite has already opened.
      Measured again after the pan, because it moves everything it measured. */
@@ -1290,8 +1418,10 @@ ti("a click on the ground lets go of the card; a drag across it does not", async
 
   /* Panning is how this wall is read, not how you change your mind about what
      is in hand — the clearing used to happen on pointerdown, so dragging the
-     wall to look at something dropped the gathering on the way. */
-  await ctl("real.drag", { ...(await bare()), dx: 90, dy: 50 });
+     wall to look at something dropped the gathering on the way. The right
+     button, because that is what pans now: the left one draws a band, and a
+     band *is* how you change your mind about what is in hand. */
+  await ctl("real.drag", { ...(await bare()), dx: 90, dy: 50, button: "right" });
   let snap = await snapshot();
   expect(snap.viewport).toMatchObject({ x: 90, y: 50 });
   expect(snap.selected).toEqual(ids);
@@ -1323,7 +1453,7 @@ ti("a right-drag pans the wall without leaving a menu behind", async () => {
 
   /* And it starts on a card, which is the whole of why this exists: the wall
      is read by panning, so a full territory must not be able to take the
-     gesture away. `isGround` used to refuse the press outright. The card has
+     gesture away. It used to refuse the press outright. The card has
      to stay exactly where it was — the right button carries nothing — and the
      menu must still not appear, which is the harder half here: the
      `contextmenu` is aimed at the card rather than at the surface, so the

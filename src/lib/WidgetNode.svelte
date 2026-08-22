@@ -1,6 +1,6 @@
 <script lang="ts">
-  /* One instrument on the wall: the frame, the two gestures it answers, and
-   * whichever face its kind draws.
+  /* One instrument on the wall: the frame, the one gesture it still answers for
+   * itself, and whichever face its kind draws.
    *
    * The same shape `ImageNode` has, minus rotation — a reference photo pinned
    * at an angle is a reference photo, and a clock at an angle is a clock you
@@ -52,7 +52,6 @@
     names,
     naming,
     toCanvas,
-    onselect,
     onupdate,
     onremove,
     onreveal,
@@ -109,7 +108,6 @@
     names: Map<string, string>;
     naming: (role: string, reference: string | null) => string | null;
     toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
-    onselect: () => void;
     onupdate: (patch: Partial<Widget>) => void;
     onremove: () => void;
     onreveal?: (role: string, reference: string) => void;
@@ -136,68 +134,58 @@
   const spec = $derived(specFor(widget.kind));
   const hs = $derived(11 / scale);
 
+  /* Moving one is not in here any more, and the resize is the whole of what
+     this file still owns as a gesture.
+
+     A widget can be selected alongside a card, a project and a reference image
+     now, and dragging any member of a selection moves all of it — so the move
+     belongs to the wall rather than to each thing moving only itself. `Canvas`
+     hears the press through one capture-phase handler on the surface
+     (`handleOf` finds this node by its `data-widget`) and applies one delta to
+     everything held.
+
+     That is also where "the press is a click until it has travelled" now lives
+     for this node. It was here because a widget can hold buttons and capturing
+     the pointer on `pointerdown` retargets the eventual `click` to this wrapper,
+     silently swallowing every one of them — the same bug `Canvas.cardDown` had.
+     The rule and the 4px are unchanged; they are stated once for the whole wall.
+
+     The resize grip stays, and stays unconditional: nothing else is under it and
+     it is small enough that requiring travel would make it feel stuck. It is
+     marked `data-grip`, which is what tells `handleOf` to leave the press alone
+     — a `button` is not enough on its own, and must not be: a card's whole body
+     is one. Same marker on the take-it-down grip, which stops the wall carrying
+     the widget out from under the click that removes it. */
   type Gesture = {
-    kind: "move" | "size";
     ox: number;
     oy: number;
     w0: number;
     h0: number;
     px: number;
     py: number;
-    /** Screen pixels, for the slop — canvas units shrink with the zoom. */
-    sx: number;
-    sy: number;
-    moved: boolean;
   };
-
-  /** The same 4px a card drag uses, and for a sharper reason here: a widget can
-   *  hold buttons, and capturing the pointer on `pointerdown` retargets the
-   *  eventual `click` to this wrapper — which silently swallows every one of
-   *  them. So a press is a click until it has travelled far enough to be a
-   *  drag, and only then is the pointer captured. */
-  const SLOP = 4;
 
   let gesture: Gesture | null = null;
 
-  function begin(e: PointerEvent, kind: Gesture["kind"]) {
+  function begin(e: PointerEvent) {
     if (e.button !== 0) return;
     e.stopPropagation();
-    onselect();
     const p = toCanvas(e.clientX, e.clientY);
     gesture = {
-      kind,
       ox: widget.x,
       oy: widget.y,
       w0: widget.w,
       h0: widget.h,
       px: p.x,
       py: p.y,
-      sx: e.clientX,
-      sy: e.clientY,
-      /* A resize grip is unambiguous — nothing else is under it, and it is
-         small enough that requiring travel would make it feel stuck. */
-      moved: kind === "size",
     };
-    if (kind === "size") (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   function move(e: PointerEvent) {
     if (!gesture) return;
-    if (!gesture.moved) {
-      if (Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy) < SLOP) return;
-      gesture.moved = true;
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    }
     e.stopPropagation();
     const p = toCanvas(e.clientX, e.clientY);
-
-    if (gesture.kind === "move") {
-      onupdate({
-        x: gesture.ox + (p.x - gesture.px),
-        y: gesture.oy + (p.y - gesture.py),
-      });
-      return;
-    }
     /* Free aspect, unlike an image: a clock stays square inside whatever box it
        is given, and a process list genuinely wants to be wider than it is tall.
        The floor is the widget's own, from the catalogue — below it the face
@@ -228,10 +216,6 @@
   style:width="{widget.w}px"
   style:height="{widget.h}px"
   style:z-index={widget.z}
-  onpointerdown={(e) => begin(e, "move")}
-  onpointermove={move}
-  onpointerup={end}
-  onpointercancel={end}
   role="presentation"
 >
   <div class="face">
@@ -275,25 +259,30 @@
   </div>
 
   {#if selected}
+    <!-- `data-grip`: the resize runs its own gesture, and the wall's drag sits
+         on an ancestor in the capture phase, so the marker is what tells
+         `Canvas.handleOf` to leave this press alone. -->
     <button
+      data-grip
       class="grip size"
       style:width="{hs}px"
       style:height="{hs}px"
       style:right="{-hs / 2}px"
       style:bottom="{-hs / 2}px"
-      onpointerdown={(e) => begin(e, "size")}
+      onpointerdown={begin}
       onpointermove={move}
       onpointerup={end}
+      onpointercancel={end}
       aria-label="Resize"
     ></button>
 
     <button
+      data-grip
       class="grip shut"
       style:width="{hs}px"
       style:height="{hs}px"
       style:right="{-hs / 2}px"
       style:top="{-hs / 2}px"
-      onpointerdown={(e) => e.stopPropagation()}
       onclick={onremove}
       aria-label="Take it down"
     ></button>

@@ -50,7 +50,7 @@ bun run check            # svelte-check + tsc over src/**
 bun run build            # vite build → dist/
 bun run tauri build      # bundle
 
-bun run test             # the pure suites: ansi, classify, layout, glass, specs, history, menu,
+bun run test             # the pure suites: ansi, classify, layout, pick, glass, specs, history, menu,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
                          # presets,
                          # commands, copy, widgets, naming, drafts, rousing, quitting, timing,
@@ -102,7 +102,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `restore.md` | painting the wall from SQLite, rousing dormant cards, setting one aside, scrollback and adopting sessions Skein did not start | `rousing.ts`, `skein.svelte.ts`, `history.ts`, `sessions.rs` |
 | `theme.md` | how the reading is set: a theme as a diff against `tokens.css`, the revert guarantee, the eleven knobs and why each is arguable, deriving and carrying one off the machine | `theme.ts`, `theme.svelte.ts`, `Themes.svelte`, `tokens.css` |
 | `panel.md` | the transcript: markdown parsing, folding tool calls, opening one to see its arguments and result, panel width, reading size, the two rails, keyboard scrolling, following the tail | `Transcript.svelte`, `Markdown.svelte`, `markdown.ts`, `outline.ts`, `follow.ts`, `transcript.ts`, `toolcall.ts`, `ToolCall.svelte`, `copy.ts` |
-| `layout.md` | territories, the flow, pinning, the two-box viewport, `CARD_BOX`, panning and the marquee, and an agent putting an image on the wall beside its card | `layout.ts`, `Canvas.svelte`, `studio.svelte.ts`, `images.svelte.ts`, `pin.rs` |
+| `layout.md` | territories, the flow, pinning, the two-box viewport, `CARD_BOX`, the three pointer gestures, one selection over four kinds and the band that draws it, and an agent putting an image on the wall beside its card | `layout.ts`, `pick.ts`, `Canvas.svelte`, `studio.svelte.ts`, `images.svelte.ts`, `pin.rs` |
 | `undo.md` | taking it back: one shape for four realms, the boundary that keeps prompts and the viewport off the stack, why a drag is one press, and the image file that is no longer deleted with its row | `undo.ts`, `undo.svelte.ts` |
 | `widgets.md` | the widget catalogue and its knobs, the clock, the performance meter, and the three logs over one substrate | `widgets.ts`, `WidgetNode.svelte`, `Clock.svelte`, `perf.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`, `unreallog.ts` |
 | `usage.md` | what is left of the allowance and what it has cost — the account's own windows and their resets, then reading transcripts, the dedup, the five prices, and the day's figure the title bar and the horizon carry | `limits.ts`, `usage.ts`, `ledger.svelte.ts`, `limits.rs`, `usage.rs` |
@@ -200,7 +200,7 @@ own vocabulary of class names wants its own file rather than a prefix;
 ### Purity boundary
 
 Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` files in
-`src/lib` (`classify.ts`, `layout.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
+`src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
 `transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
 `undo.ts`,
@@ -358,7 +358,10 @@ these apply when you open almost anything.
   and the pitch is fixed so a narrower card gives its width back to nothing. See `layout.md`.
 - **The press is a click until it has travelled.** Capturing the pointer on `pointerdown`
   retargets the eventual `click` and silently swallows every button inside the thing you
-  captured on. Same 4px slop everywhere. Bit `Canvas.cardDown` and then `WidgetNode`.
+  captured on. Same 4px slop everywhere. Bit `Canvas.cardDown` and then `WidgetNode`, and is
+  now stated **once** — in `Canvas.groundDown`/`groundMove`, for every gesture the wall
+  answers and all four kinds of thing standing on it. A marquee that appeared on the first
+  pixel of movement was the same bug wearing a third face. See `layout.md`.
 - **The wall's one-second tick advances by exactly one second.** `clock` in
   `conversation.svelte.ts` is the only wake-up on an idle machine and nearly every reading on
   the wall is a `Math.floor` of something linear in it — so a tick that drifts does not read

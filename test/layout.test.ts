@@ -37,6 +37,8 @@ import {
   settle,
   territoryColumn,
   wallOrder,
+  touches,
+  contains,
   type Lod,
   type Placeable,
   type Placement,
@@ -634,6 +636,52 @@ describe("a card and its slot", () => {
     for (const lod of DENSITIES) expect(CARD_BOX[lod].w).toBe(CARD_W);
     expect(CARD_BOX.field.h).toBeLessThan(CARD_BOX.wall.h);
     expect(CARD_BOX.open.h).toBeGreaterThan(CARD_BOX.wall.h);
+  });
+});
+
+/* Both were private while the territory packing and the pin walk were the only
+ * callers. The marquee is the third (`pick.ts::covered`), and it needs the
+ * distinction between them: everything you can pick up is caught by being
+ * touched, and a territory — which is an area rather than a thing standing on
+ * the wall — only by being enclosed. */
+describe("two boxes", () => {
+  const box = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
+
+  test("touching needs area in both axes, not merely a shared edge", () => {
+    const a = box(0, 0, 100, 100);
+    expect(touches(a, box(99, 99, 10, 10))).toBe(true);
+    /* Edge to edge. Two cards on adjacent slots share no area, and a band
+       dragged to exactly a card's left edge has not reached it. */
+    expect(touches(a, box(100, 0, 10, 10))).toBe(false);
+    expect(touches(a, box(0, 100, 10, 10))).toBe(false);
+    /* Overlapping in one axis only is not overlapping. */
+    expect(touches(a, box(50, 200, 10, 10))).toBe(false);
+  });
+
+  test("touching is symmetric, and a box touches itself", () => {
+    const a = box(10, 20, 30, 40);
+    const b = box(30, 40, 30, 40);
+    expect(touches(a, b)).toBe(touches(b, a));
+    expect(touches(a, a)).toBe(true);
+  });
+
+  test("containing allows the edges to coincide, unlike touching", () => {
+    const a = box(0, 0, 100, 100);
+    expect(contains(a, box(0, 0, 100, 100))).toBe(true);
+    expect(contains(a, box(10, 10, 80, 80))).toBe(true);
+    /* One unit over any edge is not contained. */
+    expect(contains(a, box(-1, 10, 80, 80))).toBe(false);
+    expect(contains(a, box(10, 10, 91, 80))).toBe(false);
+    expect(contains(a, box(10, 10, 80, 91))).toBe(false);
+  });
+
+  test("containing implies touching, and is not implied by it", () => {
+    const a = box(0, 0, 100, 100);
+    const inner = box(20, 20, 10, 10);
+    expect(contains(a, inner) && touches(a, inner)).toBe(true);
+    const half = box(90, 90, 40, 40);
+    expect(touches(a, half)).toBe(true);
+    expect(contains(a, half)).toBe(false);
   });
 });
 

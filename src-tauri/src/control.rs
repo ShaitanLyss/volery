@@ -168,7 +168,8 @@ fn to_screen(app: &AppHandle, x: f64, y: f64) -> Result<(i32, i32), String> {
 mod win {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS,
+        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
+        MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
@@ -217,6 +218,17 @@ mod win {
     }
     pub fn release_right() {
         button(MOUSEEVENTF_RIGHTUP);
+    }
+    /// The wall's third pan gesture. Here for the reason the right button is:
+    /// panning is how this wall is read, so a run that cannot make the gesture
+    /// cannot claim the wall is still readable. And this one is the harder of
+    /// the two to be sure of by hand, because Windows also wants the middle
+    /// button for autoscroll.
+    pub fn press_middle() {
+        button(MOUSEEVENTF_MIDDLEDOWN);
+    }
+    pub fn release_middle() {
+        button(MOUSEEVENTF_MIDDLEUP);
     }
 }
 
@@ -268,7 +280,9 @@ pub fn control_real_drag(
     button: Option<String>,
 ) -> Result<(), String> {
     check_armed()?;
-    let right = button.as_deref() == Some("right");
+    /* Three buttons, because the wall means three different things by them: the
+       left draws a selection band, and the right and the middle both pan. */
+    let which = button.as_deref().unwrap_or("left");
     #[cfg(windows)]
     {
         let (sx, sy) = to_screen(&app, x, y)?;
@@ -279,10 +293,10 @@ pub fn control_real_drag(
         std::thread::sleep(Duration::from_millis(60));
         win::move_to(sx, sy);
         std::thread::sleep(Duration::from_millis(80));
-        if right {
-            win::press_right();
-        } else {
-            win::press();
+        match which {
+            "right" => win::press_right(),
+            "middle" => win::press_middle(),
+            _ => win::press(),
         }
         std::thread::sleep(Duration::from_millis(40));
 
@@ -296,17 +310,17 @@ pub fn control_real_drag(
             std::thread::sleep(Duration::from_millis(16));
         }
         std::thread::sleep(Duration::from_millis(60));
-        if right {
-            win::release_right();
-        } else {
-            win::release();
+        match which {
+            "right" => win::release_right(),
+            "middle" => win::release_middle(),
+            _ => win::release(),
         }
         std::thread::sleep(Duration::from_millis(80));
         Ok(())
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, x, y, dx, dy, steps, right);
+        let _ = (app, x, y, dx, dy, steps, which);
         Err("real input is implemented for Windows only".into())
     }
 }

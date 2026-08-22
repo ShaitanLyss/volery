@@ -22,8 +22,8 @@ component is never mounted. Conditional items are swept for orphaned separators,
 menu that opens on a horizontal rule reads as a missing item.
 
 Two consequences elsewhere. `.region` lost its `pointer-events: none` so a territory can
-answer for itself — safe only because `isGround` now decides by what a press is *not* on,
-so a press there still pans. And the card menu is where the session id finally leaves the
+answer for itself — safe only because `handleOf` decides by what a press is *not* on, so a
+press there is still bare ground (once a pan, now a selection band; see `layout.md`). And the card menu is where the session id finally leaves the
 UI (`copy resume command`); before it, nothing on the wall would tell you what `--resume`
 takes.
 

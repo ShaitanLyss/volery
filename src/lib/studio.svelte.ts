@@ -13,6 +13,15 @@ import {
   type Region,
 } from "./layout";
 import { spotOf } from "./glass";
+import {
+  dedupe,
+  has as hasPick,
+  idsOf,
+  keyOf,
+  withoutKind,
+  type Kind,
+  type Pick,
+} from "./pick";
 
 export * from "./layout";
 
@@ -47,27 +56,90 @@ export class Studio {
    *  to read. */
   lod = $derived<Lod>(lodFor(this.scale));
 
-  /** Cards gathered for a broadcast. An array rather than a Set because
-   *  Svelte's reactivity tracks assignment, and order is the order you picked
-   *  them — which is the order the dock lists them in. */
-  selected = $state<string[]>([]);
+  /** Everything picked on the wall, in the order it was picked.
+   *
+   *  **One selection, spanning all four kinds** — a card, a project's
+   *  territory, a widget, a reference image. It was three: this list held card
+   *  ids alone, `Board.selected` held one image, `Widgets.selected` held one
+   *  widget, and the two singletons deliberately cleared each other so Delete
+   *  had an unambiguous target. Three selections none of which could hold two
+   *  things of different kinds, so "these two cards and that reference, moved
+   *  together" was not a sentence the wall could say. The algebra — what each
+   *  modifier means, what a marquee replaces, what a drag carries — is pure and
+   *  lives in `pick.ts`; this is only where it is kept.
+   *
+   *  An array rather than a Set because Svelte's reactivity tracks assignment,
+   *  and the order is the order you picked things in, which is the order the
+   *  dock lists the gathering in.
+   *
+   *  A pick naming something that has since gone is harmless and is not swept:
+   *  every reader asks the wall for the thing and finds nothing, which is what
+   *  a closed card's id has always done to the gathering. */
+  picks = $state<Pick[]>([]);
+
+  /** The picked cards — the gathering a prompt is aimed at.
+   *
+   *  Derived rather than stored, so there is one selection and not two that can
+   *  drift. Everything that read this before reads it unchanged: the dock's
+   *  targets, the cards that wear the draft as their name-to-be, and
+   *  `snapshot.selected`. */
+  selected = $derived(idsOf(this.picks, "card"));
 
   isSelected(id: string): boolean {
-    return this.selected.includes(id);
+    return this.isPicked("card", id);
   }
 
-  toggle(id: string) {
-    this.selected = this.isSelected(id)
-      ? this.selected.filter((s) => s !== id)
-      : [...this.selected, id];
+  isPicked(kind: Kind, id: string): boolean {
+    return hasPick(this.picks, { kind, id });
+  }
+
+  /** The ids of everything held of one kind, in the order it was picked.
+   *  `selected` is this for cards, named as the dock has always named it. */
+  pickedOf(kind: Kind): string[] {
+    return idsOf(this.picks, kind);
   }
 
   selectOnly(id: string) {
-    this.selected = [id];
+    this.only("card", id);
+  }
+
+  /** Pick exactly these cards and nothing else. The control surface's
+   *  `card.select` op, which used to assign the list directly. */
+  pickCards(ids: string[]) {
+    this.picks = dedupe(ids.map((id) => ({ kind: "card" as const, id })));
   }
 
   clearSelection() {
-    this.selected = [];
+    this.picks = [];
+  }
+
+  /* ── the `Picker` the wall's other two registries are handed ──────────────
+   *
+   * `Board` and `Widgets` each need to say "the thing I have just put up is
+   * what is selected now", and neither may own the wall's selection or import
+   * this file. So `Studio` satisfies `pick.ts`'s `Picker` and is injected as a
+   * field, exactly the arrangement `scribe` and `others` already have in both
+   * of those classes. */
+
+  /** Pick one thing and drop everything else. */
+  only(kind: Kind, id: string) {
+    this.picks = [{ kind, id }];
+  }
+
+  drop(kind: Kind, id: string) {
+    const k = keyOf({ kind, id });
+    this.picks = this.picks.filter((p) => keyOf(p) !== k);
+  }
+
+  /** Let go of every thing of one kind. Escape backs out one kind at a time,
+   *  innermost first, which is what it always did with the two singletons. */
+  dropKind(kind: Kind) {
+    this.picks = withoutKind(this.picks, kind);
+  }
+
+  /** Replace the whole selection. What a gesture in `pick.ts` hands back. */
+  pick(sel: Pick[]) {
+    this.picks = sel;
   }
 
   constructor() {

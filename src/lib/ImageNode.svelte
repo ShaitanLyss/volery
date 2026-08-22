@@ -7,7 +7,6 @@
     selected,
     scale,
     toCanvas,
-    onselect,
     onupdate,
     onremove,
   }: {
@@ -17,17 +16,28 @@
     /** Canvas zoom, so handles stay a constant size on screen. */
     scale: number;
     toCanvas: (clientX: number, clientY: number) => { x: number; y: number };
-    onselect: () => void;
     onupdate: (patch: Partial<RefImage>) => void;
     onremove: () => void;
   } = $props();
+
+  /* Moving one is not in here any more, and the two gestures that are left is
+     the whole of what this file still owns.
+     A reference can be selected alongside a card, a widget and a project now, and
+     dragging any member of a selection moves all of it — so the move has to be
+     the wall's rather than each thing moving only itself. `Canvas` hears the
+     press through one capture-phase handler on the surface (`handleOf` finds
+     this node by its `data-image`) and applies one delta to everything held.
+     Scaling and rotating stay here, because they are about this image and no
+     amount of selection makes them mean anything else. Their grips are marked
+     `data-grip`, which is what tells `handleOf` to leave a press on one alone —
+     being a `button` is not enough and must not be, since a card's whole body is
+     one. */
 
   /** Handles are drawn in canvas units but should feel the same size at every
    *  zoom level, so they shrink as the world grows. */
   const hs = $derived(11 / scale);
 
   type Gesture =
-    | { kind: "move"; ox: number; oy: number; px: number; py: number }
     | { kind: "scale"; w0: number; h0: number; cx: number; cy: number; d0: number }
     | { kind: "rotate"; r0: number; a0: number; cx: number; cy: number };
 
@@ -38,13 +48,10 @@
   function begin(e: PointerEvent, kind: Gesture["kind"]) {
     if (e.button !== 0) return;
     e.stopPropagation();
-    onselect();
     const p = toCanvas(e.clientX, e.clientY);
     const c = centre();
 
-    if (kind === "move") {
-      gesture = { kind, ox: img.x, oy: img.y, px: p.x, py: p.y };
-    } else if (kind === "scale") {
+    if (kind === "scale") {
       gesture = {
         kind,
         w0: img.w,
@@ -70,12 +77,7 @@
     e.stopPropagation();
     const p = toCanvas(e.clientX, e.clientY);
 
-    if (gesture.kind === "move") {
-      onupdate({
-        x: gesture.ox + (p.x - gesture.px),
-        y: gesture.oy + (p.y - gesture.py),
-      });
-    } else if (gesture.kind === "scale") {
+    if (gesture.kind === "scale") {
       /* Distance from the centre, so scaling behaves the same whatever angle
          the image is sitting at. Aspect ratio is preserved — a reference is
          wrong if it is stretched. */
@@ -110,17 +112,18 @@
   style:height="{img.h}px"
   style:transform="rotate({img.rotation}deg)"
   style:z-index={img.z}
-  onpointerdown={(e) => begin(e, "move")}
-  onpointermove={move}
-  onpointerup={end}
-  onpointercancel={end}
   role="presentation"
 >
   <img {src} alt="" draggable="false" />
 
   {#if selected}
     <!-- Handles live outside the image so they stay grabbable on a dark photo. -->
+    <!-- `data-grip` is how `Canvas.handleOf` knows to leave a press here alone.
+         These three run gestures of their own, and the wall's own drag is on an
+         ancestor in the capture phase — so `e.stopPropagation()` here cannot
+         stop it and the marker has to be in the DOM for it to read. -->
     <button
+      data-grip
       class="grip rotate"
       style:width="{hs}px"
       style:height="{hs}px"
@@ -134,6 +137,7 @@
     <span class="stem" style:height="{hs * 2.4}px"></span>
 
     <button
+      data-grip
       class="grip size"
       style:width="{hs}px"
       style:height="{hs}px"
@@ -146,12 +150,12 @@
     ></button>
 
     <button
+      data-grip
       class="grip shut"
       style:width="{hs}px"
       style:height="{hs}px"
       style:right="{-hs / 2}px"
       style:top="{-hs / 2}px"
-      onpointerdown={(e) => e.stopPropagation()}
       onclick={onremove}
       aria-label="Remove image"
     ></button>

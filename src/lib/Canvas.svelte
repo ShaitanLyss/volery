@@ -19,6 +19,20 @@
   import type { Widgets } from "./widgets.svelte";
   import type { Undo, Stand } from "./undo.svelte";
   import { nameEdit, type Edit } from "./undo";
+  import {
+    covered,
+    haulLabel,
+    haulOf,
+    haulSize,
+    marqueed,
+    pressed,
+    tapped,
+    type Haul,
+    type Mods,
+    type Pick,
+    type Standing,
+    type World,
+  } from "./pick";
   import type { Widget } from "./widgets";
   import type { Meter } from "./meter.svelte";
   import type { Ledger } from "./ledger.svelte";
@@ -291,20 +305,28 @@
   /* While a territory is being carried, where it is comes from the gesture
      rather than from the row that will be written on release. `glass` says
      which of its two positions the gesture is moving — a territory on the pane
-     is dragged in screen pixels and its wall cell is not what changed. */
-  let carried = $state<{ cwd: string; x: number; y: number; glass: boolean } | null>(
-    null,
-  );
+     is dragged in screen pixels and its wall cell is not what changed.
+
+     Several at once, keyed by `cwd`, because a selection can hold more than one
+     territory and one drag moves all of them. It was a single record, from when
+     a territory could only ever be dragged by its own name: with two selected,
+     that record could only draw the last one moving and the other snapped to
+     its new cell on release. `glass` is per gesture rather than per territory,
+     since a carry never spans the two frames — see `worldNow`. */
+  let carried = $state<{
+    glass: boolean;
+    at: Record<string, { x: number; y: number }>;
+  } | null>(null);
   const territories = $derived.by(() => {
     const c = carried;
     if (!c) return projects;
-    return projects.map((p) =>
-      p.root_path !== c.cwd
-        ? p
-        : c.glass
-          ? { ...p, glassX: c.x, glassY: c.y }
-          : { ...p, x: c.x, y: c.y },
-    );
+    return projects.map((p) => {
+      const at = c.at[p.root_path];
+      if (!at) return p;
+      return c.glass
+        ? { ...p, glassX: at.x, glassY: at.y }
+        : { ...p, x: at.x, y: at.y };
+    });
   });
 
   const model = $derived(layout(convs, studio.placements, territories));
@@ -530,13 +552,46 @@
   const panX = $derived(snap(studio.x));
   const panY = $derived(snap(studio.y));
 
-  /* ── panning the ground ─────────────────────────────────── */
-  /* $state because the template reads it for the grab/grabbing cursor. */
+  /* ── one press, three gestures ─────────────────────────────────────────────
+   *
+   * A press on the wall becomes a pan, a marquee or a carry, and which one it
+   * is used to be decided by the button alone: left panned, right panned, and
+   * shift+left drew a band that gathered cards and only cards. Nothing else on
+   * the wall could be selected at all, let alone two things at once.
+   *
+   * It is now the standard direct-manipulation arrangement, because a wall you
+   * arrange things on is a canvas and the canvas conventions are the ones your
+   * hands already know:
+   *
+   * - **Left on bare wall → a marquee**, which selects everything it touches of
+   *   all four kinds. Either modifier makes it add to the selection rather than
+   *   replace it; `pick.ts` carries the argument for what each one means.
+   * - **Left on a thing → carry it**, and carry everything else that is
+   *   selected along with it, which is the half that makes a selection worth
+   *   having rather than decoration.
+   * - **Right or middle anywhere → pan.** This is the part worth being careful
+   *   about, because panning is how this wall is *read* and the gesture that
+   *   does it must not be something the wall can be too full to offer. The
+   *   right button already panned from anywhere and goes on doing exactly that,
+   *   asking nothing about what is underneath it. The middle button is added
+   *   beside it — it is what every other canvas in the world pans with, and it
+   *   is the one that is still free while the right button is on its way to a
+   *   menu. shift+wheel pans too, and `reveal` still moves the view on its own.
+   *
+   * One press record serves all three, and the gesture it *became* is whichever
+   * of `pan` / `marquee` / `haul` is standing. None of them exists until the
+   * press has travelled `DRAG_SLOP`, which is the same rule everything else on
+   * this wall follows and is load-bearing twice over here: a marquee that
+   * appeared on the first pixel of movement would flicker up under every click,
+   * and capturing the pointer before that retargets the eventual `click` and
+   * silently swallows every button inside whatever was captured on. */
+
+  /* $state because the template reads it for the grabbing cursor. */
   let pan = $state<{ sx: number; sy: number; ox: number; oy: number } | null>(
     null,
   );
 
-  /** Shift-drag on bare ground gathers cards; plain drag pans. */
+  /** The band, in canvas units, once the press has become one. */
   let marquee = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(
     null,
   );
@@ -552,48 +607,98 @@
       : null,
   );
 
-  /** Is this press on the ground rather than on something that lives on it?
+  /** Which modifiers a gesture was made with.
    *
-   *  This used to be `e.target === surface`, which looks equivalent and is not.
-   *  `.layer` is an absolutely positioned box the size of the viewport, so a
-   *  press anywhere inside it lands on the layer and never on the surface —
-   *  and panning simply did nothing over that whole area. It went unnoticed
-   *  because the layer is carried by `.pan`: after any pan there is a margin of
-   *  bare surface where dragging still worked, so the wall felt draggable in some
-   *  places and inert in others, the inert part being wherever the projects
-   *  were. Cards, images and controls still handle their own presses. */
-  function isGround(target: EventTarget | null): boolean {
+   *  Meta is ORed into `ctrl` here rather than in `pick.ts`, which has no
+   *  business knowing what platform it is on — the same line `cycleTab`'s own
+   *  binding takes. */
+  const modsOf = (e: PointerEvent | MouseEvent): Mods => ({
+    shift: e.shiftKey,
+    ctrl: e.ctrlKey || e.metaKey,
+  });
+
+  /** What a press is aimed at: a thing standing on the wall, the bare ground,
+   *  or a control that answers for itself.
+   *
+   *  The three-way successor to `isGround`, which only ever had to tell the
+   *  ground from everything else, because the only thing a left press could do
+   *  there was pan. It still decides by what a press is *not* on, for the reason
+   *  it always did: `.layer` is an absolutely positioned box the size of the
+   *  viewport, so a press anywhere inside it lands on the layer and never on the
+   *  surface. Asking `e.target === surface` made the wall draggable in the
+   *  margin the layer had been panned off and inert over every project, which
+   *  read as a machine-specific fault and was not.
+   *
+   *  **A node marker beats an ordinary control inside it**, and getting that
+   *  the wrong way round cost every card its press: `Card.svelte`'s whole body
+   *  *is* a `<button>`, so a rule that stepped over buttons stepped over the
+   *  card. It does not need to step over them, because the pointer is not
+   *  captured until the press has travelled — a press on a card's close button
+   *  that goes nowhere is still a click on that button, exactly as it was when
+   *  `.node` ran its own `onpointerdown`, and one that travels was a drag rather
+   *  than a press on the button.
+   *
+   *  Two things genuinely are not the wall's, and `null` says so:
+   *
+   *  - **A grip**, marked `data-grip`. These run a gesture of their own — an
+   *    image's scale and rotate, a widget's resize — and are the one case where
+   *    both would fire and move the same thing twice. `e.stopPropagation()` in
+   *    the grip cannot help, since this handler is on an ancestor in the capture
+   *    phase, so it has to be asked here.
+   *  - **An editable**, where a drag means selecting text. `.surface input`
+   *    deliberately keeps `user-select: text` for the territory's worktree
+   *    field; without this, dragging across it would draw a band instead.
+   *
+   *  Everything else standing on the wall is either a node or bare ground. Note
+   *  `.region` deliberately carries no `data-region`, so a press in a
+   *  territory's open space is *ground* and can start a marquee. A territory's
+   *  handle is its name, which is where the attribute is, and that is the same
+   *  rule dragging one has always followed. */
+  function handleOf(target: EventTarget | null): Pick | "ground" | null {
     const el = target as HTMLElement | null;
-    if (!el?.closest) return false;
-    return !el.closest(
-      "[data-conv], [data-image], [data-widget], [data-region], button, input, textarea, a",
+    if (!el?.closest) return null;
+    if (el.closest("[data-grip], input, textarea, [contenteditable='true']")) {
+      return null;
+    }
+    const node = el.closest<HTMLElement>(
+      "[data-conv], [data-image], [data-widget], [data-region]",
     );
+    if (!node) return "ground";
+    const d = node.dataset;
+    if (d.conv) return { kind: "card", id: d.conv };
+    if (d.image) return { kind: "image", id: d.image };
+    if (d.widget) return { kind: "widget", id: d.widget };
+    return { kind: "region", id: d.region! };
   }
 
-  /* A press on the ground, whichever button made it — and a press *anywhere*
-     when it is the right button.
-
-     Panning is how this wall is read, so the gesture that does it must not be
-     something the wall can be too full to offer. `isGround` used to be asked of
-     every press, which meant a right-drag begun over a card, a widget, a
-     reference image or any button inside one of them did nothing at all: the
-     denser a territory got, the less of it you could take hold of, and the
-     places you most want to move away from were the places you could not. The
-     left button still asks what is under it — there the answer is the difference
-     between panning the wall and carrying a card — but nothing standing on this
-     wall wants a right-drag for itself, so the right button takes it everywhere.
-
-     A pan that happened must not also leave a menu behind when the button comes
+  /* A pan that happened must not also leave a menu behind when the button comes
      up: the gesture was "move the wall", not "ask the wall something". Chromium
      fires `contextmenu` on release on Windows, so by the time it arrives this
      knows which one it was. */
-  let ground: { button: number; sx: number; sy: number; moved: boolean } | null =
-    null;
+  let ground:
+    | {
+        button: number;
+        sx: number;
+        sy: number;
+        moved: boolean;
+        /** What the press landed on, kept for the release: a tap on bare ground
+         *  lets go of everything, and a tap on a thing collapses the selection
+         *  to it. */
+        aim: Pick | "ground";
+        mods: Mods;
+        /** Which frame the press landed in. A band is a wall gesture and must
+         *  not be drawn from a press on the pane: the pane's bare areas — a
+         *  stuck territory's chip gutter, its acts row — read as ground, and a
+         *  rectangle measured in canvas units from a point in screen space
+         *  would select whatever happened to be under the arithmetic. */
+        glass: boolean;
+      }
+    | null = null;
   let swallowMenu = false;
 
   /* That menu is refused at the *window*, in the capture phase, rather than on
-     `.surface`. A right-drag can now begin on anything, and the `contextmenu`
-     that follows is aimed at whatever the cursor was over — which may be a card
+     `.surface`. A right-drag can begin on anything, and the `contextmenu` that
+     follows is aimed at whatever the cursor was over — which may be a card
      stuck to the glass, and the glass is deliberately not inside the surface.
      Stopped as well as prevented: the studio's own handler is on an ancestor of
      both and would open Skein's menu even with the native one suppressed. */
@@ -609,11 +714,15 @@
   });
 
   /* While a gesture is live its moves and its release are read off the window
-     rather than off `.surface`, for two reasons that both come from the right
-     button: the press may have landed on the glass, which is a sibling of the
-     surface and not a descendant, and for the first few pixels the pointer is
-     deliberately not captured — so there is no one element guaranteed to see
-     them. The listeners exist only for the length of the drag. */
+     rather than off `.surface`, for two reasons: the press may have landed on
+     the glass, which is a sibling of the surface and not a descendant, and for
+     the first few pixels the pointer is deliberately not captured — so there is
+     no one element guaranteed to see them. This is also what lets every one of
+     the four kinds of thing be carried by the same three functions, rather than
+     each drawing its own `onpointermove` on its own wrapper: a card's node, a
+     territory's name, an image and a widget all now report only their *press*,
+     through `groundDown`'s single capture-phase handler, and the drag itself
+     belongs to the wall. The listeners exist only for the length of it. */
   let unwatch: (() => void) | null = null;
 
   function watch() {
@@ -633,51 +742,95 @@
   $effect(() => () => unwatch?.());
 
   function groundDown(e: PointerEvent) {
-    const rmb = e.button === 2;
-    if (!rmb && !isGround(e.target)) return;
+    const aim = handleOf(e.target);
+    const panning = e.button === 1 || e.button === 2;
+    /* Which frame, asked of the DOM rather than passed in: the pane is a
+       sibling of the surface, so containment is the whole of the question and
+       every kind of press answers it the same way. */
+    const onGlass = !!(
+      glassEl &&
+      e.target instanceof Node &&
+      glassEl.contains(e.target)
+    );
+    /* A control answers for itself — except to the two buttons that pan, which
+       reach past everything on the wall by design. */
+    if (aim === null && !panning) return;
     /* Any press ends the last gesture's claim on the menu. Without this a
        right-drag that never produced a `contextmenu` — released off the window,
        say — left the flag standing and ate the next honest right-click. */
     swallowMenu = false;
-    ground = { button: e.button, sx: e.clientX, sy: e.clientY, moved: false };
+    /* And the same guard for the click a drag must not also be read as. It is
+       set on release and consumed by the `click` that follows immediately, so a
+       drag that produced no click — carrying a reference or a widget, where the
+       eventual click has no `.node` to be captured on — would otherwise leave it
+       standing and swallow the next honest press on a card. Cleared here rather
+       than on a timer, because the next press is precisely the gesture whose
+       click it could wrongly eat. */
+    suppressClick = false;
+    ground = {
+      button: e.button,
+      sx: e.clientX,
+      sy: e.clientY,
+      moved: false,
+      aim: aim ?? "ground",
+      mods: modsOf(e),
+      glass: onGlass,
+    };
     watch();
-    /* A right press is a click until it has travelled, so the pointer is not
-       captured yet — the same rule a card drag follows, for a sharper reason
-       here: capture retargets what comes after it, and a right-click on a
-       card's composer has to reach that composer for the menu to know it was
-       aimed at an editable. `groundMove` takes the pointer once the gesture is
-       unmistakable. A left press is on bare ground by definition and has
-       nothing under it to mistarget, so it captures at once as it always did. */
-    if (!rmb) surface?.setPointerCapture(e.pointerId);
 
-    /* Shift gathers, and only with the left button: the right one is the pan
-       that always works, which is the whole point of it. */
-    if (e.shiftKey && !rmb) {
-      const p = toCanvas(e.clientX, e.clientY);
-      marquee = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+    if (panning) {
+      /* Chromium's middle-click autoscroll would fight the pan for the same
+         drag. `.surface` does not scroll, so this is belt and braces. */
+      if (e.button === 1) e.preventDefault();
+      pan = { sx: e.clientX, sy: e.clientY, ox: studio.x, oy: studio.y };
       return;
     }
-    pan = { sx: e.clientX, sy: e.clientY, ox: studio.x, oy: studio.y };
+    if (e.button !== 0) return;
+
+    /* The selection is settled on the **press**, before anybody knows whether
+       this is a click or a drag, and that is what makes a group draggable at
+       all: collapsing to the one thing under the pointer here would mean a
+       press on a member of a selection threw the rest of it away before the
+       drag had started. `pressed` therefore leaves an existing selection alone,
+       and `groundUp` collapses it if the press turns out to have been a click.
+       On bare ground nothing is settled yet either way — the band has not been
+       drawn, and a plain click there is a letting-go that also belongs on the
+       release. */
+    if (aim !== "ground" && aim !== null) {
+      studio.pick(pressed(studio.picks, aim, ground.mods));
+      grab(aim, onGlass);
+    }
   }
 
   function groundMove(e: PointerEvent) {
-    if (ground && !ground.moved) {
-      const far =
-        Math.hypot(e.clientX - ground.sx, e.clientY - ground.sy) >= DRAG_SLOP;
-      /* The same slop a card drag uses, so a right-click with an unsteady hand
-         still opens a menu. */
-      if (far) {
-        ground.moved = true;
-        /* Now it is a drag rather than a click, so taking the pointer is safe —
-           and necessary, or a pan that wanders off the window stops dead. */
-        if (surface && !surface.hasPointerCapture(e.pointerId)) {
-          surface.setPointerCapture(e.pointerId);
-        }
+    if (!ground) return;
+    if (!ground.moved) {
+      /* The same slop everything else on this wall uses, so a click with an
+         unsteady hand is still a click. */
+      if (Math.hypot(e.clientX - ground.sx, e.clientY - ground.sy) < DRAG_SLOP) {
+        return;
+      }
+      ground.moved = true;
+      /* Now it is a drag rather than a click, so taking the pointer is safe —
+         and necessary, or a gesture that wanders off the window stops dead. */
+      if (surface && !surface.hasPointerCapture(e.pointerId)) {
+        surface.setPointerCapture(e.pointerId);
+      }
+      /* And only now does a band exist. Drawn from where the press *landed*
+         rather than from where it crossed the slop, or every marquee would
+         start four pixels away from the thing you began beside. */
+      if (ground.button === 0 && ground.aim === "ground" && !ground.glass) {
+        const p = toCanvas(ground.sx, ground.sy);
+        marquee = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
       }
     }
     if (marquee) {
       const p = toCanvas(e.clientX, e.clientY);
       marquee = { ...marquee, x1: p.x, y1: p.y };
+      return;
+    }
+    if (haul) {
+      haulMove(e);
       return;
     }
     if (!pan) return;
@@ -687,40 +840,42 @@
   }
 
   function groundUp(e: PointerEvent) {
-    if (marqueeBox) {
-      const b = marqueeBox;
-      /* Anything the rectangle touches, not only what it fully contains —
-         a lasso you have to draw perfectly is a lasso you stop using. The card's
-         size is whatever the current density draws, not the wall's. */
-      const card = CARD_BOX[studio.lod];
-      /* `wallCards`, not `model.laid`: a card on the glass is not standing
-         anywhere the rectangle passed over, and gathering one because the slot
-         it still owns happened to be inside would be the wall selecting
-         something you cannot see it select. */
-      const hit = wallCards
-        .filter(
-          (n) =>
-            n.x < b.x + b.w &&
-            n.x + card.w > b.x &&
-            n.y < b.y + b.h &&
-            n.y + card.h > b.y,
-        )
-        .map((n) => n.conv.id);
-      studio.selected = [...new Set([...studio.selected, ...hit])];
+    const g = ground;
+    /* Whether it travelled is asked *first*, and it has to be: a press on a
+       thing takes hold of it straight away, so a plain click on a card arrives
+       here with a haul standing. Asking about the haul before the travel meant
+       the click was read as a drag that had moved nowhere, and the selection
+       was never collapsed — a press on one member of a group could not be
+       narrowed to it, which is half of what a plain click is for. */
+    if (g?.moved) {
+      if (marqueeBox) {
+        studio.pick(marqueed(studio.picks, covered(marqueeBox, standing()), g.mods));
+      } else if (haul) {
+        haulUp();
+      }
+    } else if (g && g.button === 0) {
+      /* A press that never travelled is a click, and there are two of them.
+         On bare ground it lets go of everything — the gathering, the focus, and
+         the panel the focus opens. On a thing it collapses the selection to
+         that one thing, which is the other half of `pressed` having left a group
+         standing so it could be carried.
+         On the *release* rather than on the press, and that is the older half of
+         this: clearing on pointerdown meant dragging the wall to look at
+         something dropped the gathering you had assembled on the way there, and
+         a pan is how this wall is read rather than how you change your mind
+         about it. */
+      if (g.aim === "ground") {
+        studio.clearSelection();
+        ondeselect?.();
+      } else {
+        studio.pick(tapped(studio.picks, g.aim, g.mods));
+      }
     }
-    /* A click on bare ground lets go of everything — the card, the gathering
-       and any reference image. On the *release*, and only if the press never
-       moved: it used to happen on pointerdown, which meant dragging the wall to
-       look at something dropped the gathering you had assembled on the way. A
-       pan is how you read this wall, not how you change your mind about it.
-       Shift is the additive gesture, so a marquee never clears either. */
-    if (ground && !ground.moved && !marquee && ground.button === 0) {
-      studio.clearSelection();
-      board.selected = null;
-      widgets.selected = null;
-      ondeselect?.();
-    }
-    if (ground?.moved && ground.button === 2) swallowMenu = true;
+    if (g?.moved && g.button === 2) swallowMenu = true;
+    /* Nothing was written unless the press travelled, so a click leaves no
+       records to commit and no positions to draw from. */
+    haul = null;
+    carried = null;
     ground = null;
     marquee = null;
     pan = null;
@@ -730,90 +885,275 @@
     }
   }
 
-  /* ── dragging a card pins it ────────────────────────────── */
+  /** Everything standing on the wall, as boxes in canvas units, for the band to
+   *  test against.
+   *
+   *  The *wall's* lists rather than the whole registries, deliberately: a thing
+   *  on the glass is not standing anywhere the rectangle passed over, and
+   *  catching one because the slot it still owns happened to be inside the band
+   *  would be the wall selecting something you cannot see it select.
+   *
+   *  A card's box is the current density's and not the wall's — `field` is 38
+   *  units shorter, and a marquee fixed at 208×78 used to catch cards it never
+   *  touched. An image's is its axis-aligned box whatever angle it is pinned at,
+   *  which over-reaches slightly on a rotated one; the alternative is a rotated
+   *  hit test for the one kind that can rotate, and being caught by a band you
+   *  drew across a picture is not the failure worth that.
+   *
+   *  A territory is marked `area`, which is what lets a band drawn inside one
+   *  gather its cards without also taking the project. See `covered`. */
+  function standing(): Standing[] {
+    const box = CARD_BOX[studio.lod];
+    return [
+      ...wallRegions.map((r) => ({
+        kind: "region" as const,
+        id: r.cwd,
+        box: { x: r.x, y: r.y, w: r.w, h: r.h },
+        area: true,
+      })),
+      ...wallCards.map((n) => ({
+        kind: "card" as const,
+        id: n.conv.id,
+        box: { x: n.x, y: n.y, w: box.w, h: box.h },
+      })),
+      ...wallImages.map((i) => ({
+        kind: "image" as const,
+        id: i.id,
+        box: { x: i.x, y: i.y, w: i.w, h: i.h },
+      })),
+      ...wallWidgets.map((w) => ({
+        kind: "widget" as const,
+        id: w.id,
+        box: { x: w.x, y: w.y, w: w.w, h: w.h },
+      })),
+    ];
+  }
+
+  /* ── carrying whatever is held ──────────────────────────────────────────────
+   *
+   * One drag for all four kinds. There used to be two — `cardDown` and
+   * `terrDown`, near-identical but for what they wrote — and the other two
+   * kinds each moved themselves from inside their own component. Four gestures
+   * that could each only move one thing is exactly what a selection spanning
+   * the wall cannot be built on, so there is one now: the press says what it
+   * landed on, `haulOf` says what is coming along, and every frame writes
+   * `origin + delta` for all of it.
+   *
+   * `origin + delta` rather than an accumulation is the same bargain the two old
+   * drags struck, and here it earns its keep twice: a pinned card that is both
+   * selected *and* inside a selected territory would be written by two paths in
+   * the same frame, and computing from the origin makes those two writes agree
+   * instead of doubling. (The flowing case cannot be made to agree, which is why
+   * `haulOf` excludes it — see the note there.) */
   const DRAG_SLOP = 4;
-  let drag: {
-    id: string;
-    sx: number;
-    sy: number;
-    ox: number;
-    oy: number;
-    moved: boolean;
-    /** Which frame this drag is in. The gesture is identical; what differs is
-     *  that the glass has no zoom to divide by and a different place to write
-     *  the result to. */
+
+  let haul: {
+    /** What the press landed on, for the label the undo menu says. */
+    on: Pick;
+    /** Which frame the gesture is in. The glass has no zoom to divide by and a
+     *  different place to write the result to. */
     glass: boolean;
-    /** The whole placement before the press, for the undo stack — captured here
-     *  because every pointermove overwrites it, and null is a real answer (a
-     *  flowing card has no placement, and undoing to that is what puts it back
-     *  in its slot). */
-    was: Placement | null;
+    /** Where everything started. */
+    it: Haul;
+    /** The records as they were, whole, so the release can record one act — see
+     *  the head of `undo.ts` for why an `Edit` is a snapshot on both sides. */
+    was: {
+      placements: Record<string, Placement | null>;
+      stands: Record<string, Stand | null>;
+      images: Record<string, RefImage>;
+      instruments: Record<string, Widget>;
+    };
   } | null = null;
   let suppressClick = false;
 
-  function cardDown(
-    e: PointerEvent,
-    id: string,
-    x: number,
-    y: number,
-    glass = false,
-  ) {
-    if (e.button !== 0) return;
-    /* Record the gesture, but do NOT capture the pointer yet. Capturing on
-       pointerdown retargets the eventual `click` to this wrapper, which silently
-       swallows every button inside the card — close included. */
-    drag = {
-      id,
-      sx: e.clientX,
-      sy: e.clientY,
-      ox: x,
-      oy: y,
-      moved: false,
-      glass,
-      was: placementOf(id),
+  /** An image's whole record, detached from the rune. */
+  function imageOf(id: string): RefImage | undefined {
+    const i = board.images.find((x) => x.id === id);
+    return i ? $state.snapshot(i) : undefined;
+  }
+
+  function widgetOf(id: string): Widget | undefined {
+    const w = widgets.items.find((x) => x.id === id);
+    return w ? $state.snapshot(w) : undefined;
+  }
+
+  /** Where everything stands right now, in the frame the gesture is happening
+   *  in.
+   *
+   *  **One frame per carry**, and a selection is allowed to span both. The two
+   *  measure a delta in different units — canvas units divided by the zoom
+   *  against screen pixels taken as they come — so one drag cannot honestly
+   *  serve both, and a thing on the pane simply does not move when you drag
+   *  something on the wall. The positions are the ones being *drawn*, clamped by
+   *  `glassAt` on the pane, which is what the old per-node drags were handed
+   *  too: on a pane narrow enough to have borrowed something back from the edge,
+   *  the drawn spot is the honest origin. */
+  function worldNow(glass: boolean): World {
+    if (glass) {
+      return {
+        cards: glassCards.map((n) => ({
+          id: n.conv.id,
+          cwd: n.conv.cwd,
+          x: n.x,
+          y: n.y,
+          /* Nothing is carried by hand on the pane: a territory's members are
+             laid at an offset from its glass origin (`drawnAt` in `layout`), so
+             moving the origin moves all of them, pinned or flowing. That is the
+             same branch `terrDown` had, arriving through the data instead. */
+          pinned: false,
+        })),
+        images: glassImages.map((i) => ({ id: i.id, x: i.x, y: i.y })),
+        widgets: glassWidgets.map((w) => ({ id: w.id, x: w.x, y: w.y })),
+        regions: glassRegions.map((r) => ({ id: r.cwd, x: r.x, y: r.y })),
+      };
+    }
+    return {
+      cards: wallCards.map((n) => ({
+        id: n.conv.id,
+        cwd: n.conv.cwd,
+        x: n.x,
+        y: n.y,
+        pinned: n.pinned,
+      })),
+      images: wallImages.map((i) => ({ id: i.id, x: i.x, y: i.y })),
+      widgets: wallWidgets.map((w) => ({ id: w.id, x: w.x, y: w.y })),
+      regions: wallRegions.map((r) => ({ id: r.cwd, x: r.x, y: r.y })),
     };
   }
 
-  function cardMove(e: PointerEvent) {
-    if (!drag) return;
-    const dx = e.clientX - drag.sx;
-    const dy = e.clientY - drag.sy;
-    if (!drag.moved) {
-      if (Math.hypot(dx, dy) < DRAG_SLOP) return;
-      drag.moved = true;
-      /* Only now is it a drag rather than a click, so capturing is safe. */
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  function grab(on: Pick, glass: boolean) {
+    /* Taking hold of a reference raises it, which is what pressing one always
+       did — an image you have picked up should not stay behind the one beside
+       it. */
+    if (on.kind === "image") board.bringToFront(on.id);
+    const it = haulOf(studio.picks, worldNow(glass));
+    if (!haulSize(it)) return;
+    const placements: Record<string, Placement | null> = {};
+    const stands: Record<string, Stand | null> = {};
+    const images: Record<string, RefImage> = {};
+    const instruments: Record<string, Widget> = {};
+    for (const c of it.cards) placements[c.id] = placementOf(c.id);
+    for (const r of it.regions) {
+      stands[r.id] = standOf(r.id);
+      for (const p of r.pins) placements[p.id] = placementOf(p.id);
     }
-    moved();
-    /* Screen delta → the frame's own units. On the wall that means dividing by
-       the scale, or a card would outrun the cursor when zoomed out and lag it
-       when zoomed in; on the glass the two are the same thing. */
-    const s = drag.glass ? 1 : studio.scale;
-    const x = drag.ox + dx / s;
-    const y = drag.oy + dy / s;
-    if (drag.glass) studio.stick(drag.id, { x, y });
-    else studio.pin(drag.id, x, y);
+    for (const i of it.images) {
+      const v = imageOf(i.id);
+      if (v) images[i.id] = v;
+    }
+    for (const w of it.widgets) {
+      const v = widgetOf(w.id);
+      if (v) instruments[w.id] = v;
+    }
+    haul = { on, glass, it, was: { placements, stands, images, instruments } };
   }
 
-  function cardUp(e: PointerEvent) {
-    if (!drag) return;
-    if (drag.moved) {
-      suppressClick = true;
-      /* Commit only once, on release — not on every pointermove. Dragging a
-         card about on the pane is not a statement about where it belongs on
-         the wall, so it writes the glass spot and leaves the placement alone. */
-      const p = studio.placements[drag.id];
-      if (p && drag.glass) onstick?.(drag.id, spotOf(p));
-      else if (p) onpin?.(drag.id, p.x, p.y);
-      /* One act for the whole press, for the same reason the row is written
-         once: the frames in between are not places the card was put. */
-      undo.did(drag.glass ? "moving a card on the glass" : "moving a card", [
-        { at: "placement", id: drag.id, was: drag.was, now: placementOf(drag.id) },
-      ]);
+  function haulMove(e: PointerEvent) {
+    const h = haul;
+    if (!h || !ground) return;
+    moved();
+    /* Screen delta → the frame's own units. On the wall that means dividing by
+       the scale, or a thing would outrun the cursor when zoomed out and lag it
+       when zoomed in; on the glass the two are the same thing. */
+    const s = h.glass ? 1 : studio.scale;
+    const dx = (e.clientX - ground.sx) / s;
+    const dy = (e.clientY - ground.sy) / s;
+    /* Every write in here is one the stack would otherwise remember, and a drag
+       writes its box on every frame. `Widgets` and `Board` record themselves —
+       that is deliberate and `undo.md` argues for it — so the quiet has to reach
+       across all four realms, and the whole gesture is recorded once on release
+       instead. It is the same reason letting go of a territory of five pinned
+       cards is one press to undo rather than six. */
+    undo.quiet(() => {
+      for (const c of h.it.cards) {
+        if (h.glass) studio.stick(c.id, { x: c.x + dx, y: c.y + dy });
+        else studio.pin(c.id, c.x + dx, c.y + dy);
+      }
+      for (const i of h.it.images) {
+        const at = { x: i.x + dx, y: i.y + dy };
+        board.update(i.id, h.glass ? { glassX: at.x, glassY: at.y } : at);
+      }
+      for (const w of h.it.widgets) {
+        const at = { x: w.x + dx, y: w.y + dy };
+        widgets.update(w.id, h.glass ? { glassX: at.x, glassY: at.y } : at);
+      }
+      if (h.it.regions.length) {
+        const at: Record<string, { x: number; y: number }> = {};
+        for (const r of h.it.regions) {
+          at[r.id] = { x: r.x + dx, y: r.y + dy };
+          for (const p of r.pins) studio.pin(p.id, p.x + dx, p.y + dy);
+        }
+        carried = { glass: h.glass, at };
+      }
+    });
+  }
+
+  /** Called from `groundUp`, and only for a press that travelled — a click is
+   *  settled there instead, since nothing was written for it to commit. */
+  function haulUp() {
+    const h = haul;
+    if (!h) return;
+    suppressClick = true;
+    /* One act for the whole press, however many things it moved and however
+       many realms they came from: the frames in between are not places anything
+       was put. The rows are committed here for the same reason — see
+       `undo.md`'s note on gestures that have a commit point. Images and widgets
+       need no commit call, since their own `update` has already scheduled the
+       save; what they need from here is the *record*, which their own scribe was
+       kept quiet about. */
+    const edits: Edit[] = [];
+    for (const c of h.it.cards) {
+      const p = studio.placements[c.id];
+      if (p && h.glass) onstick?.(c.id, spotOf(p));
+      else if (p) onpin?.(c.id, p.x, p.y);
+      edits.push({
+        at: "placement",
+        id: c.id,
+        was: h.was.placements[c.id] ?? null,
+        now: placementOf(c.id),
+      });
     }
-    const el = e.currentTarget as HTMLElement;
-    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-    drag = null;
+    for (const r of h.it.regions) {
+      const at = carried?.at[r.id];
+      if (!at) continue;
+      if (h.glass) onstickproject?.(r.id, { x: at.x, y: at.y });
+      else onplace?.(r.id, at.x, at.y);
+      const was = h.was.stands[r.id] ?? null;
+      /* The `now` is computed rather than read back: the project's row is
+         written up in App, and only one of its two positions is touched by that
+         call — so spelling it out is both the honest answer and the one that
+         cannot depend on when a rune settles. */
+      if (was) {
+        edits.push({
+          at: "territory",
+          id: r.id,
+          was,
+          now: h.glass
+            ? { ...was, glassX: at.x, glassY: at.y }
+            : { ...was, x: at.x, y: at.y },
+        });
+      }
+      for (const p of r.pins) {
+        const now = studio.placements[p.id];
+        if (now) onpin?.(p.id, now.x, now.y);
+        edits.push({
+          at: "placement",
+          id: p.id,
+          was: h.was.placements[p.id] ?? null,
+          now: placementOf(p.id),
+        });
+      }
+    }
+    for (const i of h.it.images) {
+      const was = h.was.images[i.id];
+      if (was) edits.push({ at: "image", id: i.id, was, now: imageOf(i.id) ?? null });
+    }
+    for (const w of h.it.widgets) {
+      const was = h.was.instruments[w.id];
+      if (was) edits.push({ at: "widget", id: w.id, was, now: widgetOf(w.id) ?? null });
+    }
+    undo.did(haulLabel(h.it, h.on, h.glass), edits);
+    carried = null;
   }
   /* ── a slot that empties is walked into, not teleported into ── *
    *
@@ -881,138 +1221,13 @@
    *
    *  Read at `apply()` time, which is a microtask after the pointermove that
    *  moved it, so plain `let`s are enough; nothing here wants to be reactive.
-   *  Both gestures are only counted once they are past the slop and have become
-   *  drags, which is also when they first move anything. */
+   *  It asks the *haul* rather than a per-kind gesture record, so a card that is
+   *  coming along because something else was grabbed is as glued as the thing
+   *  under the pointer — which it has to be, since one drag now moves several. */
   function inHand(id: string, cwd: string) {
-    if (drag?.moved) return drag.id === id;
-    if (terr?.moved) return terr.cwd === cwd;
-    return false;
-  }
-
-  /* ── dragging a territory carries the project ───────────── *
-   *
-   * The handle is the territory's own name, not the territory: `.region` fills
-   * most of the wall, and a press anywhere inside one has to keep panning —
-   * that whole area being inert is the bug `isGround` exists to have fixed.
-   *
-   * Everything standing in the territory comes along. Flowing cards do that by
-   * arithmetic, since their positions are slots measured off the region's
-   * origin; pinned cards are absolute canvas coordinates and have to be carried
-   * by hand, or a territory would tear in two the moment it moved. */
-  let terr: {
-    cwd: string;
-    sx: number;
-    sy: number;
-    ox: number;
-    oy: number;
-    /** Pinned members and where they started, so every frame is computed from
-     *  the origin rather than accumulated — as `ox`/`oy` are for a card. `was`
-     *  is the same fact whole, for the undo stack: the arithmetic only needs the
-     *  two numbers, but putting one back needs the record. */
-    pins: { id: string; x: number; y: number; was: Placement | null }[];
-    moved: boolean;
-    glass: boolean;
-    /** Where the territory stood before the press. */
-    was: Stand | null;
-  } | null = null;
-
-  function terrDown(
-    e: PointerEvent,
-    r: { cwd: string; x: number; y: number },
-    glass = false,
-  ) {
-    if (e.button !== 0) return;
-    /* Only the wall has pinned cards to carry by hand. On the glass a
-       territory's members are laid at an offset from its glass origin — that
-       is what `drawnAt` in `layout` computes — so moving the origin moves all
-       of them, pinned or flowing, and there is nothing to translate. */
-    const pins: { id: string; x: number; y: number; was: Placement | null }[] = [];
-    if (!glass) {
-      for (const c of convs) {
-        if (c.cwd !== r.cwd) continue;
-        const p = studio.placements[c.id];
-        if (p?.pinned) pins.push({ id: c.id, x: p.x, y: p.y, was: { ...p } });
-      }
-    }
-    terr = {
-      cwd: r.cwd,
-      sx: e.clientX,
-      sy: e.clientY,
-      ox: r.x,
-      oy: r.y,
-      pins,
-      moved: false,
-      glass,
-      was: standOf(r.cwd),
-    };
-  }
-
-  function terrMove(e: PointerEvent) {
-    if (!terr) return;
-    const dx = e.clientX - terr.sx;
-    const dy = e.clientY - terr.sy;
-    if (!terr.moved) {
-      if (Math.hypot(dx, dy) < DRAG_SLOP) return;
-      terr.moved = true;
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    }
-    moved();
-    /* Screen delta → the frame's own units, as a card's drag is: divided by the
-       scale on the wall, taken as it comes on the glass. */
-    const s = terr.glass ? 1 : studio.scale;
-    const x = terr.ox + dx / s;
-    const y = terr.oy + dy / s;
-    carried = { cwd: terr.cwd, x, y, glass: terr.glass };
-    for (const p of terr.pins) {
-      studio.pin(p.id, p.x + (x - terr.ox), p.y + (y - terr.oy));
-    }
-  }
-
-  function terrUp(e: PointerEvent) {
-    if (!terr) return;
-    if (terr.moved && carried) {
-      /* Committed once, on release: the project's row, and every card that came
-         with it. From here the rows are the position again. */
-      if (terr.glass) onstickproject?.(terr.cwd, { x: carried.x, y: carried.y });
-      else onplace?.(terr.cwd, carried.x, carried.y);
-      for (const p of terr.pins) {
-        const at = studio.placements[p.id];
-        if (at) onpin?.(p.id, at.x, at.y);
-      }
-      /* One act for the territory *and* everything it carried. Recorded as one
-         because it happened as one: a territory that came back while its cards
-         stayed where the drag left them is a torn wall, and putting that right
-         by hand is not something anybody should be asked to do with the same key
-         they pressed to undo it. */
-      if (terr.was) {
-        const edits: Edit[] = [
-          {
-            at: "territory",
-            id: terr.cwd,
-            was: terr.was,
-            now: terr.glass
-              ? { ...terr.was, glassX: carried.x, glassY: carried.y }
-              : { ...terr.was, x: carried.x, y: carried.y },
-          },
-          ...terr.pins.map(
-            (p): Edit => ({
-              at: "placement",
-              id: p.id,
-              was: p.was,
-              now: placementOf(p.id),
-            }),
-          ),
-        ];
-        undo.did(
-          terr.glass ? "moving a territory on the glass" : "moving a territory",
-          edits,
-        );
-      }
-      carried = null;
-    }
-    const el = e.currentTarget as HTMLElement;
-    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-    terr = null;
+    if (!haul || !ground?.moved) return false;
+    if (haul.it.cards.some((c) => c.id === id)) return true;
+    return haul.it.regions.some((r) => r.id === cwd);
   }
 
   /* A drag must not also read as a click that focuses the card. */
@@ -1179,6 +1394,7 @@
     <div
       class="region"
       class:torn={!!torn}
+      class:picked={studio.isPicked("region", r.cwd)}
       data-name={r.project}
       data-cwd={r.cwd}
       style:left="{r.x}px"
@@ -1198,10 +1414,6 @@
       style:top="{r.y + 8}px"
       style:z-index={Z_CHIP}
       title="{r.project} — drag to move it, and everything in it"
-      onpointerdown={(e) => terrDown(e, r, glass)}
-      onpointermove={terrMove}
-      onpointerup={terrUp}
-      onpointercancel={terrUp}
       role="presentation"
     >
       {r.project}
@@ -1379,9 +1591,13 @@
     inbox={flights.inbox[n.conv.id] ?? 0}
     draft={draftIds.includes(n.conv.id) ? draft : ""}
     onfocus={(e) => {
-      /* Shift adds to the gathering; a plain click starts a new one. */
-      if (e.shiftKey) studio.toggle(n.conv.id);
-      else studio.selectOnly(n.conv.id);
+      /* Only the focus. What is *selected* was settled by the press, up in
+         `groundDown`/`groundUp`, because a group has to be picked before the
+         drag that carries it can start and a click is too late to be told.
+         A modified click is about the gathering rather than about reading, so it
+         does not also swing the panel onto the card: ctrl-clicking one out of a
+         selection and having it open is the opposite of what you asked for. */
+      if (e.shiftKey || e.ctrlKey || e.metaKey) return;
       onfocus(n.conv.id);
     }}
     onclose={() => onclose(n.conv)}
@@ -1392,13 +1608,9 @@
   <ImageNode
     {img}
     src={board.src(img)}
-    selected={board.selected === img.id}
+    selected={studio.isPicked("image", img.id)}
     scale={glass ? 1 : studio.scale}
     toCanvas={glass ? toGlass : toCanvas}
-    onselect={() => {
-      board.selected = img.id;
-      board.bringToFront(img.id);
-    }}
     onupdate={(patch) => board.update(img.id, glass ? glassPatch(patch) : patch)}
     onremove={() => board.remove(img.id)}
   />
@@ -1407,7 +1619,7 @@
 {#snippet instrument(w: Widget, glass: boolean)}
   <WidgetNode
     widget={w}
-    selected={widgets.selected === w.id}
+    selected={studio.isPicked("widget", w.id)}
     scale={glass ? 1 : studio.scale}
     {meter}
     {ledger}
@@ -1426,13 +1638,6 @@
     toCanvas={glass ? toGlass : toCanvas}
     {onreveal}
     {onopen}
-    onselect={() => {
-      widgets.selected = w.id;
-      /* One thing is held at a time: selecting a widget lets go of any
-         reference image, or Delete would be aimed at whichever of them was
-         picked first. */
-      board.selected = null;
-    }}
     onupdate={(patch) => widgets.update(w.id, glass ? glassPatch(patch) : patch)}
     onremove={() => void widgets.remove(w.id)}
   />
@@ -1499,10 +1704,6 @@
           style:left="{n.x}px"
           style:top="{n.y}px"
           style:z-index={Z_CARD}
-          onpointerdown={(e) => cardDown(e, n.conv.id, n.x, n.y)}
-          onpointermove={cardMove}
-          onpointerup={cardUp}
-          onpointercancel={cardUp}
           onclickcapture={nodeClickCapture}
           role="presentation"
           animate:walk={{ scale: studio.scale, id: n.conv.id, cwd: n.conv.cwd }}
@@ -1568,10 +1769,6 @@
       style:left="{n.x}px"
       style:top="{n.y}px"
       style:z-index={Z_CARD}
-      onpointerdown={(e) => cardDown(e, n.conv.id, n.x, n.y, true)}
-      onpointermove={cardMove}
-      onpointerup={cardUp}
-      onpointercancel={cardUp}
       onclickcapture={nodeClickCapture}
       role="presentation"
       animate:walk={{ scale: 1, id: n.conv.id, cwd: n.conv.cwd }}
@@ -1587,7 +1784,12 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
-    cursor: grab;
+    /* An arrow, because the left button no longer takes hold of the wall: it
+       draws a selection band. A grabbing hand over ground you cannot grab is a
+       cursor telling you the wrong thing about the gesture you are about to
+       make. The two buttons that *do* pan get the grabbing hand below, once one
+       of them is down. */
+    cursor: default;
     touch-action: none;
     /* On the wall a press-and-move is always a gesture — pan, marquee, or
        carrying a card — and never a text selection. Without this, dragging a
@@ -1686,7 +1888,8 @@
     pointer-events: auto;
   }
   /* Except a territory's own boundary, which is mostly empty space. On the wall
-     that area is pannable (`isGround` decides by what a press is *not* on); on
+     that area is bare ground (`handleOf` decides by what a press is *not* on),
+     so a press there pans or draws a band; on
      the pane there is nothing to pan, so it would simply be a large rectangle
      blocking the transcript underneath it. The name, the chips, the acts row
      and the cards all keep their events, and the name carries `data-cwd`, so
@@ -1703,9 +1906,9 @@
     border-radius: 6px;
     /* Was pointer-events: none, so presses would fall through to the surface.
        They fell through to `.layer` instead and did nothing — and now that
-       `isGround` decides by what a press is *not* on, a territory can take its
-       own events without swallowing a pan: right-clicking one is how you get a
-       menu that knows which project you meant. */
+       `handleOf` decides by what a press is *not* on, a territory can take its
+       own events without swallowing a pan or a marquee: right-clicking one is
+       how you get a menu that knows which project you meant. */
   }
   /* The territory's name, and the handle that carries it. It was drawn with
      `.region::after` until the wall had to be arrangeable — a pseudo-element
@@ -1723,6 +1926,19 @@
    * Deliberately not a fill. Cards stand inside a territory, the backdrop's
    * weather draws behind everything, and a wash across a project's whole area
    * would sit between the two and tint work that is perfectly fine. */
+  /* A territory that is held. Achromatic and quiet, like every other selection
+     on this wall: colour here is status, and being picked is not a state the
+     project is in. It reads as the stitch drawn firmly rather than as a second
+     kind of boundary, which is why it is the same dash a weight heavier and not
+     a solid line — a solid one would say the territory had become a panel.
+     Before `.region.torn`, so a half-merged repo still shows rust while it is
+     held: the fault is the more important of the two things to know. */
+  .region.picked {
+    border-color: var(--paper-faint);
+    border-style: dashed;
+    background: color-mix(in srgb, var(--paper) 4%, transparent);
+  }
+
   .region.torn {
     border-color: color-mix(in srgb, var(--st-fail) 55%, var(--edge));
   }

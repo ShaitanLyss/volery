@@ -1,6 +1,8 @@
 ---
 paths:
   - "src/lib/layout.ts"
+  - "src/lib/pick.ts"
+  - "test/pick.test.ts"
   - "src-tauri/src/pin.rs"
   - "src/lib/Canvas.svelte"
   - "src/lib/studio.svelte.ts"
@@ -21,9 +23,10 @@ origin at first — project 1 at x=0, project 2 beside it, forever rightwards �
 made a wall three thousand units wide and five hundred tall, and the zoom that fitted it left
 every card a smudge with the lower half of the screen unused. They now settle into
 `TERRITORY_COLS` columns, `REGION_GAP` under what is above them, in the order
-`territoryColumn` gives — and a territory dragged by its **name** (the handle;
-`.region` itself must keep panning, which is what `isGround` exists to have fixed) stays where
-it was put: `project.x/y`, schema v3, null meaning "not settled yet".
+`territoryColumn` gives — and a territory dragged by its **name** (the handle; `.region`
+itself must stay bare ground, which is what `handleOf` exists to have got right — first so a
+press there still panned, and now so a band can be drawn inside a territory to gather what is
+standing in it) stays where it was put: `project.x/y`, schema v3, null meaning "not settled yet".
 
 Two things about that are load-bearing:
 
@@ -152,20 +155,26 @@ status, and greyscale AA at the correct raster size is sharp without it.
 `.layer` is `inset: 0`, so at rest it
 covers the surface exactly. "The ground" therefore cannot mean `e.target === surface`, which
 was true *nowhere*: panning worked only in the margin the layer had been translated off, so
-the wall felt draggable in some places and inert wherever the projects were. `isGround`
-asks what the press is *not* on instead. For the same reason the surface sets
+the wall felt draggable in some places and inert wherever the projects were. `handleOf`
+asks what the press is *not* on instead — it is the three-way successor to `isGround`, which
+had only to tell the ground from everything else while the one thing a left press could do
+there was pan. For the same reason the surface sets
 `user-select: none` — a press-and-move on the wall is always a gesture, and without it
 dragging a card highlighted its title instead of carrying it. The transcript panel is
 outside the canvas and stays selectable, because that is where you read and copy.
 
-**The right button pans from anywhere**, which is the one place `isGround` is not asked.
+**The right button pans from anywhere**, which is the one place `handleOf`'s answer is not
+asked.
 Panning is how this wall is read, so the gesture that does it must not be something the wall
 can be too full to offer — and it was: a right-drag begun over a card, a widget, a reference
 image or any button inside one of them did nothing, so the denser a territory grew the less of
 it you could take hold of, and the places you most want to move away from were the places you
-could not. The left button still asks, because there the answer is the difference between
-panning the wall and carrying a card; nothing standing on the wall wants a right-drag for
-itself. Four things make it hold everywhere:
+could not. **The middle button pans beside it**, added when the left button stopped panning
+(see the selection section below): it is what every other canvas in the world pans with, and
+it is the one that is still free while the right button is on its way to a menu. The left
+button still asks what is under it, because there the answer is the difference between drawing
+a selection band and carrying what you have got hold of; nothing standing on the wall wants a
+right- or middle-drag for itself. Four things make it hold everywhere:
 
 - **The press is read in the capture phase**, on `.surface` *and* on `.glass`. Bubble was
   enough while only bare ground counted; the things standing on the wall stop presses of their
@@ -174,10 +183,13 @@ itself. Four things make it hold everywhere:
   surface, not a descendant, so a press on a card stuck to the pane never bubbles anywhere the
   wall can see.
 - **The pointer is not captured until the press has travelled** — the same "a press is a click
-  until it has travelled" rule a card drag follows, for a sharper reason. Capture retargets
-  everything after it, and a plain right-click on a card's composer has to reach that composer
-  for the menu to know it was aimed at an editable. Capture at 4px, so a pan that wanders off
-  the window still stops dead nowhere.
+  until it has travelled" rule every gesture on this wall follows, for a sharper reason.
+  Capture retargets everything after it, and a plain right-click on a card's composer has to
+  reach that composer for the menu to know it was aimed at an editable. Capture at 4px, so a
+  pan that wanders off the window still stops dead nowhere. That rule is now stated **once**,
+  in `groundDown`/`groundMove`, for all three gestures and all four kinds of thing — it used to
+  be written out separately in `Canvas.cardDown`, `Canvas.terrDown` and `WidgetNode`, and
+  `ImageNode` never had it at all.
 - **The moves and the release come off the window**, added on the press and removed on the
   release. Between the press and the 4px there is no single element guaranteed to see them —
   the press may have landed on the glass, and the cursor may already have left whatever it
@@ -228,8 +240,8 @@ conversation. Two things about it:
 - **On the release, and only if the press never moved.** Clearing on `pointerdown` meant
   dragging the wall to look at something dropped the gathering you had assembled on the way
   there — a pan is how this wall is read, not how you change your mind about it. Left button
-  only (a right-press is on its way to a menu), and never during a shift-marquee, which is
-  the additive gesture.
+  only (a right- or middle-press is on its way to a menu or a pan), and never when a band was
+  drawn, since a marquee's own answer is what is selected afterwards.
 - **Escape backs out of one thing, innermost first**, and anything that closes on Escape owns
   the key while it is open — the context menu and the adopt panel both listen on the window
   themselves, so `onGlobalKey` only has to stay out of their way (it runs first, App having
@@ -238,6 +250,111 @@ conversation. Two things about it:
 
 The control surface's `deselect` op calls the same function rather than clearing the two
 halves itself, and `snapshot.dom.transcriptOpen` is how a test sees the third.
+
+## One selection, and the band that draws it
+
+`pick.ts` is pure and holds all of it: what a modifier means, what a marquee covers, what a
+drag carries. `Studio.picks` is where the answer is kept. Read that file's own head notes
+first — this is what does not fit in them.
+
+**There is one selection and it spans all four kinds of thing that stand on the wall.** There
+used to be three, and none of them could hold two things of different sorts: `studio.selected`
+was a list of card ids (the gathering a broadcast is aimed at), `Board.selected` was a single
+image, `Widgets.selected` a single widget, and the two singletons deliberately cleared each
+other so that Delete had one unambiguous target. A project's territory could not be selected
+at all. So "these two cards and that reference, moved together" was not a sentence the wall
+could say, and the only multi-select there was — a shift-drag that gathered cards — could not
+reach three quarters of what was standing on it.
+
+`studio.selected` survives as a `$derived` reading of the picked *cards*, in the order they
+were picked. That is not a compatibility shim, it is the honest definition: the gathering has
+always meant the cards that are selected, and everything that read it — the dock's targets, the
+cards that wear the draft as their name-to-be, `snapshot.selected` — reads it unchanged.
+`Board` and `Widgets` are each handed a `Picker` (`board.picks = studio`, beside
+`board.scribe = undo`) so they can say "what I have just put up is what you are holding"
+without owning a selection or importing `Studio` — the same injection `others` and `scribe`
+already use, and the same no-op default.
+
+**Left-drag on bare wall draws the band; left-drag on a thing carries it.** That is the
+standard direct-manipulation arrangement, and the reason for it is that a wall you arrange
+things on is a canvas, so the canvas conventions are the ones your hands already know. It cost
+the left button its pan, which is why the middle button gained one (above).
+
+Four decisions in here are the ones worth defending:
+
+- **Ctrl toggles one thing; shift adds one and never removes; either one makes a band add
+  rather than replace.** In a *list* — Explorer, a mail client — shift extends a **range**, and
+  the range is the whole reason shift is there. This wall has a reading order (`wallOrder`) and
+  it covers cards only, so a shift that meant "range" would mean it for one of the four kinds
+  and quietly mean something else for the other three. On a *canvas* — Figma, Illustrator,
+  Blender — shift is an add, and that is what this is. It is still worth having beside ctrl,
+  because the two are different gestures rather than two spellings of one: shift can never cost
+  you something you already had, and ctrl is how you take back the one you picked by mistake. A
+  band does not *toggle* under either modifier, which is what symmetry would ask for — you
+  cannot see what is already selected underneath a rectangle you are drawing, so it would be a
+  gesture whose result you could not predict while making it. Explorer and Figma both add here
+  too.
+- **A plain press on something already selected leaves the selection alone; the *release*
+  collapses it.** This is the subtlety the whole feature rests on, and getting it wrong makes
+  multi-select useless rather than merely odd: collapse on the press and dragging a group by one
+  of its members is impossible, because the group is gone before the drag starts. Hence
+  `pressed` and `tapped` being two functions. It is the same shape as "the press is a click
+  until it has travelled" one level up, arriving at the same conclusion from the other side.
+- **A territory is caught by being *enclosed*; everything else by being touched.** Touched is
+  right for anything you can pick up — a lasso you have to draw perfectly is a lasso you stop
+  using — and wrong for a territory, which is `REGION_W` wide and as tall as its cards reach. A
+  band drawn *inside* one to gather two of its cards touches it too, and a selection that
+  quietly included the project would move the whole thing on the next drag. An area you have
+  merely reached into is one you were reaching into to get at what is standing in it; an area
+  you have drawn a box right around is one you meant. Same call Figma makes about a frame, and
+  it leaves the territory's own name — already the handle you drag it by — as the precise way to
+  pick exactly one.
+- **A carry is one frame.** A selection may span the wall and the glass; a drag may not. The
+  two measure a delta in different units — canvas units divided by the zoom against screen
+  pixels taken as they come — so one gesture cannot honestly serve both, and a thing on the pane
+  does not move when you drag something on the wall.
+
+**One drag, four kinds.** There used to be two near-identical ones (`cardDown`, `terrDown`) and
+two more inside `ImageNode` and `WidgetNode` that each moved only themselves — which is exactly
+what a selection spanning the wall cannot be built on. Now the press is read by one
+capture-phase handler on `.surface` and on `.glass`, `haulOf` says what is coming along, and
+every frame writes `origin + delta` for all of it. Three consequences:
+
+- **The move gesture came *out* of `ImageNode` and `WidgetNode`.** Each keeps only what is
+  genuinely about itself: an image's scale and rotate, a widget's resize. Their grips carry
+  `data-grip`, which is what `handleOf` steps over on its way to deciding what a press is aimed
+  at — so the two live side by side with no ordering for anybody to get right, and
+  `e.stopPropagation()` inside a grip is no help at all, since the wall's handler is on an
+  ancestor in the *capture* phase.
+- **A node beats an ordinary control inside it**, and the first cut had that backwards. It
+  stepped over `button` — which stepped over every card on the wall, because `Card.svelte`'s
+  whole body *is* a `<button>`. It does not need to step over them: the pointer is not captured
+  until the press has travelled, so a press on a card's close button that goes nowhere is still
+  a click on it, exactly as it was when `.node` ran its own `onpointerdown`. What genuinely is
+  not the wall's is a grip and an editable — a drag across `.surface input`, which keeps
+  `user-select: text` for the territory's worktree field, means selecting text.
+- **`origin + delta` rather than an accumulation** is the bargain the two old drags already
+  struck, and it earns its keep twice here: a pinned card that is both selected *and* inside a
+  selected territory is written by two paths in the same frame, and computing from the origin
+  makes those two writes agree instead of doubling. A *flowing* card in that position cannot be
+  made to agree — it would be pinned where it stands and then have its territory's flow move out
+  from under it — so `haulOf` excludes any card standing in a territory that is coming along.
+  That is the one rule in the pure file worth reading twice.
+- **`inHand` asks the haul**, so a card coming along because something else was grabbed is as
+  glued as the thing under the pointer. It has to be: the FLIP animation on `.node` fires on
+  every frame of a drag (see above), and one drag now moves several cards.
+
+**One undo act for the whole press, across all four realms.** `undo.md` says a widget and an
+image record themselves from inside their own classes, and they still do — every other route to
+one is undoable by existing. A haul is the exception it already allows for: `haulMove` wraps its
+writes in `undo.quiet` and `haulUp` records once, with every record it touched. Without that,
+carrying a card, a widget and a reference together would be three presses to put back and the
+wall would come apart in the order you happened to release it — the same argument that made a
+territory of five pinned cards one press rather than six, one kind wider.
+
+Selection itself is still not on the undo stack, for the reason `undo.md` gives, and gaining
+three more kinds does not change it: gathering things up is how you are looking at the wall,
+not something you made.
 
 The wheel zooms at the cursor and shift+wheel pans — deliberately not Figma's convention
 (which this was first), because the densities are the navigation here and panning has the

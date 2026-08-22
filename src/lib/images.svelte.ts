@@ -18,6 +18,7 @@ import {
   pinSpot,
 } from "./layout";
 import { NO_SCRIBE, type Scribe } from "./undo";
+import { NO_PICKS, type Picker } from "./pick";
 
 /** A point in canvas space. */
 type Spot = { x: number; y: number };
@@ -45,7 +46,6 @@ export type RefImage = {
 
 export class Board {
   images = $state<RefImage[]>([]);
-  selected = $state<string | null>(null);
   fault = $state<string | null>(null);
 
   /** The z of everything else hand-placed on the wall — the widgets.
@@ -59,6 +59,12 @@ export class Board {
    *  has, and for the same reason: recorded from in here, so every route to an
    *  image is undoable by existing. See `undo.svelte.ts`. */
   scribe: Scribe = NO_SCRIBE;
+
+  /** What is picked on the wall. Injected for the reason `scribe` is: an image
+   *  that has just been put up is the thing you are holding, and there is one
+   *  selection for the whole wall rather than one per registry â€” see the note
+   *  over `Studio.picks`. */
+  picks: Picker = NO_PICKS;
 
   #saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -219,7 +225,7 @@ export class Board {
       { at: "image", id: img.id, was: null, now: { ...img } },
     ]);
     await invoke("save_image", { image: img });
-    this.selected = img.id;
+    this.picks.only("image", img.id);
     return img;
   }
 
@@ -298,7 +304,7 @@ export class Board {
       patch.z = nextBackZ(this.#stack());
     }
     this.update(id, patch);
-    this.selected = id;
+    this.picks.only("image", id);
   }
 
   update(id: string, patch: Partial<RefImage>) {
@@ -362,7 +368,7 @@ export class Board {
       ]);
     }
     this.images = this.images.filter((i) => i.id !== id);
-    if (this.selected === id) this.selected = null;
+    this.picks.drop("image", id);
     try {
       await invoke("delete_image", { id });
     } catch (err) {
