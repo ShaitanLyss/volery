@@ -38,6 +38,7 @@ export type WidgetKind =
   | "timer"
   | "pomodoro"
   | "usage"
+  | "burn"
   | "pipelines"
   | "reviews"
   | "billboard"
@@ -452,6 +453,75 @@ export const WIDGETS: WidgetSpec[] = [
         { key: "measure", is: ["allowance"] },
         "accounts",
       ),
+    ],
+  },
+  {
+    /* The derivative of the widget above it, and a separate kind rather than a
+       fourth `measure` on it — which is the call `azdo.md` makes for pipelines
+       and reviews, arrived at the same way. A variant on this wall is a
+       different *reading of the same fact*, and the fact here is a different
+       one: how much has gone, against how fast it is going. Decisively, they
+       are wanted on the wall at the same time — the whole use of a rate is to
+       watch it against a total — and a variant is exclusive.
+
+       Everything it reads is already in hand. The one shared `Ledger` behind
+       however many usage widgets are up is behind this one too, so a wall that
+       has either pays once and a wall that has neither pays nothing. No fourth
+       poller; see the "exactly three deliberate exceptions" note in CLAUDE.md
+       for the standard one would have had to meet. */
+    kind: "burn",
+    label: "burn rate",
+    note: "how fast this wall is burning tokens",
+    box: { w: 216, h: 196 },
+    min: { w: 92, h: 68 },
+    params: [
+      /* Four readings of one number, and they are genuinely different
+         instruments rather than skins — the same test the clock's five faces
+         pass. A dial is read by angle against the wall's own habits, a bar by
+         position, a trace by shape over the past hour, and the numerals by
+         reading the number. The dial leads because it is the one that answers
+         "fast or slow *for me*" without being read, which is what an instrument
+         hung on a wall is for. */
+      choice(
+        VARIANT,
+        "face",
+        [
+          { value: "dial", label: "a dial, with a needle" },
+          { value: "bar", label: "a bar" },
+          { value: "trace", label: "the past hour, as a line" },
+          { value: "numerals", label: "the number, and nothing else" },
+        ],
+        "dial",
+      ),
+      /* Which unit, and the default is the one this machine's own transcripts
+         argue for rather than the one that sounds tidiest. A request carries a
+         median 163k tokens and lands about every six seconds, so a per-second
+         reading is finer than its own quantum; only 22% of the wall clock has
+         any activity in it, so a per-hour reading projects an hour that never
+         happens. A minute is where the work is — a turn is about a minute and a
+         few hundred thousand tokens. The whole measurement is at the top of
+         `rate.ts`.
+
+         The other two are offered because the ask asked for them and because a
+         wall worked differently from this one may well disagree. Turning this
+         re-marks the dial to round numbers in the unit you chose, which is
+         deliberate and is explained where the scale is computed. */
+      choice(
+        "per",
+        "counted per",
+        [
+          { value: "second", label: "second" },
+          { value: "minute", label: "minute" },
+          { value: "hour", label: "hour" },
+        ],
+        "minute",
+      ),
+      /* The odometer under the speedometer: what these five hours have burned.
+         Deliberately the same figure the `usage` widget's block reading carries
+         — a speed and a distance on one face is the entire idiom being borrowed
+         here, and two instruments disagreeing about the trip would be worse
+         than one repeating it. */
+      toggle("odometer", "what these five hours have burned", true),
     ],
   },
   {

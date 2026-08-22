@@ -24,6 +24,7 @@
   import Timer from "./Timer.svelte";
   import Pomodoro from "./Pomodoro.svelte";
   import Usage from "./Usage.svelte";
+  import Speedo from "./Speedo.svelte";
   import Pipelines from "./Pipelines.svelte";
   import Reviews from "./Reviews.svelte";
   import Billboard from "./Billboard.svelte";
@@ -244,6 +245,8 @@
       <Pomodoro {widget} {pomodoro} />
     {:else if widget.kind === "usage"}
       <Usage {widget} {ledger} />
+    {:else if widget.kind === "burn"}
+      <Speedo {widget} {ledger} />
     {:else if widget.kind === "pipelines"}
       <Pipelines {widget} {devops} onopen={(url) => onopen?.(url)} />
     {:else if widget.kind === "reviews"}
