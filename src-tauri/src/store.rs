@@ -144,7 +144,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 21;
+const SCHEMA_VERSION: i64 = 22;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -171,6 +171,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (19, migrate_v19),
     (20, migrate_v20),
     (21, migrate_v21),
+    (22, migrate_v22),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1015,6 +1016,32 @@ fn migrate_v20(conn: &Connection) -> Result<(), String> {
 /// there is no window in which an image exists with nobody's name on it.
 fn migrate_v21(conn: &Connection) -> Result<(), String> {
     add_column(conn, "reference_image", "pinned_by", "TEXT")
+}
+
+/// When you last reworded a sink item, or NULL for one still in the words it was
+/// dropped in.
+///
+/// An ALTER, per the note on `SCHEMA_VERSION`, and nullable rather than
+/// defaulted to `dropped_at`: "never edited" and "edited the moment it arrived"
+/// are different facts and a default would make every item already in the sink
+/// claim the second one.
+///
+/// It exists because the words in an item stop being the finder's the moment you
+/// rewrite them, and `render` tells an agent who dropped a thing. An item that
+/// says "dropped by lucid otter" while carrying a body you rewrote yesterday is
+/// attributing your reasoning to a card that never said it — which matters here
+/// more than it would anywhere else, since half of what a long-lived sink holds
+/// was dropped by conversations that are no longer on the wall to be asked.
+///
+/// Deliberately *not* `dropped_at`, which an edit leaves alone. `dropped_at` is
+/// when the finding was made and the whole ordering of the pile turns on it
+/// (`sink.ts::reading`); moving it would let a typo fix send an item that has
+/// been ignored for three weeks to the back of the queue, which is exactly the
+/// item the pile exists to keep in front of you. `voices` is left alone for the
+/// same reason from the other end: how many cards have met a thing is not
+/// changed by somebody rewording it.
+fn migrate_v22(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "sink_item", "edited_at", "INTEGER")
 }
 
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
@@ -3266,10 +3293,14 @@ pub struct SinkItem {
     pub held_at: Option<i64>,
     pub settled_at: Option<i64>,
     pub settled_note: Option<String>,
+    /// When you last reworded it, or `None` for an item still in the words it
+    /// was dropped in. See `migrate_v22`.
+    pub edited_at: Option<i64>,
 }
 
 const SINK_COLS: &str = "id, project_id, kind, title, body, paths, from_id, dropped_at, \
-                         touched_at, voices, held_by, held_at, settled_at, settled_note";
+                         touched_at, voices, held_by, held_at, settled_at, settled_note, \
+                         edited_at";
 
 fn sink_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<SinkItem> {
     Ok(SinkItem {
@@ -3287,6 +3318,7 @@ fn sink_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<SinkItem> {
         held_at: r.get(11)?,
         settled_at: r.get(12)?,
         settled_note: r.get(13)?,
+        edited_at: r.get(14)?,
     })
 }
 
@@ -3413,6 +3445,45 @@ pub fn put_sink_item(
     )
     .map_err(|e| format!("drop into sink: {e}"))?;
     Ok(SinkPut { id: id.to_string(), merged: false, voices: 1 })
+}
+
+/// Reword one, which is yours alone — no agent reaches this.
+///
+/// The other write to an item's words, and the shorter half of `put_sink_item`
+/// in every respect: no merge, no voice, and `dropped_at` and `from_id` left
+/// exactly as they were. What moves is `kind`, `title`, `body`, `paths` and the
+/// `edited_at` stamp that says so.
+///
+/// **Conditional on the row still being editable, for `hold_sink_item`'s
+/// reason.** A guard that is not in the UPDATE is not a guard: you open an item
+/// to fix its title, a card `take`s it while you are typing, and a read-then-
+/// write would then rewrite the brief out from under an agent already working
+/// from it — which is the hazard the billboard exists to prevent, arriving
+/// through the one door the billboard does not watch. `sink.rs` checks first so
+/// it can say *why* in words; this is what makes the answer true. `cutoff` is
+/// the instant a hold stops being believed, and the arithmetic matches
+/// `sink::free` exactly — a `held_at` of NULL fails `held_at < ?` and so counts
+/// as held, which is what `free` says too.
+pub fn edit_sink_item(
+    conn: &Connection,
+    id: &str,
+    kind: &str,
+    title: &str,
+    body: &str,
+    paths: &str,
+    cutoff: i64,
+) -> bool {
+    let at = now();
+    conn.execute(
+        "UPDATE sink_item SET kind = ?2, title = ?3, body = ?4, paths = ?5,
+                              edited_at = ?6, touched_at = ?6
+          WHERE id = ?1
+            AND settled_at IS NULL
+            AND (held_by IS NULL OR held_at < ?7)",
+        params![id, kind, title, body, paths, at, cutoff],
+    )
+    .unwrap_or(0)
+        > 0
 }
 
 /// Take an item, or put it back — `by` of `None` releases it.
@@ -5492,6 +5563,57 @@ mod tests {
            caller actually read, so it lands. */
         assert!(hold_sink_item(&conn, &it.id, Some("c2"), Some("c1")));
         assert_eq!(sink_one(&conn, &it.id).unwrap().held_by.as_deref(), Some("c2"));
+    }
+
+    /// Rewording one is yours, and the guard is in the UPDATE rather than in the
+    /// check above it: a card that takes the item while you are typing must not
+    /// have the brief rewritten out from under it. `sink.rs` says why in words;
+    /// this is what makes the answer true.
+    #[test]
+    fn a_held_item_cannot_be_reworded_under_the_card_holding_it() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card(&conn, "c1", false);
+        let it = put(&conn, "a typo'd finding", "half a thought", None);
+        let cutoff = now() - 120 * 60 * 1_000;
+
+        assert!(edit_sink_item(&conn, &it.id, "chore", "the same finding, said properly",
+                               "the whole of it", "src/lib/sink.ts", cutoff));
+        let after = sink_one(&conn, &it.id).unwrap();
+        assert_eq!(after.title, "the same finding, said properly");
+        assert_eq!(after.kind, "chore");
+        assert_eq!(after.paths, "src/lib/sink.ts");
+        assert!(after.edited_at.is_some(), "the stamp says the words moved");
+        /* An edit is not a new finding, so it does not go to the back of the
+           queue — and it is not a new voice either. */
+        assert_eq!(after.dropped_at, sink_one(&conn, &it.id).unwrap().dropped_at);
+        assert_eq!(after.voices, 1);
+
+        assert!(hold_sink_item(&conn, &it.id, Some("c1"), None));
+        assert!(!edit_sink_item(&conn, &it.id, "bug", "rewritten under c1", "no", "", cutoff));
+        assert_eq!(sink_one(&conn, &it.id).unwrap().title, "the same finding, said properly");
+
+        /* A settled item is history, and history is not edited. */
+        assert!(hold_sink_item(&conn, &it.id, None, Some("c1")));
+        assert!(settle_sink_item(&conn, &it.id, None));
+        assert!(!edit_sink_item(&conn, &it.id, "bug", "rewriting the past", "no", "", cutoff));
+    }
+
+    /// A hold nobody has honoured is not a hold, here as everywhere else — the
+    /// same cutoff `sink::free` applies, so what the widget offers and what the
+    /// write allows cannot disagree.
+    #[test]
+    fn a_lapsed_hold_does_not_block_a_rewording() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        seed_card(&conn, "c1", false);
+        let it = put(&conn, "left to go stale", "somebody took this and wandered off", None);
+        assert!(hold_sink_item(&conn, &it.id, Some("c1"), None));
+
+        /* A cutoff in the future is a hold that has already lapsed by it. */
+        let cutoff = now() + 1;
+        assert!(edit_sink_item(&conn, &it.id, "note", "said better", "and better", "", cutoff));
+        assert_eq!(sink_one(&conn, &it.id).unwrap().title, "said better");
     }
 
     /// The difference between this table and the billboard, in one assertion. A

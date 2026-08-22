@@ -116,6 +116,74 @@ fn free(item: &SinkItem, now: i64) -> bool {
     item.held_by.is_none() || hold_stale(item, now)
 }
 
+/// May you reword this one, and if not, why not.
+///
+/// Yours alone — no agent reaches it, which is a decision rather than an
+/// omission. An item is a *report*, and a tool letting one card rewrite another
+/// card's finding would make the sink a place where what you read may not be
+/// what was found; the wall already has a way for one agent to add to another's
+/// item, and it is `drop`, which merges and counts the voice. What the user
+/// needs is narrower and different: a typo'd title, a half-thought body, a kind
+/// filed wrong. So this is a verb on the face, and the two bounds below are the
+/// whole of its policy.
+///
+/// **Pending, and unheld.** A held item is another card's work in flight, and
+/// editing the brief under it is precisely the hazard the billboard exists to
+/// prevent — arriving through the one door the billboard does not watch, since
+/// nothing tells a working agent that the thing it is working from has changed.
+/// A settled item is history. `Basin.svelte` does not *offer* the affordance in
+/// either case; this is what makes the refusal true when a hold lands between
+/// the offer and the save, and it says which of the two it was because the face
+/// draws the sentence beside the words you typed.
+///
+/// A lapsed hold is not a hold, here as everywhere else — `free`'s call, so what
+/// the widget offers and what the write allows cannot disagree.
+fn may_edit(item: &SinkItem, now: i64) -> Result<(), String> {
+    if item.settled_at.is_some() {
+        return Err(
+            "that item has been settled, and a settled item is history — put it back first \
+             if it wants rewording"
+                .into(),
+        );
+    }
+    match &item.held_by {
+        Some(h) if !free(item, now) => Err(format!(
+            "{} is holding that item and is working from these words — free the hold first, \
+             or wait for it to finish",
+            crate::relay::handle_of(h)
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Is another item already called this?
+///
+/// **Merging on the title is load-bearing** (see `store::put_sink_item`): a
+/// re-drop under a title already in the sink adds a voice to that item rather
+/// than making a second one, so two pending items sharing a title in one scope
+/// is a state nothing else in this subsystem can produce — and one where the
+/// next agent to meet the thing would second whichever of the two the query
+/// happened to reach first.
+///
+/// So a rename onto an occupied title is refused rather than merged. Refused,
+/// because merging here would fold the words you are in the middle of writing
+/// into another item's body with nothing in this subsystem to undo it; and not
+/// simply allowed, because that leaves the invariant broken and the merge
+/// arbitrary. Being told which item holds the title costs you one gesture and
+/// loses nothing.
+///
+/// Scoped like the merge itself: same project, or both wall-wide. Two items with
+/// one title in two different projects are two findings about two repositories
+/// and always were.
+fn title_taken<'a>(items: &'a [SinkItem], item: &SinkItem, title: &str) -> Option<&'a SinkItem> {
+    items.iter().find(|i| {
+        i.id != item.id
+            && i.settled_at.is_none()
+            && i.project_id == item.project_id
+            && i.title.eq_ignore_ascii_case(title)
+    })
+}
+
 /* ── the tools ────────────────────────────────────────────────────────────── */
 
 pub fn sink_schema() -> Value {
@@ -437,8 +505,22 @@ fn render(i: &SinkItem, now: i64, caller: &str) -> String {
         (Some(at), None) => format!("\n  settled {}", ago(now - at)),
         _ => String::new(),
     };
+    /* Said out loud, because the line above it says who dropped this and the
+       words below it may no longer be theirs. An item reading "dropped by lucid
+       otter" while carrying a body the user rewrote yesterday attributes their
+       reasoning to a card that never said it — and that matters more here than
+       it would anywhere else, since most of what a long-lived sink holds was
+       dropped by conversations no longer on the wall to be asked. It also tells
+       an agent the thing worth knowing: these are the words the user wants acted
+       on, whatever was reported. */
+    let edited = match i.edited_at {
+        Some(at) if i.from_id.is_some() => {
+            format!(" · the user reworded this {}", ago(now - at))
+        }
+        _ => String::new(),
+    };
     format!(
-        "- [{}] {}{voices} — {}\n  {}{files}\n  dropped by {who}, {}{hold}{settled}\n",
+        "- [{}] {}{voices} — {}\n  {}{files}\n  dropped by {who}, {}{hold}{edited}{settled}\n",
         i.id.chars().take(8).collect::<String>(),
         i.kind,
         i.title,
@@ -825,6 +907,7 @@ fn as_json(i: &SinkItem, now: i64) -> Value {
         "holdStale": hold_stale(i, now),
         "settledAt": i.settled_at,
         "settledNote": i.settled_note,
+        "editedAt": i.edited_at,
     })
 }
 
@@ -880,6 +963,83 @@ pub fn sink_add(
     };
     changed(&app, project_id);
     Ok(put.id)
+}
+
+/// Reword one, which is yours alone. See `may_edit` for why no agent reaches it.
+///
+/// Everything an agent may set when it drops something, you may set again: the
+/// title, the body, the kind it was filed under, the files it names. What does
+/// not move is the provenance — an edit does not make the item yours, because
+/// the finding was still theirs — nor `dropped_at`, nor `voices`, nor the scope.
+/// `store::edit_sink_item` is where those absences are argued.
+///
+/// **Off the main thread**, for `sink_tool`'s reason: this holds the store's lock
+/// across a read of the whole pending pile (the title check), a write, and an
+/// emit, and a command that blocks on the main thread stops every card on the
+/// wall from being painted for as long as it blocks. See `crate::off_main`.
+#[tauri::command]
+pub async fn sink_edit(
+    app: AppHandle,
+    id: String,
+    title: String,
+    body: String,
+    kind: Option<String>,
+    paths: Option<Vec<String>>,
+) -> Result<(), String> {
+    let title = clip(title.trim(), MAX_TITLE);
+    if title.is_empty() {
+        return Err("an item needs a title".into());
+    }
+    let body = clip(body.trim(), MAX_BODY);
+    /* The same bar `do_drop` sets, and for the same span of time: a title on its
+       own is a thing nobody will be able to act on in a month. An edit that
+       emptied the body would take an item below the bar it had to clear to get
+       in. */
+    if body.is_empty() {
+        return Err(
+            "an item needs a body — a title on its own is a thing nobody will be able to \
+             act on in a month"
+                .into(),
+        );
+    }
+    let kind = kind
+        .map(|k| k.to_lowercase())
+        .filter(|k| KINDS.contains(&k.as_str()))
+        .unwrap_or_else(|| "note".into());
+    let globs = globs_from(paths.map(|p| json!(p)).as_ref());
+
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().map_err(|_| "the store is unavailable")?;
+        let Some(item) = crate::store::sink_one(&conn, &id) else {
+            return Err("that item is not in the sink any more".into());
+        };
+        let now = crate::store::now();
+        may_edit(&item, now)?;
+
+        let pending = crate::store::sink_items(&conn, None, false)?;
+        if let Some(other) = title_taken(&pending, &item, &title) {
+            return Err(format!(
+                "another item is already called that — [{}] — and two items with one title \
+                 is what merging on the title exists to prevent. settle one of them, or \
+                 pick different words.",
+                crate::relay::handle_of(&other.id)
+            ));
+        }
+
+        let cutoff = now - HOLD_STALE_MS;
+        if !crate::store::edit_sink_item(&conn, &id, &kind, &title, &body, &globs, cutoff) {
+            /* `may_edit` said yes a moment ago, so the row moved underneath us —
+               a card took it while you were typing. The UPDATE is the guard; see
+               `store::edit_sink_item`. */
+            return Err("somebody took that item while you were typing — nothing was changed".into());
+        }
+        let project_id = item.project_id.clone();
+        drop(conn);
+        changed(&app, project_id);
+        Ok(())
+    })
+    .await?
 }
 
 /// Mark it dealt with, from the wall. No note: the note is what an *agent* has
@@ -1010,6 +1170,7 @@ mod tests {
             held_at,
             settled_at: None,
             settled_note: None,
+            edited_at: None,
         }
     }
 
@@ -1097,5 +1258,113 @@ mod tests {
     fn take_says_to_put_it_back() {
         let d = take_schema()["description"].as_str().unwrap().to_string();
         assert!(d.contains("release"));
+    }
+
+    /* ── rewording one ────────────────────────────────────────────────────── */
+
+    #[test]
+    fn an_item_nobody_is_on_may_be_reworded() {
+        assert!(may_edit(&item(None, None), 0).is_ok());
+    }
+
+    /// The bound that matters. A held item is another card's work in flight, and
+    /// nothing tells a working agent that the words it is working from have
+    /// changed — which is the billboard's hazard arriving through the one door
+    /// the billboard does not watch.
+    #[test]
+    fn a_held_item_may_not_be_reworded() {
+        let i = item(Some("c1abcdef-2222"), Some(1_000));
+        let e = may_edit(&i, 1_000 + HOLD_STALE_MS / 2).unwrap_err();
+        assert!(e.contains("c1abcdef"), "{e}");
+        assert!(e.contains("free the hold"), "{e}");
+    }
+
+    /// A hold nobody has honoured is not a hold, here as everywhere else — the
+    /// same call `free` makes, so the widget cannot offer an edit the write would
+    /// then refuse, nor refuse one it would have allowed.
+    #[test]
+    fn a_lapsed_hold_does_not_block_a_rewording() {
+        let i = item(Some("c1"), Some(1_000));
+        assert!(may_edit(&i, 1_000 + HOLD_STALE_MS + 1).is_ok());
+    }
+
+    #[test]
+    fn a_settled_item_is_history_and_is_not_reworded() {
+        let mut i = item(None, None);
+        i.settled_at = Some(5_000);
+        let e = may_edit(&i, 6_000).unwrap_err();
+        assert!(e.contains("put it back first"), "{e}");
+    }
+
+    /// Merging on the title is load-bearing, so a rename onto an occupied title
+    /// is refused rather than merged: two pending items sharing a title in one
+    /// scope is a state nothing else here can produce, and one where the next
+    /// agent to meet the thing would second whichever the query reached first.
+    #[test]
+    fn a_rename_onto_an_occupied_title_is_refused() {
+        let mut other = item(None, None);
+        other.id = "ffff0000-1111".into();
+        other.title = "the sink cannot be edited".into();
+        let items = vec![item(None, None), other];
+        let me = &items[0];
+
+        assert!(title_taken(&items, me, "the sink cannot be edited").is_some());
+        assert!(title_taken(&items, me, "THE SINK CANNOT BE EDITED").is_some());
+        assert!(title_taken(&items, me, "something else entirely").is_none());
+    }
+
+    /// Leaving your own title alone is not a collision with yourself, which is
+    /// what makes fixing only the body possible.
+    #[test]
+    fn an_item_does_not_collide_with_itself() {
+        let items = vec![item(None, None)];
+        assert!(title_taken(&items, &items[0], &items[0].title.clone()).is_none());
+    }
+
+    /// Scoped like the merge itself. One title in two projects is two findings
+    /// about two repositories and always was.
+    #[test]
+    fn one_title_in_two_projects_is_not_a_collision() {
+        let mut other = item(None, None);
+        other.id = "ffff0000-1111".into();
+        other.project_id = Some("p1".into());
+        let items = vec![item(None, None), other];
+        assert!(title_taken(&items, &items[0], &items[1].title.clone()).is_none());
+    }
+
+    /// A settled item does not hold its title against a rename, for the reason it
+    /// does not absorb a fresh drop of the same thing: it is history, and the
+    /// thing being back is news.
+    #[test]
+    fn a_settled_item_does_not_hold_its_title() {
+        let mut other = item(None, None);
+        other.id = "ffff0000-1111".into();
+        other.title = "was dealt with".into();
+        other.settled_at = Some(9_000);
+        let items = vec![item(None, None), other];
+        assert!(title_taken(&items, &items[0], "was dealt with").is_none());
+    }
+
+    /// The words in an item stop being the finder's the moment you rewrite them,
+    /// and the line above them says who found it. An agent reading a body the
+    /// user reworded is being told whose reasoning it is.
+    #[test]
+    fn the_reading_says_when_you_have_reworded_an_agents_item() {
+        let now = 10 * 60_000;
+        let mut i = item(None, None);
+        i.from_id = Some("c1".into());
+        assert!(!render(&i, now, "c2").contains("reworded"));
+        i.edited_at = Some(now - 60_000);
+        assert!(render(&i, now, "c2").contains("the user reworded this 1m ago"));
+    }
+
+    /// Your own item needs no such note — it was your words to begin with, and
+    /// saying so on every row you have ever tidied is noise in a reading an agent
+    /// pays for.
+    #[test]
+    fn your_own_item_says_nothing_about_being_reworded() {
+        let mut i = item(None, None);
+        i.edited_at = Some(1_000);
+        assert!(!render(&i, 60_000, "c2").contains("reworded"));
     }
 }

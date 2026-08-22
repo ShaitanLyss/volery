@@ -1,16 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import {
   KINDS,
+  MAX_BODY,
+  MAX_PATHS,
+  MAX_TITLE,
   about,
+  editable,
   finder,
   held,
   holder,
+  moved,
   normalize,
   normalizeAll,
   nothing,
+  opening,
   pending,
   pile,
+  proposed,
   reading,
+  refusal,
   stateOf,
   waiting,
   type Item,
@@ -32,6 +40,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   holdStale: false,
   settledAt: null,
   settledNote: null,
+  editedAt: null,
   ...over,
 });
 
@@ -66,6 +75,12 @@ describe("normalize", () => {
 
   test("the kinds are the four Rust writes", () => {
     expect([...KINDS].sort()).toEqual(["bug", "chore", "idea", "note"]);
+  });
+
+  test("an item nobody has reworded says so with a null, not a zero", () => {
+    expect(item().editedAt).toBeNull();
+    expect(item({ editedAt: 5000 }).editedAt).toBe(5000);
+    expect(item({ editedAt: "yesterday" }).editedAt).toBeNull();
   });
 });
 
@@ -147,6 +162,93 @@ describe("the badge", () => {
         item({ id: "d", settledAt: 5000 }),
       ]),
     ).toBe(2);
+  });
+});
+
+describe("rewording one", () => {
+  /* The affordance, and the whole of its policy. Drawn on a pending, unheld item
+     and *not drawn at all* otherwise — the same two bounds `sink.rs::may_edit`
+     enforces, off the same two fields, so the face cannot offer a verb the write
+     would refuse. */
+  test("pending and nobody on it", () => {
+    expect(editable(item())).toBe(true);
+    expect(editable(item({ heldBy: "c2", heldAt: 2000 }))).toBe(false);
+    expect(editable(item({ settledAt: 9000 }))).toBe(false);
+  });
+
+  /* A lapsed hold is not a hold, here as everywhere else in this file — an item
+     somebody took and let go stale is free to take and therefore free to fix. */
+  test("a lapsed hold does not lock the words", () => {
+    expect(editable(item({ heldBy: "c2", heldAt: 10, holdStale: true }))).toBe(true);
+  });
+
+  test("the fields open on what is already there", () => {
+    const d = opening(item({ paths: ["a.ts", "b.ts"] }));
+    expect(d.title).toBe("ask_user times out in a non-interactive session");
+    expect(d.kind).toBe("bug");
+    /* One line, because that is what you type into. */
+    expect(d.paths).toBe("a.ts, b.ts");
+  });
+
+  /* The paths field has one grammar and it is `sink.rs::globs_from`'s — an
+     agent's `drop` splits on newlines and commas, so this must too, or the same
+     text would mean two things depending on who typed it. */
+  test("the paths line is split the way an agent's drop is", () => {
+    expect(proposed({ title: "t", body: "b", kind: "note", paths: "a.ts, b.ts" }).paths).toEqual([
+      "a.ts",
+      "b.ts",
+    ]);
+    expect(proposed({ title: "t", body: "b", kind: "note", paths: "a.ts\n b.ts ," }).paths).toEqual([
+      "a.ts",
+      "b.ts",
+    ]);
+    expect(proposed({ title: "t", body: "b", kind: "note", paths: "  " }).paths).toEqual([]);
+  });
+
+  test("what you typed is trimmed and clipped where the write clips", () => {
+    const e = proposed({
+      title: `  ${"t".repeat(MAX_TITLE + 40)}  `,
+      body: `  ${"b".repeat(MAX_BODY + 40)}  `,
+      kind: "chore",
+      paths: Array.from({ length: MAX_PATHS + 4 }, (_, n) => `f${n}.ts`).join(","),
+    });
+    expect(e.title).toHaveLength(MAX_TITLE);
+    expect(e.body).toHaveLength(MAX_BODY);
+    expect(e.paths).toHaveLength(MAX_PATHS);
+    expect(e.kind).toBe("chore");
+  });
+
+  /* The stamp on an item is what tells an agent the words it is reading are no
+     longer the finder's. A stamp that also fired on "you opened it and closed it
+     again" would mean nothing, so a save that moved nothing is not a write. */
+  test("opening an item and closing it again is not an edit", () => {
+    const i = item({ paths: ["a.ts"] });
+    expect(moved(i, proposed(opening(i)))).toBe(false);
+  });
+
+  test("each of the four fields counts as a change on its own", () => {
+    const i = item({ paths: ["a.ts"] });
+    const at = opening(i);
+    expect(moved(i, proposed({ ...at, title: "said properly" }))).toBe(true);
+    expect(moved(i, proposed({ ...at, body: "the whole of it" }))).toBe(true);
+    expect(moved(i, proposed({ ...at, kind: "chore" }))).toBe(true);
+    expect(moved(i, proposed({ ...at, paths: "a.ts, b.ts" }))).toBe(true);
+    /* And re-spelling the same paths is not a change to them. */
+    expect(moved(i, proposed({ ...at, paths: " a.ts " }))).toBe(false);
+  });
+
+  /* The two refusals the face can make instantly. The other three — held,
+     settled, and a title another item already holds — need the table and come
+     back from Rust as a sentence. These two are the bar `do_drop` sets, and an
+     edit must not take an item below the bar it cleared to get in. */
+  test("a title and a body, which is the bar an agent's drop clears", () => {
+    expect(refusal(proposed({ title: " ", body: "b", kind: "note", paths: "" }))).toBe(
+      "an item needs a title",
+    );
+    expect(refusal(proposed({ title: "t", body: " ", kind: "note", paths: "" }))).toContain(
+      "act on in a month",
+    );
+    expect(refusal(proposed({ title: "t", body: "b", kind: "note", paths: "" }))).toBeNull();
   });
 });
 

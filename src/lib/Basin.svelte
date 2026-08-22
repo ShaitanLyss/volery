@@ -42,6 +42,18 @@
    *   answers "what should I do about it now". The second is the reading that
    *   gets an item done, and it is the whole reason to hang a sink where you are
    *   working rather than where you are planning.
+   *
+   * - **An item you can read is an item you can fix.** Everything else here acts
+   *   on an item whole — settle it, free it, throw it away — and until this there
+   *   was nothing between keeping a half-thought item and binning it. An agent
+   *   drops a finding in the seconds it can spare from the job it was actually
+   *   doing, so a typo'd title, a body that trails off, a `note` that is plainly
+   *   a `bug`: all normal, and all previously dead weight you could only watch.
+   *   The verb is offered on a pending, unheld item and *not drawn at all*
+   *   otherwise (`editable` in `sink.ts`) — a button that is there and refuses
+   *   teaches you to distrust the ones that work. Rewriting the brief under a
+   *   card that is working from it is the billboard's own hazard, so a held item
+   *   is left alone; a settled one is history.
    */
 
   import { clock } from "./conversation.svelte";
@@ -49,13 +61,19 @@
   import {
     KINDS,
     about,
+    editable,
     finder,
     held,
     holder,
+    moved,
     nothing,
+    opening,
     pile,
+    proposed,
+    refusal,
     stateOf,
     waiting,
+    type Draft,
     type Item,
     type Kind,
   } from "./sink";
@@ -135,7 +153,100 @@
      could argue for rust, and it would be wrong: a bug in the sink is a bug
      nothing is currently going wrong about. */
   const GLYPH: Record<Kind, string> = { bug: "!", idea: "*", chore: "·", note: "–" };
+
+  /* Which item you are rewording, and what the fields hold. One at a time,
+     because it is a form and there is one of you. */
+  let editing = $state<string | null>(null);
+  let draft = $state<Draft>({ title: "", body: "", kind: "note", paths: "" });
+  /* Why the last save did not happen, drawn beside the editor rather than in
+     `sink.fault` — which replaces the whole pile, and would take the paragraph
+     you just wrote with it. `Sink.edit` returns the complaint for this reason. */
+  let snag = $state<string | null>(null);
+
+  function begin(i: Item) {
+    editing = i.id;
+    snag = null;
+    draft = opening(i);
+  }
+
+  function cancel() {
+    editing = null;
+    snag = null;
+  }
+
+  async function save(i: Item) {
+    const e = proposed(draft);
+    const no = refusal(e);
+    if (no) {
+      snag = no;
+      return;
+    }
+    /* Nothing moved, so nothing is written — opening an item to read it must not
+       stamp it as reworded. See `moved` in `sink.ts`. */
+    if (!moved(i, e)) {
+      cancel();
+      return;
+    }
+    snag = await sink.edit(i.id, e);
+    if (!snag) editing = null;
+  }
+
+  /* Escape gives up, and stops there rather than reaching the wall's own ladder.
+     Ctrl+Enter saves from anywhere in the form; plain Enter saves from the title,
+     where it has nothing else to mean — in the body it is a newline, because a
+     body written for somebody months from now has paragraphs in it. */
+  function editKey(e: KeyboardEvent, i: Item, single = false) {
+    if (e.key === "Escape") {
+      cancel();
+      e.stopPropagation();
+    } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey || (single && !e.shiftKey))) {
+      e.preventDefault();
+      void save(i);
+    }
+  }
 </script>
+
+<!-- The editor. One markup for both readings, since a list row and the opened-out
+     `next` are two ways of showing an item and only one way of changing it. -->
+{#snippet editor(i: Item)}
+  <div class="draft edit">
+    <input
+      class="title"
+      bind:value={draft.title}
+      placeholder="the thing, in one line"
+      spellcheck="false"
+      onkeydown={(e) => editKey(e, i, true)}
+    />
+    <textarea
+      class="body"
+      bind:value={draft.body}
+      placeholder="what somebody picking this up needs"
+      onkeydown={(e) => editKey(e, i)}
+    ></textarea>
+    <input
+      class="globs"
+      bind:value={draft.paths}
+      placeholder="files it is about, comma separated"
+      spellcheck="false"
+      onkeydown={(e) => editKey(e, i, true)}
+    />
+    <div class="kinds">
+      {#each KINDS as k (k)}
+        <button
+          class="kind"
+          class:on={draft.kind === k}
+          onclick={() => (draft.kind = k)}
+          onkeydown={(e) => editKey(e, i)}>{k}</button
+        >
+      {/each}
+    </div>
+    {#if snag}<p class="snag">{snag}</p>{/if}
+    <div class="verbs">
+      <button class="verb" onclick={() => void save(i)}>save</button>
+      <button class="verb" onclick={cancel}>leave it</button>
+    </div>
+  </div>
+{/snippet}
 
 <div class="sink">
   <header>
@@ -146,6 +257,7 @@
       onclick={() => {
         past = !past;
         open = null;
+        cancel();
       }}>{past ? "pending" : "settled"}</button
     >
     <span class="tot">{shown.length}</span>
@@ -201,23 +313,33 @@
          and did not say there were nine more would be an instrument quietly
          understating the wall. -->
     <div class="one">
-      <p class="head">{next.title}</p>
-      <p class="prose">{next.body}</p>
-      {#if about(next)}<p class="files">{about(next)}</p>{/if}
-      <p class="whence">
-        {next.kind} · dropped by {finder(next, names)}, {waiting(next, now)} ago{#if next.voices > 1}
-          · {next.voices} conversations have met it{/if}{#if stateOf(next) === "lapsed"}
-          · {holder(next, names)} took it and let it lapse{/if}
-      </p>
-      <div class="verbs">
-        <button class="verb" onclick={() => void (past ? sink.restore(next.id) : sink.settle(next.id))}
-          >{past ? "put it back" : "settled"}</button
-        >
-        {#if next.heldBy}
-          <button class="verb" onclick={() => void sink.release(next.id)}>free the hold</button>
-        {/if}
-        <button class="verb bin" onclick={() => void sink.remove(next.id)}>throw away</button>
-      </div>
+      {#if editing === next.id}
+        {@render editor(next)}
+      {:else}
+        <p class="head">{next.title}</p>
+        <p class="prose">{next.body}</p>
+        {#if about(next)}<p class="files">{about(next)}</p>{/if}
+        <p class="whence">
+          {next.kind} · dropped by {finder(next, names)}, {waiting(next, now)} ago{#if next.voices > 1}
+            · {next.voices} conversations have met it{/if}{#if next.editedAt !== null && next.from}
+            · you have reworded it since{/if}{#if stateOf(next) === "lapsed"}
+            · {holder(next, names)} took it and let it lapse{/if}
+        </p>
+        <div class="verbs">
+          <button
+            class="verb"
+            onclick={() => void (past ? sink.restore(next.id) : sink.settle(next.id))}
+            >{past ? "put it back" : "settled"}</button
+          >
+          {#if editable(next)}
+            <button class="verb" onclick={() => begin(next)}>reword</button>
+          {/if}
+          {#if next.heldBy}
+            <button class="verb" onclick={() => void sink.release(next.id)}>free the hold</button>
+          {/if}
+          <button class="verb bin" onclick={() => void sink.remove(next.id)}>throw away</button>
+        </div>
+      {/if}
       {#if shown.length > 1}
         <p class="behind">{shown.length - 1} more behind it</p>
       {/if}
@@ -230,7 +352,16 @@
         {@const on = holder(i, names)}
         {@const files = about(i)}
         <li class:held={state === "held"} class:lapsed={state === "lapsed"} class:open={open === i.id}>
-          <button class="row" title={i.body} onclick={() => (open = open === i.id ? null : i.id)}>
+          <!-- Not while you are rewording it: closing the detail unmounts the
+               editor, and losing a paragraph to a stray click on its own heading
+               is the sort of thing you only forgive once. -->
+          <button
+            class="row"
+            title={i.body}
+            onclick={() => {
+              if (editing !== i.id) open = open === i.id ? null : i.id;
+            }}
+          >
             <span class="glyph">{GLYPH[i.kind]}</span>
             <span class="label">{i.title}</span>
             {#if i.voices > 1}<span class="voices" title="{i.voices} conversations have met this"
@@ -256,30 +387,39 @@
           {/if}
           {#if open === i.id}
             <div class="detail">
-              <p>{i.body}</p>
-              {#if files}<p class="files">{files}</p>{/if}
-              <p class="whence">
-                {i.kind} · dropped by {who}, {waiting(i, now)} ago{#if i.settledNote}
-                  · settled: {i.settledNote}{/if}
-              </p>
-              {#if state === "lapsed"}
-                <p class="aged">
-                  {holder(i, names)} took this and has not touched it since — free for
-                  anybody to pick up
+              {#if editing === i.id}
+                {@render editor(i)}
+              {:else}
+                <p>{i.body}</p>
+                {#if files}<p class="files">{files}</p>{/if}
+                <p class="whence">
+                  {i.kind} · dropped by {who}, {waiting(i, now)} ago{#if i.editedAt !== null && i.from}
+                    · you have reworded it since{/if}{#if i.settledNote}
+                    · settled: {i.settledNote}{/if}
                 </p>
+                {#if state === "lapsed"}
+                  <p class="aged">
+                    {holder(i, names)} took this and has not touched it since — free for
+                    anybody to pick up
+                  </p>
+                {/if}
+                <div class="verbs">
+                  {#if editable(i)}
+                    <button class="verb" onclick={() => begin(i)}>reword</button>
+                  {/if}
+                  {#if held(i) && i.heldBy && onreveal}
+                    <button class="verb" onclick={() => onreveal?.(i.heldBy!)}>go to {on}</button>
+                  {/if}
+                  {#if i.heldBy}
+                    <button class="verb" onclick={() => void sink.release(i.id)}>free the hold</button
+                    >
+                  {/if}
+                  {#if !past && i.from && names.has(i.from) && onreveal}
+                    <button class="verb" onclick={() => onreveal?.(i.from!)}>go to {who}</button>
+                  {/if}
+                  <button class="verb bin" onclick={() => void sink.remove(i.id)}>throw away</button>
+                </div>
               {/if}
-              <div class="verbs">
-                {#if held(i) && i.heldBy && onreveal}
-                  <button class="verb" onclick={() => onreveal?.(i.heldBy!)}>go to {on}</button>
-                {/if}
-                {#if i.heldBy}
-                  <button class="verb" onclick={() => void sink.release(i.id)}>free the hold</button>
-                {/if}
-                {#if !past && i.from && names.has(i.from) && onreveal}
-                  <button class="verb" onclick={() => onreveal?.(i.from!)}>go to {who}</button>
-                {/if}
-                <button class="verb bin" onclick={() => void sink.remove(i.id)}>throw away</button>
-              </div>
             </div>
           {/if}
         </li>
@@ -389,6 +529,23 @@
   .draft textarea:focus {
     outline: none;
     border-color: var(--rule);
+  }
+
+  /* The editor is the draft form, in place of the item rather than above the
+     pile — so no rule under it, and no padding fighting the row it sits in. */
+  .draft.edit {
+    padding: 0.1rem 0 0.2rem;
+    border-bottom: none;
+  }
+  /* Amber: nothing is broken, but this did not go through and you should look.
+     Not rust — the wall's rust is for something that failed, and the commonest
+     reason to see this is somebody having taken the item while you typed, which
+     is the wall working correctly. */
+  .snag {
+    margin: 0;
+    font-size: 0.6rem;
+    line-height: 1.4;
+    color: var(--st-soft);
   }
 
   .note {

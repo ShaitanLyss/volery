@@ -45,6 +45,9 @@ export type Item = {
   holdStale: boolean;
   settledAt: number | null;
   settledNote: string | null;
+  /** When you last reworded it, or null for an item still in the words it was
+   *  dropped in. See `store.rs::migrate_v22`. */
+  editedAt: number | null;
 };
 
 function str(v: unknown, fallback = ""): string {
@@ -90,6 +93,7 @@ export function normalize(raw: unknown): Item | null {
     holdStale: r.holdStale === true,
     settledAt: maybeNum(r.settledAt),
     settledNote: typeof r.settledNote === "string" ? r.settledNote : null,
+    editedAt: maybeNum(r.editedAt),
   };
 }
 
@@ -188,6 +192,99 @@ export function nothing(kind: Kind | "all", settled: boolean): string {
   if (settled) return "nothing settled yet";
   if (kind === "all") return "the sink is empty";
   return `no ${kind}s waiting`;
+}
+
+/* ── rewording one ─────────────────────────────────────────────────────────── */
+
+/** The caps, mirroring `sink.rs`'s `MAX_TITLE` / `MAX_BODY` / `MAX_GLOBS`.
+ *
+ *  Here so the field you are typing in stops where the write will clip, rather
+ *  than letting you write two hundred characters of title and find out
+ *  afterwards that eighty of them were dropped. Rust clips regardless — this is
+ *  the reading, not the rule. */
+export const MAX_TITLE = 120;
+export const MAX_BODY = 1_200;
+export const MAX_PATHS = 8;
+
+/** What is in the fields while you are typing. `paths` is one line, because that
+ *  is what you type; `Edit` is what gets sent. */
+export type Draft = { title: string; body: string; kind: Kind; paths: string };
+
+/** What goes on the wire. */
+export type Edit = { title: string; body: string; kind: Kind; paths: string[] };
+
+/** May you reword this one?
+ *
+ *  Pending and unheld — `may_edit` in `sink.rs` is where that policy is argued,
+ *  and this is the same call off the same two fields so the face does not offer
+ *  a verb the write would refuse. **The face does not offer it rather than
+ *  offering it and erroring**: a button that is there and does not work teaches
+ *  you to distrust the ones that do.
+ *
+ *  A lapsed hold is not a hold, which is `held`'s call and therefore the same
+ *  one an agent's `take` gets. */
+export function editable(item: Item): boolean {
+  return item.settledAt === null && !held(item);
+}
+
+/** The fields, filled from the item as it stands. An editor that opened empty
+ *  would be a second `drop` wearing an edit's clothes. */
+export function opening(item: Item): Draft {
+  return {
+    title: item.title,
+    body: item.body,
+    kind: item.kind,
+    paths: item.paths.join(", "),
+  };
+}
+
+/** What you typed, as the write wants it.
+ *
+ *  The paths line is split the way `sink.rs::globs_from` splits it — on newlines
+ *  *and* commas, trimmed, empties dropped — because that is the spelling an
+ *  agent's `drop` is parsed with and one field cannot have two grammars. */
+export function proposed(d: Draft): Edit {
+  return {
+    title: d.title.trim().slice(0, MAX_TITLE),
+    body: d.body.trim().slice(0, MAX_BODY),
+    kind: d.kind,
+    paths: d.paths
+      .split(/[\n,]/)
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0)
+      .slice(0, MAX_PATHS),
+  };
+}
+
+/** Did anything actually change?
+ *
+ *  Opening an item, reading it and closing it again must not stamp `edited_at` —
+ *  that stamp is what tells an agent the words it is reading are no longer the
+ *  ones the finder wrote, and a stamp that also fires on "you looked at it"
+ *  means nothing. So a save that moved nothing is not a write. */
+export function moved(item: Item, e: Edit): boolean {
+  return (
+    e.title !== item.title ||
+    e.body !== item.body ||
+    e.kind !== item.kind ||
+    e.paths.join("\n") !== item.paths.join("\n")
+  );
+}
+
+/** Why this cannot be saved, in the words the face will draw, or null.
+ *
+ *  Only what is decidable from what you typed. The other three refusals — held,
+ *  settled, and a title another item already has — need the table, so they come
+ *  back from Rust as a sentence; these two are the same bar `do_drop` sets and
+ *  are said here so the answer is instant. An item with no body is one nobody
+ *  will be able to act on in a month, which is the whole span this table is
+ *  built for. */
+export function refusal(e: Edit): string | null {
+  if (!e.title) return "an item needs a title";
+  if (!e.body) {
+    return "an item needs a body — a title on its own is a thing nobody will be able to act on in a month";
+  }
+  return null;
 }
 
 /** The count a collapsed face carries: what is waiting, not what is in the

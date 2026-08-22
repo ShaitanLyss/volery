@@ -21,7 +21,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { normalizeAll, type Item, type Kind } from "./sink";
+import { normalizeAll, type Edit, type Item, type Kind } from "./sink";
 
 export class Sink {
   /** Everything pending, every project. The widgets filter — one read serves
@@ -91,6 +91,34 @@ export class Sink {
     projectId: string | null = null,
   ) {
     await this.#write(() => invoke("sink_add", { title, body, kind, paths, projectId }));
+  }
+
+  /** Reword one, and answer with what went wrong rather than banking it.
+   *
+   *  **The one write here that does not go through `#write`**, and the reason is
+   *  the text you typed. Every other verb is a single gesture with nothing to
+   *  lose: a failed settle costs you a click. An edit carries a paragraph you
+   *  have just written, and `#write`'s fault lands in `sink.fault`, which
+   *  `Basin.svelte` draws *instead of* the pile — so the words would go with the
+   *  list they were sitting in. Returning the complaint lets the face put it
+   *  beside the editor with your paragraph still in it.
+   *
+   *  Refused rather than banked in three cases the face cannot see coming (a
+   *  card took the item while you were typing, it was settled from elsewhere, or
+   *  another item already has the title you just gave this one) — `sink.rs`
+   *  says which in words. */
+  async edit(id: string, e: Edit): Promise<string | null> {
+    let fault: string | null = null;
+    try {
+      await invoke("sink_edit", { id, title: e.title, body: e.body, kind: e.kind, paths: e.paths });
+    } catch (err) {
+      fault = err instanceof Error ? err.message : String(err);
+    }
+    /* Either way: on success to draw the new words, and on failure because the
+       likeliest reason for one is that this item is no longer what we think it
+       is — a hold landed, or somebody settled it. */
+    await this.refresh(true);
+    return fault;
   }
 
   /** Mark it dealt with. Kept, not deleted — `restore` is the other half. */
