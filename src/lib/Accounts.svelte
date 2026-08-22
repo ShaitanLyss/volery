@@ -15,7 +15,16 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { waterfall } from "./waterfall.svelte";
-  import { sayBlocked, sayUnmeasured, standingOf } from "./accounts";
+  import {
+    exportAccounts,
+    importAccounts,
+    mergeAccounts,
+    sayBlocked,
+    sayImported,
+    sayUnmeasured,
+    sayUnsigned,
+    standingOf,
+  } from "./accounts";
   import { pct, said as windowSaid, until } from "./limits";
   import { Listeners } from "./listeners";
   import { codeFrom, looksLikeCode, readSignin } from "./signin";
@@ -47,6 +56,16 @@
   let signinRunning = $state<Record<string, boolean>>({});
   /** What is half-typed in each account's paste field. */
   let pasting = $state<Record<string, string>>({});
+  /** Labels the last import put here, and what the rename did to them.
+   *
+   *  Kept so the one thing an export cannot carry can be said for as long as it
+   *  is true rather than once in a note that fades — `sayUnmeasured`'s rule. Not
+   *  persisted, though: this is a remark about a gesture you have just made, and
+   *  a session opening with "imported, not signed in" about a row from last week
+   *  would be reporting the state of the world as news. The durable half is the
+   *  row itself, which `standingOf` draws unusable in its own words. */
+  let imported = $state<string[]>([]);
+  let renames = $state<{ from: string; to: string }[]>([]);
 
   const listeners = new Listeners();
 
@@ -122,6 +141,13 @@
     const c = waterfall.next();
     return c.kind === "use" ? c.label : null;
   });
+
+  /** Which of the imported rows are still unsigned. Derived rather than stored,
+   *  so the line clears itself as they are signed in — and as they are removed,
+   *  since a row that has gone is not a row to say anything about. */
+  const unsigned = $derived(
+    imported.filter((l) => waterfall.list.some((a) => a.label === l && !a.signedIn)),
+  );
 
   /** The window kinds worth offering a cap for on this account: the ones its
    *  allowance actually reports, plus any it already carries a cap for — so a
@@ -221,6 +247,83 @@
     } catch (err) {
       say(String(err));
     }
+  }
+
+  /* ── carrying the waterfall off the machine ─────────────────────────────
+     Its own affordance, and deliberately not folded into anything else that
+     exports: what this carries is the order and the ceilings, which is a
+     different document with a different caveat from a wall's layout. The
+     clipboard rather than a file, for `theme.ts`'s reasons — the text is small,
+     the app has no filesystem plugin, and this is the idiom it already
+     teaches. */
+
+  async function exportAll() {
+    if (!waterfall.list.length) return say("no accounts to copy");
+    try {
+      await navigator.clipboard.writeText(exportAccounts(waterfall.list));
+      say(`copied ${waterfall.list.length}`);
+    } catch {
+      say("no clipboard");
+    }
+  }
+
+  async function importAll() {
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      return say("no clipboard");
+    }
+    const incoming = importAccounts(text);
+    /* Zero is the answer for text that is not JSON, for a document with no
+       accounts in it, and for one whose accounts were all fragments — from here
+       those are the same event, and naming which would be guessing. */
+    if (!incoming.length) return say(sayImported(0, 0));
+
+    const merge = mergeAccounts(waterfall.list, incoming);
+    try {
+      /* Straight at the commands rather than through `waterfall`'s gestures,
+         each of which refreshes — and a refresh reads every signed-in account's
+         allowance over the network. Three accounts arriving would be a dozen of
+         those passes for one paste, against an endpoint that has answered 429
+         to one account polled on a minute. One refresh at the end reaches the
+         same state and is the only reading anybody sees.
+
+         `add_account` is `ON CONFLICT DO NOTHING`, so a collision here would be
+         silent — which is exactly why the rename happens in `mergeAccounts`
+         before any of this, rather than being left to the store to absorb. */
+      for (const a of merge.added) {
+        await invoke("add_account", { label: a.label });
+        if (Object.keys(a.caps).length > 0) {
+          await invoke("set_account_caps", { label: a.label, caps: a.caps });
+        }
+        /* Only when it is off: a fresh row is on already, and `add_account` has
+           just written that default. */
+        if (!a.enabled) {
+          await invoke("set_account_enabled", { label: a.label, enabled: false });
+        }
+      }
+      await invoke("reorder_accounts", { labels: merge.order });
+    } catch (err) {
+      /* Refreshed even on the way out. A paste that failed halfway has still
+         put rows in the store, and a panel that does not show them is a panel
+         you cannot use to clean up after it. */
+      await waterfall.refresh();
+      return say(String(err));
+    }
+
+    await waterfall.refresh();
+    imported = merge.added.map((a) => a.label);
+    renames = merge.renamed;
+    /* Counted after the refresh, so it is the registry's answer rather than a
+       guess: a label that matches a credential store already on this machine —
+       signed in from a terminal, or left behind by a `remove`, which does not
+       delete the store — lands genuinely usable, and "sign in to each" would be
+       wrong about it. */
+    const ready = imported.filter((l) =>
+      waterfall.list.some((a) => a.label === l && a.signedIn),
+    ).length;
+    say(sayImported(merge.added.length, ready));
   }
 
   async function install() {
@@ -485,6 +588,34 @@
       {/if}
     </div>
 
+    <!-- ── what the last import left behind ──────────────────────────────
+         Up for as long as it is true rather than in the note that fades, and
+         achromatic: an imported account is not a status the wall is waiting on,
+         it is an ordinary row with the one thing an export cannot carry
+         missing. The rows themselves already say "not signed in" where it
+         counts; this says why they all do at once, and what the rename did. -->
+    {#if unsigned.length > 0 || renames.length > 0}
+      <div class="landed">
+        {#if unsigned.length > 0}
+          <span class="dim">{sayUnsigned(unsigned)}</span>
+        {/if}
+        {#each renames as r (r.to)}
+          <span class="dim">
+            {r.from} was already here — the pasted one arrived as {r.to}, with no credential
+            behind it
+          </span>
+        {/each}
+        <button
+          class="chip"
+          onclick={() => {
+            imported = [];
+            renames = [];
+          }}
+          title="stop saying this">ok</button
+        >
+      </div>
+    {/if}
+
     <div class="foot">
       <input
         class="namein"
@@ -492,7 +623,19 @@
         bind:value={naming}
         onkeydown={(e) => e.key === "Enter" && addAccount()}
       />
+      <!-- No spacer: `.namein` is already `flex: 1`, and a second flexing child
+           would take half the row off the field you type a name into. -->
       <button class="go" onclick={addAccount} disabled={!naming.trim()}>add</button>
+      <button
+        class="chip"
+        onclick={exportAll}
+        title="the order and your caps, to the clipboard — never a credential"
+      >export</button>
+      <button
+        class="chip"
+        onclick={importAll}
+        title="a waterfall from the clipboard, renamed on a clash and appended to this order"
+      >import</button>
     </div>
 
     {#if waterfall.fault}
@@ -777,6 +920,19 @@
     gap: 0.4rem;
     flex-wrap: wrap;
     padding: 0.3rem 0.1rem;
+  }
+
+  /* What the last import left behind. Dashed like `.signin`, which is the other
+     thing in this panel that is up only while something is in an unfinished
+     state, and achromatic because colour here is reserved for status. */
+  .landed {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem 0.6rem;
+    flex-wrap: wrap;
+    border: 1px dashed var(--rule);
+    border-radius: 4px;
+    padding: 0.3rem 0.45rem;
   }
 
   .foot {

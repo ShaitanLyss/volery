@@ -4,16 +4,27 @@ import {
   blockersFor,
   capFor,
   choose,
+  cleanAccount,
+  cleanAccounts,
+  cleanCaps,
+  cleanLabel,
+  exportAccounts,
+  EXPORT_VERSION,
+  importAccounts,
+  mergeAccounts,
   ordered,
   sayBlocked,
   sayCeiling,
+  sayImported,
   sayUnmeasured,
+  sayUnsigned,
   speaksWith,
   several,
   standingOf,
   swapNote,
   usable,
   type Account,
+  type AccountDoc,
   type Allowance,
 } from "../src/lib/accounts";
 import type { Window } from "../src/lib/limits";
@@ -525,5 +536,328 @@ describe("whether there is a choice to be made at all", () => {
     ];
     expect(usable(list).map((a) => a.label)).toEqual(["one", "four"]);
     expect(several(list)).toBe(true);
+  });
+});
+
+describe("carrying the waterfall between machines", () => {
+  /* The precedent is `theme.test.ts`'s export block, and the one thing that is
+     different is the one thing worth most of these tests: an export carries the
+     shape of the waterfall and never a credential, so every imported row has to
+     be visibly unsigned rather than plausibly signed in. */
+
+  const three = [
+    acct("work", { rank: 0, caps: { session: 80, weekly: 60 } }),
+    acct("perso", { rank: 1, enabled: false }),
+    acct("team", { rank: 2, signedIn: false }),
+  ];
+
+  test("the document is a versioned wrapper round the accounts", () => {
+    const doc = JSON.parse(exportAccounts(three));
+    expect(doc.skeinAccounts).toBe(EXPORT_VERSION);
+    expect(doc.accounts.map((a: AccountDoc) => a.label)).toEqual(["work", "perso", "team"]);
+  });
+
+  /* The whole point of the format, and the assertion to break if anybody ever
+     adds a field for convenience: `signedIn` is computed by looking for a file
+     on *this* machine, so putting it in a document would be a claim about a
+     disk the document is about to leave. */
+  test("no credential and no claim about one travels", () => {
+    const text = exportAccounts(three);
+    expect(text).not.toContain("signedIn");
+    expect(text).not.toContain("signed_in");
+    for (const a of JSON.parse(text).accounts) expect("signedIn" in a).toBe(false);
+  });
+
+  /* A cap is your decision about your own spending rather than anything about a
+     credential, and it is the most tedious thing in the panel to re-enter. */
+  test("your caps travel", () => {
+    const doc = JSON.parse(exportAccounts(three));
+    expect(doc.accounts[0].caps).toEqual({ session: 80, weekly: 60 });
+  });
+
+  /* And so does `enabled`, because an account held in reserve by being switched
+     off is a decision as real as its rank — and switching one on can spend
+     nothing while there is no credential behind it. */
+  test("so does whether an account is switched off", () => {
+    const doc = JSON.parse(exportAccounts(three));
+    expect(doc.accounts.find((a: AccountDoc) => a.label === "perso").enabled).toBe(false);
+    expect(doc.accounts.find((a: AccountDoc) => a.label === "work").enabled).toBe(true);
+  });
+
+  /* `rank` is only meaningful as an ordering — a document a person reads should
+     not have gaps in it inviting a guess about what went missing. */
+  test("ranks come out dense and in order, whatever they were", () => {
+    const sparse = [
+      acct("c", { rank: 90 }),
+      acct("a", { rank: 3 }),
+      acct("b", { rank: 40 }),
+    ];
+    const doc = JSON.parse(exportAccounts(sparse));
+    expect(doc.accounts.map((a: AccountDoc) => [a.label, a.rank])).toEqual([
+      ["a", 0],
+      ["b", 1],
+      ["c", 2],
+    ]);
+  });
+
+  test("a round trip is the same waterfall", () => {
+    const back = importAccounts(exportAccounts(three));
+    expect(back).toEqual([
+      { label: "work", rank: 0, enabled: true, caps: { session: 80, weekly: 60 } },
+      { label: "perso", rank: 1, enabled: false, caps: {} },
+      { label: "team", rank: 2, enabled: true, caps: {} },
+    ]);
+  });
+
+  /* Three shapes, because all three are things a person plausibly pastes and
+     refusing two of them teaches nothing. */
+  test("the wrapper, a bare array and a single account all read", () => {
+    const one = { label: "work", rank: 0, enabled: true, caps: {} };
+    expect(importAccounts(JSON.stringify({ skeinAccounts: 1, accounts: [one] }))).toHaveLength(1);
+    expect(importAccounts(JSON.stringify([one]))).toHaveLength(1);
+    expect(importAccounts(JSON.stringify(one))).toHaveLength(1);
+  });
+
+  test("text that is not JSON is nothing rather than a throw", () => {
+    expect(importAccounts("")).toEqual([]);
+    expect(importAccounts("not json at all")).toEqual([]);
+    expect(importAccounts("null")).toEqual([]);
+    expect(importAccounts("7")).toEqual([]);
+  });
+
+  test("a document with no accounts in it is the same nothing", () => {
+    expect(importAccounts(JSON.stringify({ skeinAccounts: 1, accounts: [] }))).toEqual([]);
+  });
+
+  /* An entry with no usable label is a fragment, not an account whose name got
+     lost — and inventing one puts a row in the waterfall over a credential
+     store that does not exist and cannot be signed into. */
+  test("an entry with no usable label is dropped, not repaired", () => {
+    expect(cleanAccount({ rank: 0, caps: {} })).toBeNull();
+    expect(cleanAccount({ label: "" })).toBeNull();
+    expect(cleanAccount({ label: 7 })).toBeNull();
+    expect(cleanAccount("work")).toBeNull();
+    /* `..` and `.` name real directories under the credential store root, and
+       `sign_out` removes one recursively — the dots clause in
+       `accounts.rs::is_label` is not decoration. */
+    expect(cleanAccount({ label: ".." })).toBeNull();
+    expect(cleanAccount({ label: "." })).toBeNull();
+  });
+
+  test("a label is repaired into something Rust will take, keeping its case", () => {
+    expect(cleanLabel("Work Laptop")).toBe("Work-Laptop");
+    expect(cleanLabel("  perso  ")).toBe("perso");
+    expect(cleanLabel("a/b\\c")).toBe("a-b-c");
+    expect(cleanLabel("work.2")).toBe("work.2");
+    expect(cleanLabel("x".repeat(200))).toHaveLength(64);
+    expect(cleanLabel("téam")).toBe("t-am");
+    expect(cleanLabel(null)).toBe("");
+  });
+
+  test("a missing field degrades rather than refusing the row", () => {
+    /* Absent means on: a hand-written `{"label":"work"}` is somebody asking for
+       an account, and one that arrives switched off for want of a field it
+       never had is a row that does nothing and does not say why. */
+    expect(cleanAccount({ label: "work" })).toEqual({
+      label: "work",
+      rank: Number.MAX_SAFE_INTEGER,
+      enabled: true,
+      caps: {},
+    });
+    /* And a missing rank sorts last rather than to zero, which is the head of
+       the queue and not a place a field that was never there may claim. */
+    const list = cleanAccounts([{ label: "nowhere" }, { label: "first", rank: 0 }]);
+    expect(list.map((a) => a.label)).toEqual(["first", "nowhere"]);
+  });
+
+  test("caps are clamped and quoted numbers taken", () => {
+    /* Clamped rather than dropped, which is what the panel's own field does and
+       changes nothing: `capFor` reads anything above 100 as no cap anyway. */
+    expect(cleanCaps({ session: 150, weekly: -4, scoped: 60.4 })).toEqual({
+      session: 100,
+      weekly: 0,
+      scoped: 60,
+    });
+    /* A document somebody edited by hand plausibly quotes its numbers. */
+    expect(cleanCaps({ session: "80" })).toEqual({ session: 80 });
+    expect(cleanCaps({ session: "eighty", weekly: null, other: {} })).toEqual({});
+    expect(cleanCaps(null)).toEqual({});
+    expect(cleanCaps([1, 2])).toEqual({});
+    /* A cap of zero is honoured — `capFor` says why — so it must survive the
+       normalizer rather than reading as unset. */
+    expect(cleanCaps({ session: 0 })).toEqual({ session: 0 });
+  });
+
+  test("a repaired label still passes what Rust asks of one", () => {
+    /* The same rule as `accounts.rs::is_label`, one layer up, so a pasted
+       document is repaired into something addable instead of refused a row at a
+       time with the reason on the far side of an IPC boundary. */
+    const ok = (s: string) =>
+      s.length > 0 &&
+      s.length <= 64 &&
+      /^[A-Za-z0-9._-]+$/.test(s) &&
+      [...s].some((c) => c !== ".");
+    for (const raw of ["Work Laptop", "a/b\\c", "..\\..\\etc", "x".repeat(90), "té am", "--x--"]) {
+      const l = cleanLabel(raw);
+      if (l) expect(ok(l)).toBe(true);
+    }
+  });
+
+  /* ── what a merge does ──────────────────────────────────────────────── */
+
+  test("imports are appended, and what is here keeps its order", () => {
+    const here = [acct("work", { rank: 0 }), acct("perso", { rank: 1 })];
+    const merge = mergeAccounts(here, importAccounts(exportAccounts([acct("spare")])));
+    expect(merge.order).toEqual(["work", "perso", "spare"]);
+    expect(merge.added.map((a) => [a.label, a.rank])).toEqual([["spare", 2]]);
+  });
+
+  /* The order is where the next turn's money goes, so a paste must not be able
+     to insert itself at the head of the queue — and an imported row is unsigned
+     by construction, so interleaving would scatter rows `choose` skips through
+     the one list whose whole meaning is its sequence. */
+  test("a rank-0 import does not take the head of the queue", () => {
+    const here = [acct("work", { rank: 0 })];
+    const merge = mergeAccounts(here, [
+      { label: "cheeky", rank: 0, enabled: true, caps: {} },
+    ]);
+    expect(merge.order).toEqual(["work", "cheeky"]);
+  });
+
+  test("imports keep their own relative order among themselves", () => {
+    const merge = mergeAccounts([acct("work")], [
+      { label: "third", rank: 9, enabled: true, caps: {} },
+      { label: "second", rank: 5, enabled: true, caps: {} },
+    ]);
+    /* `mergeAccounts` takes them as given — `cleanAccounts` is what sorts a
+       document, so the sort is asserted through the real read path. */
+    const sorted = importAccounts(
+      JSON.stringify([
+        { label: "third", rank: 9 },
+        { label: "second", rank: 5 },
+      ]),
+    );
+    expect(mergeAccounts([acct("work")], sorted).order).toEqual(["work", "second", "third"]);
+    expect(merge.order).toEqual(["work", "third", "second"]);
+  });
+
+  /* Renamed rather than overwritten, for `mergeThemes`'s reason with a sharper
+     edge: overwriting `work`'s caps would be a silent change to where your money
+     stops on an account that has a live credential behind it. */
+  test("a colliding label is renamed, and the one already here is untouched", () => {
+    const here = [acct("work", { caps: { session: 80 } })];
+    const merge = mergeAccounts(here, [
+      { label: "work", rank: 0, enabled: true, caps: { session: 20 } },
+    ]);
+    expect(merge.added).toEqual([
+      { label: "work-2", rank: 1, enabled: true, caps: { session: 20 } },
+    ]);
+    expect(merge.renamed).toEqual([{ from: "work", to: "work-2" }]);
+    expect(merge.order).toEqual(["work", "work-2"]);
+  });
+
+  test("and again, when the rename itself collides", () => {
+    const here = [acct("work"), acct("work-2")];
+    const merge = mergeAccounts(here, [{ label: "work", rank: 0, enabled: true, caps: {} }]);
+    expect(merge.added[0]!.label).toBe("work-3");
+  });
+
+  /* Stricter than the store on purpose: SQLite would hold `work` and `Work` as
+     two rows, but the label is a directory name and this is a Windows-first app,
+     so those two rows would be two accounts over one credential store. */
+  test("a collision is case-insensitive, because the label is a directory", () => {
+    const merge = mergeAccounts([acct("work")], [
+      { label: "Work", rank: 0, enabled: true, caps: {} },
+    ]);
+    expect(merge.added[0]!.label).toBe("Work-2");
+    expect(merge.renamed).toEqual([{ from: "Work", to: "Work-2" }]);
+  });
+
+  test("two entries in one document claiming a label become one", () => {
+    const back = importAccounts(
+      JSON.stringify([
+        { label: "work", rank: 0, caps: { session: 10 } },
+        { label: "Work", rank: 1, caps: { session: 90 } },
+      ]),
+    );
+    expect(back).toHaveLength(1);
+    expect(back[0]!.caps).toEqual({ session: 90 });
+  });
+
+  test("a rename cannot grow a label past what Rust will take", () => {
+    const long = "w".repeat(64);
+    const merge = mergeAccounts([acct(long)], [{ label: long, rank: 0, enabled: true, caps: {} }]);
+    expect(merge.added[0]!.label).toHaveLength(64);
+    expect(merge.added[0]!.label.endsWith("-2")).toBe(true);
+  });
+
+  test("nothing incoming leaves the order exactly as it was", () => {
+    const here = [acct("work"), acct("perso", { rank: 1 })];
+    expect(mergeAccounts(here, [])).toEqual({
+      added: [],
+      order: ["work", "perso"],
+      renamed: [],
+    });
+  });
+
+  /* ── and where an imported row lands ────────────────────────────────── */
+
+  /* The honest state, and the reason the panel has anything to say at all: an
+     imported account is known about and cannot be spent. Not "blocked", which
+     is a clock to wait on — `unusable`, which is a thing to go and do. */
+  test("an imported account is unusable until it is signed in here", () => {
+    const [doc] = importAccounts(exportAccounts([acct("work", { caps: { session: 80 } })]));
+    const landed: Account = { ...doc!, signedIn: false };
+    const standing = standingOf(landed, undefined, false);
+    expect(standing.state).toBe("unusable");
+    if (standing.state === "unusable") expect(standing.why).toContain("not signed in");
+    expect(usable([landed])).toEqual([]);
+    /* And it cannot take the next turn away from the account that can. */
+    const choice = choose([acct("here"), landed], {});
+    expect(choice).toEqual({ kind: "use", label: "here", swapFrom: null });
+  });
+
+  test("a paste on a machine with nothing signed in is a wall that says so", () => {
+    const landed = importAccounts(exportAccounts([acct("work"), acct("perso")])).map(
+      (d): Account => ({ ...d, signedIn: false }),
+    );
+    const choice = choose(landed, {});
+    expect(choice.kind).toBe("none");
+    if (choice.kind === "none") expect(choice.why).toContain("not signed in");
+  });
+
+  /* ── the words ──────────────────────────────────────────────────────── */
+
+  test("the receipt names what an export cannot carry", () => {
+    const said = sayImported(3, 0);
+    expect(said).toContain("3");
+    expect(said).toContain("credential");
+    expect(said).toContain("sign in");
+  });
+
+  /* A label matching a credential store already on this machine — signed in
+     from a terminal, or left behind by a `remove`, which does not delete the
+     store — lands genuinely usable, and "sign in to each" is wrong about it. */
+  test("and does not say it about the rows that need nothing", () => {
+    expect(sayImported(2, 2)).toContain("already signed in");
+    expect(sayImported(2, 2)).not.toContain("sign in to each");
+    expect(sayImported(3, 1)).toContain("1 already signed in");
+  });
+
+  test("nothing is a real answer with its own words", () => {
+    expect(sayImported(0, 0)).toBe("nothing in that");
+  });
+
+  /* Said for as long as it is true, `sayUnmeasured`'s rule and the same
+     argument: an imported account is indistinguishable from a working one until
+     something asks it to take a turn. */
+  test("the standing line names the labels, up to three of them", () => {
+    expect(sayUnsigned([])).toBe("");
+    expect(sayUnsigned(["work"])).toContain("work is");
+    expect(sayUnsigned(["work", "perso"])).toContain("work, perso are");
+    const many = sayUnsigned(["one", "two", "three", "four", "five"]);
+    expect(many).toContain("one, two, three and 2 more are");
+    expect(many).not.toContain("four");
+    expect(many).toContain("credential");
   });
 });
