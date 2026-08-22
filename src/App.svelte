@@ -602,9 +602,8 @@
   let importing = $state(false);
   let sessions = $state<Session[]>([]);
 
-  /* Carrying the wall off and bringing one in. See `.claude/rules` nothing yet —
-     the reasoning is at the top of `portage.ts`, which is where a layout is
-     *defined*; `portage.svelte.ts` is only the hands. */
+  /* Carrying the wall off and bringing one in. See `.claude/rules/portage.md`:
+     what a layout is and what it deliberately leaves behind. */
   const portage = new Portage({ skein, board, widgets, ambience, ink });
   let showCarry = $state(false);
   /** Territory roots that are not directories on this machine. Asked rather than

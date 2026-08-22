@@ -127,6 +127,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `hooks.md` | the hook Skein hands its cards: the Bash tool halving runs of backslashes, why a quoted heredoc was never the cause, and the one binary that undoes it | `hooks.rs`, `main.rs` |
 | `accounts.md` | more than one subscription: an account as a credential store and why Skein holds none of it, signing one in without a terminal, the waterfall and its stickiness, your caps against the server's, the per-card bypass, being held, and finding Claude Code before installing it | `accounts.ts`, `accounts.rs`, `signin.ts`, `signin.rs`, `claude.rs`, `Accounts.svelte` |
 | `update.md` | getting onto the newer one: why the installer does the work rather than a plugin, offering nothing when in doubt, and why the exit handler launches it | `update.rs`, `update.ts`, `release.svelte.ts`, `release.yml` |
+| `portage.md` | carrying a wall off and setting one up again: what a layout is and what it deliberately leaves behind, why no id travels and an import only adds, furniture identified by what-and-where, and a territory that arrives pointing nowhere | `portage.ts`, `portage.svelte.ts`, `portage.rs`, `Carry.svelte` |
 | `build.md` | building without MSVC — the four traps, and what a no-MSVC machine can check | `Cargo.toml`, `tools/*.ps1` |
 
 ## Architecture
