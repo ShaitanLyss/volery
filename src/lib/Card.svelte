@@ -45,6 +45,28 @@
    *  at a glance as cards that have earned a name and cards that have not. */
   const name = $derived(cardName(conv.title, draft));
 
+  /** As much of a line as one clipped line of a card can possibly draw.
+   *
+   *  `.say` clips to a single line with `-webkit-line-clamp`, which is around
+   *  forty characters at this size — but the browser still has to hold and lay
+   *  out whatever it was handed in order to find where to cut it. So a whole
+   *  answer went into one text node and was thrown away, for every card at
+   *  `open` density: hundreds of KB by the end of a long turn, rewritten on
+   *  every `text_delta`.
+   *
+   *  This is the rule `Line.cap` already states from the other side of the
+   *  panel — capped where it is written, since a cap that only bites at render
+   *  time is not a memory bound. Here the writing is a card face redrawn per
+   *  token, so the cap belongs at the read.
+   *
+   *  Taken off the *front*, which is both what the clamp draws and what makes
+   *  this quiet: past the cap a growing answer slices to the same string every
+   *  time, so the derived stops changing and the text node stops being written
+   *  for the rest of the turn. A tail would be a fresh string on every delta —
+   *  a ticker on every open card, which is the cost we came to remove. */
+  const SAY_CAP = 200;
+  const say = (text: string) => text.slice(0, SAY_CAP);
+
   /** At the open density a card shows what it has been saying, not just what
    *  it is doing — the latest line, which is enough to know whether to open the
    *  transcript. Deliberately one line: a card has to fit the slot it is placed
@@ -54,8 +76,11 @@
     conv.lines
       .filter((l) => l.kind === "text")
       .slice(-1)
-      .map((l) => l.text),
+      .map((l) => say(l.text)),
   );
+
+  /** The turn's own words, while it is writing them. */
+  const saying = $derived(say(conv.streaming));
 
   const CIRC = 2 * Math.PI * 11;
 
@@ -154,8 +179,8 @@
 
     {#if lod === "open"}
       <span class="said">
-        {#if conv.streaming}
-          <span class="say">{conv.streaming}</span>
+        {#if saying}
+          <span class="say">{saying}</span>
         {:else if recent.length}
           {#each recent as r}<span class="say">{r}</span>{/each}
         {:else}
@@ -562,6 +587,9 @@
     max-height: 1.2rem;
     overflow: hidden;
   }
+  /* Clipping is what this does, not what bounds it — `SAY_CAP` above cuts the
+     string before it ever reaches here, because laying out a hundred KB in
+     order to draw forty characters of it is still laying out a hundred KB. */
   .say {
     display: -webkit-box;
     -webkit-line-clamp: 1;
