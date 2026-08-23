@@ -108,12 +108,18 @@ a refusal is what `markSpent` and the reactive swap are for.
 It is a plain JSON file on Windows, exactly like the global
 `~/.claude/.credentials.json` beside it, so this **loses the DPAPI wrapping**
 the `.tok` design had. Said plainly because it is a real regression in one
-respect — and an improvement in another that matters more: **Skein no longer
-handles a credential at all.** It writes none, holds none in memory, puts none
-in a child's environment, and names a directory instead. The one place one is
-read is `limits.rs`, asking the allowance endpoint the same question about the
-same file the CLI reads. The database still holds only the label, the rank and
-the caps, so deleting it still costs no credentials.
+respect — and an improvement in another that matters more: **on every path a
+card takes, Skein handles no credential at all.** It writes none, holds none in
+memory, puts none in a child's environment, and names a directory instead. The
+one place one is read is `limits.rs`, asking the allowance endpoint the same
+question about the same file the CLI reads. The database still holds only the
+label, the rank and the caps, so deleting it still costs no credentials.
+
+That was once true without the qualifier, and the qualifier is load-bearing now:
+carrying the sign-ins to a second machine writes and reads them deliberately.
+See *Carrying a waterfall, and then carrying the sign-ins* at the end of this
+file for what bounds it — the short version being that the front end still
+never sees a token.
 
 The one thing this arrangement rests on that could move under us is an
 undocumented environment variable. If it ever stops being read, the failure is
@@ -577,3 +583,79 @@ in casing. That is the `usage.svelte.ts` trap `ledger.svelte.ts` is named
 around, one degree worse — not an ambiguity resolved the wrong way but one that
 cannot be resolved at all. `skein.svelte.ts` does the swapping and the holding,
 because sending is a Rust call and a `Conversation` never makes one.
+
+## Carrying a waterfall, and then carrying the sign-ins
+
+Two documents, two carriers, and the difference between them is the whole of the
+design.
+
+**The waterfall** — the order, the ceilings, which rows are switched on — goes on
+the **clipboard**, `theme.ts::exportThemes`'s precedent followed decision for
+decision: a versioned wrapper (`{ skeinAccounts: 1, note, accounts: [...] }`), a
+normalizer on the way in, three accepted paste shapes, and a rename rather than
+an overwrite on a collision. It carries no credential, so every account in it
+arrives unsigned, and both halves of the panel say so — `sayImported` at the
+moment of the paste and `sayUnsigned` for as long as it stays true, which is
+`sayUnmeasured`'s rule. `signedIn` is deliberately absent from the document
+rather than merely unused: it is not a stored field, it is computed by looking
+for a file on *this* machine, so writing it down would be a claim about a disk
+the document is about to leave.
+
+**The sign-ins** go in a **file**, `.volery-accounts.json`, and never on the
+clipboard — Windows keeps a clipboard history and can sync it to another device,
+which is the argument in one line. It is its own row in the panel and its own
+suffix on disk, because a document you can paste into a chat and one holding
+three live bearer tokens must not be the same artefact or the same gesture.
+
+### What was given up to make it work, and what was kept
+
+The absolute form of *Skein holds no credential* is gone. What replaced it is
+three bounds, and they are the part worth keeping true:
+
+- **The front end never sees a token.** Rust splices the credentials in on the
+  way out and takes them straight back out on the way in; `Summary` — two
+  timestamps and a plan name — is all that crosses into the webview. The webview
+  is the part of this app that renders untrusted content, so this is worth a
+  command rather than a convenience, and `a_summary_carries_no_token_at_all` is
+  the assertion that holds it.
+- **Nothing is installed without being asked for**, and *which* installs may
+  skip the asking is policy in `accounts.ts::planSignins` rather than a rule in
+  Rust or in the panel. Nothing signed in at that account, or a file whose
+  credential is demonstrably newer, goes in on its own; older, identical or
+  incomparable waits for a press.
+- **What is parked is dropped.** `Carried` is emptied when the panel closes.
+
+And the cost no code can remove, said in the panel before the file is written
+rather than after: **the file is plaintext, and anyone who can read it can spend
+those subscriptions until you sign out.** A passphrase was offered and a file was
+chosen.
+
+### The two rules that are different from the waterfall's, and why
+
+**A colliding row that carries a sign-in is *matched*, not renamed.** The rename
+rule is right about a configuration and wrong about a credential. Two rows called
+`lyss` and `lyss-2` holding different caps is a disagreement worth being able to
+see; two rows holding two credentials for the same subscription is nothing
+anybody wants — one is stale, the wall spends whichever ranks first, and the fix
+is a removal nobody was warned about. So a colliding credential-bearing row lands
+on the row already here, changing nothing about that row's caps, rank or
+switched-off-ness, and offering only its credential. That is the case this exists
+to serve twice over: a refresh token rotates, the copy on the other machine goes
+stale, and the fix is meant to be one file rather than a browser.
+
+**Freshness is compared on the refresh stamp before the access stamp.** The
+access token lapses in hours and refreshes itself, so a file copied this morning
+is "older" by it within the day on a credential that is otherwise identical —
+which would put a press in front of the one case the feature is for. The refresh
+stamp is what decides whether a sign-in survives at all, so it is what decides
+whether one file is newer than another.
+
+### The thing to watch, which is not settled
+
+Whether the OAuth deployment **rotates refresh tokens on use** is not known here
+and was not verifiable from this machine without spending a turn to find out. If
+it does, then the first refresh on one machine staling the copy on the other is
+expected behaviour, not a bug — and this feature is "carry a sign-in across once"
+rather than "keep two machines signed in for ever". Everything above is built so
+that the answer costs one file either way: a newer credential installs itself,
+and `sayLife` says how long what you just imported has left.

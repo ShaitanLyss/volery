@@ -140,6 +140,10 @@ pub fn run() {
            does, and the reader threads hold an AppHandle rather than a
            subscription. */
         .manage(signin::Signins::default())
+        /* Credentials read out of an accounts document and not yet installed.
+           Emptied by `drop_carried` when the panel closes rather than living as
+           long as the process — see `accounts.rs`. */
+        .manage(accounts::Carried::default())
         /* Empty until a performance widget asks: an app with none on the wall
            never enumerates a process. */
         .manage(Meter::default())
@@ -287,6 +291,11 @@ pub fn run() {
             accounts::set_account_enabled,
             accounts::set_account_caps,
             accounts::stored_accounts,
+            accounts::save_accounts_file,
+            accounts::load_accounts_file,
+            accounts::install_signin,
+            accounts::drop_carried,
+            accounts::signin_ages,
             signin::begin_signin,
             signin::paste_signin,
             signin::cancel_signin,

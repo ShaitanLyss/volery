@@ -8,14 +8,23 @@ import {
   cleanAccounts,
   cleanCaps,
   cleanLabel,
+  accountsDoc,
+  cleanSignIn,
+  cleanSignIns,
   exportAccounts,
   EXPORT_VERSION,
+  fresher,
   importAccounts,
   mergeAccounts,
   ordered,
+  planSignins,
   sayBlocked,
   sayCeiling,
+  sayCarried,
+  sayFileWarning,
   sayImported,
+  sayInstalled,
+  sayLife,
   sayUnmeasured,
   sayUnsigned,
   speaksWith,
@@ -26,6 +35,7 @@ import {
   type Account,
   type AccountDoc,
   type Allowance,
+  type SignIn,
 } from "../src/lib/accounts";
 import type { Window } from "../src/lib/limits";
 
@@ -797,6 +807,8 @@ describe("carrying the waterfall between machines", () => {
       added: [],
       order: ["work", "perso"],
       renamed: [],
+      matched: [],
+      landings: {},
     });
   });
 
@@ -859,5 +871,290 @@ describe("carrying the waterfall between machines", () => {
     expect(many).toContain("one, two, three and 2 more are");
     expect(many).not.toContain("four");
     expect(many).toContain("credential");
+  });
+});
+
+describe("carrying the sign-ins with them", () => {
+  /* The document above carries the shape of the waterfall; this half carries the
+     credential stores, which is what was actually wanted — three subscriptions
+     signed in here are three browser round trips to repeat on the second
+     machine. Nothing in `accounts.ts` ever holds a token: Rust hands the front
+     end `SignIn`, which is two stamps and a plan name, and everything below is
+     policy over those. */
+
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+
+  function sig(label: string, over: Partial<SignIn> = {}): SignIn {
+    return {
+      label,
+      expiresAt: T0 + 8 * HOUR,
+      refreshExpiresAt: T0 + 25 * DAY,
+      plan: "team",
+      ...over,
+    };
+  }
+
+  /* `accounts.rs` splices the credentials in after the document is built and
+     never touches the note, so a file carrying sign-ins under the other wording
+     would be a file that lies about itself to whoever opens it — and the note is
+     what somebody reads when deciding whether it is safe to keep. */
+  test("the document's own note says which kind of document it is", () => {
+    const bare = accountsDoc([acct("lyss")]);
+    expect(String(bare.note)).toContain("no credential is in here");
+    expect(String(bare.note)).not.toContain("plain text");
+
+    const loaded = accountsDoc([acct("lyss")], { withSignIns: true });
+    expect(String(loaded.note)).toContain("plain text");
+    expect(String(loaded.note)).toContain("sign out");
+    expect(String(loaded.note)).not.toContain("no credential");
+  });
+
+  /* And the clipboard's own function takes no options at all, which is what
+     stops a credential-bearing document ever reaching a clipboard: Windows
+     keeps a history of it and can sync that history to another device. */
+  test("the clipboard export cannot be asked for sign-ins", () => {
+    expect(exportAccounts([acct("lyss")])).toContain("no credential is in here");
+    expect(exportAccounts.length).toBe(1);
+  });
+
+  test("a summary is normalized, and a bad stamp is not a zero", () => {
+    /* A zero would read as 1970 and draw "expired 56 years ago" over a
+       credential that is perfectly good. */
+    const s = cleanSignIn({ label: "lyss", expiresAt: "soon", refreshExpiresAt: null, plan: 7 });
+    expect(s).toEqual({ label: "lyss", expiresAt: null, refreshExpiresAt: null, plan: null });
+  });
+
+  test("a summary with no usable label is dropped", () => {
+    expect(cleanSignIn({ expiresAt: 1 })).toBeNull();
+    expect(cleanSignIn(null)).toBeNull();
+    expect(cleanSignIns([{ label: "ok" }, {}, "no"])).toHaveLength(1);
+  });
+
+  /* The refresh stamp is what decides whether a sign-in survives at all — the
+     access token lapses in hours and refreshes itself, so reporting that would
+     have every carried sign-in looking nearly dead. */
+  test("what a sign-in is worth is its refresh life, not its access token", () => {
+    expect(sayLife(sig("a"), T0)).toBe("25d left");
+    expect(sayLife(sig("a", { refreshExpiresAt: null }), T0)).toBe("8h left");
+    expect(sayLife(sig("a", { refreshExpiresAt: T0 - 3 * DAY }), T0)).toBe("expired 3d ago");
+    expect(sayLife(sig("a", { expiresAt: null, refreshExpiresAt: null }), T0)).toBe(
+      "no expiry in it",
+    );
+  });
+
+  /* ── newer, older, or nothing that can be said ─────────────────────── */
+
+  test("freshness compares the refresh stamp first", () => {
+    const local = sig("a");
+    expect(fresher(sig("a", { refreshExpiresAt: T0 + 30 * DAY }), local)).toBe("newer");
+    expect(fresher(sig("a", { refreshExpiresAt: T0 + 20 * DAY }), local)).toBe("older");
+    expect(fresher(sig("a"), local)).toBe("same");
+  });
+
+  /* The case this ordering exists for: a file copied this morning has an older
+     access stamp within the day, on a credential that is otherwise identical.
+     Comparing that first would put a press in front of the one case the whole
+     feature is for. */
+  test("an identical refresh life is not made older by a stale access token", () => {
+    const local = sig("a", { expiresAt: T0 + 8 * HOUR });
+    const carried = sig("a", { expiresAt: T0 - 2 * HOUR });
+    expect(fresher(carried, local)).toBe("older");
+    /* …but with the refresh stamps *differing* the refresh stamp wins, which is
+       the half that matters. */
+    expect(fresher({ ...carried, refreshExpiresAt: T0 + 40 * DAY }, local)).toBe("newer");
+  });
+
+  test("nothing comparable is unknown, and a missing local is too", () => {
+    expect(fresher(sig("a", { expiresAt: null, refreshExpiresAt: null }), sig("a"))).toBe(
+      "unknown",
+    );
+    expect(fresher(sig("a"), null)).toBe("unknown");
+    expect(fresher(sig("a"), undefined)).toBe("unknown");
+  });
+
+  /* ── which installs may happen on their own ────────────────────────── */
+
+  /* The fresh-machine case, which is what was asked for: making somebody press
+     three buttons to finish a thing they have chosen twice already is friction
+     rather than care. */
+  test("a sign-in lands on its own where nothing was signed in", () => {
+    const here = [acct("lyss", { signedIn: false })];
+    const plan = planSignins([sig("lyss")], { lyss: "lyss" }, here, []);
+    expect(plan).toEqual([
+      { from: "lyss", label: "lyss", how: "now", why: "nothing was signed in here" },
+    ]);
+  });
+
+  /* The recurring case: a refresh token rotates, the copy over here goes stale,
+     and a newer credential for the same account is an update rather than a
+     decision. */
+  test("a newer sign-in replaces a stale one on its own", () => {
+    const here = [acct("lyss")];
+    const local = sig("lyss", { refreshExpiresAt: T0 + 2 * DAY });
+    const plan = planSignins(
+      [sig("lyss", { refreshExpiresAt: T0 + 25 * DAY })],
+      { lyss: "lyss" },
+      here,
+      [local],
+    );
+    expect(plan[0]!.how).toBe("now");
+    expect(plan[0]!.why).toContain("newer");
+  });
+
+  /* And the case where the paste might genuinely be a mistake — an old file,
+     the wrong file, a document from before a sign-out. Overwriting a working
+     credential with an older one costs the browser round trip this feature
+     exists to avoid. */
+  test("an older, identical or uncomparable sign-in waits to be asked about", () => {
+    const here = [acct("lyss")];
+    const local = sig("lyss", { refreshExpiresAt: T0 + 25 * DAY });
+    const older = planSignins(
+      [sig("lyss", { refreshExpiresAt: T0 + 3 * DAY })],
+      { lyss: "lyss" },
+      here,
+      [local],
+    );
+    expect(older[0]!.how).toBe("ask");
+    expect(older[0]!.why).toContain("newer sign-in here already");
+
+    const same = planSignins([sig("lyss")], { lyss: "lyss" }, here, [sig("lyss")]);
+    expect(same[0]!.how).toBe("ask");
+
+    const blind = planSignins([sig("lyss")], { lyss: "lyss" }, here, []);
+    expect(blind[0]!.how).toBe("ask");
+    expect(blind[0]!.why).toContain("compare");
+  });
+
+  /* A store lying around unregistered means the row arrives already signed in,
+     and its credential deserves exactly the protection any other one gets —
+     which is why `here` is read after the rows are made rather than before. */
+  test("a row that arrived already signed in is not overwritten silently", () => {
+    const here = [acct("lyss", { signedIn: true })];
+    const plan = planSignins([sig("lyss")], { lyss: "lyss" }, here, [sig("lyss")]);
+    expect(plan[0]!.how).toBe("ask");
+  });
+
+  test("a sign-in whose row never landed is skipped rather than invented", () => {
+    expect(planSignins([sig("ghost")], {}, [acct("lyss")], [])).toEqual([]);
+    /* And a landing naming an account that is not in the registry either. */
+    expect(planSignins([sig("ghost")], { ghost: "nope" }, [acct("lyss")], [])).toEqual([]);
+  });
+
+  test("a sign-in follows its row through a rename", () => {
+    const merge = mergeAccounts([acct("lyss")], [
+      { label: "lyss", rank: 0, enabled: true, caps: {} },
+    ]);
+    /* No sign-in carried, so the row was renamed — and the landing map is what
+       says where a credential for it would have gone. */
+    expect(merge.landings).toEqual({ lyss: "lyss-2" });
+    const plan = planSignins(
+      [sig("lyss")],
+      merge.landings,
+      [acct("lyss"), acct("lyss-2", { signedIn: false })],
+      [],
+    );
+    expect(plan[0]!.label).toBe("lyss-2");
+    expect(plan[0]!.how).toBe("now");
+  });
+
+  /* ── a credential-bearing collision is the same account ────────────── */
+
+  /* Two rows holding two credentials for one subscription is nothing anybody
+     wants: one is stale, the wall spends whichever ranks first, and the fix is
+     a removal nobody was warned about. */
+  test("a colliding row that carries a sign-in is matched, not renamed", () => {
+    const here = [acct("lyss", { caps: { session: 80 } })];
+    const merge = mergeAccounts(
+      here,
+      [{ label: "lyss", rank: 0, enabled: false, caps: { session: 10 } }],
+      { carrying: ["lyss"] },
+    );
+    expect(merge.added).toEqual([]);
+    expect(merge.renamed).toEqual([]);
+    expect(merge.matched).toEqual([{ from: "lyss", to: "lyss" }]);
+    expect(merge.order).toEqual(["lyss"]);
+    expect(merge.landings).toEqual({ lyss: "lyss" });
+  });
+
+  /* Only the credential is offered. The caps and the switched-off-ness of the
+     row already here are what you have been using, and this is not the gesture
+     that changes them. */
+  test("being matched changes nothing about the row it matched", () => {
+    const here = [acct("lyss", { caps: { session: 80 }, enabled: true, rank: 0 })];
+    const merge = mergeAccounts(
+      here,
+      [{ label: "lyss", rank: 5, enabled: false, caps: { session: 10 } }],
+      { carrying: ["lyss"] },
+    );
+    /* Nothing to create means nothing to write — the panel applies caps only to
+       rows in `added`. */
+    expect(merge.added).toEqual([]);
+  });
+
+  test("a matched label is matched across case, since one store is one account", () => {
+    const merge = mergeAccounts([acct("lyss")], [
+      { label: "Lyss", rank: 0, enabled: true, caps: {} },
+    ], { carrying: ["Lyss"] });
+    expect(merge.matched).toEqual([{ from: "Lyss", to: "lyss" }]);
+    expect(merge.landings).toEqual({ Lyss: "lyss" });
+    expect(merge.added).toEqual([]);
+  });
+
+  /* A carried sign-in for a label that is *not* here is an ordinary new row —
+     matching only ever applies to a collision. */
+  test("a carried sign-in for a new label is still a new row", () => {
+    const merge = mergeAccounts([acct("work")], [
+      { label: "lyss", rank: 0, enabled: true, caps: {} },
+    ], { carrying: ["lyss"] });
+    expect(merge.added.map((a) => a.label)).toEqual(["lyss"]);
+    expect(merge.matched).toEqual([]);
+    expect(merge.landings).toEqual({ lyss: "lyss" });
+  });
+
+  /* And with no `carrying` at all the function is exactly what it was before
+     the sign-ins existed, which is what keeps the clipboard half honest. */
+  test("without a carried sign-in the collision still renames", () => {
+    const merge = mergeAccounts([acct("lyss")], [
+      { label: "lyss", rank: 0, enabled: true, caps: {} },
+    ]);
+    expect(merge.matched).toEqual([]);
+    expect(merge.added.map((a) => a.label)).toEqual(["lyss-2"]);
+  });
+
+  /* ── the words ─────────────────────────────────────────────────────── */
+
+  /* The one thing in this feature that cannot be undone by pressing something
+     else, so it is said before the file is written rather than after. */
+  test("the warning names the number, the plaintext and the way out", () => {
+    const said = sayFileWarning(3);
+    expect(said).toContain("3 live sign-ins");
+    expect(said).toContain("plain text");
+    expect(said).toContain("sign out");
+    expect(said).toContain("delete it");
+    expect(sayFileWarning(1)).toContain("one live sign-in");
+  });
+
+  test("a save names what it could not carry", () => {
+    expect(sayCarried(["a", "b"], [], "mine.volery-accounts.json")).toBe(
+      "carried 2 sign-ins to mine.volery-accounts.json",
+    );
+    /* A label with an empty store produces a row on the other machine that looks
+       like an account which never worked, and this is the only place that is
+       findable. */
+    const some = sayCarried(["a"], ["b", "c"], "f.json");
+    expect(some).toContain("carried 1 sign-in ");
+    expect(some).toContain("nothing signed in for b, c");
+    expect(sayCarried([], [], "f.json")).toContain("the order alone");
+  });
+
+  /* Kept apart from `sayImported`, which is about the rows: an import can take
+     three accounts and install one credential, and one line for both would have
+     to fudge whichever number was less convenient. */
+  test("an install says what happened and what is waiting", () => {
+    expect(sayInstalled(2, 0)).toBe("signed in 2");
+    expect(sayInstalled(0, 1)).toBe("1 waiting on you");
+    expect(sayInstalled(2, 1)).toBe("signed in 2, 1 waiting on you");
+    expect(sayInstalled(0, 0)).toBe("no sign-ins in that file");
   });
 });

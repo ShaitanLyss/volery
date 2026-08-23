@@ -16,14 +16,24 @@
   import { listen } from "@tauri-apps/api/event";
   import { waterfall } from "./waterfall.svelte";
   import {
+    accountsDoc,
+    cleanSignIns,
     exportAccounts,
     importAccounts,
     mergeAccounts,
+    planSignins,
     sayBlocked,
+    sayCarried,
+    sayFileWarning,
     sayImported,
+    sayInstalled,
+    sayLife,
     sayUnmeasured,
     sayUnsigned,
     standingOf,
+    type Install,
+    type Merge,
+    type SignIn,
   } from "./accounts";
   import { pct, said as windowSaid, until } from "./limits";
   import { Listeners } from "./listeners";
@@ -66,10 +76,29 @@
    *  row itself, which `standingOf` draws unusable in its own words. */
   let imported = $state<string[]>([]);
   let renames = $state<{ from: string; to: string }[]>([]);
+  /** True while a file is being written or read. Both are a dialog and a disk,
+   *  which is long enough that a button doing nothing would look broken. */
+  let carrying = $state(false);
+  /** Carried sign-ins that will not be installed without a press — the file's
+   *  credential is older than the one here, the same age, or of an age nothing
+   *  can compare. `planSignins` decides which; this is what is left to ask. */
+  let waiting = $state<Install[]>([]);
+  /** What the last loaded file's sign-ins are worth, so a row that is waiting
+   *  can say what taking it would get you. Two timestamps and a plan name per
+   *  account: no token ever reaches this process. */
+  let carried = $state<SignIn[]>([]);
+  /** The file the last load came from, named in what the panel says back. */
+  let carriedFrom = $state("");
 
   const listeners = new Listeners();
 
   const now = $derived(Date.now());
+
+  /** The last component of a path, for saying which file something came from.
+   *  Both separators, since a path typed into a Windows dialog may use either. */
+  function baseName(path: string): string {
+    return path.split(/[\\/]/).pop() || path;
+  }
 
   function say(word: string) {
     note = word;
@@ -123,6 +152,12 @@
     waterfall.detach(WATCHER);
     listeners.detach();
     clearTimeout(noteTimer);
+    /* Whatever a loaded file left parked in Rust goes when the panel does. A
+       credential in a mutex for as long as a panel is open is a much smaller
+       thing than one there for the life of the process, and this is the whole
+       cost of the difference. Anything still `waiting` is abandoned by that,
+       which is the right way round: not installing is the safe outcome. */
+    void invoke("drop_carried").catch(() => {});
   });
 
   /** Where each account stands, in the order work falls through them. Bypass is
@@ -267,6 +302,47 @@
     }
   }
 
+  /** Create the rows a merge calls for, and put the whole order back. Returns
+   *  a fault to say, or null.
+   *
+   *  Straight at the commands rather than through `waterfall`'s gestures, each
+   *  of which refreshes — and a refresh reads every signed-in account's
+   *  allowance over the network. Three accounts arriving would be a dozen of
+   *  those passes for one paste, against an endpoint that has answered 429 to a
+   *  single account polled on a minute. One refresh at the end reaches the same
+   *  state and is the only reading anybody sees.
+   *
+   *  `add_account` is `ON CONFLICT DO NOTHING`, so a collision here would be
+   *  silent — which is exactly why the rename and the match both happen in
+   *  `mergeAccounts` before any of this, rather than being left to the store to
+   *  absorb. Nothing here writes to a row the merge only *matched*: that row is
+   *  the one you have been using, and a credential is all a matched document
+   *  gets to offer it. */
+  async function applyMerge(merge: Merge): Promise<string | null> {
+    try {
+      for (const a of merge.added) {
+        await invoke("add_account", { label: a.label });
+        if (Object.keys(a.caps).length > 0) {
+          await invoke("set_account_caps", { label: a.label, caps: a.caps });
+        }
+        /* Only when it is off: a fresh row is on already, and `add_account` has
+           just written that default. */
+        if (!a.enabled) {
+          await invoke("set_account_enabled", { label: a.label, enabled: false });
+        }
+      }
+      await invoke("reorder_accounts", { labels: merge.order });
+    } catch (err) {
+      return String(err);
+    } finally {
+      /* Refreshed on the way out too. An import that failed halfway has still
+         put rows in the store, and a panel that cannot see them is a panel you
+         cannot clean up with. */
+      await waterfall.refresh();
+    }
+    return null;
+  }
+
   async function importAll() {
     let text = "";
     try {
@@ -281,38 +357,8 @@
     if (!incoming.length) return say(sayImported(0, 0));
 
     const merge = mergeAccounts(waterfall.list, incoming);
-    try {
-      /* Straight at the commands rather than through `waterfall`'s gestures,
-         each of which refreshes — and a refresh reads every signed-in account's
-         allowance over the network. Three accounts arriving would be a dozen of
-         those passes for one paste, against an endpoint that has answered 429
-         to one account polled on a minute. One refresh at the end reaches the
-         same state and is the only reading anybody sees.
-
-         `add_account` is `ON CONFLICT DO NOTHING`, so a collision here would be
-         silent — which is exactly why the rename happens in `mergeAccounts`
-         before any of this, rather than being left to the store to absorb. */
-      for (const a of merge.added) {
-        await invoke("add_account", { label: a.label });
-        if (Object.keys(a.caps).length > 0) {
-          await invoke("set_account_caps", { label: a.label, caps: a.caps });
-        }
-        /* Only when it is off: a fresh row is on already, and `add_account` has
-           just written that default. */
-        if (!a.enabled) {
-          await invoke("set_account_enabled", { label: a.label, enabled: false });
-        }
-      }
-      await invoke("reorder_accounts", { labels: merge.order });
-    } catch (err) {
-      /* Refreshed even on the way out. A paste that failed halfway has still
-         put rows in the store, and a panel that does not show them is a panel
-         you cannot use to clean up after it. */
-      await waterfall.refresh();
-      return say(String(err));
-    }
-
-    await waterfall.refresh();
+    const fault = await applyMerge(merge);
+    if (fault) return say(fault);
     imported = merge.added.map((a) => a.label);
     renames = merge.renamed;
     /* Counted after the refresh, so it is the registry's answer rather than a
@@ -324,6 +370,149 @@
       waterfall.list.some((a) => a.label === l && a.signedIn),
     ).length;
     say(sayImported(merge.added.length, ready));
+  }
+
+  /* ── and carrying the sign-ins with them ────────────────────────────────
+     A file rather than the clipboard, and its own row rather than a modifier on
+     the buttons above, because the two documents are not the same kind of
+     thing: one is safe to paste anywhere and one holds live credentials in
+     plain text. Windows keeps a clipboard history and can sync it to another
+     device, which is the whole argument. See `.claude/rules/accounts.md`. */
+
+  /** Every account whose store has something to carry. */
+  const signable = $derived(waterfall.list.filter((a) => a.signedIn).map((a) => a.label));
+
+  async function saveFile() {
+    if (carrying) return;
+    carrying = true;
+    try {
+      /* Imported lazily, as the rest of the app does it: the dialog plugin
+         pulls in a chunk nothing on the first paint needs. */
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const picked = await save({
+        title: "Carry these accounts off",
+        defaultPath: "accounts.volery-accounts.json",
+        filters: [{ name: "volery accounts", extensions: ["volery-accounts.json", "json"] }],
+      });
+      if (typeof picked !== "string") return;
+      /* The extension is insisted on rather than corrected — `accounts.rs`
+         refuses anything else, and silently renaming what somebody typed is a
+         file saved where they cannot find it. */
+      const path = picked.toLowerCase().endsWith(".volery-accounts.json")
+        ? picked
+        : `${picked.replace(/\.json$/i, "")}.volery-accounts.json`;
+      const saved = await invoke<{ signins: string[]; missing: string[] }>(
+        "save_accounts_file",
+        {
+          path,
+          /* The object rather than text, and `withSignIns` so the note inside
+             the file tells the truth about what is in it. Rust splices the
+             credentials in after this and never touches that line. */
+          doc: accountsDoc(waterfall.list, { withSignIns: signable.length > 0 }),
+          signins: signable,
+        },
+      );
+      say(sayCarried(saved.signins, saved.missing, baseName(path)));
+    } catch (err) {
+      say(String(err));
+    } finally {
+      carrying = false;
+    }
+  }
+
+  async function loadFile() {
+    if (carrying) return;
+    carrying = true;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: false,
+        directory: false,
+        title: "Accounts to bring in",
+        filters: [{ name: "volery accounts", extensions: ["json"] }],
+      });
+      if (typeof picked !== "string") return;
+
+      /* Rust takes the credentials out before this sees the document and parks
+         them; `text` is the same shape a paste has, so it goes through the same
+         tested reader rather than a second path that could drift from it. */
+      const loaded = await invoke<{ text: string; signins: unknown[] }>(
+        "load_accounts_file",
+        { path: picked },
+      );
+      carried = cleanSignIns(loaded.signins);
+      const incoming = importAccounts(loaded.text);
+      if (incoming.length === 0 && carried.length === 0) {
+        return say(`there is nothing in ${baseName(picked)}`);
+      }
+
+      /* `carrying` here is the *document's* labels that came with a credential.
+         A colliding one is the same subscription arriving again, so it is
+         matched to the row already here instead of added beside it — see
+         `mergeAccounts`. */
+      const merge = mergeAccounts(waterfall.list, incoming, {
+        carrying: carried.map((s) => s.label),
+      });
+      const fault = await applyMerge(merge);
+      if (fault) return say(fault);
+      imported = merge.added.map((a) => a.label);
+      renames = merge.renamed;
+
+      /* Asked after the rows exist, so `signedIn` is the truth about the store
+         rather than about the document — a label that had a store lying around
+         unregistered arrives already signed in, and its credential deserves the
+         same protection as any other. */
+      const locals = cleanSignIns(
+        await invoke<unknown[]>("signin_ages", {
+          labels: waterfall.list.map((a) => a.label),
+        }),
+      );
+      const plan = planSignins(carried, merge.landings, waterfall.list, locals);
+      let done = 0;
+      for (const one of plan) {
+        if (one.how !== "now") continue;
+        try {
+          await invoke("install_signin", { label: one.label, from: one.from });
+          done++;
+        } catch (err) {
+          say(String(err));
+        }
+      }
+      waiting = plan.filter((one) => one.how === "ask");
+      carriedFrom = baseName(picked);
+      await waterfall.refresh();
+
+      const rows = merge.added.length > 0 ? `took ${merge.added.length} · ` : "";
+      say(`${rows}${sayInstalled(done, waiting.length)}`);
+    } catch (err) {
+      say(String(err));
+    } finally {
+      carrying = false;
+    }
+  }
+
+  /** Take a sign-in the plan would not install on its own. */
+  async function useCarried(one: Install) {
+    try {
+      await invoke("install_signin", { label: one.label, from: one.from });
+      waiting = waiting.filter((x) => x.from !== one.from);
+      await waterfall.refresh();
+      say(`${one.label} is signed in`);
+    } catch (err) {
+      say(String(err));
+    }
+  }
+
+  /** Stop saying anything about the last import, and forget what it parked.
+   *  Dropping the parked credentials is the point rather than a tidy-up: this
+   *  button is how you say you do not want the ones still waiting. */
+  function dismiss() {
+    imported = [];
+    renames = [];
+    waiting = [];
+    carried = [];
+    carriedFrom = "";
+    void invoke("drop_carried").catch(() => {});
   }
 
   async function install() {
@@ -594,7 +783,7 @@
          it is an ordinary row with the one thing an export cannot carry
          missing. The rows themselves already say "not signed in" where it
          counts; this says why they all do at once, and what the rename did. -->
-    {#if unsigned.length > 0 || renames.length > 0}
+    {#if unsigned.length > 0 || renames.length > 0 || waiting.length > 0}
       <div class="landed">
         {#if unsigned.length > 0}
           <span class="dim">{sayUnsigned(unsigned)}</span>
@@ -605,14 +794,32 @@
             behind it
           </span>
         {/each}
-        <button
-          class="chip"
-          onclick={() => {
-            imported = [];
-            renames = [];
-          }}
-          title="stop saying this">ok</button
-        >
+
+        <!-- A carried sign-in that will not go in on its own: the file's is
+             older than what is here, the same age, or of an age nothing can
+             compare. Armed, because replacing a working credential with an
+             older one costs the browser round trip this whole thing exists to
+             save. -->
+        {#each waiting as one (one.from)}
+          {@const what = carried.find((c) => c.label === one.from)}
+          <span class="dim">
+            {one.label}: {one.why}{#if what} · the file's has {sayLife(what, now)}{/if}
+          </span>
+          <button
+            class="chip danger"
+            onmousedown={(e) => e.stopPropagation()}
+            onclick={() => {
+              if (arming === `use:${one.from}`) {
+                arming = null;
+                void useCarried(one);
+              } else arming = `use:${one.from}`;
+            }}
+          >{arming === `use:${one.from}`
+              ? "really replace it?"
+              : "use the file's sign-in"}</button>
+        {/each}
+
+        <button class="chip" onclick={dismiss} title="stop saying this">ok</button>
       </div>
     {/if}
 
@@ -636,6 +843,40 @@
         onclick={importAll}
         title="a waterfall from the clipboard, renamed on a clash and appended to this order"
       >import</button>
+    </div>
+
+    <!-- ── the sign-ins themselves ───────────────────────────────────────
+         Its own row, below the clipboard pair and deliberately not folded into
+         it. What goes in this file is three live credentials; what goes on the
+         clipboard never is. Armed on the way out, and the warning is up while
+         it is armed rather than in a tooltip nobody opens. -->
+    <div class="carry">
+      <span class="dim">sign-ins</span>
+      <button
+        class="chip danger"
+        disabled={carrying || signable.length === 0}
+        onmousedown={(e) => e.stopPropagation()}
+        onclick={() => {
+          if (arming === "carry") {
+            arming = null;
+            void saveFile();
+          } else arming = "carry";
+        }}
+        title="the order, the ceilings and the credentials, to a file you pick"
+      >{arming === "carry" ? "yes, write the file" : "save to a file…"}</button>
+      <button
+        class="chip"
+        disabled={carrying}
+        onclick={loadFile}
+        title="an accounts file from another machine"
+      >{carrying ? "working…" : "load a file…"}</button>
+      {#if arming === "carry"}
+        <span class="caution">{sayFileWarning(signable.length)}</span>
+      {:else if signable.length === 0}
+        <span class="dim">nothing is signed in here yet, so there is nothing to carry</span>
+      {:else if carriedFrom}
+        <span class="dim">from {carriedFrom}</span>
+      {/if}
     </div>
 
     {#if waterfall.fault}
@@ -920,6 +1161,29 @@
     gap: 0.4rem;
     flex-wrap: wrap;
     padding: 0.3rem 0.1rem;
+  }
+
+  /* The sign-ins' own row, ruled off from the clipboard pair above it because
+     the two carry different things and the difference is the point. */
+  .carry {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    border-top: 1px dashed var(--rule);
+    padding-top: 0.45rem;
+  }
+  /* The one place in this panel that is loud, and it earns it: everything else
+     here can be undone by pressing something else, and a plaintext credential
+     written into a synced folder cannot. Rust, which is what `.bad` and the
+     danger chips already mean — not a new colour. */
+  .caution {
+    flex: 1;
+    min-width: 18rem;
+    font-family: var(--util);
+    font-size: 0.7rem;
+    line-height: 1.45;
+    color: var(--st-fail);
   }
 
   /* What the last import left behind. Dashed like `.signin`, which is the other

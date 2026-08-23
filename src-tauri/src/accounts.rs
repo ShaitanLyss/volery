@@ -53,17 +53,30 @@
 //! The store is a plain JSON file on Windows, exactly like the global
 //! `~/.claude/.credentials.json` it is a sibling of — so this **loses the DPAPI
 //! wrapping** the `.tok` design had. That is a real regression in one respect
-//! and an improvement in another: Skein no longer handles a secret at all. It
-//! writes no credential, holds none in memory, and puts none in a child's
-//! environment; it names a *directory*, and the CLI does the rest. The one place
-//! a credential is read is `limits.rs`, asking the allowance endpoint the same
-//! question about the same file the CLI reads.
+//! and an improvement in another: on every path a card takes, Skein handles no
+//! secret at all. It writes no credential, holds none in memory, and puts none
+//! in a child's environment; it names a *directory*, and the CLI does the rest.
+//! Spawning, swapping, signing in and reading an allowance are all like that,
+//! and `limits.rs` — asking the allowance endpoint about the same file the CLI
+//! reads — is the only one of them that opens the thing at all.
 //!
-//! Nothing here logs, formats or serialises a credential, and `Account` — the
-//! struct that crosses into the webview — carries no secret and no path to one.
+//! **The exception is at the bottom of this file and is deliberate.** Carrying
+//! the sign-ins to a second machine is the one thing the absolute form of that
+//! rule made impossible, and it was the thing actually wanted: three
+//! subscriptions here are three browser round trips to repeat over there. So
+//! `save_accounts_file` reads the stores, `install_signin` writes one, and
+//! `Carried` holds what a document was carrying until a panel closes. The bounds
+//! on it are stated where it is, and the important one is that **the front end
+//! still never sees a token** — `Summary` is two timestamps and a plan name.
+//!
+//! Nothing here logs or formats a credential, and `Account` — the struct that
+//! crosses into the webview on every ordinary read — carries no secret and no
+//! path to one.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
 use crate::store::Store;
@@ -335,6 +348,380 @@ pub fn stored_accounts(app: AppHandle) -> Result<Vec<String>, String> {
    is not that: it is `process.stdout.write` and a readline, so the window it
    was given was inherited rather than needed. See that module's header. */
 
+/* ── carrying the sign-ins to another machine ──────────────────────────────
+ *
+ * **This module's headline property changes here, and it is worth marking where
+ * the line moved to rather than moving it quietly.** Everything above is built
+ * on Skein handling no secret at all: it names a *directory* and the CLI does
+ * the rest. That is still true of every path a card takes — spawning, swapping,
+ * signing in, reading an allowance. What is no longer true is the absolute form
+ * of it, because the thing the absolute form made impossible turned out to be
+ * the thing that was actually wanted: three subscriptions signed in here are
+ * three browser round trips to repeat on the second machine, and a wall that
+ * carries its whole layout across but not those is answering the easy half.
+ *
+ * So a credential can be written into a file you picked and read back out of
+ * one, and these are the bounds on it:
+ *
+ *  - **The front end never sees a token.** `save_accounts_file` splices the
+ *    credentials in on the way out; `load_accounts_file` takes them straight
+ *    back out on the way in and parks them here. What crosses into the webview
+ *    is `Summary` — two timestamps and a plan name. The webview is the part of
+ *    this app that renders untrusted content, and a token is one `console.log`
+ *    or one injected script away from leaving it, so this is worth a command
+ *    rather than a convenience.
+ *  - **Nothing is installed without being asked for.** Loading a document
+ *    parks it; `install_signin` is a separate call taking one label at a time,
+ *    and every question of *which* of them may happen without a press is
+ *    policy, which lives in `accounts.ts::planSignins` with the rest of it.
+ *  - **What is parked is dropped.** `drop_carried` runs when the panel closes.
+ *    A credential in a mutex for as long as a panel is open is a smaller thing
+ *    than one there for the life of the process, and this is the cheapest
+ *    difference in the file.
+ *
+ * And what it costs, said plainly, because the file is the part no code here
+ * can protect: **the document is plaintext, and anyone who can read it can
+ * spend those subscriptions until you sign out.** No DPAPI — the store this
+ * copies has none either — and no passphrase, which was offered and declined in
+ * favour of a file. `.volery-accounts.json` is its own suffix rather than the
+ * layout's `.volery.json` exactly so the artefact is recognisable for what it is
+ * in a sync folder, a backup or a downloads directory, and `Accounts.svelte`
+ * says the same sentence in the one place somebody is standing when they make
+ * one.
+ */
+
+/// The suffix an accounts document is written with, and insisted on when one is
+/// read. Deliberately not the layout's `.volery.json`: these two documents want
+/// telling apart on sight, and the narrower verb is also what keeps these
+/// commands from being a way to read or overwrite arbitrary files — the same
+/// argument `portage.rs` makes about a command being reachable from anything
+/// holding the IPC, a card's own agent included.
+const DOC_SUFFIX: &str = ".volery-accounts.json";
+
+/// Room for hundreds of accounts. Three with a credential apiece came to under
+/// 2KB, measured 2026-08-22 against this machine's own stores; the ceiling is
+/// not a limit anybody should meet but the thing that turns "the app hung" into
+/// a sentence when the path picked is a disk image.
+const DOC_CEILING: u64 = 1024 * 1024;
+
+fn checked_doc(path: &str) -> Result<PathBuf, String> {
+    let p = Path::new(path);
+    if !p.is_absolute() {
+        return Err(format!("{path} is not a full path"));
+    }
+    /* Compared lowercase, since a person typing a filename into a save dialog
+       on Windows may well capitalise it and the filesystem does not care. */
+    if !path.to_ascii_lowercase().ends_with(DOC_SUFFIX) {
+        return Err(format!("an accounts document is a {DOC_SUFFIX} file"));
+    }
+    Ok(p.to_path_buf())
+}
+
+/// Credentials read out of a document and not yet installed, by the label the
+/// *document* called them.
+///
+/// Keyed on the document's own label rather than the one they will land under,
+/// because at this point nothing has decided that: a document's `lyss` may be
+/// installed into a `lyss` created here, offered against a `lyss` that already
+/// holds a credential, or declined altogether. `install_signin` takes both names
+/// for exactly that reason.
+#[derive(Default)]
+pub struct Carried(pub Mutex<HashMap<String, serde_json::Value>>);
+
+/// What the front end is told about a credential, and the whole of what it is
+/// told.
+///
+/// Three fields, all optional, none of them spendable: how long the access
+/// token has, how long the refresh token has, and which plan it is on. That is
+/// enough for `accounts.ts` to say what a sign-in is worth and to work out
+/// whether the one in a file is newer than the one already on this disk, and it
+/// is nothing anybody could use.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub label: String,
+    pub expires_at: Option<i64>,
+    pub refresh_expires_at: Option<i64>,
+    pub plan: Option<String>,
+}
+
+/// A credential read down to its summary.
+///
+/// Every field is looked for and none is required. The shape probed 2026-08-22
+/// against this machine's stores, written by claude 2.1.235, is
+/// `{ claudeAiOauth: { accessToken, refreshToken, expiresAt,
+/// refreshTokenExpiresAt, scopes, subscriptionType, rateLimitTier } }` — but
+/// this runs against a file that may have been written by an older CLI or a
+/// newer one, so a missing stamp becomes `None` and the face says it does not
+/// know rather than this refusing the credential. Nothing about installability
+/// hangs on it: what is lost with a missing stamp is only the ability to say how
+/// long the thing has left.
+///
+/// `unwrap_or(cred)` for the same reason one rung down — a credential handed
+/// over already unwrapped summarises rather than coming back empty.
+pub fn summarize(label: &str, cred: &serde_json::Value) -> Summary {
+    let o = cred.get("claudeAiOauth").unwrap_or(cred);
+    Summary {
+        label: label.to_string(),
+        expires_at: o.get("expiresAt").and_then(|v| v.as_i64()),
+        refresh_expires_at: o.get("refreshTokenExpiresAt").and_then(|v| v.as_i64()),
+        plan: o
+            .get("subscriptionType")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    }
+}
+
+/// One account's credential off the disk, or `None` if there is not one there.
+///
+/// Deliberately not public: everything outside this module that wants to know
+/// about a credential wants `signed_in` or a `Summary`, and a helper handing
+/// back the whole thing is a helper somebody reaches for by accident.
+fn read_credential(app: &AppHandle, label: &str) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(credential_path(app, label).ok()?).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// What a save actually managed.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Saved {
+    /// Labels whose credential went into the file.
+    pub signins: Vec<String>,
+    /// Labels that were asked for and had nothing to carry. Reported rather
+    /// than skipped: "I exported my sign-ins" and "two of the four had none in
+    /// them" must not be the same silence, and the second one is only findable
+    /// here — on the other machine it looks like an account that never worked.
+    pub missing: Vec<String>,
+}
+
+/// Write an accounts document, splicing in the credentials for the labels
+/// asked for.
+///
+/// The document itself is built by `accounts.ts::exportAccounts` and arrives as
+/// parsed JSON rather than text, so this only has to reach into the rows it was
+/// told about — one owner for the format, in the pure module where it is tested,
+/// and no second copy of it here to drift.
+///
+/// `async` and `off_main` because it is a blocking write, and a blocking call on
+/// the main thread stops every card on the wall being painted for as long as it
+/// lasts. See CLAUDE.md on `off_main`.
+#[tauri::command]
+pub async fn save_accounts_file(
+    app: AppHandle,
+    path: String,
+    doc: serde_json::Value,
+    signins: Vec<String>,
+) -> Result<Saved, String> {
+    let target = checked_doc(&path)?;
+    crate::off_main(move || {
+        let mut doc = doc;
+        let want: std::collections::HashSet<String> = signins.into_iter().collect();
+        let mut wrote: Vec<String> = Vec::new();
+        let mut missing: Vec<String> = Vec::new();
+
+        let rows = doc
+            .get_mut("accounts")
+            .and_then(|v| v.as_array_mut())
+            .ok_or_else(|| "there are no accounts in that document".to_string())?;
+        for row in rows.iter_mut() {
+            let Some(obj) = row.as_object_mut() else { continue };
+            let label = match obj.get("label").and_then(|v| v.as_str()) {
+                Some(l) if want.contains(l) => l.to_string(),
+                _ => continue,
+            };
+            match read_credential(&app, &label) {
+                Some(cred) => {
+                    obj.insert("signIn".into(), cred);
+                    wrote.push(label);
+                }
+                None => missing.push(label),
+            }
+        }
+
+        let text = serde_json::to_string_pretty(&doc)
+            .map_err(|e| format!("could not write that document: {e}"))?;
+        /* The parent is not created — a save dialog only ever returns a
+           directory that exists, and creating one here would mean a typo in a
+           path produced a directory tree nobody asked for. `portage.rs` makes
+           the same call. */
+        std::fs::write(&target, text.as_bytes())
+            .map_err(|e| format!("could not write {}: {e}", target.display()))?;
+        Ok(Saved {
+            signins: wrote,
+            missing,
+        })
+    })
+    .await?
+}
+
+/// A document read back, with every credential taken out of it.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Loaded {
+    /// The document as text with every `signIn` removed, so
+    /// `accounts.ts::importAccounts` reads it exactly as it reads a pasted one.
+    /// One reader for both carriers, rather than a second path through the same
+    /// format that can drift away from the tested one.
+    pub text: String,
+    /// What was taken out, one per credential, in document order.
+    pub signins: Vec<Summary>,
+}
+
+/// Read an accounts document, park its credentials, and hand back everything
+/// about it that is safe to hold in a webview.
+///
+/// A second load clears the first rather than adding to it. A document opened,
+/// looked at and abandoned must not leave credentials behind that a later and
+/// unrelated press could install — the parked set is always exactly what the
+/// file now on screen contained.
+#[tauri::command]
+pub async fn load_accounts_file(
+    carried: State<'_, Carried>,
+    path: String,
+) -> Result<Loaded, String> {
+    let source = checked_doc(&path)?;
+    let (text, sums, creds) = crate::off_main(move || {
+        let size = std::fs::metadata(&source)
+            .map_err(|e| format!("could not read {}: {e}", source.display()))?
+            .len();
+        if size > DOC_CEILING {
+            return Err(format!(
+                "{} is {size} bytes, which is far larger than any accounts document",
+                source.display()
+            ));
+        }
+        let text = std::fs::read_to_string(&source)
+            .map_err(|e| format!("could not read {}: {e}", source.display()))?;
+        let mut doc: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("{} is not JSON: {e}", source.display()))?;
+
+        let mut sums: Vec<Summary> = Vec::new();
+        let mut creds: Vec<(String, serde_json::Value)> = Vec::new();
+        if let Some(rows) = doc.get_mut("accounts").and_then(|v| v.as_array_mut()) {
+            for row in rows.iter_mut() {
+                let Some(obj) = row.as_object_mut() else { continue };
+                let label = obj
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                /* Taken out whatever the label looks like, and only *kept* if
+                   the label is usable. A document with a malformed row still
+                   gets its credential stripped from the text the webview is
+                   handed — which is the guarantee this function makes, and it
+                   must not depend on the row being good. */
+                let Some(cred) = obj.remove("signIn") else { continue };
+                if label.is_empty() || !is_label(&label) {
+                    continue;
+                }
+                sums.push(summarize(&label, &cred));
+                creds.push((label, cred));
+            }
+        }
+        let clean = serde_json::to_string(&doc)
+            .map_err(|e| format!("could not read that document: {e}"))?;
+        Ok((clean, sums, creds))
+    })
+    .await??;
+
+    let mut held = carried
+        .0
+        .lock()
+        .map_err(|_| "the carried sign-ins are wedged".to_string())?;
+    held.clear();
+    for (label, cred) in creds {
+        held.insert(label, cred);
+    }
+    Ok(Loaded {
+        text,
+        signins: sums,
+    })
+}
+
+/// Put one parked credential into an account's store.
+///
+/// `from` is what the document called it and `label` is where it is to land, and
+/// they are two arguments because they are genuinely two things: a document's
+/// `lyss` may be installed into a row this machine calls `lyss-2`, and the
+/// person who decided that is looking at the panel.
+///
+/// **This overwrites whatever is in that store**, which is the point — the case
+/// this exists for is a credential that has gone stale being replaced by a newer
+/// copy of itself. Whether a given install is allowed to happen without being
+/// asked for is `accounts.ts::planSignins`, and the panel arms the ones that
+/// are not.
+#[tauri::command]
+pub async fn install_signin(
+    app: AppHandle,
+    carried: State<'_, Carried>,
+    label: String,
+    from: String,
+) -> Result<(), String> {
+    /* Both names, because both reach the filesystem: `label` becomes a
+       directory and `from` is a key that came out of a file somebody else
+       wrote. `store_dir` checks `label` again on its own account; this is the
+       earlier and clearer refusal. */
+    if !is_label(&label) {
+        return Err("that is not a usable account name".into());
+    }
+    let cred = {
+        let held = carried
+            .0
+            .lock()
+            .map_err(|_| "the carried sign-ins are wedged".to_string())?;
+        /* Cloned rather than taken, so an install that fails on a permission or
+           a full disk can be pressed again. What bounds how long it is held is
+           `drop_carried`, not this. */
+        held.get(&from)
+            .cloned()
+            .ok_or_else(|| format!("there is no sign-in for {from} in that document"))?
+    };
+    let dir = store_dir(&app, &label)?;
+    let file = credential_path(&app, &label)?;
+    crate::off_main(move || {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("could not make {}: {e}", dir.display()))?;
+        let text = serde_json::to_string(&cred)
+            .map_err(|e| format!("could not write that sign-in: {e}"))?;
+        std::fs::write(&file, text.as_bytes())
+            .map_err(|e| format!("could not write {}: {e}", file.display()))
+    })
+    .await?
+}
+
+/// Forget every parked credential. Called when the accounts panel closes.
+#[tauri::command]
+pub fn drop_carried(carried: State<'_, Carried>) -> Result<(), String> {
+    carried
+        .0
+        .lock()
+        .map_err(|_| "the carried sign-ins are wedged".to_string())?
+        .clear();
+    Ok(())
+}
+
+/// What the credentials already on this machine are worth, for the accounts
+/// asked about.
+///
+/// So the panel can say whether the sign-in in a file is newer than the one it
+/// would replace — which is the difference between an update and a downgrade,
+/// and the one fact that decides whether an install needs asking about.
+/// Accounts with no credential are absent from the answer rather than present
+/// and empty: there is nothing to compare against, and `signed_in` already says
+/// so from the registry.
+#[tauri::command]
+pub async fn signin_ages(app: AppHandle, labels: Vec<String>) -> Result<Vec<Summary>, String> {
+    crate::off_main(move || {
+        labels
+            .into_iter()
+            .filter(|l| is_label(l))
+            .filter_map(|l| read_credential(&app, &l).map(|c| summarize(&l, &c)))
+            .collect::<Vec<Summary>>()
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +753,100 @@ mod tests {
            character set could not simply drop it. */
         assert!(is_label("work.2"));
         assert!(is_label("a.b.c"));
+    }
+
+    /* ── carrying the sign-ins ─────────────────────────────────────────── */
+
+    /// The layout's suffix and this one are different on purpose: a document you
+    /// can hand somebody and one carrying three live bearer tokens want telling
+    /// apart on sight, and the narrow verb is also what keeps this command from
+    /// being a way to read or overwrite arbitrary files.
+    #[test]
+    fn an_accounts_document_is_its_own_kind_of_file() {
+        assert!(checked_doc(r"C:\x\mine.volery-accounts.json").is_ok());
+        /* A save dialog on Windows will happily give this back capitalised, and
+           the filesystem does not care either. */
+        assert!(checked_doc(r"C:\x\Mine.Volery-Accounts.JSON").is_ok());
+        /* The layout's own suffix is refused — these are not interchangeable
+           documents and reading one as the other would report nonsense. */
+        assert!(checked_doc(r"C:\x\wall.volery.json").is_err());
+        assert!(checked_doc(r"C:\x\anything.json").is_err());
+        assert!(checked_doc(r"C:\x\notes.txt").is_err());
+        /* Not a full path: a dialog always returns one, so anything else came
+           from somewhere that should be saying so. */
+        assert!(checked_doc("mine.volery-accounts.json").is_err());
+    }
+
+    fn a_credential() -> serde_json::Value {
+        serde_json::json!({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-secret",
+                "refreshToken": "sk-ant-ort01-secret",
+                "expiresAt": 1787432213338i64,
+                "refreshTokenExpiresAt": 1789625720339i64,
+                "scopes": ["user:inference", "user:profile"],
+                "subscriptionType": "team",
+                "rateLimitTier": "default_claude_max"
+            }
+        })
+    }
+
+    #[test]
+    fn a_summary_says_what_a_sign_in_is_worth() {
+        let s = summarize("lyss", &a_credential());
+        assert_eq!(s.label, "lyss");
+        assert_eq!(s.expires_at, Some(1787432213338));
+        assert_eq!(s.refresh_expires_at, Some(1789625720339));
+        assert_eq!(s.plan.as_deref(), Some("team"));
+    }
+
+    /// **The guarantee of this whole arrangement**, and the assertion to break
+    /// if anybody ever widens `Summary` for convenience: what crosses into the
+    /// webview carries nothing anybody could spend. The webview is the part of
+    /// this app that renders untrusted content, so a token reaching it is one
+    /// `console.log` away from leaving the machine a second time.
+    #[test]
+    fn a_summary_carries_no_token_at_all() {
+        let text = serde_json::to_string(&summarize("lyss", &a_credential())).unwrap();
+        assert!(!text.contains("sk-ant"));
+        assert!(!text.contains("accessToken"));
+        assert!(!text.contains("refreshToken"));
+        assert!(!text.contains("secret"));
+        /* And the refresh *stamp* is there, which is the one field whose name
+           looks like the token's and is not it. */
+        assert!(text.contains("refreshExpiresAt"));
+    }
+
+    /// A file may have been written by an older CLI or a newer one, so a missing
+    /// stamp costs the face a sentence and never costs the credential its
+    /// installability.
+    #[test]
+    fn a_credential_with_no_stamps_still_summarises() {
+        let s = summarize("odd", &serde_json::json!({ "claudeAiOauth": {} }));
+        assert_eq!(s.label, "odd");
+        assert_eq!(s.expires_at, None);
+        assert_eq!(s.refresh_expires_at, None);
+        assert_eq!(s.plan, None);
+
+        /* Nor does a stamp of the wrong type become a zero, which would read as
+           1970 and draw "expired 56 years ago". */
+        let odd = summarize(
+            "odd",
+            &serde_json::json!({ "claudeAiOauth": { "expiresAt": "soon" } }),
+        );
+        assert_eq!(odd.expires_at, None);
+    }
+
+    /// A credential handed over already unwrapped summarises rather than coming
+    /// back empty — the same degrade-to-something-usable bargain every other
+    /// opaque document in this app strikes.
+    #[test]
+    fn an_unwrapped_credential_summarises_too() {
+        let s = summarize(
+            "flat",
+            &serde_json::json!({ "expiresAt": 12i64, "subscriptionType": "pro" }),
+        );
+        assert_eq!(s.expires_at, Some(12));
+        assert_eq!(s.plan.as_deref(), Some("pro"));
     }
 }

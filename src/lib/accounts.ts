@@ -21,7 +21,7 @@
  *    promise work through a real refusal, so nothing here pretends to.
  */
 
-import { binding, type Window } from "./limits";
+import { binding, until, type Window } from "./limits";
 
 /** One account as the registry holds it. No credential: an account *is* a
  *  Claude Code credential store (`~/.claude/accounts/<label>/`), the CLI owns
@@ -514,31 +514,54 @@ export type AccountDoc = {
   caps: Record<string, number>;
 };
 
-/** The registry as text, for the clipboard.
+/** The document itself, as an object.
+ *
+ *  Handed to `accounts.rs::save_accounts_file` as JSON rather than text when a
+ *  file is being written, so the format keeps exactly one owner — this
+ *  function, in the module where it is tested — and Rust only has to reach
+ *  into the rows it was told to put a credential in.
  *
  *  Ranks are re-densified to 0…n-1 in `ordered` order rather than copied,
  *  because `rank` is only ever meaningful as an ordering — `reorder_accounts`
  *  makes the same point from the other side — and this is a document a person
  *  reads, where 0,3,7 invites a guess about what went missing. */
-export function exportAccounts(accounts: Account[]): string {
+export function accountsDoc(
+  accounts: Account[],
+  opts: { withSignIns?: boolean } = {},
+): Record<string, unknown> {
   const list: AccountDoc[] = ordered(accounts).map((a, i) => ({
     label: a.label,
     rank: i,
     enabled: a.enabled,
     caps: cleanCaps(a.caps),
   }));
-  return JSON.stringify(
-    {
-      skeinAccounts: EXPORT_VERSION,
-      /* A line for whoever reads this in a paste buffer, ignored on the way
-         back in. The plainest available place to say the one thing about this
-         document that is easy to get wrong, and it costs a line. */
-      note: "the order and the ceilings, not the accounts — no credential is in here, so every account arrives unsigned",
-      accounts: list,
-    },
-    null,
-    2,
-  );
+  return {
+    skeinAccounts: EXPORT_VERSION,
+    /* A line for whoever reads this in a paste buffer or a text editor,
+       ignored on the way back in. The plainest available place to say the one
+       thing about this document that is easy to get wrong, and it costs a line.
+
+       **Which of the two it says is not cosmetic.** `accounts.rs` splices the
+       credentials in *after* this and never touches the note, so a document
+       carrying sign-ins under the other wording would be a file that lies
+       about itself to whoever opens it — and this is the wording somebody
+       reads when they are deciding whether it is safe to keep. */
+    note: opts.withSignIns
+      ? "the order, the ceilings AND the sign-ins — this file holds live credentials in plain text, and anyone who can read it can spend these subscriptions until you sign out"
+      : "the order and the ceilings, not the accounts — no credential is in here, so every account arrives unsigned",
+    accounts: list,
+  };
+}
+
+/** The registry as text, for the clipboard.
+ *
+ *  **Never with sign-ins**, and taking no options is what says so. The clipboard
+ *  is the wrong carrier for a bearer token — Windows keeps a history of it
+ *  and can sync that history to another device — which is why the file
+ *  exists at all, and why the two are two gestures rather than one with a
+ *  modifier on it. */
+export function exportAccounts(accounts: Account[]): string {
+  return JSON.stringify(accountsDoc(accounts), null, 2);
 }
 
 /** A label reduced to the shape `accounts.rs::is_label` allows: ASCII letters,
@@ -688,6 +711,15 @@ export type Merge = {
   /** The collisions, so the panel can say what became of them rather than
    *  leaving you to notice a row you did not name. */
   renamed: { from: string; to: string }[];
+  /** Incoming rows matched to an account already here instead of added beside
+   *  it — a collision on a row that carries a sign-in. Nothing about the row
+   *  here is changed by being matched; only its credential is then offered. */
+  matched: { from: string; to: string }[];
+  /** Every incoming label, and the account it turned out to mean. What a
+   *  carried sign-in needs in order to know where it lands, and computed here
+   *  rather than re-derived by the caller, since only this function knows
+   *  whether a name was renamed, matched or taken as it stood. */
+  landings: Record<string, string>;
 };
 
 /** Merge imported accounts into the ones already here: renamed rather than
@@ -714,22 +746,58 @@ export type Merge = {
  *  the one list whose entire meaning is its sequence. At the end they read as
  *  what they are: new, and not yet signed in. Moving one up is then a
  *  deliberate press of `move`, which is where a decision about spending
- *  belongs. */
-export function mergeAccounts(existing: Account[], incoming: AccountDoc[]): Merge {
+ *  belongs.
+ *
+ *  **Except for a row that carries a sign-in, which is matched rather than
+ *  renamed**, and `carrying` is how it is told. The rename rule is right about
+ *  a configuration and wrong about a credential, because the two collisions
+ *  mean different things: two rows called `lyss` and `lyss-2` holding different
+ *  caps is a disagreement worth being able to see, but two rows holding two
+ *  credentials for the *same subscription* is nothing anybody wants — one of
+ *  them is stale, the wall would keep spending whichever it happened to rank
+ *  first, and the fix would be a removal nobody was warned about. A colliding
+ *  credential-bearing row is the same account arriving again, so it lands on the
+ *  row already here: no new row, nothing about that row's caps, rank or
+ *  switched-off-ness touched, and only its credential put up for replacement by
+ *  `planSignins`. That is the case a second export exists to serve — a refresh
+ *  token rotates, the copy over here goes stale, and the fix is meant to be one
+ *  file rather than a browser. */
+export function mergeAccounts(
+  existing: Account[],
+  incoming: AccountDoc[],
+  opts: { carrying?: Iterable<string> } = {},
+): Merge {
   const here = ordered(existing);
   const taken = new Set(here.map((a) => a.label));
+  /* Both maps are keyed lowercase, `freeLabel`'s reason exactly: on this
+     filesystem a document's `Lyss` and a local `lyss` are one credential
+     store, so they have to be one account here too. */
+  const hereBy = new Map(here.map((a) => [a.label.toLowerCase(), a.label]));
+  const carrying = new Set([...(opts.carrying ?? [])].map((l) => l.toLowerCase()));
   const added: AccountDoc[] = [];
   const renamed: { from: string; to: string }[] = [];
+  const matched: { from: string; to: string }[] = [];
+  const landings: Record<string, string> = {};
   for (const doc of incoming) {
+    const key = doc.label.toLowerCase();
+    const already = hereBy.get(key);
+    if (already !== undefined && carrying.has(key)) {
+      matched.push({ from: doc.label, to: already });
+      landings[doc.label] = already;
+      continue;
+    }
     const label = freeLabel(doc.label, taken);
     taken.add(label);
     if (label !== doc.label) renamed.push({ from: doc.label, to: label });
+    landings[doc.label] = label;
     added.push({ ...doc, label, rank: here.length + added.length });
   }
   return {
     added,
     order: [...here.map((a) => a.label), ...added.map((a) => a.label)],
     renamed,
+    matched,
+    landings,
   };
 }
 
@@ -776,4 +844,240 @@ export function sayUnsigned(labels: string[]): string {
         ? `${shown} and ${rest} more are`
         : `${shown} are`;
   return `imported — ${which} not signed in on this machine, and no export carries a credential`;
+}
+
+/* ── and carrying the sign-ins with them ───────────────────────────────────
+ *
+ * The document above carries the *shape* of the waterfall, and everything it
+ * says about not carrying a credential was true when it was written. It is not
+ * true any more, and the reason is worth stating plainly rather than editing
+ * the old comment into agreement: three subscriptions signed in on one machine
+ * are three browser round trips to repeat on the second, and a wall that can
+ * carry its layout across but not those is answering the easy half of what was
+ * asked. So a document may now also carry the credential stores themselves.
+ *
+ * **Nothing in this file ever holds one.** `accounts.rs` splices the credentials
+ * in on the way out and takes them straight back out on the way in; what reaches
+ * the front end is `SignIn` — two timestamps and a plan name, per account. The
+ * pure functions below are the *policy* over those summaries: where a carried
+ * sign-in lands, whether installing it may happen without being asked for, and
+ * what the panel says about it. That split is the same one the rest of this
+ * module keeps, one degree more carefully, because the thing on the other side
+ * of it is a bearer token.
+ *
+ * The one caveat neither this file nor Rust can remove: the file is plaintext,
+ * and anyone who can read it can spend those subscriptions until you sign out.
+ * `sayFileWarning` is where that gets said, and it is said before the file is
+ * written rather than after.
+ */
+
+/** What the front end is told about one carried credential. Mirrors
+ *  `accounts.rs::Summary` exactly, and mirrors *only* it — there is no field
+ *  here that could be spent, and that is the point rather than an accident. */
+export type SignIn = {
+  label: string;
+  /** When the access token lapses. Hours, in practice, and it moves every time
+   *  the CLI refreshes. */
+  expiresAt: number | null;
+  /** When the *refresh* token lapses, after which the account genuinely has to
+   *  be signed into again. Weeks, in practice. This is the one that says how
+   *  long a carried sign-in is worth anything. */
+  refreshExpiresAt: number | null;
+  /** `pro`, `team`, whatever the account calls itself. Drawn because a file with
+   *  three sign-ins in it wants telling apart by something other than a label
+   *  somebody chose months ago. */
+  plan: string | null;
+};
+
+/** One summary, normalized. Rust builds these, so the shape is known — but they
+ *  also come back out of a *file*, by way of a Rust that reads whatever is in
+ *  it, so a stamp of the wrong type has to degrade to "not known" rather than
+ *  becoming a zero. A zero here would read as 1970 and draw "expired 56 years
+ *  ago" over a credential that is perfectly good. */
+export function cleanSignIn(raw: unknown): SignIn | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const label = cleanLabel(r.label);
+  if (!label) return null;
+  const stamp = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return {
+    label,
+    expiresAt: stamp(r.expiresAt),
+    refreshExpiresAt: stamp(r.refreshExpiresAt),
+    plan: typeof r.plan === "string" && r.plan.trim() ? r.plan.trim().slice(0, 40) : null,
+  };
+}
+
+export function cleanSignIns(raw: unknown): SignIn[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const out: SignIn[] = [];
+  for (const entry of list) {
+    const s = cleanSignIn(entry);
+    if (s) out.push(s);
+  }
+  return out;
+}
+
+/** How long a carried sign-in has left, in one line.
+ *
+ *  The *refresh* stamp where there is one, because that is what decides whether
+ *  the sign-in survives at all: the access token lapses in hours and refreshes
+ *  itself, so reporting it would have every carried sign-in looking nearly dead
+ *  and would be wrong about the only question being asked. Says so when it does
+ *  not know, rather than picking a number — a credential with no stamp in it is
+ *  still perfectly installable, and what is missing is the ability to say how
+ *  long it is good for. */
+export function sayLife(s: SignIn, now: number): string {
+  const at = s.refreshExpiresAt ?? s.expiresAt;
+  if (at === null) return "no expiry in it";
+  return at > now ? `${until(at - now)} left` : `expired ${until(now - at)} ago`;
+}
+
+export type Freshness = "newer" | "older" | "same" | "unknown";
+
+/** Whether a carried sign-in is newer than the one already on this disk.
+ *
+ *  This is the whole of what decides between an update and a downgrade, and so
+ *  between installing and asking first. The refresh stamp is compared *before*
+ *  the access stamp for `sayLife`'s reason turned round: the access stamp moves
+ *  every few hours, so a file copied this morning is "older" by it within the
+ *  day, on a credential that is otherwise identical — which would put a press
+ *  in front of the one case this feature exists for.
+ *
+ *  "unknown" is a real answer and not a failure: neither side had a stamp
+ *  comparable with the other's, so nothing can be said, and the caller must
+ *  treat it as it treats "older" — ask. */
+export function fresher(incoming: SignIn, local: SignIn | null | undefined): Freshness {
+  if (!local) return "unknown";
+  let compared = false;
+  for (const stamp of ["refreshExpiresAt", "expiresAt"] as const) {
+    const i = incoming[stamp];
+    const l = local[stamp];
+    if (i === null || l === null) continue;
+    compared = true;
+    if (i > l) return "newer";
+    if (i < l) return "older";
+  }
+  return compared ? "same" : "unknown";
+}
+
+/** One carried sign-in and what is to be done with it. */
+export type Install = {
+  /** What the document called it — `install_signin`'s `from`, and the key the
+   *  credential is parked under in Rust. */
+  from: string;
+  /** The account it lands in. Not always the same name: a document's `lyss` may
+   *  land in a row this machine already calls `lyss`, or in one the merge had to
+   *  rename. */
+  label: string;
+  /** `now` goes without being asked for; `ask` waits for a press. */
+  how: "now" | "ask";
+  /** Why, in one line, for the face — because "this one just happened and that
+   *  one is waiting for you" is not a distinction to leave anybody to infer. */
+  why: string;
+};
+
+/** Which carried sign-ins may be installed, and which have to be asked about.
+ *
+ *  Three cases, and the middle one is the whole reason this function exists
+ *  rather than a rule in the panel:
+ *
+ *  - **Nothing signed in at that account yet** — install. There is nothing to
+ *    overwrite and nothing to lose, and this is the fresh-machine case the
+ *    feature was asked for. Making somebody press three buttons to finish a
+ *    thing they have already chosen twice is not care, it is friction.
+ *  - **Signed in, and the file's is newer** — install, and say so afterwards.
+ *    This is the case that recurs: a refresh token rotates, the copy on the
+ *    other machine goes stale, and the fix is a fresh export. A newer credential
+ *    for the same account is not a decision, it is an update, and treating it as
+ *    one would put a press in the way of the only maintenance this feature has.
+ *  - **Signed in, and the file's is older, identical, or of unknown age** —
+ *    ask. Here the paste genuinely might be a mistake: an old file, the wrong
+ *    file, a document from before a sign-out. Overwriting a working credential
+ *    with an older one costs a browser round trip to undo, which is exactly the
+ *    cost this feature exists to avoid paying.
+ *
+ *  `here` is the registry **after** the rows have been created, so `signedIn` is
+ *  the truth about the store rather than about the document — which matters for
+ *  a label that had a credential store lying around unregistered, since that row
+ *  arrives signed in and its existing credential deserves the same protection as
+ *  any other. */
+export function planSignins(
+  incoming: SignIn[],
+  landings: Record<string, string>,
+  here: Account[],
+  locals: SignIn[],
+): Install[] {
+  const signedIn = new Set(here.filter((a) => a.signedIn).map((a) => a.label));
+  const known = new Set(here.map((a) => a.label));
+  const localBy = new Map(locals.map((s) => [s.label, s]));
+  const out: Install[] = [];
+  for (const s of incoming) {
+    const label = landings[s.label];
+    /* No landing means the row it belonged to was a fragment `cleanAccounts`
+       dropped, or a document whose accounts and sign-ins disagree. Either way
+       there is no account to put it in, and inventing one would be the thing
+       `cleanAccount` refuses for the same reason. */
+    if (!label || !known.has(label)) continue;
+    if (!signedIn.has(label)) {
+      out.push({ from: s.label, label, how: "now", why: "nothing was signed in here" });
+      continue;
+    }
+    const how = fresher(s, localBy.get(label));
+    if (how === "newer") {
+      out.push({ from: s.label, label, how: "now", why: "the file's sign-in is newer" });
+      continue;
+    }
+    out.push({
+      from: s.label,
+      label,
+      how: "ask",
+      why:
+        how === "older"
+          ? "there is a newer sign-in here already"
+          : how === "same"
+            ? "the sign-in here is the same age"
+            : "there is a sign-in here already, of an age nothing can compare",
+    });
+  }
+  return out;
+}
+
+/** The sentence said *before* a file is written, and the reason it is a function
+ *  rather than a string in the panel is that it is the one thing in this feature
+ *  that is not recoverable.
+ *
+ *  Everything else here can be undone by pressing something else. A plaintext
+ *  credential written to a directory that syncs, or a downloads folder, or a
+ *  drive that gets lent to somebody, cannot be — the only way back is signing
+ *  the account out, which is the round trip this whole feature exists to save.
+ *  So it names the number, names what the file is worth, and names the thing to
+ *  do about it afterwards. */
+export function sayFileWarning(n: number): string {
+  const what = n === 1 ? "one live sign-in" : `${n} live sign-ins`;
+  return `this file will hold ${what} in plain text — anyone who can read it can spend them until you sign out. delete it once it is across.`;
+}
+
+/** What a save managed, in one line. Names what it could *not* carry, because a
+ *  label whose store is empty produces a row on the other machine that looks
+ *  like an account which never worked — and this is the only place that is
+ *  findable. */
+export function sayCarried(signins: string[], missing: string[], where: string): string {
+  const n = signins.length;
+  const said = n === 0 ? "carried the order alone" : `carried ${n} sign-in${n === 1 ? "" : "s"}`;
+  const rest =
+    missing.length > 0 ? ` — nothing signed in for ${missing.join(", ")}, so ${missing.length === 1 ? "it went" : "they went"} across unsigned` : "";
+  return `${said} to ${where}${rest}`;
+}
+
+/** What an import of a file did about the sign-ins in it. Kept apart from
+ *  `sayImported`, which is about the rows: an import can perfectly well take
+ *  three accounts and install one credential, and one line claiming both would
+ *  have to fudge whichever number was less convenient. */
+export function sayInstalled(done: number, waiting: number): string {
+  if (done === 0 && waiting === 0) return "no sign-ins in that file";
+  const parts: string[] = [];
+  if (done > 0) parts.push(`signed in ${done}`);
+  if (waiting > 0) parts.push(`${waiting} waiting on you`);
+  return parts.join(", ");
 }
