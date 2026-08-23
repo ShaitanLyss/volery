@@ -108,6 +108,13 @@
     tokens,
   } from "./lib/bang";
   import { activeShellKey } from "./lib/shell";
+  /* The finder behind the space-leader chords, and the file viewer it opens
+     into. Same component/class split `Console` and `Shell` have, and forced
+     the same way: `Spyglass.svelte` beside `finder.svelte.ts` rather than
+     `Finder.svelte`, which would be one module path to two files. See
+     `.claude/rules/finding.md`. */
+  import Spyglass from "./lib/Spyglass.svelte";
+  import { Finder } from "./lib/finder.svelte";
   import WindowControls from "./lib/WindowControls.svelte";
 
   const studio = new Studio();
@@ -218,6 +225,13 @@
      released on destroy with the rest of them — and it holds a *process*, which
      the panel being toggled shut deliberately does not end. */
   const shell = new Shell();
+  /* The finder behind `<space>ff` and `<space>fw`. Told where to look rather
+     than reaching for it — the same injection `devops.roots` and
+     `pomodoro.watched` use — because it asks the question the shell asks: which
+     tree are you working in. It holds timers and no subscriptions, so it is
+     released on destroy with the rest of them. */
+  const finder = new Finder();
+  finder.where = () => shellCwd();
 
   /* The `!` line. Given a way to find a card and a way to say something to one,
      rather than the whole of `Skein` — the same injection `devops.roots` and
@@ -301,6 +315,7 @@
     actions.detach();
     control.detach();
     shell.detach();
+    finder.detach();
     bang.detach();
     /* Not a subscription but the same hazard: a superseded generation's sampler
        would go on enumerating every process on the machine every two seconds
@@ -1811,6 +1826,40 @@
        from inside a console into a transcript nobody is looking at. Escape and
        the history keys are the panel's own, handled in Shell.svelte. */
     if (shell.open) return;
+    /* And an open finder owns it for the same reason, one panel over: every
+       branch below is aimed at the wall or at the reading, and the finder's own
+       keys — the arrows through the results, ctrl+F between its two modes,
+       Escape back out of the viewer — are handled in `Spyglass.svelte` where
+       the field it is typed into lives. */
+    if (finder.open) return;
+
+    /* The space-leader chords: `<space>ff` for a file by name, `<space>fw` for
+       a word in one. Ahead of everything below because it has to beat the bare
+       printable key at the bottom of this ladder, which would otherwise take
+       the space into the focused card's draft.
+     *
+     * That branch is also the whole argument for space being free here. The
+     * wall routes any printable key into the draft — but a prompt never
+     * *begins* with a space, and by the time a space is a space the focus is in
+     * the field and this ladder no longer runs at all. So the leader costs
+     * nothing that was being used.
+     *
+     * `press` is the machine and it answers whether the key was ours: a second
+     * key that completes no chord abandons the sequence and **falls through**,
+     * the way `<space>q` in nvim leaves you with a `q`. Not called at all with
+     * a modifier down or with a menu up, so ctrl+Z is still undo and the
+     * sequence is not advanced by a gesture aimed somewhere else. */
+    if (
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !menu &&
+      !isTyping(e.target) &&
+      finder.press(e.key)
+    ) {
+      e.preventDefault();
+      return;
+    }
 
     if (e.key === "F11") {
       e.preventDefault();
@@ -2041,6 +2090,7 @@
     attention,
     actions,
     shell,
+    finder,
     bang,
     canvas: () => canvas,
     focusedId: () => focusedId,
@@ -2141,6 +2191,7 @@
     "read",
     "servers",
     "shell",
+    "find",
     "fit",
     "themes",
     "ambience",
@@ -2287,6 +2338,13 @@
         title: "A shell over the middle of the wall (alt+I)",
         on: shell.open,
         press: () => shell.toggle(shellCwd()),
+      },
+      {
+        key: "find",
+        label: "find",
+        title: "Find a file, or a word in one (space then f, then f or w)",
+        on: finder.open,
+        press: () => (finder.open ? finder.hide() : finder.show("files", shellCwd())),
       },
       {
         key: "ambience",
@@ -2550,6 +2608,15 @@
 
   {#if shell.open}
     <Console {shell} />
+  {/if}
+
+  <!-- Drawn for a *pending chord* as well as for an open panel, and that is why
+       the hint lives in `Spyglass.svelte` rather than here: a leader sequence is
+       the one gesture on this wall with no affordance at all, and a component is
+       the only CSS scope this codebase has. Putting a `.hint` in App's 565-line
+       stylesheet is how `.ghost` came to mean two things. -->
+  {#if finder.open || finder.pending !== null}
+    <Spyglass {finder} />
   {/if}
 
   <main class="wall" class:sizing={!!grip}>

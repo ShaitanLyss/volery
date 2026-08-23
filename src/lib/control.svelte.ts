@@ -51,6 +51,7 @@ import {
 } from "./limits";
 import type { DevOps } from "./devops.svelte";
 import type { Shell } from "./shell.svelte";
+import type { Finder } from "./finder.svelte";
 import type { Bang } from "./bang.svelte";
 import {
   needsMe,
@@ -104,6 +105,12 @@ export type ControlHost = {
    *  separate facts — which is exactly the sort of thing only a test from
    *  outside can hold both halves of at once. */
   shell: Shell;
+  /** The finder behind the space-leader chords. Here for the leader above all:
+   *  a chord is a *sequence* of keypresses with a stopwatch in it, and the only
+   *  thing that can hold both halves of that at once — that the second key
+   *  fires and that the wrong second key falls through to the draft — is a test
+   *  pressing real keys from outside. */
+  finder: Finder;
   /** The `!` line's session. Here for the leak count above all: it holds two
    *  subscriptions and a batch timer, and a superseded generation of it would go
    *  on writing another card's output into a transcript. */
@@ -973,6 +980,30 @@ export class Control {
           cwd: session.cwd,
           lines: session.lines.length,
         })),
+      },
+      /* The panel and the chord in progress are reported apart, the way the
+         shell's panel and session are: a half-typed leader is a state the app
+         is in with nothing on screen but a caption, and from outside it is
+         otherwise invisible. */
+      finder: {
+        open: h.finder.open,
+        mode: h.finder.mode,
+        root: h.finder.root,
+        query: h.finder.query,
+        pending: h.finder.pending,
+        at: h.finder.at,
+        rows: h.finder.rows.length,
+        files: h.finder.files.length,
+        hits: h.finder.hits.length,
+        literal: h.finder.literal,
+        busy: h.finder.busy,
+        /* Which file the viewer is on, or null for the list — the one step
+           whose whole content is that it happened. */
+        sheet: h.finder.sheet?.path ?? null,
+        sheetLine: h.finder.sheetLine,
+        rendered: h.finder.rendered,
+        raw: h.finder.raw,
+        fault: h.finder.fault,
       },
       attention: {
         windowFocused: h.attention.focused,
@@ -2291,6 +2322,60 @@ export class Control {
               kind: l.kind,
               failed: !!l.failed,
               text: stripAnsi(l.text),
+            })),
+          },
+        };
+      },
+
+      /** Drive the finder.
+       *
+       *  `do` is the gesture: `show`, `hide`, `type`, `step`, `pick`, `look`,
+       *  `back`, `swap`, `raw`. Every one of them is the function the panel's
+       *  own keyboard calls, so an op cannot pass where a keypress would fail.
+       *
+       *  There is deliberately no op for *the chord itself* — that is what the
+       *  `key` op is for, pressing space then f then f at the window the way a
+       *  hand does, which is the only thing that can see the leader losing a
+       *  race with the bare-printable branch below it in `onGlobalKey`.
+       *
+       *  Returns the head of the list as well as the state, because what a
+       *  search did is only ever visible in what it found. */
+      find: async (op) => {
+        const what = String(op.do ?? "show");
+        if (what === "show") {
+          await h.finder.show(
+            String(op.mode ?? "files") === "grep" ? "grep" : "files",
+            String(op.cwd ?? h.shellCwd()),
+          );
+        } else if (what === "hide") h.finder.hide();
+        else if (what === "type") h.finder.type(String(op.text ?? ""));
+        else if (what === "step") h.finder.step(Number(op.by ?? 1));
+        else if (what === "pick") h.finder.pick(Number(op.at ?? 0));
+        else if (what === "look") await h.finder.look();
+        else if (what === "back") h.finder.back();
+        else if (what === "swap") await h.finder.swap();
+        else if (what === "raw") h.finder.toggleRaw();
+        else throw new Error(`no such finder gesture: ${what}`);
+
+        const head = Number(op.head ?? 20);
+        return {
+          finder: {
+            open: h.finder.open,
+            mode: h.finder.mode,
+            root: h.finder.root,
+            query: h.finder.query,
+            at: h.finder.at,
+            count: h.finder.rows.length,
+            files: h.finder.files.length,
+            literal: h.finder.literal,
+            sheet: h.finder.sheet?.path ?? null,
+            sheetLine: h.finder.sheetLine,
+            rendered: h.finder.rendered,
+            fault: h.finder.fault,
+            rows: h.finder.rows.slice(0, head).map((r) => ({
+              path: r.path,
+              line: r.line,
+              text: r.text === null ? null : clip(r.text, 120),
             })),
           },
         };

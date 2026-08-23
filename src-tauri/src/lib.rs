@@ -9,6 +9,11 @@ mod board;
 /// the form "what does this service actually do".
 pub mod azdo;
 mod control;
+/// Public so `examples/find-probe.rs` can drive the real search rather than a
+/// copy of it — the same arrangement `azdo` has, and the convention
+/// `tools/probe-context.ts` sets for questions of the form "what does this
+/// actually do".
+pub mod find;
 pub mod hooks;
 mod later;
 mod limits;
@@ -405,6 +410,9 @@ pub fn run() {
             actions::process_alive,
             ask::answer_ask,
             open::open_external,
+            find::find_files,
+            find::find_grep,
+            find::read_file_text,
             portage::write_layout_file,
             portage::read_layout_file,
             portage::missing_roots,

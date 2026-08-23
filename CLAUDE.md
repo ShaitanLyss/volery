@@ -62,7 +62,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # usage,
                          # bang,
                          # repair, limits, accounts, signin, azdo,
-                         # shell, styles
+                         # shell, finding, styles
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -75,9 +75,10 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # repair/text.rs,
                               # control.rs,
                               # supervisor.rs,
-                              # servers.rs, shell.rs, sessions.rs, project.rs, usage.rs,
+                              # servers.rs, shell.rs, find.rs, sessions.rs, project.rs, usage.rs,
                               # limits.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
+cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs
@@ -119,6 +120,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `ambience.md` | what the ground does when nobody is asking it anything | `ambience.ts`, `Backdrop.svelte` |
 | `servers.md` | dev server groups, colour without a terminal, why the PTY came off, and what an EDR made of it | `servers.rs`, `ansi.ts` |
 | `shell.md` | the shell Alt+I floats over the wall, the marker that draws its prompt, and why this one is pipes | `shell.rs`, `shell.ts`, `shell.svelte.ts`, `Console.svelte` |
+| `finding.md` | the finder and the file viewer: why space is free as a leader, a file list fetched once and scored here, what the fuzzy scorer prefers, and a markdown file that opens as a document | `find.rs`, `finding.ts`, `finder.svelte.ts`, `Spyglass.svelte` |
 | `bang.md` | `!` in the dock: a shell line where a prompt goes, the two things Enter and Ctrl+Enter mean, and completion out of the shell's own `TabExpansion2` | `bang.ts`, `bang.svelte.ts`, `bang.rs`, `Dock.svelte`, `field.svelte.ts` |
 | `naming.md` | what a card is called, and the draft it wears before it is named | `naming.ts` |
 | `menu.md` | the right-click, and why offering nothing is a real answer | `menu.ts` |
@@ -215,7 +217,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
 `transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
-`undo.ts`,
+`undo.ts`, `finding.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
 `update.ts`,
 `unreallog.ts`,
