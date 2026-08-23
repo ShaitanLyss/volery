@@ -38,7 +38,7 @@ export class Widgets {
 
   /** What is picked on the wall. Injected for the reason `scribe` is: a widget
    *  you have just hung up is the thing you are holding, and there is one
-   *  selection for the whole wall rather than one per registry â€” see the note
+   *  selection for the whole wall rather than one per registry — see the note
    *  over `Studio.picks`. */
   picks: Picker = NO_PICKS;
 

@@ -483,7 +483,7 @@ fn splice(text: &str, line_no: usize, was: &str, to: &str) -> Option<String> {
 /// or `None` if the field it was found by is no longer there.
 ///
 /// Both halves are returned because `actions.rs` needs both. The new text is
-/// obvious; the old value is how a *stale* plan is caught â€” the facts a chip's
+/// obvious; the old value is how a *stale* plan is caught — the facts a chip's
 /// tooltip was built from are probed once, when the territory appears, so a
 /// version edited by hand or by another card since then would otherwise be
 /// overwritten by arithmetic done on a number that is no longer there. Going
