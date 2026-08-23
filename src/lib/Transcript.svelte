@@ -9,7 +9,7 @@
   import Rail from "./Rail.svelte";
   import ToolCall from "./ToolCall.svelte";
   import { nudgeReading } from "./layout";
-  import { parseMarkdown } from "./markdown";
+  import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
     conclusionAt,
     landing,
@@ -71,8 +71,18 @@
      than once per render: `lines` only ever grows, so a line is folded the once.
      Everything else is left exactly as it is. `you` is what *you* typed, shown
      character for character; a tool call and an error are already terse and
-     already monospaced. */
-  const streamed = $derived(parseMarkdown(conv.streaming));
+     already monospaced.
+
+     The turn still being written is the same argument one level down, and it
+     used to be the exception: `parseMarkdown(conv.streaming)` re-read the whole
+     of an answer on every `text_delta`, which is thousands of times a turn and
+     quadratic in its length — 36.6 s of parsing across a hundred-thousand
+     character report, against 169 ms now. `StreamedMarkdown` settles everything
+     above the last block boundary once and hands it back by identity, so this
+     one holds a fold rather than being one. See markdown.ts for what counts as
+     a boundary; it is the whole of the subtlety. */
+  const stream = new StreamedMarkdown();
+  const streamed = $derived(stream.read(conv.id, conv.streaming));
 
   /* Runs of tool calls fold into one line each — see transcript.ts for why, and
      for why the two columns are folded separately. Both are cheap: a fold is one
@@ -999,8 +1009,23 @@
 
       {@render column(live)}
       {#if conv.streaming}
+        <!-- Two components, one column: what has settled and what is still
+             being written. Neither adds an element, so `.md > :first-child` and
+             `:last-child` still find the ends of the answer — and the settled
+             array's identity only moves when one more block joins it, so
+             Svelte's each walks none of them on an ordinary delta. That is the
+             other half of the fix; parsing once would be wasted if the diff
+             still read every block per token.
+             The caret goes wherever the writing has got to, which is the last
+             settled block on the deltas where the tail is only blank lines —
+             or it would blink out between one paragraph and the next. -->
         <div class="line text md" data-nav="msg">
-          <Markdown blocks={streamed} caret {onlink} />
+          <Markdown
+            blocks={streamed.settled}
+            caret={streamed.tail.length === 0}
+            {onlink}
+          />
+          <Markdown blocks={streamed.tail} caret {onlink} />
         </div>
       {/if}
       <!-- What the agent is doing *now*, at the foot of the column.

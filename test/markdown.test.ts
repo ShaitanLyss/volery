@@ -4,6 +4,7 @@ import {
   parseMarkdown,
   runIn,
   safeHref,
+  StreamedMarkdown,
   type Block,
   type Inline,
 } from "../src/lib/markdown";
@@ -371,5 +372,264 @@ describe("run-in headings", () => {
      and half a bold opening is not a heading yet. */
   test("a half-written label is not one", () => {
     expect(lead("**4. Moving parts")).toBe(null);
+  });
+});
+
+/* ── the answer as it is being written ───────────────────────────────────── */
+
+/** One of everything that decides a boundary: a fence holding blank lines and
+ *  lines that look like other blocks, a bullet list a numbered one interrupts,
+ *  a loose list whose blanks are *inside* it, a table, a quote, a rule, and
+ *  prose either side of the lot. */
+const ANSWER = [
+  "# the plan",
+  "",
+  "Two things, and the second is the one that matters.",
+  "A second line of the same paragraph.",
+  "",
+  "## first",
+  "",
+  "- one",
+  "- two",
+  "  - nested",
+  "",
+  "1. numbered",
+  "",
+  "2. loose, and the blank line above it is inside the list",
+  "",
+  "   a continuation of the second item",
+  "",
+  "Prose after the list.",
+  "",
+  "```ts",
+  "const a = 1;",
+  "",
+  "// a blank line, a heading and a bullet, and all of them are code",
+  "# not a heading",
+  "- not a bullet",
+  "",
+  "const b = 2;",
+  "```",
+  "",
+  "> a quote",
+  "> that runs on",
+  "",
+  "| a | b |",
+  "|---|--:|",
+  "| 1 | 2 |",
+  "",
+  "---",
+  "",
+  "**Last.** and a word after it",
+].join("\n");
+
+/** The whole contract: every prefix of `src`, fed in `step`-character pieces,
+ *  reads exactly as a fresh parse of that prefix does. */
+function agrees(src: string, step: number) {
+  const s = new StreamedMarkdown();
+  for (let n = 0; n <= src.length; n += step) {
+    const at = src.slice(0, n);
+    const { settled, tail } = s.read("card", at);
+    expect([...settled, ...tail]).toEqual(parseMarkdown(at));
+  }
+  const { settled, tail } = s.read("card", src);
+  expect([...settled, ...tail]).toEqual(parseMarkdown(src));
+}
+
+describe("streaming markdown", () => {
+  test("every prefix reads as a fresh parse of it, a character at a time", () => {
+    agrees(ANSWER, 1);
+  });
+
+  test("…and in pieces of every size, which is how deltas actually arrive", () => {
+    for (const step of [2, 3, 7, 13, 64]) agrees(ANSWER, step);
+  });
+
+  /* The case the whole scanner exists for. Settle inside a fence and the code
+     above the blank line becomes a paragraph of its own, then a code block
+     again once the fence closes — a block flickering into prose mid-stream. */
+  test("a blank line inside an open fence is not a boundary", () => {
+    const src = [
+      "prose",
+      "",
+      "```",
+      "one",
+      "",
+      "two",
+      "```",
+      "",
+      "after",
+    ].join("\n");
+    const s = new StreamedMarkdown();
+    for (let n = 0; n <= src.length; n++) {
+      const at = src.slice(0, n);
+      const { settled, tail } = s.read("f", at);
+      expect([...settled, ...tail]).toEqual(parseMarkdown(at));
+      // Nothing that is still being written has been settled.
+      expect(settled.some((b) => b.t === "code" && b.open)).toBe(false);
+    }
+  });
+
+  test("a tilde fence, and a run of backticks inside a longer one", () => {
+    const src = ["~~~", "```", "still code", "", "~~~", "", "after"].join("\n");
+    const s = new StreamedMarkdown();
+    for (let n = 0; n <= src.length; n++) {
+      const at = src.slice(0, n);
+      const { settled, tail } = s.read("f", at);
+      expect([...settled, ...tail]).toEqual(parseMarkdown(at));
+    }
+  });
+
+  /* A blank line does not end a list — `readList` counts them and carries on —
+     so settling at one drops the items written after it out of the list. */
+  test("a blank line inside a loose list is not a boundary either", () => {
+    const src = [
+      "- one",
+      "",
+      "- two",
+      "",
+      "  a continuation",
+      "",
+      "after",
+    ].join("\n");
+    const s = new StreamedMarkdown();
+    for (let n = 0; n <= src.length; n++) {
+      const at = src.slice(0, n);
+      const { settled, tail } = s.read("l", at);
+      expect([...settled, ...tail]).toEqual(parseMarkdown(at));
+    }
+  });
+
+  test("a table's rule line arriving turns a paragraph into a table", () => {
+    /* `readTable`'s one line of lookahead is why a boundary has to be a blank
+       line: until the rule lands, the head is an ordinary paragraph line. */
+    const src = ["intro", "", "| a | b |", "|---|---|", "| 1 | 2 |"].join("\n");
+    const s = new StreamedMarkdown();
+    for (let n = 0; n <= src.length; n++) {
+      const at = src.slice(0, n);
+      const { settled, tail } = s.read("t", at);
+      expect([...settled, ...tail]).toEqual(parseMarkdown(at));
+    }
+  });
+
+  test("what has settled is parsed once and handed back as the same array", () => {
+    const s = new StreamedMarkdown();
+    let first: Block | null = null;
+    let last: Block[] | null = null;
+    let unchanged = 0;
+    for (let n = 1; n <= ANSWER.length; n++) {
+      const { settled } = s.read("card", ANSWER.slice(0, n));
+      if (!settled.length) continue;
+      first ??= settled[0];
+      // The first block was parsed on the delta it settled on, and never again.
+      expect(settled[0]).toBe(first);
+      if (settled === last) unchanged++;
+      last = settled;
+    }
+    // And the array's identity only moves when one more block settles, so a
+    // panel redrawing per delta has nothing to redraw for nearly all of them.
+    expect(unchanged).toBeGreaterThan(ANSWER.length / 2);
+  });
+
+  test("a shorter source is a new one", () => {
+    const s = new StreamedMarkdown();
+    s.read("c", "one\n\ntwo\n\n");
+    const { settled, tail } = s.read("c", "fresh");
+    expect(settled).toEqual([]);
+    expect([...settled, ...tail]).toEqual(parseMarkdown("fresh"));
+  });
+
+  test("another card is another source, however long this one got", () => {
+    /* Length is all a source that only grows can be told by, and moving to
+       another card mid-turn is exactly what it cannot see. */
+    const s = new StreamedMarkdown();
+    s.read("a", "one\n\ntwo\n\n");
+    const next = "a different answer\n\nand a longer one than that was";
+    const { settled, tail } = s.read("b", next);
+    expect([...settled, ...tail]).toEqual(parseMarkdown(next));
+  });
+
+  test("a \\r\\n split across two fragments is one line break", () => {
+    const src = "one\r\ntwo\r\n\r\nthree";
+    for (const step of [1, 2, 3]) agrees(src, step);
+  });
+
+  test("being asked twice for the same string answers the same object", () => {
+    const s = new StreamedMarkdown();
+    s.read("c", "one\n\ntw");
+    const a = s.read("c", "one\n\ntwo");
+    const b = s.read("c", "one\n\ntwo");
+    expect(b).toBe(a);
+  });
+
+  /* Documents shuffled out of every line that can decide a boundary, in orders
+     nobody would think to write down. A hand-written case tests the boundary
+     you had in mind; this tests the ones you did not — it is what a rule about
+     "the last place nothing after it can reach" is actually worth. Seeded, so a
+     failure is a failure you can run again. */
+  test("random documents agree with a fresh parse at every prefix", () => {
+    const POOL = [
+      "",
+      "   ",
+      "prose line",
+      "prose with `code` and **bold**",
+      "# heading",
+      "### deeper",
+      "---",
+      "***",
+      "> quote",
+      "lazy quote continuation",
+      "- bullet",
+      "  - nested",
+      "  continuation",
+      "1. one",
+      "2. two",
+      "1) paren",
+      "```",
+      "```ts",
+      "~~~",
+      "``` `inline` ```",
+      "code line",
+      "| a | b |",
+      "|---|---|",
+      "| 1 | 2 |",
+      "|:--|--:|",
+      "\ttab indented",
+      "    four spaces",
+      "  ``` ",
+      "- ```",
+      "> ```",
+    ];
+    let seed = 20260823;
+    const rand = (n: number) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+
+    for (let doc = 0; doc < 150; doc++) {
+      const lines: string[] = [];
+      const n = 3 + rand(24);
+      for (let i = 0; i < n; i++) lines.push(POOL[rand(POOL.length)]);
+      const src = lines.join("\n") + (rand(2) ? "\n" : "");
+
+      const s = new StreamedMarkdown();
+      for (let k = 0; k <= src.length; k++) {
+        const at = src.slice(0, k);
+        const { settled, tail } = s.read(String(doc), at);
+        const got = [...settled, ...tail];
+        const want = parseMarkdown(at);
+        /* Compared as JSON and only *asserted* on a mismatch: `toEqual` on a
+           hundred thousand prefixes is the slow half of this suite, and the
+           message when one does differ wants the whole document anyway. */
+        if (JSON.stringify(got) !== JSON.stringify(want)) {
+          throw new Error(
+            `settled wrongly after ${JSON.stringify(at)}\n` +
+              `  document: ${JSON.stringify(src)}\n` +
+              `  got:  ${JSON.stringify(got)}\n` +
+              `  want: ${JSON.stringify(want)}`,
+          );
+        }
+      }
+    }
   });
 });

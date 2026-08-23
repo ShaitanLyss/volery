@@ -295,17 +295,29 @@ function splitRow(line: string): string[] {
   return cells;
 }
 
+/** Is this pair of lines a table's head and its alignment rule?
+ *
+ *  The whole of the decision, and it takes no more than the two lines — which
+ *  is what lets the streaming scanner below ask exactly the question `readTable`
+ *  asks without parsing anything. Pulled out rather than duplicated: the two
+ *  have to agree, or the scanner settles a line the parser is still using. */
+function tableAt(head: string | undefined, spec: string | undefined): boolean {
+  if (!head?.includes("|") || !spec?.includes("|")) return false;
+  const rule = splitRow(spec);
+  return (
+    rule.length === splitRow(head).length && rule.every((c) => /^:?-+:?$/.test(c))
+  );
+}
+
 function readTable(
   lines: string[],
   at: number,
 ): { block: Block; next: number } | null {
   const head = lines[at];
   const spec = lines[at + 1];
-  if (!head?.includes("|") || !spec?.includes("|")) return null;
+  if (!tableAt(head, spec)) return null;
   const cols = splitRow(head);
   const rule = splitRow(spec);
-  if (rule.length !== cols.length) return null;
-  if (!rule.every((c) => /^:?-+:?$/.test(c))) return null;
 
   const align: Align[] = rule.map((c) => {
     const l = c.startsWith(":");
@@ -331,6 +343,221 @@ function readTable(
     block: { t: "table", align, head: cols.map(parseInline), rows },
     next: i,
   };
+}
+
+/* ── an answer as it is being written ────────────────────────────────────── */
+
+/** An answer split at the last place nothing after it can reach. */
+export type Streamed = {
+  /** Blocks that cannot change again, parsed exactly once. The *same array*
+   *  until one more of them settles, so a panel redrawing per token redraws
+   *  none of them. */
+  settled: Block[];
+  /** The part still being written, re-parsed on every call. */
+  tail: Block[];
+};
+
+/** The scanner's whole memory of where it stands. */
+type Where = {
+  /** What would close the fence we are inside, or null for none. */
+  fence: RegExp | null;
+  /** The list we are inside, as the two things `readList` breaks on: the
+   *  column its current item's content starts at, and whether it is numbered. */
+  list: { ordered: boolean; col: number } | null;
+  /** Blank lines since the last line of content. Only a list cares — a blank
+   *  line does not end one, so what the list does *next* is what says whether
+   *  those blanks were inside it or after it. */
+  blanks: number;
+};
+
+const EMPTY: Block[] = [];
+
+/** One growing markdown source, parsed once rather than once per token.
+ *
+ *  `conv.streaming` grows by a fragment at a time — cards spawn with
+ *  `--include-partial-messages`, so that is thousands of times a turn — and
+ *  re-parsing the whole of it per delta is quadratic in the length of the
+ *  answer. Measured here: 24,400 characters over ~2,000 deltas cost 1,344 ms of
+ *  parsing alone, 2.2 ms of it on the last delta; double the answer and the
+ *  total quadruples. A hundred-thousand-character plan, which is an ordinary
+ *  thing for a card to write, is on the order of twenty seconds of it — on the
+ *  same thread that folds every event on the wall, with Svelte's diff of the
+ *  block array on top.
+ *
+ *  This is the argument the panel already makes about `lines`, one level down:
+ *  a settled line is folded the once *because* `lines` only ever grows. So does
+ *  an answer, and everything above the last **block boundary** in it is settled
+ *  in the same sense — it has been written, and nothing arriving later can
+ *  reach back past that point and change it.
+ *
+ *  What counts as a boundary is the whole of the subtlety, and getting it wrong
+ *  is a code block that flickers into prose mid-stream. A blank line settles
+ *  what is above it: a paragraph stops at one, a quote's lazy continuation
+ *  stops at one, a table's rows stop at one, and `readTable`'s one line of
+ *  lookahead cannot see past one. **Unless** we are inside a fence, where a
+ *  blank line is code, or inside a list, where `readList` counts blanks and
+ *  carries on regardless. So the scanner tracks exactly those two and mirrors
+ *  `readList`'s break condition branch for branch — and where it cannot yet
+ *  tell, it stays *inside*: a boundary that was not one is a wrong answer, a
+ *  boundary missed is only a slower one.
+ *
+ *  What is left is linear — each line is scanned once, and only the tail after
+ *  the last boundary is re-parsed. The honest limit is an answer with no
+ *  boundary in it at all: one enormous fence, or one loose list running the
+ *  whole length of it, is no faster than it was. A fence at least degrades
+ *  well, since nothing inside one is parsed for inlines.
+ *
+ *  The source must only ever *grow*, or start again from a shorter one. `key`
+ *  is what tells a different source from a longer one — the panel passes the
+ *  card's id, since moving to another card mid-turn is exactly the case a
+ *  length comparison cannot see. */
+export class StreamedMarkdown {
+  #key: string | null = null;
+  /** Characters of the source already taken in. */
+  #seen = 0;
+  /** Every complete line so far, and the incomplete one after the last "\n". */
+  #lines: string[] = [];
+  #rest = "";
+  /** Blocks for `#lines[0 … #at)`, which cannot change again. Replaced rather
+   *  than appended to, so its identity is the signal that one more settled. */
+  #done: Block[] = EMPTY;
+  #at = 0;
+  /** How far the boundary scan has read. Never past `#lines.length - 1`: asking
+   *  whether a line inside a list is a table's first row takes the line after
+   *  it, and the line after the last one has not been written yet. */
+  #scanned = 0;
+  #where: Where = { fence: null, list: null, blanks: 0 };
+  /** The last answer given, so an unchanged source is unchanged output — and so
+   *  that being asked twice for the same string costs nothing and changes
+   *  nothing. */
+  #out: Streamed | null = null;
+
+  read(key: string, src: string): Streamed {
+    if (key !== this.#key || src.length < this.#seen) {
+      this.#key = key;
+      this.#seen = 0;
+      this.#lines = [];
+      this.#rest = "";
+      this.#done = EMPTY;
+      this.#at = 0;
+      this.#scanned = 0;
+      this.#where = { fence: null, list: null, blanks: 0 };
+      this.#out = null;
+    }
+    if (this.#out && src.length === this.#seen) return this.#out;
+
+    this.#take(src.slice(this.#seen));
+    this.#seen = src.length;
+    this.#settle();
+
+    /* The tail is what is still in play: the lines below the last boundary, and
+       the part of the newest line that has no newline after it yet. */
+    const tail = this.#lines.slice(this.#at);
+    for (const l of this.#rest.replace(/\r\n?/g, "\n").split("\n")) tail.push(l);
+    this.#out = { settled: this.#done, tail: parseBlocks(tail) };
+    return this.#out;
+  }
+
+  /** Take in what has arrived since last time, as whole lines. */
+  #take(add: string) {
+    if (!add) return;
+    let chunk = this.#rest + add;
+    /* A "\r" at the very end may be half of a "\r\n" whose other half is in the
+       next fragment, so it waits rather than becoming a line break here. */
+    let hold = "";
+    if (chunk.endsWith("\r")) {
+      hold = "\r";
+      chunk = chunk.slice(0, -1);
+    }
+    const parts = chunk.replace(/\r\n?/g, "\n").split("\n");
+    this.#rest = parts.pop()! + hold;
+    for (const l of parts) this.#lines.push(l);
+  }
+
+  /** Read the new lines, and settle everything above the last boundary. */
+  #settle() {
+    const lines = this.#lines;
+    const w = this.#where;
+    const end = lines.length - 1;
+    let bound = -1;
+    let i = this.#scanned;
+
+    while (i < end) {
+      const line = lines[i];
+      const blank = !line.trim();
+
+      if (w.fence) {
+        if (w.fence.test(line)) w.fence = null;
+        i++;
+        continue;
+      }
+
+      if (w.list) {
+        if (blank) {
+          w.blanks++;
+          i++;
+          continue;
+        }
+        /* Branch for branch with `readList`'s loop, and it has to stay that
+           way — this is the one place the scanner can be wrong in the
+           direction that costs a wrong answer rather than a slow one. */
+        const mk = markerAt(line);
+        if (mk && mk.indent < w.list.col) {
+          /* The same kind carries the list on; a different kind ends it and
+             starts another on the very same line. Either way a list is open,
+             which is all this needs to know. */
+          w.list = { ordered: mk.ordered, col: mk.col };
+          w.blanks = 0;
+          i++;
+          continue;
+        }
+        if (line.length - line.trimStart().length >= w.list.col) {
+          w.blanks = 0;
+          i++;
+          continue;
+        }
+        if (w.blanks === 0 && !startsBlock(line) && !tableAt(line, lines[i + 1])) {
+          i++;
+          continue;
+        }
+        /* The list is over — so the blanks before this line were after it, and
+           the last of them is a boundary after all. */
+        if (w.blanks > 0) bound = i;
+        w.list = null;
+        w.blanks = 0;
+        // and this line is read at the top level, below.
+      }
+
+      if (blank) {
+        bound = i + 1;
+        i++;
+        continue;
+      }
+
+      const f = FENCE.exec(line);
+      if (f && !(f[1][0] === "`" && f[2].includes("`"))) {
+        w.fence = new RegExp(`^ {0,3}\\${f[1][0]}{${f[1].length},}[ \\t]*$`);
+        i++;
+        continue;
+      }
+
+      /* Everything else is either one line (a heading, a rule) or something a
+         blank line already ends (a quote and its lazy continuation, a table's
+         rows, a paragraph), so a list is the only other thing worth carrying.
+         `markerAt` answers null for a quote and for a thematic break, which is
+         what keeps this in step with `parseBlocks`' order of tries. */
+      const mk = markerAt(line);
+      w.list = mk ? { ordered: mk.ordered, col: mk.col } : null;
+      w.blanks = 0;
+      i++;
+    }
+
+    this.#scanned = i;
+    if (bound > this.#at) {
+      this.#done = this.#done.concat(parseBlocks(lines.slice(this.#at, bound)));
+      this.#at = bound;
+    }
+  }
 }
 
 /** The words of an inline run, with every mark taken off. */

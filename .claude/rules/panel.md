@@ -31,11 +31,11 @@ Five things it is worth knowing:
 
 - **Only `text` lines fold.** `you` is what you typed, shown character for character; a
   tool call, an error and a meta note are already terse and already monospaced.
-- **The streaming line is parsed on every delta**, so every *prefix* of an answer has to
-  parse into something showable — an unclosed fence is a code block that says so (a dashed
+- **Every *prefix* of an answer has to parse into something showable**, since the streaming
+  line is re-parsed as it arrives — an unclosed fence is a code block that says so (a dashed
   edge) rather than a paragraph of literal backticks that becomes a code block later. The
   caret travels down the tree to the last thing written, or a half-written list blinks a
-  line below itself.
+  line below itself. What is *re*-parsed is only the tail; see below.
 - **Single newlines survive** (GFM's `breaks`, not CommonMark's collapse): an agent's own
   line breaks in prose carry meaning in a transcript.
 - **A link is a `<button>`, never an `<a href>`.** This window is undecorated, with no
@@ -59,6 +59,52 @@ Five things it is worth knowing:
 
 No syntax highlighting, deliberately: colour on this wall is status, and a keyword is not a
 status.
+
+### An answer is parsed once, not once per token
+
+`lines` only ever grows, so a settled line is folded the once — that argument is at the top
+of `Transcript.svelte` and has been since markdown arrived here. **The turn still being
+written is the same argument one level down, and it was the exception for as long as it
+existed.** `parseMarkdown(conv.streaming)` re-read the whole accumulated answer on every
+`text_delta`, and cards spawn with `--include-partial-messages`, so that is thousands of
+times a turn: quadratic in the length of the answer, on the thread that also runs one script
+eval per event on the wall, with Svelte's diff of the block array on top. Measured here on a
+hundred-thousand-character report — an ordinary plan on this wall — **36.6 s of parsing
+across the turn, against 169 ms now**. The symptom is exactly what it sounds like: the panel
+gets less responsive the longer an answer runs, and comes right the moment it finishes.
+
+`StreamedMarkdown` in `markdown.ts` is the fold. Everything above the last **block boundary**
+is settled in the same sense a line is — it has been written, and nothing arriving later can
+reach back past that point — so it is parsed once and handed back by identity.
+
+- **What counts as a boundary is the whole of the subtlety.** A blank line settles what is
+  above it: a paragraph stops at one, a quote's lazy continuation stops at one, a table's
+  rows stop at one, and `readTable`'s single line of lookahead cannot see past one. **Unless**
+  it is inside a fence, where a blank line is code, or inside a list, where `readList` counts
+  blanks and carries on. Those are the only two things the scanner tracks, and its list
+  branch mirrors `readList`'s break condition branch for branch — `tableAt` exists so the two
+  ask the table question with one piece of code rather than two that have to agree.
+- **Where it cannot tell, it stays inside.** A boundary that was not one is a code block
+  flickering into prose mid-stream; a boundary missed is only a slower parse. So every
+  uncertainty resolves towards *not settling* — a numbered list interrupting a bulleted one
+  settles nothing, though it safely could.
+- **The honest limit is an answer with no boundary in it at all.** One enormous fence, or one
+  loose list running its whole length, is no faster than it was. A fence at least degrades
+  well, since nothing inside one is parsed for inlines.
+- **The source must only ever grow, and `key` is what says it is still the same source.** A
+  length comparison catches a restart; it cannot catch moving to another card mid-turn, which
+  is why `read` takes `conv.id`.
+- **Parsing once is only half of it.** The panel draws two `<Markdown>` components into one
+  `.md` column — the settled blocks and the tail — because a single array would have Svelte's
+  `{#each}` walk every block on every token however cheap the parse got. Neither adds an
+  element, so `.md > :first-child` and `:last-child` still find the ends of the answer, and
+  the settled array's identity moves only when one more block joins it. The caret rides the
+  tail, except on the deltas where the tail is nothing but blank lines — then it goes on the
+  last settled block, or it would blink out between one paragraph and the next.
+- **The contract is tested as a contract**: every prefix of a document holding one of
+  everything, fed a character at a time, must read exactly as a fresh `parseMarkdown` of that
+  prefix. That is the only assertion worth making here, and it is what caught the
+  fence-straddling case. `test/markdown.test.ts`.
 
 ### Folding the machinery away
 
