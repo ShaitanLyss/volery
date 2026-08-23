@@ -2717,6 +2717,8 @@
             watching={attention.focused}
             onhistory={(c) => void skein.loadHistory(c)}
             onlink={(href) => void skein.openLink(href)}
+            onfile={(path, line) =>
+              void finder.lookAt(focused.kind === "project" ? focused.cwd : "", path, line)}
             onread={setRead}
           />
         </aside>

@@ -4,6 +4,10 @@ paths:
   - "src/lib/finding.ts"
   - "src/lib/finder.svelte.ts"
   - "src/lib/Spyglass.svelte"
+  - "tools/probe-places.ts"
+  # ToolCall is panel.md's file first, but half of "a path opens the file" lives
+  # in it — so this loads there too rather than trusting a pointer in prose.
+  - "src/lib/ToolCall.svelte"
 ---
 
 # The finder, and the file viewer
@@ -174,6 +178,65 @@ The preview beside the list is deliberately **not** rendered, in either mode. It
 show you *where* a hit is, and that is a line number and a column; a rendered document has
 neither.
 
+### Getting there from a transcript
+
+The finder finds files; the place you most often want to *look* at one is while reading what an
+agent just did to it. So a path in a tool call is a link into the viewer — the `path`-form
+arguments (`file_path`, `cwd`, `scriptPath`, and the rest of `PATHS` in `toolcall.ts`), and
+every `path:line[:col]` in a tool's **result**, which is what turns a `Grep` answer from a wall
+of matches into something you can walk.
+
+**Two functions in `finding.ts` make it possible, and the asymmetry between them is the whole
+lesson.**
+
+`insideRoot(path, root)` is the front-end mirror of `safe_join` in `find.rs`: a transcript is
+full of absolute paths, the viewer reads `(root, relative)`, and Rust refuses anything that
+climbs out. **Null is the useful answer** — a tool call can perfectly reasonably name a file in
+another repository, in `%TEMP%`, or in the engine directory, and none of those can be opened
+here. Those stay inert text, because *a link that fails when pressed is the one outcome worse
+than no link*.
+
+`placesIn(text)` finds the places in a result, and its guards matter more than its pattern.
+A candidate must carry a **file extension** before the colon, which is what rules out `10:30`
+and `Error at 5:12`. The **matched text** is checked for `://` rather than what precedes it —
+the path character class includes `/`, so `http://example.com:8080` otherwise parses as a path
+of `http://example.com` and a line of 8080, and looking backwards would never have seen it.
+There is **no space in the path class**, a deliberate loss: allowing one let a match run
+backwards through prose (`see src/lib/a.ts:42` parsed with a path of `see src/lib/a.ts`), so
+`C:\Program Files\x\a.ts:3` is missed — the right way round to fail.
+
+**And the guard that measurement added rather than reasoning: a relative candidate must carry a
+separator.** `tools/probe-places.ts` reads the real tool results out of this machine's
+transcripts and reports what `placesIn` finds in them. Over 1,153 of them it turned up
+`RailReplayTests.cpp:282` and dozens like it — a *filename mentioned in prose*, which
+`insideRoot` then happily reduced to a root-relative path that does not exist. Exactly the dead
+link the whole pattern exists to avoid, and nothing about reading the code would have shown it.
+The guard took the count from 520 places to 392 and left the `Grep` results untouched.
+
+So the two functions ask for different evidence on purpose: a bare name given as a tool's
+`file_path` **is** a path, because something passed it to a tool that opened it; a bare name in
+a sentence is somebody talking about a file. `package.json:3` in prose is not a link, and that
+is the price.
+
+**A line, only when the call actually said one.** `startLine` in `toolcall.ts` reads `Read`'s
+`offset`. An `Edit` names the text it replaced rather than where, and finding that text in the
+file would put the viewer confidently in the wrong place whenever the string occurs twice — so
+the honest answer is null and the file opens at the top.
+
+**Where "back" goes depends on where you came from**, and `alone` is the flag that knows.
+Opened from a result, Escape returns to the list with the query and the selection intact.
+Opened from a transcript there is no list behind it, and dropping you into an empty finder over
+a project you never searched would be one gesture answered with two — so that case closes the
+panel and gives you back what you were reading. The header's button says which (`results` or
+`close`), because the two states draw an identical panel and differ only in this. `alone` is
+cleared by `hide` and by `show`, or a later chord would inherit it.
+
+The links are drawn as text with a dotted underline that firms up under the pointer, not as
+links: this is a wall of machinery, and a coloured underline through every path in a `Grep`
+result would be decoration where `tokens.css` reserves colour for status. `LINK_LINES` (300)
+bounds the linkified result — the default fold is 24 lines, so it only bites once you have
+asked for the whole of something long, and past it the text is drawn plain as it always was.
+
 ### `find.rs`
 
 - **All three commands are `async` and go through `off_main`.** A `rg` over an Unreal tree is
@@ -239,11 +302,20 @@ quietly cannot see a file is worse than one that admits its bound.
   hazard a leaked listener is, one layer down.
 - `Spyglass.svelte` — elements, and nothing else. Every piece of arithmetic it needs is
   imported from `finding.ts`.
+- `ToolCall.svelte` — the transcript's end of it, importing `insideRoot` and `placesIn`. It
+  routes the gesture out as `onfile` rather than reaching for the panel, the same way it
+  routes `onlink`: what this component knows about is typography, and which panel is on
+  screen is not its business. `Transcript.svelte` passes the card's `cwd` as `root` — absent
+  for a chat card, which has no project, and every path there stays text.
+- `tools/probe-places.ts` — what real tool results look like and what `placesIn` finds in
+  them. Run it before changing that pattern; it is what caught the bare-filename case.
 
 The control surface has a `find` op (`show`, `hide`, `type`, `step`, `pick`, `look`, `back`,
 `swap`, `raw`) driving the panel's own functions, and `snapshot.finder` reports the panel and
 the **pending chord** apart — a half-typed leader is a state the app is in with nothing on
-screen but a caption, and from outside it is otherwise invisible. There is deliberately no op
-for a chord itself: that is what the `key` op is for, pressing space then f then f at the
-window the way a hand does, which is the only thing that can see the leader losing a race
-with the bare-printable branch below it in `onGlobalKey`.
+screen but a caption, and from outside it is otherwise invisible. `look-at` is the transcript's door in — a
+separate gesture rather than a shortcut for `look`, since it names its own root and leaves
+nothing behind for Escape to step back to, which is what makes `alone` in the answer worth
+reading. There is deliberately no op for a chord itself: that is what the `key` op is for,
+pressing space then f then f at the window the way a hand does, which is the only thing that
+can see the leader losing a race with the bare-printable branch below it in `onGlobalKey`.

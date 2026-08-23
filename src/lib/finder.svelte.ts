@@ -123,6 +123,11 @@ export class Finder {
   sheetLine = $state<number | null>(null);
   reading = $state(false);
 
+  /** The viewer was opened without a result list behind it — from a path in a
+   *  transcript rather than from a search. It is what `back` reads to decide
+   *  whether Escape steps back or closes; see the note there. */
+  alone = $state(false);
+
   /** Show a document's source instead of the document.
    *
    *  A markdown file opens *rendered*, because that is what it is — half the
@@ -261,6 +266,7 @@ export class Finder {
     this.literal = false;
     this.sheet = null;
     this.sheetLine = null;
+    this.alone = false;
     this.fault = null;
     /* A list from another project is worse than no list: every row of it is a
        path that is not there. */
@@ -281,6 +287,10 @@ export class Finder {
     this.open = false;
     this.sheet = null;
     this.sheetLine = null;
+    /* Cleared with the panel, not left standing: the next thing to open the
+       viewer may well be a search, and a stale `alone` would make its Escape
+       close the whole panel instead of stepping back to the list. */
+    this.alone = false;
     this.pending = null;
     if (this.#lapse !== null) clearTimeout(this.#lapse);
     this.#lapse = null;
@@ -478,6 +488,7 @@ export class Finder {
     try {
       const sheet = await this.#read(row.path);
       if (!sheet || this.#gone) return;
+      this.alone = false;
       this.sheet = sheet;
       this.sheetLine = row.line;
     } finally {
@@ -485,10 +496,57 @@ export class Finder {
     }
   }
 
-  /** Back to the list, with the query and the selection where they were. Free
-   *  on purpose: a step back that cost you your search is one that stops you
-   *  using Enter to look at things. */
+  /** Open a file straight from somewhere else on the wall — a path in a tool
+   *  call, which is where you most often want to look at a file.
+   *
+   *  Two things it has to do that `look` does not. It **names its own root**,
+   *  because the card whose transcript you are reading may not be the project
+   *  the finder last searched, and the viewer reads `(root, relative)`; the
+   *  caller has already reduced the path with `insideRoot`, so anything
+   *  arriving here is inside. And it sets `alone`, which is the whole reason
+   *  this is a second entry point rather than a call to `look` — see `back`. */
+  async lookAt(root: string, path: string, line: number | null = null) {
+    if (!root || !path) return;
+    /* A file list from another project is every row being a path that is not
+       there, so it goes with the root — the same clearing `show` does, for the
+       same reason. The common case is the same root and nothing is thrown
+       away. */
+    if (root !== this.root) {
+      this.root = root;
+      this.files = [];
+      this.filesTruncated = false;
+      this.#sheets.clear();
+      this.preview = null;
+    }
+    this.open = true;
+    this.fault = null;
+    this.reading = true;
+    try {
+      const sheet = await this.#read(path);
+      if (!sheet || this.#gone) return;
+      this.alone = true;
+      this.sheet = sheet;
+      this.sheetLine = line;
+    } finally {
+      this.reading = false;
+    }
+  }
+
+  /** Back out of the viewer.
+   *
+   *  Where "back" goes depends on where you came from, and getting that wrong
+   *  is the whole of why `alone` exists. Opened from a result, Escape returns
+   *  to the list with the query and the selection where they were — free on
+   *  purpose, because a step back that cost you your search is one that stops
+   *  you using Enter to look at things. Opened from a path in a transcript
+   *  there is no list behind it, and dropping you into an empty finder over a
+   *  project you never searched would be one gesture answered with two. So that
+   *  case closes the panel and gives you back what you were reading. */
   back() {
+    if (this.alone) {
+      this.hide();
+      return;
+    }
     this.sheet = null;
     this.sheetLine = null;
   }

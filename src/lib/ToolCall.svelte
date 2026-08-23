@@ -27,16 +27,24 @@
     diffTally,
     resultSize,
     splitPath,
+    startLine,
     toolBadge,
     type Arg,
     type ToolCall,
   } from "./toolcall";
+  /* The finder's two pure path functions. Imported from there rather than
+     reimplemented here because both are the front end's half of a bargain with
+     `find.rs`: `insideRoot` mirrors its `safe_join`, and `placesIn` produces the
+     `(path, line)` pair its viewer reads. See `.claude/rules/finding.md`. */
+  import { insideRoot, placesIn } from "./finding";
 
   let {
     call,
     text,
     open = false,
+    root,
     ontoggle,
+    onfile,
   }: {
     call: ToolCall;
     /** `describeTool`'s prose — the line this always was. Passed in rather than
@@ -44,8 +52,28 @@
      *  doing cannot drift: both are the string the line was pushed with. */
     text: string;
     open?: boolean;
+    /** The card's working directory, so a path can be reduced to one the viewer
+     *  can actually open. Absent — a chat card has no project — and every path
+     *  here stays inert text, which is the honest answer rather than a link
+     *  that fails when pressed. */
+    root?: string;
     ontoggle?: () => void;
+    /** Open a file in the finder's viewer. Routed out rather than reached for,
+     *  the same way `onlink` is: this component knows about typography, and
+     *  which panel is on screen is not its business. The path is already
+     *  project-relative when it arrives. */
+    onfile?: (path: string, line: number | null) => void;
   } = $props();
+
+  /** How much of a result gets scanned for places to look at.
+   *
+   *  A `Grep` result is a list of places and every one of them is worth a link,
+   *  which is the whole point — but "the remaining 4,000 lines" turns each of
+   *  them into a `<button>`, and past a few hundred that is a lot of DOM for
+   *  output nobody is clicking. Past this the text is drawn plain, which is what
+   *  it did before any of this existed. The default fold is `RESULT_LINES` (24),
+   *  so this only ever bites once you have asked for the whole thing. */
+  const LINK_LINES = 300;
 
   /* Derived rather than computed once: a live call's result lands after the
      line does, so the view has to follow it. Only ever built for calls that
@@ -79,6 +107,47 @@
    *  the right-hand column of a two-column grid in a panel a third of the
    *  window wide makes a ribbon of it. */
   const inline = (a: Arg) => a.form === "path" || a.form === "scalar";
+
+  /** Where in the file this call was looking, if it said. A `Read` with an
+   *  offset knows; an `Edit` does not, and does not guess. */
+  const startAt = $derived(view ? startLine(view.args) : null);
+
+  /** A path reduced to something the viewer can open, or null for one that is
+   *  not inside this card's tree — another repository, `%TEMP%`, the engine
+   *  directory. Those stay text. */
+  function openable(value: string): string | null {
+    if (!onfile || !root) return null;
+    return insideRoot(value, root);
+  }
+
+  /** The result, cut into plain runs and places you can go to.
+   *
+   *  Built here rather than in `finding.ts` because the *cutting* is generic and
+   *  already lives there as `pieces` — what is local is which places survived
+   *  `openable`, since a `Grep` across a monorepo names files this card cannot
+   *  open and those have to stay text rather than become dead links. */
+  const outParts = $derived.by(() => {
+    const text = shown?.head ?? "";
+    if (!text || !onfile || !root) return null;
+    if (text.split("\n").length > LINK_LINES) return null;
+    /* Resolved to a plain `{ path, line }` here rather than carried as the
+       `Place` it came from: the template then needs no narrowing and no
+       non-null assertion, and a `rel` that survived the filter is a string by
+       construction rather than by assertion. */
+    type Part = { text: string; go: { path: string; line: number } | null };
+    const parts: Part[] = [];
+    let at = 0;
+    for (const pl of placesIn(text)) {
+      const rel = openable(pl.path);
+      if (rel === null) continue;
+      if (pl.from > at) parts.push({ text: text.slice(at, pl.from), go: null });
+      parts.push({ text: text.slice(pl.from, pl.to), go: { path: rel, line: pl.line } });
+      at = pl.to;
+    }
+    if (!parts.length) return null;
+    if (at < text.length) parts.push({ text: text.slice(at), go: null });
+    return parts;
+  });
 </script>
 
 <div class="call" class:shown={open} class:live={!call.result}>
@@ -126,9 +195,25 @@
                 {#if a.form === "path"}
                   <!-- The directory recedes and the name does not: which file
                        is the question, and the eleven segments above it are
-                       the answer to a question nobody asked. -->
+                       the answer to a question nobody asked.
+
+                       And it opens. The place you most often want to *look* at a
+                       file on this wall is while reading what an agent just did
+                       to it, and this was inert text. A path outside the card's
+                       tree stays inert — see `openable`. -->
                   {@const p = splitPath(a.value)}
-                  <span class="path"><span class="dir">{p.dir}</span>{p.base}</span>
+                  {@const rel = openable(a.value)}
+                  {#if rel}
+                    <button
+                      type="button"
+                      class="path go"
+                      onclick={() => onfile?.(rel, startAt)}
+                      title="Look at {rel}{startAt ? ` from line ${startAt}` : ""}"
+                      ><span class="dir">{p.dir}</span>{p.base}</button
+                    >
+                  {:else}
+                    <span class="path"><span class="dir">{p.dir}</span>{p.base}</span>
+                  {/if}
                 {:else if a.form === "scalar"}
                   <span class="scalar">{a.value}</span>
                 {:else if a.form === "list"}
@@ -190,7 +275,22 @@
         {:else if !call.result.text}
           <p class="none">it answered with nothing</p>
         {:else}
-          <pre class="out">{shown?.head}</pre>
+          <!-- A `Grep` result is a list of places, and every one of them is
+               somewhere you might want to look — so `path:line:` becomes a link
+               and a wall of matches becomes something you can walk. Plain text
+               whenever there is nothing to link or there is too much of it. -->
+          {#if outParts}
+            <pre class="out">{#each outParts as part, i (i)}{#if part.go}{@const go =
+                    part.go}<button
+                    type="button"
+                    class="go"
+                    onclick={() => onfile?.(go.path, go.line)}
+                    title="Look at {go.path} at line {go.line}"
+                    >{part.text}</button
+                  >{:else}{part.text}{/if}{/each}</pre>
+          {:else}
+            <pre class="out">{shown?.head}</pre>
+          {/if}
           {#if shown?.hidden}
             <button type="button" class="more" onclick={() => (allOut = true)}>
               the remaining {shown.hidden} lines
@@ -377,6 +477,34 @@
      you know which project this card is in — and the name is the answer. */
   .path {
     color: var(--paper-dim);
+  }
+  /* A place you can go to. Drawn as text and not as a link: this is a wall of
+     machinery, and a blue underline through every path in a Grep result would
+     read as decoration where `tokens.css` reserves colour for status. What it
+     gets instead is a dotted underline that only firms up under the pointer —
+     enough to say it is reachable when you look for it, quiet enough to read
+     past when you are not.
+
+     `button` resets, because a `<button>` inside a `<pre>` otherwise arrives
+     with the browser's font, its own line-height and a border, and one of those
+     in the middle of a monospace column shifts every line around it. */
+  .go {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    text-align: left;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-decoration-color: var(--paper-faint);
+    text-underline-offset: 0.18em;
+  }
+  .go:hover,
+  .go:focus-visible {
+    color: var(--paper);
+    text-decoration-color: var(--paper-mute);
   }
   .dir {
     color: var(--paper-faint);

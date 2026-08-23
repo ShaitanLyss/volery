@@ -7,10 +7,12 @@ import {
   chord,
   fileRows,
   grepRows,
+  insideRoot,
   isMarkdown,
   moveIn,
   offers,
   pieces,
+  placesIn,
   rank,
   runsOf,
   score,
@@ -453,5 +455,151 @@ describe("splitting a path", () => {
 
   test("a windows path splits at the last separator too", () => {
     expect(splitPath("C:\\atelier\\skein")).toEqual({ dir: "C:\\atelier\\", name: "skein" });
+  });
+});
+
+/* ── reaching the viewer from a transcript ────────────────────────────────── */
+
+describe("reducing a path against a project root", () => {
+  const ROOT = "C:\\atelier\\skein";
+
+  test("an absolute path inside the root becomes a relative one", () => {
+    expect(insideRoot("C:\\atelier\\skein\\src\\lib\\finding.ts", ROOT)).toBe(
+      "src/lib/finding.ts",
+    );
+  });
+
+  test("either separator, on either side", () => {
+    expect(insideRoot("C:/atelier/skein/src/lib/a.ts", ROOT)).toBe("src/lib/a.ts");
+    expect(insideRoot("C:\\atelier\\skein\\src\\a.ts", "C:/atelier/skein")).toBe("src/a.ts");
+  });
+
+  test("case does not decide it, because Windows does not", () => {
+    expect(insideRoot("c:\\ATELIER\\Skein\\src\\a.ts", ROOT)).toBe("src/a.ts");
+  });
+
+  test("a trailing separator on the root changes nothing", () => {
+    expect(insideRoot("C:\\atelier\\skein\\a.ts", "C:\\atelier\\skein\\")).toBe("a.ts");
+  });
+
+  test("a path outside the root is null rather than clamped", () => {
+    /* The useful answer. A tool call can name a file in another repo, in %TEMP%
+       or in the engine directory, and none of those can be opened here — they
+       have to stay inert text rather than become a link that fails. */
+    expect(insideRoot("C:\\Windows\\win.ini", ROOT)).toBeNull();
+    expect(insideRoot("C:\\atelier\\caravan\\src\\a.cpp", ROOT)).toBeNull();
+    expect(insideRoot("/etc/passwd", ROOT)).toBeNull();
+  });
+
+  test("a sibling whose name merely starts the same is outside", () => {
+    /* Whole segments only: `skein2` is not inside `skein`. */
+    expect(insideRoot("C:\\atelier\\skein2\\a.ts", ROOT)).toBeNull();
+  });
+
+  test("the root itself is a directory and not a file to open", () => {
+    expect(insideRoot(ROOT, ROOT)).toBeNull();
+    expect(insideRoot(ROOT + "\\", ROOT)).toBeNull();
+  });
+
+  test("an already-relative path is taken as it is", () => {
+    expect(insideRoot("src/lib/finding.ts", ROOT)).toBe("src/lib/finding.ts");
+    expect(insideRoot("./src/lib/a.ts", ROOT)).toBe("src/lib/a.ts");
+    expect(insideRoot(".claude/rules/finding.md", ROOT)).toBe(".claude/rules/finding.md");
+  });
+
+  test("a relative path that climbs out is refused here too", () => {
+    /* Rust refuses it as well, and both must: the front end so no dead link is
+       drawn, Rust because a command is reachable from anything holding the IPC. */
+    expect(insideRoot("..\\..\\Windows\\win.ini", ROOT)).toBeNull();
+    expect(insideRoot("src/../../secrets", ROOT)).toBeNull();
+  });
+
+  test("nothing on either side is null and not a crash", () => {
+    expect(insideRoot("", ROOT)).toBeNull();
+    expect(insideRoot("src/a.ts", "")).toBeNull();
+  });
+});
+
+describe("finding places in a tool result", () => {
+  test("ripgrep's own output is a list of places", () => {
+    const text =
+      "src/lib/finding.ts:42:7:  const at = 0;\nsrc/App.svelte:900:9:  finder.press(e.key)";
+    const found = placesIn(text);
+    expect(found.length).toBe(2);
+    expect(found[0]).toMatchObject({ path: "src/lib/finding.ts", line: 42, col: 7 });
+    expect(found[1]).toMatchObject({ path: "src/App.svelte", line: 900, col: 9 });
+  });
+
+  test("the span covers exactly the place and not the line after it", () => {
+    const text = "src/lib/finding.ts:42:7:  const at = 0;";
+    const [p] = placesIn(text);
+    expect(text.slice(p.from, p.to)).toBe("src/lib/finding.ts:42:7");
+  });
+
+  test("a place with no column is still a place", () => {
+    const [p] = placesIn("see src/lib/finding.ts:42 for the reason");
+    expect(p).toMatchObject({ path: "src/lib/finding.ts", line: 42, col: null });
+  });
+
+  test("an absolute windows path with a drive letter", () => {
+    const [p] = placesIn("C:\\atelier\\skein\\src\\lib\\finding.ts:12:1:x");
+    expect(p.path).toBe("C:\\atelier\\skein\\src\\lib\\finding.ts");
+    expect(p.line).toBe(12);
+  });
+
+  test("a bare time is not a place", () => {
+    /* The extension guard is the whole of what rules these out, and a false
+       positive here is a dead link in the middle of an agent's output. */
+    expect(placesIn("finished at 10:30 after 5:12 of work")).toEqual([]);
+    expect(placesIn("ratio 3:1, took 90:00")).toEqual([]);
+  });
+
+  test("a url is not a place, even though it has a dot and a colon-number", () => {
+    /* The path character class includes `/`, so the match can start at the
+       scheme — `http://example.com:8080` parses as a path of `http://example.com`
+       and a line of 8080 unless the matched text itself is checked. */
+    expect(placesIn("serving on http://localhost:1420/ now")).toEqual([]);
+    expect(placesIn("see https://example.com:8080/x")).toEqual([]);
+  });
+
+  test("a version number is not a place", () => {
+    expect(placesIn("ripgrep 15.2.0:1 is installed")).toEqual([]);
+  });
+
+  test("a bare filename mentioned in prose is not a place", () => {
+    /* The guard that measurement added rather than reasoning: `probe-places.ts`
+       over 1,150 real tool results found `RailReplayTests.cpp:282` and dozens
+       like it, all of which `insideRoot` then reduced to a root-relative path
+       that does not exist — a dead link, which is the one outcome worse than no
+       link. A relative candidate has to carry a separator. */
+    expect(placesIn("see RailReplayTests.cpp:282 for the assertion")).toEqual([]);
+    expect(placesIn("package.json:3 sets it")).toEqual([]);
+  });
+
+  test("but a relative path with a directory in it is", () => {
+    /* The asymmetry with `insideRoot` is the point: a bare name passed as a
+       tool's `file_path` is a path, because something opened it. A bare name in
+       a sentence is somebody talking about a file. */
+    const [p] = placesIn("see src/lib/finding.ts:42");
+    expect(p).toMatchObject({ path: "src/lib/finding.ts", line: 42 });
+  });
+
+  test("and an absolute one needs no separator argument at all", () => {
+    const [p] = placesIn("C:\\atelier\\skein\\a.ts:9");
+    expect(p.line).toBe(9);
+  });
+
+  test("prose with no places in it yields none", () => {
+    expect(placesIn("")).toEqual([]);
+    expect(placesIn("the build succeeded")).toEqual([]);
+  });
+
+  test("places come back in the order they occur, so spans can be walked", () => {
+    const text = "a/one.ts:1:1:x\nb/two.rs:2:2:y\nc/three.md:3:3:z";
+    const found = placesIn(text);
+    expect(found.map((p) => p.line)).toEqual([1, 2, 3]);
+    for (let i = 1; i < found.length; i++) {
+      expect(found[i].from).toBeGreaterThanOrEqual(found[i - 1].to);
+    }
   });
 });

@@ -208,8 +208,16 @@
           >{finder.raw ? "source" : "rendered"}</button
         >
       {/if}
-      <button class="ghost" onclick={() => finder.back()} title="Back to the results (esc)"
-        >results</button
+      <!-- What "back" is depends on where the viewer was opened from, so the
+           button says which. Opened from a path in a transcript there is no
+           list behind it, and offering `results` would be a button promising a
+           search nobody ran. -->
+      <button
+        class="ghost"
+        onclick={() => finder.back()}
+        title={finder.alone
+          ? "Close it and go back to what you were reading (esc)"
+          : "Back to the results (esc)"}>{finder.alone ? "close" : "results"}</button
       >
     {/if}
     <button class="x" onclick={() => finder.hide()} title="Put it away (esc)">✕</button>

@@ -16,6 +16,7 @@ import {
   landed,
   resultSize,
   splitPath,
+  startLine,
   toolBadge,
 } from "../src/lib/toolcall";
 
@@ -333,5 +334,41 @@ describe("the result", () => {
   test("the clip note names where the whole of it is", () => {
     expect(clipNote(1234)).toContain("1,234");
     expect(clipNote(1234)).toContain("session file");
+  });
+});
+
+describe("which line a call was pointed at", () => {
+  /* For the one gesture that wants it: a path in a tool call is clickable into
+     the file viewer, and the viewer opens where the call was looking. */
+  test("a Read with an offset says where it started", () => {
+    const args = argsOf("Read", { file_path: "src/lib/finding.ts", offset: 240, limit: 60 });
+    expect(startLine(args)).toBe(240);
+  });
+
+  test("a Read of a whole file names no line", () => {
+    expect(startLine(argsOf("Read", { file_path: "src/lib/finding.ts" }))).toBeNull();
+  });
+
+  test("an Edit names no line, and does not guess one", () => {
+    /* It says what text it replaced rather than where, and finding that text in
+       the file would put the viewer confidently in the wrong place whenever the
+       string occurs twice. The honest answer is the top of the file. */
+    const args = argsOf("Edit", {
+      file_path: "src/lib/finding.ts",
+      old_string: "const a = 1;",
+      new_string: "const a = 2;",
+    });
+    expect(startLine(args)).toBeNull();
+  });
+
+  test("a zero or a negative offset is not a line", () => {
+    /* Lines are 1-based everywhere that counts them, so a 0 is a tool saying
+       "from the beginning" rather than naming a place. */
+    expect(startLine(argsOf("Read", { file_path: "a.ts", offset: 0 }))).toBeNull();
+    expect(startLine(argsOf("Read", { file_path: "a.ts", offset: -5 }))).toBeNull();
+  });
+
+  test("a call with no arguments at all names no line", () => {
+    expect(startLine([])).toBeNull();
   });
 });

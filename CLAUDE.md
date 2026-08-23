@@ -120,7 +120,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `ambience.md` | what the ground does when nobody is asking it anything | `ambience.ts`, `Backdrop.svelte` |
 | `servers.md` | dev server groups, colour without a terminal, why the PTY came off, and what an EDR made of it | `servers.rs`, `ansi.ts` |
 | `shell.md` | the shell Alt+I floats over the wall, the marker that draws its prompt, and why this one is pipes | `shell.rs`, `shell.ts`, `shell.svelte.ts`, `Console.svelte` |
-| `finding.md` | the finder and the file viewer: why space is free as a leader, a file list fetched once and scored here, what the fuzzy scorer prefers, and a markdown file that opens as a document | `find.rs`, `finding.ts`, `finder.svelte.ts`, `Spyglass.svelte` |
+| `finding.md` | the finder and the file viewer: why space is free as a leader, a file list fetched once and scored here, what the fuzzy scorer prefers, a markdown file that opens as a document, and a path in a tool call that opens it | `find.rs`, `finding.ts`, `finder.svelte.ts`, `Spyglass.svelte`, `ToolCall.svelte` |
 | `bang.md` | `!` in the dock: a shell line where a prompt goes, the two things Enter and Ctrl+Enter mean, and completion out of the shell's own `TabExpansion2` | `bang.ts`, `bang.svelte.ts`, `bang.rs`, `Dock.svelte`, `field.svelte.ts` |
 | `naming.md` | what a card is called, and the draft it wears before it is named | `naming.ts` |
 | `menu.md` | the right-click, and why offering nothing is a real answer | `menu.ts` |

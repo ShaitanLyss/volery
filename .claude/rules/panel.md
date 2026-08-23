@@ -748,3 +748,13 @@ overlap.** `stepBy` and `landing` in `outline.ts` are the arithmetic, pure and t
 unreadable from outside: a `scrollTop` of 0 is the top of a long transcript and also every
 position of one that does not fill its panel, where the keys are correctly a no-op.
 
+### A path in a tool call opens the file
+
+`ToolCall.svelte` turns a `path`-form argument, and every `path:line` in a result, into a link
+into the finder's file viewer. The reasoning — why `insideRoot` returns null rather than
+clamping, why a bare filename in prose is deliberately *not* a link, and why backing out of a
+viewer opened this way closes the panel instead of stepping back to a list nobody opened — is
+in `.claude/rules/finding.md`, which owns the viewer. What belongs here is only the house rule
+it obeys: the links are text with a dotted underline, not coloured, because **colour on this
+wall is status** and a path is not one. Same argument the diff two screens up makes about not
+being red and green.

@@ -1003,6 +1003,10 @@ export class Control {
         sheetLine: h.finder.sheetLine,
         rendered: h.finder.rendered,
         raw: h.finder.raw,
+        /* Whether there is a result list behind the viewer, which is the whole
+           of what Escape does next and is otherwise invisible: the two states
+           draw an identical panel and differ only in where backing out goes. */
+        alone: h.finder.alone,
         fault: h.finder.fault,
       },
       attention: {
@@ -2330,8 +2334,13 @@ export class Control {
       /** Drive the finder.
        *
        *  `do` is the gesture: `show`, `hide`, `type`, `step`, `pick`, `look`,
-       *  `back`, `swap`, `raw`. Every one of them is the function the panel's
-       *  own keyboard calls, so an op cannot pass where a keypress would fail.
+       *  `look-at`, `back`, `swap`, `raw`. Every one of them is the function the
+       *  panel's own keyboard calls, so an op cannot pass where a keypress would
+       *  fail.
+       *
+       *  `look-at` takes `path` and `line` and is the transcript's door into the
+       *  viewer — the one entry that leaves no result list behind it, which is
+       *  what makes `alone` in the answer worth reading.
        *
        *  There is deliberately no op for *the chord itself* — that is what the
        *  `key` op is for, pressing space then f then f at the window the way a
@@ -2352,7 +2361,16 @@ export class Control {
         else if (what === "step") h.finder.step(Number(op.by ?? 1));
         else if (what === "pick") h.finder.pick(Number(op.at ?? 0));
         else if (what === "look") await h.finder.look();
-        else if (what === "back") h.finder.back();
+        /* The transcript's entry point, which is a different gesture and not a
+           shortcut for `look`: it names its own root, and it is the one that
+           leaves nothing behind for Escape to step back to. */
+        else if (what === "look-at") {
+          await h.finder.lookAt(
+            String(op.cwd ?? h.shellCwd()),
+            String(op.path ?? ""),
+            op.line === undefined || op.line === null ? null : Number(op.line),
+          );
+        } else if (what === "back") h.finder.back();
         else if (what === "swap") await h.finder.swap();
         else if (what === "raw") h.finder.toggleRaw();
         else throw new Error(`no such finder gesture: ${what}`);
@@ -2371,6 +2389,7 @@ export class Control {
             sheet: h.finder.sheet?.path ?? null,
             sheetLine: h.finder.sheetLine,
             rendered: h.finder.rendered,
+            alone: h.finder.alone,
             fault: h.finder.fault,
             rows: h.finder.rows.slice(0, head).map((r) => ({
               path: r.path,

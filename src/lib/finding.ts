@@ -513,6 +513,118 @@ export function isMarkdown(path: string): boolean {
   return MARKDOWN.has(path.slice(at + 1).toLowerCase());
 }
 
+/* ── reaching the viewer from somewhere else ──────────────────────────────── */
+
+/** A path an agent wrote, reduced to one the viewer can open — or null.
+ *
+ *  This is the front-end mirror of `safe_join` in `find.rs`, and it exists
+ *  because the two sides count from different places. A transcript is full of
+ *  absolute paths (`C:\atelier\skein\src\lib\finding.ts`), the viewer reads
+ *  `(root, relative)`, and Rust refuses anything that climbs out of the root —
+ *  so a path has to be reduced here before it can be offered as a link at all.
+ *
+ *  **Null is the useful answer**, and it is why this returns one rather than
+ *  throwing or clamping. A tool call can perfectly reasonably name a file in
+ *  another repository, in `%TEMP%`, or in the engine directory — none of which
+ *  this card's viewer can open. Those must stay inert text rather than becoming
+ *  a link that fails when pressed, which is the one outcome worse than not
+ *  offering the link.
+ *
+ *  Case-insensitively and over either separator, since Windows hands the same
+ *  directory back as `C:\Users\...` or `c:\users\...` depending on who was
+ *  asked, and an agent writes whichever slash it feels like. Whole segments
+ *  only: `C:\atelier\skein2` is not inside `C:\atelier\skein`. */
+export function insideRoot(path: string, root: string): string | null {
+  if (!path || !root) return null;
+  const norm = (s: string) => s.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+  const r = norm(root);
+  const p = path.replace(/\\/g, "/");
+  const low = p.toLowerCase();
+
+  /* Already relative. Accepted as it is — a tool call that wrote `src/lib/a.ts`
+     meant it relative to the card's own directory, which is the root. `..` is
+     refused here as well as in Rust, so a relative path that climbs out is not
+     offered either. */
+  if (!/^([A-Za-z]:|[\\/])/.test(p)) {
+    const clean = p.replace(/^\.\//, "");
+    if (!clean || clean.split("/").includes("..")) return null;
+    return clean;
+  }
+
+  if (low === r) return null; // the root itself is a directory, not a file
+  if (!low.startsWith(r + "/")) return null;
+  const rel = p.slice(r.length + 1);
+  return rel || null;
+}
+
+/** Where in a line of output a place on disk is named.
+ *
+ *  A `Grep` result is a list of places — `src/lib/finding.ts:42:7:  const at`
+ *  — and every one of them is somewhere you might want to look. So the result
+ *  text is scanned for the shape and each hit becomes a link, which turns a
+ *  wall of matches into something you can walk.
+ *
+ *  **The guards matter more than the pattern**, because a false positive here
+ *  is a link that goes nowhere sitting in the middle of an agent's output. So a
+ *  candidate must carry a *file extension* before the colon — which is what
+ *  rules out `10:30`, `Error at 5:12`, and every bare `key: 3` — and anything
+ *  inside a `://` is skipped, which is what rules out `http://host:8080`.
+ *  Deliberately conservative: a place this misses stays readable text, and a
+ *  place it invents does not.
+ *
+ *  Returns spans into `text` with the parsed place, in the order they occur. */
+export type Place = { from: number; to: number; path: string; line: number; col: number | null };
+
+/* Extension before the colon is the whole guard. 1–12 characters of word, since
+   `.ts` and `.uproject` both exist and nothing useful is longer.
+ *
+ * **No space in the path class**, and that is a deliberate loss. Allowing one
+ * lets the match run backwards through prose: `see src/lib/a.ts:42` parsed with
+ * a path of `see src/lib/a.ts`, and `ripgrep 15.2.0:1` became a place called
+ * `ripgrep 15.2.0`. So `C:\Program Files\x\a.ts:3` is missed — which is the
+ * right way round to fail, since a place this misses stays readable text and a
+ * place it invents is a dead link in the middle of an agent's output. */
+const PLACE = /([A-Za-z]:[\\/])?([\w.\-+/\\]*?[\w\-+]\.\w{1,12}):(\d+)(?::(\d+))?/g;
+
+export function placesIn(text: string): Place[] {
+  const out: Place[] = [];
+  for (const m of text.matchAll(PLACE)) {
+    const path = (m[1] ?? "") + m[2];
+    /* A url, not a path — and the check is on the *matched* text rather than on
+       what precedes it, because the path character class includes `/` and will
+       happily swallow a scheme: `http://example.com:8080` matches with a path of
+       `http://example.com` and a line of 8080. Looking backwards would never
+       have seen it. */
+    if (path.includes("://")) continue;
+    /* The extension guard has already refused `10:30`; what is left is a "path"
+       that is entirely digits and dots, which is a version number. */
+    if (/^[\d.]+$/.test(m[2])) continue;
+    /* **A relative candidate must carry a separator**, and this is the guard
+       that measurement added rather than reasoning. `tools/probe-places.ts` over
+       1,150 real tool results found `RailReplayTests.cpp:282` and dozens like
+       it — a *filename mentioned in prose*, which `insideRoot` then happily
+       reduced to a root-relative path that does not exist, producing precisely
+       the dead link this whole pattern is written to avoid.
+     *
+     * The asymmetry with `insideRoot` is deliberate and is the point: a bare
+     * name given as a tool's `file_path` argument genuinely means "relative to
+     * the card's directory", because something passed it to a tool that then
+     * opened it. A bare name found in a sentence means somebody was talking
+     * about a file. Evidence that is good enough for the first is not good
+     * enough for the second, so the second asks for more. Cost: `package.json:3`
+     * in prose is not a link. Worth it. */
+    if (!m[1] && !/[\\/]/.test(m[2])) continue;
+    out.push({
+      from: m.index,
+      to: m.index + m[0].length,
+      path,
+      line: Number(m[3]),
+      col: m[4] ? Number(m[4]) : null,
+    });
+  }
+  return out;
+}
+
 /** The path as two pieces, so the panel can draw the directory quietly and the
  *  file plainly. The directory keeps its trailing separator — it reads as a
  *  path that way, and it means the two halves concatenate back to the whole. */

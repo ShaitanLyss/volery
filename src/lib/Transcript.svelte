@@ -34,7 +34,7 @@
      panel has a rail carrying the view, a keyboard ladder that steps it, and a
      `following` its effect graph reads, so it keeps its own effect and hands
      that module the three numbers. */
-  import { stillFollowing, STICK_PX } from "./follow";
+  import { hearGrowth, stillFollowing, STICK_PX } from "./follow";
 
   let {
     conv,
@@ -42,6 +42,7 @@
     read = 1,
     onhistory,
     onlink,
+    onfile,
     onread,
   }: {
     conv: Conversation;
@@ -60,6 +61,11 @@
     onhistory?: (c: Conversation) => void;
     /** Open a link the agent wrote. Routed out for the same reason. */
     onlink?: (href: string) => void;
+    /** Look at a file a tool call named, in the finder's viewer. Routed out for
+     *  the same reason as `onlink`: which panel is on screen is not this one's
+     *  business. The path arrives project-relative, already reduced against
+     *  `conv.cwd` by `ToolCall` — see `.claude/rules/finding.md`. */
+    onfile?: (path: string, line: number | null) => void;
     /** A notch of ctrl+wheel asking for a different size. Routed out for the
      *  same reason the width's drag is: how this window is set up to be read
      *  from is not the panel's to keep. */
@@ -127,6 +133,7 @@
   function toggleRun(key: string) {
     if (shut[key]) delete shut[key];
     else shut[key] = true;
+    unfolded();
     refresh(0);
   }
 
@@ -135,7 +142,23 @@
     else open[key] = true;
     /* The column just changed height, so every offset the rails measured is
        stale — including which mark counts as where you are reading. */
+    unfolded();
     refresh(0);
+  }
+
+  /** A fold you have just worked is something you are asking to read where it
+   *  is, so it lets go of the tail — the same argument the rails' `jump` makes,
+   *  and one the follow now needs made out loud: it hears the column itself, so
+   *  a call unfolded at the bottom of a live turn would otherwise carry the view
+   *  straight past the header to the end of whatever it uncovered.
+   *
+   *  Said for closing as well as for opening, and that is safe rather than
+   *  sloppy: a shorter column clamps the view back down onto the tail, which is
+   *  a real scroll event, and `onScroll` measures it and takes the tail up
+   *  again. */
+  function unfolded() {
+    following = false;
+    pinned = -1;
   }
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -181,6 +204,30 @@
   function pin(el: HTMLElement) {
     el.scrollTop = el.scrollHeight;
     pinned = el.scrollTop;
+  }
+
+  /** The follow's pending frame: one write however many reasons to make it land
+   *  in the same one. */
+  let holding = 0;
+
+  /** Put the view back on the tail, if that is still where it belongs.
+   *
+   *  On the next frame rather than now, because every caller is *inside* the
+   *  change: mid-effect and mid-mutation-callback the panel still has its old
+   *  height, so scrolling to `scrollHeight` here would stop one line short of
+   *  the text that caused it.
+   *
+   *  And asked again when the frame fires, not only when it was scheduled — a
+   *  frame is long enough to have let go. A rail click or an unfolded call
+   *  during a live turn lands between the two, and this would otherwise carry
+   *  out a decision that had already been reversed. */
+  function keepTail() {
+    if (holding || !following) return;
+    holding = requestAnimationFrame(() => {
+      holding = 0;
+      const el = scroller;
+      if (el && following) pin(el);
+    });
   }
 
   /** How far below the fold the tail has to be before the way back is worth
@@ -469,6 +516,7 @@
     clearTimeout(recollect);
     clearTimeout(carrying);
     cancelAnimationFrame(gliding);
+    cancelAnimationFrame(holding);
   });
 
   /** Hand the clipboard the markdown, not the drawing of it.
@@ -668,41 +716,62 @@
     if (!untrack(() => watching)) following = true;
   });
 
-  /* Follow the tail while text streams in — but only if that is where you
+  /* Follow the tail while the column grows — but only if that is where you
      already were. Scrolling up during a live turn is how you read what has just
      gone past, and pinning the view to the bottom on every token made that
      impossible: the line you were reading left the screen before you finished
-     it, several times a second. */
+     it, several times a second.
+
+     **Heard from the column rather than declared by the panel**, which is the
+     whole of the fix for "it keeps ending up back up the page and I keep
+     clicking the button". This used to wake on four conversation signals —
+     `streaming`, `lines.length`, `history.length`, `activity` — which is every
+     way the *agent* can make the column taller and not one of the others. Every
+     other way changed the height with no signal behind it and therefore with
+     nothing to re-pin: the panel dragged narrower by its grip, or the window
+     resized, which rewraps every line of an answer into a taller column; a fold
+     opened; a `!` run writing its output into a line that already exists, which
+     moves no length anywhere. Each of them left the view above the tail with
+     `following` still *true* — so by the panel's own account nothing was wrong,
+     nothing re-armed it, and only the wheel or the button got you back.
+
+     `hearGrowth` is the same pair of observers `stickToTail` hands every plain
+     scroller in the app, and the argument for it is the one already written
+     there: a component that has to declare its own growth is a component that
+     forgets to. Which this one did, in four ways, for as long as it has existed.
+
+     A mutation re-pins; a resize re-measures as well, because a rewrap moves
+     every mark in the panel and `far` taken at the old width is a way back that
+     never appears. Only on a resize, though — measuring is the walk `refresh`
+     exists to throttle, and the content effects above already ask for it at a
+     rate a stream can afford. */
   $effect(() => {
-    void conv.streaming;
-    void conv.lines.length;
-    /* History arrives all at once and lands *above* everything, so without this
-       the view would sit at what is suddenly the top of a long column. */
-    void conv.history.length;
-    /* The live status line is at the foot of the column and changes without any
-       line being added — a tool call begins before its line exists. It is the
-       thing most worth being at the bottom for. */
-    void conv.activity;
-    /* And coming back to the window is a moment to honour the tail, because the
-       frame this effect waits for may never have come while you were away:
-       Chromium suspends `requestAnimationFrame` for a minimised or fully
-       occluded window, so every scroll the re-arm above asked for is a callback
-       queued behind the restore rather than a view at the bottom. Re-running on
-       focus costs nothing when the tail was let go of — the guard below returns
-       — and is the difference between landing on the newest thing said and
-       landing wherever the column happened to leave you. */
-    void watching;
     const el = scroller;
-    if (!el || !following) return;
-    /* On the next frame rather than now: mid-effect the DOM still has its old
-       height, so scrolling to `scrollHeight` here would stop one line short of
-       the text that triggered this.
-       Asked again when it fires, because a frame is long enough to have let go:
-       a rail click during a live turn lands between the two, and this would
-       otherwise carry out a decision that had already been reversed. */
-    requestAnimationFrame(() => {
-      if (following) pin(el);
+    if (!el) return;
+    /* Untracked, or reading `following` here would have every scroll that lets
+       go of the tail tear the observers down and build them again. */
+    untrack(keepTail);
+    return hearGrowth(el, keepTail, () => {
+      keepTail();
+      measure();
     });
+  });
+
+  /* And coming back to the window is a moment to honour the tail, because the
+     frame the follow waits for may never have come while you were away:
+     Chromium suspends `requestAnimationFrame` for a minimised or fully occluded
+     window, so every scroll the re-arm above asked for is a callback queued
+     behind the restore rather than a view at the bottom. It costs nothing when
+     the tail was genuinely let go of — `keepTail` returns — and is the
+     difference between landing on the newest thing said and landing wherever the
+     column happened to leave you.
+
+     `watching` is the one dependency, and `keepTail`'s read of `following` is
+     untracked for the reason this whole file is careful about: in an effect a
+     condition and a trigger are the same act unless you separate them. */
+  $effect(() => {
+    void watching;
+    untrack(keepTail);
   });
 
   /* ── how big the reading is ───────────────────────────────────────────────
@@ -827,6 +896,8 @@
       text={line.text}
       open={!!open[key]}
       ontoggle={() => toggle(key)}
+      root={conv.kind === "project" ? conv.cwd : undefined}
+      {onfile}
     />
   {:else if line.kind === "text"}
     <!-- `data-nav` is the rail's whole handle on the panel: this one is the

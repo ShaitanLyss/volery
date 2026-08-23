@@ -250,6 +250,38 @@ export function formOf(key: string, value: unknown): Form {
   return value.length > SCALAR_MAX ? "text" : "scalar";
 }
 
+/** Keys whose value is the line a call started reading at.
+ *
+ *  Only `offset`, which is `Read`'s, and it is a set rather than a comparison so
+ *  a second tool spelling it differently is one entry. `Grep`'s `offset` is a
+ *  count of *results* to skip rather than a line in a file — but `Grep` carries
+ *  no path-form argument to attach a line to, so the two cannot collide.
+ *
+ *  1-based, as `Read` counts and as every editor does, so it is used exactly as
+ *  it arrives. */
+const STARTS = new Set(["offset", "start_line", "startLine", "line"]);
+
+/** Which line a call was pointed at, if it said.
+ *
+ *  For the one gesture that wants it: a path in a tool call is clickable into
+ *  the file viewer, and a `Read` with an offset knows where in the file you were
+ *  looking. An `Edit` does not — it names the text it replaced rather than where
+ *  — and guessing by searching the file for `old_string` would be a viewer that
+ *  is confidently in the wrong place whenever the string occurs twice. So the
+ *  honest answer there is null, and the viewer opens at the top.
+ *
+ *  Pure and separate from `argsOf` because it is a question about a call rather
+ *  than a thing to draw, and because it is the sort of arithmetic that is worth
+ *  a test rather than a line inside a component. */
+export function startLine(args: Arg[]): number | null {
+  for (const a of args) {
+    if (!STARTS.has(a.key)) continue;
+    const n = Number(a.value);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return null;
+}
+
 /** Every argument the call carried, in reading order.
  *
  *  Every one of them: a call is machinery, and the reason to open it is that
