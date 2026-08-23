@@ -127,6 +127,32 @@ mod tests {
         assert!(checked("C:\\a\\studio.volery.json.exe").is_err());
     }
 
+    /// An accounts document is not a layout, and this is the half of that which
+    /// has teeth.
+    ///
+    /// There are two carried-document formats side by side and they are
+    /// deliberately not interchangeable (see `accounts.rs`, and the last section
+    /// of `.claude/rules/accounts.md`): a layout is something you can put in a
+    /// chat message, and `.volery-accounts.json` holds live bearer tokens.
+    /// `accounts.rs` asserts that its reader refuses *this* suffix. The
+    /// symmetric case belongs here, and it is the one that costs something if it
+    /// ever stops holding — `read_layout_file` hands the file's **text** back to
+    /// the front end, so a layout reader that accepted an accounts document
+    /// would put three plaintext credentials inside the webview, which is the
+    /// one place in this app that renders untrusted content.
+    ///
+    /// Which is why this is a test rather than a comment. Widening `SUFFIX` to
+    /// `.json` — an entirely reasonable-looking convenience — is all it would
+    /// take, and nothing else in either module would fail.
+    #[test]
+    fn an_accounts_document_is_never_read_as_a_layout() {
+        assert!(checked(r"C:\walls\mine.volery-accounts.json").is_err());
+        assert!(checked(r"C:\walls\Mine.Volery-Accounts.JSON").is_err());
+        /* And the near miss, since the suffixes differ by one segment: a layout
+           whose name merely mentions accounts is still a layout. */
+        assert!(checked(r"C:\walls\accounts.volery.json").is_ok());
+    }
+
     #[test]
     fn the_ceiling_is_a_sentence_rather_than_a_hang() {
         /* Not a behaviour test — there is no 256mb file to point at — but the

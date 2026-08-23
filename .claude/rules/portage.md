@@ -119,6 +119,23 @@ not.
   through `off_main`, because a document carrying a wall of screenshots is tens of megabytes
   and CLAUDE.md's paragraph on that is not optional reading.
 
+## There are two carried documents, and they must not become one
+
+`.volery.json` is this one. `.volery-accounts.json` is `accounts.rs`, and since `941dbca` it
+carries **live plaintext credentials**. Each module's path check refuses the other's suffix,
+on purpose, and both directions have a test.
+
+If anyone proposes folding them into one "carry my Volery off" document, this is the reason
+not to: **a wall layout is something you can put in a chat message and an accounts file is
+not**, and merging them makes the safe artefact unsafe. The last section of
+`.claude/rules/accounts.md` has the full argument.
+
+The direction that costs something is the one tested *here*, and it is worth knowing why:
+`read_layout_file` hands the file's text straight back to the front end, so a layout reader
+that accepted an accounts document would put bearer tokens inside the webview — the one place
+in this app that renders untrusted content. Widening `SUFFIX` to `.json` is all it would take,
+and it is exactly the kind of change that looks like a convenience.
+
 Image bytes ride inside the document, read back out through the asset protocol the wall
 already draws them with (`assetProtocol.scope` is `$APPDATA/references/**`), so nothing
 newly reachable was not already on screen. An image whose bytes could not be read is carried
