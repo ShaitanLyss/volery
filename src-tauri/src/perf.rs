@@ -42,7 +42,7 @@ use sysinfo::{
     CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind,
     System,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::actions::Runs;
 use crate::servers::Servers;
@@ -138,130 +138,147 @@ fn ancestry(
 
 /// One reading. `scope` is "skein" (this studio and everything it spawned) or
 /// "machine" (every process, the way a task manager shows it).
+///
+/// `async` and off the main thread, because a reading is a full enumeration of
+/// the Windows process table and the front end asks for one every two seconds
+/// for as long as a performance widget is on the wall. Run inline on the IPC
+/// thread — which is what a `#[tauri::command]` without `async` does — that is
+/// every card on the wall going unpainted for the length of an enumeration,
+/// thirty times a minute — the widget you would open to diagnose a freeze
+/// causing one. See `crate::off_main`, and the rule in CLAUDE.md.
+///
+/// The four `State` guards the body needs are reached from the `AppHandle`
+/// *inside* the closure rather than taken as parameters, since a
+/// `State<'_, T>` borrows the invocation and cannot cross into
+/// `spawn_blocking`. `usage::read_usage` is the same shape.
 #[tauri::command]
-pub fn sample_performance(
-    meter: State<'_, Meter>,
-    sup: State<'_, Supervisor>,
-    servers: State<'_, Servers>,
-    runs: State<'_, Runs>,
+pub async fn sample_performance(
+    app: AppHandle,
     scope: Option<String>,
     limit: Option<usize>,
 ) -> Result<Sample, String> {
-    let machine = scope.as_deref() == Some("machine");
-    let cap = limit.unwrap_or(40).clamp(1, 400);
+    crate::off_main(move || {
+        let meter = app.state::<Meter>();
+        let sup = app.state::<Supervisor>();
+        let servers = app.state::<Servers>();
+        let runs = app.state::<Runs>();
+        let machine = scope.as_deref() == Some("machine");
+        let cap = limit.unwrap_or(40).clamp(1, 400);
 
-    let mut guard = meter.0.lock().map_err(|e| e.to_string())?;
-    let sys = guard.get_or_insert_with(|| {
-        System::new_with_specifics(
-            RefreshKind::nothing()
-                .with_memory(MemoryRefreshKind::nothing().with_ram())
-                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
-        )
-    });
-
-    sys.refresh_cpu_usage();
-    sys.refresh_memory();
-    /* Memory and CPU only. Enumerating command lines and open files on every
-       tick is most of what makes a process listing expensive, and none of it is
-       drawn. */
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_memory().with_cpu(),
-    );
-
-    /* What we know about our own children, keyed by pid. The three states are
-       asked rather than guessed at: a `claude.exe` on the machine that this
-       studio did not spawn is somebody else's terminal, and must not be labelled
-       as one of our cards. */
-    let mut known: HashMap<Pid, (String, Option<String>)> = HashMap::new();
-    let me = Pid::from_u32(std::process::id());
-    known.insert(me, ("studio".into(), None));
-    for (pid, id) in sup.pids() {
-        known.insert(Pid::from_u32(pid), ("conversation".into(), Some(id)));
-    }
-    for (pid, id) in servers.pids() {
-        known.insert(Pid::from_u32(pid), ("server".into(), Some(id)));
-    }
-    for (pid, id) in runs.pids() {
-        known.insert(Pid::from_u32(pid), ("action".into(), Some(id)));
-    }
-
-    let parents: HashMap<Pid, Pid> = sys
-        .processes()
-        .iter()
-        .filter_map(|(pid, p)| p.parent().map(|up| (*pid, up)))
-        .collect();
-
-    /* What each card's job says it owns, consulted only where `ancestry` came
-       back empty-handed. The order matters and is the whole point: ancestry
-       still decides `own`, so a `pnpm` is still the server and its node
-       children still hang off it — but a process whose intermediate parent has
-       exited is invisible to a parent walk, and the job can still name it. That
-       gap is not a corner case, it is precisely where the leaked processes
-       live, and the meter used to drop them on the floor as strangers. */
-    let owned = sup.owned_pids();
-
-    let mut rows: Vec<Proc> = Vec::new();
-    for (pid, p) in sys.processes() {
-        let found = ancestry(*pid, &parents, &known).or_else(|| {
-            owned
-                .get(&pid.as_u32())
-                .map(|id| ("conversation".to_string(), Some(id.clone()), false))
-        });
-        if found.is_none() && !machine {
-            continue;
-        }
-        let (role, reference, own) = found.unwrap_or_else(|| ("other".into(), None, true));
-        /* No parent recorded, or one the process table no longer holds. Note
-           the second is the common shape and the first is not: Windows keeps
-           the ppid field after the parent dies, so an orphan usually still
-           names one — it just names a pid nobody is at any more. */
-        let orphan = p.parent().is_none_or(|up| !sys.processes().contains_key(&up));
-        rows.push(Proc {
-            pid: pid.as_u32(),
-            ppid: p.parent().map(|up| up.as_u32()),
-            name: p.name().to_string_lossy().to_string(),
-            cpu: p.cpu_usage(),
-            mem: p.memory(),
-            role,
-            reference,
-            own,
-            orphan,
-            age: p.run_time(),
-        });
-    }
-
-    let counted = rows.len();
-    /* Costliest first, and by CPU before memory: the question a wall of agents
-       raises is "what is running", not "what is resident". A process that is
-       recognised as one of ours outranks an anonymous one at the same cost, so
-       capping the machine view never hides the studio's own work. */
-    rows.sort_by(|a, b| {
-        let ours = |r: &Proc| r.role != "other";
-        ours(b)
-            .cmp(&ours(a))
-            .then(
-                b.cpu
-                    .partial_cmp(&a.cpu)
-                    .unwrap_or(std::cmp::Ordering::Equal),
+        let mut guard = meter.0.lock().map_err(|e| e.to_string())?;
+        let sys = guard.get_or_insert_with(|| {
+            System::new_with_specifics(
+                RefreshKind::nothing()
+                    .with_memory(MemoryRefreshKind::nothing().with_ram())
+                    .with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
             )
-            .then(b.mem.cmp(&a.mem))
-    });
-    let dropped = rows.split_off(rows.len().min(cap));
+        });
 
-    Ok(Sample {
-        at: now(),
-        scope: if machine { "machine".into() } else { "skein".into() },
-        cores: sys.cpus().len().max(1),
-        cpu: sys.global_cpu_usage(),
-        mem_used: sys.used_memory(),
-        mem_total: sys.total_memory(),
-        counted,
-        other_cpu: dropped.iter().map(|r| r.cpu).sum(),
-        other_mem: dropped.iter().map(|r| r.mem).sum(),
-        procs: rows,
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+        /* Memory and CPU only. Enumerating command lines and open files on every
+           tick is most of what makes a process listing expensive, and none of it is
+           drawn. */
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_memory().with_cpu(),
+        );
+
+        /* What we know about our own children, keyed by pid. The three states are
+           asked rather than guessed at: a `claude.exe` on the machine that this
+           studio did not spawn is somebody else's terminal, and must not be labelled
+           as one of our cards. */
+        let mut known: HashMap<Pid, (String, Option<String>)> = HashMap::new();
+        let me = Pid::from_u32(std::process::id());
+        known.insert(me, ("studio".into(), None));
+        for (pid, id) in sup.pids() {
+            known.insert(Pid::from_u32(pid), ("conversation".into(), Some(id)));
+        }
+        for (pid, id) in servers.pids() {
+            known.insert(Pid::from_u32(pid), ("server".into(), Some(id)));
+        }
+        for (pid, id) in runs.pids() {
+            known.insert(Pid::from_u32(pid), ("action".into(), Some(id)));
+        }
+
+        let parents: HashMap<Pid, Pid> = sys
+            .processes()
+            .iter()
+            .filter_map(|(pid, p)| p.parent().map(|up| (*pid, up)))
+            .collect();
+
+        /* What each card's job says it owns, consulted only where `ancestry` came
+           back empty-handed. The order matters and is the whole point: ancestry
+           still decides `own`, so a `pnpm` is still the server and its node
+           children still hang off it — but a process whose intermediate parent has
+           exited is invisible to a parent walk, and the job can still name it. That
+           gap is not a corner case, it is precisely where the leaked processes
+           live, and the meter used to drop them on the floor as strangers. */
+        let owned = sup.owned_pids();
+
+        let mut rows: Vec<Proc> = Vec::new();
+        for (pid, p) in sys.processes() {
+            let found = ancestry(*pid, &parents, &known).or_else(|| {
+                owned
+                    .get(&pid.as_u32())
+                    .map(|id| ("conversation".to_string(), Some(id.clone()), false))
+            });
+            if found.is_none() && !machine {
+                continue;
+            }
+            let (role, reference, own) = found.unwrap_or_else(|| ("other".into(), None, true));
+            /* No parent recorded, or one the process table no longer holds. Note
+               the second is the common shape and the first is not: Windows keeps
+               the ppid field after the parent dies, so an orphan usually still
+               names one — it just names a pid nobody is at any more. */
+            let orphan = p.parent().is_none_or(|up| !sys.processes().contains_key(&up));
+            rows.push(Proc {
+                pid: pid.as_u32(),
+                ppid: p.parent().map(|up| up.as_u32()),
+                name: p.name().to_string_lossy().to_string(),
+                cpu: p.cpu_usage(),
+                mem: p.memory(),
+                role,
+                reference,
+                own,
+                orphan,
+                age: p.run_time(),
+            });
+        }
+
+        let counted = rows.len();
+        /* Costliest first, and by CPU before memory: the question a wall of agents
+           raises is "what is running", not "what is resident". A process that is
+           recognised as one of ours outranks an anonymous one at the same cost, so
+           capping the machine view never hides the studio's own work. */
+        rows.sort_by(|a, b| {
+            let ours = |r: &Proc| r.role != "other";
+            ours(b)
+                .cmp(&ours(a))
+                .then(
+                    b.cpu
+                        .partial_cmp(&a.cpu)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(b.mem.cmp(&a.mem))
+        });
+        let dropped = rows.split_off(rows.len().min(cap));
+
+        Ok(Sample {
+            at: now(),
+            scope: if machine { "machine".into() } else { "skein".into() },
+            cores: sys.cpus().len().max(1),
+            cpu: sys.global_cpu_usage(),
+            mem_used: sys.used_memory(),
+            mem_total: sys.total_memory(),
+            counted,
+            other_cpu: dropped.iter().map(|r| r.cpu).sum(),
+            other_mem: dropped.iter().map(|r| r.mem).sum(),
+            procs: rows,
+        })
     })
+    .await?
 }
 
 /* ── ending one, and sweeping the ones nobody is waiting on ──────────────── */
@@ -419,11 +436,21 @@ pub fn spawn_reaper(app: AppHandle) {
 /// Let the sampler go when the last widget comes off the wall. A `System` holds
 /// a row per process on the machine, and there is no reason to keep several
 /// thousand of them warm for a wall that has stopped asking.
+///
+/// Dropping a `System` is instant and this would still be wrong on the main
+/// thread, which is the half of the rule that is easy to miss: it takes the
+/// same mutex `sample_performance` now holds across an entire enumeration, so
+/// left sync it would park the thread that paints every card *waiting for the
+/// lock* — the freeze back through the door the other fix just closed.
+/// `release_azdo` is the same case one subsystem over.
 #[tauri::command]
-pub fn release_performance(meter: State<'_, Meter>) {
-    if let Ok(mut guard) = meter.0.lock() {
-        *guard = None;
-    }
+pub async fn release_performance(app: AppHandle) {
+    let _ = crate::off_main(move || {
+        if let Ok(mut guard) = app.state::<Meter>().0.lock() {
+            *guard = None;
+        }
+    })
+    .await;
 }
 
 #[cfg(test)]
