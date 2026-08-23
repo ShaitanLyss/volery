@@ -382,7 +382,6 @@ pub fn run() {
             servers::stop_group,
             servers::group_running,
             servers::servers_quiet,
-            servers::probe_ports,
             bang::bang_run,
             bang::bang_stop,
             bang::bang_running,

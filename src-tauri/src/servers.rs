@@ -226,31 +226,22 @@ struct ServerState {
     code: Option<i32>,
 }
 
-#[derive(Clone, Serialize)]
-pub struct PortReport {
-    pub port: u16,
-    pub listening: bool,
-}
-
+/// Blocking for up to 180ms, so **only ever from a thread that is not the main
+/// one** — the health poll below spawns for this, and anything else that wants
+/// it owes the same. There was a `probe_ports` command here that answered a
+/// list of ports for the front end ("port 5173 is taken", surfaced before a
+/// start); it was removed 2026-08-23 having never had a caller, because sync
+/// and sequential it would have parked the thread that paints every card for
+/// 180ms per port on whatever gesture finally wired it up. If the reading is
+/// wanted, it comes back `async` over `crate::off_main` with the probes run
+/// concurrently rather than one after another — a group's four ports are one
+/// timeout's wait, not four.
 fn port_open(port: u16) -> bool {
     TcpStream::connect_timeout(
         &SocketAddrV4::new(Ipv4Addr::LOCALHOST, port).into(),
         Duration::from_millis(180),
     )
     .is_ok()
-}
-
-/// Is anything already holding these ports? Surfaced before a start so a stale
-/// listener reads as "port 5173 is taken" rather than a wall of npm output.
-#[tauri::command]
-pub fn probe_ports(ports: Vec<u16>) -> Vec<PortReport> {
-    ports
-        .into_iter()
-        .map(|port| PortReport {
-            port,
-            listening: port_open(port),
-        })
-        .collect()
 }
 
 /// A line this long is a program that has lost the plot. Flush it rather than
