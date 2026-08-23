@@ -145,17 +145,29 @@ claude -p (child, NDJSON stdio)
 Nothing polls, and nothing the *agent* said is drawn before it says it — every card state
 above is a fold over events that arrived.
 
-There are exactly **three** deliberate exceptions to the polling half, and all three are the
-same argument: there is no event to fold, because nothing emits one. The performance sampler,
-since no process announces that it has started using the CPU (`meter.svelte.ts`); a running
-workflow's progress, since its agents run on a stream this app never sees and nothing announces
-that one has finished (`crowds.svelte.ts`, `workflow.rs`); and whether a newer release exists,
-since GitHub tells nobody a tag appeared (`release.svelte.ts`, `update.rs`).
+There are exactly **three** places that go and look, and all three are the same argument:
+there is no event to fold *from the thing being watched*, because it emits none. The
+performance sampler, since no process announces that it has started using the CPU
+(`meter.svelte.ts`); a running workflow's progress, since its agents run on a stream this app
+never sees and nothing announces that one has finished (`crowds.svelte.ts`, `workflow.rs`);
+and whether a newer release exists, since GitHub tells nobody a tag appeared
+(`release.svelte.ts`, `update.rs`).
 
-The first two are bounded the same way — one poller however many readers, started by the first
-that asks and stopped by the last that stops. The third is bounded harder still and is the
-shape to prefer: it is asked **once, at launch**, and never again, because the answer only has
-to be right by tomorrow morning. Anything proposing to be the fourth owes one of those two
+The first two are bounded the same way — one poller however many readers, started by the
+first that asks and stopped by the last that stops.
+
+**The third is the shape to prefer, and it is not a clock at all.** It was once asked exactly
+once, at launch, on the argument that the answer only had to be right by tomorrow morning —
+which was true of the answer and wrong about the wall, since this app is left up for days and
+a wall opened with no network never checked again. What replaced it is not a timer: *focus* is
+an event, `attention.focused` already folds it, and the question is asked when you come back
+to the window — which is also the moment the answer is worth having. The residue is bounded
+three ways: only while the window is in front, never twice inside a floor, and **not at all
+once there is something to say**, since no further ask can change the answer.
+
+That is the lesson worth carrying, and it generalises past updates: when the thing you care
+about emits nothing, **look for an event that already exists near it and fold that instead**,
+then bound whatever is left over. Anything proposing to be the fourth owes one of these
 shapes and the same argument. "I could not find where the event was" is not the argument.
 
 Your own prompt is the one exception, and it is drawn the moment you send it

@@ -87,16 +87,44 @@ a missing installer and an unreadable answer all come out the same way, which is
 - **Strictly later, so an older tag is never taken.** A tag going backwards means somebody
   pulled a release, and rolling a wall backwards unasked is worse than doing nothing.
 
-### Asked once, at launch, and never on a clock
+### Asked when you are looking at it, and not otherwise
 
-There is no event to fold — GitHub does not tell anyone a tag appeared — so this goes and
-looks. It looks **once**, when the wall is painted, which is the smallest amount of looking
-that answers the question and is why it needs none of the bounded-poller machinery
-`meter.svelte.ts` and `crowds.svelte.ts` carry. A release that landed at four is one you are
-told about tomorrow morning, and that is a fine answer.
+GitHub does not tell anyone a tag appeared, so this goes and looks. It used to look
+**once**, when the wall was painted, on the argument that a release landing at four is one
+you are told about tomorrow morning.
+
+That was true of the answer and wrong about the wall. This app is left running for days —
+the process behind the 0.7.0 button had been up thirty-nine hours — so "once at launch"
+meant a release cut on Tuesday stayed invisible until something unrelated made you restart.
+And a wall opened with no network never checked again at all, which is the failure that
+actually settled it: the old shape had no way to recover from its own worst case.
+
+So it asks again, and **the shape is deliberately not a clock.** Focus is an event,
+`attention.focused` already folds it, and `App.svelte` hands it to `Releases.watch` in one
+line. The common trigger is you coming back to the window, which is also the moment the
+answer is worth having. Three bounds, each doing a job:
+
+- **Only while the window is in front.** A wall left open on a second monitor for a week
+  asks nothing. This is the whole of the cost argument.
+- **A floor between asks** (`FLOOR`, five minutes), so alt-tabbing forty times costs one
+  question. The pending ask is *rescheduled*, never queued.
+- **It stops for good once there is something to say.** `unanswered` in `update.ts` is that
+  rule, and it is the tightest of the three — not a saving but the observation that no
+  further ask can change the answer.
+
+`BACKSTOP` (fifteen minutes) covers the window you never look away from, where focus alone
+would never fire again. It runs only while focused, so the first bound contains it rather
+than sitting beside it: four questions an hour at the very most, against sixty.
+
+`unanswered` does a second job that is easy to miss and is why it is pure and tested: a
+reply can be **in flight when you press the button**, so it is asked again *after* the answer
+comes back. Without that, an ask that started before the press would put `offered` back over
+a download already three megabytes in.
 
 Unauthenticated, which is 60 requests an hour from one address. No token: a public repo's
 releases need none, and an updater that wanted a credential is an updater nobody can audit.
+`latest_release` is `async` and that is now load-bearing — asked repeatedly, a synchronous
+version would freeze every card on the wall for the length of each request.
 
 **Every failure is silence in the header.** No network, GitHub down, a rate limit, a tag
 nothing can order: the chrome looks exactly as it did. `fault` is kept for the control

@@ -357,6 +357,17 @@
     void attention.sync();
   });
 
+  /* Whether there is a newer Volery, asked when you are looking at the window
+     and not otherwise. Nothing emits an event when a tag appears, so this has to
+     go and look — but focus *is* an event and `attention.focused` already folds
+     it, so the trigger is you coming back to the wall rather than a clock. It
+     runs once at mount, once per focus change, and stops for good once there is
+     something to say. `release.svelte.ts` holds the three bounds and why each
+     one is there; every failure of it is silence in the header. */
+  $effect(() => {
+    releases.watch(attention.focused);
+  });
+
   let canvas = $state<ReturnType<typeof Canvas> | undefined>();
   /** The open panel, for the keys that move the reading. Undefined whenever
    *  there is no card focused, which is what makes those keys a no-op there
@@ -448,11 +459,6 @@
   /* Paint the wall from disk, then start the servers. Deliberately no agent. */
   $effect(() => {
     void skein.load();
-    /* And whether there is a newer Volery. Once, here, and never on a clock:
-       nothing emits an event when a tag appears, so this is one of the few
-       things in the app that goes and looks — see `release.svelte.ts`. Every
-       failure of it is silence in the header. */
-    void releases.check();
     void board.load();
     void widgets.load();
     void ambience.load();

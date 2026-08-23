@@ -131,3 +131,38 @@ export const READY_LINE =
 export function releaseUrl(repo: string, tag: string): string {
   return `https://github.com/${repo}/releases/tag/${tag}`;
 }
+
+/* ── Whether to go on asking ──────────────────────────────────────────────── */
+
+/** What is happening, for the header to draw one thing at a time.
+ *
+ *  Here rather than in `release.svelte.ts` because the two rules below turn on
+ *  it, and this is the file that holds every judgement about an update. */
+export type Stage = "quiet" | "offered" | "fetching" | "armed" | "failed";
+
+/** Every stage there is, so a rule over them can be tested exhaustively rather
+ *  than at the two values somebody happened to think of. */
+export const STAGES: Stage[] = ["quiet", "offered", "fetching", "armed", "failed"];
+
+/** Is the question still open?
+ *
+ *  One predicate doing two jobs, because they are one idea. It decides whether
+ *  to ask GitHub again, and it decides whether an answer may be written onto the
+ *  header — and the second is the one with teeth. A reply can be in flight when
+ *  you press the button, so an answer landing a moment later must not put
+ *  `offered` back over a download that has already started, or the header would
+ *  offer you an update you are three megabytes into fetching.
+ *
+ *  Every stage but `quiet` is closed, each for its own reason: `offered` already
+ *  says the thing another ask could only say again, `fetching` and `armed` are
+ *  past deciding, and `failed` is a button you pressed that did not work — which
+ *  asking again cannot mend, since the offer is still in hand and the version you
+ *  are on is still the one you have.
+ *
+ *  Note `quiet` covers the interesting failure too: no network, GitHub down, a
+ *  rate limit. Those leave the stage alone, so the question stays open and the
+ *  next ask picks it up — which is the one thing asking once a launch could never
+ *  do. A wall opened on a train used to be a wall that never checked again. */
+export function unanswered(stage: Stage): boolean {
+  return stage === "quiet";
+}

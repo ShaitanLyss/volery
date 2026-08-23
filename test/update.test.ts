@@ -7,7 +7,10 @@ import {
   READY_LINE,
   sayOffer,
   sayProgress,
+  STAGES,
+  unanswered,
   type Latest,
+  type Stage,
 } from "../src/lib/update";
 
 /* Whether there is a newer Volery, and whether to say so.
@@ -162,5 +165,43 @@ describe("what it says while it works", () => {
   test("the ready line says the app is going to close", () => {
     expect(READY_LINE).toContain("close");
     expect(READY_LINE).toContain("come back");
+  });
+});
+
+describe("unanswered", () => {
+  test("only a quiet header is still asking", () => {
+    expect(unanswered("quiet")).toBe(true);
+    for (const s of STAGES.filter((x) => x !== "quiet")) {
+      expect(unanswered(s)).toBe(false);
+    }
+  });
+
+  /* The one with teeth. A reply can be in flight when the button is pressed, and
+     an answer landing a moment later must not put `offered` back over a download
+     already three megabytes in. */
+  test("a reply arriving mid-download may not write an offer", () => {
+    expect(unanswered("fetching")).toBe(false);
+    expect(unanswered("armed")).toBe(false);
+  });
+
+  /* Asking again cannot mend a download that broke: the offer is still in hand
+     and the version you are on is still the one you have. */
+  test("a failed download is not a reason to keep asking", () => {
+    expect(unanswered("failed")).toBe(false);
+  });
+
+  /* Exhaustive on purpose — a stage added later must be *decided* about rather
+     than falling into "keep asking" because nobody looked. */
+  test("every stage is accounted for", () => {
+    expect(STAGES).toHaveLength(5);
+    const open = STAGES.filter(unanswered);
+    expect(open).toEqual(["quiet"]);
+  });
+
+  /* A network failure leaves the stage alone, which is what makes a wall opened
+     with no signal one that checks again rather than one that never does. */
+  test("a failure to reach github leaves the question open", () => {
+    const afterNetworkFailure: Stage = "quiet";
+    expect(unanswered(afterNetworkFailure)).toBe(true);
   });
 });

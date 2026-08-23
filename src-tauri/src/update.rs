@@ -130,10 +130,19 @@ fn agent() -> ureq::Agent {
 /// `None` for a repository this build cannot name, which is a build somebody
 /// forked and left the URL off rather than an error worth drawing.
 ///
-/// Unauthenticated, which is 60 requests an hour from one address — ample for a
-/// question asked once a launch, and the reason it is asked once a launch rather
-/// than on a timer. No token, either: a public repo's releases need none, and an
-/// updater that wanted a credential would be an updater nobody could audit.
+/// Unauthenticated, which is 60 requests an hour from one address. That used to
+/// be the reason this was asked once a launch; it is now asked whenever the
+/// window comes back to the front, which spends at most four an hour and only
+/// while somebody is looking at it — see `release.svelte.ts` for the three
+/// bounds. No token either: a public repo's releases need none, and an updater
+/// that wanted a credential would be an updater nobody could audit.
+///
+/// `async`, and that is load-bearing rather than stylistic now that it is asked
+/// more than once. It is a network request with a read timeout, and a
+/// `#[tauri::command]` without `async` runs inline on the thread that drains the
+/// event loop — so a synchronous version would stop every card on the wall from
+/// being painted for the length of each ask. That is the `azdo_runs` freeze, and
+/// CLAUDE.md's paragraph on `off_main` is the whole of it.
 #[tauri::command]
 pub async fn latest_release() -> Result<Option<Latest>, String> {
     crate::off_main(|| {
