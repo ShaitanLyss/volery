@@ -685,7 +685,7 @@ three times to three different standards. `stillFollowing` and `STICK_PX` used t
   hundred lines and stayed there while the group talked.
 - **`stickToTail` is an attachment and is the whole of what a plain scroller needs** —
   `<pre class="log" {@attach stickToTail}>`, no state, no effect, no handler. It hears growth
-  through a `MutationObserver` rather than being told about it, which is what lets it be
+  through `hearGrowth` rather than being told about it, which is what lets it be
   complete on its own: appended lines are `childList`, and a `{#each}` over a sliding window
   of the last N lines rewrites the text of nodes it already has once it is full
   (`characterData`), so past that point nothing is appended ever again. A component that had
@@ -696,6 +696,41 @@ three times to three different standards. `stillFollowing` and `STICK_PX` used t
   reactive — it is a plain class over three numbers, which is what keeps the judgement
   testable with no DOM (`test/follow.test.ts`) — so wiring it in here would cost the panel
   its reactivity and buy nothing. The rule is the shared one; the wiring is per panel.
+
+  **And "the wiring is per panel" is what it took a long time to stop meaning "the growth is
+  declared per panel".** The bullet above was written about the plain scrollers and it applied
+  to this one all along: the follow effect woke on `conv.streaming`, `conv.lines.length`,
+  `conv.history.length` and `conv.activity` — which is every way the *agent* can make the
+  column taller and not one of the others. Everything else changed the height with no signal
+  behind it and so with nothing to re-pin:
+
+  - the **panel dragged narrower** by its grip, or the window resized. Every line of every
+    answer rewraps into a taller column, and there is nothing in the app's own state that
+    even *could* have said so; `panelWidth` is arithmetic on a drag.
+  - a **fold opened**, since `open` and `shut` are the panel's own `$state`.
+  - a **`!` run's output**, which is written into a line that already exists (`#push` returns
+    the proxy for exactly this) and so moves no length anywhere.
+
+  Every one of them left the view above the tail with `following` still **true**, which is
+  the signature worth knowing: by the panel's own account nothing was wrong, so nothing
+  re-armed and only the wheel or the button got you back. Reported as "it keeps ending up
+  back up the page, I don't know when, I keep clicking to the end" — and the "I don't know
+  when" is the tell. **A follow that enumerates its causes is a follow with a list of
+  conditions nobody can finish.** `hearGrowth` is now shared with `stickToTail`: a
+  `MutationObserver` for the column and a `ResizeObserver` for the viewport, and the panel
+  keeps only what is genuinely its own — `keepTail()`, which coalesces however many reasons
+  arrive in one frame into one write and asks `following` again when the frame fires.
+- **A fold you have just worked lets go of the tail** (`unfolded`), which is the same argument
+  `jump` makes and one the follow had never needed made out loud before: unfolding a call at
+  the bottom of a live turn is asking to read *that*, and a follow that hears the column would
+  otherwise carry the view straight past the header to the end of whatever was uncovered. Said
+  for closing as well as opening, which is safe rather than sloppy — a shorter column clamps
+  the view back down onto the tail, and that clamp is a real scroll event, so `onScroll`
+  measures it and takes the tail up again.
+- **The resize re-measures; a mutation only re-pins.** A rewrap moves every mark in the panel,
+  so `far` taken at the old width is a way back that never appears — but a collect walks every
+  mark, which is the cost `refresh` exists to throttle, and the content effects already ask
+  for it at a rate a stream can afford.
 - **`snapToTail(el)` is the imperative nudge**, for a scroller that has to go back to the
   bottom because something was *asked for* rather than printed — sending a command in the
   shell, where you want to watch what it does even if you had scrolled back to read what the

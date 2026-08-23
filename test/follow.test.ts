@@ -1,5 +1,5 @@
 import { expect, test, describe } from "bun:test";
-import { Tail, slack, stillFollowing, STICK_PX } from "../src/lib/follow";
+import { Tail, hearGrowth, slack, stillFollowing, STICK_PX } from "../src/lib/follow";
 
 describe("holding the tail through a scroll event", () => {
   /* A panel writes `scrollTop = scrollHeight` to follow a growing column, and
@@ -132,5 +132,103 @@ describe("one scroller's follow state", () => {
        vouch for a position the reader could have scrolled to. */
     t.scrolled({ ...bottom, scrollTop: 9400, scrollHeight: 40000 });
     expect(t.following).toBe(false);
+  });
+});
+
+describe("hearing a column change shape", () => {
+  /* The observers are wiring rather than judgement, but *what they are asked to
+     watch* is the load-bearing part and it is one object literal: the panel spent
+     its whole life declaring its own growth instead, and every kind of change it
+     forgot to declare was a view stranded above the tail. So the options are
+     asserted, with the two observers stubbed — bun has neither. */
+  type Watch = { target: unknown; options?: MutationObserverInit };
+
+  function stub(withResize: boolean) {
+    const watched: Watch[] = [];
+    let disconnects = 0;
+    const before = {
+      m: globalThis.MutationObserver,
+      r: globalThis.ResizeObserver,
+    };
+    class M {
+      constructor(readonly cb: () => void) {}
+      observe(target: unknown, options?: MutationObserverInit) {
+        watched.push({ target, options });
+      }
+      disconnect() {
+        disconnects++;
+      }
+    }
+    class R {
+      constructor(readonly cb: () => void) {}
+      observe(target: unknown) {
+        watched.push({ target });
+      }
+      disconnect() {
+        disconnects++;
+      }
+    }
+    (globalThis as Record<string, unknown>).MutationObserver = M;
+    (globalThis as Record<string, unknown>).ResizeObserver = withResize
+      ? R
+      : undefined;
+    return {
+      watched,
+      seen: () => disconnects,
+      restore: () => {
+        (globalThis as Record<string, unknown>).MutationObserver = before.m;
+        (globalThis as Record<string, unknown>).ResizeObserver = before.r;
+      },
+    };
+  }
+
+  test("text rewritten in place is heard, not only lines appended", () => {
+    const s = stub(true);
+    try {
+      const el = {} as Element;
+      hearGrowth(el, () => {});
+      const mutations = s.watched[0];
+      expect(mutations.target).toBe(el);
+      /* All three, and each for its own case: an appended line is `childList`,
+         a streaming answer rewrites the block it is inside (`characterData`,
+         `subtree`), and a `!` run writes into a line that already exists. */
+      expect(mutations.options).toEqual({
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+      /* And the element itself, for the change nothing in the app announces:
+         dragged narrower is a taller column. */
+      expect(s.watched[1]?.target).toBe(el);
+    } finally {
+      s.restore();
+    }
+  });
+
+  test("both observers are let go of together", () => {
+    const s = stub(true);
+    try {
+      const stop = hearGrowth({} as Element, () => {});
+      expect(s.seen()).toBe(0);
+      stop();
+      expect(s.seen()).toBe(2);
+    } finally {
+      s.restore();
+    }
+  });
+
+  test("no ResizeObserver is not a broken follow", () => {
+    /* Every consumer is in the app, where it exists — but `stickToTail` guarded
+       for its absence and losing that would turn a missing global into a panel
+       that never follows anything at all. */
+    const s = stub(false);
+    try {
+      const stop = hearGrowth({} as Element, () => {});
+      expect(s.watched.length).toBe(1);
+      stop();
+      expect(s.seen()).toBe(1);
+    } finally {
+      s.restore();
+    }
   });
 });

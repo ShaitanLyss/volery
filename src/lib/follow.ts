@@ -23,14 +23,19 @@
  *
  *     <pre class="log" {@attach stickToTail}>…</pre>
  *
- * Growth is heard through a `MutationObserver` rather than declared by the
- * component, which is what makes the attachment complete on its own: appended
- * lines are `childList`, a `{#each}` over a sliding window rewrites the text of
- * nodes it already has (`characterData`), and neither is something the panel
- * would have to remember to announce. `Transcript.svelte` keeps its own
- * `$effect` — it has a rail carrying the view, a keyboard ladder and a
- * `following` that its effect graph depends on being `$state` — but the
- * judgement it makes is `stillFollowing` from here.
+ * Growth is heard from the element rather than declared by the component
+ * (`hearGrowth`), which is what makes the attachment complete on its own:
+ * appended lines are `childList`, a `{#each}` over a sliding window rewrites the
+ * text of nodes it already has (`characterData`), a resize rewraps all of it,
+ * and none of the three is something the panel would have to remember to
+ * announce. `Transcript.svelte` keeps its own `$effect` — it has a rail carrying
+ * the view, a keyboard ladder and a `following` that its effect graph depends on
+ * being `$state` — but it hears the column through `hearGrowth` and judges it
+ * with `stillFollowing`, both from here. It spent a long time declaring its own
+ * growth instead, as four conversation signals, and what that cost was every
+ * height change with no signal behind it: a fold opened, the panel dragged
+ * narrower, a `!` run writing into a line that already existed. The view was
+ * left above the tail with `following` still true and nothing to take it back.
  */
 
 /** The three numbers every one of these decisions is made from. */
@@ -134,6 +139,40 @@ export class Tail {
    element does, and a log inside an `{#if}` comes and goes all afternoon. */
 const tails = new WeakMap<Element, Tail>();
 
+/** Hear a scroller change shape, from the scroller rather than from whoever
+ *  changed it.
+ *
+ *  Both observers, because a follow needs both halves and they are asked
+ *  differently: content arriving moves the bottom away from you, and the
+ *  viewport changing rewraps every line of what is already there. The second is
+ *  the one nothing in an app's own state announces — a panel dragged narrower is
+ *  a taller column, and no signal was written to say so.
+ *
+ *  `subtree` and `characterData` as well as `childList`, because text arriving is
+ *  not always an appended node: a log drawn as an `{#each}` over the last N
+ *  lines rewrites the text of the nodes it already has once it is full, so past
+ *  that point nothing is ever appended again, and a streaming answer rewrites
+ *  the block it is in the middle of.
+ *
+ *  Returns the teardown. `resized` is separate only because the two can cost
+ *  different amounts to answer: a panel that re-measures every mark in itself on
+ *  a resize cannot afford to do it once per token. */
+export function hearGrowth(
+  el: Element,
+  grew: () => void,
+  resized: () => void = grew,
+): () => void {
+  const mutated = new MutationObserver(grew);
+  mutated.observe(el, { childList: true, subtree: true, characterData: true });
+  const sized =
+    typeof ResizeObserver === "function" ? new ResizeObserver(resized) : null;
+  sized?.observe(el);
+  return () => {
+    mutated.disconnect();
+    sized?.disconnect();
+  };
+}
+
 /** Stick a scrolling element to its own tail: `{@attach stickToTail}`.
  *
  *  The element is put on its tail once as it mounts, then kept there for as long
@@ -164,17 +203,10 @@ export function stickToTail(el: HTMLElement): () => void {
   const onScroll = () => tail.scrolled(el);
   el.addEventListener("scroll", onScroll, { passive: true });
 
-  /* `subtree` and `characterData` as well as `childList`: a log drawn as an
-     `{#each}` over the last N lines rewrites the text of the nodes it already
-     has once it is full, so past that point nothing is ever appended again. */
-  const grew = new MutationObserver(soon);
-  grew.observe(el, { childList: true, subtree: true, characterData: true });
-
-  /* The viewport growing shortens the column below it, and a panel dragged
-     taller while parked at the bottom should still be at the bottom. */
-  const resized =
-    typeof ResizeObserver === "function" ? new ResizeObserver(soon) : null;
-  resized?.observe(el);
+  /* Growth and rewrapping both, and neither declared by the component: the
+     viewport growing shortens the column below it, and a log dragged taller
+     while parked at the bottom should still be at the bottom. */
+  const stop = hearGrowth(el, soon);
 
   el.scrollTop = el.scrollHeight;
   tail.landed(el.scrollTop);
@@ -182,8 +214,7 @@ export function stickToTail(el: HTMLElement): () => void {
   return () => {
     if (frame) cancelAnimationFrame(frame);
     el.removeEventListener("scroll", onScroll);
-    grew.disconnect();
-    resized?.disconnect();
+    stop();
     tails.delete(el);
   };
 }
