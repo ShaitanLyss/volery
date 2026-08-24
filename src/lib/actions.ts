@@ -998,3 +998,53 @@ export function tallyNote(t: Tally): string {
     ? `${t.passed}/${t.total} passed`
     : `${failed}/${t.total} failed`;
 }
+
+/* ── coming back to the window ─────────────────────────────────────────────
+ *
+ * A project's facts are probed once, when it comes onto the wall, and the rule
+ * that says so is about the eight-second poll rather than about the facts: what
+ * a project *is* changes when you edit package.json, not while you are looking
+ * at it. Which is true, and is exactly why the bump chip went stale — a pull
+ * that brings in somebody else's release, or a version edited in an editor,
+ * both happen while you are looking at something else, and the arc came back
+ * offering a bump that had already been made.
+ *
+ * Nothing emits an event when a file changes underneath us. Focus is the event
+ * that already exists nearby: coming back to the window is the boundary of
+ * having been away, which is the whole of when it can have changed. The gate is
+ * here and pure because it is two easy mistakes in three lines — firing on the
+ * way *out* of focus as well as in, and a floor that measures from the wrong
+ * end. See `Actions.refocus`.
+ */
+
+/** What the gate remembers between asks. */
+export type FocusGate = {
+  /** Whether the window was in front when it last heard. */
+  focused: boolean;
+  /** When it last said yes — not when it last heard, which would let a burst of
+   *  alt-tabs push the floor out ahead of itself forever. Zero means never, so
+   *  the first transition is never held behind a floor it has not met; the same
+   *  convention `release.svelte.ts` uses for `#askedAt`. */
+  at: number;
+};
+
+export const NO_FOCUS: FocusGate = { focused: false, at: 0 };
+
+/** Fold one focus reading into the gate.
+ *
+ *  Yes only on the *transition* into focus, and only if the floor has passed.
+ *  Losing focus is never a yes and never touches the clock — it is the thing
+ *  that arms the next one. */
+export function refocusStep(
+  prev: FocusGate,
+  focused: boolean,
+  now: number,
+  floorMs: number,
+): { next: FocusGate; ask: boolean } {
+  if (!focused) return { next: { ...prev, focused: false }, ask: false };
+  if (prev.focused) return { next: prev, ask: false };
+  if (prev.at !== 0 && now - prev.at < floorMs) {
+    return { next: { ...prev, focused: true }, ask: false };
+  }
+  return { next: { focused: true, at: now }, ask: true };
+}

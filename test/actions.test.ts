@@ -7,9 +7,11 @@ import {
   liveCodingStep,
   managerFromField,
   progressFrom,
+  refocusStep,
   scriptArgv,
   tallyNote,
   LIVE_CODING,
+  NO_FOCUS,
   NO_STATUS,
   NO_TALLY,
   type ProjectFacts,
@@ -457,5 +459,56 @@ describe("counting an automation run", () => {
       "LogAutomationController: Test Completed. Result={Success} Name={Z} Path={Other.Z}",
     ]);
     expect(t.passed).toBe(0);
+  });
+});
+
+describe("coming back to the window", () => {
+  /* The bump chip read a version once, when the project came onto the wall, and
+     then said it forever — so a pull that brought in somebody else's release
+     left the arc offering a bump that had already been made. Nothing emits an
+     event when a file changes underneath us; focus is the event that already
+     exists nearby. Two rules, both easy to get subtly wrong. */
+
+  test("asks on the way in, never on the way out", () => {
+    const a = refocusStep(NO_FOCUS, true, 1_000, 10_000);
+    expect(a.ask).toBe(true);
+    const b = refocusStep(a.next, false, 2_000, 10_000);
+    expect(b.ask).toBe(false);
+  });
+
+  test("staying focused is not a transition", () => {
+    const a = refocusStep(NO_FOCUS, true, 1_000, 10_000);
+    /* The effect re-runs for reasons of its own; a reading that has not changed
+       must not be a second ask. */
+    expect(refocusStep(a.next, true, 500_000, 10_000).ask).toBe(false);
+  });
+
+  test("forty alt-tabs cost one pass", () => {
+    let gate = NO_FOCUS;
+    let asks = 0;
+    for (let i = 0; i < 40; i++) {
+      for (const focused of [true, false]) {
+        const step = refocusStep(gate, focused, 1_000 + i * 100, 10_000);
+        gate = step.next;
+        if (step.ask) asks++;
+      }
+    }
+    expect(asks).toBe(1);
+  });
+
+  test("the floor measures from the last yes, not the last reading", () => {
+    /* Measuring from when it last *heard* would let a burst push the floor out
+       ahead of itself forever, and the wall would never re-read at all. */
+    let gate = refocusStep(NO_FOCUS, true, 500, 10_000).next;
+    for (let t = 1_000; t < 10_000; t += 1_000) {
+      gate = refocusStep(gate, false, t, 10_000).next;
+      gate = refocusStep(gate, true, t, 10_000).next;
+    }
+    gate = refocusStep(gate, false, 10_501, 10_000).next;
+    expect(refocusStep(gate, true, 10_501, 10_000).ask).toBe(true);
+  });
+
+  test("the first ask is not held behind a floor it has never met", () => {
+    expect(refocusStep(NO_FOCUS, true, 0, 10_000).ask).toBe(true);
   });
 });

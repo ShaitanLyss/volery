@@ -20,12 +20,15 @@ import {
   folderName,
   liveCodingStep,
   progressFrom,
+  refocusStep,
   tallyNote,
   LIVE_CODING,
+  NO_FOCUS,
   NO_STATUS,
   NO_TALLY,
   REMOTE_CONTROL_PORT,
   type Action,
+  type FocusGate,
   type ProjectFacts,
   type ProjectStatus,
   type Step,
@@ -53,6 +56,11 @@ const LIVE_CODING_OFF =
 /** Long enough for an editor to save a big level and put its prompt away. */
 const CLOSE_TIMEOUT_MS = 3 * 60 * 1000;
 const POLL_MS = 8_000;
+/** The floor between two whole-wall re-probes on focus. Generous because the
+ *  thing it guards against is a burst of alt-tabs rather than any real cost:
+ *  what changes a version is a pull or an editor save, and neither happens
+ *  twice in ten seconds. See `Actions.refocus`. */
+const REPROBE_FLOOR_MS = 10_000;
 /** How stale a repo's remote-tracking refs may get before a poll tick fetches
  *  it. Minutes rather than seconds, because unlike everything else the poll
  *  reads this one leaves the machine: somebody else's push is not news anybody
@@ -182,6 +190,10 @@ export class Actions {
    *  it, and a clock that repainted the wall every five minutes would be a poll
    *  with extra steps. */
   #fetched: Record<string, number> = {};
+  /** What `refocus` remembers between focus changes — see `refocusStep`, which
+   *  is where the two rules live. Plain for the same reason `#fetched` is:
+   *  nothing draws it. */
+  #focus: FocusGate = NO_FOCUS;
 
   constructor(fault: (message: string) => void) {
     this.#fault = fault;
@@ -267,8 +279,15 @@ export class Actions {
    *  The deliberate exception to "probing is once per project and never
    *  repeated". That rule is about the *poll* not having to re-read a
    *  package.json every eight seconds; it is not a claim that the facts can
-   *  never change. A bump writes a version, so the fact it wrote has to be
-   *  read back — and only for the one project it wrote in. */
+   *  never change.
+   *
+   *  Two callers, and they divide the ways it does change. `run`'s `finally`
+   *  covers what this app did itself — a bump writes a version, a pull brings
+   *  in somebody else's — one project, the one whose chip was pressed.
+   *  `refocus` covers what happened while the wall was not in front, which is
+   *  any project and so is all of them. Both are here rather than at either
+   *  call site because the failure to swallow is the same one: a folder that
+   *  has gone away. */
   async reprobe(root: string) {
     try {
       const f = await invoke<ProjectFacts>("probe_project", { root });
@@ -277,6 +296,39 @@ export class Actions {
       /* A folder that has gone away is not a fault worth a red bar, here for
          the same reason it is not in `sync`. */
     }
+  }
+
+  /** Re-read every project's facts when you come back to the window.
+   *
+   *  The bump chip read a version once, at the moment the project came onto the
+   *  wall, and then said it forever: pull a release somebody else cut and the
+   *  arc went on offering 0.10.1 from a file that already said 0.10.1, which is
+   *  a bump that refuses at the last step or writes a version backwards.
+   *  Editing package.json in an editor did the same thing. Neither is exotic —
+   *  they are the two ordinary ways a version changes.
+   *
+   *  Nothing emits an event when a file changes under us, so this is one of the
+   *  cases CLAUDE.md is about: **look for an event that already exists near it
+   *  and fold that instead.** Focus is that event. `attention.focused` already
+   *  folds it and `App.svelte` hands it here, exactly as it does to
+   *  `release.svelte.ts` — and it is not merely a trigger that happens to be
+   *  available, it is the right one. The invariant this bends says a project's
+   *  facts change "when you edit package.json, not while you are looking at it";
+   *  coming back to the window is precisely the boundary of *not looking*, so
+   *  asking there re-reads after every away-from-the-wall change and during
+   *  none.
+   *
+   *  Two bounds, both in `refocusStep` because both are easy to get subtly
+   *  wrong: only on the transition into focus, never on the way out, and a
+   *  floor so forty alt-tabs cost one pass. There is no third bound and no
+   *  backstop timer, because unlike the update check this asks nothing of a
+   *  network — `probe_project` is about a dozen `read_to_string`s and five
+   *  bounded `read_dir`s per project, all local. */
+  async refocus(focused: boolean) {
+    const { next, ask } = refocusStep(this.#focus, focused, Date.now(), REPROBE_FLOOR_MS);
+    this.#focus = next;
+    if (!ask) return;
+    await Promise.all(Object.keys(this.facts).map((root) => this.reprobe(root)));
   }
 
   /** Re-read what every project is doing. Cheap unless an Unreal project has no
@@ -657,6 +709,17 @@ export class Actions {
          branch went out. */
       void this.poll();
       if (run.state === "failed") this.#report(facts, run, id);
+      /* And the project may not be the same project any more. A chip that runs
+         `git pull --ff-only` brings in whatever somebody else committed, which
+         includes the version in package.json — so the bump chip went on
+         offering the bump that pull had just brought in, and the arc read a
+         number the file no longer held. `bump` used to re-read here by itself,
+         on the argument that it was the one chip that edited that file; pull
+         edits it too, one chip along, and so would any script somebody adds.
+         So it is every chip, once, after the run has reported: this is the
+         narrow, precise half of the same fix `refocus` does for the changes
+         that happen while the wall is not in front. */
+      await this.reprobe(facts.root);
     }
   }
 
@@ -704,12 +767,12 @@ export class Actions {
            sentence. A throw lands in `run`'s catch, which puts it on the chip
            and on the fault bar. */
         run.note = await invoke<string>("bump_version", { root: f.root, plan });
-        /* A project's facts are probed once and never again, because what a
-           project *is* changes when you edit package.json rather than while you
-           are looking at it — and this is the one place the app edits it itself.
-           Without the re-probe the whole row goes on offering the bump that has
-           just been made, from the number it has just left. */
-        await this.reprobe(f.root);
+        /* The re-probe this needs is in `run`'s `finally`, which does it for
+           every chip rather than only for the one that writes a version — see
+           the note there. It used to be here, on the argument that a bump is
+           the one place the app edits a package.json itself. Which is true and
+           was too narrow: `git pull --ff-only` is also this app changing that
+           file, one chip along. */
         return;
       }
 

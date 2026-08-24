@@ -384,6 +384,22 @@
     releases.watch(attention.focused);
   });
 
+  /* And what version each project is on, for the same reason and off the same
+     event. A pull or an editor save changes a package.json with nothing emitted
+     to hear, and the facts behind the bump chip were read once when the project
+     came onto the wall — so the arc went on offering a bump that had already
+     been made. Coming back to the window is the boundary of having been away,
+     which is when it can have changed. `Actions.refocus` holds the bounds. */
+  $effect(() => {
+    const focused = attention.focused;
+    /* `untrack` for the reason line 500 gives: `refocus` reads `facts` to know
+       which projects to re-probe and then *writes* it, so tracked it would
+       re-run on every poll tick — harmless, since the gate answers no to
+       anything that is not a transition, and exactly the sort of quiet
+       self-feeding effect that is a real bug the next time someone edits it. */
+    void untrack(() => actions.refocus(focused));
+  });
+
   let canvas = $state<ReturnType<typeof Canvas> | undefined>();
   /** The open panel, for the keys that move the reading. Undefined whenever
    *  there is no card focused, which is what makes those keys a no-op there
