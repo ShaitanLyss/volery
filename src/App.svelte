@@ -2167,11 +2167,13 @@
     "fit",
     "servers",
     "shell",
+    "find",
     "ambience",
     "read",
     "adopt",
     "themes",
     "accounts",
+    "token",
     "chime",
     "layout",
   ];
@@ -2183,7 +2185,16 @@
    *  is live is the cards that are moving, and the count is the cards
    *  themselves. `adopt` is kept longest of the verbs partly because it is the
    *  control surface's only handle on this bar (`data-adopt`), and a test
-   *  driving a narrow window should not have to widen it first.
+   *  driving a narrow window should not have to widen it first. `token` is the
+   *  first of the verbs to go, being a panel you open once a year and then
+   *  never again.
+   *
+   *  An item's key has to be in *both* lists or it is drawn nowhere at all —
+   *  the bar iterates `BAR_ORDER` and the panel iterates what folded out of
+   *  this one, so a `barButtons` entry in neither is a button that exists only
+   *  in the array. `token` shipped that way for a release, with the panel
+   *  reachable only from the pipelines widget's own fault line;
+   *  `chrome.test.ts` now holds the three lists against each other.
    *
    *  Three things in the bar are deliberately absent from this list and never
    *  fold. The update offer, because an offer nobody is shown is not an offer.
@@ -2203,6 +2214,7 @@
     "accounts",
     "chime",
     "layout",
+    "token",
     "zoom",
     "live",
     "spend",
