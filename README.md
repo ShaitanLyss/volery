@@ -105,9 +105,17 @@ Three things do go out, all of them at your direction:
   Claude Code does. Volery does not talk to the API itself; it reads the CLI's output stream.
 - **Azure DevOps**, and only if you place a pipelines or reviews widget and have repositories
   on a Azure DevOps remote. `azdo.rs` is the only file in the codebase that makes an HTTP
-  request. Credentials come from your existing Git Credential Manager, `az` login or a
-  `VOLERY_AZDO_PAT` variable (the older `SKEIN_AZDO_PAT` is still read) — Volery stores
-  none of them, and never writes a credential or any fragment of one into a snapshot.
+  request. Credentials are tried in order until one is accepted: your existing Git Credential
+  Manager, an `az` login, a personal access token you enter in the app, then a
+  `VOLERY_AZDO_PAT` variable (the older `SKEIN_AZDO_PAT` is still read). Volery holds none of
+  the first two and never writes a credential or any fragment of one into a snapshot.
+
+  The token you enter is the one thing it stores, and it goes in the **Windows Credential
+  Manager** — under `dev.skein.studio/azdo-pat`, beside the one Git Credential Manager keeps
+  for the same organisation — rather than into Volery's own database. So it is encrypted at
+  rest by Windows, it is visible in Control Panel → Credential Manager, and you can delete it
+  there without Volery's cooperation. Nothing hands it back once stored: no command returns
+  it, so no panel, no snapshot and no exported layout can carry it.
 - **`git fetch` against your own remotes**, to know whether a branch is behind. Always with
   `GIT_TERMINAL_PROMPT=0`, so a background poll can never pop a credential prompt at you.
 

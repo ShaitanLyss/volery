@@ -331,9 +331,15 @@ function ledgerSnapshot(h: ControlHost) {
  *  wall whose pipelines are quiet, and `emptySaid` distinguishes them on the
  *  face.
  *
+ *  `unseen` is on the runs half only — pull requests come back org-wide in one
+ *  call, so there is no per-project request there to be refused. It is reported
+ *  because a pass that quietly skipped four of six projects and one that read
+ *  all six draw the same empty widget otherwise.
+ *
  *  Deliberately reports no credential and no fragment of one. What rung was
  *  accepted is Rust's business; a snapshot is read by a test harness and written
- *  to a file, and a token in either is a token leaked. */
+ *  to a file, and a token in either is a token leaked. `token` is a boolean —
+ *  whether one is stored — which is also the most the front end is ever told. */
 function devopsSnapshot(h: ControlHost) {
   const half = (
     k: "runs" | "reviews",
@@ -344,6 +350,7 @@ function devopsSnapshot(h: ControlHost) {
     rows: number;
     orgs: string[];
     asked: number;
+    unseen: number;
     fault: string | null;
   } => {
     const it = h.devops[k];
@@ -354,12 +361,20 @@ function devopsSnapshot(h: ControlHost) {
       rows: it.rows.length,
       orgs: [...it.orgs],
       asked: it.asked,
+      unseen: it.unseen,
       fault: it.fault,
     };
   };
   const now = Date.now();
   return {
     polling: h.devops.polling,
+    /* Whether a token is stored, and nothing about what it is. The boolean is
+       the whole of what the front end is ever told — see `vault.rs` — so there
+       is no version of this that could leak one even by accident. It is here
+       because "the pipelines half is faulting" and "the pipelines half is
+       faulting and there is no token to fall back on" are different states of
+       the app and only one of them is a bug. */
+    token: h.devops.held,
     runs: {
       ...half("runs"),
       /* The tallies, so a test can assert on what the header says without

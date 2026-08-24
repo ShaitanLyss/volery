@@ -39,7 +39,10 @@ is still `skein`, on purpose:
 
 The one interface that grew a second name is `VOLERY_AZDO_PAT`, read ahead of
 `SKEIN_AZDO_PAT` — a variable sitting in a shell profile is exactly what a rename must not
-break, and both are kept.
+break, and both are kept. The Azure DevOps token entered in the app keys off the durable
+identity for the same reason the `%APPDATA%` folder does: it lives in the Windows credential
+vault under `dev.skein.studio/azdo-pat`, so a further rename does not read as the app having
+forgotten your credential (`vault.rs`).
 
 ## Commands
 
@@ -108,7 +111,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `widgets.md` | the widget catalogue and its knobs, the clock, the performance meter, and the three logs over one substrate | `widgets.ts`, `WidgetNode.svelte`, `Clock.svelte`, `perf.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`, `unreallog.ts` |
 | `usage.md` | what is left of the allowance and what it has cost — the account's own windows and their resets, then reading transcripts, the dedup, the five prices, and the day's figure the title bar and the horizon carry | `limits.ts`, `usage.ts`, `ledger.svelte.ts`, `limits.rs`, `usage.rs` |
 | `timers.md` | timers, the pomodoro cycle, and why breaks are taken rather than offered | `timing.ts`, `cycle.svelte.ts`, `Rest.svelte` |
-| `azdo.md` | pipelines and reviews, the auth ladder, and the TLS interception this network does | `azdo.ts`, `devops.svelte.ts`, `azdo.rs` |
+| `azdo.md` | pipelines and reviews, the four-rung auth ladder and the rung that could not spawn, a 400 that means "not your project", where the one stored secret lives, and the TLS interception this network does | `azdo.ts`, `devops.svelte.ts`, `azdo.rs`, `vault.rs`, `Keyring.svelte` |
 | `actions.md` | the verbs a project has all day, Unreal's shape, conflicts and the fetch clock | `actions.ts`, `project.rs`, `actions.rs` |
 | `ask.md` | the `ask_user` MCP server, parking a `tools/call`, and several questions in one call | `ask.rs`, `asking.ts`, `Ask.svelte` |
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |

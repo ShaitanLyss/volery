@@ -16,13 +16,19 @@
 //!   request per project and the projects are fetched (and cached) to know what
 //!   to ask. That asymmetry is why the two widgets poll on different clocks.
 //!
-//! - **The organisation is not configured, it is read off the wall.** Skein has
-//!   no text field anywhere on it, so an org typed into a settings panel is not
-//!   a thing this app can offer. It does not have to: the AzDO organisations
-//!   worth watching are exactly the ones whose repositories are standing on your
-//!   wall, so `git remote get-url origin` in each project root is the whole of
-//!   the configuration. A wall with no Azure DevOps repo on it asks nothing of
-//!   the network, which is the same bargain the process sampler strikes.
+//! - **The organisation is not configured, it is read off the wall.** The AzDO
+//!   organisations worth watching are exactly the ones whose repositories are
+//!   standing on your wall, so `git remote get-url origin` in each project root
+//!   is the whole of the configuration. A wall with no Azure DevOps repo on it
+//!   asks nothing of the network, which is the same bargain the process sampler
+//!   strikes.
+//!
+//!   This paragraph used to rest on "Skein has no text field anywhere on it",
+//!   which is no longer true — the dock, the shell, the finder and now
+//!   `Keyring.svelte` all have one — and the argument is better without it. An
+//!   organisation is a **fact about the wall**, derivable from what is on it, so
+//!   asking would be asking somebody to retype what the app can already see. A
+//!   token is not derivable from anything, which is why that one *is* a field.
 //!
 //! - **Authentication is a ladder that falls through on 401, not on absence.**
 //!   Git Credential Manager already holds a credential for `dev.azure.com` on
@@ -43,6 +49,18 @@
 //!   about why. Each rung is therefore tried until one is *accepted*, and which
 //!   rung answered is remembered per organisation and per endpoint family so the
 //!   401 above is paid once rather than on every poll.
+//!
+//!   Four rungs: the git credential, an `az` sign-in, a token stored in the
+//!   Windows vault, then `VOLERY_AZDO_PAT`. **The middle one did not work at all
+//!   for the first ten days**, and how it failed is the more useful half of the
+//!   lesson — `Command::new("az")` cannot find `az.cmd`, which is the only thing
+//!   the Azure CLI installs on Windows, and `output` turned the spawn failure
+//!   into the same `None` that means "az is not installed". So the ladder was one
+//!   rung long, the widget said "a token was refused (401)" for ever, and the
+//!   message was consistent with having tried everything. Two things came out of
+//!   it and both are load-bearing: a rung is looked for under every name it goes
+//!   by (`az_names`), and a `Cred` carries **what to call it** rather than
+//!   deriving that from its shape, so a refusal names the rung that was refused.
 //!
 //! - **This network intercepts TLS, and the client had to be chosen for it.**
 //!   `dev.azure.com` here presents a certificate signed by
@@ -123,32 +141,60 @@ struct Project {
     name: String,
 }
 
-/// How a request is signed. Two shapes because the two sources give two shapes:
-/// a personal access token goes in as HTTP Basic with an empty user, an Entra
+/// How a request is signed. Two shapes because the sources give two shapes: a
+/// personal access token goes in as HTTP Basic with an empty user, an Entra
 /// token goes in as a bearer.
 #[derive(Clone, PartialEq)]
-enum Cred {
-    Basic(String),
-    Bearer(String),
+enum Kind {
+    Basic,
+    Bearer,
+}
+
+/// One rung's answer: what to sign with, and what to *call* it.
+///
+/// **The name is carried rather than derived from the shape**, and that is a
+/// correction rather than a flourish. `source()` used to answer off the `Kind`
+/// alone — "a token" for Basic, "a sign-in" for Bearer — which was unambiguous
+/// only while exactly one rung was Basic. Three of the four now are, so a
+/// widget saying "a token was refused (401)" named a rung you could not
+/// identify, and the one thing it most needed to distinguish was a *code-scoped
+/// credential git happens to hold* from *a PAT you minted on purpose*. That
+/// ambiguity is most of why the dead `az` rung above went unnoticed for ten
+/// days: the message was consistent with a ladder that had tried everything.
+#[derive(Clone)]
+struct Cred {
+    kind: Kind,
+    secret: String,
+    /// Which rung this came off, for the one line the widget has room for.
+    /// Never the secret, and never enough of it to be one.
+    from: &'static str,
 }
 
 impl Cred {
+    fn basic(from: &'static str, secret: String) -> Self {
+        Cred { kind: Kind::Basic, secret, from }
+    }
+
+    fn bearer(from: &'static str, secret: String) -> Self {
+        Cred { kind: Kind::Bearer, secret, from }
+    }
+
     fn header(&self) -> String {
-        match self {
+        match self.kind {
             /* Basic with an empty username is Azure DevOps' documented way of
                presenting a PAT, and the only one it accepts. */
-            Cred::Basic(pat) => format!("Basic {}", base64(format!(":{pat}").as_bytes())),
-            Cred::Bearer(tok) => format!("Bearer {tok}"),
+            Kind::Basic => format!("Basic {}", base64(format!(":{}", self.secret).as_bytes())),
+            Kind::Bearer => format!("Bearer {}", self.secret),
         }
     }
 
-    /// What to call this rung when the widget has to explain itself. Never the
-    /// secret, and never enough of it to be one.
-    fn source(&self) -> &'static str {
-        match self {
-            Cred::Basic(_) => "a token",
-            Cred::Bearer(_) => "a sign-in",
-        }
+    /// Whether two rungs resolved to the same credential — which is ordinary,
+    /// and is the dedup `ladder` does. Deliberately **not** `PartialEq` on the
+    /// whole struct: `from` differs precisely in the case worth collapsing (the
+    /// stored token and `VOLERY_AZDO_PAT` holding the same PAT), so comparing it
+    /// would keep both and pay the cost of discovering the refusal twice.
+    fn same_as(&self, other: &Cred) -> bool {
+        self.kind == other.kind && self.secret == other.secret
     }
 }
 
@@ -257,7 +303,36 @@ fn from_git(org: &str) -> Option<Cred> {
         .lines()
         .find_map(|l| l.strip_prefix("password="))
         .filter(|p| !p.is_empty())
-        .map(|p| Cred::Basic(p.to_string()))
+        .map(|p| Cred::basic("the git credential", p.to_string()))
+}
+
+/// Where an `az` might be, in the order worth trying.
+///
+/// **This is not a nicety — it is the difference between this rung existing and
+/// not.** `Command::new("az")` resolves a bare program name by appending `.exe`
+/// and does not consult `PATHEXT`; the Azure CLI installs `az.cmd`, and there is
+/// no `az.exe` in a normal install. So the middle rung of this ladder silently
+/// did not exist on Windows at all: `ladder` returned the git credential alone,
+/// that credential is code-scoped, and the pipelines widget therefore read "a
+/// token was refused (401)" on every poll with nothing to fall through to.
+/// Probed 2026-08-24 on this machine, `UseShellExecute = false` so it is the same
+/// CreateProcess resolution Rust does — bare `az` fails with "the system cannot
+/// find the file specified", `az.cmd` starts and exits 0. Note also that
+/// `output` turns the spawn failure into `None`, which is indistinguishable from
+/// az not being installed, so nothing anywhere said the rung had been skipped.
+///
+/// Bare `az` is still tried first, the order `find.rs::candidates` uses for
+/// ripgrep: an `az.exe` somebody put on their PATH on purpose is the one they
+/// mean, and the miss costs a failed CreateProcess rather than a process.
+fn az_names() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["az", "az.cmd"]
+    }
+    #[cfg(not(windows))]
+    {
+        &["az"]
+    }
 }
 
 /// An Entra token from the Azure CLI, for the Azure DevOps resource.
@@ -272,18 +347,51 @@ fn from_git(org: &str) -> Option<Cred> {
 /// a different identity than git is, which is why it is below git rather than
 /// above it — the credential you clone with is the one whose PRs you mean.
 fn from_az() -> Option<Cred> {
-    let out = output(Command::new("az").args([
-        "account",
-        "get-access-token",
-        "--resource",
-        "499b84ac-1321-427f-aa17-267ca6975798",
-        "--query",
-        "accessToken",
-        "-o",
-        "tsv",
-    ]))?;
-    let tok = out.trim();
-    (!tok.is_empty()).then(|| Cred::Bearer(tok.to_string()))
+    for name in az_names() {
+        let Some(out) = output(Command::new(name).args([
+            "account",
+            "get-access-token",
+            "--resource",
+            "499b84ac-1321-427f-aa17-267ca6975798",
+            "--query",
+            "accessToken",
+            "-o",
+            "tsv",
+        ])) else {
+            continue;
+        };
+        let tok = out.trim();
+        if !tok.is_empty() {
+            return Some(Cred::bearer("an az sign-in", tok.to_string()));
+        }
+    }
+    None
+}
+
+/// A token entered in the app, out of the Windows credential vault.
+///
+/// This rung is the answer to the case the two above cannot reach, and on this
+/// network it is the common one rather than the exotic one: Git Credential
+/// Manager holds a code-scoped credential that 401s on builds, and an `az`
+/// sign-in is frequently a *different identity* — probed 2026-08-24 against
+/// `LagardereAWPL`, git authenticates as `l.delprat@lagardereawpl.com` and az as
+/// `ca.lyss.delprat@ltrp.onmicrosoft.com`, which can see builds in two of the
+/// org's six projects and none of the other four. Neither of those is fixable
+/// from inside this app; a PAT minted with Build (read) is.
+///
+/// **Above the environment variable, below the sign-in.** Above `from_env`
+/// because the two are the same kind of credential — a PAT you minted by hand —
+/// and this is the better-kept copy: a variable in a shell profile is the one
+/// that goes stale unnoticed, so the more current statement wins, exactly as
+/// `VOLERY_AZDO_PAT` is read ahead of `SKEIN_AZDO_PAT`. Below `from_az` for the
+/// reason the whole order barely matters: the ladder falls through on refusal,
+/// so a rung above this one only decides anything when it was *accepted*, and an
+/// accepted rung is by definition a credential that works.
+///
+/// `vault.rs` has the argument about where the secret goes, and this is the only
+/// place that reads it.
+fn from_vault() -> Option<Cred> {
+    crate::vault::read().map(|pat| Cred::basic("the stored token", pat))
 }
 
 /// A token set by hand, for when neither of the above has the scope.
@@ -303,22 +411,26 @@ fn from_az() -> Option<Cred> {
 /// shell profile is exactly the kind of thing a rename must not silently break.
 /// The new name is read first so that setting both means the current one wins.
 fn from_env() -> Option<Cred> {
-    ["VOLERY_AZDO_PAT", "SKEIN_AZDO_PAT"]
-        .into_iter()
-        .filter_map(|k| std::env::var(k).ok())
-        .map(|v| v.trim().to_string())
-        .find(|v| !v.is_empty())
-        .map(Cred::Basic)
+    [
+        ("VOLERY_AZDO_PAT", "VOLERY_AZDO_PAT"),
+        ("SKEIN_AZDO_PAT", "SKEIN_AZDO_PAT"),
+    ]
+    .into_iter()
+    .filter_map(|(k, name)| Some((std::env::var(k).ok()?, name)))
+    .map(|(v, name)| (v.trim().to_string(), name))
+    .find(|(v, _)| !v.is_empty())
+    .map(|(v, name)| Cred::basic(name, v))
 }
 
 fn ladder(org: &str) -> Vec<Cred> {
-    let mut out = Vec::new();
-    for got in [from_git(org), from_az(), from_env()] {
+    let mut out: Vec<Cred> = Vec::new();
+    for got in [from_git(org), from_az(), from_vault(), from_env()] {
         /* Two rungs resolving to the same secret is ordinary — `VOLERY_AZDO_PAT`
-           set to the same PAT git holds — and trying it twice would double the
-           cost of discovering it is refused. */
+           set to the same PAT the vault holds — and trying it twice would double
+           the cost of discovering it is refused. Compared on the credential and
+           not on the name it came off; see `Cred::same_as`. */
         if let Some(c) = got {
-            if !out.contains(&c) {
+            if !out.iter().any(|held| held.same_as(&c)) {
                 out.push(c);
             }
         }
@@ -335,6 +447,58 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
+/// Why a request came back with no answer.
+///
+/// Two variants because two of these are *not the same thing to a reader*. A
+/// credential being refused is something you can act on — mint a PAT, sign in
+/// again — and belongs in the widget's one line. A project that no rung can see
+/// is a silence: an organisation with per-project permissions will legitimately
+/// have projects your credential is not on, and drawing that as a fault means a
+/// wall permanently reporting a problem that is only the shape of the org.
+enum Denied {
+    /// Say this. The last rung's refusal, or whatever else went wrong.
+    Said(String),
+    /// Every rung that answered said it cannot see this project. Not a fault.
+    Unseen,
+}
+
+impl From<Denied> for String {
+    fn from(d: Denied) -> String {
+        match d {
+            Denied::Said(s) => s,
+            /* For the callers that have nowhere to put the distinction — the
+               project list and the identity — where it also cannot arise: both
+               are org-level and neither names a project. */
+            Denied::Unseen => "not visible to any credential".into(),
+        }
+    }
+}
+
+/// Whether a body is Azure DevOps saying "you are not on this project".
+///
+/// It answers this with a **400**, not the 404 you would expect, and that is
+/// what made it a bug rather than a case: 400 fell to the hard-error arm below,
+/// so the ladder stopped dead on the first rung that could not see a project
+/// instead of trying the ones that could. Probed 2026-08-24 against
+/// `_apis/build/builds` with an Entra bearer lacking access:
+///
+/// ```text
+/// 400  VS800075: The project with id 'vstfs:///Classification/TeamProject/969d…'
+///      does not exist, or you do not have permission to access it.
+///      typeKey: ProjectDoesNotExistException
+/// ```
+///
+/// Matched on `typeKey` rather than on the status or the message: blanket-
+/// forgiving every 400 would swallow a genuinely malformed request, which is a
+/// bug in *this* file and has to stay loud, and the message is prose that gets
+/// localised and rewritten.
+fn unseen(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("typeKey")?.as_str().map(|s| s.to_string()))
+        .is_some_and(|k| k == "ProjectDoesNotExistException")
+}
+
 /// One GET, signed with whichever rung is accepted, starting from the one that
 /// worked last time for this family.
 ///
@@ -348,7 +512,7 @@ fn get(
     org: &str,
     family: &'static str,
     url: &str,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, Denied> {
     let creds = match cache.creds.get(org) {
         Some(c) => c.clone(),
         None => {
@@ -358,10 +522,10 @@ fn get(
         }
     };
     if creds.is_empty() {
-        return Err(format!(
+        return Err(Denied::Said(format!(
             "no credential for {org} on this machine — clone from it, run `az login`, \
-             or set VOLERY_AZDO_PAT"
-        ));
+             or store a token"
+        )));
     }
 
     let start = cache
@@ -371,6 +535,7 @@ fn get(
         .unwrap_or(0);
     let agent = agent();
     let mut refused: Option<String> = None;
+    let mut invisible = false;
 
     for step in 0..creds.len() {
         let at = (start + step) % creds.len();
@@ -384,7 +549,7 @@ fn get(
                 cache.rung.insert((org.to_string(), family), at);
                 return res
                     .into_json::<serde_json::Value>()
-                    .map_err(|e| format!("unreadable answer from Azure DevOps: {e}"));
+                    .map_err(|e| Denied::Said(format!("unreadable answer from Azure DevOps: {e}")));
             }
             /* 401 is "this credential is not enough", 403 is "this identity is
                not allowed" — both are answered by trying another identity, and
@@ -393,16 +558,37 @@ fn get(
                because Azure DevOps returns it for a project the caller cannot
                see rather than admitting the project exists. */
             Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 || code == 404 => {
-                refused = Some(format!("{} was refused ({code})", cred.source()));
+                refused = Some(format!("{} was refused ({code})", cred.from));
             }
             Err(ureq::Error::Status(code, res)) => {
                 let body = res.into_string().unwrap_or_default();
-                return Err(format!("Azure DevOps answered {code}: {}", first_line(&body)));
+                /* The same fact as that 404, wearing a 400. Falls through to the
+                   next rung rather than ending the pass — a credential scoped to
+                   some of an org's projects and not others is ordinary, and the
+                   rung that *can* see this one may be the next in the list. */
+                if code == 400 && unseen(&body) {
+                    invisible = true;
+                    continue;
+                }
+                return Err(Denied::Said(format!(
+                    "Azure DevOps answered {code}: {}",
+                    first_line(&body)
+                )));
             }
-            Err(e) => return Err(format!("could not reach Azure DevOps: {e}")),
+            Err(e) => return Err(Denied::Said(format!("could not reach Azure DevOps: {e}"))),
         }
     }
-    Err(refused.unwrap_or_else(|| "no credential was accepted".into()))
+    /* A credential refusal outranks an invisibility, and the mixed case is why.
+       On this org before a PAT is stored, a build read gets 401 from the git
+       credential and 400-unseen from the az sign-in: reporting "not visible"
+       there would be true of one rung and would hide the actionable half, since
+       a token with Build (read) fixes it. Only a pass where *every* rung said it
+       cannot see the project is a silence. */
+    match (refused, invisible) {
+        (Some(r), _) => Err(Denied::Said(r)),
+        (None, true) => Err(Denied::Unseen),
+        (None, false) => Err(Denied::Said("no credential was accepted".into())),
+    }
 }
 
 /// The useful part of an error body. Azure DevOps answers with a JSON object
@@ -537,7 +723,7 @@ fn projects_of(cache: &mut Cache, org: &str) -> Result<Vec<Project>, String> {
         "https://dev.azure.com/{}/_apis/projects?api-version=7.1&$top=200",
         encode(org)
     );
-    let v = get(cache, org, "core", &url)?;
+    let v = get(cache, org, "core", &url).map_err(String::from)?;
     let list: Vec<Project> = v
         .get("value")
         .and_then(|v| v.as_array())
@@ -715,6 +901,12 @@ pub struct Runs {
     orgs: Vec<String>,
     /// How many project-level requests this reading cost.
     asked: usize,
+    /// Projects no credential on the ladder can see. Reported rather than
+    /// merely skipped: an org where four of six projects are invisible to you
+    /// draws an empty widget, and "nothing is building" and "you are not on
+    /// these projects" are different sentences. The rule the caps follow — a
+    /// bound that can hide an answer says so out loud.
+    unseen: usize,
     fault: Option<String>,
 }
 
@@ -729,7 +921,7 @@ pub struct Reviews {
 
 /* ── the two readings ──────────────────────────────────────────────────────*/
 
-fn read_runs(cache: &mut Cache, org: &str, project: &Project) -> Result<Vec<Run>, String> {
+fn read_runs(cache: &mut Cache, org: &str, project: &Project) -> Result<Vec<Run>, Denied> {
     /* `queryOrder` is asked for explicitly: the default is by build id, which is
        the same order right up until a project has two pipelines whose ids
        interleave differently from their queue times. */
@@ -788,7 +980,7 @@ fn read_reviews(cache: &mut Cache, org: &str) -> Result<Vec<Review>, String> {
         encode(org),
         PRS_PER_ORG,
     );
-    let v = get(cache, org, "git", &url)?;
+    let v = get(cache, org, "git", &url).map_err(String::from)?;
     let me = me_in(cache, org);
     let empty = Vec::new();
     let rows = v.get("value").and_then(|v| v.as_array()).unwrap_or(&empty);
@@ -890,6 +1082,7 @@ pub fn runs_with(cache: &mut Cache, roots: &[String]) -> Runs {
     let mut runs = Vec::new();
     let mut fault = None;
     let mut asked = 0usize;
+    let mut unseen = 0usize;
 
     for org in &orgs {
         let projects = match projects_of(cache, org) {
@@ -903,10 +1096,15 @@ pub fn runs_with(cache: &mut Cache, roots: &[String]) -> Runs {
             asked += 1;
             match read_runs(cache, org, &project) {
                 Ok(mut rows) => runs.append(&mut rows),
+                /* A project nobody on the ladder is on is counted, not faulted.
+                   Per-project permissions are ordinary in a large org, and a
+                   widget that reports one as an error is a widget permanently
+                   red about the shape of somebody else's tenant. */
+                Err(Denied::Unseen) => unseen += 1,
                 /* One project refusing must not lose the other five. The first
                    fault is kept because a widget has room for one line, and the
                    rows that did arrive are the more useful half of the answer. */
-                Err(e) => {
+                Err(Denied::Said(e)) => {
                     fault.get_or_insert(e);
                 }
             }
@@ -918,6 +1116,7 @@ pub fn runs_with(cache: &mut Cache, roots: &[String]) -> Runs {
         runs,
         orgs,
         asked,
+        unseen,
         fault,
     }
 }
@@ -976,6 +1175,49 @@ pub async fn release_azdo(app: AppHandle) -> Result<(), String> {
         *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
     })
     .await
+}
+
+/* ── the token you entered ─────────────────────────────────────────────────
+ *
+ * Three commands over `vault.rs`, and the shape of them is the point: the front
+ * end can say whether a token is held and can replace or remove it, and there is
+ * no command that hands one back. Nothing outside `vault.rs` and the
+ * `Authorization` header ever holds the secret, so no panel can leak it, no
+ * snapshot can carry it, and a screenshot of the wall cannot either.
+ *
+ * All three leave the main thread. Reading the vault is a syscall and cheap, but
+ * `set` and `clear` also reset the cache — and that mutex is held across an
+ * entire reading pass, which is the whole reason `release_azdo` is `async`. */
+
+/// Whether a token is stored. Never the token.
+#[tauri::command]
+pub async fn azdo_token() -> Result<bool, String> {
+    crate::off_main(crate::vault::held).await
+}
+
+/// Store one, replacing whatever was there.
+///
+/// The cache goes with it, for the reason `release_azdo` exists: `creds` is
+/// resolved once per organisation and held, so without this the ladder you just
+/// changed would not be consulted until the last widget came off the wall.
+#[tauri::command]
+pub async fn set_azdo_token(app: AppHandle, token: String) -> Result<(), String> {
+    crate::off_main(move || {
+        crate::vault::store(&token)?;
+        *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
+        Ok(())
+    })
+    .await?
+}
+
+#[tauri::command]
+pub async fn clear_azdo_token(app: AppHandle) -> Result<(), String> {
+    crate::off_main(move || {
+        crate::vault::clear()?;
+        *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
+        Ok(())
+    })
+    .await?
 }
 
 #[cfg(test)]
@@ -1040,8 +1282,48 @@ mod tests {
     fn a_pat_is_presented_the_way_azure_devops_wants_it() {
         /* Basic with an empty user, which is the documented and only accepted
            form. `:hunter2` is the exact string being encoded. */
-        assert_eq!(Cred::Basic("hunter2".into()).header(), "Basic Omh1bnRlcjI=");
-        assert_eq!(Cred::Bearer("ey.J".into()).header(), "Bearer ey.J");
+        assert_eq!(
+            Cred::basic("the stored token", "hunter2".into()).header(),
+            "Basic Omh1bnRlcjI="
+        );
+        assert_eq!(
+            Cred::bearer("an az sign-in", "ey.J".into()).header(),
+            "Bearer ey.J"
+        );
+    }
+
+    #[test]
+    fn two_rungs_holding_one_secret_are_tried_once() {
+        /* The case this exists for: a PAT stored in the vault and the same PAT
+           still sitting in a shell profile. Two names, one credential, and
+           discovering it is refused must not cost two round trips. */
+        let vault = Cred::basic("the stored token", "hunter2".into());
+        let env = Cred::basic("VOLERY_AZDO_PAT", "hunter2".into());
+        assert!(vault.same_as(&env));
+        /* Same secret presented two different ways is genuinely two attempts —
+           Azure DevOps accepts a PAT as Basic and refuses it as a bearer. */
+        assert!(!vault.same_as(&Cred::bearer("an az sign-in", "hunter2".into())));
+        assert!(!vault.same_as(&Cred::basic("the git credential", "other".into())));
+    }
+
+    #[test]
+    fn a_project_you_cannot_see_is_recognised_by_its_type_key() {
+        /* Verbatim from `_apis/build/builds` on 2026-08-24, with an Entra bearer
+           that is not on the project. Note the 400: this is the whole reason it
+           needed its own arm rather than riding the 401/403/404 one. */
+        let body = r#"{"$id":"1","innerException":null,
+            "message":"VS800075: The project with id 'vstfs:///Classification/TeamProject/969d50af-ce8a-4fa8-a262-1b7c9f6f8e8a' does not exist, or you do not have permission to access it.",
+            "typeName":"Microsoft.TeamFoundation.Core.WebApi.ProjectDoesNotExistException, Microsoft.TeamFoundation.Core.WebApi",
+            "typeKey":"ProjectDoesNotExistException","errorCode":0,"eventId":3000}"#;
+        assert!(unseen(body));
+
+        /* A real malformed request must stay loud — forgiving every 400 would
+           turn a bug in this file into a project that quietly went missing. */
+        assert!(!unseen(
+            r#"{"message":"The query parameter $top is invalid","typeKey":"VssPropertyValidationException"}"#
+        ));
+        assert!(!unseen("<html>418 from a proxy</html>"));
+        assert!(!unseen(""));
     }
 
     #[test]

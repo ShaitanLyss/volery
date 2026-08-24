@@ -67,6 +67,7 @@
   import Import from "./lib/Import.svelte";
   import Themes from "./lib/Themes.svelte";
   import Accounts from "./lib/Accounts.svelte";
+  import Keyring from "./lib/Keyring.svelte";
   import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
   import { foldChrome, type Fold, type Measured } from "./lib/chrome";
   /* `Carry` draws `Portage` — the same component/class split `Console` and
@@ -620,6 +621,10 @@
      whether the panel over it is up. */
   let showThemes = $state(false);
   let showAccounts = $state(false);
+  /* The Azure DevOps token. Reachable from here *and* from the pipelines widget's
+     fault line, which is where you actually find out you need one — a panel only
+     in the menu is a panel nobody finds at the moment it would help. */
+  let showKeyring = $state(false);
   let importing = $state(false);
   let sessions = $state<Session[]>([]);
 
@@ -1953,7 +1958,7 @@
          "give the wall the key back", not "throw away what I aimed this at".
          Letting go of the card there would leave a written prompt pointed at
          nothing, so the draft survives and a second press does the deselect. */
-      if (menu || showImport || showThemes || showAccounts) return;
+      if (menu || showImport || showThemes || showAccounts || showKeyring) return;
       if (isTyping(e.target)) {
         (e.target as HTMLElement).blur();
         return;
@@ -2379,6 +2384,13 @@
         press: () => (showAccounts = !showAccounts),
       },
       {
+        key: "token",
+        label: "azdo token",
+        title: "A personal access token for Azure DevOps, when the credential git holds isn't enough for builds",
+        on: showKeyring,
+        press: () => (showKeyring = !showKeyring),
+      },
+      {
         key: "chime",
         label: "chime",
         title: "Play a soft chime when a card wants you and Skein isn't focused",
@@ -2571,6 +2583,10 @@
     <Themes onclose={() => (showThemes = false)} />
   {/if}
 
+  {#if showKeyring}
+    <Keyring {devops} onclose={() => (showKeyring = false)} />
+  {/if}
+
   {#if showCarry}
     <Carry
       carry={portage}
@@ -2638,6 +2654,7 @@
         naming={nameFor}
         onreveal={revealRow}
         onopen={(url) => void skein.openLink(url)}
+        onkeyring={() => (showKeyring = true)}
         ambience={ambience.active}
         flights={skein.flights}
         lineage={skein.kin}

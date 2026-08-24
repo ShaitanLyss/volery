@@ -56,6 +56,7 @@
     onremove,
     onreveal,
     onopen,
+    onkeyring,
   }: {
     widget: Widget;
     selected: boolean;
@@ -116,6 +117,10 @@
      *  link in the transcript is — see `open.rs` for why an `<a href>` here
      *  would be a one-way trip out of an undecorated window. */
     onopen?: (url: string) => void;
+    /** Ask for the Azure DevOps token panel — the pipelines face's fault line,
+     *  which is the one fault on this wall you can act on. Routed for the same
+     *  reason `onopen` is. */
+    onkeyring?: () => void;
   } = $props();
 
   /** A timer's own state rides in its config, so setting a run is an ordinary
@@ -232,7 +237,12 @@
     {:else if widget.kind === "burn"}
       <Speedo {widget} {ledger} />
     {:else if widget.kind === "pipelines"}
-      <Pipelines {widget} {devops} onopen={(url) => onopen?.(url)} />
+      <Pipelines
+        {widget}
+        {devops}
+        onopen={(url) => onopen?.(url)}
+        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
+      />
     {:else if widget.kind === "reviews"}
       <Reviews {widget} {devops} onopen={(url) => onopen?.(url)} />
     {:else if widget.kind === "billboard"}

@@ -73,6 +73,7 @@
     naming,
     onreveal,
     onopen,
+    onkeyring,
     ambience,
     flights,
     lineage,
@@ -145,6 +146,8 @@
     onreveal?: (role: string, reference: string) => void;
     /** Leave the app entirely — a pipeline or a pull request in the browser. */
     onopen?: (url: string) => void;
+    /** Ask for the Azure DevOps token panel, from the pipelines face's fault. */
+    onkeyring?: () => void;
     /** What the wall does when nobody is asking it anything, or null for a bare
      *  one. Drawn inside the surface rather than in App, so it covers exactly
      *  the wall and never the transcript you are reading. */
@@ -1638,6 +1641,7 @@
     toCanvas={glass ? toGlass : toCanvas}
     {onreveal}
     {onopen}
+    {onkeyring}
     onupdate={(patch) => widgets.update(w.id, glass ? glassPatch(patch) : patch)}
     onremove={() => void widgets.remove(w.id)}
   />

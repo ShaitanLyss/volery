@@ -57,6 +57,10 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     # CreateJobObjectW takes a SECURITY_ATTRIBUTES, which lives behind this.
     "Win32_Security",
+    # The Azure DevOps token goes in the Windows credential vault rather than
+    # into this app's own database — `vault.rs` has the argument. advapi32's
+    # Cred* family lives behind this one.
+    "Win32_Security_Credentials",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     # The control surface drives the *real* cursor. A synthetic pointer event

@@ -377,18 +377,33 @@ export function took(ms: number): string {
 
 /** What the whole list is, in one line, when there is nothing in it.
  *
- * Four different silences, and telling them apart is most of what stops this
+ * Five different silences, and telling them apart is most of what stops this
  * widget reading as broken. A wall with no Azure DevOps repo on it is not a
  * wall whose pipelines are quiet, and neither is a reading that has not landed
- * yet — which is the state a first poll spends several seconds in. */
+ * yet — which is the state a first poll spends several seconds in.
+ *
+ * The fifth is `unseen`, and it is the one that would otherwise read as a lie.
+ * A credential is scoped to some of an organisation's projects and not others —
+ * measured on this org, an `az` sign-in reaches builds in two of six — and Rust
+ * counts those rather than faulting on them, because per-project permissions are
+ * the shape of somebody's tenant and not an error. But a widget that answers "no
+ * recent runs" while it was refused four of the six projects it asked about is
+ * telling you something it does not know. Only said when the list is *otherwise*
+ * empty: with rows to draw, the rows are the answer. */
 export function emptySaid(
   what: "runs" | "reviews",
   ready: boolean,
   orgs: string[],
   scoped: boolean,
+  unseen = 0,
 ): string {
   if (!ready) return "asking azure devops…";
   if (!orgs.length) return "no azure devops repo on this wall";
+  if (unseen > 0 && !scoped) {
+    return unseen === 1
+      ? "1 project your credential is not on"
+      : `${unseen} projects your credential is not on`;
+  }
   if (scoped) return what === "runs" ? "nothing running" : "nothing waiting on you";
   return what === "runs" ? "no recent runs" : "no open pull requests";
 }

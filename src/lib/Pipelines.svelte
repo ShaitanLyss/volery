@@ -41,6 +41,7 @@
     widget,
     devops,
     onopen,
+    onkeyring,
   }: {
     widget: Widget;
     devops: DevOps;
@@ -48,6 +49,11 @@
      *  than invoked here for the reason the process meter's `onreveal` is: where
      *  a click goes is the studio's to decide, not an instrument's. */
     onopen: (url: string) => void;
+    /** Ask for the token panel. Routed out rather than reached for, the same way
+     *  `onopen` is: which panel is on screen is the studio's business, and this
+     *  widget can be dropped to the size of a card, where a field would not
+     *  fit. */
+    onkeyring?: () => void;
   } = $props();
 
   /* The wall's own one-second tick, taken directly — the same rune `Clock` and
@@ -108,9 +114,22 @@
   </header>
 
   {#if half.fault && !half.rows.length}
-    <p class="fault" title={half.fault}>{half.fault}</p>
+    <!-- A refused credential is the one fault here you can actually do something
+         about, so it is the one that gets a way in. Pressed rather than
+         auto-opened: a panel that appears over the wall because a poll came back
+         401 would be a window opening itself every twenty seconds. The fault
+         keeps its own `title`, since the button truncates at this size. -->
+    {#if onkeyring && /refused|no credential/.test(half.fault)}
+      <button class="fault ask" title={half.fault} onclick={() => onkeyring?.()}>
+        {half.fault}<span class="more">— store a token</span>
+      </button>
+    {:else}
+      <p class="fault" title={half.fault}>{half.fault}</p>
+    {/if}
   {:else if !shown.length}
-    <p class="quiet">{emptySaid("runs", half.ready, half.orgs, scope !== "all")}</p>
+    <p class="quiet">
+      {emptySaid("runs", half.ready, half.orgs, scope !== "all", half.unseen)}
+    </p>
   {:else if variant === "dots"}
     <!-- One mark per run and no words at all, for a widget dropped to the size
          of a card. It answers exactly one question — is anything red — which is
@@ -362,5 +381,25 @@
   .fault {
     color: var(--st-fail);
     text-align: left;
+  }
+  /* The same line, pressable. A refinement rather than its own definition, so
+     the two cannot drift apart — see `test/styles.test.ts`. */
+  .fault.ask {
+    display: block;
+    width: 100%;
+    background: none;
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+    text-overflow: ellipsis;
+  }
+  .fault.ask:hover {
+    background: var(--raised);
+  }
+  /* What pressing it does, in the widget's quietest voice — the fault is the
+     message and this is only the affordance. */
+  .more {
+    display: block;
+    color: var(--paper-faint);
   }
 </style>

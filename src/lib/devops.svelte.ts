@@ -42,7 +42,13 @@ const RUNS_EVERY = 20_000;
  *  something anybody is waiting at the wall to see. */
 const REVIEWS_EVERY = 60_000;
 
-type RunsScan = { runs: Run[]; orgs: string[]; asked: number; fault: string | null };
+type RunsScan = {
+  runs: Run[];
+  orgs: string[];
+  asked: number;
+  unseen: number;
+  fault: string | null;
+};
 type ReviewsScan = { reviews: Review[]; orgs: string[]; asked: number; fault: string | null };
 
 /** One half of the connection: a list, when it last landed, and what went wrong.
@@ -66,6 +72,10 @@ class Half<T> {
   /** How many requests the last pass cost. Reported rather than merely counted:
    *  this is the only widget on the wall whose cost is somebody else's server. */
   asked = $state(0);
+  /** Projects no rung of the ladder can see. Only the runs half can have any —
+   *  pull requests come back org-wide in one call, so there is no per-project
+   *  request there to be refused. See `emptySaid`. */
+  unseen = $state(0);
 }
 
 export class DevOps {
@@ -103,6 +113,12 @@ export class DevOps {
     if (this.#runTimer) return;
     this.#runTimer = setInterval(() => void this.#pollRuns(), RUNS_EVERY);
     void this.#pollRuns();
+    /* Asked once when the poller starts rather than on a clock of its own. It is
+       what tells a fault apart from a fault with nothing to fall back on, and it
+       is the runs half that needs a token — a code-scoped credential reads pull
+       requests perfectly well. The panel asks again when it opens, since the
+       vault is reachable without us. */
+    void this.askHeld();
   }
 
   attachReviews(id: string) {
@@ -208,13 +224,57 @@ export class DevOps {
   #land<T>(
     half: Half<T>,
     rows: T[],
-    scan: { orgs: string[]; asked: number; fault: string | null },
+    scan: { orgs: string[]; asked: number; unseen?: number; fault: string | null },
   ) {
     if (rows.length || !scan.fault) half.rows = rows;
     half.orgs = scan.orgs;
     half.asked = scan.asked;
+    /* Optional because only the runs half has any — and defaulted rather than
+       left alone, or a pass that stopped being refused would keep reporting the
+       count from the one before it. */
+    half.unseen = scan.unseen ?? 0;
     half.fault = scan.fault;
     half.at = Date.now();
     half.ready = true;
+  }
+
+  /* ── the token you entered ───────────────────────────────────────────────
+   *
+   * The fourth rung of the ladder, and the only one this app can do anything
+   * about. `held` is a reading of the vault rather than something remembered
+   * here, because the vault is reachable from outside — Control Panel →
+   * Credential Manager will delete it behind our back, which is a property
+   * `vault.rs` chose on purpose and therefore one this class must not cache
+   * away. */
+
+  /** Whether a token is stored. Never the token — no command hands one back. */
+  held = $state(false);
+
+  async askHeld(): Promise<void> {
+    try {
+      this.held = await invoke<boolean>("azdo_token");
+    } catch {
+      /* A vault that will not answer is a vault with nothing usable in it, and
+         the ladder will reach the same conclusion on the next pass. */
+      this.held = false;
+    }
+  }
+
+  /** Store one and read again immediately.
+   *
+   *  Rust drops the credential cache as part of the same command, so the next
+   *  poll resolves a fresh ladder — and `refresh` is called rather than waited
+   *  for, since somebody who has just pasted a token is looking at the widget
+   *  they pasted it for. */
+  async store(token: string): Promise<void> {
+    await invoke("set_azdo_token", { token });
+    await this.askHeld();
+    await this.refresh();
+  }
+
+  async forget(): Promise<void> {
+    await invoke("clear_azdo_token");
+    await this.askHeld();
+    await this.refresh();
   }
 }

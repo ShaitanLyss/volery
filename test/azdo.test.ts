@@ -424,4 +424,34 @@ describe("saying it", () => {
     expect(emptySaid("reviews", true, ["org"], true)).toBe("nothing waiting on you");
     expect(emptySaid("reviews", true, ["org"], false)).toBe("no open pull requests");
   });
+
+  test("projects the credential is not on are the fifth silence", () => {
+    /* Measured on this org: an `az` sign-in reaches builds in two of six
+       projects and is told the other four do not exist. Rust counts those
+       rather than faulting, since per-project permissions are the shape of a
+       tenant and not an error — but "no recent runs" over four projects that
+       refused to answer is the widget claiming to know something it does not. */
+    expect(emptySaid("runs", true, ["org"], false, 4)).toBe(
+      "4 projects your credential is not on",
+    );
+    /* Singular, because one is the commonest count and "1 projects" is the
+       kind of thing that makes a reading look machine-generated. */
+    expect(emptySaid("runs", true, ["org"], false, 1)).toBe(
+      "1 project your credential is not on",
+    );
+
+    /* Not said when the reading has not landed or there is no org — those are
+       about the whole pass and outrank a per-project detail. */
+    expect(emptySaid("runs", false, ["org"], false, 4)).toBe("asking azure devops…");
+    expect(emptySaid("runs", true, [], false, 4)).toBe("no azure devops repo on this wall");
+
+    /* And not under a scope, where the emptiness has a nearer explanation: you
+       asked for what is live and nothing is. Saying the credential is short of
+       projects there would blame the wrong thing for an empty list. */
+    expect(emptySaid("runs", true, ["org"], true, 4)).toBe("nothing running");
+
+    /* Zero is the ordinary case and must read exactly as it did before. */
+    expect(emptySaid("runs", true, ["org"], false, 0)).toBe("no recent runs");
+    expect(emptySaid("runs", true, ["org"], false)).toBe("no recent runs");
+  });
 });

@@ -35,6 +35,7 @@ mod store;
 mod supervisor;
 mod update;
 mod usage;
+mod vault;
 mod window;
 mod workflow;
 
@@ -379,6 +380,9 @@ pub fn run() {
             azdo::azdo_runs,
             azdo::azdo_reviews,
             azdo::release_azdo,
+            azdo::azdo_token,
+            azdo::set_azdo_token,
+            azdo::clear_azdo_token,
             store::list_ambience,
             store::save_ambience,
             store::activate_ambience,
