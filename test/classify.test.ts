@@ -1,4 +1,6 @@
 import { expect, test, describe } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   ASK_TOOLS,
   CLEAN_BLOOM_S,
@@ -167,6 +169,50 @@ describe("describeTool degrades before arguments arrive", () => {
     expect(
       describeTool(SKEIN_ASK_TOOL, { questions: [{ question: "a?" }, { question: "b?" }] }),
     ).toBe("asked you 2 things");
+  });
+
+  test("every other tool skein hosts is named too", () => {
+    /* Six of nineteen were named and thirteen drew the raw wire name — so a
+       card that had just put an image on the wall said `mcp__skein__pin` in a
+       panel whose whole register is lowercase prose. */
+    expect(describeTool("mcp__skein__recall", { card: "1b06f3da" })).toBe("read 1b06f3da's words");
+    expect(describeTool("mcp__skein__recall", {})).toBe("read another card's words");
+    expect(describeTool("mcp__skein__pin", { path: "a/b/chart.png" })).toBe("pinned chart.png");
+    expect(describeTool("mcp__skein__repin", { image: "last", remove: true })).toBe(
+      "took an image down",
+    );
+    expect(describeTool("mcp__skein__spawn", { title: "the migration" })).toBe(
+      "opened a card: the migration",
+    );
+    expect(describeTool("mcp__skein__take", { item: "2c1b45c2", release: true })).toBe(
+      "put back 2c1b45c2",
+    );
+    expect(describeTool("mcp__skein__sink", { settled: true })).toBe(
+      "read what the sink has settled",
+    );
+    expect(describeTool("mcp__skein__wake_me", { seconds: 480 })).toBe("back in 8 minutes");
+    expect(describeTool("mcp__skein__touched", { paths: ["src/a.ts", "src/b.ts"] })).toBe(
+      "checked who else is in 2 files",
+    );
+  });
+
+  test("the vocabulary is the whole vocabulary, held against the rust that serves it", () => {
+    /* The thirteen were not a judgement about which calls matter — they were
+       simply never added, one server at a time, and nothing said so. Each MCP
+       server declares its names as `pub const *_TOOL`, so that is the list this
+       file owes a case for, and a new tool fails here on the day it is added
+       rather than on the day somebody notices a wire name on a card. */
+    const rust = readdirSync("src-tauri/src")
+      .filter((f) => f.endsWith(".rs"))
+      .flatMap((f) => [
+        ...readFileSync(join("src-tauri/src", f), "utf8").matchAll(
+          /pub const [A-Z_]+_TOOL: &str = "([a-z_]+)"/g,
+        ),
+      ])
+      .map((m) => `mcp__skein__${m[1]}`);
+
+    expect(rust.length).toBeGreaterThan(15);
+    for (const name of rust) expect(describeTool(name, {})).not.toBe(name);
   });
 
   test("it is not an ASK_TOOL, and must not become one", () => {

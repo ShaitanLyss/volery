@@ -3,7 +3,12 @@
  *
  * This file is also where nearly all Claude-specific knowledge lives (tool
  * names, model ids, event vocabulary). If a second agent backend ever matters,
- * this is the file that gets an interface. */
+ * this is the file that gets an interface.
+ *
+ * The one import is `said`, which is a span in words — "12 hours", "4 minutes".
+ * `wake_me` carries a number of seconds and the activity line is prose, so the
+ * choice is this import or a second copy of the same arithmetic. */
+import { said } from "./timing";
 
 /** How a turn ended. Immutable once decided — this is a fact about the turn. */
 export type Ending =
@@ -104,6 +109,34 @@ export const SKEIN_SEND_TOOL = "mcp__skein__send";
 export const SKEIN_BOARD_TOOL = "mcp__skein__board";
 export const SKEIN_POST_TOOL = "mcp__skein__post";
 export const SKEIN_UNPOST_TOOL = "mcp__skein__unpost";
+
+/** The rest of what Skein hosts, and the reason the whole vocabulary is written
+ *  out here rather than only the interesting half.
+ *
+ *  Six of these were named and thirteen were not, and an unnamed one does not
+ *  degrade — it falls to `default` and prints `mcp__skein__recall` on the card,
+ *  in a panel whose entire register is lowercase prose. Which is what it did:
+ *  an agent reading another card's words, or putting an image on the wall, drew
+ *  the raw wire name at the exact moment you would want to know what it had
+ *  done. Naming six of nineteen is worse than naming none, because the six make
+ *  the other thirteen read as a fault rather than as a convention.
+ *
+ *  So: every tool the Rust side registers has a case below, and a new one owes
+ *  a line here. `src-tauri/src/*.rs` is the list — each server declares its
+ *  names as `pub const *_TOOL`. */
+export const SKEIN_RECALL_TOOL = "mcp__skein__recall";
+export const SKEIN_TOUCHED_TOOL = "mcp__skein__touched";
+export const SKEIN_PIN_TOOL = "mcp__skein__pin";
+export const SKEIN_PINNED_TOOL = "mcp__skein__pinned";
+export const SKEIN_REPIN_TOOL = "mcp__skein__repin";
+export const SKEIN_DROP_TOOL = "mcp__skein__drop";
+export const SKEIN_SINK_TOOL = "mcp__skein__sink";
+export const SKEIN_TAKE_TOOL = "mcp__skein__take";
+export const SKEIN_DONE_TOOL = "mcp__skein__done";
+export const SKEIN_SPAWN_TOOL = "mcp__skein__spawn";
+export const SKEIN_CLOSE_TOOL = "mcp__skein__close";
+export const SKEIN_WAKE_TOOL = "mcp__skein__wake_me";
+export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
 
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
@@ -275,6 +308,74 @@ export function describeTool(name: string, input: any): string {
       const subject = arg(input?.subject);
       return subject ? `took down: ${clip(subject, 30)}` : "took a notice down";
     }
+    /* Reading rather than costing: `recall` is what an agent does *instead* of
+       messaging a card to ask what it did, so the line says whose words. */
+    case SKEIN_RECALL_TOOL: {
+      const card = arg(input?.card);
+      return card ? `read ${clip(card, 22)}'s words` : "read another card's words";
+    }
+    case SKEIN_TOUCHED_TOOL: {
+      const paths = input?.paths;
+      const one =
+        typeof paths === "string"
+          ? paths
+          : Array.isArray(paths) && paths.length === 1
+            ? String(paths[0])
+            : null;
+      if (one) return `checked who else is in ${basename(one)}`;
+      return Array.isArray(paths) && paths.length > 1
+        ? `checked who else is in ${paths.length} files`
+        : "checked who else has been here";
+    }
+    case SKEIN_PIN_TOOL: {
+      const img = arg(input?.path);
+      return img ? `pinned ${basename(img)}` : "pinned an image";
+    }
+    case SKEIN_PINNED_TOOL:
+      return "checked what it has pinned";
+    case SKEIN_REPIN_TOOL: {
+      if (input?.remove === true) return "took an image down";
+      const img = arg(input?.path);
+      if (img) return `repinned ${basename(img)}`;
+      const place = arg(input?.place);
+      return place ? `moved an image ${clip(place, 20)}` : "changed a pinned image";
+    }
+    case SKEIN_DROP_TOOL: {
+      const title = arg(input?.title);
+      return title ? `dropped: ${clip(title, 30)}` : "dropped something in the sink";
+    }
+    case SKEIN_SINK_TOOL:
+      return input?.settled === true ? "read what the sink has settled" : "read the sink";
+    case SKEIN_TAKE_TOOL: {
+      const item = arg(input?.item);
+      if (input?.release === true) return item ? `put back ${clip(item, 24)}` : "put an item back";
+      return item ? `took on ${clip(item, 24)}` : "took an item on";
+    }
+    case SKEIN_DONE_TOOL: {
+      const item = arg(input?.item);
+      return item ? `settled ${clip(item, 26)}` : "settled an item";
+    }
+    /* The two that change what is on the wall. Worth the most specific line of
+       any of these: a card appearing beside yours is the one thing here you
+       would want an account of without opening the call. */
+    case SKEIN_SPAWN_TOOL: {
+      const title = arg(input?.title);
+      if (title) return `opened a card: ${clip(title, 24)}`;
+      const project = arg(input?.project);
+      return project ? `opened a card in ${clip(project, 22)}` : "opened a card";
+    }
+    case SKEIN_CLOSE_TOOL: {
+      const card = arg(input?.card);
+      return card ? `closed ${clip(card, 26)}` : "closed a card";
+    }
+    case SKEIN_WAKE_TOOL: {
+      const secs = input?.seconds;
+      return typeof secs === "number" && Number.isFinite(secs) && secs > 0
+        ? `back in ${said(secs)}`
+        : "asked to be woken later";
+    }
+    case SKEIN_ALLOWANCE_TOOL:
+      return "checked the allowance";
     case "ExitPlanMode":
       return "wants the plan approved";
     default:
