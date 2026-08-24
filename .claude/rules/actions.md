@@ -21,8 +21,10 @@ The split is the same one `classify.ts` draws for Claude:
 
 - **`project.rs` answers in facts and never in verbs.** What a project *is* — its scripts, its
   package manager, its `.uproject` and the engine that `EngineAssociation` resolves to — is
-  probed once, when the territory appears. What it is *doing* — is its editor up, is the
-  branch ahead — is a poll, every 8s.
+  probed when the territory appears, and then only at the two moments it can have changed
+  (below). What it is *doing* — is its editor up, is the branch ahead — is a poll, every 8s. "Once" is about the poll not re-reading a package.json
+  every eight seconds; it is not a claim the facts cannot change, and reading it as one is what
+  went wrong below.
 - **`actions.ts` is pure** and holds all the toolchain knowledge: UBT's argv, what Live Coding
   prints when it succeeds, how to read `[3/12]` and `@progress` and the cook's counters. It is
   tested directly (`test/actions.test.ts`).
@@ -33,12 +35,47 @@ The split is the same one `classify.ts` draws for Claude:
 
 Things that are load-bearing:
 
+- **Facts are re-read at the two boundaries a file can change across, and neither of them is a
+  clock.** "Probed once and never again" was a claim about the *poll* not re-reading a
+  package.json every eight seconds, and it got read as a claim that the facts cannot change —
+  so the bump chip said the version it found when the territory appeared and went on saying it.
+  Pull a release somebody else cut and the arc offered a bump that had already been made, from
+  a number the file no longer held; it then refuses at the last step, or writes a version
+  backwards. The two boundaries: **a run finishing**, in `run`'s `finally`, since `git pull
+  --ff-only` is this app changing that file just as much as `bump_version` is — which is why
+  the re-probe is every chip and not, as it first was, only the one that writes a version; and
+  **the window coming back to the front**, `Actions.refocus`, for the pull done in a terminal
+  and the version edited in an editor. The second is the CLAUDE.md shape — nothing emits an
+  event when a file changes under us, so fold the event that already exists nearby, and focus
+  is not merely the available one but the right one: coming back to the window is exactly the
+  boundary of not having been looking. Bounded by `refocusStep` (pure, tested) on the
+  transition into focus only and behind a floor, so a burst of alt-tabs costs one pass. No
+  backstop timer, because unlike the update check this leaves nothing on the network —
+  `probe_project` is local reads.
 - **Steps carry argv, never a shell string.** Everything runs through `cmd /C call …`, and cmd
   does not read the `\"` escaping a Windows command line is quoted with — so
   `C:\Program Files\Epic Games\UE_5.8\…`, which is where every engine is installed, would
   arrive at UBT in pieces. The `call` earns its place too: cmd strips the first and last quote
   of its own tail when that tail *begins* with one, so a command whose first token is a quoted
   path loses it. A bare word in front means there is nothing to strip.
+- **The facts are re-read at both boundaries, and the narrow one was not enough.** The bump
+  chip reads a version out of `facts` and offers the next one, so a stale fact does not read as
+  stale — it reads as a chip offering a bump that has already been made, refusing at the last
+  step or writing a version backwards. `bump` used to `reprobe` by itself, on the argument that
+  it was the one place this app edits a package.json. Which was true and too narrow twice over:
+  `git pull --ff-only` is one chip along and edits that file too, and a version changed in an
+  editor is not this app at all. So there are two callers of `reprobe` and they divide the
+  causes. **What this app did**: `run`'s `finally`, every chip, the one project whose chip was
+  pressed. **What happened while the wall was not in front**: `Actions.refocus`, every project.
+  There is no watcher and no clock, because *nothing emits an event when a file changes under
+  us* — so, per CLAUDE.md, fold the event that already exists nearby. Focus is it, and not
+  merely because it is available: the invariant being bent says the facts change while you are
+  *not looking*, and coming back to the window is exactly that boundary. Two bounds, both in
+  pure `refocusStep` because both are three lines and both are easy to get subtly wrong — only
+  on the transition *into* focus, and a floor measured from the last **yes** rather than the
+  last reading, or a burst of alt-tabs pushes the floor out ahead of itself forever and the
+  wall never re-reads at all. No third bound and no backstop timer: unlike the update check
+  this leaves the machine for nothing, being a dozen `read_to_string`s per project.
 - **Pipes, not a PTY** — see the note under dev servers. `pump_lines` is shared, and it splits
   on `\r` as well as `\n` whatever it is reading, so a redraw still arrives as a line. Both
   streams are pumped: cargo and UBT do much of their talking on stderr.
