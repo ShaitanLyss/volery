@@ -392,11 +392,12 @@
      which is when it can have changed. `Actions.refocus` holds the bounds. */
   $effect(() => {
     const focused = attention.focused;
-    /* `untrack` for the reason line 500 gives: `refocus` reads `facts` to know
-       which projects to re-probe and then *writes* it, so tracked it would
-       re-run on every poll tick — harmless, since the gate answers no to
-       anything that is not a transition, and exactly the sort of quiet
-       self-feeding effect that is a real bug the next time someone edits it. */
+    /* `untrack` for the reason the clock effect below gives: `refocus` reads
+       `facts` to know which projects to re-probe and then *writes* it, so
+       tracked it would re-run on every poll tick. Harmless today, since the
+       gate answers no to anything that is not a transition — and exactly the
+       sort of quiet self-feeding effect that becomes a real one the next time
+       somebody edits either end of it. */
     void untrack(() => actions.refocus(focused));
   });
 
