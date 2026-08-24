@@ -22,9 +22,7 @@ The split is the same one `classify.ts` draws for Claude:
 - **`project.rs` answers in facts and never in verbs.** What a project *is* — its scripts, its
   package manager, its `.uproject` and the engine that `EngineAssociation` resolves to — is
   probed when the territory appears, and then only at the two moments it can have changed
-  (below). What it is *doing* — is its editor up, is the branch ahead — is a poll, every 8s. "Once" is about the poll not re-reading a package.json
-  every eight seconds; it is not a claim the facts cannot change, and reading it as one is what
-  went wrong below.
+  (below). What it is *doing* — is its editor up, is the branch ahead — is a poll, every 8s.
 - **`actions.ts` is pure** and holds all the toolchain knowledge: UBT's argv, what Live Coding
   prints when it succeeds, how to read `[3/12]` and `@progress` and the cook's counters. It is
   tested directly (`test/actions.test.ts`).
