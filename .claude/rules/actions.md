@@ -56,24 +56,6 @@ Things that are load-bearing:
   arrive at UBT in pieces. The `call` earns its place too: cmd strips the first and last quote
   of its own tail when that tail *begins* with one, so a command whose first token is a quoted
   path loses it. A bare word in front means there is nothing to strip.
-- **The facts are re-read at both boundaries, and the narrow one was not enough.** The bump
-  chip reads a version out of `facts` and offers the next one, so a stale fact does not read as
-  stale — it reads as a chip offering a bump that has already been made, refusing at the last
-  step or writing a version backwards. `bump` used to `reprobe` by itself, on the argument that
-  it was the one place this app edits a package.json. Which was true and too narrow twice over:
-  `git pull --ff-only` is one chip along and edits that file too, and a version changed in an
-  editor is not this app at all. So there are two callers of `reprobe` and they divide the
-  causes. **What this app did**: `run`'s `finally`, every chip, the one project whose chip was
-  pressed. **What happened while the wall was not in front**: `Actions.refocus`, every project.
-  There is no watcher and no clock, because *nothing emits an event when a file changes under
-  us* — so, per CLAUDE.md, fold the event that already exists nearby. Focus is it, and not
-  merely because it is available: the invariant being bent says the facts change while you are
-  *not looking*, and coming back to the window is exactly that boundary. Two bounds, both in
-  pure `refocusStep` because both are three lines and both are easy to get subtly wrong — only
-  on the transition *into* focus, and a floor measured from the last **yes** rather than the
-  last reading, or a burst of alt-tabs pushes the floor out ahead of itself forever and the
-  wall never re-reads at all. No third bound and no backstop timer: unlike the update check
-  this leaves the machine for nothing, being a dozen `read_to_string`s per project.
 - **Pipes, not a PTY** — see the note under dev servers. `pump_lines` is shared, and it splits
   on `\r` as well as `\n` whatever it is reading, so a redraw still arrives as a line. Both
   streams are pumped: cargo and UBT do much of their talking on stderr.
