@@ -34,7 +34,10 @@ now, and the panel is one window onto whichever of them is active.
   the object holding every session with it, and the rebuilt one has to *find* the shells rather
   than spawn a second set beside them. A generated id would have lost them all every edit.
   Worktree cards need no thought here: a card carries its project root as its `cwd` whatever
-  `--worktree` did with it, so `skein` and `skein · fix` are one territory and one shell.
+  tree its agent is actually running in, so `skein` and `skein · fix` are one territory and one
+  shell. (That used to say "whatever `--worktree` did with it". The flag is gone — Skein makes
+  the tree itself now, `worktree.md` — but the reason this needs no thought is unchanged, and
+  it is the `cwd` in the row rather than the flag that was ever doing the work.)
 - **The active one is the last project you touched a card in, and it is sticky.**
   `activeShellKey` in `shell.ts` is the whole rule and it is pure, so it is tested rather than
   reasoned about. Sticky is the half that had to be decided: Escape, the ground click and

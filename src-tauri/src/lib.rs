@@ -38,6 +38,7 @@ mod usage;
 mod vault;
 mod window;
 mod workflow;
+mod worktree;
 
 use actions::Runs;
 use ask::Asks;

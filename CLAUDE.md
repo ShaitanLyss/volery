@@ -127,6 +127,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `bang.md` | `!` in the dock: a shell line where a prompt goes, the two things Enter and Ctrl+Enter mean, and completion out of the shell's own `TabExpansion2` | `bang.ts`, `bang.svelte.ts`, `bang.rs`, `Dock.svelte`, `field.svelte.ts` |
 | `naming.md` | what a card is called, and the draft it wears before it is named | `naming.ts` |
 | `menu.md` | the right-click, and why offering nothing is a real answer | `menu.ts` |
+| `worktree.md` | the tree a card works in: why Skein makes it rather than `--worktree`, the folder spelling it must keep, the upstream `-b` would otherwise set, and the base ladder | `worktree.rs`, `supervisor.rs` |
 | `spawn.md` | a card putting a card on the wall and taking it off again: which territories it may name and why a path is not one of them, the three bounds that are switched off and what is watching instead, the one birth path, what a card may close, and the root a spawned card is drawn on | `spawn.rs`, `lineage.ts`, `Lineage.svelte` |
 | `chat.md` | the card with no project, what `--tools` really does, and where a capability is decided | `supervisor.rs`, `store.rs`, `skein.svelte.ts` |
 | `hooks.md` | the hook Skein hands its cards: the Bash tool halving runs of backslashes, why a quoted heredoc was never the cause, and the one binary that undoes it | `hooks.rs`, `main.rs` |

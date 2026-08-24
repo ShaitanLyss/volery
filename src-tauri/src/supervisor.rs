@@ -320,8 +320,27 @@ fn spawn_now(
         let home = app.path().home_dir().map_err(|e| format!("no home dir: {e}"))?;
         crate::claude::program(&home)
     };
+    /* Where the child actually runs, which is not always where the card says it
+       lives. A worktree card's `cwd` in the store is the project root — that is
+       its territory, and what every other subsystem means by it — while the
+       agent belongs in the tree for its branch. `ensure` makes that tree on the
+       first spawn and finds it on every one after, so waking a dormant card
+       puts it back in the tree it has been working in.
+
+       This used to be `--worktree <name>`, one flag, the CLI doing all of it.
+       What it did with the name is why it is not any more: the branch came out
+       `worktree-feat+async-auth` for a card called `feat/async-auth`, and there
+       is no flag to ask for anything else. See `worktree.rs`. */
+    let run_dir = match worktree.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        /* Never for a chat card, whose cwd is a folder of Skein's own —
+           branching it would put a git tree somewhere nobody asked for one, for
+           an agent with no tool to edit it. */
+        Some(name) if !chat => crate::worktree::ensure(&cwd, name)?,
+        _ => cwd.clone(),
+    };
+
     let mut cmd = Command::new(&program);
-    cmd.current_dir(&cwd)
+    cmd.current_dir(&run_dir)
         .arg("--print")
         .args(["--input-format", "stream-json"])
         .args(["--output-format", "stream-json"])
@@ -384,22 +403,19 @@ fn spawn_now(
     }
 
     /* A path we cannot even build is one we cannot find a transcript at, which
-       is the same answer as there not being one: start fresh. */
-    let resume = transcript_path(&app, &cwd, session).is_ok_and(|p| p.exists());
+       is the same answer as there not being one: start fresh.
+
+       Asked of `run_dir` rather than of `cwd`, because the CLI files a
+       transcript under the directory it is *running* in — a worktree card's
+       transcripts are under the tree's own slug, not the project root's. Asking
+       the wrong one would answer "no transcript" for a card that has been
+       talking for days, and a card that starts fresh every time it wakes is one
+       that has quietly lost its memory. */
+    let resume = transcript_path(&app, &run_dir, session).is_ok_and(|p| p.exists());
     if resume {
         cmd.args(["--resume", session]);
     } else {
         cmd.args(["--session-id", session]);
-        /* Only on a fresh spawn: `--worktree` *creates* one, so passing it
-           while resuming would try to branch a session that already lives in
-           its own tree. And never for a chat card, whose cwd is a folder of
-           Skein's own — branching it would put a git tree somewhere nobody
-           asked for one, for an agent with no tool to edit it. */
-        if !chat {
-            if let Some(name) = worktree.as_deref().filter(|n| !n.trim().is_empty()) {
-                cmd.args(["--worktree", name]);
-            }
-        }
     }
     if let Some(m) = model.as_deref().filter(|m| !m.trim().is_empty()) {
         cmd.args(["--model", m]);
