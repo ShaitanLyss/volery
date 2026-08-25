@@ -6,6 +6,7 @@ import {
   amount,
   blockAt,
   blocks,
+  costStep,
   count,
   dayStart,
   leaders,
@@ -368,5 +369,31 @@ describe("saying it", () => {
     expect(left(41 * 60_000)).toBe("41m");
     expect(left(2 * HOUR)).toBe("2h");
     expect(left(2 * HOUR + 14 * 60_000)).toBe("2h 14m");
+  });
+});
+
+describe("costStep", () => {
+  /* `total_cost_usd` is a running total of the *process*, probed 2026-08-25
+     with tools/probe-cost.ts: a fresh session reported 0.2542635 and the same
+     session resumed reported 0.225298 for its next small turn. */
+  test("is the step the running total took", () => {
+    expect(costStep(0.5, 0.2)).toBeCloseTo(0.3, 10);
+    expect(costStep(0.2542635, 0)).toBeCloseTo(0.2542635, 10);
+  });
+
+  test("takes the whole total when the counter has restarted", () => {
+    /* The card outlived its process — an account move, a wake after a crash —
+       so the baseline is above what the new process counts from. This used to
+       clamp to zero and book the turn at nothing. */
+    expect(costStep(0.225298, 0.2542635)).toBeCloseTo(0.225298, 10);
+    expect(costStep(0.01, 12.4)).toBeCloseTo(0.01, 10);
+  });
+
+  test("never invents money and never returns less than nothing", () => {
+    expect(costStep(0, 0)).toBe(0);
+    expect(costStep(0, 5)).toBe(0);
+    expect(costStep(Number.NaN, 1)).toBe(0);
+    expect(costStep(-1, 0)).toBe(0);
+    expect(costStep(2, Number.NaN)).toBe(2);
   });
 });

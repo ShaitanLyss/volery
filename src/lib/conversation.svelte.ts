@@ -56,6 +56,7 @@ import {
   recordCompaction,
   type Compaction,
 } from "./compaction";
+import { costStep } from "./usage";
 import { until } from "./limits";
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
@@ -772,11 +773,32 @@ export class Conversation {
    *  than an order of magnitude — a cache read is 0.1x input, a cache write
    *  1.25x — so any total that adds them is a number nobody can act on.
    *
-   *  `usd` is a delta, not a reading. `total_cost_usd` is cumulative over the
-   *  session, so the turn's own cost is the step it took; `#costAtLastTurn`
-   *  holds the previous value to subtract. Clamped at zero because a cleared
-   *  card keeps its `Conversation` and starts a fresh session whose total
-   *  begins again below the old one. */
+   *  `usd` is a delta, not a reading. `total_cost_usd` is a running total and
+   *  the turn's own cost is the step it took; `#costAtLastTurn` holds the
+   *  previous value to subtract.
+   *
+   *  **What it is a running total *of* is the process, not the session**, and
+   *  the difference is a turn's cost. Probed 2026-08-25 with
+   *  `tools/probe-cost.ts`, spawning with Skein's exact argv: one small turn on
+   *  a fresh session reported `0.2542635`, and the same session `--resume`d in a
+   *  second process reported `0.225298` for its next small turn — *lower*, so
+   *  the counter had started again rather than carrying the session's history.
+   *
+   *  A `Conversation` outlives its process — an account move ends the child and
+   *  wakes it (`#moveTo`), a crashed card is woken again — so the baseline is
+   *  routinely above the number the new process is counting from. That was
+   *  clamped to zero, which quietly booked the first turn of every new process
+   *  at nothing: nine such turns on 2026-08-24, one of them 4.7M cache reads
+   *  wide. A counter that went *down* has restarted, and its current value is
+   *  the whole of what this process has spent — which is this turn, since a new
+   *  process has taken no other. So that is the step, and the clamp is gone
+   *  along with the case it was standing in for.
+   *
+   *  Note what this does not fix: a `result` carrying a cost and no `usage` at
+   *  all (a prompt the CLI answered itself — see `#claimLocalCommand`) still
+   *  books the accumulated step onto a turn with no tokens to explain it. Four
+   *  of those on 2026-08-24. They are honest about the money and misleading
+   *  about the turn. */
   lastTurn = $state({ in: 0, out: 0, cacheRead: 0, cacheWrite: 0, usd: 0 });
   #costAtLastTurn = 0;
 
@@ -1875,7 +1897,7 @@ export class Conversation {
           cacheWrite: tu?.cache_creation_input_tokens ?? 0,
           usd:
             typeof ev.total_cost_usd === "number"
-              ? Math.max(0, ev.total_cost_usd - this.#costAtLastTurn)
+              ? costStep(ev.total_cost_usd, this.#costAtLastTurn)
               : 0,
         };
         if (typeof ev.total_cost_usd === "number") {

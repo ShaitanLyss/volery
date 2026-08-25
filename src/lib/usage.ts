@@ -364,3 +364,30 @@ export function left(ms: number): string {
   const m = mins % 60;
   return m ? `${h}h ${m}m` : `${h}h`;
 }
+
+/** What this turn cost, given the CLI's running total and the last one seen.
+ *
+ *  `result.total_cost_usd` is a running total **of the process**, not of the
+ *  session — probed 2026-08-25 with `tools/probe-cost.ts`, spawning with
+ *  Skein's exact argv: a small turn on a fresh session reported `0.2542635`,
+ *  and the same session `--resume`d in a second process reported `0.225298`
+ *  for its next small turn. Lower, so the counter had started again rather
+ *  than carrying what the session had already spent.
+ *
+ *  A card outlives its process — an account move ends the child and wakes it,
+ *  a card that crashed is woken again — so the baseline is routinely above the
+ *  number the new process counts from. This used to be `Math.max(0, total -
+ *  baseline)`, which booked the first turn of every new process at nothing:
+ *  nine such turns on 2026-08-24, one of them 4.7M cache reads wide, and each
+ *  of them missing from the day's figure and the ledger both.
+ *
+ *  **A total below the baseline is a counter that restarted**, and its own
+ *  value is then the whole of what this process has spent — which is this
+ *  turn, since a new process has taken no other. Here rather than in
+ *  `conversation.svelte.ts` for the reason the price table is here: it is
+ *  arithmetic about a bill, and arithmetic wants a test. */
+export function costStep(total: number, baseline: number): number {
+  if (!Number.isFinite(total) || total < 0) return 0;
+  if (!Number.isFinite(baseline) || baseline < 0) return total;
+  return total < baseline ? total : total - baseline;
+}
