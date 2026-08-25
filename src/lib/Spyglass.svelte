@@ -16,6 +16,7 @@
 
   import Markdown from "./Markdown.svelte";
   import { parseMarkdown } from "./markdown";
+  import { type Reading, flatOf, locate } from "./dogears";
   import { offers, pieces, shift, splitPath, viewLines, windowAround } from "./finding";
   import type { Finder } from "./finder.svelte";
 
@@ -24,6 +25,7 @@
   let field: HTMLInputElement | undefined = $state();
   let list: HTMLDivElement | undefined = $state();
   let sheet: HTMLDivElement | undefined = $state();
+  let pane: HTMLDivElement | undefined = $state();
 
   /* Whichever of the two is showing takes the keyboard. The panel is a question
      and there is nothing else in the list state to click; the viewer has no
@@ -57,12 +59,23 @@
      A rendered document has no line to scroll to, so it opens at the top, which
      is where a document starts — and that has to be *set* rather than left
      alone, or switching from source to rendered keeps the scroll offset of a
-     view that is no longer there. */
+     view that is no longer there.
+
+     Unless a tab is being resumed, which is the one case that overrides all of
+     it: coming back to a dog-ear means coming back to where you were, and the
+     line the file was first opened at is not that. Taken here rather than in
+     the continuation so the reading is claimed by the same effect run the
+     resume triggered. */
   $effect(() => {
     const line = finder.sheetLine;
     const rendered = finder.rendered;
     if (!finder.sheet) return;
+    const resume = finder.takeResume();
     void tick().then(() => {
+      if (resume) {
+        putBack(resume);
+        return;
+      }
       if (rendered || line === null) {
         if (sheet) sheet.scrollTop = 0;
         return;
@@ -72,6 +85,89 @@
         ?.scrollIntoView({ block: "center" });
     });
   });
+
+  /* How the finder reads where we are — installed, not reached for. See the
+     note on `Finder.reader`: this component is the only thing that can see a
+     scroller or a `Selection`, and the finder is the only thing that knows when
+     the answer is worth having. Cleared on the way out, since a reader holding
+     a `bind:this` from a superseded generation answers about a node nothing is
+     drawing. */
+  $effect(() => {
+    finder.reader = reading;
+    return () => {
+      if (finder.reader === reading) finder.reader = null;
+    };
+  });
+
+  /** Every text node under an element, in document order.
+   *
+   *  The one line of this arrangement that cannot be tested — everything it
+   *  feeds is in `dogears.ts`. A flat run of text nodes is what makes one
+   *  description of a selection work in both readings: the source view is
+   *  line-numbered `div`s and a rendered document is arbitrary markup, and a
+   *  line/column pair would mean nothing in the second. */
+  function textNodes(el: HTMLElement): Text[] {
+    const out: Text[] = [];
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) out.push(n as Text);
+    return out;
+  }
+
+  /** Where the viewer is, for the tab it belongs to. */
+  function reading(): Reading | null {
+    const el = sheet;
+    if (!el) return null;
+    let span: { from: number; to: number } | null = null;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount && !sel.isCollapsed) {
+      const r = sel.getRangeAt(0);
+      /* A selection that started in the transcript and ended here is not this
+         file's selection, so both ends have to be inside. */
+      if (el.contains(r.startContainer) && el.contains(r.endContainer)) {
+        const nodes = textNodes(el);
+        const lens = nodes.map((n) => n.data.length);
+        const a = nodes.indexOf(r.startContainer as Text);
+        const b = nodes.indexOf(r.endContainer as Text);
+        /* Not found means an endpoint on an *element* rather than in text,
+           which a selection dragged past the end of the last line genuinely
+           is. The scroll is still worth keeping, so the selection is what is
+           dropped and nothing else. */
+        if (a !== -1 && b !== -1) {
+          span = {
+            from: flatOf(lens, a, r.startOffset),
+            to: flatOf(lens, b, r.endOffset),
+          };
+        }
+      }
+    }
+    return { scroll: el.scrollTop, sel: span };
+  }
+
+  /** And back again. */
+  function putBack(read: Reading) {
+    const el = sheet;
+    if (!el) return;
+    if (read.sel) {
+      const nodes = textNodes(el);
+      const lens = nodes.map((n) => n.data.length);
+      const a = locate(lens, read.sel.from);
+      const b = locate(lens, read.sel.to);
+      const na = nodes[a.i];
+      const nb = nodes[b.i];
+      if (na && nb) {
+        const range = document.createRange();
+        range.setStart(na, Math.min(a.off, na.data.length));
+        range.setEnd(nb, Math.min(b.off, nb.data.length));
+        const s = window.getSelection();
+        s?.removeAllRanges();
+        s?.addRange(range);
+      }
+    }
+    /* Last, and that is the order rather than an accident: putting a selection
+       back scrolls to it, and where the scroller actually was is the more
+       precise of the two facts. */
+    el.scrollTop = read.scroll;
+  }
 
   /** The preview, as the slice of numbered lines around the selected place. */
   const shown = $derived.by(() => {
@@ -154,6 +250,35 @@
   }
 </script>
 
+<!-- A press outside puts it away, and it is the *tabs* that make that affordable.
+     Closing used to cost you the whole search and the whole scroll, so the only
+     way out was a deliberate Escape and a stray click could not be allowed to
+     mean it; now leaving leaves a pill, and coming back is one click. So the
+     panel behaves the way every other dismissible thing on this wall does.
+
+     `pointerdown` rather than `click`, which is `ContextMenu`'s reasoning
+     exactly: the panel should be gone before the thing underneath decides what
+     that press meant. But **no catcher** — that component can afford an overlay
+     and this one cannot, because the whole argument for having no scrim is that
+     the reason you are reading a file is usually the card beside it. So this
+     listens at the window and swallows nothing: one press both closes the panel
+     and reaches the card, which is what clicking a card while a file is open
+     should do.
+
+     Two exclusions. The strip, because clicking another tab is switching files
+     and not dismissing — and it would otherwise close and immediately reopen.
+     And anything but the primary button, since a right-click is asking the wall
+     for a menu rather than putting this away. -->
+<svelte:window
+  onpointerdown={(e) => {
+    if (!finder.open || e.button !== 0) return;
+    const t = e.target;
+    if (!(t instanceof Node) || pane?.contains(t)) return;
+    if (t instanceof Element && t.closest(".strip")) return;
+    finder.hide();
+  }}
+/>
+
 {#if !finder.open}
   <!-- Which-key, in one line and without a plugin. A chord half-typed is the
        only gesture on this wall with no affordance at all — every other binding
@@ -178,7 +303,14 @@
        one step in has no field — so `tabindex` is what lets the pane itself be
        a place the keyboard can be, and every key below arrives here by bubbling
        from whichever of the two is focused. -->
-  <div class="pane" role="dialog" aria-label="finder" tabindex="-1" onkeydown={onKey}>
+  <div
+    class="pane"
+    role="dialog"
+    aria-label="finder"
+    tabindex="-1"
+    bind:this={pane}
+    onkeydown={onKey}
+  >
   <header>
     <span class="mark">{finder.mode === "files" ? "find file" : "grep"}</span>
     <span class="path" title={finder.root}

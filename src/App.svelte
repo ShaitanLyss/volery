@@ -61,6 +61,7 @@
   import { ink } from "./lib/theme.svelte";
   import Canvas from "./lib/Canvas.svelte";
   import Dock from "./lib/Dock.svelte";
+  import Dogears from "./lib/Dogears.svelte";
   import { Field } from "./lib/field.svelte";
   import ContextMenu from "./lib/ContextMenu.svelte";
   import Effects from "./lib/Effects.svelte";
@@ -2781,6 +2782,14 @@
         </p>
       </div>
     {/if}
+
+    <!-- The files kept to hand. Inside the wall rather than beside it, and that
+         is the whole of its placement: the wall ends exactly where the dock
+         begins, so a strip anchored to the bottom of this element sits on the
+         dock's top edge however tall the draft has grown — no measurement and
+         nothing to keep in step. It draws itself away when there is nothing to
+         show. -->
+    <Dogears {finder} />
   </main>
 
   <Dock

@@ -4,6 +4,8 @@ paths:
   - "src/lib/finding.ts"
   - "src/lib/finder.svelte.ts"
   - "src/lib/Spyglass.svelte"
+  - "src/lib/dogears.ts"
+  - "src/lib/Dogears.svelte"
   - "tools/probe-places.ts"
   # ToolCall is panel.md's file first, but half of "a path opens the file" lives
   # in it — so this loads there too rather than trusting a pointer in prose.
@@ -278,6 +280,159 @@ asked for the whole of something long, and past it the text is drawn plain as it
   rather than as "this is not text". Truncation cuts at the last newline inside the cap, which
   also guarantees it never cuts inside a UTF-8 sequence.
 
+### The files kept to hand
+
+The viewer was very good at getting you to a file and had no memory at all: read halfway down
+`store.rs`, press Escape to look at the card beside it, and getting back was `<space>ff`, four
+characters, Enter, and the scroll all over again. Which is enough friction that you stop
+looking things up — the failure mode of a reader with no bookmarks is that it stops being used
+rather than that it is annoying.
+
+So every file the viewer opens leaves a **dog-ear**: a pill on a strip above the dock,
+`Dogears.svelte`, with the arithmetic in `dogears.ts` (`test/dogears.test.ts`, 37 tests).
+
+**A tab is a reading, not a path**, and that is the whole design. It carries where the
+scroller was, what was selected, and *which of the two readings* it was in — because "the
+state I was at" is all three, and a tab that only remembered the path would have saved you the
+four characters and none of the scroll.
+
+- **Character offsets, not a line and a column.** This looks like the harder answer and is the
+  easier one: the source view is line-numbered `div`s and a rendered document is arbitrary
+  markup, so a line/column pair works in one and means nothing in the other. A flat offset
+  over the container's text nodes works in both, in twenty lines, and is exact for as long as
+  the DOM is the same — which it is, since the viewer renders the whole file rather than a
+  window of it. `flatOf` and `locate` are the two inverses and they are pure; the only
+  untestable line in the arrangement is the `TreeWalker` in the component.
+- **The capture is at the gesture, never in a teardown.** A Svelte `$effect`'s cleanup runs
+  *after* the DOM has been updated for the change that triggered it, so by the time a
+  teardown asked for `scrollTop` the scroller would already be showing the next file. So
+  `Finder.#keep` runs at the top of every gesture that stops showing the current file —
+  `show`, `hide`, `back`, `look`, `lookAt`, `resume` — because **the only moment a reading is
+  true is before the state that draws it moves.** That generalises past this file: anything
+  reading the DOM as a side effect of state changing has to read it *first*.
+- **The component is told how to read itself**, `Finder.reader`, the same injection `where` is.
+  A scroll offset and a `Selection` are facts only the thing that drew them can see, and the
+  finder asking the DOM for them itself would be the one place in it that knew what it was
+  rendered into. Cleared by `detach`, since a reader holding a superseded generation's
+  `bind:this` answers about a node nothing is drawing.
+- **The reading being put back is *not* `$state`.** The effect that applies it keys on `sheet`;
+  a reactive field cleared on consumption re-runs that effect with nothing pending, which falls
+  through to the open-at-the-line branch and scrolls away from the reading it had just
+  restored. `takeResume` hands it over once.
+- **Restore the selection, then the scroll.** Putting a selection back scrolls to it, and where
+  the scroller actually was is the more precise of the two facts.
+
+**A fresh open is not a resume**, and the difference is what the tab forgets. `remember` clears
+the stored reading: you asked for line 900 of `store.rs`, so line 900 is where it opens, even
+if a tab for that file is carrying a scroll from an hour ago. `resume` is the gesture that
+means "back to where I was", and it is a second entry point rather than `lookAt` with extra
+state for exactly that reason. Switching between source and document forgets it too — the
+offsets describe a DOM that is about to stop existing, and landing in the middle of a rendering
+with half as many lines as the source is worse than opening at the top.
+
+**Resuming writes the `raw` preference, and that is the one thing here worth arguing.** The
+toggle is a preference and not a per-file switch (see above), and this is the only place other
+than the toggle that writes it. The reconciliation: what `raw` decides is what a file opened
+*fresh* is drawn as, and resuming a tab is not opening a file fresh — a reading includes which
+of the two it was, and restoring a scroll into a view that is not on screen restores nothing.
+
+**A tab that fails when pressed is closed rather than left standing.** A file renamed, or a
+branch switched under it, makes `read_file_text` fail; the fault goes in the panel and the pill
+goes with it. Same argument `insideRoot` makes about not drawing a link it cannot open.
+
+#### And what the tabs paid for: a press outside puts the panel away
+
+This is the second-order effect and it is the more interesting half. Dismissing on an outside
+click was never available before, because closing cost you the whole search and the whole
+scroll — so the only way out had to be a deliberate Escape, and a stray click could not be
+allowed to mean it. Once leaving leaves a pill, closing is cheap and the panel can behave the
+way every other dismissible thing on this wall does.
+
+- **`pointerdown`, not `click`** — `ContextMenu`'s reasoning exactly: the panel should be gone
+  before the thing underneath decides what that press meant.
+- **No catcher, though.** `ContextMenu` can afford an overlay and this cannot: the whole
+  argument for having no scrim is that the reason you are reading a file is usually the card
+  beside it. So the listener is at the window and swallows nothing — one press both closes the
+  panel and reaches the card, which is what clicking a card while a file is open should do.
+- **The strip is excluded**, since clicking another tab is switching files rather than
+  dismissing, and it would otherwise close and immediately reopen. So is any button but the
+  primary one, because a right-click is asking the wall for a menu.
+
+The general shape worth keeping: **a gesture becomes affordable when the thing it costs stops
+being expensive.** The no-scrim decision and the Escape-only decision were both correct
+against a viewer with no memory, and only one of them still is.
+
+#### The fuse, and why it is not a cap
+
+There is **no limit** on the tabs. There is a number that are *safe* — the five most recently
+touched — and a fuse under everything below that line: fall out of the top five and you have
+five minutes. Coming back to a tab makes it the most recent again, which both takes it off the
+fuse and resets it.
+
+That beats a hard cap for the reason a hard cap always fails: the sixth file you open is not
+the least interesting one, it is the newest, and a cap would either refuse it or silently throw
+away the tab you were about to go back to. **Time is the only thing that distinguishes a file
+you are done with from one you are between.**
+
+- **Nothing here schedules anything.** Expiry is time passing, and the wall already has a
+  one-second tick every card folds (`clock`). `reap` is a fold over it, and it answers with the
+  *same array* when nothing has gone — a second in which nothing expires must not be a write,
+  or every `$derived` reading the strip is invalidated once a second forever. This is the shape
+  CLAUDE.md asks for: when the thing you care about emits nothing, find an event that already
+  exists near it rather than starting a fourth poller.
+- **Order in the strip is the order they were opened, never recency.** A strip whose pills
+  rearranged themselves every time you used one is a row of buttons that are never twice in the
+  same place. Recency is `touched`, and the only thing it decides is the fuse. Ties in `touched`
+  are broken by position, or two tabs stamped in the same millisecond would swap ranks between
+  ticks and a pill would flicker on and off its fuse.
+- **The last second is kept.** `reap` drops at `<= 0` and the hairline draws `> 0`, so the pill
+  and the fuse agree about the final second instead of the pill vanishing a beat early.
+- **Only a tab that has one gets a hairline.** A line under every pill reads as chrome; this
+  has to read as a thing running out.
+
+#### Where the two knobs live
+
+`tabs kept` and `close after` are on the strip itself, behind the `⋯`, and not in a settings
+panel. There is no general settings panel in this app — the chime is a bar toggle, the reading
+is the themes panel, the ambience is its own — and inventing one for two numbers puts them a
+panel away from the only thing they are about.
+
+- **`keep: 0` is the off switch**, and it clears the strip rather than leaving the pills to
+  expire. Which creates the trap the strip is shaped around: knobs reachable only from a strip
+  the knobs can empty would be a setting you can enter and not leave. So the strip also stands
+  whenever the finder is open — if you are using the viewer at all, what it remembers is
+  adjustable.
+- **`Number("")` is 0, and 0 means "keep none".** So clearing the field would arrive as an
+  explicit off switch nobody asked for; `readNum` checks for emptiness *before* coercing, and
+  anything unreadable is the default rather than zero. Found by the test, not by reading the
+  code.
+- **localStorage, behind `readKnobs`/`writeKnobs`** — the same seam `theme.svelte.ts` draws.
+  Right here rather than merely available: a tab is per-machine and disposable by construction,
+  and two numbers about how long a pill stays on the bottom of *this* window are not authored
+  work. The tabs themselves do not persist at all, which the fuse already implies — a strip
+  restored at launch is a set of readings from before the wall came down.
+
+#### Where the strip sits
+
+Absolutely placed inside `main.wall`, anchored by `bottom` — and that is the whole of its
+placement, with no arithmetic. The wall ends exactly where the dock begins, so the strip sits
+on the dock's top edge however tall the draft has grown. (The which-key hint one file over
+hard-codes `bottom: 5.2rem` because it is `position: fixed`; this is what that would have
+wanted.) `z-index: 5` clears `Canvas`'s `.glass`, said out loud because this is later in the
+document than the canvas and earlier than `.side`, so source order alone would put it behind
+the transcript. It may cover the transcript's bottom edge when the tabs wrap, which is the same
+bargain the glass strikes: over the panel, never over the dock or the header — and that last
+part is a fact about the DOM rather than a number.
+
+`pointer-events` are off on the strip and on again per pill, so the gaps between them are still
+wall. A rectangle across the bottom of the window that swallowed a click on a card would be a
+strip that cost you a gesture — the same bargain `.glass` and the which-key hint strike.
+
+A pill says **one directory segment and the filename** (`rules/finding.md`), with the whole
+path in the tooltip. Not the full path, which does not fit and whose truncation eats the
+filename you are reading; not the bare name, which loses the difference between three
+`mod.rs`.
+
 ### Where the bounds are, and that they are said out loud
 
 `FILE_CAP` (40,000 paths), `HIT_CAP` (2,000 lines), `LINE_CAP` (400 chars), `VIEW_CAP` (2MB),
@@ -301,7 +456,15 @@ quietly cannot see a file is worse than one that admits its bound.
   superseded generation's debounce firing a grep into a panel nobody can see is the same
   hazard a leaked listener is, one layer down.
 - `Spyglass.svelte` — elements, and nothing else. Every piece of arithmetic it needs is
-  imported from `finding.ts`.
+  imported from `finding.ts`. Plus the two functions that read and write a `Reading`, which are
+  here because a scroller and a `Selection` are the only facts in the whole arrangement that
+  nothing else can see.
+- `dogears.ts` — pure and tested (`test/dogears.test.ts`, 37 tests): the tab list and its
+  identity, the knobs and their clamps, `remember`/`touch`/`mark`/`reread`/`drop`, the fuse
+  (`fuses`, `reap`, `burn`, `sayFuse`), `tabLabel`, and the two selection inverses `flatOf`
+  and `locate`.
+- `Dogears.svelte` — the strip: the pills, the fuse hairlines, the `⋯` and its two knobs. Reads
+  `clock` for the tick and holds no timer of its own.
 - `ToolCall.svelte` — the transcript's end of it, importing `insideRoot` and `placesIn`. It
   routes the gesture out as `onfile` rather than reaching for the panel, the same way it
   routes `onlink`: what this component knows about is typography, and which panel is on
@@ -319,3 +482,11 @@ nothing behind for Escape to step back to, which is what makes `alone` in the an
 reading. There is deliberately no op for a chord itself: that is what the `key` op is for,
 pressing space then f then f at the window the way a hand does, which is the only thing that
 can see the leader losing a race with the bare-printable branch below it in `onGlobalKey`.
+
+The tabs are the same op — `resume`, `shut`, `reap`, `keep`, `fuse` — and `snapshot.finder.tabs`
+reports each with the milliseconds it has `left`, null for a safe one. That number is the only
+way from outside to tell a tab that is about to go from one that is staying, since the pills
+differ by an opacity and a hairline. **`reap` takes the time**, because the alternative is a
+test sleeping five real minutes to watch a fuse burn down. And a tab reports *whether* it is
+carrying a reading rather than what the reading is: a scroll offset in pixels is a fact about a
+font, and a test asserting one would be a test about the theme.

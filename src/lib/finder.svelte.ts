@@ -29,6 +29,21 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import {
+  type Dogear,
+  type Reading,
+  FUSE_DEFAULT,
+  KEEP_DEFAULT,
+  clampFuse,
+  clampKeep,
+  drop as dropTab,
+  keyOf,
+  mark as markTab,
+  reap as reapTabs,
+  remember as rememberTab,
+  reread as rereadTab,
+  touch as touchTab,
+} from "./dogears";
+import {
   type FindMode,
   type Hit,
   type Row,
@@ -59,6 +74,38 @@ const PREVIEW_MS = 60;
  *  same read, and without this each of them is an IPC round trip and a
  *  `fs::read`. */
 const CACHED = 8;
+
+/** Where the two knobs on the tab strip are kept.
+ *
+ *  localStorage, and the same seam `theme.svelte.ts` draws around its authored
+ *  themes: `readKnobs`/`writeKnobs` are the only two functions that know where
+ *  these live, so the day they become a schema rung nothing else in this file
+ *  moves. It is the right home here rather than merely the available one — a
+ *  tab is per-machine and disposable by construction, and two numbers about how
+ *  long a pill stays on the bottom of *this* window are not authored work. */
+const KNOBS_KEY = "skein.dogears.v1";
+
+function readKnobs(): { keep: number; fuse: number } {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(KNOBS_KEY) ?? "null");
+    if (!raw || typeof raw !== "object") return { keep: KEEP_DEFAULT, fuse: FUSE_DEFAULT };
+    const o = raw as Record<string, unknown>;
+    /* Clamped on the way in as well as on the way out: what is on disk is a
+       previous build's idea of a sensible number, and `clampKeep` answers with
+       the default for anything it cannot read. */
+    return { keep: clampKeep(o.keep), fuse: clampFuse(o.fuse) };
+  } catch {
+    return { keep: KEEP_DEFAULT, fuse: FUSE_DEFAULT };
+  }
+}
+
+function writeKnobs(keep: number, fuse: number) {
+  try {
+    localStorage.setItem(KNOBS_KEY, JSON.stringify({ keep, fuse }));
+  } catch {
+    /* A full or blocked store loses the preference and nothing else. */
+  }
+}
 
 /** A file the panel has read, for the preview and for the viewer. */
 export type Sheet = {
@@ -157,14 +204,62 @@ export class Finder {
     return !!this.sheet && isMarkdown(this.sheet.path);
   }
 
-  /** Source, or the document. Only ever reached from the viewer. */
+  /** Source, or the document. Only ever reached from the viewer.
+   *
+   *  The open file's tab follows, and **forgets what it remembered** — the
+   *  offsets and the scroll describe a DOM that is about to stop existing, and
+   *  landing in the middle of a rendering with half as many lines as the source
+   *  is worse than opening at the top. */
   toggleRaw() {
     this.raw = !this.raw;
+    const path = this.sheet?.path;
+    if (path) {
+      this.tabs = rereadTab(this.tabs, keyOf({ root: this.root, path }), this.raw);
+    }
   }
 
   /** What the preview shows — the selected row's file, or null. Kept apart from
    *  `sheet` so stepping through the list does not disturb an open viewer. */
   preview = $state<Sheet | null>(null);
+
+  /* ── the files kept to hand ───────────────────────────────────────────── */
+
+  /** The tabs above the dock, in the order they were opened — never in recency
+   *  order, so a pill is twice in the same place. See `dogears.ts`. */
+  tabs = $state<Dogear[]>([]);
+
+  /** How many tabs are safe from the fuse, and how long the rest have, in
+   *  minutes. Both are knobs on the strip itself rather than in a settings
+   *  panel: there is no general settings panel in this app, and inventing one
+   *  for two numbers puts them a panel away from the only thing they are about.
+   *  `keep: 0` is the off switch. */
+  keep = $state(KEEP_DEFAULT);
+  fuse = $state(FUSE_DEFAULT);
+
+  /** How to read where the viewer is. Installed by `Spyglass.svelte`, the same
+   *  injection `where` is and for the same reason: a scroll offset and a
+   *  `Selection` are facts only the component that drew them can see, and this
+   *  class asking the DOM for them itself would be the one place in the finder
+   *  that knew what it was rendered into. Null before the viewer has ever been
+   *  on screen, which is a real state — nothing is captured then, because there
+   *  is nothing to capture. */
+  reader: (() => Reading | null) | null = null;
+
+  /** A reading waiting to be put back, left by `resume` for the component to
+   *  consume once.
+   *
+   *  A plain field rather than `$state`, and that is load-bearing. The effect
+   *  that applies it keys on `sheet`; if this were reactive, clearing it on
+   *  consumption would re-run that effect with nothing pending, which falls
+   *  through to the open-at-the-line branch and scrolls away from the reading
+   *  it had just restored. */
+  #resume: Reading | null = null;
+
+  constructor() {
+    const k = readKnobs();
+    this.keep = k.keep;
+    this.fuse = k.fuse;
+  }
 
   /* ── the leader ───────────────────────────────────────────────────────── */
 
@@ -257,6 +352,9 @@ export class Finder {
    *  alternative (a cache with an age) is a finder that is right most of the
    *  time about the one thing it exists to know. */
   async show(mode: FindMode, root: string) {
+    /* Before anything moves: this can be pressed with the viewer open, and the
+       file it was showing keeps its place. */
+    this.#keep();
     this.open = true;
     this.mode = mode;
     this.query = "";
@@ -284,6 +382,7 @@ export class Finder {
   /** Put it away. Nothing was running, so there is nothing to leave running —
    *  which is the one way this panel is unlike the shell. */
   hide() {
+    this.#keep();
     this.open = false;
     this.sheet = null;
     this.sheetLine = null;
@@ -484,6 +583,7 @@ export class Finder {
   /** Open the selected row — or a named one — in the viewer. */
   async look(row: Row | null = this.row) {
     if (!row) return;
+    this.#keep();
     this.reading = true;
     try {
       const sheet = await this.#read(row.path);
@@ -491,6 +591,7 @@ export class Finder {
       this.alone = false;
       this.sheet = sheet;
       this.sheetLine = row.line;
+      this.#remember(row.path, row.line);
     } finally {
       this.reading = false;
     }
@@ -507,6 +608,7 @@ export class Finder {
    *  this is a second entry point rather than a call to `look` — see `back`. */
   async lookAt(root: string, path: string, line: number | null = null) {
     if (!root || !path) return;
+    this.#keep();
     /* A file list from another project is every row being a path that is not
        there, so it goes with the root — the same clearing `show` does, for the
        same reason. The common case is the same root and nothing is thrown
@@ -527,6 +629,7 @@ export class Finder {
       this.alone = true;
       this.sheet = sheet;
       this.sheetLine = line;
+      this.#remember(path, line);
     } finally {
       this.reading = false;
     }
@@ -543,12 +646,157 @@ export class Finder {
    *  project you never searched would be one gesture answered with two. So that
    *  case closes the panel and gives you back what you were reading. */
   back() {
+    this.#keep();
     if (this.alone) {
       this.hide();
       return;
     }
     this.sheet = null;
     this.sheetLine = null;
+  }
+
+  /* ── the files kept to hand ───────────────────────────────────────────── */
+
+  /** Where the tabs are, for the strip: the tab whose file is on screen, or
+   *  null. Asked rather than tracked, since it is one comparison. */
+  get openKey(): string | null {
+    const path = this.sheet?.path;
+    return path ? keyOf({ root: this.root, path }) : null;
+  }
+
+  /** Go back to a tab, with the reading it was left at.
+   *
+   *  Not a call to `lookAt` with extra state, because the two differ in what
+   *  they mean about the *line*: `lookAt` is "put me at line 900", and this is
+   *  "put me back where I was", which is the reading and not the line the file
+   *  was first opened at. */
+  async resume(d: Dogear) {
+    this.#keep();
+    /* Where "back" goes, decided before the panel moves. Coming from the
+       results list there is a list behind this and Escape should return to it;
+       coming from a closed panel there is nothing behind it at all. And when
+       the viewer was already showing another file, whatever was behind that one
+       still is — so `alone` is left exactly as it was. */
+    const fromList = this.open && !this.sheet;
+    if (fromList) this.alone = false;
+    else if (!this.open) this.alone = true;
+
+    /* A file list from another project is every row being a path that is not
+       there — the same clearing `show` and `lookAt` do, for the same reason. */
+    if (d.root !== this.root) {
+      this.root = d.root;
+      this.files = [];
+      this.filesTruncated = false;
+      this.#sheets.clear();
+      this.preview = null;
+    }
+    this.open = true;
+    this.fault = null;
+    this.reading = true;
+    try {
+      const sheet = await this.#read(d.path);
+      if (this.#gone) return;
+      if (!sheet) {
+        /* The file has gone since the tab was made — renamed, or a branch
+           switched under it. `#read` has put the reason in `fault`; the tab goes
+           with it, because a pill that fails when pressed is the one outcome
+           worse than no pill. Same argument `insideRoot` makes about not drawing
+           a link it cannot open. */
+        this.tabs = dropTab(this.tabs, keyOf(d));
+        return;
+      }
+      /* The reading includes which of the two readings it was, so this writes
+         the preference — the one place in the app other than the toggle that
+         does. It is not the toggle becoming per-file: what `raw` decides is
+         what a file opened *fresh* is drawn as, and resuming a tab is not
+         opening a file fresh. See `.claude/rules/finding.md`. */
+      this.raw = d.raw;
+      this.sheet = sheet;
+      this.sheetLine = d.line;
+      this.#resume = d.read;
+      this.tabs = touchTab(this.tabs, keyOf(d), Date.now());
+    } finally {
+      this.reading = false;
+    }
+  }
+
+  /** The reading a `resume` left for the component to put back, once. */
+  takeResume(): Reading | null {
+    const r = this.#resume;
+    this.#resume = null;
+    return r;
+  }
+
+  /** Close a tab. */
+  shut(key: string) {
+    this.tabs = dropTab(this.tabs, key);
+  }
+
+  /** Close whatever has burned down.
+   *
+   *  Called from the strip on the wall's own one-second tick rather than from a
+   *  timer of ours — expiry is time passing, `clock` is already an event every
+   *  card folds, and `reap` answers with the same array when nothing has gone,
+   *  so a second in which nothing expires is not a write. */
+  reap(now: number) {
+    const next = reapTabs(this.tabs, this.keep, this.fuse, now);
+    /* The guard rather than a bare assignment, and it is not a micro-
+       optimisation. This is called from an `$effect` that reads `tabs` to
+       compute the answer, so a write is a re-run — and a write on every tick
+       would be a re-run on every tick that writes again. `reap` returning the
+       same array is what makes that terminate, and stating the comparison here
+       means it terminates whatever `$state`'s equality does with an identical
+       object reference. */
+    if (next !== this.tabs) this.tabs = next;
+  }
+
+  setKeep(n: unknown) {
+    this.keep = clampKeep(n);
+    /* Zero is the off switch, and an off switch that leaves six pills standing
+       on the wall is not one. */
+    if (this.keep === 0) this.tabs = [];
+    writeKnobs(this.keep, this.fuse);
+  }
+
+  setFuse(n: unknown) {
+    this.fuse = clampFuse(n);
+    writeKnobs(this.keep, this.fuse);
+  }
+
+  /** Note a file has been opened fresh, so it has somewhere to come back to. */
+  #remember(path: string, line: number | null) {
+    this.tabs = rememberTab(
+      this.tabs,
+      { root: this.root, path, line, raw: this.raw },
+      Date.now(),
+      this.keep,
+    );
+  }
+
+  /** Capture where the viewer is and write it onto the open file's tab.
+   *
+   *  Called at the top of every gesture that stops showing the current file,
+   *  rather than from a teardown in the component — and that is not a style
+   *  choice. A Svelte `$effect`'s cleanup runs *after* the DOM has been updated
+   *  for the change that triggered it, so by then the scroller is already
+   *  showing the next file and `scrollTop` is the wrong number. The only moment
+   *  a reading is true is before the state that draws it moves.
+   *
+   *  It is also where a *pending* restore is dropped, which belongs here rather
+   *  than looking like it does: the set of gestures that leave the current file
+   *  is exactly the set that invalidates a reading nobody has applied yet.
+   *  Without it, resuming the tab that is already open can leave one standing —
+   *  `sheet` is assigned the same cached object, so the effect that consumes it
+   *  may not run — and the next `look` would then put that file's scroll into a
+   *  different file. `resume` calls this before setting its own, so the clear
+   *  cannot eat the one it means to leave. */
+  #keep() {
+    this.#resume = null;
+    const path = this.sheet?.path;
+    if (!path || !this.reader) return;
+    const read = this.reader();
+    if (!read) return;
+    this.tabs = markTab(this.tabs, keyOf({ root: this.root, path }), read);
   }
 
   /* ── lifecycle ────────────────────────────────────────────────────────── */
@@ -558,6 +806,10 @@ export class Finder {
    *  is, and Vite rebuilds this object on every front-end edit. */
   detach() {
     this.#gone = true;
+    /* The component that installed this is going with it, and a reader holding
+       a `bind:this` from a superseded generation would answer with the scroll
+       offset of a node nothing is drawing. */
+    this.reader = null;
     for (const t of [this.#lapse, this.#grepTimer, this.#previewTimer]) {
       if (t !== null) clearTimeout(t);
     }

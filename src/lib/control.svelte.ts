@@ -52,6 +52,7 @@ import {
 import type { DevOps } from "./devops.svelte";
 import type { Shell } from "./shell.svelte";
 import type { Finder } from "./finder.svelte";
+import { fuses, keyOf } from "./dogears";
 import type { Bang } from "./bang.svelte";
 import {
   needsMe,
@@ -589,6 +590,10 @@ export class Control {
 
   #snapshot() {
     const h = this.#host;
+    /* Once, rather than once per tab: `fuses` ranks the whole strip to answer
+       about one of them, so asking it inside the map would be the ranking done
+       n times over for the same answer. */
+    const fuseLeft = fuses(h.finder.tabs, h.finder.keep, h.finder.fuse, Date.now());
     return {
       focusedId: h.focusedId(),
       selected: [...h.studio.selected],
@@ -1023,6 +1028,24 @@ export class Control {
            draw an identical panel and differ only in where backing out goes. */
         alone: h.finder.alone,
         fault: h.finder.fault,
+        /* The files kept to hand. `left` is how many milliseconds a tab has
+           before it closes itself, and null where it is one of the safe ones —
+           which is the only way from outside to tell a tab that is about to go
+           from one that is staying, since the pills differ by opacity and a
+           hairline. `read` says whether it is carrying a place to go back to
+           rather than what the place is: a scroll offset in px is a fact about
+           a font, and a test asserting one would be a test about the theme. */
+        keep: h.finder.keep,
+        fuse: h.finder.fuse,
+        tabs: h.finder.tabs.map((t) => ({
+          root: t.root,
+          path: t.path,
+          line: t.line,
+          raw: t.raw,
+          read: t.read !== null,
+          sel: !!t.read?.sel,
+          left: fuseLeft.get(keyOf(t)) ?? null,
+        })),
       },
       attention: {
         windowFocused: h.attention.focused,
@@ -2349,9 +2372,10 @@ export class Control {
       /** Drive the finder.
        *
        *  `do` is the gesture: `show`, `hide`, `type`, `step`, `pick`, `look`,
-       *  `look-at`, `back`, `swap`, `raw`. Every one of them is the function the
-       *  panel's own keyboard calls, so an op cannot pass where a keypress would
-       *  fail.
+       *  `look-at`, `back`, `swap`, `raw`, and for the tabs above the dock
+       *  `resume`, `shut`, `reap`, `keep`, `fuse`. Every one of them is the
+       *  function the panel's own keyboard or the strip's own buttons call, so
+       *  an op cannot pass where a gesture would fail.
        *
        *  `look-at` takes `path` and `line` and is the transcript's door into the
        *  viewer — the one entry that leaves no result list behind it, which is
@@ -2388,6 +2412,25 @@ export class Control {
         } else if (what === "back") h.finder.back();
         else if (what === "swap") await h.finder.swap();
         else if (what === "raw") h.finder.toggleRaw();
+        /* The files kept to hand. `resume` takes a `path` — and the tab's own
+           root, not the shell's, since the whole point of a tab is that it
+           still knows which project it came out of. `reap` takes the time,
+           because the alternative is a test sleeping five real minutes to see
+           a fuse burn down. */
+        else if (what === "resume") {
+          const path = String(op.path ?? "");
+          const tab = h.finder.tabs.find((t) => t.path === path);
+          if (!tab) throw new Error(`no tab for: ${path}`);
+          await h.finder.resume(tab);
+        } else if (what === "shut") {
+          const path = String(op.path ?? "");
+          const tab = h.finder.tabs.find((t) => t.path === path);
+          if (!tab) throw new Error(`no tab for: ${path}`);
+          h.finder.shut(keyOf(tab));
+        } else if (what === "reap") {
+          h.finder.reap(op.now === undefined ? Date.now() : Number(op.now));
+        } else if (what === "keep") h.finder.setKeep(op.value);
+        else if (what === "fuse") h.finder.setFuse(op.value);
         else throw new Error(`no such finder gesture: ${what}`);
 
         const head = Number(op.head ?? 20);
