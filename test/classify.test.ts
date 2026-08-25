@@ -30,6 +30,7 @@ import {
   isTaskNotification,
   jobLabel,
   localAnswer,
+  localCommandAwaiting,
   parseTaskNotification,
   sameModel,
   spanOf,
@@ -477,6 +478,43 @@ describe("a turn the CLI answered by itself", () => {
     expect(localAnswer({ type: "result", num_turns: 0, result: "   " })).toBeNull();
     expect(localAnswer({ type: "result", num_turns: 0 })).toBeNull();
     expect(localAnswer(undefined)).toBeNull();
+  });
+
+  /* And the acknowledgement that never comes. `tools/probe-echo.ts`,
+     2026-08-25: `/model sonnet` returned a result with `num_turns: 0` and no
+     `user` event at all, where the two ordinary prompts either side of it were
+     replayed. So the line stayed `awaited`, `awaiting` never reached zero, and
+     the card read `sent, not picked up` and spent its whole nudge budget for
+     the life of the process. */
+  describe("closing the books on one by hand", () => {
+    test("the command is claimed, the prompt queued behind it is not", () => {
+      /* The whole risk of the fix: claim the wrong line and a prompt still
+         sitting in the queue is marked delivered, and its own echo then finds
+         nothing to claim and draws your words a second time. */
+      expect(localCommandAwaiting(["/compact", "now fix the tests"])).toBe("/compact");
+      expect(localCommandAwaiting(["now fix the tests", "/compact"])).toBe("/compact");
+    });
+
+    test("oldest first, with two outstanding", () => {
+      /* Delivery is sequential, so the answer belongs to the earlier — the
+         same rule `#echoOf` follows for an ordinary echo. */
+      expect(localCommandAwaiting(["/model sonnet", "/effort high"])).toBe("/model sonnet");
+    });
+
+    test("nothing slash-shaped is nothing to claim", () => {
+      /* Rather than claiming *something* because a local answer arrived. A
+         locally-answered turn whose prompt this window never sent is a
+         terminal typing into the same session, and eating a line here would be
+         Skein closing books that are not its own. */
+      expect(localCommandAwaiting(["go", "now fix the tests"])).toBeNull();
+      expect(localCommandAwaiting([])).toBeNull();
+    });
+
+    test("the slash may be behind whitespace", () => {
+      /* `echo` draws the line as typed; the trim is the same one `#echoOf`
+         matches on, so the two agree about which line this is. */
+      expect(localCommandAwaiting(["  /compact  "])).toBe("  /compact  ");
+    });
   });
 });
 

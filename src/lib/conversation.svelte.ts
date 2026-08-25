@@ -24,6 +24,7 @@ import {
   skillBody,
   jobLabel,
   localAnswer,
+  localCommandAwaiting,
   localCommand,
   NUDGE_BUDGET,
   nudgeGaveUpNote,
@@ -1295,6 +1296,21 @@ export class Conversation {
     return true;
   }
 
+  /** Close the books on a prompt the CLI answered itself.
+   *
+   *  The one acknowledgement that never comes — `localCommandAwaiting` has the
+   *  probe. Routed through `#claimEcho` rather than clearing the line here, so
+   *  the awaiting count and the budget refund stay in one place: the difference
+   *  between this and an ordinary echo is only *which* line, never what closing
+   *  it means. */
+  #claimLocalCommand(): boolean {
+    const awaited = this.lines
+      .filter((l) => l.kind === "you" && l.awaited === true)
+      .map((l) => l.text);
+    const hit = localCommandAwaiting(awaited);
+    return hit === null ? false : this.#claimEcho(hit);
+  }
+
   /** Anything still pending when the process speaks has plainly arrived, even
    *  if its echo did not match character for character. Proof of receipt is
    *  proof of receipt, and a mark left up after the answer has come back would
@@ -1922,6 +1938,15 @@ export class Conversation {
              are written in. */
           const said = localAnswer(ev);
           if (said) {
+            /* And the books have to be closed by hand, because nothing else
+               ever will: this turn's prompt is not replayed, so its line would
+               stay `awaited` for the life of the process. See
+               `localCommandAwaiting`, which is where the probe and the reason
+               for the leading slash are. Left undone the card read `sent, not
+               picked up` from here on and spent its whole nudge budget saying
+               so to an agent that answered, every time, that nothing was
+               queued. */
+            this.#claimLocalCommand();
             this.#push("meta", said);
             this.activity = clip(said, 44);
             /* `/effort` is one of the turns that lands here, and its answer is

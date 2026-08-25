@@ -285,6 +285,37 @@ where a terminal session runs for days. The work behind it has usually finished 
 its output (11 of 15, in the case this was found from), so what is lost is the news rather
 than the work, and the card sits reading `at rest` on top of a completed job.
 
+#### And the job nudge has never once fired, because Skein cannot see the case
+
+Everything above is right about the CLI and wrong about what reaches this window. Measured
+2026-08-25 over all 222 transcripts on this machine: **zero `NUDGE_TEXT` sends, ever**, against
+193 `<task-notification>` records and 14 prompt nudges. The whole job half is dead code, and
+two probes say why.
+
+`tools/probe-echo.ts` spawned with Skein's exact argv and sent nothing for fifteen seconds:
+**not one event arrived** — no `system/init`, no notification, nothing. The CLI in `--print`
+mode with stream-json input is silent until it is spoken to. So the orphan reconciliation
+notification, which is generated at startup and is the entire case this feature was built for,
+cannot reach Skein before a prompt does. It surfaces *with* the prompt that flushed it, at
+which point the card is `working` — and `#settleJob`'s guard is `!this.working && !this.busy`,
+so `unwoken` is never set and no nudge is ever raised.
+
+The transcripts agree from the other side. Of the 193 notification records, **none** is
+followed by a real user prompt: 98 are followed by an assistant message (the agent woke) and
+the rest by interleaved bookkeeping (`attachment`, `last-prompt`, `queue-operation`) — the same
+interleaving that broke the first wake measurement. There is no observed case of a notification
+sitting visible on a card at rest, because Skein is not told about one until something has
+already flushed it.
+
+Which turns the conclusion around: **the nudge's work is done for free.** By the time the
+notification is visible, the queue it was going to flush has been flushed. The measured "wakes
+nobody, three times out of three" is real, but it is invisible from here — the card genuinely
+does sit at rest on a finished job, and no event says so. Anything that fixes it has to come
+from somewhere other than the notification, because the notification is precisely what does not
+arrive. The bullets below are kept as written: they are sound about the *prompt* half, which
+does fire and does work, and the job half is now known to be unreachable rather than merely
+untested.
+
 So this is a narrow fix for a narrow case, and the wall's own reading was the wrong half of it:
 
 - **`unwoken` is a third question, the way `busy` was a second one.** `working` means a turn is
@@ -352,6 +383,22 @@ What was wrong was what the wall drew while it waited, and it was worse than say
   behind it in that queue is your own words — so it says only where to look. And it says *if*,
   because twelve seconds is long enough for the queue to have drained since the check, and an
   agent told flatly that a message exists would go hunting for one that does not.
+- **A prompt the CLI answers itself is never echoed, and that leaked until 2026-08-25.**
+  `--replay-user-messages` re-emits real prompts and stays silent on locally-answered ones —
+  `tools/probe-echo.ts` sent `"say only: ok"`, `/model sonnet`, `"say only: done"` and got
+  replays for the first and third and *no `user` event at all* for the second. So the line kept
+  `awaited` for the life of the process, and three things followed and did not stop: the card
+  read `sent, not picked up` from then on, every subsequent `result` scheduled a nudge until the
+  budget was gone, and — because the budget is only refunded when `awaiting` hits zero — a real
+  stall later in that session got no nudge at all. Every one of the 14 nudges on this machine
+  was this; three cards spent a turn to answer, verbatim, "Nothing is queued behind it".
+  `/compact` is the ordinary way in, which is every long card eventually.
+  `#claimLocalCommand` closes the books at the `localAnswer` branch, and the leading-slash test
+  in `localCommandAwaiting` is the narrowing that keeps it safe: the `result` does not name the
+  prompt it answered, and claiming a real prompt queued behind a `/compact` is the double-draw
+  bug `#settleEchoes` was rewritten to avoid. Skein cannot know which commands *this* build
+  answers locally — a custom `/commit` is a real prompt — and does not have to, since every
+  locally-answered one is slash-shaped and no ordinary prompt is.
 - **The face says *sent*, not *delivered*.** Skein knows the prompt reached the child's stdin
   and knows the wire never echoed it back. Whether the CLI is holding it or lost it is not a
   question this side can answer, and both are "you are owed a turn nobody is taking".

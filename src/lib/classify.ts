@@ -1203,6 +1203,49 @@ export function localAnswer(result: any): string | null {
   return typeof said === "string" && said.trim() ? said.trim() : null;
 }
 
+/** Which awaited prompt a locally-answered turn was answering — the one whose
+ *  echo is never coming.
+ *
+ *  `--replay-user-messages` echoes back what we wrote to stdin, and that echo
+ *  is the whole of how `#claimEcho` closes the books on a line. **A prompt the
+ *  CLI answers itself is never replayed.** Probed 2026-08-25 with
+ *  `tools/probe-echo.ts` against Skein's exact argv:
+ *
+ *    → "say only: ok"    ← USER REPLAY "say only: ok"   result num_turns=1
+ *    → "/model sonnet"     (no user event at all)       result num_turns=0
+ *    → "say only: done"  ← USER REPLAY "say only: done" result num_turns=1
+ *
+ *  So the line stayed `awaited` for the life of the process, `awaiting` never
+ *  returned to zero, and three things followed and did not stop: the card read
+ *  `sent, not picked up` for ever, every subsequent `result` scheduled a prompt
+ *  nudge until the budget was gone, and — because `promptNudgeAttempts` is only
+ *  refunded when `awaiting` hits zero — a *real* stall later in that session got
+ *  no nudge at all, the allowance having been spent on the false one. `/compact`
+ *  is the ordinary way in, which is to say every long card eventually.
+ *
+ *  `num_turns` is what identifies the turn and it is exact rather than a
+ *  heuristic — see `localAnswer`. What it does *not* carry is which prompt it
+ *  answered, and that is the reason this is a search and not an index. Guessing
+ *  wrong is the double-draw bug `#settleEchoes` was rewritten to avoid: claim
+ *  the real prompt queued behind a `/compact` and it is marked delivered when it
+ *  is still in the queue, and its own echo then finds nothing to claim and draws
+ *  your words on the wall a second time.
+ *
+ *  Hence the leading slash, which is a deliberate narrowing rather than a
+ *  guess at the catalogue. Skein cannot know which commands this build answers
+ *  locally — a custom `/commit` is a real prompt and reaches a model — but it
+ *  does not have to: *every* locally-answered command is a slash command, and
+ *  no ordinary prompt starts with one. So the test is sound in the direction
+ *  that matters. What it trades away is a locally-answered turn caused by
+ *  something that is not slash-shaped, which would go on leaking exactly as
+ *  before; nothing on this machine has ever produced one.
+ *
+ *  Oldest first, for the reason `#echoOf` is: delivery is sequential, so with
+ *  two commands outstanding the answer belongs to the earlier. */
+export function localCommandAwaiting(awaited: string[]): string | null {
+  return awaited.find((t) => t.trim().startsWith("/")) ?? null;
+}
+
 /** Decide how a turn ended, from the `result` event and the turn's text. */
 export function endingFor(
   result: any,
