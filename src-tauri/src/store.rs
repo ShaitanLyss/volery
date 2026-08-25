@@ -12,9 +12,13 @@
 //!    and is the only thing here that would be painful to change once there is
 //!    real data behind it.
 //!
-//! 2. `file_touch` is written from the first build and read by almost nobody.
-//!    It is what collision detection will need, and what the broadcast bar
-//!    already uses to warn that two selected cards share a working tree.
+//! 2. `file_touch` is written from the first build, and the collision detection
+//!    it was always for is finally built on it. Three readers now: the broadcast
+//!    bar warns that two selected cards share a working tree, `relay::touched`
+//!    answers "who else has been in this file", and `foreign_staged` stops a
+//!    card committing a sibling's work out of the index they share. The last of
+//!    those is the one the table was written for — see sink 8d3dab75, and
+//!    `hooks.rs` for the guard that reads it.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -2024,6 +2028,173 @@ pub fn record_file_touch(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/* ── the shared index ─────────────────────────────────────────────────────── */
+
+/// A staged file that another card wrote and this one did not.
+///
+/// `title` is that card's, so the message a hook builds can name a card the
+/// agent has actually seen on the wall rather than eight hex digits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Foreign {
+    /// As git named it: relative to the repository root, forward slashes.
+    pub path: String,
+    pub conversation_id: String,
+    pub title: String,
+    /// Still on the wall. A closed card's uncommitted work is no more yours to
+    /// commit, so this does not gate anything — it only changes the wording.
+    pub open: bool,
+}
+
+/// Open the studio database read-only, for a process that is not the app.
+///
+/// **`Store::open` is not the way in from outside**, and the difference is the
+/// whole point: it creates the directory, sets `journal_mode`, and runs
+/// `migrate`. A short-lived process that did any of that would be a second
+/// writer racing the wall through the recovery path — and `migrate`'s own note
+/// records what a half-applied ladder costs. This opens the file that is there
+/// and reads it.
+///
+/// `None` for anything at all: no file, a lock, a schema from the future. Every
+/// caller here is advisory, so not knowing is the same as having nothing to say.
+///
+/// The database is in WAL, which a read-only connection reaches through the
+/// `-shm` file rather than by reading the journal itself — so this works
+/// *because the app is running*, which is exactly when the only caller exists.
+pub fn open_readonly(db: &std::path::Path) -> Option<Connection> {
+    use rusqlite::OpenFlags;
+    Connection::open_with_flags(
+        db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()
+}
+
+/// How far back a write counts as still being somebody's work in progress.
+///
+/// Milliseconds, because `now` is — getting that wrong would make the window
+/// twenty-four *seconds* and the guard would see nothing on a wall that had
+/// been quiet for a minute.
+///
+/// The staged-ness is the real evidence and this only bounds the scan, but it
+/// is not *only* an optimisation: a card that wrote a file last week and
+/// committed it, in a tree where somebody has since re-staged that same file,
+/// would otherwise be named as the owner of work that is not its. A day is long
+/// enough to cover a card left dormant overnight and short enough that last
+/// week's history says nothing.
+const STILL_WARM_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// Is this stored touch the same file git just named?
+///
+/// **Anchored at a separator, or `re.rs` matches `store.rs`** — the same trap
+/// `board::covers` records, and the reason this is a suffix test rather than a
+/// `contains`. Both sides arrive through `board::normalize`, so the comparison
+/// is over forward slashes in one case.
+///
+/// The stored side is the longer one: an absolute path out of a tool call
+/// against a path relative to the repository root. Equality is kept as a case
+/// because a tool call may name a relative path too, which is what an agent
+/// typing `src/lib/a.ts` into `Edit` produces.
+fn same_file(stored: &str, staged_normalized: &str) -> bool {
+    stored == staged_normalized
+        || (stored.len() > staged_normalized.len()
+            && stored.ends_with(staged_normalized)
+            && stored.as_bytes()[stored.len() - staged_normalized.len() - 1] == b'/')
+}
+
+/// Of these staged paths, which were written by some *other* card lately.
+///
+/// This is the reader `file_touch` was waiting for. The table has been written
+/// since the first build — every `Edit`, `Write` and `NotebookEdit` any card
+/// makes — and until now the only thing that read it was the broadcast bar's
+/// overlap warning. What it answers here is the question behind
+/// sink 8d3dab75: **cards sharing a working tree share one git index**, so
+/// `git add <my paths>` stages into an index a sibling has already staged into
+/// and a pathspec-less `git commit` takes all of it.
+///
+/// **Paths are matched by normalised suffix, not by equality.** What
+/// `file_touch` holds is whatever the tool call named — an absolute Windows path
+/// with backslashes, nearly always — and what git names is relative to the
+/// repository root with forward slashes. `board::normalize` already folds those
+/// two into one spelling and is reused rather than respelled.
+///
+/// **A path this card has also written is not foreign.** Two cards editing one
+/// file is a different problem and one the agent can see; being handed somebody
+/// else's file it has never opened is the one it cannot.
+///
+/// Empty for every ordinary case — one card in a tree, a clean index, a machine
+/// with no wall — and that is what makes a guard built on it silent rather than
+/// a thing to work around.
+pub fn foreign_staged(db: &std::path::Path, card: &str, root: &str, staged: &[String], now: i64) -> Vec<Foreign> {
+    if staged.is_empty() {
+        return Vec::new();
+    }
+    let Some(conn) = open_readonly(db) else {
+        return Vec::new();
+    };
+
+    /* Every write under this tree, lately, by anybody. Narrowed in SQL by the
+       root so a wall with a year of touches across six projects does not come
+       back whole, and the deciding is done in Rust because `board::covers` and
+       `normalize` are already the place that knows what "the same file" means.
+       The cap is a backstop against a pathological tree, not a real bound. */
+    let since = now - STILL_WARM_MS;
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT f.path, f.conversation_id, COALESCE(c.title, ''), c.closed_at IS NULL
+           FROM file_touch f
+           LEFT JOIN conversation c ON c.id = f.conversation_id
+          WHERE f.op = 'write'
+            AND f.at > ?1
+            AND instr(lower(f.path), lower(?2)) > 0
+          ORDER BY f.at DESC
+          LIMIT 8000",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![since, root], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)? != 0,
+        ))
+    }) else {
+        return Vec::new();
+    };
+
+    /* Ours and theirs in one pass, because "this card also wrote it" is only
+       answerable once every row has been seen. */
+    let mut mine: Vec<String> = Vec::new();
+    let mut theirs: Vec<(String, String, String, bool)> = Vec::new();
+    for (path, conv, title, open) in rows.filter_map(Result::ok) {
+        let norm = crate::board::normalize(&path);
+        if conv == card {
+            mine.push(norm);
+        } else {
+            theirs.push((norm, conv, title, open));
+        }
+    }
+
+    let mut out: Vec<Foreign> = Vec::new();
+    for rel in staged {
+        let want = crate::board::normalize(rel);
+        let is = |p: &String| same_file(p, &want);
+        if mine.iter().any(is) {
+            continue;
+        }
+        /* Newest first out of SQL, so the first match is the card that touched
+           it last — which is the one whose work is sitting in the index. */
+        if let Some((_, conv, title, open)) = theirs.iter().find(|(p, ..)| is(p)) {
+            out.push(Foreign {
+                path: rel.clone(),
+                conversation_id: conv.clone(),
+                title: title.clone(),
+                open: *open,
+            });
+        }
+    }
+    out
 }
 
 /// Which other open conversations have edited the same files as this one.
@@ -4100,6 +4271,30 @@ pub fn inbox_counts(conn: &Connection) -> Vec<(String, i64)> {
 
 #[cfg(test)]
 mod tests {
+    /// The staged path is repository-relative with forward slashes; the stored
+    /// one is whatever a tool call named, which on this machine is an absolute
+    /// Windows path. Both come through `board::normalize` first.
+    #[test]
+    fn a_stored_touch_is_matched_to_the_file_git_named() {
+        let stored = crate::board::normalize("C:\\Users\\x\\workbench\\skein\\src\\lib\\store.rs");
+        assert!(same_file(&stored, &crate::board::normalize("src/lib/store.rs")));
+        assert!(same_file(&stored, &crate::board::normalize("lib/store.rs")));
+        assert!(same_file(&stored, &crate::board::normalize("store.rs")));
+
+        /* Anchored at a separator: the trap `board::covers` already records. */
+        assert!(!same_file(&stored, &crate::board::normalize("re.rs")));
+        assert!(!same_file(&stored, &crate::board::normalize("ore.rs")));
+
+        /* A different file whose name merely ends the same way. */
+        assert!(!same_file(&stored, &crate::board::normalize("src/lib/other.rs")));
+
+        /* A relative tool call, which is what `Edit` on a typed path produces. */
+        assert!(same_file(
+            &crate::board::normalize("src/lib/store.rs"),
+            &crate::board::normalize("src/lib/store.rs")
+        ));
+    }
+
     use super::*;
 
     fn db() -> Connection {

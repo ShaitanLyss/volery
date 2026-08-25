@@ -408,8 +408,18 @@ fn spawn_now(
     /* Every card, not only a chat card, because the layer now also carries the
        hook that undoes the Bash tool's backslash collapse — and a project card,
        being the one with a shell, is the one that needs it. `crate::hooks` has
-       the measurements and why the compensator lives in this binary. */
-    cmd.args(["--settings", &crate::hooks::settings(chat)]);
+       the measurements and why the compensator lives in this binary.
+
+       The card's own id goes in with it, and the studio directory, which is what
+       arms the shared-index guard: a hook process has no wall to ask who it is
+       working for or where the record of that is kept, and both are constants of
+       the process this layer is being built for. A chat card gets them too and
+       will never use them — it has no Bash tool to run a commit with. */
+    let studio = app.state::<crate::store::Store>().1.clone();
+    cmd.args([
+        "--settings",
+        &crate::hooks::settings(chat, Some((id.as_str(), studio.as_path()))),
+    ]);
 
     /* What you told every card once instead of every turn — the wall's standing
        instructions and this card's territory's, composed. Read from the store

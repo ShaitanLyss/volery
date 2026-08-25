@@ -92,6 +92,20 @@ and WiX and NSIS produce what they produce under MSVC. Four things bite:
   cd src-tauri && cargo check --lib
   ```
 
+  That block is `tools/check-gnu.sh`, so the loop is one command:
+
+  ```bash
+  bash tools/check-gnu.sh            # cargo check --lib
+  bash tools/check-gnu.sh --tests    # and the test modules, which still cannot be *run*
+  ```
+
+  **`--tests` typechecks assertions it cannot execute**, which is worth saying out loud because
+  a green `check --tests` reads like a green test run and is not one. The way to actually run a
+  pure Rust function here is to lift it into a throwaway with `rustc --test` — no cargo, no
+  dependencies, no MSVC — which is how `hooks.rs`'s 21 assertions were run on 2026-08-25
+  despite `cargo test` being unavailable. It takes a minute and it is the difference between
+  believing a parser is right and knowing it.
+
   Without `RUSTUP_TOOLCHAIN` the failure is the misleading one at the top of this section:
   every build script dies with `link: extra operand`, which is a *missing* MSVC linker rather
   than a broken anything.
