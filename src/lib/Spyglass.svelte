@@ -15,12 +15,14 @@
   import { invoke } from "@tauri-apps/api/core";
 
   import Markdown from "./Markdown.svelte";
+  import Quill from "./Quill.svelte";
   import { parseMarkdown } from "./markdown";
   import { type Reading, flatOf, locate } from "./dogears";
   import { offers, pieces, shift, splitPath, viewLines, windowAround } from "./finding";
   import type { Finder } from "./finder.svelte";
+  import type { Editor } from "./nvim.svelte";
 
-  let { finder }: { finder: Finder } = $props();
+  let { finder, editor }: { finder: Finder; editor: Editor } = $props();
 
   let field: HTMLInputElement | undefined = $state();
   let list: HTMLDivElement | undefined = $state();
@@ -34,9 +36,40 @@
      switched off while this is open. */
   $effect(() => {
     if (!finder.open) return;
+    /* Three readings now, and the third holds its own keyboard: `Quill` focuses
+       the grid itself, and taking it back here would mean every redraw stole
+       the keys from the editor it had just drawn. */
+    if (editor.on) return;
     const viewing = !!finder.sheet;
     void tick().then(() => (viewing ? sheet?.focus() : field?.focus()));
   });
+
+  /** The line the viewer is looking at, for handing to the editor.
+   *
+   *  The *middle* of the viewport rather than the top, because nvim centres
+   *  what it is sent (`zz`) — so the middle is the one line that lands back
+   *  where it already was, and switching to edit does not scroll the file half
+   *  a screen under you.
+   *
+   *  `elementFromPoint` rather than arithmetic over the scroll offset: it costs
+   *  one hit test instead of a walk over every row, and it is right even where
+   *  a long line has wrapped and the rows are no longer a uniform height. A
+   *  rendered document has no line numbers at all, which is what the fallback
+   *  is for. */
+  function viewerLine(): number | null {
+    if (!sheet || finder.rendered) return finder.sheetLine;
+    const r = sheet.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + 8, r.top + r.height / 2);
+    const row = hit instanceof Element ? hit.closest(".ln") : null;
+    const no = row?.getAttribute("data-no");
+    return no ? Number(no) : finder.sheetLine;
+  }
+
+  /** Hand the file being read to the editor. */
+  function edit() {
+    if (!finder.sheet) return;
+    void editor.edit(finder.root, finder.sheet.path, viewerLine());
+  }
 
   /* Keep the selected row in view without moving the list otherwise. `nearest`
      rather than `center`: holding Down should walk the list a row at a time,
@@ -202,6 +235,16 @@
         finder.back();
         return;
       }
+      /* Into the editor. A bare letter is free here for the same reason the
+         leader is free on the wall — the viewer has no field, so a printable
+         key means only one thing. Alt+E does it too, because that is the chord
+         that comes *back* out and a gesture whose two halves are spelled
+         differently is one you have to remember twice. */
+      if ((e.key === "e" || e.key === "E") && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        edit();
+        return;
+      }
       if ((e.key === "r" || e.key === "R") && e.ctrlKey && finder.markdown) {
         e.preventDefault();
         finder.toggleRaw();
@@ -312,7 +355,9 @@
     onkeydown={onKey}
   >
   <header>
-    <span class="mark">{finder.mode === "files" ? "find file" : "grep"}</span>
+    <span class="mark"
+      >{editor.on ? "edit" : finder.mode === "files" ? "find file" : "grep"}</span
+    >
     <span class="path" title={finder.root}
       >{splitPath(finder.root).name || finder.root}</span
     >
@@ -330,7 +375,31 @@
       >
     {/if}
     <span class="grow"></span>
-    {#if finder.sheet}
+    <!-- The panel's third reading, and it is a *switch* rather than a second
+         panel: same frame, same file, same header. nvim keeps running when you
+         switch back — a real config is five seconds to start, and an editor
+         that paid that every time you glanced at a result is one nobody would
+         open twice. -->
+    {#if editor.on}
+      {#if editor.others.length}
+        <span class="note" title="editors open in other projects — they may hold unsaved buffers"
+          >+{editor.others.length}</span
+        >
+      {/if}
+      <!-- Achromatic, and deliberately: `tokens.css` reserves colour for
+           status, and which mode an editor is in is not one of the five this
+           wall has. It is drawn at all because with no chrome of Volery's own
+           in the grid it is the one thing you cannot infer by looking. -->
+      <span class="note">{editor.mode}</span>
+      <button
+        class="ghost"
+        onclick={() => editor.rest()}
+        title="Back to reading it. nvim keeps your buffers (alt+E)">read</button
+      >
+    {:else if finder.sheet && !finder.sheet.binary}
+      <button class="ghost" onclick={edit} title="Edit it in your own nvim (e)">edit</button>
+    {/if}
+    {#if finder.sheet && !editor.on}
       {#if finder.markdown}
         <button
           class="ghost"
@@ -355,13 +424,25 @@
     <button class="x" onclick={() => finder.hide()} title="Put it away (esc)">✕</button>
   </header>
 
-  {#if finder.sheet}
+  {#if editor.on}
+    <!-- Two steps in: the same file, in your own editor. The bar above it is
+         Volery's and says what is being edited; everything below it is nvim's,
+         statusline and all, because it is nvim's screen. -->
+    {@const p = splitPath(editor.active?.path ?? finder.sheet?.path ?? "")}
+    <div class="sheetbar">
+      <span class="dir">{p.dir}</span><span class="name">{p.name}</span>
+      <span class="grow"></span>
+      <span class="note">alt+E to read</span>
+    </div>
+    <Quill {editor} />
+  {:else if finder.sheet}
     <!-- One step in: the file itself. -->
     {@const p = splitPath(finder.sheet.path)}
     <div class="sheetbar">
       <span class="dir">{p.dir}</span><span class="name">{p.name}</span>
       {#if finder.sheetLine !== null}<span class="at">:{finder.sheetLine}</span>{/if}
       <span class="grow"></span>
+      {#if !finder.sheet.binary}<span class="note">e to edit</span>{/if}
       <span class="note">{(finder.sheet.bytes / 1024).toFixed(1)} kB</span>
     </div>
     <!-- Focusable so it can hold the keyboard with no field on screen, and so

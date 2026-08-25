@@ -92,6 +92,14 @@ What that costs, and what it does not:
 - **No TUI.** Anything that paints by moving a cursor — `vim`, `htop`, a full-screen installer
   — has nowhere to paint. Line-oriented output, which is essentially everything you actually
   type at a shell, comes through exactly as it does for dev servers, `pump_lines` and all.
+
+  **The one that mattered got in by another door.** Editing is the case where "no TUI" would
+  have been fatal rather than limiting, and the way round it was not to fix the PTY: nvim has a
+  UI protocol built for programs rather than for terminals (`nvim --embed`, msgpack-RPC over
+  these same three pipes), so the editor never needed a terminal at all. See
+  `.claude/rules/editing.md`. Worth carrying past this file: **when the terminal route is
+  blocked, check whether the thing you are talking to has a second interface meant for
+  programs.** Editors, debuggers, language servers and build tools very often do.
 - **Colour survives.** Probed 2026-08-17 against PowerShell 7 with `-Command -` over pipes:
   output streamed line by line as it happened, and SGR sequences came through intact
   (`Get-Location` emitted `ESC[32;1m`). `ansi.ts` renders them, the same parser the servers

@@ -26,6 +26,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import type { Conversation } from "./conversation.svelte";
 import { NO_PREFERENCE, composeAnswer, isComplete, panelsOf, stepAt } from "./asking";
 import { stripAnsi } from "./ansi";
+import { screenText } from "./nvim";
 import type { Ambience } from "./ambience.svelte";
 import { living, type EffectKind } from "./ambience";
 import { readingScale } from "./layout";
@@ -52,6 +53,7 @@ import {
 import type { DevOps } from "./devops.svelte";
 import type { Shell } from "./shell.svelte";
 import type { Finder } from "./finder.svelte";
+import type { Editor } from "./nvim.svelte";
 import { fuses, keyOf } from "./dogears";
 import type { Bang } from "./bang.svelte";
 import {
@@ -116,6 +118,12 @@ export type ControlHost = {
    *  subscriptions and a batch timer, and a superseded generation of it would go
    *  on writing another card's output into a transcript. */
   bang: Bang;
+  /** The editor behind the finder's panel. Here because it is the second thing
+   *  on this wall whose panel and whose session are separate facts, and the
+   *  more expensive of the two to be wrong about: leaving edit mode keeps an
+   *  nvim running with unsaved buffers in it, and from outside a panel showing
+   *  a file and an editor holding one look identical. */
+  editor: Editor;
   canvas: () =>
     | {
         toCanvas(x: number, y: number): { x: number; y: number };
@@ -974,6 +982,7 @@ export class Control {
         actions: h.actions.listenerCount,
         shell: h.shell.listenerCount,
         bang: h.bang.listenerCount,
+        editor: h.editor.listenerCount,
       },
       /* The panel and the session are two facts, and the whole shape of this
          thing is that closing one does not end the other. The flat fields are
@@ -1046,6 +1055,26 @@ export class Control {
           sel: !!t.read?.sel,
           left: fuseLeft.get(keyOf(t)) ?? null,
         })),
+      },
+      /* The panel's third reading. `on` is the reading and `live` is the
+         process, and they are two facts for the same reason the shell's are:
+         switching back to reading a file leaves nvim running with your buffers
+         and your undo history in it. `cols`/`rows` is the size last agreed with
+         it, which is the one thing a resize bug is visible in from outside;
+         `seq` counts the flushes, so a test can wait for the screen to settle
+         rather than for a stopwatch. */
+      editor: {
+        on: h.editor.on,
+        active: h.editor.activeKey,
+        live: h.editor.live,
+        starting: h.editor.starting,
+        mode: h.editor.mode,
+        path: h.editor.active?.path ?? null,
+        cols: h.editor.active?.cols ?? 0,
+        rows: h.editor.active?.rows ?? 0,
+        seq: h.editor.active?.screen.seq ?? 0,
+        others: h.editor.others.map((o) => o.key),
+        fault: h.editor.fault,
       },
       attention: {
         windowFocused: h.attention.focused,
@@ -2365,6 +2394,65 @@ export class Control {
               failed: !!l.failed,
               text: stripAnsi(l.text),
             })),
+          },
+        };
+      },
+
+      /** Drive the editor behind the finder's panel.
+       *
+       *  `do` is the gesture: `edit` (with `root`, `path` and an optional
+       *  `line`), `rest`, `close`, `keys`, and `screen`.
+       *
+       *  **`screen` is the whole reason this op exists**, and it is not a
+       *  convenience. Everything else on this wall can be asserted through the
+       *  DOM, because Volery drew it. This one is drawn by somebody else's
+       *  editor from a stream this app only forwards — so whether the file
+       *  opened, whether the cursor is on the line it was sent to, whether a
+       *  plugin painted what it should have, is knowable *only* from the grid.
+       *  It comes back as text, one string per row, with the colour dropped
+       *  the way every other reading here drops it.
+       *
+       *  `keys` takes nvim's own notation rather than a browser key name —
+       *  `<Esc>`, `ihello<Esc>`, `:wq<CR>` — because that is what the process
+       *  takes, and translating a synthetic `KeyboardEvent` here would be
+       *  testing `nvimKey` through two layers instead of testing it directly
+       *  in `test/nvim.test.ts`, where it already is.
+       *
+       *  Note what this op cannot do: it cannot type into nvim the way a person
+       *  does, since the control surface has no way to make a real key reach a
+       *  focused element (see the note in control.md). `keys` reaches the
+       *  process, which is one layer below the thing a person presses. */
+      editor: async (op) => {
+        const what = String(op.do ?? "screen");
+        if (what === "edit") {
+          await h.editor.edit(
+            String(op.root ?? h.finder.root),
+            String(op.path ?? ""),
+            op.line === undefined || op.line === null ? null : Number(op.line),
+          );
+        } else if (what === "rest") h.editor.rest();
+        else if (what === "close") await h.editor.close();
+        else if (what === "keys") h.editor.keyIn(String(op.keys ?? ""));
+        else if (what !== "screen") throw new Error(`no such editor gesture: ${what}`);
+
+        const active = h.editor.active;
+        return {
+          editor: {
+            on: h.editor.on,
+            live: h.editor.live,
+            starting: h.editor.starting,
+            mode: h.editor.mode,
+            path: active?.path ?? null,
+            seq: active?.screen.seq ?? 0,
+            cursor: active ? { ...active.screen.cursor } : null,
+            /* Trailing blank rows dropped: nvim pads its screen to the size it
+               was given, and forty empty strings after the interesting part is
+               a diff nobody can read. */
+            screen: active
+              ? screenText(active.screen).filter(
+                  (_, i, all) => all.slice(i).some((l) => l.length > 0),
+                )
+              : [],
           },
         };
       },

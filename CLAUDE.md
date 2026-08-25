@@ -58,6 +58,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # presets,
                          # commands, copy, widgets, naming, drafts, rousing, quitting, timing,
                          # sink, logface, serverlog, buildlog, unreallog,
+                         # nvim,
                          # undo, lineage, update,
                          # asking,
                          # toolcall,
@@ -78,10 +79,12 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # repair/text.rs,
                               # control.rs,
                               # supervisor.rs,
-                              # servers.rs, shell.rs, find.rs, sessions.rs, project.rs, usage.rs,
+                              # servers.rs, shell.rs, nvim.rs, find.rs, sessions.rs, project.rs,
+                              # usage.rs,
                               # limits.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
+bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, with your config
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs
@@ -123,6 +126,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `ambience.md` | what the ground does when nobody is asking it anything | `ambience.ts`, `Backdrop.svelte` |
 | `servers.md` | dev server groups, colour without a terminal, why the PTY came off, and what an EDR made of it | `servers.rs`, `ansi.ts` |
 | `shell.md` | the shell Alt+I floats over the wall, the marker that draws its prompt, and why this one is pipes | `shell.rs`, `shell.ts`, `shell.svelte.ts`, `Console.svelte` |
+| `editing.md` | editing a file in your own nvim: attaching to one as a UI over pipes rather than a PTY, the panel's third reading, what the wire format gets wrong, the one key kept back, and colour against the house rule | `nvim.rs`, `nvim.ts`, `nvim.svelte.ts`, `Quill.svelte` |
 | `finding.md` | the finder and the file viewer: why space is free as a leader, a file list fetched once and scored here, what the fuzzy scorer prefers, a markdown file that opens as a document, and a path in a tool call that opens it | `find.rs`, `finding.ts`, `finder.svelte.ts`, `Spyglass.svelte`, `ToolCall.svelte` |
 | `bang.md` | `!` in the dock: a shell line where a prompt goes, the two things Enter and Ctrl+Enter mean, and completion out of the shell's own `TabExpansion2` | `bang.ts`, `bang.svelte.ts`, `bang.rs`, `Dock.svelte`, `field.svelte.ts` |
 | `naming.md` | what a card is called, and the draft it wears before it is named | `naming.ts` |
@@ -224,6 +228,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
 `undo.ts`, `finding.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
+`nvim.ts`,
 `update.ts`,
 `unreallog.ts`,
 `repair.ts`, `toolcall.ts`, `follow.ts`) are pure

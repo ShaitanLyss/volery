@@ -151,8 +151,14 @@ thing is worse than marking nothing.
 Enter opens the file where it is; Escape returns to the list with the query and the selection
 exactly where they were; Escape again puts it away. The step back has to be free or you stop
 using Enter to look at things — which would leave the finder as a thing that finds paths
-rather than a thing that shows you files. There is no editor on this wall, so a file that has
-been found wants somewhere to be *read*.
+rather than a thing that shows you files.
+
+**This used to say "there is no editor on this wall", and there is one now** — the panel has a
+third reading, and `e` from here hands the file to your own nvim at the line you were looking
+at (`.claude/rules/editing.md`). The viewer did not become it, deliberately: a real nvim config
+takes about five seconds to start, and putting that in front of every Enter on a grep hit would
+have cost the cheap reading this whole section is about. So the two are one panel and two
+steps — found, read, edited — and the step between the last two is one key each way.
 
 - **It opens at the line you were looking at**, centred — a hit on line 900 of `store.rs` is
   the whole reason you pressed Enter. The *list* uses `block: "nearest"` instead, because

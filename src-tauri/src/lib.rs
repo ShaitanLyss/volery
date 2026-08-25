@@ -16,6 +16,7 @@ mod control;
 pub mod find;
 pub mod hooks;
 mod later;
+mod nvim;
 mod limits;
 mod open;
 mod perf;
@@ -47,6 +48,7 @@ use azdo::Azdo;
 use control::Control;
 use perf::Meter;
 use pin::Pins;
+use nvim::Nvims;
 use relay::Relays;
 use servers::Servers;
 use shell::Shells;
@@ -136,6 +138,11 @@ pub fn run() {
            holds no process, and the one it holds outlives the panel being
            toggled shut. */
         .manage(Shells::default())
+        /* Empty until the finder is asked to edit something. One nvim per
+           project, and like the shell it outlives the panel being switched back
+           to a reading — the five seconds a real config takes to start is paid
+           once, not once per file. */
+        .manage(Nvims::default())
         .manage(Bangs::default())
         .manage(Runs::default())
         .manage(Asks::default())
@@ -400,6 +407,14 @@ pub fn run() {
             shell::shell_send,
             shell::close_shell,
             shell::shell_alive,
+            nvim::open_editor,
+            nvim::editor_open,
+            nvim::editor_input,
+            nvim::editor_paste,
+            nvim::editor_mouse,
+            nvim::editor_resize,
+            nvim::close_editor,
+            nvim::editor_alive,
             project::probe_project,
             project::poll_projects,
             project::fetch_projects,
@@ -443,6 +458,11 @@ pub fn run() {
                 /* And the shell, which is the one process here a person was
                    driving by hand — so it can be holding anything at all. */
                 app.state::<Shells>().shutdown();
+                /* And the editor, which holds language servers — and, if
+                   anything was left unsaved, leaves the swap files nvim keeps
+                   for exactly this. Writing a buffer nobody asked to have
+                   written would be the one thing here that cannot be undone. */
+                app.state::<Nvims>().shutdown();
                 /* The `!` runs and the completion shell go with everything
                    else — a build started from the dock is a tree of processes
                    like any other. */

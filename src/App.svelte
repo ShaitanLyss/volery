@@ -117,6 +117,7 @@
      `.claude/rules/finding.md`. */
   import Spyglass from "./lib/Spyglass.svelte";
   import { Finder } from "./lib/finder.svelte";
+  import { Editor } from "./lib/nvim.svelte";
   import WindowControls from "./lib/WindowControls.svelte";
 
   const studio = new Studio();
@@ -233,6 +234,10 @@
      tree are you working in. It holds timers and no subscriptions, so it is
      released on destroy with the rest of them. */
   const finder = new Finder();
+  /* The editor behind the finder's panel. One nvim per project and it outlives
+     the panel switching back to a reading, so this is created once with
+     everything else that holds subscriptions — and released below with them. */
+  const editor = new Editor();
   finder.where = () => shellCwd();
 
   /* The `!` line. Given a way to find a card and a way to say something to one,
@@ -318,6 +323,7 @@
     control.detach();
     shell.detach();
     finder.detach();
+    editor.detach();
     bang.detach();
     /* Not a subscription but the same hazard: a superseded generation's sampler
        would go on enumerating every process on the machine every two seconds
@@ -2115,6 +2121,7 @@
     shell,
     finder,
     bang,
+    editor,
     canvas: () => canvas,
     focusedId: () => focusedId,
     setFocused: (id) => (focusedId = id),
@@ -2662,7 +2669,7 @@
        the only CSS scope this codebase has. Putting a `.hint` in App's 565-line
        stylesheet is how `.ghost` came to mean two things. -->
   {#if finder.open || finder.pending !== null}
-    <Spyglass {finder} />
+    <Spyglass {finder} {editor} />
   {/if}
 
   <main class="wall" class:sizing={!!grip}>

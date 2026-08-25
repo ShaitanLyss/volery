@@ -49,6 +49,13 @@ sysinfo = { version = "0.38.4", default-features = false, features = ["system"] 
 # is unaffected — a schannel-backed `native-tls` would work too and costs a C
 # toolchain we go out of our way not to need.
 ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "json", "gzip"] }
+# nvim own UI protocol, which is msgpack-RPC over three pipes — see `nvim.rs`.
+# `rmpv` rather than a hand-rolled reader for one reason that matters: msgpack
+# is self-delimiting, and `read_value` consumes exactly one message from a
+# stream, so there is no framing here to get wrong. It also knows about *ext*
+# types, which nvim uses for every buffer and window handle and which a naive
+# decoder chokes on the moment one appears.
+rmpv = "1"
 
 [target.'cfg(windows)'.dependencies]
 # Job objects. A dev server is `npm run dev` spawning node spawning more node;
