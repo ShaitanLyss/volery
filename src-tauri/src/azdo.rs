@@ -77,7 +77,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 /// How long a project list is trusted. Projects are created about once a year;
@@ -95,6 +95,28 @@ const ORG_FOR: Duration = Duration::from_secs(5 * 60);
 /// this exists so a token swapped underneath us is noticed within the hour
 /// rather than never.
 const ME_FOR: Duration = Duration::from_secs(60 * 60);
+
+/// The margin taken off an `az` token's own expiry before it is trusted.
+///
+/// A token that dies between being chosen and the request landing is a refusal
+/// that looks exactly like a credential problem, and this poll is slow enough
+/// (six projects, a network away) that the gap is real rather than theoretical.
+const AZ_MARGIN: Duration = Duration::from_secs(2 * 60);
+
+/// The least time an `az` token is held, whatever its own expiry says.
+///
+/// Without a floor, a token handed over with a minute left would be re-resolved
+/// on *every* poll — an `az` process spawn each time, for a credential that is
+/// about to be replaced anyway. Better to present it, take the one refusal, and
+/// let the ladder rotate.
+const AZ_MIN_HOLD: Duration = Duration::from_secs(60);
+
+/// How long an `az` token is held when it did not say when it expires.
+///
+/// Only reachable if a future `az` stops printing `expires_on`. Conservative on
+/// purpose: the cost of being wrong low is one process spawn, and the cost of
+/// being wrong high is the bug this whole mechanism exists to prevent.
+const AZ_BLIND_HOLD: Duration = Duration::from_secs(30 * 60);
 
 /// Builds asked for per project. Deep enough that a project mid-deploy shows
 /// the run and the two before it, shallow enough that six of these is a payload
@@ -168,15 +190,35 @@ struct Cred {
     /// Which rung this came off, for the one line the widget has room for.
     /// Never the secret, and never enough of it to be one.
     from: &'static str,
+    /// When this credential stops working, for the one kind that does.
+    ///
+    /// `None` is the common case and means *does not expire on its own*: a PAT
+    /// is good for months, an environment variable does not change underneath
+    /// us, and Git Credential Manager refreshes its own. The exception is an
+    /// `az` sign-in, which is an Entra access token with about an hour in it —
+    /// see `from_az`. An `Instant` rather than a wall-clock time because it is
+    /// a deadline rather than a date, and the machine's clock moving must not
+    /// make a live token look dead.
+    until: Option<Instant>,
 }
 
 impl Cred {
     fn basic(from: &'static str, secret: String) -> Self {
-        Cred { kind: Kind::Basic, secret, from }
+        Cred { kind: Kind::Basic, secret, from, until: None }
     }
 
-    fn bearer(from: &'static str, secret: String) -> Self {
-        Cred { kind: Kind::Bearer, secret, from }
+    /// A bearer, which always dies on its own — `hold` from now.
+    ///
+    /// There is deliberately no non-expiring constructor beside this one. Every
+    /// bearer Skein holds is an Entra access token with about an hour in it, and
+    /// a `bearer()` that quietly meant *forever* is the shape the bug had.
+    fn bearer_for(from: &'static str, secret: String, hold: Duration) -> Self {
+        Cred { kind: Kind::Bearer, secret, from, until: Some(Instant::now() + hold) }
+    }
+
+    /// Whether this one is past it. A rung with no expiry never is.
+    fn spent(&self, now: Instant) -> bool {
+        self.until.is_some_and(|t| now >= t)
     }
 
     fn header(&self) -> String {
@@ -348,24 +390,76 @@ fn az_names() -> &'static [&'static str] {
 /// above it — the credential you clone with is the one whose PRs you mean.
 fn from_az() -> Option<Cred> {
     for name in az_names() {
+        /* The whole object rather than `--query accessToken -o tsv`, which is
+           what this asked for until the token's own lifetime turned out to
+           matter. See `az_hold` for what is read out of it and what is
+           deliberately not. */
         let Some(out) = output(Command::new(name).args([
             "account",
             "get-access-token",
             "--resource",
             "499b84ac-1321-427f-aa17-267ca6975798",
-            "--query",
-            "accessToken",
             "-o",
-            "tsv",
+            "json",
         ])) else {
             continue;
         };
-        let tok = out.trim();
-        if !tok.is_empty() {
-            return Some(Cred::bearer("an az sign-in", tok.to_string()));
+        if let Some((tok, hold)) = az_token(&out, now_unix()) {
+            return Some(Cred::bearer_for("an az sign-in", tok, hold));
         }
     }
     None
+}
+
+/// Now, in seconds since the epoch. Only ever subtracted from `az`'s own
+/// `expires_on`, which is in the same units.
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The token `az` printed, and how long Skein will hold it.
+///
+/// Pure, and split out from `from_az` for that reason: everything interesting
+/// here is arithmetic on somebody else's JSON, and the failure it guards
+/// against — holding a dead token — is invisible until a widget goes dark an
+/// hour later.
+///
+/// **`expires_on`, never `expiresOn`.** Probed 2026-08-25 against the Azure CLI
+/// on this machine, one call returns both:
+///
+/// ```text
+/// "expiresOn":  "2026-08-25 11:30:28.000000"
+/// "expires_on": 1787621428
+/// ```
+///
+/// The first is local time with no zone on it, so reading it means knowing
+/// which zone the CLI meant and being wrong by hours in the other ones. The
+/// second is seconds since the epoch and needs nothing. Accepted as a number or
+/// a string, since which one a JSON serialiser produces for a large integer is
+/// not a thing to depend on.
+fn az_token(out: &str, now: u64) -> Option<(String, Duration)> {
+    let v: serde_json::Value = serde_json::from_str(out).ok()?;
+    let tok = v.get("accessToken")?.as_str()?.trim();
+    if tok.is_empty() {
+        return None;
+    }
+    let expires = v.get("expires_on").and_then(|e| {
+        e.as_u64().or_else(|| e.as_str().and_then(|s| s.trim().parse().ok()))
+    });
+    let hold = match expires {
+        /* Already gone, or so nearly gone that the margin eats it. Held for the
+           floor anyway rather than discarded: the ladder's own rotation deals
+           with a refusal in one request, where returning None here would spawn
+           `az` again on the very next poll and keep doing it. */
+        Some(at) => Duration::from_secs(at.saturating_sub(now))
+            .saturating_sub(AZ_MARGIN)
+            .max(AZ_MIN_HOLD),
+        None => AZ_BLIND_HOLD,
+    };
+    Some((tok.to_string(), hold))
 }
 
 /// A token entered in the app, out of the Windows credential vault.
@@ -513,11 +607,31 @@ fn get(
     family: &'static str,
     url: &str,
 ) -> Result<serde_json::Value, Denied> {
+    /* The ladder is resolved once per organisation and held, because each rung
+       costs a process spawn — and it was held *forever*, which is the bug this
+       re-resolution answers. Three of the four rungs genuinely do not expire, so
+       the expiry lives on the rung that does (`Cred::until`) rather than on the
+       map: a TTL on the whole cache would re-spawn four processes on a clock to
+       rediscover three things that had not changed.
+
+       What went wrong without it: an `az` sign-in is good for about an hour, and
+       a wall is left up for a day. `get` rotates past a refused rung, so on a
+       machine with another working credential this cost one wasted request — but
+       the ordinary case on this network is a git credential that is code-scoped
+       and 401s on builds anyway, so once the bearer died *every* rung was
+       refused and the widget went dark until you took it off the wall and put it
+       back, which is the only thing that reached `release_azdo`. */
     let creds = match cache.creds.get(org) {
-        Some(c) => c.clone(),
-        None => {
+        Some(c) if !c.iter().any(|cred| cred.spent(Instant::now())) => c.clone(),
+        _ => {
             let c = ladder(org);
             cache.creds.insert(org.to_string(), c.clone());
+            /* The remembered rung is an *index into the ladder we just replaced*,
+               and the new one can be a different length or a different order — a
+               rung that resolved an hour ago may not now. Nothing unsafe comes of
+               a stale one, since the walk is modulo the length and re-records on
+               success, but it would start the pass at a rung nobody chose. */
+            cache.rung.retain(|(o, _), _| o != org);
             c
         }
     };
@@ -1224,6 +1338,92 @@ pub async fn clear_azdo_token(app: AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// What `az account get-access-token -o json` actually printed on this
+    /// machine, 2026-08-25, trimmed to the fields that are read. The token was
+    /// 2290 characters; nothing here depends on its length.
+    fn az_json(expires_on: &str) -> String {
+        format!(
+            r#"{{"accessToken":"ey.J","expiresOn":"2026-08-25 11:30:28.000000",
+                 "expires_on":{expires_on},"subscription":"b0556cda","tenant":"e8a8a7fa",
+                 "tokenType":"Bearer"}}"#
+        )
+    }
+
+    #[test]
+    fn a_token_is_held_for_its_own_life_less_the_margin() {
+        /* The real numbers off the probe: issued at 1787617212, expiring at
+           1787621428, which is a little over 70 minutes. */
+        let (tok, hold) = az_token(&az_json("1787621428"), 1_787_617_212).unwrap();
+        assert_eq!(tok, "ey.J");
+        assert_eq!(hold, Duration::from_secs(1787621428 - 1787617212) - AZ_MARGIN);
+    }
+
+    #[test]
+    fn the_local_time_field_is_not_the_one_read() {
+        /* `expiresOn` says 11:30:28 with no zone on it and is right there in the
+           same object. Reading it would mean guessing which zone the CLI meant.
+           Here it stays fixed while `expires_on` moves, and the answer follows
+           `expires_on`. */
+        let (_, a) = az_token(&az_json("1787621428"), 1_787_617_212).unwrap();
+        let (_, b) = az_token(&az_json("1787624428"), 1_787_617_212).unwrap();
+        assert!(b > a, "the epoch field is what decides: {a:?} then {b:?}");
+    }
+
+    #[test]
+    fn a_token_already_dead_is_still_held_briefly() {
+        /* Not discarded, which would spawn `az` again on the very next poll and
+           keep doing it. The ladder's rotation settles a refusal in one
+           request. */
+        let (_, hold) = az_token(&az_json("1787617000"), 1_787_617_212).unwrap();
+        assert_eq!(hold, AZ_MIN_HOLD);
+    }
+
+    #[test]
+    fn a_token_inside_the_margin_does_not_come_back_as_zero() {
+        /* Expiring in one minute, which the two-minute margin would take past
+           zero. `Duration` does not go negative, but a zero hold is a token
+           re-resolved on every poll. */
+        let (_, hold) = az_token(&az_json("1787617272"), 1_787_617_212).unwrap();
+        assert_eq!(hold, AZ_MIN_HOLD);
+    }
+
+    #[test]
+    fn an_expiry_that_arrives_as_a_string_is_read_too() {
+        /* Which spelling a JSON serialiser gives a large integer is not a thing
+           to depend on. */
+        let (_, hold) = az_token(&az_json(r#""1787621428""#), 1_787_617_212).unwrap();
+        assert_eq!(hold, Duration::from_secs(1787621428 - 1787617212) - AZ_MARGIN);
+    }
+
+    #[test]
+    fn a_token_that_says_nothing_about_expiry_gets_the_blind_hold() {
+        /* Only reachable if a future `az` stops printing the field. Holding it
+           forever is the bug; holding it for half an hour costs one spawn. */
+        let out = r#"{"accessToken":"ey.J","tokenType":"Bearer"}"#;
+        let (_, hold) = az_token(out, 1_787_617_212).unwrap();
+        assert_eq!(hold, AZ_BLIND_HOLD);
+    }
+
+    #[test]
+    fn nothing_usable_is_not_a_credential() {
+        assert!(az_token("not json at all", 0).is_none());
+        assert!(az_token(r#"{"accessToken":""}"#, 0).is_none());
+        assert!(az_token(r#"{"error":"please run az login"}"#, 0).is_none());
+    }
+
+    #[test]
+    fn only_the_rung_that_expires_ever_looks_spent() {
+        /* The point of putting the expiry on the rung: a PAT is good for months
+           and an environment variable does not change underneath us, so a clock
+           on the whole cache would re-spawn four processes to rediscover three
+           things that had not moved. */
+        let now = Instant::now();
+        assert!(!Cred::basic("a stored token", "pat".into()).spent(now));
+        let live = Cred::bearer_for("an az sign-in", "ey.J".into(), Duration::from_secs(600));
+        assert!(!live.spent(now));
+        assert!(live.spent(now + Duration::from_secs(601)));
+    }
+
     #[test]
     fn an_org_is_read_out_of_every_remote_shape_in_the_wild() {
         /* Exactly what `git remote -v` prints in this workspace. */
@@ -1287,7 +1487,7 @@ mod tests {
             "Basic Omh1bnRlcjI="
         );
         assert_eq!(
-            Cred::bearer("an az sign-in", "ey.J".into()).header(),
+            Cred::bearer_for("an az sign-in", "ey.J".into(), AZ_MIN_HOLD).header(),
             "Bearer ey.J"
         );
     }
@@ -1302,7 +1502,7 @@ mod tests {
         assert!(vault.same_as(&env));
         /* Same secret presented two different ways is genuinely two attempts —
            Azure DevOps accepts a PAT as Basic and refuses it as a bearer. */
-        assert!(!vault.same_as(&Cred::bearer("an az sign-in", "hunter2".into())));
+        assert!(!vault.same_as(&Cred::bearer_for("an az sign-in", "hunter2".into(), AZ_MIN_HOLD)));
         assert!(!vault.same_as(&Cred::basic("the git credential", "other".into())));
     }
 

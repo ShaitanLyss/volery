@@ -106,13 +106,38 @@ own for how it is drawn (`list`, `lanes`, `dots`).
   report `token` at all. `set`/`clear` drop the credential cache in the same command, since
   `Cache::creds` is resolved once per org and held; without that the ladder you just changed
   would not be consulted until the last widget came off the wall.
-- **`Cache::creds` has no TTL, and one rung is a token that expires.** The other three cached
-  things carry an `Instant`; the ladder does not, so it lives until `release_azdo`. An `az`
-  bearer is good for about an hour, so a wall left up for days holds an expired one — and once
-  the git credential is refused too, the widget goes dark until the last pipelines widget comes
-  off the wall and goes back on. Now reachable rather than theoretical, since the `az` rung
-  works. Not fixed here; it wants an expiry on the rung rather than on the map, because the
-  other three do not expire.
+- **The expiry is on the rung, not on the cache.** The ladder is resolved once per organisation
+  and held, because each rung costs a process spawn — and it used to be held *forever*, living
+  until `release_azdo`, which only fires when the last pipelines or reviews widget comes off the
+  wall. An `az` bearer is good for about an hour. So a wall left up for a day presented a dead
+  token; `get` rotates past a refused rung, so on a machine with another working credential that
+  cost one wasted request, but the ordinary case on this network is a git credential that is
+  code-scoped and 401s on builds anyway — so once the bearer died *every* rung was refused and
+  the widget went dark, recoverable only by taking it off the wall and putting it back. Latent
+  for ten days while `from_az` could not spawn at all, and reachable the moment that was fixed.
+
+  A TTL on the map would have been the wrong shape: three of the four rungs do not expire — a
+  PAT is good for months, an environment variable does not change underneath us, GCM refreshes
+  its own — so a clock on the container would re-spawn four processes to rediscover three things
+  that had not moved. `Cred::until` is `None` for those and a deadline for the one that dies,
+  `get` re-resolves the ladder when any held rung is spent, and there is deliberately no
+  non-expiring bearer constructor: every bearer here is an Entra token, and a `bearer()` that
+  quietly meant *forever* is the shape the bug had.
+
+  **`expires_on`, never `expiresOn`.** Probed 2026-08-25, one `az account get-access-token`
+  returns both: `"expiresOn": "2026-08-25 11:30:28.000000"` is local time with no zone on it, so
+  reading it means knowing which zone the CLI meant and being wrong by hours in the others;
+  `"expires_on": 1787621428` is seconds since the epoch and needs nothing. Two minutes come off
+  it, because a token that dies between being chosen and the request landing is a refusal that
+  looks exactly like a credential problem and this poll is slow enough for the gap to be real. A
+  floor of a minute goes under it, because a token handed over nearly dead would otherwise be
+  re-resolved on every poll — better to present it, take the one refusal and let the ladder
+  rotate. `az_token` is pure and holds all of that arithmetic, which is why it is tested.
+
+  Re-resolving also clears that organisation's remembered rung, since the index is into the
+  ladder that was just replaced and the new one can be a different length or order. Nothing
+  unsafe follows from a stale one — the walk is modulo the length and re-records on success —
+  but it would start the pass at a rung nobody chose.
 - **GCM refuses to answer for `dev.azure.com` without the organisation, and then tries to
   prompt.** Probed 2026-08-14: asked for the bare host it returns `fatal: Cannot determine the
   organization name for this 'dev.azure.com' remote URL`, and falls through to a sign-in — which
