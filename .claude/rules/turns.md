@@ -285,36 +285,60 @@ where a terminal session runs for days. The work behind it has usually finished 
 its output (11 of 15, in the case this was found from), so what is lost is the news rather
 than the work, and the card sits reading `at rest` on top of a completed job.
 
-#### And the job nudge has never once fired, because Skein cannot see the case
+#### And the job nudge has never once fired, because live it is a different event
 
-Everything above is right about the CLI and wrong about what reaches this window. Measured
-2026-08-25 over all 222 transcripts on this machine: **zero `NUDGE_TEXT` sends, ever**, against
-193 `<task-notification>` records and 14 prompt nudges. The whole job half is dead code, and
-two probes say why.
+Everything above is right about the CLI and wrong about the wire. Measured 2026-08-25 over all
+222 transcripts on this machine: **zero `NUDGE_TEXT` sends, ever**, against 193
+`<task-notification>` records. `tools/probe-nudge.ts` says why, and the answer is one line
+long: **live, the notification is not a `user` message.**
 
-`tools/probe-echo.ts` spawned with Skein's exact argv and sent nothing for fifteen seconds:
-**not one event arrived** — no `system/init`, no notification, nothing. The CLI in `--print`
-mode with stream-json input is silent until it is spoken to. So the orphan reconciliation
-notification, which is generated at startup and is the entire case this feature was built for,
-cannot reach Skein before a prompt does. It surfaces *with* the prompt that flushed it, at
-which point the card is `working` — and `#settleJob`'s guard is `!this.working && !this.busy`,
-so `unwoken` is never set and no nudge is ever raised.
+```text
+34.89s  system/task_notification  {task_id, tool_use_id, status,
+                                   output_file, summary}
+34.91s  system/init                       ← the woken turn, 20ms later
+35.9s   assistant "The background command completed (exit code 0)."
+```
 
-The transcripts agree from the other side. Of the 193 notification records, **none** is
-followed by a real user prompt: 98 are followed by an assistant message (the agent woke) and
-the rest by interleaved bookkeeping (`attachment`, `last-prompt`, `queue-operation`) — the same
-interleaving that broke the first wake measurement. There is no observed case of a notification
-sitting visible on a card at rest, because Skein is not told about one until something has
-already flushed it.
+`#settleJob` is reached from the `user` arm, on a message whose text contains
+`<task-notification>` XML. On the wire the CLI sends a **`system` event with subtype
+`task_notification`** carrying the same facts already parsed into fields. `ingest`'s `system`
+arm knows exactly three subtypes — `init`, `status`, `compact_boundary` — so it falls straight
+through and nothing happens at all.
 
-Which turns the conclusion around: **the nudge's work is done for free.** By the time the
-notification is visible, the queue it was going to flush has been flushed. The measured "wakes
-nobody, three times out of three" is real, but it is invisible from here — the card genuinely
-does sit at rest on a finished job, and no event says so. Anything that fixes it has to come
-from somewhere other than the notification, because the notification is precisely what does not
-arrive. The bullets below are kept as written: they are sound about the *prompt* half, which
-does fire and does work, and the job half is now known to be unreachable rather than merely
-untested.
+The XML *does* exist, in the **transcript**, as a `user` record. That is why `history.ts` folds
+it correctly, why every measurement over transcripts finds it, and why the section above reads
+as though the mechanism worked: **it works on restart and has never once run live.** A probe
+over transcripts cannot see this difference, and two of them did not.
+
+So the reach is much wider than the nudge, and the nudge is the least of it. Live, none of this
+happens: `#dropJob` is never called, so `busy` stays true and a card keeps its background-work
+ring after the work is done; `#closeSeat` never fires, so a backgrounded subagent's seat and a
+workflow's crowd never close; the `job` row is never deleted, so the next launch reports
+finished work as lost; and `unwoken` is never set, which is the whole of why no job nudge has
+ever been sent.
+
+Three sibling events arrive on the same arm and are also unread — and each carries, already
+parsed, something `classify.ts` currently scrapes out of receipt prose with a regex:
+
+```text
+system/background_tasks_changed  {tasks: [{task_id, task_type, description}]}
+system/task_started              {task_id, tool_use_id, description,
+                                  is_backgrounded, task_type}
+system/task_updated              {task_id, patch: {status, end_time}}
+```
+
+`task_started` is `startedJob`'s three shapes with the guessing taken out, including the
+`is_backgrounded` flag that the `Agent` inline-or-not dance exists to infer. `output_file` on
+the notification is the path `store::task_output_path` derives. A fold onto these events is
+strictly better than the text it replaces, and the receipt parsing should stay anyway — it is
+what `history.ts` reads.
+
+One thing the same probe settles about the grace: the woken turn's `system/init` arrived **20ms**
+after the notification. The transcript-measured "wake delay" of ten seconds is the gap to the
+*finished* assistant record, and `#beginTurn` fires on the first `thinking` block, so it was
+never the number `WAKE_GRACE_S` should have been set against. Once these events are folded the
+nudge will be quiet almost always — which is correct, and is the opposite of the reason it is
+quiet now.
 
 So this is a narrow fix for a narrow case, and the wall's own reading was the wrong half of it:
 
