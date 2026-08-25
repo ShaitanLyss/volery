@@ -410,10 +410,17 @@ export class Skein {
          our own storage. Where it goes is this side's knowledge — a card's drawn
          position comes out of `layout`, which Rust has never heard of — and so
          is how big it is, which only the webview can answer. */
-      listen<{ id: string; parent_id: string; cwd: string; prompt: string; title: string | null }>(
+      listen<{
+        id: string;
+        parent_id: string;
+        cwd: string;
+        worktree: string | null;
+        prompt: string;
+        title: string | null;
+      }>(
         "spawn:asked",
         (e) => {
-          const { id, parent_id, cwd, prompt, title } = e.payload;
+          const { id, parent_id, cwd, worktree, prompt, title } = e.payload;
           /* The root is recorded before the card is opened, and `born` is
              stamped here rather than read back off the row: this is the moment
              it happened, and a growth animation timed off a later query would
@@ -421,7 +428,7 @@ export class Skein {
              the row (`record_spawn`), so nothing is being claimed early — this
              is the same fact, in the frame that draws it. */
           this.kin = [...this.kin, { child: id, parent: parent_id, born: Date.now() }];
-          void this.openSpawned(id, cwd, prompt, title);
+          void this.openSpawned(id, cwd, worktree, prompt, title);
         },
       ),
     );
@@ -706,14 +713,20 @@ export class Skein {
    *  `ensure_project`, which finds the existing territory by its `root_path`
    *  rather than making a second one. So this is the same line `new
    *  conversation here` takes in that project, which is the point of having
-   *  Rust decide where and the wall decide nothing. */
+   *  Rust decide where and the wall decide nothing.
+   *
+   *  `worktree` is the parent's branch, or null — and it is the difference
+   *  between a card opened *beside* its parent and one opened in the main tree
+   *  four hours of work behind it. Resolved in `spawn.rs` for the same reason
+   *  `cwd` is; this passes it on and decides nothing. */
   async openSpawned(
     id: string,
     cwd: string,
+    worktree: string | null,
     prompt: string,
     title: string | null,
   ): Promise<void> {
-    const conv = await this.#openIn(cwd, null, "project", id);
+    const conv = await this.#openIn(cwd, worktree, "project", id);
     if (!conv) return;
     if (title) {
       conv.title = title;

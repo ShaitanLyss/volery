@@ -32,6 +32,7 @@ import {
   localAnswer,
   localCommandAwaiting,
   parseTaskNotification,
+  systemTaskNote,
   sameModel,
   spanOf,
   startedJob,
@@ -690,6 +691,97 @@ describe("task notifications", () => {
   test("anything that is not one parses to nothing", () => {
     expect(parseTaskNotification("just a prompt")).toBeNull();
     expect(parseTaskNotification("")).toBeNull();
+  });
+
+  /* And the same news on the wire, where it is not a message at all. The block
+     above is a *transcript* record; live the CLI sends a `system` event with
+     the fields already parsed, and nothing read it until 2026-08-25 — so the
+     whole job fold ran from `history.ts` after a restart and never once live.
+     The event below is verbatim from `tools/probe-nudge.ts`, which ran a real
+     background job and watched the stream. */
+  describe("the live shape, which is a system event", () => {
+    const wire = {
+      type: "system",
+      subtype: "task_notification",
+      task_id: "b0twsai9p",
+      tool_use_id: "toolu_01Mn89PP7C2NJN1LZ1vhbnJS",
+      status: "completed",
+      output_file:
+        "C:\\Users\\LYSS~1.DEL\\AppData\\Local\\Temp\\claude\\C--Users-lyss-delprat-workbench-skein--scratch-probe\\059f99a8-39a2-43b6-ac44-04e08d7a067d\\tasks\\b0twsai9p.output",
+      summary:
+        'Background command "Run a 20-second sleep then echo, in the background" completed (exit code 0)',
+      uuid: "0946d366-2e96-47c2-a487-92c63149863f",
+      session_id: "059f99a8-39a2-43b6-ac44-04e08d7a067d",
+    };
+
+    test("it reads to the same note the XML does", () => {
+      /* The point of `taskNoteOf` being shared: a job's fate must not depend on
+         which side of a restart the news arrived from. */
+      const n = systemTaskNote(wire)!;
+      expect(n.taskId).toBe("b0twsai9p");
+      expect(n.toolId).toBe("toolu_01Mn89PP7C2NJN1LZ1vhbnJS");
+      expect(n.end).toBe("done");
+      expect(n.summary).toBe(
+        'Background command "Run a 20-second sleep then echo, in the background" completed (exit code 0)',
+      );
+    });
+
+    test("a non-zero exit code is a failure here too", () => {
+      const red = { ...wire, summary: wire.summary.replace("(exit code 0)", "(exit code 1)") };
+      expect(systemTaskNote(red)!.end).toBe("failed");
+    });
+
+    test("the orphan reconciliation is a killed job, not a failed one", () => {
+      /* The case the nudge was built for: tasks a dead process was holding,
+         reported stopped with no exit code. It wakes nobody, which is why it is
+         the one notification that has to reach `unwoken`. */
+      const orphan = {
+        ...wire,
+        status: "stopped",
+        summary:
+          "3 background shell command task(s) from the previous session have no completion record.",
+      };
+      expect(systemTaskNote(orphan)!.end).toBe("killed");
+    });
+
+    test("the three sibling events are not settlements", () => {
+      /* `task_updated` carries `status: "completed"` too and arrives in the same
+         millisecond — folding it beside the notification would settle one job
+         twice. They are left alone on purpose; see `systemTaskNote`. */
+      expect(
+        systemTaskNote({
+          type: "system",
+          subtype: "task_updated",
+          task_id: "b0twsai9p",
+          patch: { status: "completed", end_time: 1787617824702 },
+        }),
+      ).toBeNull();
+      expect(
+        systemTaskNote({
+          type: "system",
+          subtype: "task_started",
+          task_id: "b0twsai9p",
+          tool_use_id: "toolu_01Mn",
+          is_backgrounded: true,
+        }),
+      ).toBeNull();
+      expect(
+        systemTaskNote({ type: "system", subtype: "background_tasks_changed", tasks: [] }),
+      ).toBeNull();
+      /* And the three the arm already knew, which must not change meaning. */
+      expect(systemTaskNote({ type: "system", subtype: "init" })).toBeNull();
+      expect(systemTaskNote({ type: "system", subtype: "compact_boundary" })).toBeNull();
+    });
+
+    test("an event naming no job at all settles nothing", () => {
+      /* Rather than settling whichever job happens to be first. A shape this
+         build does not know is not news about any particular job. */
+      expect(
+        systemTaskNote({ type: "system", subtype: "task_notification", status: "completed" }),
+      ).toBeNull();
+      expect(systemTaskNote(undefined)).toBeNull();
+      expect(systemTaskNote({ type: "user", subtype: "task_notification", task_id: "b1" })).toBeNull();
+    });
   });
 });
 

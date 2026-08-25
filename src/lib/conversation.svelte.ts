@@ -24,6 +24,7 @@ import {
   skillBody,
   jobLabel,
   localAnswer,
+  systemTaskNote,
   localCommandAwaiting,
   localCommand,
   NUDGE_BUDGET,
@@ -1611,6 +1612,24 @@ export class Conversation {
             if (stat.post > 0) this.ctxTokens = stat.post;
             this.#compacted = compactNote(stat);
           }
+        } else if (ev.subtype === "task_notification") {
+          /* A background job reporting in — the *live* shape of it, which
+             nothing here read until now. The `<task-notification>` block the
+             `user` arm below parses is a transcript record; on the wire the CLI
+             sends this instead, with the same facts already in fields. So the
+             whole job fold ran only from `history.ts` after a restart, and a
+             card whose work finished in front of you kept its ring, its seat and
+             its `job` row until it was relaunched. `systemTaskNote` has the
+             probe and the three sibling events it deliberately leaves alone.
+
+             `#settleJob` is reached from both arms and needs no telling which:
+             it is keyed on ids, not on where the news came from. No turn is
+             begun here, for the reason the `user` arm gives — the agent is woken
+             by this and its own first event opens the turn, 20ms later in the
+             probe, and opening one here would strand a card `working` on exactly
+             the occasions when nothing responds. */
+          const note = systemTaskNote(ev);
+          if (note) this.#settleJob(note, note.summary);
         }
         break;
 

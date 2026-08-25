@@ -302,23 +302,30 @@ long: **live, the notification is not a `user` message.**
 `#settleJob` is reached from the `user` arm, on a message whose text contains
 `<task-notification>` XML. On the wire the CLI sends a **`system` event with subtype
 `task_notification`** carrying the same facts already parsed into fields. `ingest`'s `system`
-arm knows exactly three subtypes — `init`, `status`, `compact_boundary` — so it falls straight
-through and nothing happens at all.
+arm knew exactly three subtypes — `init`, `status`, `compact_boundary` — so it fell straight
+through and nothing happened at all.
+
+**Fixed by reading it.** `systemTaskNote` in `classify.ts` takes the event and `ingest`'s
+system arm hands it to the same `#settleJob` the `user` arm does — which needs no telling
+which side it came from, being keyed on ids rather than on provenance. `taskNoteOf` is the
+one reading of a job's fate, shared by both, so a job cannot mean one thing live and another
+after a restart. The XML path stays exactly as it was: `history.ts` still folds a transcript,
+and that is still the only thing that runs on a relaunch.
 
 The XML *does* exist, in the **transcript**, as a `user` record. That is why `history.ts` folds
 it correctly, why every measurement over transcripts finds it, and why the section above reads
 as though the mechanism worked: **it works on restart and has never once run live.** A probe
 over transcripts cannot see this difference, and two of them did not.
 
-So the reach is much wider than the nudge, and the nudge is the least of it. Live, none of this
-happens: `#dropJob` is never called, so `busy` stays true and a card keeps its background-work
-ring after the work is done; `#closeSeat` never fires, so a backgrounded subagent's seat and a
-workflow's crowd never close; the `job` row is never deleted, so the next launch reports
-finished work as lost; and `unwoken` is never set, which is the whole of why no job nudge has
-ever been sent.
+So the reach was much wider than the nudge, and the nudge was the least of it. Live, none of
+this happened: `#dropJob` was never called, so `busy` stayed true and a card kept its
+background-work ring after the work was done; `#closeSeat` never fired, so a backgrounded
+subagent's seat and a workflow's crowd never closed; the `job` row was never deleted, so the
+next launch reported finished work as lost; and `unwoken` was never set, which is the whole of
+why no job nudge had ever been sent. All four come back with the event.
 
-Three sibling events arrive on the same arm and are also unread — and each carries, already
-parsed, something `classify.ts` currently scrapes out of receipt prose with a regex:
+**Three sibling events arrive on the same arm and are deliberately still unread** — each
+carrying, already parsed, something `classify.ts` scrapes out of receipt prose with a regex:
 
 ```text
 system/background_tasks_changed  {tasks: [{task_id, task_type, description}]}
@@ -329,9 +336,13 @@ system/task_updated              {task_id, patch: {status, end_time}}
 
 `task_started` is `startedJob`'s three shapes with the guessing taken out, including the
 `is_backgrounded` flag that the `Agent` inline-or-not dance exists to infer. `output_file` on
-the notification is the path `store::task_output_path` derives. A fold onto these events is
+the notification is the path `store::task_output_path` derives. A fold onto these would be
 strictly better than the text it replaces, and the receipt parsing should stay anyway — it is
-what `history.ts` reads.
+what `history.ts` reads. They were left out of the fix on purpose and the reason is narrow:
+**the start path already works live**, because a `tool_result` does arrive as a `user` event,
+and `task_updated` carries `status: "completed"` in the same millisecond as the notification —
+folding it beside this one settles the same job twice. Only the settle was broken, so only the
+settle was changed.
 
 One thing the same probe settles about the grace: the woken turn's `system/init` arrived **20ms**
 after the notification. The transcript-measured "wake delay" of ten seconds is the gap to the

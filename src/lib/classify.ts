@@ -716,24 +716,78 @@ export function parseTaskNotification(text: string): TaskNote | null {
     const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text);
     return m ? m[1].trim() || null : null;
   };
-  const status = (field("status") ?? "").toLowerCase();
-  const summary = field("summary") ?? "";
-  /* `completed` and `killed` are the two seen on this machine. The exit code
-     rides in the summary rather than in a field of its own, and a command that
-     completed non-zero is a job that failed — a background test run that came
-     back red must not read as done. */
+  return taskNoteOf(field("status"), field("summary"), field("task-id"), field("tool-use-id"));
+}
+
+/** The one reading of a job's fate, shared by the two places it arrives.
+ *
+ *  `completed` and `killed` are the two statuses seen on this machine. The exit
+ *  code rides in the summary rather than in a field of its own, and a command
+ *  that completed non-zero is a job that failed — a background test run that
+ *  came back red must not read as done. */
+export function taskNoteOf(
+  rawStatus: string | null,
+  rawSummary: string | null,
+  taskId: string | null,
+  toolId: string | null,
+): TaskNote {
+  const status = (rawStatus ?? "").trim().toLowerCase();
+  const summary = (rawSummary ?? "").trim();
   const code = /\(exit code (\d+)\)/.exec(summary);
   let end: JobEnd;
   if (status === "completed") end = code && code[1] !== "0" ? "failed" : "done";
   else if (/^(killed|stopped|cancelled|canceled)$/.test(status)) end = "killed";
-  else if (status === "" ) end = "done";
+  else if (status === "") end = "done";
   else end = "failed";
   return {
-    taskId: field("task-id"),
-    toolId: field("tool-use-id"),
+    taskId,
+    toolId,
     end,
     summary: summary || `a background job ${status || "finished"}`,
   };
+}
+
+/** The same news, on the wire, where it is not a message at all.
+ *
+ *  `parseTaskNotification` above reads a `<task-notification>` block off a
+ *  `user` record, and that block is real — but it is a **transcript** record.
+ *  Live, the CLI reports the same thing as a `system` event with structured
+ *  fields, and nothing here read it. Probed 2026-08-25 with
+ *  `tools/probe-nudge.ts`, which ran a real background job and watched the
+ *  wire:
+ *
+ *    34.89s  system/task_notification  {task_id, tool_use_id, status,
+ *                                       output_file, summary}
+ *    34.91s  system/init                      ← the woken turn, 20ms later
+ *
+ *  So the whole job fold ran from `history.ts` after a restart and never once
+ *  live: `#dropJob` was never called, so a card kept its background-work ring
+ *  after the work was done; `#closeSeat` never fired, so a backgrounded
+ *  subagent's seat and a workflow's crowd never closed; the `job` row was never
+ *  deleted, so the next launch reported finished work as lost; and `unwoken` was
+ *  never set, which is the whole of why no job nudge had ever been sent in 222
+ *  transcripts. **A probe over transcripts cannot see this**, and two of them
+ *  did not — the difference is only visible on the stream.
+ *
+ *  Three siblings arrive on the same arm and are deliberately still unread:
+ *  `task_started` (`{task_id, tool_use_id, description, is_backgrounded,
+ *  task_type}`), `task_updated` (`{task_id, patch: {status, end_time}}`) and
+ *  `background_tasks_changed` (`{tasks: [...]}`). Each carries, already parsed,
+ *  something `startedJob` currently scrapes out of receipt prose — including the
+ *  `is_backgrounded` flag the `Agent` starting-or-running promotion exists to
+ *  infer. They are worth folding and they are not this bug: the start path works
+ *  live, because a tool_result does arrive as a `user` event. Folding
+ *  `task_updated` beside this one would settle the same job twice. */
+export function systemTaskNote(ev: any): TaskNote | null {
+  if (ev?.type !== "system" || ev?.subtype !== "task_notification") return null;
+  const str = (v: unknown): string | null =>
+    typeof v === "string" && v.trim() ? v.trim() : null;
+  const taskId = str(ev.task_id);
+  const toolId = str(ev.tool_use_id);
+  /* Both ids absent is not a job — it is an event shape this build does not
+     know, and settling on it would drop whichever job happened to be first. */
+  if (!taskId && !toolId) return null;
+  return taskNoteOf(str(ev.status), str(ev.summary), taskId, toolId);
 }
 
 /* ── Being told, and not stirring ─────────────────────────────────────────

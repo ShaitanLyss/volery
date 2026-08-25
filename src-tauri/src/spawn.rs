@@ -210,6 +210,11 @@ struct SpawnAsked {
     /// territory the parent named — resolved here against `store::projects`,
     /// never a string the caller wrote. See the module note.
     cwd: String,
+    /// The branch's tree the child works in, which is the parent's own or
+    /// nothing. Only ever inherited when the child stands *here*: a card opened
+    /// in another territory has no business carrying this one's branch name,
+    /// and `worktree::ensure` would make a tree for it there.
+    worktree: Option<String>,
     /// Its first turn.
     prompt: String,
     /// What to call it until it has named itself, or null.
@@ -643,9 +648,16 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        project is not written down as a spawn at all — an agent correcting a name
        is not an agent fanning out, and `spawns_since` is what a restored rate
        limit would read. */
-    let (cwd, elsewhere) = match standing(&wall, &me.project_id, asked) {
-        Standing::Here => (me.cwd.clone(), None),
-        Standing::There(i) => (wall[i].root_path.clone(), Some(wall[i].name.clone())),
+    let (cwd, worktree, elsewhere) = match standing(&wall, &me.project_id, asked) {
+        /* The parent's tree as well as its territory, and the two are different
+           facts for a worktree card: the row's `cwd` is the project root by
+           design (`worktree.md`) and the agent stands in the tree for its
+           branch. Taking `cwd` alone put the child in the *main* tree — sharing
+           a checkout with whatever else is there and unable to see a line of the
+           work it was opened to help with, which is the opposite of what
+           "open one beside me" means and what this rule claimed to do. */
+        Standing::Here => (me.cwd.clone(), me.worktree.clone(), None),
+        Standing::There(i) => (wall[i].root_path.clone(), None, Some(wall[i].name.clone())),
         Standing::Unknown => {
             return format!(
                 "there is no project called {asked:?} on this wall, so no card was opened. \
@@ -682,6 +694,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
             id: id.clone(),
             parent_id: caller.to_string(),
             cwd: cwd.clone(),
+            worktree: worktree.clone(),
             prompt,
             title: title.clone(),
         },
@@ -692,12 +705,23 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         Some(t) => format!(" It is called {t:?} until it names itself."),
         None => " It will name itself from its first turn.".into(),
     };
+    /* Said out loud, because it is the one thing about a card opened here that
+       the caller cannot see and has to act on: two agents in one checkout is
+       how a morning's work ends up under somebody else's commit message. The
+       wall has no other way to tell either of them. */
+    let sharing = match &worktree {
+        Some(name) => format!(
+            " It works in the same tree as you, on {name}, so you are both editing one \
+             checkout — say what each of you owns, and stage exact paths rather than `-A`."
+        ),
+        None => String::new(),
+    };
     match elsewhere {
         None => format!(
             "opening a card in {cwd} — its handle is {handle}. It has the brief you wrote and \
              nothing else of yours. Tell the user you have opened it and what for. You can \
              `send` to it or `recall` it by that handle; it will not appear in `list` until \
-             its process is up, which takes a moment.{called}"
+             its process is up, which takes a moment.{called}{sharing}"
         ),
         /* Said differently on purpose. A card in another repository is the one
            case where "it has the brief and nothing else" costs something real:

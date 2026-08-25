@@ -50,9 +50,24 @@ reading all turn.
   `C:\dev\nova` and `D:\archive\nova` are both `nova`; guessing the first would open a card
   with the machine in its hands in the wrong repository, so it is `Ambiguous` and the refusal
   carries both paths.
-- **Naming your own project is the default said out loud** — `Standing::Here`, which keeps the
-  parent's `cwd` rather than the project root. That is what lets a card in a worktree open one
-  beside it instead of one in the main tree.
+- **Naming your own project is the default said out loud** — `Standing::Here`, which stands the
+  child where the parent actually stands: its `cwd` *and* its worktree.
+- **The tree is the half that was missing, and the sentence here was wrong for a while.** This
+  bullet claimed `cwd` alone was what let a worktree card open one beside it. It is not: the
+  row's `cwd` is the project root by design (`worktree.md` — that is what keeps a worktree card
+  in its parent's territory, sharing its dev servers and its shell), so a child taking `cwd`
+  alone landed in the **main tree**. Confirmed against the live database, where both cards
+  reading `C:\Users\lyss.delprat\workbench\nova` carried a branch their children would not
+  have had. That is the opposite of "beside": the child shares a checkout with whatever else
+  is in the main tree, and cannot see one line of the work it was opened to help with.
+  `Standing::Here` inherits `me.worktree` now, and only `Here` does — a card opened in another
+  territory has no business carrying this one's branch name, and `worktree::ensure` would make
+  a tree for it there.
+- **And the receipt says they share a checkout**, because that is the one thing about a card
+  opened here that the caller cannot see and has to act on. Two agents in one tree is how a
+  morning's work ends up under somebody else's commit message (sink 8d3dab75, and the five
+  muddled commits of 2026-08-24 that were read as one card duplicating itself). The wall has
+  no other way to tell either of them.
 - **Skein's own directories are not on offer.** Chat cards need an address and get a folder
   beside the database, which `#openIn` makes an ordinary `project` row of (`chat.md`) — a row
   in the table that nobody declared. `is_skeins_own` drops it, in `spawn.rs` rather than in the
