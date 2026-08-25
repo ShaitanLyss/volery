@@ -779,7 +779,12 @@ export class Skein {
          manages no accounts — every card before this feature. */
       const opening = waterfall.list.length > 0 ? waterfall.next() : null;
       const account = opening?.kind === "use" ? opening.label : null;
-      await invoke("spawn_conversation", { id, cwd, worktree: wt, accountLabel: account });
+      /* No `worktree` here: `spawn_conversation` reads it back off the row for
+         the reason it reads `kind` and the preset off the row. It was the one
+         thing still travelling as an argument, `wake` was the call site that
+         never passed it, and a card that came back in the main tree is what
+         that cost. See `store::worktree_of`. */
+      await invoke("spawn_conversation", { id, cwd, accountLabel: account });
       const conv = new Conversation(id, cwd, project.id, wt, kind);
       if (preset) {
         /* Drawn from the first frame rather than from the first turn. The alias
@@ -939,8 +944,12 @@ export class Skein {
         /* Whether this resumes is not ours to say — `spawn_conversation` looks
            for the transcript. We used to pass `everSpoke`, which answers "did a
            turn ever finish" and so sent a card killed mid-first-turn back with
-           `--session-id` against an id that already had a transcript. */
-        worktree: null,
+           `--session-id` against an id that already had a transcript.
+           Nor is which tree it works in. This used to pass `worktree: null`,
+           which was true of nothing and was read as "the project root": every
+           worktree card woken by a click, a send, a rouse or an account swap
+           came back in the main tree with its history filed under the wrong
+           slug. The row has known all along; the spawn asks it now. */
         /* Which subscription this card spends. Null is "whoever Claude Code is
            signed in as", which is every card on a wall with no accounts
            registered. Passed explicitly rather than omitted: a missing Tauri
@@ -1036,7 +1045,6 @@ export class Skein {
            about work it has no process to go and look at. */
         const jobs = await invoke<LostJob[]>("pending_jobs", {
           conversationId: conv.id,
-          cwd: conv.cwd,
         }).catch(() => [] as LostJob[]);
         if (lost && !conv.working) {
           /* Sent as an ordinary prompt, and the panel folds it away behind
@@ -2196,7 +2204,10 @@ export class Skein {
     try {
       const t = await invoke<{ text: string; dropped_bytes: number } | null>(
         "read_transcript",
-        { cwd: c.cwd, sessionId: c.sessionId },
+        /* The id alone: where the file is depends on the directory the child
+           runs in, which is not `c.cwd` for a card on a branch, and the store
+           is the one place that holds both halves of that. */
+        { id: c.id },
       );
       if (!t) {
         /* No file at all — a card that was opened and never spoken to. */
@@ -2248,10 +2259,7 @@ export class Skein {
       return;
     }
     try {
-      const effort = await invoke<string | null>("read_session_effort", {
-        cwd: c.cwd,
-        sessionId: c.sessionId,
-      });
+      const effort = await invoke<string | null>("read_session_effort", { id: c.id });
       if (!isEffort(effort) || effort === c.effort) return;
       c.effort = effort;
       await invoke("update_conversation", { id: c.id, effort });
@@ -2265,10 +2273,7 @@ export class Skein {
   async #adoptAiTitle(c: Conversation) {
     if (c.namedByHand) return;
     try {
-      const title = await invoke<string | null>("read_ai_title", {
-        cwd: c.cwd,
-        sessionId: c.sessionId,
-      });
+      const title = await invoke<string | null>("read_ai_title", { id: c.id });
       if (!title || title === c.title) return;
       c.title = title;
       await invoke("update_conversation", { id: c.id, title });

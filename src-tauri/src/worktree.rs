@@ -109,6 +109,37 @@ pub fn dir_for(root: &str, name: &str) -> PathBuf {
     Path::new(root).join(".claude").join("worktrees").join(slug(name))
 }
 
+/// **Where a card's child actually runs** — its territory, or the tree for its
+/// branch when it has one.
+///
+/// This is the answer `ensure` gives, without the making of it, and it is what
+/// anything that is not spawning a process should ask. The distinction is the
+/// whole reason it exists separately: reading a card's transcript, or resolving
+/// a relative path an agent wrote, wants the directory and must not create a git
+/// worktree as a side effect of a look.
+///
+/// **Every question the CLI answers per-directory is a question about *this*
+/// directory**, and a year of the app asking it about `cwd` instead is the bug
+/// this was extracted for. The row's `cwd` is the project root by design (see
+/// the module note, and `worktree.md`) — that is the card's territory, its dev
+/// servers and its shell. It is not where the agent stands. Ask `cwd` about a
+/// worktree card's transcript and you are told it has none, because the CLI
+/// files that session under the *running* directory's slug; ask it where to
+/// spawn and the agent comes back in the main tree with its history left behind
+/// in the other one. Measured 2026-08-25 across the four worktree cards then on
+/// the wall: every one of them had two transcripts under one session id, split
+/// at the first wake, and nine respawns in the wrong tree between them.
+///
+/// Pure, and deliberately so — no git, nothing made, nothing on disk consulted.
+/// `ensure` must return this same path for the same pair, which is what makes
+/// the transcript a running card writes the one a dormant card reads.
+pub fn run_dir(cwd: &str, worktree: Option<&str>) -> String {
+    match worktree.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => dir_for(cwd, name).to_string_lossy().into_owned(),
+        None => cwd.to_string(),
+    }
+}
+
 /// What to branch from, best first.
 ///
 /// `origin/main` by default, which is what was asked for and what the CLI did
@@ -253,6 +284,29 @@ mod tests {
     fn anything_a_path_cannot_hold_becomes_a_dash() {
         assert_eq!(slug("feat/a:b*c?d"), "feat+a-b-c-d");
         assert_eq!(slug("feat/two words"), "feat+two-words");
+    }
+
+    #[test]
+    fn a_card_with_no_branch_stands_in_its_territory() {
+        assert_eq!(run_dir("C:/x", None), "C:/x");
+        assert_eq!(
+            run_dir("C:/x", Some("   ")),
+            "C:/x",
+            "a name that is only whitespace is no name — `ensure` refuses it too"
+        );
+    }
+
+    #[test]
+    fn a_card_with_a_branch_stands_where_ensure_would_put_it() {
+        /* The two must not be able to disagree: `ensure` is what the *running*
+           child gets and `run_dir` is what everything looking the card up gets,
+           and a transcript written under one and read under the other is the
+           bug this pair exists to close. Both go through `dir_for`. */
+        assert_eq!(
+            run_dir("C:/x", Some("feat/async-auth")),
+            dir_for("C:/x", "feat/async-auth").to_string_lossy()
+        );
+        assert!(run_dir("C:/x", Some("feat/async-auth")).contains("feat+async-auth"));
     }
 
     #[test]

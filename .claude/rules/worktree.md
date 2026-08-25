@@ -37,6 +37,39 @@ Things that are load-bearing:
   there. That is why it is `ensure` and not `create`: a function that could only make one would
   have needed every caller to remember which case it was in, which is the shape of the bug
   before it happens (the same argument `store::kind_of` settles for chat cards, `chat.md`).
+- **Which name it is asked about comes off the row, and for a day this bullet was a wish.**
+  The line above was written as though every spawn reached `ensure`, and one did not: `wake`
+  passed `worktree: null` and had done since the app was written. That was harmless while
+  `--worktree` was a flag the CLI kept across a `--resume`, and became live the moment this
+  module started making the tree — so a worktree card woken by a click, a send, a rouse or an
+  account swap came back running in the **main tree**, with nothing on the wall to say so,
+  because the `cwd` the card draws itself from was still right. `store::worktree_of` is the
+  third thing `spawn_conversation` asks the store rather than the caller, and it is the one
+  that proves the rule the other two only state: `kind` and the preset were argued into the
+  store *because* a future call site would forget, and this is the parameter where the call
+  site already had.
+- **`worktree::run_dir` is that same answer without the making of it**, and everything that
+  is not spawning asks it instead. Reading a transcript, resolving a relative path an agent
+  wrote, deriving where the CLI filed a background task's output — all of them are questions
+  the CLI answers *per directory*, and all of them were being asked about `cwd`. That is the
+  bug's second half and the more expensive one: the CLI files a session under the directory
+  it is running in, so a card sent to the wrong tree also comes back with **no transcript to
+  resume**, spawns `--session-id` fresh, and starts a second history under the root's slug
+  while its own sits in the tree. Measured 2026-08-25 over the four worktree cards then on
+  the wall: two transcripts apiece under one session id, split at the first wake, not
+  overlapping by a record. One of them was found by its own card writing "I'll find the
+  component first" about a component it had spent the previous hour in.
+- **So the fix had to mend what it would otherwise rewind.** With the child sent back to its
+  tree, `--resume` finds the *older* half — the one from before the first wake — and the day's
+  work stops being what the card comes back holding. `supervisor::reunite_split_transcript`
+  moves the newer half to where the card now looks and keeps the older beside it as
+  `.jsonl.bak`. It is narrow by construction rather than by a guess: a transcript under the
+  project root's slug for a card that works in a tree can only have been written by a build
+  with this bug in it, since that child was never once meant to run there. `.bak` and not
+  `.jsonl`, because `sessions::walk` reads any `.jsonl` stem as a session id and would offer
+  a half that can be adopted and never resumed. It runs at a spawn, where the card has no
+  process to be holding the file, and only ever moves newer onto older, so the second call
+  finds nothing to do.
 - **`--no-track`, or the branch's idea of upstream is `main` itself.** Branching from a
   remote-tracking ref makes git set that ref as the upstream: probed 2026-08-25,
   `worktree add -b feat/x <dir> origin/main` leaves `branch.feat/x.merge = refs/heads/main`, so
@@ -67,9 +100,15 @@ Things that are load-bearing:
   its *running* directory, so a worktree card's transcripts are under the tree's slug and not
   the project root's. `spawn_now` therefore asks `transcript_path` about `run_dir`. Ask the
   wrong one and a card that has been talking for days is told it has no transcript — and a card
-  that starts fresh every time it wakes has quietly lost its memory.
+  that starts fresh every time it wakes has quietly lost its memory. **And so is every other
+  per-directory question**: `store::session_of` returns the run directory rather than the
+  row's `cwd`, which is what the three transcript reads, `relay`'s recall, `pin`'s relative
+  paths and `pending_jobs`' output paths all stand on. Those three reads take a card id now
+  and nothing else — two arguments that can disagree with the row is what put them a
+  directory out in the first place.
 
-**The row's `cwd` stays the project root.** Only the child process moves. That is what keeps a
+**The row's `cwd` stays the project root, and that is the trap as well as the design.** Only
+the child process moves. That is what keeps a
 worktree card in its parent's territory, sharing its dev servers and its shell (`shell.md`),
 and it is the reason this change touched no schema. The card's own name carries the branch
 (`skein · fix`), which is where a person reads it.

@@ -1433,6 +1433,40 @@ fn setup_row(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
     .unwrap_or((None, None))
 }
 
+/// Which branch's tree a card works in, or `None` for one that works in its
+/// project.
+///
+/// The third of these, and it is the one that proves the rule the other two
+/// state. `kind_of` and `setup_of` are both asked of the store because "`open`
+/// and `wake` both reach this line and only one of them would have remembered
+/// to pass it" — and `worktree` was the parameter that *was* passed, by `open`,
+/// which remembered. `wake` did not. It sent `worktree: null` from the day the
+/// app was written, which was harmless for as long as `--worktree` was a flag
+/// the CLI kept across a `--resume`, and became a live bug the moment Skein
+/// started making the tree itself (`worktree.rs`): every card woken by a click,
+/// a send, a rouse or an account transition came back in the main tree — with
+/// nothing to say so, since the row it reads its `cwd` from was still right.
+///
+/// Unknown ids answer `None`, which is the same thing every card without a
+/// worktree answers and is therefore safe to fall back to.
+pub fn worktree_of(store: &Store, id: &str) -> Option<String> {
+    worktree_row(&store.0.lock().unwrap(), id)
+}
+
+/// The query itself, so the fallback can be tested without a Tauri app.
+fn worktree_row(conn: &Connection, id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT worktree FROM conversation WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|n: &String| !n.trim().is_empty())
+}
+
 /// Where chat cards stand.
 ///
 /// They need *a* directory — the CLI is spawned in one, and the transcript
@@ -1838,11 +1872,23 @@ pub fn touches_near(conn: &Connection, needle: &str, limit: i64) -> Vec<Touch> {
 /// Where a card is standing and which session it is on, which is the pair
 /// `supervisor::transcript_path` needs. `None` for the session on a card that
 /// has never taken a turn.
+///
+/// **The directory is where the card's child runs, not the row's `cwd`.** For
+/// every card without a worktree those are the same string, and for one with a
+/// worktree they are not: the row keeps the project root — its territory, its
+/// servers, its shell — while the agent stands in the tree for its branch, and
+/// the CLI files the transcript under whichever directory it is *running* in.
+/// Every caller here is asking a question the CLI answers per-directory, so
+/// every one of them wants the second. See `worktree::run_dir`.
 pub fn session_of(conn: &Connection, id: &str) -> Option<(String, Option<String>)> {
     conn.query_row(
-        "SELECT cwd, agent_session_id FROM conversation WHERE id = ?1",
+        "SELECT cwd, worktree, agent_session_id FROM conversation WHERE id = ?1",
         params![id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| {
+            let cwd: String = r.get(0)?;
+            let worktree: Option<String> = r.get(1)?;
+            Ok((crate::worktree::run_dir(&cwd, worktree.as_deref()), r.get(2)?))
+        },
     )
     .optional()
     .ok()
@@ -2879,9 +2925,18 @@ pub struct PendingJob {
 pub fn pending_jobs(
     store: tauri::State<'_, Store>,
     conversation_id: String,
-    cwd: String,
 ) -> Result<Vec<PendingJob>, String> {
     let conn = store.0.lock().unwrap();
+    /* The directory the card's child *ran* in, which for a worktree card is not
+       the `cwd` on its row — the temp task tree is slugged from the same string
+       transcripts are, so asking the wrong one hands back a path that is not
+       there and the check below then drops it. Silent, and it looked exactly
+       like "the CLI moved its task directory". Taken from the row rather than
+       from the caller for the reason `spawn_conversation` takes everything from
+       the row: `rouse` is the only caller and it had `cwd` to hand. */
+    let run_dir = session_of(&conn, &conversation_id)
+        .map(|(dir, _)| dir)
+        .unwrap_or_default();
     let mut stmt = conn
         .prepare(
             "SELECT tool_id, task_id, kind, label, output_path, started_at, session_id
@@ -2906,7 +2961,7 @@ pub fn pending_jobs(
     for row in rows {
         let (tool_id, task_id, kind, label, stored, started_at, session_id) =
             row.map_err(|e| e.to_string())?;
-        let path = stored.or_else(|| task_output_path(&cwd, &session_id, task_id.as_deref()));
+        let path = stored.or_else(|| task_output_path(&run_dir, &session_id, task_id.as_deref()));
         let path = path.filter(|p| std::path::Path::new(p).exists());
         out.push(PendingJob { tool_id, task_id, kind, label, output_path: path, started_at });
     }
@@ -4856,6 +4911,60 @@ mod tests {
             (None, None),
             "and so does an id with no row at all"
         );
+    }
+
+    /// The third thing the argv is built from, and the one that used to travel
+    /// as an argument — `open` passed it, `wake` passed null, and a card on a
+    /// branch came back in the main tree for it.
+    #[test]
+    fn the_tree_a_card_works_in_comes_off_its_row() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        record_row(&conn, "branched", "p1", "C:/x", Some("feat/async-auth"), None, None, None)
+            .unwrap();
+        record_row(&conn, "plain", "p1", "C:/x", None, None, None, None).unwrap();
+        record_row(&conn, "blank", "p1", "C:/x", Some("   "), None, None, None).unwrap();
+
+        assert_eq!(worktree_row(&conn, "branched"), Some("feat/async-auth".into()));
+        assert_eq!(worktree_row(&conn, "plain"), None);
+        assert_eq!(
+            worktree_row(&conn, "blank"),
+            None,
+            "whitespace is not a branch, and `ensure` would refuse it anyway"
+        );
+        assert_eq!(
+            worktree_row(&conn, "no-such-card"),
+            None,
+            "an unknown id means the card every card without a worktree is"
+        );
+    }
+
+    /// The pair every per-directory question about a card is asked with. The
+    /// directory is where the child *runs*, which is the whole of the fix: the
+    /// row's `cwd` is the territory, and the CLI files a session under the tree.
+    #[test]
+    fn a_card_is_looked_up_where_its_child_actually_stands() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        record_row(&conn, "plain", "p1", "C:/x", None, None, None, None).unwrap();
+        record_row(&conn, "branched", "p1", "C:/x", Some("feat/async-auth"), None, None, None)
+            .unwrap();
+
+        let (dir, session) = session_of(&conn, "plain").unwrap();
+        assert_eq!(dir, "C:/x", "no branch, so the territory is where it stands");
+        assert_eq!(
+            session.as_deref(),
+            Some("plain"),
+            "the insert seeds the session with the card id"
+        );
+
+        let (dir, _) = session_of(&conn, "branched").unwrap();
+        assert_eq!(
+            dir,
+            crate::worktree::dir_for("C:/x", "feat/async-auth").to_string_lossy(),
+            "and this is the directory `ensure` puts the child in"
+        );
+        assert!(dir.contains("feat+async-auth"), "the CLI's folder spelling, kept");
     }
 
     /// The other half: what a settling turn learns replaces what the preset

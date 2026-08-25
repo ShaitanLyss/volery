@@ -274,10 +274,9 @@ pub async fn spawn_conversation(
     id: String,
     session_id: Option<String>,
     cwd: String,
-    worktree: Option<String>,
     account_label: Option<String>,
 ) -> Result<(), String> {
-    crate::off_main(move || spawn_now(&app, id, session_id, cwd, worktree, account_label)).await?
+    crate::off_main(move || spawn_now(&app, id, session_id, cwd, account_label)).await?
 }
 
 /// The spawn itself, apart from the command that carries it — so the `app` it
@@ -289,7 +288,6 @@ fn spawn_now(
     id: String,
     session_id: Option<String>,
     cwd: String,
-    worktree: Option<String>,
     account_label: Option<String>,
 ) -> Result<(), String> {
     let sup = app.state::<Supervisor>();
@@ -311,6 +309,18 @@ fn spawn_now(
        `store::setup_of`. */
     let (model, effort) =
         crate::store::setup_of(&app.state::<crate::store::Store>(), &id);
+
+    /* And so is the tree it works in, for the third time and the same reason.
+       This one used to be a parameter, and it is the one that proves the rule:
+       `open` passed it and `wake` passed `null`, from the day the app was
+       written. That was harmless while `--worktree` was a flag the CLI kept
+       across a `--resume` and became a live bug the moment this module started
+       making the tree itself — every card woken by a click, a send, a rouse or
+       an account transition came back running in the main tree, sharing a
+       checkout with whatever else was there and filing its transcript under the
+       wrong slug, which is a card that has quietly lost its memory as well as
+       its place. See `store::worktree_of`. */
+    let worktree = crate::store::worktree_of(&app.state::<crate::store::Store>(), &id);
 
     /* The path `claude.rs` verified, not the bare name. On a machine where the
        CLI is installed but never made it onto PATH, the bare name fails every
@@ -411,6 +421,9 @@ fn spawn_now(
        the wrong one would answer "no transcript" for a card that has been
        talking for days, and a card that starts fresh every time it wakes is one
        that has quietly lost its memory. */
+    if run_dir != cwd {
+        reunite_split_transcript(app, &cwd, &run_dir, session);
+    }
     let resume = transcript_path(&app, &run_dir, session).is_ok_and(|p| p.exists());
     if resume {
         cmd.args(["--resume", session]);
@@ -816,6 +829,12 @@ pub(crate) fn transcript_dir_name(cwd: &str) -> String {
 /// Going the other way — deciding which sessions exist — must not decode this
 /// name, because the encoding is lossy (`.scratch` and `-scratch` collide). Ask
 /// the records instead; every one of them carries its own `cwd`.
+///
+/// **`cwd` here means the directory the child *runs* in**, which for a worktree
+/// card is not the `cwd` on its row. The CLI files a session under whichever
+/// directory it was started in, so this is the one question where the tree wins
+/// over the territory — `store::session_of` folds the two and is what every
+/// caller outside this module should be asking.
 pub(crate) fn transcript_path(app: &AppHandle, cwd: &str, session_id: &str) -> Result<PathBuf, String> {
     let home = app
         .path()
@@ -826,6 +845,106 @@ pub(crate) fn transcript_path(app: &AppHandle, cwd: &str, session_id: &str) -> R
         .join("projects")
         .join(transcript_dir_name(cwd))
         .join(format!("{session_id}.jsonl")))
+}
+
+/// Put back together a worktree card whose history got split in two.
+///
+/// **A transcript under the project root's slug, for the session of a card that
+/// works in a tree, is the fingerprint of one bug and nothing else.** That
+/// card's child has never once been meant to run there, so the file can only
+/// have been written by a build that spawned it in the wrong directory — every
+/// build before `worktree_of`, on every wake, account swap and rouse. The cards
+/// this was found on had two transcripts apiece under one session id, split at
+/// the first wake and not overlapping by a single record: the tree holding the
+/// first stretch and the root everything since, up to 1,697 records and a full
+/// day of work in the half the tree does not have.
+///
+/// So the fix on its own would have *rewound* those cards — sending the child
+/// back to the tree, where the older half is what `--resume` finds. The newer
+/// half is moved to where the card now looks, and the older is kept beside it
+/// as `.jsonl.bak`: nothing is deleted, and `.bak` rather than `.jsonl` because
+/// `sessions::walk` reads any `.jsonl` stem as a session id, and a half a card
+/// could adopt but never resume is worse than one it cannot see.
+///
+/// Runs at the one safe moment — a spawn, where this card has no process — and
+/// only ever moves the newer file onto the older, so the second call finds
+/// nothing to do. Best effort throughout: every failure leaves both files
+/// exactly where they were, which is the state this is an improvement on rather
+/// than a departure from.
+fn reunite_split_transcript(app: &AppHandle, cwd: &str, run_dir: &str, session: &str) {
+    let (Ok(stray), Ok(ours)) = (
+        transcript_path(app, cwd, session),
+        transcript_path(app, run_dir, session),
+    ) else {
+        return;
+    };
+    let Ok(stray_at) = stray.metadata().and_then(|m| m.modified()) else {
+        // No file under the root slug: the ordinary case, and nothing to mend.
+        return;
+    };
+    /* Newer, or there is nothing here at all. The comparison is what keeps this
+       from ever running backwards — a card mended once has its recent half in
+       the tree, and the root copy left behind is older from then on. */
+    match ours.metadata().and_then(|m| m.modified()) {
+        Ok(ours_at) if ours_at >= stray_at => return,
+        Ok(_) => {
+            /* A free name, never an occupied one. `fs::rename` on Windows
+               replaces silently, and the one thing this must not do while
+               claiming to keep both halves is write over a half it kept
+               earlier. */
+            let Some(kept) = (1..99)
+                .map(|n| match n {
+                    1 => ours.with_extension("jsonl.bak"),
+                    n => ours.with_extension(format!("jsonl.bak{n}")),
+                })
+                .find(|p| !p.exists())
+            else {
+                return;
+            };
+            if std::fs::rename(&ours, &kept).is_err() {
+                return;
+            }
+        }
+        Err(_) => {}
+    }
+    let _ = std::fs::rename(&stray, &ours);
+}
+
+/// Where *this card's* transcript is, asked of the store.
+///
+/// The three reads below all used to take a `cwd` and a `session_id` from the
+/// front end, which had both to hand and passed them faithfully — and for a
+/// worktree card the first of them was the wrong directory, because the row's
+/// `cwd` is the territory and the CLI files under the tree. So the panel of a
+/// card working on a branch read a transcript that was not its own: empty
+/// before the card had ever been woken in the main tree, and the *wrong half*
+/// of a split history afterwards.
+///
+/// One id in, one path out, and the pair is folded in the one place that holds
+/// both facts — `store::session_of`. Two travelling arguments cannot disagree
+/// with the row if there are no travelling arguments.
+///
+/// `None` for a card with no row at all, which is the same silent case a
+/// missing file already is: nothing to read, and nothing to complain about.
+fn card_transcript(app: &AppHandle, id: &str) -> Result<Option<PathBuf>, String> {
+    let Some(store) = app.try_state::<crate::store::Store>() else {
+        return Ok(None);
+    };
+    let found = {
+        let Ok(conn) = store.0.lock() else {
+            return Ok(None);
+        };
+        crate::store::session_of(&conn, id)
+    };
+    let Some((run_dir, session)) = found else {
+        return Ok(None);
+    };
+    /* The row carries the id in `agent_session_id` from the insert, so the
+       fallback is belt and braces — and it is the same fallback the front end
+       applied when it was the one passing this down (`agent_session_id || id`),
+       kept so a row written by some older build behaves as it always did. */
+    let session = session.unwrap_or_else(|| id.to_string());
+    transcript_path(app, &run_dir, &session).map(Some)
 }
 
 /// The conversation as Claude Code recorded it, for the front end to fold.
@@ -856,18 +975,16 @@ pub struct Transcript {
 #[tauri::command]
 pub async fn read_transcript(
     app: AppHandle,
-    cwd: String,
-    session_id: String,
+    id: String,
     max_bytes: Option<u64>,
 ) -> Result<Option<Transcript>, String> {
-    crate::off_main(move || transcript_of(&app, cwd, session_id, max_bytes)).await?
+    crate::off_main(move || transcript_of(&app, id, max_bytes)).await?
 }
 
 /// The read itself, apart from the command that carries it.
 fn transcript_of(
     app: &AppHandle,
-    cwd: String,
-    session_id: String,
+    id: String,
     max_bytes: Option<u64>,
 ) -> Result<Option<Transcript>, String> {
     /* Enough for any transcript on this machine, and a bound rather than a
@@ -876,8 +993,10 @@ fn transcript_of(
     const DEFAULT_CAP: u64 = 8 * 1024 * 1024;
     let cap = max_bytes.unwrap_or(DEFAULT_CAP).max(1);
 
-    let path = transcript_path(app, &cwd, &session_id)?;
     // A card that was never spoken to has no transcript. Normal, not an error.
+    let Some(path) = card_transcript(app, &id)? else {
+        return Ok(None);
+    };
     let Ok(mut file) = File::open(&path) else {
         return Ok(None);
     };
@@ -922,24 +1041,17 @@ fn transcript_of(
 /// into memory — the comment below says multi-megabyte, and means it — and the
 /// wall asks it once per card while naming them.
 #[tauri::command]
-pub async fn read_ai_title(
-    app: AppHandle,
-    cwd: String,
-    session_id: String,
-) -> Result<Option<String>, String> {
-    crate::off_main(move || ai_title_of(&app, cwd, session_id)).await?
+pub async fn read_ai_title(app: AppHandle, id: String) -> Result<Option<String>, String> {
+    crate::off_main(move || ai_title_of(&app, id)).await?
 }
 
 /// The read itself, apart from the command that carries it.
-fn ai_title_of(
-    app: &AppHandle,
-    cwd: String,
-    session_id: String,
-) -> Result<Option<String>, String> {
-    let path = transcript_path(app, &cwd, &session_id)?;
-
+fn ai_title_of(app: &AppHandle, id: String) -> Result<Option<String>, String> {
+    // No transcript yet is normal, not an error.
+    let Some(path) = card_transcript(app, &id)? else {
+        return Ok(None);
+    };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        // No transcript yet is normal, not an error.
         return Ok(None);
     };
 
@@ -1003,17 +1115,15 @@ const EFFORT_TAIL_MAX: u64 = 8 * 1024 * 1024;
 /// Off the main thread, via `crate::off_main`: it is a file read, and the rule
 /// on blocking commands does not care that it is usually a fast one.
 #[tauri::command]
-pub async fn read_session_effort(
-    app: AppHandle,
-    cwd: String,
-    session_id: String,
-) -> Result<Option<String>, String> {
-    crate::off_main(move || effort_of(&app, cwd, session_id)).await?
+pub async fn read_session_effort(app: AppHandle, id: String) -> Result<Option<String>, String> {
+    crate::off_main(move || effort_of(&app, id)).await?
 }
 
 /// The read itself, apart from the command that carries it.
-fn effort_of(app: &AppHandle, cwd: String, session_id: String) -> Result<Option<String>, String> {
-    let path = transcript_path(app, &cwd, &session_id)?;
+fn effort_of(app: &AppHandle, id: String) -> Result<Option<String>, String> {
+    let Some(path) = card_transcript(app, &id)? else {
+        return Ok(None);
+    };
     Ok(last_effort(&path))
 }
 
