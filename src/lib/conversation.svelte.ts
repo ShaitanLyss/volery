@@ -65,6 +65,18 @@ import { isRelayPrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
 import type { Answers, AskQuestion } from "./asking";
 import { capInput, landed, type ToolCall } from "./toolcall";
+import {
+  afterAck,
+  afterExit,
+  afterInit,
+  DEFAULT_GEAR,
+  gearOfInit,
+  gearOfModeAck,
+  gearOfWire,
+  isPlanDocument,
+  type Gear,
+  type GearState,
+} from "./gears";
 
 export type { Ending, Tier };
 /* The panel draws a call from this and half the wall types against it. */
@@ -748,6 +760,65 @@ export class Conversation {
   bypassCaps = $state(false);
 
 
+  /* ── the gear ──────────────────────────────────────────────────────────────
+   *
+   * Whether this card has the machine or is only reading. `gears.ts` has the
+   * vocabulary and what was probed to establish it. */
+
+  /** Making, or planning. Folded off `system/init`'s `permissionMode`, which the
+   *  CLI re-emits on every change — so this is right for a card Volery put into
+   *  planning, for a card that came back from a rouse in the gear it was left
+   *  in, and for one something else changed under us. */
+  gear = $state<Gear>(DEFAULT_GEAR);
+
+  /** A gear the wire has acknowledged but no `system/init` has yet agreed with.
+   *
+   *  The two events disagree for a while and this is what resolves them. A
+   *  `control_response` confirms a change in about 60ms; a `system/init` is
+   *  emitted per *turn* and reports the mode that turn is running under — so an
+   *  init belonging to a turn that was already in flight names the old mode, and
+   *  folding it would flip the card back. Measured; see `gears.ts`.
+   *
+   *  While this is set, inits that disagree are ignored as stale and the one
+   *  that agrees clears it, after which inits fold normally again — which is
+   *  what keeps a card put into planning by something that is not Volery drawn
+   *  correctly. Cleared when the process goes, so a change that never took
+   *  effect cannot deafen this card to inits for the rest of its life. */
+  #pendingGear: Gear | null = null;
+
+  /** Take a gear the wire has confirmed, or one an init reported.
+   *
+   *  The deciding is `gears.ts`'s — pure, and tested there, because which of
+   *  two disagreeing events to believe is exactly the kind of rule that is
+   *  wrong in a way nothing notices. This holds the two fields and the one
+   *  consequence that is not about gears at all. */
+  #foldGear(next: GearState) {
+    /* Coming back into making retires the plan. A card wearing "a plan is
+       waiting" after the plan has been acted on is a badge that stops meaning
+       anything, and this is the moment it was acted on. Guarded on a *change*
+       so an event arriving mid-making does not clear a plan a making card has
+       yet to be pointed at. */
+    if (next.gear !== this.gear && next.gear === "making") this.planDoc = null;
+    this.gear = next.gear;
+    this.#pendingGear = next.pending;
+  }
+
+  /** Take a gear the wire has acknowledged. */
+  ackGear(gear: Gear) {
+    this.#foldGear(afterAck({ gear: this.gear, pending: this.#pendingGear }, gear));
+  }
+
+  /** The newest plan document this card has written, or `null`.
+   *
+   *  Kept as a path rather than as content: the panel already knows how to open
+   *  a markdown file as a document (`finding.ts`, `Spyglass.svelte`), so what a
+   *  card owes is the name of the thing to open. Cleared when the card is put
+   *  back into making, because a plan that has been acted on is history and a
+   *  card wearing "a plan is waiting" for the rest of the day is a badge that
+   *  stops meaning anything. */
+  planDoc = $state<string | null>(null);
+
+
   /* ── the original a repair is keeping ──────────────────────────────────────
    *
    * A repair rewrites the session file, so Skein keeps the untouched original
@@ -871,6 +942,8 @@ export class Conversation {
     account_label?: string | null;
     bypass_caps?: boolean;
     effort?: string | null;
+    /** Optional because a row written before schema v23 has no gear. */
+    permissionMode?: string | null;
   }): Conversation {
     const c = new Conversation(
       row.id,
@@ -916,6 +989,11 @@ export class Conversation {
        about it: that card was spawned as whoever was signed in. */
     c.accountLabel = row.account_label ?? null;
     c.bypassCaps = row.bypass_caps ?? false;
+    /* A dormant card emits no `system/init`, so the gear cannot be folded — the
+       whole wall would come back drawn as making until each card was woken.
+       A row from before the column existed is null, which is the truth about
+       it: no card had a gear to be in. */
+    c.gear = gearOfWire(row.permissionMode ?? "bypassPermissions");
     c.activity = row.interrupted ? "interrupted" : "dormant";
     return c;
   }
@@ -1572,6 +1650,20 @@ export class Conversation {
              one is no longer the current state of this card. */
           this.died = false;
           if (ev.model) this.#adoptModel(ev.model, true);
+          /* The gear this turn is running under — which is not always what the
+             card is set to, since an init for a turn already in flight when the
+             mode changed reports the old one. `#initGear` holds the rule; see
+             `gears.ts` for the measurement.
+
+             `null` is "this init said nothing about the mode", which is not the
+             same as "bypass": folding a default here would flip a planning card
+             back to making on the next init an older build sent. */
+          const gear = gearOfInit(ev);
+          if (gear !== null) {
+            this.#foldGear(
+              afterInit({ gear: this.gear, pending: this.#pendingGear }, gear),
+            );
+          }
           this.activity = "ready";
           if (!this.working) this.restingSince ??= Date.now();
         } else if (ev.subtype === "status") {
@@ -1753,6 +1845,21 @@ export class Conversation {
                alone meant no seat was ever taken here and the only ones that
                appeared were minted by the forwarded-message fallback below,
                which has no persona to give them. */
+            /* A planning turn ends in a document rather than in a diff, and
+               this is where the wall learns its name. Structural: the CLI
+               writing a file into a directory of its own, which is already in
+               the pipeline — rather than reading the result prose that also
+               names it, since that is a sentence a model composed. `ExitPlanMode`
+               used to be this event and no longer exists; see `gears.ts`.
+
+               Not gated on `this.gear`, deliberately. The write and the init
+               that announced the gear are two events, and a card whose plan was
+               dropped because the fold order surprised us is a card that did
+               the work and has nothing to show. Anything writing into
+               `~/.claude/plans/` is planning, whatever we think it is doing. */
+            if (block.name === "Write" && isPlanDocument(block.input?.file_path)) {
+              this.planDoc = block.input.file_path;
+            }
             if ((block.name === "Agent" || block.name === "Task") && block.id) {
               this.#seat(block.id, {
                 persona:
@@ -2203,13 +2310,18 @@ export class Conversation {
         break;
       }
 
-      /* The CLI's receipt for a `control_request` — today that means an
-         interrupt. Named rather than left to fall through, because it says
-         only that the message was *taken*: what the turn did about it arrives
-         a moment later as an aborted `result`, and that is the event the card
-         actually folds. */
-      case "control_response":
+      /* The CLI's receipt for a `control_request`. For an interrupt it says only
+         that the message was *taken* — what the turn did about it arrives a
+         moment later as an aborted `result`, and that is the event the card
+         folds. For a mode change it says more than that: the acknowledgement
+         carries the new mode, and it is the *only* immediate account of it,
+         since `system/init` is per-turn and can name the mode of a turn already
+         in flight. So this is where the gear is really learned. See `gears.ts`. */
+      case "control_response": {
+        const acked = gearOfModeAck(ev);
+        if (acked !== null) this.ackGear(acked);
         break;
+      }
 
       /* Shape isn't documented and it fired once in an otherwise nominal run,
          so this stays quiet unless it clearly isn't business as usual. */
@@ -2373,6 +2485,11 @@ export class Conversation {
        is the line below. */
     this.#settleEchoes();
     this.#forgetEchoes();
+    /* A gear change the process never got round to reflecting in an init is not
+       owed one now — and left set, it would make this card deaf to every init
+       for the rest of its life. The next process announces its own mode, off
+       the flag `spawn` reads from the row. */
+    this.#foldGear(afterExit({ gear: this.gear, pending: this.#pendingGear }));
     if (code !== 0 && code !== null) {
       this.died = true;
       this.ending = "error";

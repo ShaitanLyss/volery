@@ -399,10 +399,29 @@ fn spawn_now(
         .arg("--replay-user-messages")
         .arg("--forward-subagent-text");
 
+    /* And the gear, for the fourth time and the same reason as the three above:
+       `open` could pass it, `wake` could not, and the card `wake` forgets is one
+       put into planning and roused at launch with the machine back in its hands.
+       See `store::gear_of`. */
+    let gear = crate::store::gear_of(&app.state::<crate::store::Store>(), &id);
+
     if chat {
         chat_argv(&mut cmd);
     } else {
-        cmd.arg("--dangerously-skip-permissions");
+        match gear.as_deref() {
+            /* A card nobody has ever set a gear on spawns exactly as every card
+               did before gears existed. Kept as the flag rather than spelled
+               `--permission-mode bypassPermissions`, because the flag is what
+               every rule in this repository names and two spellings of one
+               state is how a mode ends up set in one place and read in
+               another. */
+            None | Some("bypassPermissions") => {
+                cmd.arg("--dangerously-skip-permissions");
+            }
+            Some(mode) => {
+                cmd.args(["--permission-mode", mode]);
+            }
+        }
     }
 
     /* Every card, not only a chat card, because the layer now also carries the
@@ -852,6 +871,103 @@ pub async fn interrupt_conversation(app: AppHandle, id: String) -> Result<(), St
 }
 
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+
+/// Put a conversation into a different permission mode, without ending it.
+///
+/// The second gear the wall has ever had. Every project card spawns with
+/// `--dangerously-skip-permissions` and has the machine from its first turn;
+/// this is how one is set to *plan* instead — reading, searching and thinking,
+/// with no tool that can change the repository — and how it is set back.
+///
+/// **Probed before it was built** (claude 2.1.241, `tools/probe-plan.ts`), and
+/// two of the three answers were not what the design assumed:
+///
+/// ```text
+/// --> set_permission_mode plan          (on a card spawned with bypass)
+///     control_response  success, {"mode":"plan"}
+///     system/init       permissionMode=plan   tools=29     <- was 59
+///     ...asked to write a file: wrote a PLAN instead, to ~/.claude/plans/
+/// --> set_permission_mode acceptEdits
+///     system/init       permissionMode=acceptEdits  tools=59
+///     ...asked again: wrote the file
+/// ```
+///
+/// 1. **It beats the bypass flag.** A card spawned
+///    `--dangerously-skip-permissions` and then asked for `plan` really loses
+///    its writing tools. That is what makes this a gear rather than a kind of
+///    card: no respawn, no lost process, no second conversation, and the context
+///    the planning was done in is the context that executes it.
+/// 2. **Two events carry the mode and one of them can be stale.** The
+///    `control_response` above is the immediate, authoritative one: it lands in
+///    ~60ms carrying the new mode, and it is what the front end really folds.
+///    `system/init` also carries `permissionMode`, but it is emitted **per
+///    turn** and reports the mode that turn is running *under* — a turn already
+///    in flight names the old one. Measured: acknowledged `plan` at 15.13s,
+///    then an init at 17.76s still saying `bypassPermissions`. So nothing here
+///    has to tell the front end what it just did, but `gears.ts` does have to
+///    decide which of the two to believe, and does.
+/// 3. **`ExitPlanMode` is gone.** 2.1.241's plan mode writes a document to
+///    `~/.claude/plans/` rather than parking a tool call for approval, so none
+///    of `ask.rs` is involved and there is nothing to resume.
+///
+/// The mode is written to the store *before* the wire, and that order is the
+/// point: a card whose gear did not survive a rouse would be a card that comes
+/// back holding the machine because nobody remembered it had been put down.
+/// Same lesson as `store::setup_of` — see the note in `spawn`.
+///
+/// **Persisted even when there is no process**, which is the case a dormant card
+/// is in. Setting the gear on a dormant card is a decision about that card, and
+/// it is honoured the moment it wakes, by `spawn`.
+///
+/// `async` for `interrupt_conversation`'s reason: this shares the supervisor's
+/// mutex with every other command here, so leaving it on the main thread would
+/// park it there waiting for a lock a slow write is holding.
+#[tauri::command]
+pub async fn set_permission_mode(app: AppHandle, id: String, mode: String) -> Result<(), String> {
+    /* The wall's two, and the CLI's wider set, both allowed through: Volery
+       offers two gears but the column is the CLI's vocabulary, so a mode this
+       build has no reading for is still a mode this build can be *put* into.
+       Rejected rather than passed through blind, because an unknown value on
+       `--permission-mode` is a card that fails to spawn at all, for ever, with
+       the reason in a stderr line nobody reads. */
+    const KNOWN: [&str; 6] = [
+        "plan",
+        "acceptEdits",
+        "auto",
+        "bypassPermissions",
+        "manual",
+        "dontAsk",
+    ];
+    if !KNOWN.contains(&mode.as_str()) {
+        return Err(format!("not a permission mode: {mode}"));
+    }
+
+    crate::off_main(move || {
+        crate::store::set_permission_mode(&app.state::<crate::store::Store>(), &id, &mode)?;
+
+        let sup = app.state::<Supervisor>();
+        let mut map = sup.0.lock().unwrap();
+        /* A dormant card has no process and that is not a failure: the gear is
+           stored, and `spawn` reads it when the card wakes. */
+        let Some(conv) = map.get_mut(&id) else {
+            return Ok(());
+        };
+
+        let n = GEAR_CHANGES.fetch_add(1, Ordering::Relaxed);
+        let msg = serde_json::json!({
+            "type": "control_request",
+            "request_id": format!("skein-mode-{n}"),
+            "request": { "subtype": "set_permission_mode", "mode": mode }
+        });
+        writeln!(conv.stdin, "{msg}").map_err(|e| format!("write to claude stdin: {e}"))?;
+        conv.stdin
+            .flush()
+            .map_err(|e| format!("flush claude stdin: {e}"))
+    })
+    .await?
+}
+
+static GEAR_CHANGES: AtomicU64 = AtomicU64::new(0);
 
 /// How Claude Code names a transcript directory: every character that is not
 /// ASCII alphanumeric becomes a dash. `C:\atelier\skein` → `C--atelier-skein`.

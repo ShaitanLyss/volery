@@ -9,6 +9,7 @@ import {
   matchChoices,
   matchCommands,
   resolveCommand,
+  stillWriting,
   typingChoice,
   typingName,
 } from "../src/lib/commands";
@@ -60,6 +61,7 @@ describe("a command that takes a value keeps the palette up", () => {
       "sonnet[1m]",
       "haiku",
       "fable",
+      "opusplan",
     ]);
     expect(values("/effort ")).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
@@ -73,8 +75,10 @@ describe("a command that takes a value keeps the palette up", () => {
 
   test("a prefix outranks a mere containing match", () => {
     /* `[1m]` contains `1m`, and so would sort in on a contains-match; the
-       prefixes must still come first. */
-    expect(values("/model opus")).toEqual(["opus", "opus[1m]"]);
+       prefixes must still come first. `opusplan` is a third prefix match and
+       sits with them — it joined the list the day the wall got a second gear,
+       since it is the model pairing plan mode is for. */
+    expect(values("/model opus")).toEqual(["opus", "opus[1m]", "opusplan"]);
   });
 
   test("the choosing really is over at the second space", () => {
@@ -390,5 +394,60 @@ describe("the effort a card is set to", () => {
   test("the levels offered are the levels recognised", () => {
     const offered = COMMANDS.find((c) => c.name === "effort")?.choices ?? [];
     expect(offered.map((c) => c.value)).toEqual([...EFFORT_LEVELS]);
+  });
+});
+
+describe("a command with choices, now that one of them is Volery's own", () => {
+  /* Until `/gear` every command with choices was the CLI's, and those are
+     filtered out before this arm is reached — so "a choices command with an
+     argument" returned null and nothing ever noticed. */
+  test("it resolves with one of its own values", () => {
+    const found = resolveCommand("/gear planning");
+    expect(found?.cmd.name).toBe("gear");
+    expect(found?.arg).toBe("planning");
+    expect(resolveCommand("/gear making")?.arg).toBe("making");
+  });
+
+  test("and not with anything else, which falls through to the agent", () => {
+    /* The same rule `/clear the deck` follows: a command that cannot be carried
+       out must not be swallowed. */
+    expect(resolveCommand("/gear sideways")).toBeNull();
+    expect(resolveCommand("/gear planning please")).toBeNull();
+    expect(resolveCommand("/gear plan")).toBeNull();
+  });
+
+  test("a bare name still resolves, so Enter can open the values", () => {
+    expect(resolveCommand("/gear")?.arg).toBe("");
+  });
+
+  test("the CLI's own are still nobody's business here", () => {
+    expect(resolveCommand("/model opus")).toBeNull();
+  });
+});
+
+describe("whether a command is still being written", () => {
+  const gear = COMMANDS.find((c) => c.name === "gear")!;
+  const model = COMMANDS.find((c) => c.name === "model")!;
+  const rename = COMMANDS.find((c) => c.name === "rename")!;
+  const clear = COMMANDS.find((c) => c.name === "clear")!;
+
+  test("a command needing a value and given none is incomplete", () => {
+    expect(stillWriting(gear, "")).toBe(true);
+    expect(stillWriting(model, "")).toBe(true);
+    expect(stillWriting(rename, "")).toBe(true);
+  });
+
+  /* The bug this exists for: `cmd.choices` alone read a command as incomplete
+     even with its value typed, so `/gear planning` submitted with no palette
+     open silently did nothing at all. */
+  test("and complete once it has one", () => {
+    expect(stillWriting(gear, "planning")).toBe(false);
+    expect(stillWriting(model, "opus")).toBe(false);
+    expect(stillWriting(rename, "the auth work")).toBe(false);
+  });
+
+  test("a command that takes nothing is never incomplete", () => {
+    expect(stillWriting(clear, "")).toBe(false);
+    expect(stillWriting(clear, "anything")).toBe(false);
   });
 });

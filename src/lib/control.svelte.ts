@@ -767,6 +767,17 @@ export class Control {
            set aside and one that is merely resting both read `rest`, which is
            the intended effect and therefore the thing a test cannot see. */
         aside: c.aside,
+        /* The gear, for exactly the reason `kind` is reported: from out here a
+           planning card and a making card differ in a dashed border and one
+           word in a footer, while what they are *allowed to do* is the whole
+           point. And it is the only way a test can see that a gear change
+           landed at all — the acknowledgement it is folded from is a
+           `control_response`, which leaves no line in the transcript. */
+        gear: c.gear,
+        /* Beside it, and not derivable from it: a card writes a plan while
+           planning and keeps it after being put back into making, which is the
+           state the whole gesture exists to produce. */
+        planDoc: c.planDoc,
         /* Reported beside `working` for that same reason, and it is the sharper
            case: a card mid-turn and a card whose turn ended over a background
            job both read `work`, which is the whole point of the change — so

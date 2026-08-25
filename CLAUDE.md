@@ -57,6 +57,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
                          # presets,
                          # commands, copy, widgets, naming, drafts, rousing, quitting, timing,
+                         # gears,
                          # sink, logface, serverlog, buildlog, unreallog,
                          # nvim,
                          # guidance,
@@ -137,6 +138,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `worktree.md` | the tree a card works in: why Skein makes it rather than `--worktree`, the folder spelling it must keep, the upstream `-b` would otherwise set, and the base ladder | `worktree.rs`, `supervisor.rs` |
 | `spawn.md` | a card putting a card on the wall and taking it off again: which territories it may name and why a path is not one of them, the three bounds that are switched off and what is watching instead, the one birth path, what a card may close, and the root a spawned card is drawn on | `spawn.rs`, `lineage.ts`, `Lineage.svelte` |
 | `chat.md` | the card with no project, what `--tools` really does, and where a capability is decided | `supervisor.rs`, `store.rs`, `skein.svelte.ts` |
+| `gears.md` | the wall's second gear: a card that reads and thinks but cannot write, why plan mode beats the bypass flag, the document a planning turn leaves instead of a diff, and why the viewer is re-rooted rather than the sandbox widened | `gears.ts`, `Card.svelte`, `supervisor.rs` |
 | `hooks.md` | the hook Skein hands its cards: the Bash tool halving runs of backslashes, why a quoted heredoc was never the cause, and the one binary that undoes it | `hooks.rs`, `main.rs` |
 | `accounts.md` | more than one subscription: an account as a credential store and why Skein holds none of it, signing one in without a terminal, the waterfall and its stickiness, your caps against the server's, the per-card bypass, being held, and finding Claude Code before installing it | `accounts.ts`, `accounts.rs`, `signin.ts`, `signin.rs`, `claude.rs`, `Accounts.svelte` |
 | `update.md` | getting onto the newer one: why the installer does the work rather than a plugin, offering nothing when in doubt, and why the exit handler launches it | `update.rs`, `update.ts`, `release.svelte.ts`, `release.yml` |
@@ -235,6 +237,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `guidance.ts`,
 `update.ts`,
 `unreallog.ts`,
+`gears.ts`,
 `repair.ts`, `toolcall.ts`, `follow.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.

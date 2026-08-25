@@ -291,6 +291,7 @@ pub fn run() {
             supervisor::spawn_conversation,
             supervisor::send_prompt,
             supervisor::interrupt_conversation,
+            supervisor::set_permission_mode,
             supervisor::close_conversation,
             supervisor::read_ai_title,
             supervisor::read_session_effort,

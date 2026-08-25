@@ -81,8 +81,10 @@
     completionFor,
     completionForChoice,
     resolveCommand,
+    stillWriting,
     type Command,
   } from "./lib/commands";
+  import { isGear, planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
   import { presetById, presetPicks, type Preset } from "./lib/presets";
   import { spotOf } from "./lib/glass";
@@ -1532,8 +1534,12 @@
        to run. Tab does the identical thing, which is the point: at this row the
        two keys agree. One that takes prose is in exactly the same position with
        nothing typed after it, and gets the same answer: `/rename` names
-       nothing, so Enter opens the space to write in. */
-    if (cmd.choices || (cmd.takesText && !arg)) {
+       nothing, so Enter opens the space to write in.
+
+       The rule itself is `commands.ts`'s — pure, and tested there, because the
+       version of it that lived here was wrong in a way nothing could see. See
+       `stillWriting` for what was wrong and how long it had been. */
+    if (stillWriting(cmd, arg)) {
       field.text = completionFor(cmd);
       field.at = 0;
       return;
@@ -1548,7 +1554,12 @@
     /* The CLI's own commands are carried out by sending them. Skein has nothing
        to do here beyond having helped you type it: `/compact` goes down the
        same stdin as any prompt, and the agent answers it. */
-    if (cmd.by === "cli") return sendText(`/${cmd.name}`, broadcast);
+    /* The value goes with it. It could not before, because a command carrying
+       one never got past the guard above — so `/${cmd.name}` alone was the
+       whole of what there ever was to send. */
+    if (cmd.by === "cli") {
+      return sendText(arg ? `/${cmd.name} ${arg}` : `/${cmd.name}`, broadcast);
+    }
     field.text = "";
     field.at = 0;
     /* Forced open rather than `openImport()`, which toggles: toggling is the
@@ -1567,6 +1578,14 @@
          rename that silently only took on the focused card would be the dock
          quietly disagreeing with its own target line. */
       for (const c of on) await skein.rename(c, arg);
+    } else if (cmd.name === "gear") {
+      /* The value is one of `GEAR_CHOICES`, since a command with `choices` is
+         incomplete until it has one — but the palette is a help rather than a
+         gate, and nothing stops the name being typed by hand. An unrecognised
+         word changes nothing rather than putting a card into a gear neither of
+         us meant. */
+      if (!isGear(arg)) return field.refuse();
+      for (const c of on) await skein.setGear(c, arg);
     }
   }
 
@@ -1591,9 +1610,19 @@
   }
 
   async function send(broadcast = false) {
-    /* With a value lit the line is complete, so Enter sends it. */
+    /* With a value lit the line is complete, so Enter runs it.
+       
+       *Sends* it, if it is the CLI's — those commands are carried out by being
+       typed at the agent, and the palette has only helped you write the line.
+       Volery's own have to be **run**, which is the half this did not have:
+       every command with choices was the CLI's until `/gear`, so sending the
+       text was indistinguishable from running it. Sending `/gear planning`
+       gives the agent a prompt about the word "planning". */
     if (field.choicePick && field.choosing) {
-      return sendText(completionForChoice(field.choosing.cmd, field.choicePick), broadcast);
+      const { cmd } = field.choosing;
+      const value = field.choicePick.value;
+      if (cmd.by === "skein") return runCommand(cmd, broadcast, value);
+      return sendText(completionForChoice(cmd, field.choicePick), broadcast);
     }
     /* With the palette open the key means "run what is lit", exactly as it
        does in the CLI: `/cle` and Enter runs clear. */
@@ -2727,6 +2756,15 @@
         onreveal={revealRow}
         onopen={(url) => void skein.openLink(url)}
         onkeyring={() => (showKeyring = true)}
+        onplan={(conv, path) => {
+          /* Rooted at the plans directory rather than at the card's project,
+             because that is where the document is and the viewer refuses to
+             climb out of a root it was given — see `gears.ts::planRoot`. The
+             card is focused first, so the panel beside the viewer is the one
+             whose plan you are reading. */
+          focusedId = conv.id;
+          void finder.lookAt(planRoot(path), planFile(path));
+        }}
         ambience={ambience.active}
         flights={skein.flights}
         lineage={skein.kin}

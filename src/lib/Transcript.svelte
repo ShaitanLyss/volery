@@ -9,6 +9,7 @@
   import Rail from "./Rail.svelte";
   import ToolCall from "./ToolCall.svelte";
   import { nudgeReading } from "./layout";
+  import { readingOf } from "./gears";
   import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
     conclusionAt,
@@ -1184,10 +1185,31 @@
          effort is read off the transcript — and both are readings rather than
          controls, so this footer states them and `/effort` changes them. -->
     {#if conv.effort}<span class="effort">{conv.effort}</span>{/if}
+    <!-- And the third of the same fact: what this card is allowed to do. Stated
+         here rather than only drawn on the card, because the card can say only
+         "not quite settled" with a dashed edge and this is the line with room
+         for the word. Only when it is *planning* — "making" is what every card
+         on this wall has always been, and a word that never varies is one
+         nobody reads after the first day. Same argument as `acct`. -->
+    {#if conv.gear === "planning"}
+      <span class="gear" title={readingOf(conv.gear).note}
+        >{readingOf(conv.gear).name}</span
+      >
+    {/if}
   </footer>
 </section>
 
 <style>
+  /* Beside `.model` and `.effort` and drawn like them: a reading, not a
+     control. Achromatic — a planning card can be working, asking or failed like
+     any other, and tinting the word would put a fifth thing in a channel that
+     has three. */
+  .gear {
+    border: 1px dashed var(--edge);
+    border-radius: 3px;
+    padding: 0 0.3rem;
+  }
+
   .detail {
     flex: 1 1 auto;
     min-height: 0;

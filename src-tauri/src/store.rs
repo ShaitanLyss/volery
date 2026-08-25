@@ -120,6 +120,13 @@ pub struct StoredConversation {
     /// about a conversation, and one that quietly reverted on restart is one you
     /// would have to remember to make again.
     pub bypass_caps: bool,
+    /// Which gear the card is in, or `None` for one nobody has ever set — see
+    /// `gear_of`. Carried on the restore because a **dormant** card has no
+    /// process to announce itself: the gear otherwise arrives folded off a
+    /// `system/init`, which a card without a child never emits, so the whole
+    /// wall would come back drawn as making until each card was woken.
+    #[serde(rename = "permissionMode")]
+    pub permission_mode: Option<String>,
     /// Canvas position. `None` means "let the layout place it".
     pub x: Option<f64>,
     pub y: Option<f64>,
@@ -165,7 +172,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 23;
+const SCHEMA_VERSION: i64 = 24;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -194,6 +201,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (21, migrate_v21),
     (22, migrate_v22),
     (23, migrate_v23),
+    (24, migrate_v24),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1099,6 +1107,19 @@ fn migrate_v23(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v23: {e}"))
 }
 
+/// Which gear a card is in, so one put down survives a rouse.
+///
+/// NULL rather than a default of `bypassPermissions`, and the two are not the
+/// same thing: NULL is "nobody has ever set this card's gear", which is every
+/// card that existed before this column, and it spawns exactly as it always did
+/// — with `--dangerously-skip-permissions` and nothing else said. A card that
+/// has been *put* in bypass deliberately stores the string. Nothing reads the
+/// difference today; the migration is written this way so that if anything ever
+/// needs to, the answer is in the data rather than lost to a backfill.
+fn migrate_v24(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "conversation", "permission_mode", "TEXT")
+}
+
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
 /// one. Every failure here is `None` on purpose — a missing row, a locked
 /// database, a width some future build wrote as a negative — because the
@@ -1501,6 +1522,55 @@ fn setup_row(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
     .ok()
     .flatten()
     .unwrap_or((None, None))
+}
+
+/// Which gear a card is in, or `None` for one nobody has ever set.
+///
+/// The fourth of these, and it is asked of the store for exactly the reason the
+/// other three are — see `worktree_of`, which records what happened to the one
+/// that was passed as an argument instead. `open` could pass a gear; `wake`
+/// could not, and the card it would forget is the one that matters: a card put
+/// into planning, left dormant overnight, and roused at launch with the machine
+/// back in its hands because nobody remembered it had been put down.
+///
+/// `None` means "spawn as this card has always spawned", which is bypass via
+/// the flag rather than an explicit `--permission-mode`. Free text and not
+/// validated here: what the flag accepts is the CLI's business, and
+/// `supervisor::set_permission_mode` is the one door in, which does check.
+pub fn gear_of(store: &Store, id: &str) -> Option<String> {
+    gear_row(&store.0.lock().unwrap(), id)
+}
+
+/// The query itself, so the fallback can be tested without a Tauri app.
+fn gear_row(conn: &Connection, id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT permission_mode FROM conversation WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|m| !m.trim().is_empty())
+}
+
+/// Remember the gear, so it survives the card going dormant.
+///
+/// Written before the control request reaches the wire, not after — the order
+/// `supervisor::set_permission_mode` keeps, and the same shape as
+/// `set_mid_turn`: **bookkeeping that records a decision must not wait for the
+/// thing it decides to succeed.** A card whose process died between the write
+/// and the flush comes back in the gear you asked for; one where the order was
+/// reversed comes back in the gear you left.
+pub fn set_permission_mode(store: &Store, id: &str, mode: &str) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    conn.execute(
+        "UPDATE conversation SET permission_mode = ?2 WHERE id = ?1",
+        params![id, mode],
+    )
+    .map_err(|e| format!("set permission mode: {e}"))?;
+    Ok(())
 }
 
 /// Which branch's tree a card works in, or `None` for one that works in its
@@ -2395,7 +2465,8 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
             "SELECT c.id, c.agent_session_id, c.project_id, c.cwd, c.title, c.worktree,
                     c.model, c.interrupted, c.last_ctx_frac, c.last_ending, c.aside,
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
-                    p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort
+                    p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
+                    c.permission_mode
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
               WHERE c.closed_at IS NULL
@@ -2426,6 +2497,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 glass_x: r.get(18)?,
                 glass_y: r.get(19)?,
                 effort: r.get(20)?,
+                permission_mode: r.get(21)?,
             })
         })
         .map_err(|e| e.to_string())?

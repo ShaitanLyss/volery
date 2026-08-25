@@ -2,6 +2,7 @@
   import { waterfall } from "./waterfall.svelte";
   import type { Conversation } from "./conversation.svelte";
   import { cardName } from "./naming";
+  import { planTitle } from "./gears";
 
   import type { Lod } from "./studio.svelte";
 
@@ -15,6 +16,7 @@
     draft = "",
     onfocus,
     onclose,
+    onplan,
   }: {
     conv: Conversation;
     focused?: boolean;
@@ -29,6 +31,9 @@
     draft?: string;
     onfocus: (e: MouseEvent) => void;
     onclose: () => void;
+    /** Open the plan this card has written. Absent where there is nowhere to
+     *  open it — the peek window draws cards too and has no file viewer. */
+    onplan?: (path: string) => void;
   } = $props();
 
   /** What this card is called, or what it is about to be called.
@@ -143,6 +148,7 @@
     data-st={conv.tier}
     data-dormant={conv.dormant ? "" : undefined}
     data-aside={conv.aside ? "" : undefined}
+    data-gear={conv.gear === "planning" ? "planning" : undefined}
     onclick={onfocus}
   >
     <span class="top">
@@ -252,6 +258,36 @@
     >
   {/if}
 
+  <!-- A plan this card has written and has not been let out of. Bottom right,
+       the last free corner — `.pin` has the top left, `.post` the top right,
+       `.aside` and `.jobs` the bottom left.
+
+       A real button rather than a mark, because unlike every other mark here
+       there is somewhere to go: it opens the document in the file viewer, which
+       already reads markdown as a document. A sibling of `.card` for `.shut`'s
+       reason — a button inside a button is invalid — and it sits inboard of
+       `.shut` so the two do not meet.
+
+       Achromatic. A plan waiting is not a status: the card is resting, and it
+       is resting correctly. Colour here would put a fifth thing in a channel
+       that means working, asking and failed. -->
+  {#if conv.planDoc && onplan}
+    {@const path = conv.planDoc}
+    <button
+      class="plan"
+      title="a plan is waiting — {planTitle(path)}"
+      onclick={(e) => {
+        e.stopPropagation();
+        onplan(path);
+      }}
+      aria-label="Open the plan this card wrote"
+    >
+      <svg viewBox="0 0 10 10" aria-hidden="true"
+        ><path d="M2 2h6M2 5h6M2 8h3" /></svg
+      >
+    </button>
+  {/if}
+
   <button class="shut" onclick={onclose} aria-label="Close conversation">
     <svg viewBox="0 0 10 10" aria-hidden="true"
       ><path d="M2 2l6 6M8 2L2 8" /></svg
@@ -284,6 +320,22 @@
   }
   .card:hover {
     border-color: var(--rule);
+  }
+
+  /* Planning: the card's own outline stops being solid.
+     
+     A card that cannot change anything is drawn as one that is not quite
+     settled — which is a reading of the *whole* card, and that is why it is the
+     border rather than a fifth corner mark. The four corners are spoken for,
+     and more to the point the gear is not a thing that has happened to this
+     card, it is what the card currently is.
+
+     Achromatic, like `.pin` and `.aside`: colour on this wall is status, and a
+     card in planning can be working, asking or failed exactly like any other —
+     tinting it would make one of those unreadable. The dash is fine at every
+     density because it is on a border the card already draws. */
+  .card[data-gear="planning"] {
+    border-style: dashed;
   }
 
   /* Selection is achromatic on purpose — colour is the status channel, and a
@@ -420,6 +472,43 @@
     height: 6px;
     border-radius: 50%;
     background: var(--st, var(--st-rest));
+  }
+
+  /* A plan waiting. Bottom right, inboard of nothing — `.shut` is top right —
+     and unlike `.shut` it is drawn *always* rather than on hover: a plan is
+     something the card is holding for you, and a thing you have to hover a card
+     to discover is a thing you never discover. Faint until you reach it, which
+     is the same restraint at a lower cost than invisibility. */
+  .plan {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    background: none;
+    border: 0;
+    padding: 0;
+    border-radius: 3px;
+    cursor: pointer;
+    color: var(--paper-faint);
+    transition:
+      color 0.15s ease,
+      background 0.15s ease;
+  }
+  .plan svg {
+    width: 9px;
+    height: 9px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.3;
+    stroke-linecap: round;
+  }
+  .plan:hover,
+  .plan:focus-visible {
+    color: var(--paper);
+    background: var(--rule);
   }
 
   .shut {

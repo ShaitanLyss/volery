@@ -90,6 +90,7 @@
     onfocus,
     ondeselect,
     onclose,
+    onplan,
     onpin,
     onplace,
     onstick,
@@ -188,6 +189,8 @@
      *  beside the panel it opens, so the canvas can only report the gesture. */
     ondeselect?: () => void;
     onclose: (conv: Conversation) => void;
+    /** Open a plan a card has written, in the file viewer. */
+    onplan: (conv: Conversation, path: string) => void;
     onpin?: (id: string, x: number, y: number) => void;
     /** A territory was carried somewhere. `null` gives it back to the grid. */
     onplace?: (cwd: string, x: number | null, y: number | null) => void;
@@ -1604,6 +1607,7 @@
       onfocus(n.conv.id);
     }}
     onclose={() => onclose(n.conv)}
+    onplan={(path) => onplan(n.conv, path)}
   />
 {/snippet}
 

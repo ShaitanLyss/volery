@@ -52,6 +52,7 @@ import { Flights, type SentEvent } from "./relay.svelte";
 import { Board } from "./board.svelte";
 import { Sink } from "./sink.svelte";
 import { cliCommand, isEffort } from "./commands";
+import { wireOf, type Gear } from "./gears";
 import type { Preset } from "./presets";
 import { UNNAMED, isNamed, titleFromPrompt } from "./naming";
 import {
@@ -1769,6 +1770,36 @@ export class Skein {
     } catch (err) {
       this.fault = String(err);
       conv.activity = "could not stop";
+    }
+  }
+
+  /** Change what a card is allowed to do: planning, or making.
+   *
+   *  The gear is *not* set optimistically here, and that is the whole reason
+   *  this reads as it does. The CLI acknowledges the change on the wire within
+   *  ~60ms — a `control_response` carrying the new mode — and
+   *  `Conversation.ingest` folds *that*, which is the process saying it has
+   *  taken it. A card drawn in the gear Volery asked for rather than the one
+   *  the process confirmed would be the wall drawing something the agent never
+   *  said, which is the one thing the whole event pipeline is arranged not to
+   *  do. It costs nothing to wait: the acknowledgement is faster than the
+   *  round trip this call is already making.
+   *
+   *  The exception is a **dormant** card, which has no process to answer and
+   *  will not emit an init until it wakes. There the row is the only truth
+   *  there is, so the fold has to happen here or the gesture would appear to do
+   *  nothing at all. Rust has already persisted it by the time this returns. */
+  async setGear(conv: Conversation, gear: Gear) {
+    if (conv.gear === gear) return;
+    try {
+      await invoke("set_permission_mode", { id: conv.id, mode: wireOf(gear) });
+      if (conv.dormant) {
+        conv.gear = gear;
+        if (gear === "making") conv.planDoc = null;
+      }
+    } catch (err) {
+      this.fault = String(err);
+      conv.activity = "could not change gear";
     }
   }
 

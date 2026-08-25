@@ -106,8 +106,13 @@ export type Command = {
    (`opus`, `opus[1m]`, `sonnet`, `sonnet[1m]`, `haiku`, `fable`, `opusplan`).
    The `[1m]` pair earn their place on this wall in particular: the context ring
    is drawn against the window tier, and switching to one is the gesture for a
-   card that is running out of room. `opusplan` is left off — it is plan mode's
-   upgrade model, and every card here spawns with permissions bypassed. */
+   card that is running out of room.
+
+   `opusplan` earned its place the day the wall got a second gear. It used to be
+   left off with the note "it is plan mode's upgrade model, and every card here
+   spawns with permissions bypassed" — which was true of every card and is no
+   longer true of any: `/gear planning` is exactly the state it is for, and a
+   card that plans on Opus and executes on Sonnet is the pairing it names. */
 const MODELS: Choice[] = [
   { value: "opus", summary: "the most capable, 200k of room" },
   { value: "opus[1m]", summary: "the same model with a million tokens of room" },
@@ -115,6 +120,21 @@ const MODELS: Choice[] = [
   { value: "sonnet[1m]", summary: "quicker, with a million tokens of room" },
   { value: "haiku", summary: "fastest and cheapest — for small, mechanical work" },
   { value: "fable", summary: "the newest family" },
+  { value: "opusplan", summary: "opus while planning, sonnet while making" },
+];
+
+/** The two gears, and what each one costs you.
+ *
+ *  The vocabulary is `gears.ts`'s; these are the words the dock says. Kept
+ *  beside the other choice sets rather than in `gears.ts` because a summary is
+ *  the palette's voice — the same split `MODELS` keeps, where what `--model`
+ *  accepts is the CLI's business and what to call it here is ours. */
+export const GEAR_CHOICES: Choice[] = [
+  {
+    value: "planning",
+    summary: "read, search and think — cannot change anything",
+  },
+  { value: "making", summary: "the machine, as every card has always been" },
 ];
 
 /** The five levels `--effort` names, narrowest first. */
@@ -175,6 +195,15 @@ export const COMMANDS: Command[] = [
     needsCard: true,
     by: "skein",
     takesText: true,
+  },
+  {
+    name: "gear",
+    summary: "what this card is allowed to do",
+    detail:
+      "planning takes its writing tools away and ends the turn in a document rather than a diff — the card, the session and the context all survive the change",
+    needsCard: true,
+    by: "skein",
+    choices: GEAR_CHOICES,
   },
   {
     name: "clear",
@@ -289,6 +318,15 @@ export type Resolved = {
  *  it, so it must fall through to the ordinary prompt path exactly as
  *  `/commit` does.
  *
+ *  A `choices` command resolves with its bare name — the form Enter turns into
+ *  an open palette — or with **one of its own values**, and nothing else. That
+ *  is the third clause and the newest. `/gear planning` pasted whole is Volery's
+ *  to run; `/gear sideways` is not, and falls through to the agent as the words
+ *  it is — the same rule `/clear the deck` follows, and for the same reason.
+ *  Until `/gear` this arm was unreachable: every command with choices was the
+ *  CLI's, and those are filtered out a line above, so "a choices command with
+ *  an argument" simply returned null and nothing noticed.
+ *
  *  The name and the argument come out of one parse rather than two, so nothing
  *  can decide this is `/rename` and then disagree about where the name starts. */
 export function resolveCommand(draft: string): Resolved | null {
@@ -307,7 +345,36 @@ export function resolveCommand(draft: string): Resolved | null {
      falls through to the agent as the words it is. */
   const arg = (m[2] ?? "").trim();
   if (cmd.takesText) return arg ? { cmd, arg } : null;
+  if (cmd.choices) {
+    /* The bare name resolves too, and has to: it is the form Enter turns into
+       an open palette (`stillWriting`), so refusing it here would send `/gear`
+       to the agent as a prompt rather than offering the two gears. */
+    if (!arg) return { cmd, arg: "" };
+    return cmd.choices.some((c) => c.value === arg) ? { cmd, arg } : null;
+  }
   return arg ? null : { cmd, arg: "" };
+}
+
+/** Is this command still being written, rather than ready to run?
+ *
+ *  The rule the dock's Enter turns on, and it is stated here because it was
+ *  wrong in a component where nothing could test it. A command that needs a
+ *  value and has not been given one is *incomplete*: Enter opens the space to
+ *  write in rather than running anything. `/model` alone offers the models,
+ *  `/rename` alone opens somewhere to type a name.
+ *
+ *  **The `!arg` half is the fix.** The condition used to be
+ *  `cmd.choices || (cmd.takesText && !arg)`, so a command with choices was read
+ *  as incomplete *even with its value already typed* — `/model opus` pasted
+ *  whole came back as an offer of the models rather than as a model. Invisible
+ *  for as long as every command with choices was the CLI's, because the
+ *  palette's own Enter sends those as text and never asks this question. It
+ *  stopped being invisible the moment one of Volery's own had choices:
+ *  `/gear planning` reached that line and returned, silently, having done
+ *  nothing at all. Found by driving the real wall, which is the only place it
+ *  was visible. */
+export function stillWriting(cmd: Command, arg: string): boolean {
+  return (!!cmd.choices || !!cmd.takesText) && !arg;
 }
 
 /** Is this prompt one of the CLI's own commands rather than something said?
