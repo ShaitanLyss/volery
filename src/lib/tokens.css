@@ -28,7 +28,14 @@
   --display: "Sitka Display", "Sitka Heading", Sitka, Constantia, Georgia, serif;
   --body: "Sitka Text", Sitka, Constantia, Georgia, serif;
   --util: Corbel, "Segoe UI", Candara, system-ui, sans-serif;
-  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  /* "Nerd Symbols" carries no letters at all, so it changes nothing about how
+     text is set — it is only what the shell, the server logs and the editor
+     grid fall through to for an *icon*, all three being readings of somebody
+     else's output rather than chrome of Volery's own. It is the one face this
+     app ships rather than finds, and it is declared in `nerd.ts` rather than
+     here, because the size it has to be drawn at is measured from whichever of
+     the faces above it won. */
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "Nerd Symbols", ui-monospace, monospace;
 
   /* ── how the reading is set ───────────────────────────────────────────
      The knobs a theme may turn (`theme.ts`), each declared here with

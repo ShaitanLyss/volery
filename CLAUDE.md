@@ -395,6 +395,16 @@ these apply when you open almost anything.
   past the coming boundary and `t` is *snapped* to it, which is the half that makes the step
   exactly 1000 rather than merely close. Anything else that ever schedules from "when the last
   one ran" owes the same correction.
+- **Data folded in place needs a version number *and* a fresh value.** Where a structure is too
+  big to be `$state` — the editor's four-thousand-cell grid is the one case so far — the
+  sanctioned shape is a plain object mutated by the fold and a `$state` counter bumped when it
+  settles. The trap is the second half: a `$derived` that returns the mutated object returns the
+  *same object* every time, and Svelte only invalidates readers when a derived's new value
+  differs from its old one (`deriveds.js`'s `update_derived`, `runtime.js`'s `is_dirty`). So
+  the version bumped, the derived re-ran, and nothing redrew — the editor painted once at mount
+  and then never again while you typed into it. The version is the dependency; something like
+  `nvim.ts`'s `screenView`, which builds a new value each call, is the identity. See
+  `.claude/rules/editing.md`.
 - **Anything holding a Tauri subscription needs releasing.** `Skein`, `Attention` and
   `Control` are plain classes with no lifecycle, so `App.svelte`'s `onDestroy` releases them
   via `Listeners`. Skip it and a superseded instance keeps ingesting events *and writing

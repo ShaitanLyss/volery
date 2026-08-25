@@ -4,6 +4,7 @@ paths:
   - "src/lib/nvim.ts"
   - "src/lib/nvim.svelte.ts"
   - "src/lib/Quill.svelte"
+  - "src/lib/nerd.ts"
   - "tools/probe-nvim.ts"
 ---
 
@@ -163,6 +164,28 @@ redraw and then reads the screen. Two things bound it:
   frame is the right unit here for the same reason 50ms is the right unit for the shell's
   lines: it is about how often the wall may be repainted, not how often the process spoke.
 
+**And the version has to be the dependency of a value that is not the screen**, which is the
+half that was got wrong and shipped: for a week the editor drew nothing at all. You could type,
+nvim answered, the fold was right — and the panel went on showing whatever had been there when
+you entered edit mode, so the only way to see your own keystrokes was Alt+E out and back in,
+which remounts the component. Nothing about it looked like a reactivity bug from outside; it
+looked like nvim not redrawing.
+
+The derived was `editor.active?.screen`. It re-executed on every version bump and returned **the
+same object every time**, because the whole point of the design above is that the screen is
+mutated in place — and Svelte only invalidates what reads a derived when the new value differs
+from the old one (`deriveds.js`'s `update_derived` bumps `wv` only `if (!derived.equals(value))`;
+`runtime.js`'s `is_dirty` wants `dependency.wv > reaction.wv`). Equal value, no write version, no
+dirty effect, no redraw — once, at mount, and never again.
+
+So `screenView` in `nvim.ts` builds the frame's drawing — the runs, their CSS, the caret box —
+and **returns a new value every call**, which `test/nvim.test.ts` asserts directly because it is
+the property that matters rather than an implementation detail. `Quill.svelte` names the version
+to depend on it and `screenView` to have something to invalidate on. The general shape, and it
+reaches past this file: **data folded in place needs a version number to notice it changed *and*
+a fresh value to hand on.** A `$derived` that returns the thing that was mutated is a derived
+that never fires.
+
 ### What the wire format gets you wrong on
 
 Every one of these is tested in `test/nvim.test.ts`, and every one of them was found by reading
@@ -232,6 +255,39 @@ Three things the Lua does beyond opening, each of which would otherwise read as 
 - **`checktime`**, because on *this* wall the other thing editing these files is an agent.
   Without it nvim sits on a buffer it read ten minutes ago and quietly writes it back over the
   agent's work.
+
+### The icons, and the one face Volery ships
+
+The same argument as the colourscheme, one layer down. A config with a file tree, a git gutter
+or a statusline draws them out of a **Nerd Font** — several thousand glyphs in the private use
+area, none of which any font shipping with Windows has — so without one, everything nvchad or
+lazyvim draws its furniture with is tofu, and the editor on the wall is a worse-looking editor
+than the same nvim in a terminal. Volery finds every other font it uses; this is the one it
+carries: `src/lib/fonts/symbols-nerd-font-mono.woff2`, Nerd Fonts v3.4.0 symbols-only, MIT, 1.2 MB.
+
+Two facts make it safe to simply name in `--mono`, where it serves the shell and the server logs
+as well — both of which render somebody else's output, and a prompt with a branch icon in it is
+the same case as a statusline with one.
+
+- **It contains no letters.** Probed with fontTools: 10,410 mapped codepoints, nothing in
+  U+0041–U+007A, not even a space. A face that cannot set text can only ever supply a glyph the
+  faces before it do not have, so `--mono` still reads in Cascadia and only the tofu changes.
+- **Nothing is fetched until a glyph needs it.** A `FontFace` is loaded on first use, so a wall
+  with no editor open never pays for it — and `local()` comes first in the source list, so a
+  machine whose terminal already has the symbols font installed never pays for it at all.
+
+**The `Mono` variant, and `size-adjust`, and the second is why the face is built in `nerd.ts`
+rather than declared in `tokens.css`.** Every glyph in it is one em wide — all 10,410, measured.
+The faces that set text are not: Cascadia Mono and JetBrains Mono are 0.6 em, Consolas 0.55. So
+an icon in a monospace line is about 1.6 cells wide, and in a *grid* that is not a cosmetic
+problem: nvim has already decided the glyph occupies one column, so the rest of the row slides
+right and the caret — placed by arithmetic on the cell width — lands in the wrong column. The
+adjustment has to be measured rather than written down, for the same reason `Quill.svelte`
+measures a cell instead of assuming one: the ratio belongs to whichever face in `--mono` the
+machine actually has. A `@font-face` descriptor cannot read a custom property, so the rule is
+constructed once in `main.ts` from a probe span instead. This is also what patching a font does —
+a `Nerd Font Mono` scales its icons to one cell of the font it was patched into — arrived at
+from the other side.
 
 ### Colour, against the house rule
 

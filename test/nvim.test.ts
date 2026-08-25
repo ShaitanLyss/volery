@@ -15,6 +15,7 @@ import {
   nvimKey,
   rowRuns,
   screenText,
+  screenView,
   wheelDir,
 } from "../src/lib/nvim";
 
@@ -222,6 +223,44 @@ describe("rowRuns", () => {
 
   test("an empty row is no spans at all", () => {
     expect(rowRuns([])).toEqual([]);
+  });
+});
+
+describe("the view the panel draws", () => {
+  test("every call is a new value, even for a screen that did not change", () => {
+    /* The bug this whole function exists to prevent, and it shipped. The screen
+       is folded in place, so a `$derived` returning it returned the same object
+       reference every frame — and Svelte only invalidates what reads a derived
+       when the new value differs from the old. Nothing downstream was ever
+       dirty, so the grid was painted once at mount and never redrawn: you could
+       type, nvim answered correctly, and the panel showed the state as of
+       whenever you last entered edit mode. */
+    const s = emptyScreen(4, 2);
+    const a = screenView(s);
+    const b = screenView(s);
+    expect(a).not.toBe(b);
+    expect(a.rows).not.toBe(b.rows);
+    expect(a).toEqual(b);
+  });
+
+  test("a row arrives as styled pieces, in nvim's own colours", () => {
+    const s = emptyScreen(3, 1);
+    s.colors = { fg: 0xc9d1d9, bg: 0x14171a, sp: 0xc9d1d9 };
+    s.attrs = new Map([[1, { foreground: 0xff0000 }]]);
+    applyRedraw(s, [gridLine(0, 0, [["a", 1], ["b"], ["c", 0]])]);
+    expect(s.cells[0].map((c) => c.hl)).toEqual([1, 1, 0]);
+    const view = screenView(s);
+    expect(view.bg).toBe("#14171a");
+    expect(view.rows[0].map((p) => p.text)).toEqual(["ab", "c"]);
+    expect(view.rows[0][0].css).toContain("#ff0000");
+  });
+
+  test("no caret while nvim is busy", () => {
+    const s = emptyScreen(4, 2);
+    applyRedraw(s, [["grid_cursor_goto", [1, 1, 2]]]);
+    expect(screenView(s).caret).toEqual({ row: 1, col: 2, w: 1, h: 1, bottom: false });
+    applyRedraw(s, [["busy_start", [[]]]]);
+    expect(screenView(s).caret).toBeNull();
   });
 });
 

@@ -8,6 +8,7 @@ import "./lib/tokens.css";
    the properties it sets are overrides of what that file declares. */
 import "./lib/theme.svelte";
 import App from "./App.svelte";
+import { fitNerdSymbols } from "./lib/nerd";
 import Peek from "./lib/Peek.svelte";
 
 /* Both windows load the same bundle; the query string picks the root. The peek
@@ -15,6 +16,10 @@ import Peek from "./lib/Peek.svelte";
    in the studio's own language instead of Windows'. */
 const isPeek = new URLSearchParams(location.search).has("peek");
 if (isPeek) document.documentElement.classList.add("peek-window");
+
+/* After tokens.css and the theme, since what it measures is the `--mono` those
+   two settle on, and before `mount` so the first thing drawn already has it. */
+fitNerdSymbols();
 
 /* Chromium's own menu never appears in Skein — an undecorated window whose
    header is its title bar has no business offering "Reload" and "Save image

@@ -372,6 +372,50 @@ export function cursorBox(s: Screen): { w: number; h: number; bottom: boolean } 
   return { w: 1, h: 1, bottom: false };
 }
 
+/** One drawn span: the text of a run and the style it wears. */
+export interface Piece {
+  text: string;
+  css: string;
+}
+
+/** Everything the grid draws in one frame, and **a new value every time**.
+ *
+ *  That second half is the whole reason this function exists rather than the
+ *  component reading the screen directly, and it is a bug that shipped. The
+ *  screen is folded *in place* — deliberately, since a `$state` proxy over four
+ *  thousand cells would put Svelte's scheduler in front of the reader thread —
+ *  so a `$derived` that returned the `Screen` itself returned the same object
+ *  reference on every frame. Svelte compares a derived's new value against its
+ *  old one and only bumps the write version when they differ
+ *  (`deriveds.js`'s `update_derived`, `runtime.js`'s `is_dirty`), so nothing
+ *  downstream was ever dirty: the grid was painted once, at mount, and then
+ *  never again. You could type, nvim answered, the fold was correct, and the
+ *  panel showed the state as of whenever you last entered it.
+ *
+ *  So the version number is the *dependency* and this value is the *identity*.
+ *  Anything else in this app that folds in place and draws from a derived owes
+ *  the same shape. */
+export interface View {
+  /** The panel's background, which is nvim's default one. */
+  bg: string;
+  rows: Piece[][];
+  /** Where the cursor is and how big, in cells — or null while nvim is busy,
+   *  which is nvim saying the screen it has drawn is not one it has finished
+   *  with. */
+  caret: { row: number; col: number; w: number; h: number; bottom: boolean } | null;
+}
+
+export function screenView(s: Screen): View {
+  const box = cursorBox(s);
+  return {
+    bg: hex(s.colors.bg),
+    rows: s.cells.map((row) =>
+      rowRuns(row).map((run) => ({ text: run.text, css: attrCss(run.hl, s.attrs, s.colors) })),
+    ),
+    caret: s.busy ? null : { row: s.cursor.row, col: s.cursor.col, ...box },
+  };
+}
+
 /** How many cells fit. Floored, because a partial row is one nvim would paint
  *  into and the panel would clip. */
 export function gridSize(

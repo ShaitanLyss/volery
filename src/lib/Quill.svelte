@@ -23,7 +23,7 @@
   import { onMount } from "svelte";
 
   import type { Editor } from "./nvim.svelte";
-  import { attrCss, cursorBox, rowRuns } from "./nvim";
+  import { screenView } from "./nvim";
 
   let { editor }: { editor: Editor } = $props();
 
@@ -36,14 +36,19 @@
      this number is bumped once per frame in which nvim said it was consistent. */
   const version = $derived(editor.active?.version ?? 0);
 
-  /** The screen, re-read whenever the version says to. `version` is referenced
-     rather than used, which is the point — it is the dependency. */
-  const screen = $derived.by(() => {
-    void version;
-    return editor.active?.screen ?? null;
-  });
+  /** What to draw, rebuilt on the frames the version names.
 
-  const cursor = $derived(screen ? cursorBox(screen) : { w: 1, h: 1, bottom: false });
+     `version` is the dependency and `screenView` is the identity, and both
+     halves are load-bearing. This was once `editor.active?.screen`, which is
+     the same object on every frame because the fold mutates it — and a derived
+     whose value is `===` its last one does not invalidate anything that reads
+     it, so the grid was painted at mount and never again. `screenView`'s own
+     comment has the whole of it. */
+  const view = $derived.by(() => {
+    void version;
+    const screen = editor.active?.screen;
+    return screen ? screenView(screen) : null;
+  });
 
   /* ── measuring a cell ─────────────────────────────────────────────────────
 
@@ -199,30 +204,28 @@
       if (grid) editor.wheel(e, ...at(e));
     }}
     oncontextmenu={(e) => e.preventDefault()}
-    style:background={screen ? `#${(screen.colors.bg & 0xffffff).toString(16).padStart(6, "0")}` : undefined}
+    style:background={view?.bg}
   >
-    {#if screen}
-      {#each screen.cells as row, r (r)}
+    {#if view}
+      {#each view.rows as row, r (r)}
         <div class="row">
-          {#each rowRuns(row) as run, i (i)}<span
-              style={attrCss(run.hl, screen.attrs, screen.colors)}>{run.text}</span
-            >{/each}
+          {#each row as piece, i (i)}<span style={piece.css}>{piece.text}</span>{/each}
         </div>
       {/each}
 
       <!-- The cursor is Volery's one addition to what nvim said, and it is not
            an invention: the shape and the size come from the config's own
            `mode_info_set`, so an insert-mode bar being thin is that config's
-           decision. Hidden while nvim is busy, which is nvim saying the screen
+           decision. Absent while nvim is busy, which is nvim saying the screen
            it has drawn is not one it is finished with. -->
-      {#if !screen.busy}
+      {#if view.caret}
         <div
           class="caret"
-          class:bottom={cursor.bottom}
-          style:left="{screen.cursor.col * editor.cellW}px"
-          style:top="{screen.cursor.row * editor.cellH}px"
-          style:width="{cursor.w * editor.cellW}px"
-          style:height="{cursor.h * editor.cellH}px"
+          class:bottom={view.caret.bottom}
+          style:left="{view.caret.col * editor.cellW}px"
+          style:top="{view.caret.row * editor.cellH}px"
+          style:width="{view.caret.w * editor.cellW}px"
+          style:height="{view.caret.h * editor.cellH}px"
         ></div>
       {/if}
     {/if}
