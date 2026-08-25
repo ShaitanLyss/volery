@@ -5,7 +5,7 @@
 //! child emits structured events, and the front end renders them as its own
 //! design rather than as somebody else's TUI.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -193,7 +193,8 @@ pub struct Conv {
 /// successor. See `Conv::generation`.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// `.0` is the live children; `.1` says the app is on its way out.
+/// `.0` is the live children; `.1` says the app is on its way out; `.2` is the
+/// ids a spawn is part-way through starting.
 ///
 /// The second exists for one race with one consequence. A reader thread clears
 /// the row's mid-turn mark when its stream ends, because a child that died with
@@ -202,8 +203,42 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// `shutdown` ends every stream too, by killing them, and *that* is exactly the
 /// case the mark is for. So the flag is raised before the first kill and the
 /// reader threads read it on their way out.
+///
+/// **The third exists because `.0` alone could not answer "is this card already
+/// open" during the one window where it matters.** `spawn_now` asked that of the
+/// map at its first line and did not enter the map until its last, and between
+/// those it reads the store three times, works out where the CLI is, makes a git
+/// worktree — including a network `fetch` — and calls `CreateProcess`. That is
+/// not a tick, it is seconds, and it runs on the blocking pool, so two callers
+/// can be inside it at once and both be told the card is free. The result is two
+/// `claude` children resuming one session, of which the map keeps the **second**:
+/// the first is dropped on the floor by the `insert` that overwrites it, still
+/// running, still `--dangerously-skip-permissions` in the same repository, with
+/// no handle left to kill it and nothing on the wall that knows it is there.
+/// Reserving the id up front is what makes the guard mean what it always said.
 #[derive(Default)]
-pub struct Supervisor(pub Mutex<HashMap<String, Conv>>, AtomicBool);
+pub struct Supervisor(pub Mutex<HashMap<String, Conv>>, AtomicBool, Mutex<HashSet<String>>);
+
+/// A reservation on an id, held for as long as a spawn is working on it.
+///
+/// `Drop` rather than a call at each exit, because `spawn_now` is a column of
+/// `?` — a store read, a home directory, `worktree::ensure`, the spawn itself —
+/// and a release that has to be remembered at each of them is one that will be
+/// missed at the next one added. A missed release is the worse failure: the id
+/// stays reserved for the life of the process and that card can never be woken
+/// again.
+struct Claim<'a> {
+    sup: &'a Supervisor,
+    id: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut starting) = self.sup.2.lock() {
+            starting.remove(&self.id);
+        }
+    }
+}
 
 #[derive(Clone, Serialize)]
 struct ConvEvent {
@@ -291,9 +326,14 @@ fn spawn_now(
     account_label: Option<String>,
 ) -> Result<(), String> {
     let sup = app.state::<Supervisor>();
-    if sup.0.lock().unwrap().contains_key(&id) {
-        return Err(format!("conversation {id} is already open"));
-    }
+    /* Held for the rest of this function, and released whichever way it leaves.
+       This used to be a bare `contains_key` here and an `insert` at the far end,
+       which is a guard with the whole of the spawn inside its own window — see
+       `Supervisor`, and note that the window contains a network `git fetch` for
+       a worktree card. */
+    let _claim = sup
+        .claim(&id)
+        .ok_or_else(|| format!("conversation {id} is already open"))?;
     let session = session_id.as_deref().filter(|s| !s.is_empty()).unwrap_or(&id);
 
     /* Asked of the store, never of the caller — see `store::kind_of`. `wake`
@@ -1548,6 +1588,38 @@ mod tests {
         );
     }
 
+    /// The guard `spawn_now` always meant to have. It read `contains_key` at the
+    /// first line and `insert` at the last, with a store read, a git worktree —
+    /// network `fetch` included — and a `CreateProcess` in between, on the
+    /// blocking pool where two callers really can be inside it at once. Both
+    /// were told the card was free; the map then kept the second child and the
+    /// first went on running with no handle left to reach it.
+    #[test]
+    fn an_id_being_spawned_is_taken_before_the_child_exists() {
+        let sup = Supervisor::default();
+        let first = sup.claim("c1").expect("nothing holds it yet");
+        assert!(
+            sup.claim("c1").is_none(),
+            "the second spawn was told the card was free, and made a second child"
+        );
+        assert!(sup.claim("c2").is_some(), "and it is per card, not a lock on spawning");
+        drop(first);
+        assert!(
+            sup.claim("c1").is_some(),
+            "a claim that outlives its spawn is a card that can never be woken again"
+        );
+    }
+
+    /// The half the map already answered, kept: an id with a live child is taken
+    /// whether or not anybody is mid-spawn on it.
+    #[cfg(windows)]
+    #[test]
+    fn an_id_with_a_live_child_is_taken_too() {
+        let sup = Supervisor::default();
+        sup.0.lock().unwrap().insert("c1".into(), waiting_child(false));
+        assert!(sup.claim("c1").is_none());
+    }
+
     /// A deliberate close already removed and waited for the child, so there is
     /// nothing left to report — and nothing to panic about either.
     #[test]
@@ -1712,6 +1784,30 @@ mod tests {
 }
 
 impl Supervisor {
+    /// Reserve an id for a spawn about to start, or refuse it because one
+    /// already has it.
+    ///
+    /// The whole of the guard `spawn_now` used to spell as a `contains_key` at
+    /// its first line — with the difference that this is *held* across the work
+    /// rather than consulted before it. Both questions are asked under one lock
+    /// so the answer cannot change between them: an id is taken if a child is
+    /// live under it, and taken if somebody is on their way to making one.
+    ///
+    /// Lock order is `.2` then `.0`, and it is the only place in this module
+    /// that holds two at once — every other path takes `.0` alone, so there is
+    /// no second order for this one to deadlock against. Keep it that way.
+    fn claim(&self, id: &str) -> Option<Claim<'_>> {
+        let mut starting = self.2.lock().ok()?;
+        if starting.contains(id) {
+            return None;
+        }
+        if self.0.lock().ok()?.contains_key(id) {
+            return None;
+        }
+        starting.insert(id.to_string());
+        Some(Claim { sup: self, id: id.to_string() })
+    }
+
     /// Take a finished conversation out of the map and collect its exit code.
     ///
     /// Called from the stdout reader once the stream ends. Returning `None` when

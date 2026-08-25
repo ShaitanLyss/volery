@@ -175,6 +175,10 @@ export class Skein {
   }
 
   #byId = new Map<string, Conversation>();
+
+  /** Wakes in flight, by card id — see `#spawn`. One attempt per card, shared
+   *  by everybody who asks for it while it is running. */
+  #waking = new Map<string, Promise<"spawned" | "already" | "failed">>();
   /** Heals waiting to fire, by conversation id. Held rather than fired and
    *  forgotten because a timer that outlives this Skein is the same leak
    *  `detach` exists for — in dev that is every file save, and what it would
@@ -929,9 +933,45 @@ export class Skein {
     }
   }
 
-  /** Give a dormant card a process again, resuming its history in place. */
+  /** Give a dormant card a process again, resuming its history in place.
+   *
+   *  True means it has a process, whoever gave it one. Use `#spawn` where the
+   *  difference matters. */
   async wake(conv: Conversation): Promise<boolean> {
-    if (!conv.dormant) return true;
+    return (await this.#spawn(conv)) !== "failed";
+  }
+
+  /** The spawn itself, and **at most one at a time per card**.
+   *
+   *  `wake` used to be the whole of this and its guard was `conv.dormant`,
+   *  read before an `await` and cleared after it — which is no guard at all
+   *  once two callers arrive inside the same window, and three of them can:
+   *  the rousing queue (which walks the wall spawning cards that take seconds
+   *  apiece), a click on `wake`, and a prompt sent to a dormant card. Rust's
+   *  own guard was the same shape and has been made atomic (`Supervisor::claim`),
+   *  so a second spawn is now *refused* rather than granted — but a refusal is
+   *  still an error the second caller has to interpret, and the second caller
+   *  is usually `rouse`, which would then decide the card had failed to wake.
+   *
+   *  So the two callers share one attempt instead of racing over one: whoever
+   *  arrives second awaits the promise the first is already holding and gets
+   *  the same answer. Single-flight, keyed by id, cleared in a `finally` — a
+   *  key left behind is a card that can never be woken again, which is the one
+   *  failure worse than the one this fixes.
+   *
+   *  `"spawned"` this call started the process; `"already"` it had one, or
+   *  something outside this instance is looking after it; `"failed"` it has
+   *  none and the card has been told so. */
+  async #spawn(conv: Conversation): Promise<"spawned" | "already" | "failed"> {
+    if (!conv.dormant) return "already";
+    const inflight = this.#waking.get(conv.id);
+    if (inflight) return inflight;
+    const attempt = this.#spawnNow(conv).finally(() => this.#waking.delete(conv.id));
+    this.#waking.set(conv.id, attempt);
+    return attempt;
+  }
+
+  async #spawnNow(conv: Conversation): Promise<"spawned" | "already" | "failed"> {
     conv.activity = "waking…";
     try {
       await invoke("spawn_conversation", {
@@ -958,17 +998,25 @@ export class Skein {
         accountLabel: conv.accountLabel,
       });
       conv.dormant = false;
-      return true;
+      return "spawned";
     } catch (err) {
       /* Belt and braces: if the supervisor says it is already running, then it
-         is awake, whatever this card believed about itself. */
+         is awake, whatever this card believed about itself. Said apart from a
+         spawn we performed, because the caller that cares is `rouse` — a card
+         somebody else already has a process for is not one this launch found
+         cut off and revived, and prompting it costs money and starts an agent
+         in a repository another instance is already working in. */
       if (String(err).includes("already open")) {
         conv.dormant = false;
-        return true;
+        /* Or the card stands there saying `waking…` about a wake that is over.
+           `rouse` says "ready" for the cards it woke and no longer reaches this
+           one, which is precisely why the line has to be cleared here. */
+        conv.activity = "ready";
+        return "already";
       }
       this.fault = String(err);
       conv.activity = "could not wake";
-      return false;
+      return "failed";
     }
   }
 
@@ -1038,7 +1086,19 @@ export class Skein {
            priority and not a list of who is still here. */
         if (!this.#byId.has(conv.id)) continue;
         const lost = conv.interrupted;
-        if (!(await this.wake(conv))) continue;
+        /* `#spawn`, not `wake`, because the answer this queue needs is *did we
+           start it* rather than *does it have a process*. They differ in one
+           case and that case is the expensive one: a second Skein against the
+           same store (the pairing `SKEIN_NO_WAKE` exists for — see the module
+           note in `rousing.ts`) has already given this card a process and
+           already sent it whatever it needed, so a resume prompt from here is a
+           second agent told to pick up a turn somebody else is picking up, in
+           the same working tree, with `--dangerously-skip-permissions`. That is
+           the shape of the wall coming back as several instances of itself, each
+           independently committing the same piece of work. */
+        const started = await this.#spawn(conv);
+        if (started === "failed") continue;
+        if (started === "already") continue;
         woken += 1;
         /* What this card had in flight and never heard the end of. Asked after
            the wake rather than before, so a card whose spawn failed is not told

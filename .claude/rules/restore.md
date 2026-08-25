@@ -143,6 +143,23 @@ until somebody noticed.
   report. So `resumePrompt` sends it to `git status` and the tree, and says to stop and ask
   rather than guess: a guess at half-finished work is worse than a question, because it looks
   finished. Hand-wrapped, like `conflictPrompt`, since the panel renders GFM breaks.
+- **The queue prompts only what *it* woke**, which is not the same as what has a process.
+  `wake` answers "does this card have a child", and answers yes when Rust refuses the spawn
+  because something else already made one — which is right for a click and wrong here. The
+  case that separates them is the one `SKEIN_NO_WAKE` exists for: a second Skein against the
+  same store has already spawned this card and already sent it whatever it needed, so a resume
+  prompt from this queue is a *second* agent told to pick up the same cut-off turn, in the same
+  working tree, with `--dangerously-skip-permissions`. `#spawn` says which of the two happened
+  (`spawned` / `already` / `failed`) and `rouse` prompts on the first alone.
+- **And two callers share one spawn rather than racing over it.** `wake`'s guard was
+  `conv.dormant`, read before an `await` and cleared after it, with a Rust-side spawn that
+  takes seconds — long enough for the queue, a click and a send to all be inside the window.
+  `#waking` is a single-flight map keyed by id: whoever arrives second awaits the promise the
+  first is holding. Rust's own guard was the same shape and is atomic now
+  (`Supervisor::claim`), so the second spawn is refused rather than granted — two `claude`
+  children on one session, of which the map kept the second while the first ran on with no
+  handle left to kill it. Both halves were needed: without the front-end one the second caller
+  merely sees an error it has to interpret, and the caller that usually sees it is `rouse`.
 - **A loop cannot be unsubscribed**, so `detach` sets a flag the queue checks each time
   round. This is the `Listeners` hazard in a shape `Listeners` cannot fix: editing a
   front-end file constructs a second Skein while the first one's queue is still walking the
