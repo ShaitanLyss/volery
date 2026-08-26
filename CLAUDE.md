@@ -59,6 +59,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # commands, copy, widgets, naming, drafts, rousing, quitting, timing,
                          # sink, logface, serverlog, buildlog, unreallog,
                          # nvim,
+                         # guidance,
                          # undo, lineage, update,
                          # asking,
                          # toolcall,
@@ -74,7 +75,7 @@ bun run test:wall        # drives a RUNNING app over the control surface
 
 cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
                               # later.rs, pin.rs, spawn.rs,
-                              # bang.rs, update.rs,
+                              # bang.rs, update.rs, guidance.rs,
                               # quit.rs,
                               # repair/text.rs,
                               # control.rs,
@@ -85,6 +86,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
 bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, with your config
+bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs
@@ -121,6 +123,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
 | `commands.md` | slash commands, why Skein reads only its own names, and clearing a card | `commands.ts`, `Dock.svelte`, `field.svelte.ts` |
+| `guidance.md` | standing instructions: the wall's and a territory's, why they are a system prompt rather than a `CLAUDE.md` or a hook, what a live card does not hear, and why they are instructions rather than a lock | `guidance.rs`, `guidance.ts`, `Guidance.svelte` |
 | `control.md` | the control surface and the two rules that make a green run mean something | `control.rs`, `control.svelte.ts`, `wall.test.ts` |
 | `glass.md` | sticking a thing to a pane in screen space without moving where it is | `glass.ts` |
 | `ambience.md` | what the ground does when nobody is asking it anything | `ambience.ts`, `Backdrop.svelte` |
@@ -229,6 +232,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `undo.ts`, `finding.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
 `nvim.ts`,
+`guidance.ts`,
 `update.ts`,
 `unreallog.ts`,
 `repair.ts`, `toolcall.ts`, `follow.ts`) are pure

@@ -69,6 +69,7 @@
   import Themes from "./lib/Themes.svelte";
   import Accounts from "./lib/Accounts.svelte";
   import Keyring from "./lib/Keyring.svelte";
+  import Guidance from "./lib/Guidance.svelte";
   import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
   import { foldChrome, type Fold, type Measured } from "./lib/chrome";
   /* `Carry` draws `Portage` — the same component/class split `Console` and
@@ -649,6 +650,13 @@
      fault line, which is where you actually find out you need one — a panel only
      in the menu is a panel nobody finds at the moment it would help. */
   let showKeyring = $state(false);
+
+  /* Standing instructions — what you tell every card once instead of every
+     turn. `null` while shut; open it *at* a scope, since the same panel is
+     reached from the header (the wall) and from a territory's menu (that
+     territory), and arriving on the wrong one is arriving somewhere you then
+     have to navigate out of. See `.claude/rules/guidance.md`. */
+  let guiding = $state<{ focus: string | null } | null>(null);
   let importing = $state(false);
   let sessions = $state<Session[]>([]);
 
@@ -1018,6 +1026,12 @@
           const before = stands();
           skein.placeProject(cwd, null, null);
           undo.did("settling a territory back in", moved(before));
+        } else if (id === "guidance") {
+          /* Opened on this territory, by id — the panel speaks the store's
+             vocabulary and the wall speaks paths. A territory with no row is
+             not a case: the region was drawn from one. */
+          const p = skein.projects.find((x) => x.root_path === cwd);
+          guiding = { focus: p?.id ?? null };
         } else if (id === "forget") {
           /* Same reasoning as a card being closed: the project row is gone, so
              an act about where its territory stood can never be applied. */
@@ -1052,6 +1066,9 @@
         /* The ground is the thing the effects are drawn on, so this is where
            asking about them belongs. */
         else if (id === "ambience") showEffects = true;
+        /* And what the wall tells every card standing on it, one scope out from
+           the territory menu's own. */
+        else if (id === "guidance") guiding = { focus: null };
       };
     } else if (selected) {
       /* Read-only prose — the transcript, mostly. */
@@ -1982,7 +1999,7 @@
          "give the wall the key back", not "throw away what I aimed this at".
          Letting go of the card there would leave a written prompt pointed at
          nothing, so the draft survives and a second press does the deselect. */
-      if (menu || showImport || showThemes || showAccounts || showKeyring) return;
+      if (menu || showImport || showThemes || showAccounts || showKeyring || guiding) return;
       if (isTyping(e.target)) {
         (e.target as HTMLElement).blur();
         return;
@@ -2198,6 +2215,7 @@
     "adopt",
     "themes",
     "accounts",
+    "guide",
     "token",
     "chime",
     "layout",
@@ -2237,6 +2255,7 @@
     "themes",
     "ambience",
     "accounts",
+    "guide",
     "chime",
     "layout",
     "token",
@@ -2419,6 +2438,14 @@
         title: "Which Claude subscriptions this wall spends, and in what order",
         on: showAccounts,
         press: () => (showAccounts = !showAccounts),
+      },
+      {
+        key: "guide",
+        label: "instructions",
+        title:
+          "What every card is told before you say anything — for the whole wall, and per project",
+        on: !!guiding,
+        press: () => (guiding = guiding ? null : { focus: null }),
       },
       {
         key: "token",
@@ -2622,6 +2649,14 @@
 
   {#if showKeyring}
     <Keyring {devops} onclose={() => (showKeyring = false)} />
+  {/if}
+
+  {#if guiding}
+    <Guidance
+      {skein}
+      focus={guiding.focus}
+      onclose={() => (guiding = null)}
+    />
   {/if}
 
   {#if showCarry}

@@ -14,6 +14,7 @@ mod control;
 /// `tools/probe-context.ts` sets for questions of the form "what does this
 /// actually do".
 pub mod find;
+mod guidance;
 pub mod hooks;
 mod later;
 mod nvim;
@@ -345,6 +346,8 @@ pub fn run() {
             store::forget_project,
             store::load_studio,
             store::ensure_project,
+            store::set_wall_guidance,
+            store::set_project_guidance,
             store::reroot_project,
             store::record_conversation,
             store::chat_home,

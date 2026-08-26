@@ -411,6 +411,21 @@ fn spawn_now(
        the measurements and why the compensator lives in this binary. */
     cmd.args(["--settings", &crate::hooks::settings(chat)]);
 
+    /* What you told every card once instead of every turn — the wall's standing
+       instructions and this card's territory's, composed. Read from the store
+       here for the fourth time and the fourth iteration of the same argument;
+       `crate::guidance` has why it is the system prompt rather than a hook or a
+       CLAUDE.md, and why a card already running does not hear an edit.
+
+       A chat card gets this too. Its territory is the sentinel one chat cards
+       share and says nothing, but the wall's instructions are facts about the
+       person at the keyboard and do not stop being true because a card has no
+       repository in front of it. */
+    if let Some(text) = crate::guidance::for_conversation(&app.state::<crate::store::Store>(), &id)
+    {
+        cmd.args(["--append-system-prompt", &text]);
+    }
+
     /* Which subscription this card spends. `CLAUDE_SECURESTORAGE_CONFIG_DIR`
        selects the credential store and *only* the store — `CLAUDE_CONFIG_DIR`
        is untouched, so the transcript still lands in the shared config

@@ -48,6 +48,17 @@ pub struct Project {
     pub glass_x: Option<f64>,
     #[serde(rename = "glassY")]
     pub glass_y: Option<f64>,
+    /// What every card standing in this territory is told, on top of what the
+    /// wall tells all of them. Empty is the ordinary case and means "nothing
+    /// beyond the wall's". See `crate::guidance`.
+    ///
+    /// Carried in the snapshot rather than behind a command of its own, because
+    /// the panel lists every territory with a mark against the ones that carry
+    /// something — a standing instruction whose existence is invisible is the
+    /// kind that gets forgotten and then blamed on the agent — and a round trip
+    /// per territory to draw that list would be a list that fills in.
+    #[serde(default)]
+    pub instructions: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -123,6 +134,12 @@ pub struct Studio {
     pub projects: Vec<Project>,
     pub conversations: Vec<StoredConversation>,
     pub server_groups: Vec<ServerGroup>,
+    /// What the wall tells every card standing on it, project and chat alike.
+    /// Empty is the ordinary case. In the snapshot rather than behind a command
+    /// of its own for the same reason a project's is on its row: the front end
+    /// wants to draw whether there is one, and a second round trip to find out
+    /// is a round trip the first paint would have to wait for.
+    pub guidance: String,
 }
 
 impl Store {
@@ -144,7 +161,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 22;
+const SCHEMA_VERSION: i64 = 23;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -172,6 +189,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (20, migrate_v20),
     (21, migrate_v21),
     (22, migrate_v22),
+    (23, migrate_v23),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1044,6 +1062,39 @@ fn migrate_v22(conn: &Connection) -> Result<(), String> {
     add_column(conn, "sink_item", "edited_at", "INTEGER")
 }
 
+/// Standing instructions: one text for the whole wall, one per territory.
+///
+/// Two homes for one idea, and that is the point rather than an accident. A
+/// project's instructions are a *property of that project* — they belong on its
+/// row, where `forget_project`'s existing cascade takes them with it and no
+/// second delete has to remember. The wall's are a property of nothing else, so
+/// they get the singleton `window_frame` already established here: a table with
+/// one row, `CHECK (id = 1)` making a second one impossible at the schema
+/// rather than by convention.
+///
+/// The alternative — one `guidance(scope, project_id)` table shaped like
+/// `notice` — was rejected because the wall's row would key on a NULL
+/// `project_id`, and SQLite counts NULLs as distinct inside a PRIMARY KEY. That
+/// is a uniqueness constraint that does not constrain, which is the worst of
+/// the three options: it looks like it holds.
+///
+/// An ALTER with a default, per the note on `SCHEMA_VERSION` — every project
+/// that already exists carries no instructions, which is the right answer for
+/// all of them.
+fn migrate_v23(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "project", "instructions", "TEXT NOT NULL DEFAULT ''")?;
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS wall_guidance (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            instructions TEXT NOT NULL,
+            updated_at   INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v23: {e}"))
+}
+
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
 /// one. Every failure here is `None` on purpose — a missing row, a locked
 /// database, a width some future build wrote as a negative — because the
@@ -1176,18 +1227,22 @@ fn dir_name(path: &str) -> String {
 #[tauri::command]
 pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Result<Project, String> {
     let conn = store.0.lock().unwrap();
-    type Row = (String, String, Option<f64>, Option<f64>, Option<f64>, Option<f64>);
+    type Row =
+        (String, String, Option<f64>, Option<f64>, Option<f64>, Option<f64>, String);
     let existing: Option<Row> = conn
         .query_row(
-            "SELECT id, name, x, y, glass_x, glass_y FROM project WHERE root_path = ?1",
+            "SELECT id, name, x, y, glass_x, glass_y, instructions
+               FROM project WHERE root_path = ?1",
             params![root_path],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())?;
 
-    if let Some((id, name, x, y, glass_x, glass_y)) = existing {
-        return Ok(Project { id, name, root_path, x, y, glass_x, glass_y });
+    if let Some((id, name, x, y, glass_x, glass_y, instructions)) = existing {
+        return Ok(Project { id, name, root_path, x, y, glass_x, glass_y, instructions });
     }
 
     let id = uuid_v4();
@@ -1201,7 +1256,18 @@ pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Resu
        one back as soon as it has flowed it somewhere. */
     /* And not on the glass: the pane is somewhere you put a thing on purpose,
        never somewhere a thing arrives. */
-    Ok(Project { id, name, root_path, x: None, y: None, glass_x: None, glass_y: None })
+    Ok(Project {
+        id,
+        name,
+        root_path,
+        x: None,
+        y: None,
+        glass_x: None,
+        glass_y: None,
+        /* A new territory says nothing of its own. The wall's instructions still
+           reach every card in it — see `crate::guidance::compose`. */
+        instructions: String::new(),
+    })
 }
 
 /// Where a territory sits on the wall.
@@ -1465,6 +1531,43 @@ fn worktree_row(conn: &Connection, id: &str) -> Option<String> {
     .flatten()
     .flatten()
     .filter(|n: &String| !n.trim().is_empty())
+}
+
+/// The two standing instructions a card is to be told: the wall's, and its own
+/// territory's. `crate::guidance` composes them; this is only the reading.
+///
+/// The fourth thing `spawn_now` asks the store rather than its caller, for the
+/// reason `worktree_of` spells out at length — `open` and `wake` both reach that
+/// line, and the one that forgets is the one that wakes every dormant card on
+/// the wall at launch.
+///
+/// A lock it cannot take, a card with no row, a territory that has been
+/// forgotten: all of them answer "nothing", which is what a wall with no
+/// instructions set answers too and is therefore already a case every reader
+/// handles.
+pub fn guidance_of(store: &Store, id: &str) -> (String, String) {
+    match store.0.lock() {
+        Ok(conn) => guidance_rows(&conn, id),
+        Err(_) => (String::new(), String::new()),
+    }
+}
+
+/// The queries themselves, so the fallbacks can be tested without a Tauri app.
+fn guidance_rows(conn: &Connection, id: &str) -> (String, String) {
+    let wall = wall_guidance(conn);
+    let project = conn
+        .query_row(
+            "SELECT p.instructions
+               FROM conversation c JOIN project p ON p.id = c.project_id
+              WHERE c.id = ?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    (wall, project)
 }
 
 /// Where chat cards stand.
@@ -2095,7 +2198,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
 
     let mut ps = conn
         .prepare(
-            "SELECT id, name, root_path, x, y, glass_x, glass_y
+            "SELECT id, name, root_path, x, y, glass_x, glass_y, instructions
                FROM project ORDER BY created_at",
         )
         .map_err(|e| e.to_string())?;
@@ -2109,6 +2212,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 y: r.get(4)?,
                 glass_x: r.get(5)?,
                 glass_y: r.get(6)?,
+                instructions: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -2183,7 +2287,67 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
         projects,
         conversations,
         server_groups,
+        guidance: wall_guidance(&conn),
     })
+}
+
+/* ── standing instructions ────────────────────────────────────────────────
+   The store's half of `crate::guidance`; the composing and the argv are
+   there. Kept here because this is the file that owns the two tables, and a
+   subsystem reaching into another's SQL is how a schema stops being one
+   file's business. */
+
+/// What the wall tells every card. Never fails: a missing row is the ordinary
+/// first-launch case and a locked database is not worth failing a paint over,
+/// and both mean the same thing to every reader — nothing to say.
+pub fn wall_guidance(conn: &Connection) -> String {
+    conn.query_row("SELECT instructions FROM wall_guidance WHERE id = 1", [], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or_default()
+}
+
+/// Set the wall's. An upsert on the one permitted id, the same shape
+/// `save_window_frame` uses over the same kind of single-row table.
+///
+/// Answers what was stored rather than nothing, because `clip` may have
+/// shortened it and a panel that goes on showing its own draft would then be
+/// showing text no card will ever be handed.
+#[tauri::command]
+pub fn set_wall_guidance(store: tauri::State<'_, Store>, text: String) -> Result<String, String> {
+    let text = crate::guidance::clip(&text);
+    let conn = store.0.lock().map_err(|_| "the store is unavailable")?;
+    conn.execute(
+        "INSERT INTO wall_guidance (id, instructions, updated_at) VALUES (1, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET instructions = ?1, updated_at = ?2",
+        params![text, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(text)
+}
+
+/// Set one territory's. Same contract as the wall's, one row over.
+#[tauri::command]
+pub fn set_project_guidance(
+    store: tauri::State<'_, Store>,
+    project_id: String,
+    text: String,
+) -> Result<String, String> {
+    let text = crate::guidance::clip(&text);
+    let conn = store.0.lock().map_err(|_| "the store is unavailable")?;
+    let n = conn
+        .execute(
+            "UPDATE project SET instructions = ?2 WHERE id = ?1",
+            params![project_id, text],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("no project {project_id} on this wall"));
+    }
+    Ok(text)
 }
 
 /* ── reference images ─────────────────────────────────────────────────── */
@@ -3972,6 +4136,124 @@ mod tests {
            they read the brand before checking the length. */
         assert_eq!(sniff_image(b"RIFF"), None);
         assert_eq!(sniff_image(b"\x00\x00\x00\x20ftyp"), None);
+    }
+
+    /* ── standing instructions (v23) ──────────────────────────────────── */
+
+    /// The wall's, and the shape every reader depends on: a studio nobody has
+    /// set instructions on answers the empty string rather than failing, since
+    /// that is what "nothing to say" is everywhere else in this subsystem.
+    #[test]
+    fn a_wall_with_no_instructions_says_nothing() {
+        let conn = db();
+        assert_eq!(wall_guidance(&conn), "");
+    }
+
+    /// One wall, so writing twice leaves one row — the `CHECK (id = 1)` is the
+    /// schema saying so and the upsert is honouring it. The same invariant
+    /// `saving_the_cycle_twice_leaves_one_row` pins one table over.
+    #[test]
+    fn the_wall_keeps_one_set_of_instructions() {
+        let conn = db();
+        let put = |t: &str| {
+            conn.execute(
+                "INSERT INTO wall_guidance (id, instructions, updated_at) VALUES (1, ?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET instructions = ?1, updated_at = ?2",
+                params![t, 0],
+            )
+            .unwrap();
+        };
+        put("call me Lyss");
+        put("call me Lyss, and keep it short");
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wall_guidance", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "the wall grew a second set of instructions");
+        assert_eq!(wall_guidance(&conn), "call me Lyss, and keep it short");
+    }
+
+    /// What `spawn_now` actually asks for, both halves at once.
+    #[test]
+    fn a_card_is_told_the_walls_and_its_own_territorys() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, agent_session_id, project_id, cwd, born_at)
+             VALUES ('c1', 'c1', 'p1', 'C:/x', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO wall_guidance (id, instructions, updated_at) VALUES (1, 'wall says', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE project SET instructions = 'project says' WHERE id = 'p1'",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            guidance_rows(&conn, "c1"),
+            ("wall says".to_string(), "project says".to_string())
+        );
+
+        /* A card this wall has never heard of still gets the wall's. The
+           alternative — refusing both — would make one unknown id cost a spawn
+           the instructions every other card on the wall gets. */
+        assert_eq!(
+            guidance_rows(&conn, "nobody"),
+            ("wall says".to_string(), String::new())
+        );
+    }
+
+    /// Forgetting a territory takes its instructions with it, by the cascade
+    /// that is already there — which is the whole reason they live on the
+    /// project row rather than in a table of their own.
+    #[test]
+    fn forgetting_a_project_forgets_what_it_told_its_cards() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute("UPDATE project SET instructions = 'read only' WHERE id = 'p1'", [])
+            .unwrap();
+        conn.execute("DELETE FROM project WHERE id = 'p1'", []).unwrap();
+
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project WHERE instructions = 'read only'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    /// v23 has to land on a database that already exists, and the column has to
+    /// arrive filled rather than NULL — every project that predates this said
+    /// nothing, which is the right answer for all of them and is also the only
+    /// one `guidance_rows`' `String` column can read.
+    #[test]
+    fn an_existing_database_gains_instructions_that_are_not_null() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate_v1(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO project (id, name, root_path, created_at) VALUES ('old','old','C:/old',0)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let text: String = conn
+            .query_row("SELECT instructions FROM project WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(text, "");
+        assert_eq!(wall_guidance(&conn), "");
     }
 
     #[test]

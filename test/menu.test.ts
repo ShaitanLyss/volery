@@ -161,6 +161,7 @@ describe("the list is shaped like something a person meant", () => {
       "fit",
       "tidy",
       "ambience",
+      "guidance",
     ]);
     expect(ids(menuFor({ kind: "region" }))).toEqual([
       "new",
@@ -168,6 +169,7 @@ describe("the list is shaped like something a person meant", () => {
       "adopt",
       "image",
       "glass",
+      "guidance",
     ]);
   });
 
@@ -369,5 +371,35 @@ describe("the list is shaped like something a person meant", () => {
       (i) => i.kind === "item" && i.id === "forget",
     );
     expect(forget).toMatchObject({ danger: true });
+  });
+});
+
+/* One gesture, one label, whichever scope it is read at and whether or not
+   anything is set behind it — the argument is by `item("guidance", …)` in
+   `menu.ts`. A menu entry that renames itself according to its own contents is
+   one you cannot learn the position of, which is the whole value of a menu. */
+describe("standing instructions", () => {
+  test("both the wall and a territory offer them, always", () => {
+    expect(ids(menuFor({ kind: "ground" }))).toContain("guidance");
+    expect(ids(menuFor({ kind: "region" }))).toContain("guidance");
+    /* An empty territory is still a territory, and setting its instructions
+       before opening the first card in it is a reasonable order to work in. */
+    expect(ids(menuFor({ kind: "region", empty: true }))).toContain("guidance");
+    /* Chat cards are told the wall's, so the territory they stand in is not a
+       special case here — see `guidance.rs`. */
+    expect(ids(menuFor({ kind: "region", chat: true }))).toContain("guidance");
+  });
+
+  test("nothing else offers them", () => {
+    for (const kind of ["card", "image", "widget", "prose", "editable"] as const) {
+      expect(ids(menuFor({ kind }))).not.toContain("guidance");
+    }
+  });
+
+  test("the labels say which scope you are about to set", () => {
+    const label = (t: Parameters<typeof menuFor>[0]) =>
+      menuFor(t).find((i) => i.kind === "item" && i.id === "guidance") as { label: string };
+    expect(label({ kind: "ground" }).label).toContain("wall");
+    expect(label({ kind: "region" }).label).toContain("project");
   });
 });

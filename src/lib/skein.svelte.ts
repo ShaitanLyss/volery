@@ -76,6 +76,10 @@ export type Project = {
    *  pair above, which stays whatever the wall says — see `glass.ts`. */
   glassX: number | null;
   glassY: number | null;
+  /** What every card standing in this territory is told, on top of what the
+   *  wall tells all of them. `""` is the ordinary case. See `guidance.ts`, and
+   *  `src-tauri/src/guidance.rs` for why it reaches the agent the way it does. */
+  instructions: string;
 };
 
 /** A conversation Claude Code recorded, as read off disk by `sessions.rs`.
@@ -144,6 +148,9 @@ const HOLD_SWEEP_MS = 60_000;
 
 export class Skein {
   projects = $state<Project[]>([]);
+  /** What the wall tells every card standing on it, project and chat alike.
+   *  Its territories' own are on `Project.instructions`. See `guidance.ts`. */
+  guidance = $state("");
   convs = $state<Conversation[]>([]);
   groups = $state<GroupRuntime[]>([]);
   fault = $state<string | null>(null);
@@ -528,9 +535,14 @@ export class Skein {
         projects: Project[];
         conversations: any[];
         server_groups: ServerGroup[];
+        guidance: string;
       }>("load_studio");
 
       this.projects = s.projects;
+      /* `?? ""` rather than trusting the field: this arrives in the snapshot,
+         and a snapshot from a build before v23 has no such key. Nothing set is
+         what that build meant. */
+      this.guidance = s.guidance ?? "";
 
       /* Learned off the wall where it can be: a chat card's cwd *is* the chat
          home, so a wall holding one knows where it is on the first frame with
@@ -2220,6 +2232,42 @@ export class Skein {
    *  you had to notice to undo. */
   rootedAt(id: string, rootPath: string) {
     this.projects = this.projects.map((p) => (p.id === id ? { ...p, root_path: rootPath } : p));
+  }
+
+  /** What the wall tells every card, changed.
+   *
+   *  Both of these write what Rust *stored* back into hand, rather than the
+   *  draft they were given. `guidance::clip` may have shortened it, and a panel
+   *  that goes on showing its own draft would be showing text no card will ever
+   *  be handed — the one lie this feature could tell that nobody would catch,
+   *  since the whole point is that you cannot see the system prompt.
+   *
+   *  A fault is reported and the wall is left alone. That is the honest pairing:
+   *  a write that did not land must not read back as though it did, or the next
+   *  edit is made against a number that is not there. */
+  async setGuidance(text: string) {
+    try {
+      this.guidance = await invoke<string>("set_wall_guidance", { text });
+    } catch (err) {
+      this.fault = String(err);
+      throw err;
+    }
+  }
+
+  /** What one territory tells the cards standing in it, changed. */
+  async setProjectGuidance(id: string, text: string) {
+    try {
+      const stored = await invoke<string>("set_project_guidance", {
+        projectId: id,
+        text,
+      });
+      this.projects = this.projects.map((p) =>
+        p.id === id ? { ...p, instructions: stored } : p,
+      );
+    } catch (err) {
+      this.fault = String(err);
+      throw err;
+    }
   }
 
   async removeGroup(g: GroupRuntime) {

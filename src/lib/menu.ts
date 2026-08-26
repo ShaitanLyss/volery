@@ -279,6 +279,16 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         /* Only once it is standing empty. A territory outlives its last card so
            you can start again in it; forgetting is how you say you won't, and
            it is not something to offer next to live work. */
+        sep,
+        /* Always offered, and with one label whether or not anything is set.
+           The obvious alternative — two labels, the shape `glassItem` and
+           `aside` use — is wrong here and the difference is worth stating: those
+           are one *state* with two sides, where only one of the two gestures is
+           available at a time. This is one gesture that opens one panel, and a
+           menu entry that renames itself according to what is behind it is an
+           entry you cannot learn the position of. The panel says what is set;
+           the menu says where to go. */
+        item("guidance", "this project's standing instructions…"),
         t.empty ? sep : null,
         t.empty ? item("forget", "forget this project", true) : null,
       ].filter(Boolean) as MenuItem[]);
@@ -313,6 +323,12 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            about it belongs — the chrome button is for reaching it without
            finding bare wall first. */
         item("ambience", "the wall's ambience…"),
+        /* And beside it, for the same reason one level up: the ground is the
+           wall itself, so what the wall tells every card standing on it is a
+           question you ask by right-clicking the wall. A territory's own are in
+           that territory's menu, which is the same arrangement read one scope
+           in. */
+        item("guidance", "the wall's standing instructions…"),
       ].filter(Boolean) as MenuItem[]);
 
     case "editable":
