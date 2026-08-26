@@ -8,6 +8,9 @@ import {
   QUESTION_BLOOM_S,
   SKEIN_ASK_TOOL,
   backgroundKind,
+  jobNote,
+  taskNoteOf,
+  JOB_NOTE_CAP,
   baseModel,
   compactNote,
   NUDGE_BUDGET,
@@ -1577,5 +1580,55 @@ return { results }
     expect(note?.summary).toBe(
       'Dynamic workflow "Audit all 97 Caravan test files" completed',
     );
+  });
+});
+
+describe("what a finished job says in the transcript", () => {
+  /* The case that reads as narration, and the reason the line is worth keeping
+     at all: a backgrounded call whose model wrote a `description` gets a
+     sentence, and it must arrive whole. Every real one measured on this machine
+     is well under the cap. */
+  test("a summary written for a person is left alone", () => {
+    for (const said of [
+      "Snapshot slot configs before the delete",
+      "Run the affected tests",
+      "Command completed (exit code 0)",
+      'Dynamic workflow "Audit all 97 Caravan test files" completed',
+    ]) {
+      expect(jobNote(said)).toBe(said);
+    }
+  });
+
+  /* The bug. A backgrounded `Bash` with no `description` is summarised by its
+     own command, and a heredoc command is a hundred lines — drawn on a `meta`
+     line, which is `pre-wrap` and has no fold to hide behind. Flattening is the
+     half that matters: one line of news, whatever it was made of. */
+  test("a summary that is really a heredoc command becomes one line", () => {
+    const command = ["python - <<'PY'", "import io", 'p = "a/b.ts"', "PY"].join("\n");
+    const said = jobNote(`Command completed (exit code 0): ${command}`);
+    expect(said).not.toContain("\n");
+    expect(said.length).toBeLessThanOrEqual(JOB_NOTE_CAP);
+    /* The head is kept, so what it says is still which job and how it went. */
+    expect(said.startsWith("Command completed (exit code 0):")).toBe(true);
+  });
+
+  test("a very long summary is capped and says so", () => {
+    const said = jobNote("x".repeat(JOB_NOTE_CAP * 3));
+    expect(said.length).toBe(JOB_NOTE_CAP);
+    expect(said.endsWith("\u2026")).toBe(true);
+  });
+
+  /* The clip is for drawing only. Whether a job failed is read off the *raw*
+     summary by `taskNoteOf`, before any of this — so an exit code past the cap
+     must still turn the job red. */
+  test("capping cannot change whether the job failed", () => {
+    const note = taskNoteOf(
+      "completed",
+      `${"y".repeat(JOB_NOTE_CAP * 2)} (exit code 1)`,
+      "t1",
+      null,
+    );
+    expect(note.end).toBe("failed");
+    expect(jobNote(note.summary).length).toBe(JOB_NOTE_CAP);
   });
 });

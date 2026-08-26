@@ -23,6 +23,7 @@ import {
   isStopNote,
   skillBody,
   jobLabel,
+  jobNote,
   localAnswer,
   systemTaskNote,
   localCommandAwaiting,
@@ -1126,7 +1127,7 @@ export class Conversation {
         this.#closeSeat(hit.toolId, summary);
       }
     }
-    this.#push("meta", summary);
+    this.#push("meta", jobNote(summary));
     /* Nothing is warming while a job runs, so the neglect clock has to start
        when the last one lands rather than back when the turn ended — otherwise
        a card whose job ran twenty minutes blooms amber the instant it finishes,

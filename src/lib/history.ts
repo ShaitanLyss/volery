@@ -35,6 +35,7 @@ import {
   isStopNote,
   localCommand,
   parseTaskNotification,
+  jobNote,
   skillBody,
   textOf,
 } from "./classify";
@@ -215,7 +216,7 @@ export function foldTranscript(
            the same here as it does live, or a restart changes what a card said. */
         const job = parseTaskNotification(said);
         if (job) {
-          push("meta", job.summary);
+          push("meta", jobNote(job.summary));
           break;
         }
         /* And when it was a local command. `/compact` alone writes two of

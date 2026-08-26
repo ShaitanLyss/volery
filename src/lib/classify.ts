@@ -434,6 +434,37 @@ export function backgroundKind(name: string, input: any): JobKind | null {
   return null;
 }
 
+/** How much of a finished job's own account of itself the transcript keeps.
+ *
+ *  Generous next to the 44 an `activity` line gets, which has a card to fit
+ *  inside; this only has to stay a sentence. */
+export const JOB_NOTE_CAP = 160;
+
+/** What a finished job says in the transcript.
+ *
+ *  A notification's `summary` is the CLI's own words and is usually a sentence,
+ *  so it went in whole. But for a backgrounded `Bash` with no `description` the
+ *  summary is *the command*, and a heredoc command is a hundred lines — while a
+ *  `meta` line is `pre-wrap` and, unlike a compaction or a skill, has no fold.
+ *  So those hundred lines stood in the column with nothing to collapse them,
+ *  directly under the folded call they belonged to, reading exactly like the
+ *  transcript had sprung a leak. Reported three times before it was found,
+ *  because every search for the text went to the session file and a wire
+ *  `system/task_notification` is never written there.
+ *
+ *  `clip` rather than a fold, and the flattening is the point rather than a side
+ *  effect: what a job did is one line of news. Adding `meta` to `blocksOf`'s
+ *  `LONG` kinds would have put `stopped` and `cleared` behind a triangle too,
+ *  and a fold whose cap is the whole of its content is a triangle beside
+ *  nothing.
+ *
+ *  Both folds call this — `Conversation.#settleJob` and `history.ts` — for the
+ *  reason every other shared caption exists: the live column and the one read
+ *  back off disk must not be able to describe the same job differently. */
+export function jobNote(summary: string): string {
+  return clip(summary, JOB_NOTE_CAP);
+}
+
 /** What to call a job on the card. The `description` field is written to be
  *  read by a person, so it is preferred over the command wherever it exists. */
 export function jobLabel(name: string, input: any): string {
