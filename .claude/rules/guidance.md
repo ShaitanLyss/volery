@@ -164,11 +164,38 @@ Neither scope set means **no argument at all**, not an empty one.
   one panel, and a menu entry that renames itself according to its own contents is one you
   cannot learn the position of.
 
-### Not carried by portage, yet
+### They travel, and they are only ever topped up
 
 `portage.ts`'s line is that furniture travels and work does not, and standing instructions
 are furniture by that test — they are how the room is arranged, not what has been said in
-it. They are left out anyway for now, because the wall's scope collides with the rule that
-**an import only ever adds**: there is one wall guidance, so importing one is replacing
-yours, which is the single thing that document has promised never to do. A territory's
-would travel cleanly. The sink has it.
+it. They are also the only piece of furniture that is *words* rather than a rectangle, and
+that is what made the wall's scope a real question rather than one more field.
+
+Both travel: `Carried.guidance` for the wall's, `CarriedProject.instructions` for a
+territory's. A carried set is applied **only where this wall has none**, both scopes, one
+rule. The argument is that there is exactly one wall guidance, so applying a carried one
+over a set one is *replacing* it — the single thing `portage.ts`'s header promises an
+import never does. The ambience switch is the nearest precedent for changing something
+already on screen and it does not carry: switching ambience changes a setting you can
+change back, where this would destroy prose somebody wrote.
+
+So a wall with nothing set gains them, which is the case that matters — a new machine, and
+"my name is Lyss, I have ADHD" is exactly the thing you should not have to type twice. A
+wall already saying something keeps saying it, and the document's version is named in the
+import's `skipped` list rather than dropped quietly. Clearing yours and importing again is
+the way to take theirs.
+
+The same rule at both scopes on purpose. One policy is explicable; "the wall's is kept but
+a territory's is overwritten" is a thing nobody could predict from outside.
+
+`LAYOUT_VERSION` is **not** bumped for this. The header is explicit that the version marks
+changes of *meaning*, not of shape, and `readLayout` is lenient by design: a document
+written before this reads back with `""` at both scopes, and an older build reading a newer
+document ignores two keys it does not know. `test/portage.test.ts` pins the
+document-from-before-this case, because it is every layout anybody has already exported and
+`tally` calls `.trim()` on both.
+
+One thing fell out of doing this that was a bug on its own: `settle` reached
+`ensure_project` directly and stopped there, so a carried territory was a row on disk the
+wall did not know about until the next launch. `Skein.learnProject` is the three lines
+`#openIn` has always had inline, now shared, and the import calls it.

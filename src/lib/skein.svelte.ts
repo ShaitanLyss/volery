@@ -2234,6 +2234,25 @@ export class Skein {
     this.projects = this.projects.map((p) => (p.id === id ? { ...p, root_path: rootPath } : p));
   }
 
+  /** Take a territory the store has just made or found into the wall's own
+   *  hands, if it is not already there.
+   *
+   *  `#openIn` has done this inline since the app was written, because opening a
+   *  card in a folder was the only way a territory came into existence. An
+   *  import is the second way (`portage.svelte.ts`), and it reached
+   *  `ensure_project` directly — so a carried territory was a row on disk that
+   *  the wall did not know about until the next launch, and anything set on it
+   *  in the same breath landed nowhere in hand.
+   *
+   *  `#settlePlaces` for the same reason it is called there: a new territory
+   *  flows into the first free cell once, rather than sitting wherever the order
+   *  of the list implies. */
+  learnProject(project: Project) {
+    if (this.projects.some((p) => p.id === project.id)) return;
+    this.projects = [...this.projects, project];
+    this.#settlePlaces();
+  }
+
   /** What the wall tells every card, changed.
    *
    *  Both of these write what Rust *stored* back into hand, rather than the

@@ -28,6 +28,7 @@ import type { Board } from "./images.svelte";
 import type { Widgets } from "./widgets.svelte";
 import type { Ambience } from "./ambience.svelte";
 import type { ink } from "./theme.svelte";
+import { changed } from "./guidance";
 import { specFor } from "./widgets";
 import { EXPORT_VERSION as THEME_VERSION } from "./theme";
 import {
@@ -66,6 +67,12 @@ export type Landed = {
   images: number;
   ambiences: number;
   themes: number;
+  /** Sets of standing instructions that were actually applied — the wall's, and
+   *  each territory's. Counted rather than assumed for the same reason
+   *  everything else here is: the rule below is top-up-never-overwrite, so most
+   *  of the time importing your own layout back applies none of them, and a
+   *  sentence claiming otherwise would hide exactly that. */
+  instructions: number;
   /** Things in the document this build could not place, by reason. Reported
    *  rather than swallowed — a layout that came back quietly incomplete is the
    *  failure `portage.ts` is written against. */
@@ -79,6 +86,7 @@ const NOTHING_LANDED = (): Landed => ({
   images: 0,
   ambiences: 0,
   themes: 0,
+  instructions: 0,
   skipped: [],
 });
 
@@ -124,6 +132,9 @@ export class Portage {
          where it also is. */
       x: p.x,
       y: p.y,
+      /* Furniture by this file's own test — how the room is arranged, not what
+         has been said in it. See `.claude/rules/guidance.md`. */
+      instructions: p.instructions,
       groups: skein.groups
         .filter((g) => g.group.project_id === p.id)
         .map((g) => ({
@@ -173,6 +184,11 @@ export class Portage {
          explicit that the choice is per-machine and disposable, and it lives in
          localStorage for that reason. */
       themes: $state.snapshot(ink.customs),
+      /* And the wall's own, which is the scope somebody actually wants on a new
+         machine: "my name is Lyss, I have ADHD" is a fact about the person, and
+         a laptop set up from a carried layout should not have to be told it
+         again. */
+      guidance: skein.guidance,
     };
   }
 
@@ -323,6 +339,35 @@ export class Portage {
          it. */
       if (becomes) await ambience.use(becomes);
 
+      /* The wall's standing instructions — free-standing like the two above, so
+         it lands here rather than among the territories.
+         `.claude/rules/guidance.md` has the subsystem.
+
+         **Topped up, never overwritten**, and that is the whole of the decision
+         this needed. There is exactly one wall guidance, so applying a carried
+         one over a set one is *replacing* it — the single thing this file's
+         header promises an import never does, and unlike the ambience switch
+         above it would destroy prose somebody wrote rather than change a setting
+         they can change back. So a wall with nothing set gains them, which is
+         the case that matters (a new machine), and a wall that is already saying
+         something keeps saying it and the document's version is named in the
+         skips. Clearing yours and importing again is the way to take theirs.
+
+         The same rule the territories below use, one scope out — one policy for
+         both, which is what makes it explicable. */
+      if (carried.guidance.trim()) {
+        if (!skein.guidance.trim()) {
+          try {
+            await skein.setGuidance(carried.guidance);
+            out.instructions++;
+          } catch (err) {
+            out.skipped.push(`the wall's standing instructions would not go on (${err})`);
+          }
+        } else if (changed(carried.guidance, skein.guidance)) {
+          out.skipped.push("the wall already has its own standing instructions");
+        }
+      }
+
       /* Territories. A carried root that is already a territory here is matched
          to it rather than duplicated — importing your own layout back onto the
          machine it came from should be close to a no-op, not a second copy of
@@ -333,11 +378,37 @@ export class Portage {
         try {
           const here = alreadyHere(p, skein.projects.map((x) => x.root_path));
           const project = await invoke<Project>("ensure_project", { rootPath: p.wasRoot });
+          /* Into the wall's own hands as well as onto disk. This reached
+             `ensure_project` directly and stopped there, so a carried territory
+             was a row the wall did not know about until the next launch — and
+             `setProjectGuidance` below writes through a list it is not in. */
+          skein.learnProject(project);
           if (!here) {
             out.projects++;
             if (p.x !== null && p.y !== null) skein.placeProject(p.wasRoot, p.x, p.y);
           }
           out.groups += await this.#groupsFor(project, p.wasRoot, p.groups);
+          /* And what it tells its cards, by the same top-up rule the wall's took
+             above. `project.instructions` is what is on disk *now* rather than
+             what the wall had in hand, which matters for a territory this import
+             has only just made. */
+          if (p.instructions.trim()) {
+            if (!project.instructions.trim()) {
+              /* Its own guard, not the territory's. The catch below says "the
+                 territory could not be made", which would be a lie about a
+                 territory that was made perfectly well and only failed to be
+                 told something — and it would also cost this project its server
+                 groups, which have already landed by here. */
+              try {
+                await skein.setProjectGuidance(project.id, p.instructions);
+                out.instructions++;
+              } catch (err) {
+                out.skipped.push(`"${p.name}" would not take its instructions (${err})`);
+              }
+            } else if (changed(p.instructions, project.instructions)) {
+              out.skipped.push(`"${p.name}" already has its own standing instructions`);
+            }
+          }
         } catch (err) {
           out.skipped.push(`the territory "${p.name}" could not be made (${err})`);
         }
@@ -532,6 +603,11 @@ export function sayLanded(l: Landed): string {
   say(l.images, "image");
   say(l.ambiences, "ambience");
   say(l.themes, "theme");
+  if (l.instructions > 0) {
+    parts.push(
+      l.instructions === 1 ? "1 set of instructions" : `${l.instructions} sets of instructions`,
+    );
+  }
   const did = parts.length > 0 ? parts.join(" · ") : "nothing new — it was all already here";
   return l.skipped.length > 0 ? `${did} · ${l.skipped.length} left out` : did;
 }

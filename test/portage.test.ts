@@ -27,6 +27,7 @@ import {
   writeLayout,
   type Carried,
 } from "../src/lib/portage";
+import { LIMIT } from "../src/lib/guidance";
 
 const widget = (kind: string, x = 0, y = 0) => ({
   kind,
@@ -45,6 +46,7 @@ const full: Carried = {
       wasRoot: "C:\\atelier\\skein",
       x: 100,
       y: 200,
+      instructions: "read only, no commits",
       groups: [
         {
           label: "dev",
@@ -61,6 +63,7 @@ const full: Carried = {
   images: [{ name: "shot.png", x: 5, y: 6, w: 300, h: 200, rotation: 0, z: 1, bytes: "AAAA" }],
   ambiences: [{ name: "dusk", layers: [{ kind: "leaves" }], active: true }],
   themes: [],
+  guidance: "call me Lyss",
 };
 
 describe("the round trip", () => {
@@ -301,6 +304,10 @@ describe("what the panel says", () => {
       ambiences: 1,
       themes: 0,
       bytes: 4,
+      /* The wall's and the one territory's — counted together, because what the
+         sentence before an import has to answer is whether the document tells
+         your agents anything. */
+      instructions: 2,
     });
   });
 
@@ -343,5 +350,102 @@ describe("freeName", () => {
   test("two names differing only in case are a person who does not think they have two", () => {
     expect(freeName("Dusk", ["dusk"])).toBe("Dusk 2");
     expect(freeName("dusk", ["  DUSK  "])).toBe("dusk 2");
+  });
+});
+
+/* Standing instructions are the one piece of furniture that is words rather
+   than a rectangle — see `.claude/rules/guidance.md`. They travel by the same
+   test everything else here travels by: how the room is arranged, not what has
+   been said in it. What is asserted below is the *document*; the top-up rule
+   that decides whether a carried one is applied lives in `portage.svelte.ts`,
+   where it needs a wall to be applied to. */
+describe("standing instructions travel", () => {
+  test("both scopes survive the round trip", () => {
+    const back = readLayout(writeLayout(full));
+    expect(back?.guidance).toBe("call me Lyss");
+    expect(back?.projects[0].instructions).toBe("read only, no commits");
+  });
+
+  test("a document from before they existed reads as nothing set", () => {
+    /* The case that must not throw: every layout anybody exported before this
+       has no `guidance` key and no `instructions` on its projects. Reading one
+       has to answer "" for both rather than undefined, since `tally` and the
+       import both call `.trim()` on them. */
+    const old = JSON.stringify({
+      skeinLayout: 1,
+      projects: [{ name: "skein", wasRoot: "C:\\atelier\\skein", x: 1, y: 2, groups: [] }],
+      widgets: [],
+      images: [],
+      ambiences: [],
+      themes: [],
+    });
+    const back = readLayout(old);
+    expect(back?.guidance).toBe("");
+    expect(back?.projects[0].instructions).toBe("");
+    expect(() => tally(back!)).not.toThrow();
+    expect(tally(back!).instructions).toBe(0);
+  });
+
+  test("a hand-edited document past the limit arrives bounded", () => {
+    /* Normalized on read like every other opaque thing this app takes back off
+       disk. The alternative is a string that reaches an argv and fails a spawn
+       with an OS error naming nothing — see `guidance::LIMIT`. */
+    const huge = "x".repeat(LIMIT + 500);
+    const back = readLayout(
+      JSON.stringify({
+        skeinLayout: 1,
+        guidance: huge,
+        projects: [{ name: "p", wasRoot: "C:\\p", groups: [], instructions: huge }],
+      }),
+    );
+    expect([...(back?.guidance ?? "")]).toHaveLength(LIMIT);
+    expect([...(back?.projects[0].instructions ?? "")]).toHaveLength(LIMIT);
+  });
+
+  test("instructions that are not strings are nothing rather than a crash", () => {
+    const back = readLayout(
+      JSON.stringify({
+        skeinLayout: 1,
+        guidance: { oh: "dear" },
+        projects: [{ name: "p", wasRoot: "C:\\p", groups: [], instructions: 42 }],
+      }),
+    );
+    expect(back?.guidance).toBe("");
+    expect(back?.projects[0].instructions).toBe("");
+  });
+
+  test("a wall whose only content is instructions is still an empty layout", () => {
+    /* Deliberate: `guidance` is a string on the document rather than a section,
+       so it does not make a document non-empty on its own. A wall with a line of
+       instructions and nothing standing on it is a wall with nothing on it, and
+       `LAYOUT_KEY` is already the right test for "this claims to be a layout". */
+    const back = readLayout(JSON.stringify({ skeinLayout: 1, guidance: "hello" }));
+    expect(back).not.toBeNull();
+    expect(back?.guidance).toBe("hello");
+    expect(sayTally(back!)).toBe("1 set of instructions");
+
+    /* And with no claim to be a layout at all, it is still not one. */
+    expect(readLayout(JSON.stringify({ guidance: "hello" }))).toBeNull();
+  });
+
+  test("the tally names them, singular and plural", () => {
+    expect(sayTally({ ...NOTHING_CARRIED, guidance: "one" })).toBe("1 set of instructions");
+    expect(
+      sayTally({
+        ...NOTHING_CARRIED,
+        guidance: "one",
+        projects: [
+          { name: "a", wasRoot: "C:\\a", x: null, y: null, groups: [], instructions: "two" },
+        ],
+      }),
+    ).toBe("1 project · 2 sets of instructions");
+    /* A territory carrying nothing is not counted, or every wall would report a
+       set of instructions per project the moment this shipped. */
+    expect(
+      sayTally({
+        ...NOTHING_CARRIED,
+        projects: [{ name: "a", wasRoot: "C:\\a", x: null, y: null, groups: [], instructions: "" }],
+      }),
+    ).toBe("1 project");
   });
 });

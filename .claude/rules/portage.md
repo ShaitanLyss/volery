@@ -20,6 +20,7 @@ changing something here, check it against that line first.
 | widgets, reference images (bytes included) | `window_frame` |
 | ambiences, including which was showing | which *theme* is on |
 | the custom themes you wrote | accounts |
+| standing instructions, both scopes | |
 
 Each of those exclusions is a rule from somewhere else, not a shortcut:
 
@@ -57,6 +58,32 @@ spot set to two timezones are one clock somebody has been fiddling with, and a r
 should leave the fiddling alone rather than adding a second clock underneath it. An image is
 matched on its file's *name*, since its path is a `%APPDATA%` directory that means nothing
 off this machine.
+
+### Standing instructions are furniture, and are only ever topped up
+
+The one carried thing that is *words* rather than a rectangle, and therefore the one where
+"an import adds" had to be worked out rather than assumed. `Carried.guidance` is the
+wall's, `CarriedProject.instructions` is a territory's — see `.claude/rules/guidance.md`.
+
+There is exactly one wall guidance, so applying a carried one over a set one is
+**replacing** it, which is the single thing this subsystem promises never to do. The nearest
+precedent is the ambience switch, and it does not carry: that changes a setting you can
+change back in one click, where this destroys prose somebody wrote. So a carried set is
+applied only where this wall has none — both scopes, one rule, because "the wall's is kept
+but a territory's is overwritten" is a policy nobody could predict from outside. What is
+skipped is *named* in `Landed.skipped` rather than dropped quietly, and clearing yours and
+importing again is the way to take theirs.
+
+This is why `Skein.learnProject` exists. `settle` reached `ensure_project` directly and
+stopped there, so a carried territory was a row on disk that the wall did not know about
+until the next launch — invisible while nothing was written *to* a fresh territory in the
+same breath, and not invisible at all once instructions were.
+
+No `LAYOUT_VERSION` bump: the version marks changes of meaning and this is a change of
+shape, which `readLayout` is lenient about by design. The case that needs pinning is the
+document written *before* this — every layout already exported — which must read back as
+`""` at both scopes rather than `undefined`, since `tally` and the import both `.trim()`
+them. `test/portage.test.ts` holds it.
 
 ## The import goes through the same commands a pair of hands would use
 

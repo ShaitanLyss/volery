@@ -55,6 +55,7 @@
  * territory that looks fine and does nothing.
  */
 
+import { tidy } from "./guidance";
 import { cleanThemes, type Theme } from "./theme";
 
 /** Bumped when a document written by this build could be misread by an older
@@ -91,6 +92,11 @@ export type CarriedProject = {
   x: number | null;
   y: number | null;
   groups: CarriedGroup[];
+  /** What this territory tells the cards standing in it. Furniture by this
+   *  file's own test — it is how the room is arranged, not what has been said in
+   *  it — and the one piece of furniture that is words rather than a rectangle.
+   *  `""` for a territory that says nothing, which is most of them. */
+  instructions: string;
 };
 
 export type CarriedWidget = {
@@ -139,6 +145,16 @@ export type Carried = {
   images: CarriedImage[];
   ambiences: CarriedAmbience[];
   themes: Theme[];
+  /** What the wall told every card standing on it. See `.claude/rules/guidance.md`.
+   *
+   *  A string rather than a section, so a document with nothing set is a
+   *  document with `""` here rather than a key that may be missing — and so the
+   *  five-section emptiness test below stays about *sections*. It is on purpose
+   *  that this does not make a document non-empty on its own: a wall whose only
+   *  content is a line of instructions is still a wall with nothing standing on
+   *  it, and `readLayout` already has the right answer for that case through
+   *  `LAYOUT_KEY`. */
+  guidance: string;
 };
 
 export const NOTHING_CARRIED: Carried = {
@@ -147,6 +163,7 @@ export const NOTHING_CARRIED: Carried = {
   images: [],
   ambiences: [],
   themes: [],
+  guidance: "",
 };
 
 /* ── Writing ─────────────────────────────────────────────────────────────── */
@@ -170,6 +187,12 @@ export function tally(c: Carried): {
   ambiences: number;
   themes: number;
   bytes: number;
+  /** How many sets of standing instructions are in here — the wall's, if it has
+   *  any, plus every territory that carries some. Counted as one number rather
+   *  than split by scope, because what the sentence before an import needs to
+   *  say is *whether the document tells your agents anything*, and the panel
+   *  that follows is where you find out what. */
+  instructions: number;
 } {
   return {
     projects: c.projects.length,
@@ -178,6 +201,8 @@ export function tally(c: Carried): {
     ambiences: c.ambiences.length,
     themes: c.themes.length,
     bytes: c.images.reduce((n, i) => n + (i.bytes?.length ?? 0), 0),
+    instructions:
+      (c.guidance.trim() ? 1 : 0) + c.projects.filter((p) => p.instructions.trim()).length,
   };
 }
 
@@ -196,6 +221,13 @@ export function sayTally(c: Carried): string | null {
   say(t.images, "image");
   say(t.ambiences, "ambience");
   say(t.themes, "theme");
+  /* Last, and named as "instructions" rather than counted as a thing — "2
+     instructions" reads as two sentences. This is the one item in the tally that
+     changes what an agent is *told*, so it is worth its own clause even though
+     it is the smallest thing in the file. */
+  if (t.instructions > 0) {
+    parts.push(t.instructions === 1 ? "1 set of instructions" : `${t.instructions} sets of instructions`);
+  }
   if (parts.length === 0) return null;
   const size = t.bytes > 0 ? ` · ${saySize(t.bytes)} of image` : "";
   return parts.join(" · ") + size;
@@ -243,6 +275,11 @@ export function readLayout(text: string): Carried | null {
     images: list(r.images).map(cleanImage).filter(isThere),
     ambiences: list(r.ambiences).map(cleanAmbience).filter(isThere),
     themes: cleanThemes(r.themes),
+    /* Through `guidance.ts`'s own `tidy`, so a document that has been hand-edited
+       past the limit arrives already bounded — the same normalize-on-read
+       bargain every opaque column in this app strikes, and the alternative is a
+       string that reaches an argv and fails a spawn. */
+    guidance: tidy(str(r.guidance) ?? ""),
   };
 
   const empty =
@@ -423,6 +460,7 @@ export function cleanProject(raw: unknown): CarriedProject | null {
     x: maybeNum(o.x),
     y: maybeNum(o.y),
     groups: list(o.groups).map(cleanGroup).filter(isThere),
+    instructions: tidy(str(o.instructions) ?? ""),
   };
 }
 

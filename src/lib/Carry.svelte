@@ -63,7 +63,8 @@
   <p class="what">
     Everything about how this room is arranged — the territories and where they sit, the
     server groups they run, the widgets and images on the wall, the ambiences, the themes you
-    wrote. Not the cards: a conversation is a session on this machine, and one carrying a
+    wrote, and the standing instructions the wall and its territories give their cards. Not
+    the cards themselves: a conversation is a session on this machine, and one carrying a
     resume id that resolves to nothing is worse than no card. Accounts have their own export
     in the accounts panel, because no document carries a credential.
   </p>
@@ -86,6 +87,8 @@
         This adds to the wall — it never replaces and never deletes, and furniture of the same
         kind already in the same place is left alone. Undo takes it back one thing at a time
         rather than in one press. An ambience the document was wearing becomes the one showing.
+        Standing instructions are only taken where you have none: anything already telling its
+        cards something goes on saying it, and the document's version is left out and named.
       </p>
       <div class="pair">
         <button class="act go" disabled={carry.busy} onclick={() => void carry.settle()}>
