@@ -849,7 +849,7 @@ static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 /// path that does not exist, `read_ai_title` read that as "no transcript yet"
 /// — its normal, silent case — and every conversation under a dotted directory
 /// went permanently untitled.
-pub(crate) fn transcript_dir_name(cwd: &str) -> String {
+fn fold_dir_name(cwd: &str) -> String {
     let mut out = String::with_capacity(cwd.len());
     for c in cwd.chars() {
         if c.is_ascii_alphanumeric() {
@@ -861,6 +861,61 @@ pub(crate) fn transcript_dir_name(cwd: &str) -> String {
         }
     }
     out
+}
+
+/// The same fold, over the path **the child will actually report** — which is
+/// not always the path we spawn it with, and that gap cost two territories
+/// every one of their conversations.
+///
+/// `C:\Users\lyss` on this machine is a junction to `C:\Users\flori`. Windows
+/// resolves a reparse point when a process's current directory is *opened*, so
+/// a child spawned with `current_dir("C:\Users\lyss\codes\rise")` reports
+/// `C:\Users\flori\codes\rise` from `process.cwd()` and files its transcript
+/// under `C--Users-flori-codes-rise`. Probed 2026-08-26 — `bun -e
+/// "console.log(process.cwd())"` from the junction path answers the target, and
+/// there is not one `C--Users-lyss-…` directory under `~/.claude/projects`
+/// against 17 cards whose rows say that is where they live. Note `cmd`'s own
+/// `cd` answers the junction path, because a shell tracks its directory as a
+/// string; a real spawn does not, and a real spawn is what this is about.
+///
+/// So both sides asked the same question and got different answers. The CLI
+/// refuses `--session-id` for a session it already has a transcript for
+/// (`Own()` in the bundled JS, a `statSync` of exactly this path), and Skein
+/// chooses between `--session-id` and `--resume` by asking whether that file is
+/// there — from the unresolved path, where it never was. So every card under
+/// `nova` and `rise` spawned fresh, and the first wake after it had spoken died
+/// on `Error: Session ID … is already in use.`, exit 1, before a turn: the
+/// account waterfall's close-and-respawn was where it showed, since that is the
+/// one path that wakes a card seconds after it spoke.
+///
+/// Falls back to the string it was given when the path cannot be resolved,
+/// which is a directory that is not there — the same answer as before, and the
+/// same "no transcript" every caller already handles.
+pub(crate) fn transcript_dir_name(cwd: &str) -> String {
+    fold_dir_name(&real_dir(cwd))
+}
+
+/// A path as the filesystem itself spells it: junctions and symlinks followed,
+/// case as the directories really are.
+fn real_dir(cwd: &str) -> String {
+    match std::fs::canonicalize(cwd) {
+        Ok(p) => plain(&p.to_string_lossy()),
+        // Not there — nothing to resolve, and nothing to file under either.
+        Err(_) => cwd.to_string(),
+    }
+}
+
+/// Take the verbatim prefix off what `canonicalize` hands back on Windows.
+///
+/// `\\?\C:\x` is the same directory as `C:\x` and folds to a different slug, so
+/// leaving it on would trade this bug for the identical one. The UNC form needs
+/// its own arm: `\\?\UNC\server\share` is `\\server\share`, and stripping only
+/// `\\?\` would leave a literal `UNC` in the middle of the path.
+fn plain(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
 }
 
 /// Where Claude Code keeps this session's transcript.
@@ -1278,7 +1333,7 @@ pub fn wake_quiet() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::transcript_dir_name;
+    use super::{fold_dir_name, plain};
 
     /// Every backticked `mcp__skein__…` in the appended prompt, in order.
     fn named_tools(prompt: &str) -> Vec<String> {
@@ -1663,23 +1718,23 @@ mod tests {
     #[test]
     fn transcript_dir_matches_claude_codes_own_naming() {
         // Verified against the real directories on disk.
-        assert_eq!(transcript_dir_name("C:\\atelier"), "C--atelier");
-        assert_eq!(transcript_dir_name("C:\\atelier\\caravan"), "C--atelier-caravan");
+        assert_eq!(fold_dir_name("C:\\atelier"), "C--atelier");
+        assert_eq!(fold_dir_name("C:\\atelier\\caravan"), "C--atelier-caravan");
         assert_eq!(
-            transcript_dir_name("C:\\Users\\flori\\codes\\rise"),
+            fold_dir_name("C:\\Users\\flori\\codes\\rise"),
             "C--Users-flori-codes-rise"
         );
     }
 
     #[test]
     fn forward_slashes_encode_the_same_way() {
-        assert_eq!(transcript_dir_name("C:/atelier/skein"), "C--atelier-skein");
+        assert_eq!(fold_dir_name("C:/atelier/skein"), "C--atelier-skein");
     }
 
     #[test]
     fn case_is_preserved() {
         // C--Users-... keeps its capital U on disk.
-        assert_eq!(transcript_dir_name("C:\\Users"), "C--Users");
+        assert_eq!(fold_dir_name("C:\\Users"), "C--Users");
     }
 
     /// The bug: only separators folded, so `.scratch` kept its dot, the path
@@ -1689,18 +1744,95 @@ mod tests {
     #[test]
     fn every_non_alphanumeric_folds_to_a_dash() {
         assert_eq!(
-            transcript_dir_name("C:\\atelier\\skein\\.scratch\\wall"),
+            fold_dir_name("C:\\atelier\\skein\\.scratch\\wall"),
             "C--atelier-skein--scratch-wall"
         );
-        assert_eq!(transcript_dir_name("slug_probe a.b+c"), "slug-probe-a-b-c");
-        assert_eq!(transcript_dir_name("café_naïve-Ω9"), "caf--na-ve--9");
+        assert_eq!(fold_dir_name("slug_probe a.b+c"), "slug-probe-a-b-c");
+        assert_eq!(fold_dir_name("café_naïve-Ω9"), "caf--na-ve--9");
     }
 
     /// Replacement is per UTF-16 code unit, as in the JS that does it upstream,
     /// so a char outside the BMP is two dashes. `char`-wise mapping gives one.
     #[test]
     fn an_astral_char_folds_to_two_dashes() {
-        assert_eq!(transcript_dir_name("emoji\u{1F33F}probe"), "emoji--probe");
+        assert_eq!(fold_dir_name("emoji\u{1F33F}probe"), "emoji--probe");
+    }
+
+    /// `\\?\C:\x` and `C:\x` are one directory and fold to two slugs, so the
+    /// prefix `canonicalize` adds has to come back off — resolving the path and
+    /// then filing it under the verbatim spelling would be the same bug wearing
+    /// the other shoe. The UNC arm is why this is not a single `strip_prefix`.
+    #[test]
+    fn the_verbatim_prefix_comes_off() {
+        assert_eq!(plain(r"\\?\C:\atelier\skein"), r"C:\atelier\skein");
+        assert_eq!(plain(r"C:\atelier\skein"), r"C:\atelier\skein");
+        assert_eq!(plain(r"\\?\UNC\build\share\rise"), r"\\build\share\rise");
+    }
+
+    /// The bug: two spellings of one directory, folding to two slugs, and only
+    /// one of them the CLI's. `C:\Users\lyss` on this machine is a junction to
+    /// `C:\Users\flori`, so a child spawned with the row's `cwd` filed its
+    /// transcript under the target — while Skein asked whether one existed under
+    /// the junction, where it never did, chose `--session-id`, and the CLI
+    /// refused it with `Error: Session ID … is already in use.`
+    ///
+    /// It makes a real junction, because nothing else reproduces this: every
+    /// string test in this module passed throughout, and 17 cards under two
+    /// territories could not be woken.
+    #[test]
+    #[cfg(windows)]
+    fn a_junction_folds_to_what_it_points_at() {
+        use super::transcript_dir_name;
+
+        let base = std::env::temp_dir().join(format!("skein-junction-{}", std::process::id()));
+        let (real, link) = (base.join("real"), base.join("link"));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&real).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !made {
+            /* No junction to be had — nothing to assert about one. Skipped
+               rather than failed: `mklink` is not this crate's to guarantee. */
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        /* Both shapes, and the second is the one that shipped: the junction on
+           this machine is at `C:\Users\lyss`, three segments above the directory
+           a card actually runs in, so a reparse point in the *middle* of the
+           path is what has to resolve. */
+        for (a, b) in [(link.clone(), real.clone()), (link.join("codes"), real.join("codes"))] {
+            std::fs::create_dir_all(&b).unwrap();
+            let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+            assert_ne!(
+                fold_dir_name(a),
+                fold_dir_name(b),
+                "the two spellings must differ, or this test proves nothing"
+            );
+            assert_eq!(
+                transcript_dir_name(a),
+                transcript_dir_name(b),
+                "a junction and its target are one directory and file in one place"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&link);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A directory that is not there resolves to nothing, and the answer is the
+    /// string it was given — which is what every caller already handles, since
+    /// "no transcript" is the reading it produces.
+    #[test]
+    fn an_unresolvable_path_folds_as_written() {
+        assert_eq!(
+            super::transcript_dir_name("C:\\nowhere\\at\\all\\really"),
+            "C--nowhere-at-all-really"
+        );
     }
 
     /// One transcript's worth of records, in the shape claude 2.1.233 writes

@@ -36,6 +36,29 @@ since been deleted now starts fresh rather than dying on `No conversation found 
 ID`. The front end no longer passes the flag: one question with a file for an answer must not
 have a second, staler answer travelling beside it.
 
+**And then the file was asked about under a name the CLI does not use.** Both sides ask the
+same question — the CLI refuses `--session-id` for a session it already has a transcript for,
+`Own()` in the bundled JS being a `statSync` of exactly this path — so the only way to
+disagree is to spell the directory differently, and a junction is how. `C:\Users\lyss` on this
+machine points at `C:\Users\flori`; Windows resolves a reparse point when a process's current
+directory is *opened*, so a child spawned with `current_dir("C:\Users\lyss\codes\rise")`
+reports the target from `process.cwd()` and files under `C--Users-flori-codes-rise`, while
+Skein looked under `C--Users-lyss-codes-rise` and found nothing there. Every card in those two
+territories therefore spawned fresh, and the first wake after one had spoken died on `Error:
+Session ID … is already in use.` — exit 1, nothing on stdout, the same failure the paragraph
+above is about, arrived at from the opposite direction. Found 2026-08-26 from an account swap,
+which is where it shows: closing and respawning seconds after a card spoke is the one path
+that wakes a card that recently had a transcript. 17 cards, 9 of them live, and not one
+`C--Users-lyss-…` directory under `~/.claude/projects` to show for them.
+
+So `transcript_dir_name` canonicalizes before it folds, and the pure fold is `fold_dir_name`
+underneath it — every caller reaches the resolving one, because a caller that has to remember
+is the shape of the bug before it happens. The general rule it is an instance of: **a path
+used to predict what another process will do must be the path that process will see, not the
+one we typed.** Two spellings of one directory is not a case a string test can reach, which is
+why `a_junction_folds_to_what_it_points_at` makes a real junction — every string test in that
+module passed throughout.
+
 Because of this, anything a dormant card must display has to be persisted in
 `store.rs::update_conversation` as turns settle.
 
