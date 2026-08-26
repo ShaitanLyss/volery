@@ -327,6 +327,16 @@ pub fn control_real_drag(
 
 /* ── the endpoint ─────────────────────────────────────────────────────── */
 
+/// Is the control surface asked for at all?
+///
+/// Read straight off the environment rather than out of `Control`, because
+/// `window::settle` runs *before* `start` binds anything — see the order in
+/// `lib.rs`'s setup. Shares `requested_port`'s vocabulary so one variable goes
+/// on meaning one thing, including the pinned-port spelling.
+pub fn asked_for() -> bool {
+    requested_port(std::env::var("SKEIN_CONTROL").ok().as_deref()).is_some()
+}
+
 /// `SKEIN_CONTROL=1` for an ephemeral port, `SKEIN_CONTROL=8787` to pin one.
 /// Anything falsey, or unset, and none of this exists.
 pub(crate) fn requested_port(raw: Option<&str>) -> Option<u16> {

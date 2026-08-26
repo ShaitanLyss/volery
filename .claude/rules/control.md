@@ -88,6 +88,21 @@ The window is not visually branded, because `decorations: false` means the title
 `App.svelte` and the header draws its own name. An empty wall plus the control chip is what
 tells the two apart.
 
+**An armed wall opens at the back.** `window::settle` reads who holds the foreground *before*
+it shows, and when `SKEIN_CONTROL` is set it hands the keyboard straight back and drops the
+window to the bottom of the z-order (`opens_quietly`, `hand_back`). It still opens, at full
+size, un-minimised, where it was placed — it just does not interrupt what you were typing
+into. `tauri dev` rebuilds on every source change, including changes another card on the wall
+is making, so a lab instance that grabbed focus each time would be one you stopped starting.
+
+The show itself stays unconditional, which matters: the comment above `win.show()` is there
+because a skipped show is an app with no window and no gesture that asks for one. So this is
+a *return* of the foreground after taking it, not a refusal to take it — which is also the
+only order Windows permits, since a process may only give the foreground away while it holds
+it. Measured on the lab: z-index 42 of 43, `iconic=False`, foreground still on the real
+studio. Gated on `SKEIN_CONTROL` rather than on the lab identifier, because a wall being
+driven from outside is the thing that shouldn't grab focus, whichever store it opened.
+
 `test/fixtures/bash-described.json` and `…-undescribed.json` are the shape to copy for a
 `feed` fixture: the same real 97-line Bash call, differing in exactly one field, so feeding
 each into a fresh card is a controlled experiment rather than two anecdotes.

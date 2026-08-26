@@ -107,12 +107,94 @@ pub fn settle<R: Runtime>(app: &AppHandle<R>, saved: Option<Frame>) {
         return;
     };
     place(&win, saved);
+    /* Who has the keyboard right now, asked *before* the show, because the show
+       is what takes it away from them. `None` unless we mean to give it back —
+       see `opens_quietly`. */
+    let interrupted = opens_quietly().then(foreground).flatten();
     /* Unconditionally, and this is the one line here that must not be allowed
        to become conditional: every failure above leaves a window in the wrong
        place, which you can drag, while a `show` that got skipped leaves an app
        with no window at all and no gesture that asks for one. */
     let _ = win.show();
+    /* So the quiet open is a *return* of the foreground rather than a refusal to
+       take it, and the guarantee above survives untouched. */
+    if let Some(prev) = interrupted {
+        hand_back(&win, prev);
+    }
 }
+
+/// Should the studio open without taking the foreground?
+///
+/// A wall with the control surface armed is a wall being driven from outside —
+/// `bun run lab`, `bun run test:wall` — and neither is something you are looking
+/// at when it starts. It still opens, at full size, un-minimised, exactly where
+/// it was placed; it simply does not interrupt what you were already typing
+/// into. A dev instance that steals focus on every rebuild is a dev instance you
+/// stop starting.
+///
+/// Gated on `SKEIN_CONTROL` rather than on a third flag of its own, deliberately:
+/// arming the control surface is already an explicit gesture that lights a chip
+/// in the title bar, and a *driven* wall taking the keyboard is unwanted in every
+/// case rather than in some. The real studio, started by hand, is asking to be
+/// looked at and still comes to the front.
+fn opens_quietly() -> bool {
+    crate::control::asked_for()
+}
+
+/// The window that had the keyboard, or `None` when nothing did.
+#[cfg(windows)]
+fn foreground() -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let h = unsafe { GetForegroundWindow() };
+    (!h.is_invalid()).then(|| h.0 as isize)
+}
+
+#[cfg(not(windows))]
+fn foreground() -> Option<isize> {
+    None
+}
+
+/// Send the studio to the back of the z-order and give the keyboard back.
+///
+/// Two calls, because they are two separate facts and either alone leaves half
+/// the disturbance: `SetWindowPos` with `SWP_NOACTIVATE` fixes where the window
+/// sits without activating it, and `SetForegroundWindow` returns the focus the
+/// `show` above has already taken. Windows only lets a process hand the
+/// foreground away while it *is* the foreground, which is exactly where the show
+/// has just left us standing — so the order here is the thing that makes it
+/// work, not a preference.
+///
+/// Failure is silent and harmless throughout: what you get is the old
+/// behaviour, a window at the front, which is where every other app's would be.
+#[cfg(windows)]
+fn hand_back<R: Runtime>(win: &WebviewWindow<R>, prev: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetForegroundWindow, SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let Ok(ours) = win.hwnd() else { return };
+    /* Our own window having been the foreground is not a thing to restore: it
+       would mean handing the keyboard back to the window we are trying to move
+       out of the way. */
+    if prev == ours.0 as isize {
+        return;
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            ours,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        let _ = SetForegroundWindow(HWND(prev as *mut core::ffi::c_void));
+    }
+}
+
+#[cfg(not(windows))]
+fn hand_back<R: Runtime>(_win: &WebviewWindow<R>, _prev: isize) {}
 
 fn place<R: Runtime>(win: &WebviewWindow<R>, saved: Option<Frame>) {
     let wanted = match saved {
