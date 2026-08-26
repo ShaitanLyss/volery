@@ -700,6 +700,15 @@ pub struct ProjectStatus {
     /// What is half-done: "merge" | "rebase" | "cherry-pick" | "revert". Only
     /// asked for while there are conflicts, since it costs a second spawn.
     pub operation: Option<String>,
+    /// The annotated tags a push from here would carry with it — exactly the
+    /// set `git push --follow-tags` would send, by name.
+    ///
+    /// Why the push chip needs to know rather than just passing the flag: a
+    /// `bump` writes a commit *and* an annotated tag, and a chip reading
+    /// `push ↑1` that also publishes a release tag is a surprise on the one
+    /// gesture in this app that reaches another machine. Naming them is what
+    /// makes the flag safe to pass. See `actions.ts`.
+    pub unpushed_tags: Vec<String>,
 }
 
 /// Everything one `git status --porcelain=v2 --branch` amounts to.
@@ -713,10 +722,16 @@ struct Git {
     conflicts: u32,
     conflict_paths: Vec<String>,
     operation: Option<String>,
+    tags: Vec<String>,
 }
 
 /// How many conflicted paths are worth carrying to the front end.
 const MAX_CONFLICT_PATHS: usize = 8;
+
+/// And how many tag names. A chip cannot draw more than a couple, and the
+/// tooltip behind it is a line rather than a list — past this the label says
+/// how many instead of which, so the names stop being what is needed.
+const MAX_TAGS: usize = 8;
 
 /// One `git` call for branch, tracking, distance and cleanliness together.
 ///
@@ -752,7 +767,63 @@ fn git_status(root: &str) -> Git {
     if g.conflicts > 0 {
         g.operation = git_operation(root);
     }
+    /* And the same bargain for tags, which is why it is gated on an upstream
+       rather than merely on being a repository. Two reasons and both matter.
+       The cheap one: this is another spawn on an 8-second poll over every
+       territory on the wall, and the answer is empty for nearly all of them.
+       The honest one: with no upstream there is no ref to measure "not pushed
+       yet" *against*, so any answer would be a guess — see `git_unpushed_tags`,
+       and see the `publish` chip in `actions.ts`, which deliberately does not
+       carry the flag for exactly this reason. */
+    if g.upstream && g.branch.is_some() {
+        g.tags = git_unpushed_tags(root);
+    }
     g
+}
+
+/// The annotated tags `git push --follow-tags` would send from here: reachable
+/// from `HEAD`, not reachable from the upstream.
+///
+/// Entirely local, like every other reading in this file — measured against the
+/// remote-tracking ref as the last fetch left it, so a tag the remote gained
+/// since then still reads as unpushed. Pushing it again is a no-op, so the
+/// direction of that error is the harmless one.
+///
+/// Probed 2026-08-26 against git on this machine, in a scratch repo with a real
+/// remote, and the set matched `--follow-tags` exactly in three cases:
+/// annotated tags go and **lightweight tags do not** (hence the `objecttype`
+/// filter — a lightweight tag reports `commit`, an annotated one reports
+/// `tag`); a tag on an already-pushed commit still goes, with the branch up to
+/// date, which is why `actions.ts` draws the chip for tags alone; and a tag the
+/// remote already has is not offered, since it is reachable from the upstream.
+fn git_unpushed_tags(root: &str) -> Vec<String> {
+    let Some(out) = output(Command::new("git").current_dir(root).args([
+        "--no-optional-locks",
+        "for-each-ref",
+        "--format=%(objecttype)%09%(refname:short)",
+        "--merged",
+        "HEAD",
+        "--no-merged",
+        "@{upstream}",
+        "refs/tags",
+    ])) else {
+        return Vec::new();
+    };
+    parse_tags(&out)
+}
+
+/// Annotated tag names out of `for-each-ref`'s two columns.
+fn parse_tags(out: &str) -> Vec<String> {
+    out.lines()
+        .filter_map(|line| line.split_once('\t'))
+        /* `tag` is an annotated tag — a real object with a message. `commit` is
+           a lightweight one, a bare pointer, which `--follow-tags` does not
+           send and which this must therefore not promise. */
+        .filter(|(kind, _)| *kind == "tag")
+        .map(|(_, name)| name.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .take(MAX_TAGS)
+        .collect()
 }
 
 fn parse_status(out: &str) -> Git {
@@ -1081,6 +1152,7 @@ pub async fn poll_projects(requests: Vec<PollRequest>) -> Vec<ProjectStatus> {
                 upstream: g.upstream,
                 ahead: g.ahead,
                 behind: g.behind,
+                unpushed_tags: g.tags,
                 dirty: g.dirty,
                 conflicts: g.conflicts,
                 conflict_paths: g.conflict_paths,
@@ -1126,6 +1198,43 @@ mod tests {
         assert_eq!(g.ahead, 2);
         assert_eq!(g.behind, 5);
         assert!(!g.dirty);
+    }
+
+    /// `--follow-tags` sends annotated tags and not lightweight ones, so the
+    /// `objecttype` column is the whole of the filter — and getting it backwards
+    /// would put a name on the chip that the push then does not send, which is
+    /// the one failure a label must not have.
+    #[test]
+    fn only_annotated_tags_are_what_a_push_would_carry() {
+        let out = "tag\tv1.0.0\ncommit\tscratch\ntag\tv1.1.0\n";
+        assert_eq!(parse_tags(out), vec!["v1.0.0", "v1.1.0"]);
+    }
+
+    #[test]
+    fn nothing_to_carry_reads_as_nothing() {
+        assert!(parse_tags("").is_empty());
+        /* A repository with only lightweight tags has nothing a push would take,
+           which must read as an empty list rather than as tags it will not
+           send. */
+        assert!(parse_tags("commit\tscratch\ncommit\told\n").is_empty());
+    }
+
+    /// A tag name may not contain a tab and `for-each-ref` writes exactly one,
+    /// so `split_once` is right — but a line with no tab at all is a format this
+    /// code did not ask for, and skipping it beats indexing into it.
+    #[test]
+    fn a_line_that_is_not_two_columns_is_skipped() {
+        assert_eq!(parse_tags("tag\tv1.0.0\ngarbage\n\ntag\t\n"), vec!["v1.0.0"]);
+    }
+
+    /// Bounded, because the label falls back to a count past two and the tooltip
+    /// is a line rather than a list — a repository with four hundred release
+    /// tags on an unpushed branch must not send four hundred names to the front
+    /// end every eight seconds.
+    #[test]
+    fn the_list_is_capped() {
+        let many: String = (0..50).map(|i| format!("tag\tv{i}.0.0\n")).collect();
+        assert_eq!(parse_tags(&many).len(), MAX_TAGS);
     }
 
     /// No upstream means no `branch.ab` at all, so there is nothing to count

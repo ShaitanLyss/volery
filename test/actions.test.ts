@@ -9,6 +9,7 @@ import {
   progressFrom,
   refocusStep,
   scriptArgv,
+  tagMark,
   tallyNote,
   LIVE_CODING,
   NO_FOCUS,
@@ -183,6 +184,81 @@ describe("push and pull", () => {
   test("nothing is offered until the poll has answered, or off a branch", () => {
     expect(ids(repo, NO_STATUS)).toEqual([]);
     expect(ids(repo, { ...NO_STATUS, branch: null, ahead: 2 })).toEqual([]);
+  });
+
+  /* ── what rides along ──────────────────────────────────────────────────
+     `bump` writes a commit *and* an annotated tag, and `git push` alone leaves
+     the tag behind — the release goes out with no tag on it and the chip
+     disappears, which reads as done. `--follow-tags` fixes the push; naming the
+     tag on the label is what makes the flag safe to pass, since this is the one
+     gesture in the row that reaches another machine. */
+
+  test("the tag a bump wrote is named on the chip and carried by the push", () => {
+    const s = tracking({ ahead: 1, unpushedTags: ["v0.11.3"] });
+    const [push] = actionsFor(repo, s);
+    expect(push.label).toBe("push ↑1 +v0.11.3");
+    expect(push.title).toBe("1 commit to push on main, carrying v0.11.3");
+    expect(argvOf(repo, "push", s)).toEqual(["git", "push", "--follow-tags"]);
+  });
+
+  /* Three names do not fit on a chip, and a chip that grows to fit its contents
+     is a row that reflows every time you commit. The tooltip still lists them,
+     because "+3 tags" is the one label you would actually want to check. */
+  test("several tags are counted, and still named in the tooltip", () => {
+    const [push] = actionsFor(
+      repo,
+      tracking({ ahead: 2, unpushedTags: ["v0.9.0", "v0.10.0", "v0.11.0"] }),
+    );
+    expect(push.label).toBe("push ↑2 +3 tags");
+    expect(push.title).toContain("v0.9.0, v0.10.0, v0.11.0");
+  });
+
+  /* Probed: `git push --follow-tags` sends an annotated tag even when the branch
+     is up to date. So a tag on an already-pushed commit is genuinely pushable,
+     and without this the chip is absent and the tag has no way off the wall. */
+  test("a tag alone draws the chip, with nothing counted ahead", () => {
+    const s = tracking({ ahead: 0, unpushedTags: ["v0.11.3"] });
+    expect(ids(repo, s)).toEqual(["push"]);
+    const [push] = actionsFor(repo, s);
+    expect(push.label).toBe("push +v0.11.3");
+    /* No "↑0" anywhere, and the title says what is true rather than counting to
+       zero — a chip reading "push ↑0" is a chip that looks broken. */
+    expect(push.label).not.toContain("↑");
+    expect(push.title).toBe("nothing to push on main, carrying v0.11.3");
+  });
+
+  test("no tags leaves the label exactly as it was", () => {
+    expect(actionsFor(repo, tracking({ ahead: 3 }))[0].label).toBe("push ↑3");
+    expect(actionsFor(repo, tracking({ ahead: 3, unpushedTags: [] }))[0].label).toBe("push ↑3");
+  });
+
+  /* The one place the two push chips differ, and it is deliberate. With no
+     upstream there is no ref to measure "not pushed yet" against, so
+     `project.rs` reads no tags and this chip cannot name what it would send.
+     Nothing is stranded: publishing gives the branch an upstream, and a tag left
+     behind draws its own `push +v…` on the next poll. */
+  test("publish carries no tags, because it cannot say which", () => {
+    const s = { ...NO_STATUS, branch: "spike", unpushedTags: ["v0.11.3"] };
+    expect(argvOf(repo, "push", s)).toEqual(["git", "push", "-u", "origin", "HEAD"]);
+    expect(actionsFor(repo, s)[0].label).toBe("publish");
+  });
+
+  /* Off a branch there is nothing to push and nothing to tag against, and a tag
+     must not be the thing that resurrects a chip a detached HEAD should not
+     have. */
+  test("a tag does not draw the chip off a branch, or before the first poll", () => {
+    expect(ids(repo, { ...NO_STATUS, unpushedTags: ["v1.0.0"] })).toEqual([]);
+    expect(
+      ids(repo, { ...NO_STATUS, upstream: true, branch: null, unpushedTags: ["v1.0.0"] }),
+    ).toEqual([]);
+  });
+});
+
+describe("tagMark", () => {
+  test("names one, counts many, says nothing about none", () => {
+    expect(tagMark([])).toBe("");
+    expect(tagMark(["v1.0.0"])).toBe(" +v1.0.0");
+    expect(tagMark(["v1.0.0", "v1.1.0"])).toBe(" +2 tags");
   });
 });
 

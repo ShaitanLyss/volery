@@ -79,6 +79,28 @@ Things that are load-bearing:
   *presence* the news: a pull chip on a territory means somebody pushed to that remote, legible
   from across the wall without reading a label. They are last in the row because they come and
   go, so what moves under the cursor is only ever each other.
+- **A push carries its tag, and says which on the chip.** `bump` writes a commit *and* an
+  annotated tag, and a bare `git push` sends the commit and leaves the tag behind — the
+  release goes out untagged, the `↑1` clears, the chip disappears, and the whole thing reads
+  as done. So the push step is `--follow-tags`, which sends the annotated tags reachable from
+  what is being pushed and nothing else: a scratch tag on some other branch is not swept along
+  with a release, which `--tags` would do. `project.rs::git_unpushed_tags` computes the same
+  set the flag would send — `for-each-ref --merged HEAD --no-merged @{upstream} refs/tags`,
+  filtered to `objecttype == tag` because lightweight tags are not sent — so the label can
+  name it: `push ↑1 +v0.11.3` for one, `push ↑2 +3 tags` past that, the tooltip listing them.
+  Naming it is what makes the flag safe to pass, since this is the one chip in the row that
+  reaches another machine.
+  **A tag alone draws the chip**, with nothing counted ahead — probed 2026-08-26 in a scratch
+  repo with a real remote: `--follow-tags` sends an annotated tag even when the branch is up to
+  date, so a tag on an already-pushed commit is genuinely pushable and without this it has no
+  way off the wall. **`publish` deliberately does not carry the flag**, and it is the one place
+  the two push chips differ: with no upstream there is no ref to measure "not pushed yet"
+  against, so no tags are read and the chip could not name what it would send. Nothing is
+  stranded — publishing gives the branch an upstream, and a tag left behind draws its own
+  `push +v…` on the next poll. Two clicks, both labelled.
+  The tag read is the only other spawn in the poll besides `git_operation`, and it is gated on
+  there being an upstream for both reasons at once: the answer is empty for nearly every
+  territory, and without an upstream it would be a guess.
 - **The fetch is a second, much slower clock, and the only thing here that leaves the
   machine.** `behind` comes off the same `--porcelain=v2 --branch` header `ahead` does
   (`# branch.ab +2 -5`, parsed and thrown away for as long as only push existed), so it is

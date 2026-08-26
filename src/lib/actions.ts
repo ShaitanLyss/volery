@@ -79,6 +79,10 @@ export type ProjectStatus = {
   /** What is half-done, when something is. `null` either means nothing is or
    *  means the markers were gone by the time we looked. */
   operation: Operation | null;
+  /** The annotated tags a push would carry with it, by name — exactly what
+   *  `--follow-tags` would send, worked out locally in `project.rs` and capped
+   *  there. Empty unless the branch has an upstream to measure against. */
+  unpushedTags: string[];
 };
 
 /** The operations that can stop on a conflict. */
@@ -94,6 +98,7 @@ export const NO_STATUS: ProjectStatus = {
   conflicts: 0,
   conflictPaths: [],
   operation: null,
+  unpushedTags: [],
 };
 
 /** One thing an action does. Most are a command; the Unreal ones that talk to a
@@ -661,16 +666,45 @@ export function actionsFor(f: ProjectFacts, s: ProjectStatus = NO_STATUS): Actio
         id: "push",
         label: "publish",
         title: `publish ${s.branch} to origin — it is not tracking anything yet`,
+        /* No `--follow-tags` here, deliberately, and it is the one place the two
+           push chips differ. With no upstream there is no ref to measure "not
+           pushed yet" against, so `project.rs` reads no tags and this chip
+           cannot name what it would send — and a chip that reaches another
+           machine with something it did not say it was sending is the one thing
+           this row must not do. Nothing is stranded by the omission: publishing
+           gives the branch an upstream, and a tag left behind draws its own
+           `push +v…` chip on the very next poll. Two clicks, both labelled. */
         steps: [{ kind: "run", argv: ["git", "push", "-u", "origin", "HEAD"] }],
       });
-    } else if (s.upstream && s.ahead > 0) {
+    } else if (s.branch && s.upstream && (s.ahead > 0 || s.unpushedTags.length > 0)) {
+      /* `s.branch` is new here and is belt-and-braces rather than a fix: a
+         detached HEAD reports no `# branch.upstream`, so `upstream` was already
+         doing this work. It is stated anyway because the guard now protects a
+         *second* reason to draw — a tag — and "you cannot push what you are not
+         standing on" is too load-bearing to leave resting on a coincidence in
+         another file. The publish branch above makes the same argument at
+         length, for a case where getting it wrong publishes a branch named
+         after wherever you happened to be. */
+      /* Tags alone are enough to draw this, which is why the condition is not
+         just `ahead > 0`. Probed: `git push --follow-tags` sends an annotated
+         tag even when the branch is up to date, so a tag on an already-pushed
+         commit — `bump`'s output after somebody pushed the commit from a
+         terminal, or any tag written by hand — is genuinely pushable from here.
+         Without this the chip is absent and the tag has no way off the wall. */
+      const tags = s.unpushedTags;
       out.push({
         id: "push",
-        label: `push ↑${s.ahead}`,
+        label: `push${s.ahead > 0 ? ` ↑${s.ahead}` : ""}${tagMark(tags)}`,
         title:
-          `${commits(s.ahead)} to push${where(s)}` +
+          (s.ahead > 0 ? `${commits(s.ahead)} to push${where(s)}` : `nothing to push${where(s)}`) +
+          (tags.length ? `, carrying ${tags.join(", ")}` : "") +
           (s.behind > 0 ? ` — ${commits(s.behind)} behind, so pull first` : ""),
-        steps: [{ kind: "run", argv: ["git", "push"] }],
+        /* `--follow-tags` rather than `--tags`: it sends the annotated tags
+           reachable from what is being pushed and nothing else, so a local tag
+           on some other branch — or a scratch one somebody made on an old
+           commit — is not swept along with a release. `project.rs` computes the
+           same set for the label, so the chip says exactly what the flag does. */
+        steps: [{ kind: "run", argv: ["git", "push", "--follow-tags"] }],
       });
     }
   }
@@ -679,6 +713,16 @@ export function actionsFor(f: ProjectFacts, s: ProjectStatus = NO_STATUS): Actio
 }
 
 const commits = (n: number) => `${n} commit${n === 1 ? "" : "s"}`;
+
+/** What rides along, on the label. One tag is named — that is the whole point,
+ *  since the tag you are about to publish is nearly always the one `bump` just
+ *  wrote and seeing `v0.11.3` is the confirmation. Several are counted, because
+ *  three names do not fit on a chip and a chip that grows to fit its contents
+ *  is a row that reflows every time you commit. */
+export function tagMark(tags: string[]): string {
+  if (!tags.length) return "";
+  return tags.length === 1 ? ` +${tags[0]}` : ` +${tags.length} tags`;
+}
 const where = (s: ProjectStatus) => (s.branch ? ` on ${s.branch}` : "");
 
 /* ── a torn territory ──────────────────────────────────────────────────────
