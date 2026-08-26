@@ -1,0 +1,63 @@
+[
+  {
+    "type": "assistant",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Now attach configs to the delete snapshot, on the delete path only:"
+        }
+      ]
+    }
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_lab_described",
+          "name": "Bash",
+          "input": {
+            "command": "python - <<'PY'\np = \"src/app/store-productivity/assets/_assets/component/useAssetDeletion.ts\"\ns = open(p, encoding=\"utf-8\").read()\n\nold = '''  /** Expand the selection into the rows the delete will actually close, and\n   *  snapshot them. Called before the request, never after.'''\nnew = '''  /**\n   * Attach each split fixture's slot config to the snapshot.\n   *\n   * Without this, undoing the deletion of a fixture that was split TODAY\n   * restores its slot rows but not the AM.AssetSlotConfig that defines them\n   * — BulkDeleteAsset hard-deletes a same-day config, so there is nothing\n   * left for the restore proc to reopen. The result isn't a fixture without\n   * its split: it is slot rows with no config to derive them from, and the\n   * viewer's synthesis loop skips a parent in exactly that state, so the\n   * fixture disappears from the plan while its rows sit in this grid.\n   *\n   * Only runs when the snapshot actually contains slot rows — a config only\n   * exists for a fixture that has them, so there is nothing to fetch\n   * otherwise, and an ordinary delete pays nothing.\n   *\n   * A failed fetch is NOT fatal. The delete is what the user asked for and\n   * must not be blocked by the undo's homework; the snapshot degrades to\n   * one without configs, which is the behaviour this replaces.\n   */\n  const withSlotConfigs = async (\n    snapshot: readonly DeletableAssetRow[],\n  ): Promise<readonly DeletableAssetRow[]> => {\n    if (!snapshot.some((row) => row.isSlot)) return snapshot;\n    try {\n      const response = await fetch(\n        `/api/store-productivity/get-asset-slot-configs?costCentre=${encodeURIComponent(costCentre)}`,\n      );\n      const json = await response.json();\n      if (!response.ok || !json?.success || !json.data) return snapshot;\n      const configs = json.data as Record<string, SlotConfigLike>;\n      return snapshot.map((row) =>\n        configs[row.id] ? { ...row, slotConfig: configs[row.id] } : row,\n      );\n    } catch (error) {\n      console.error(\"[useAssetDeletion] slot config snapshot failed:\", error);\n      return snapshot;\n    }\n  };\n\n  /** Expand the selection into the rows the delete will actually close, and\n   *  snapshot them. Called before the request, never after.'''\nassert s.count(old) == 1\ns = s.replace(old, new)\n\ns = s.replace('''  type DeletableAssetRow,\n} from \"@/lib/assets/deleteTargets\";''', '''  type DeletableAssetRow,\n  type SlotConfigLike,\n} from \"@/lib/assets/deleteTargets\";''')\n\n# Single delete\nold_single = '''    enqueueMutation(async () => {\n      try {\n        const result = await deleteRequest(targets.ids);\n        if (result.success) {\n          recordDelete(targets.snapshot);\n          setIsDeleting(false);'''\nnew_single = '''    enqueueMutation(async () => {\n      try {\n        // Configs first: the rows are still open at this point, and closed\n        // by the time the next statement returns.\n        const snapshot = await withSlotConfigs(targets.snapshot);\n        const result = await deleteRequest(targets.ids);\n        if (result.success) {\n          recordDelete(snapshot);\n          setIsDeleting(false);'''\nassert s.count(old_single) == 1\ns = s.replace(old_single, new_single)\n\n# Bulk delete\nold_bulk = '''    enqueueMutation(async () => {\n      try {\n        const result = await deleteRequest(targets.ids);\n        setIsBulkDeleting(false);\n\n        if (result.success) {\n          recordDelete(targets.snapshot);'''\nnew_bulk = '''    enqueueMutation(async () => {\n      try {\n        const snapshot = await withSlotConfigs(targets.snapshot);\n        const result = await deleteRequest(targets.ids);\n        setIsBulkDeleting(false);\n\n        if (result.success) {\n          recordDelete(snapshot);'''\nassert s.count(old_bulk) == 1\ns = s.replace(old_bulk, new_bulk)\n\nopen(p, \"w\", encoding=\"utf-8\", newline=\"\").write(s)\nprint(\"ok\")\nPY\nnpx tsc --noEmit 2>&1 | head -6; echo TSC_DONE",
+            "description": "Snapshot slot configs before the delete"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_lab_described",
+          "content": "ok\nTSC_DONE"
+        }
+      ]
+    }
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Done — that is the whole of the fixture."
+        }
+      ]
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "terminal_reason": "completed",
+    "result": "Done — that is the whole of the fixture."
+  }
+]

@@ -18,18 +18,30 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const CONTROL_FILE = join(
-  process.env.APPDATA ?? "",
-  "dev.skein.studio",
-  "control.json",
-);
+/** Which wall to talk to, as the identifier naming its `%APPDATA%` folder.
+ *
+ *  `control.json` is written beside the database, so the folder that decides
+ *  which store an instance opens also decides which control surface this
+ *  reaches — one variable, not two. Defaults to the real studio, so every
+ *  existing invocation is unchanged.
+ *
+ *  The one other value that means anything today is `dev.skein.lab`, which is
+ *  what `bun run lab` starts: a second instance with its own store, its own
+ *  `control.json` and an empty wall, so driving it cannot reach real work. See
+ *  `.claude/rules/control.md`. */
+const IDENTIFIER = process.env.SKEIN_ID?.trim() || "dev.skein.studio";
+
+const CONTROL_FILE = join(process.env.APPDATA ?? "", IDENTIFIER, "control.json");
 
 function endpoint(): { port: number; token: string } {
   if (!existsSync(CONTROL_FILE)) {
     console.error(
       `no control.json at ${CONTROL_FILE}\n` +
         `Start Skein with SKEIN_CONTROL=1 — e.g.\n` +
-        `  $env:SKEIN_CONTROL="1"; bun run tauri dev`,
+        `  $env:SKEIN_CONTROL="1"; bun run tauri dev\n` +
+        `or, for the isolated lab wall:\n` +
+        `  $env:SKEIN_CONTROL="1"; bun run lab\n` +
+        `  $env:SKEIN_ID="dev.skein.lab"; bun tools/ctl.ts health`,
     );
     process.exit(2);
   }

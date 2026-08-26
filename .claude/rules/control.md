@@ -50,3 +50,45 @@ from outside: they must not climb across an edit (7, 3 and 2 today). Module-leve
 `test/wall.test.ts` only ever creates conversations under `.scratch/`, and closes them in
 `afterAll`. Keep it that way, so running it cannot disturb real work on the wall.
 
+### The lab wall (`src-tauri/tauri.lab.conf.json`)
+
+```powershell
+$env:SKEIN_CONTROL="1"; bun run lab              # terminal 1 — an empty second wall
+$env:SKEIN_ID="dev.skein.lab"; bun tools/ctl.ts health   # terminal 2
+bun tools/ctl.ts open project=... ; bun tools/ctl.ts feed card=1 events:@test/fixtures/bash-undescribed.json
+```
+
+Driving the *real* wall is driving real work: `feed` is cheap and harmless, but `open` and
+`send` spend money and put an agent with `--dangerously-skip-permissions` in a real repo, and
+a crash mid-op leaves the user's own cards behind it. So there is a second instance whose
+whole purpose is to have nothing on it.
+
+**One variable does it, because one thing decides everything else.** `identifier` is what
+`app_data_dir()` resolves (`lib.rs`), which is where `skein.db` lives (`store.rs`) — *and*
+where `control.json` is written. So overriding it to `dev.skein.lab` forks the store, the
+control surface and the window frame in a single move; `tauri dev --config` merges rather than
+replaces, so the shipped identifier is never touched. `SKEIN_ID` is how `ctl.ts` follows it,
+defaulting to `dev.skein.studio` so every existing invocation is unchanged.
+
+Vite gets its own port too (1421, `dev:lab`), since `strictPort` is on and two dev builds
+would otherwise race :1420.
+
+This is stronger isolation than the two quiet flags, and they solve a different problem.
+`SKEIN_NO_WAKE` and `SKEIN_NO_SERVERS` make a second instance safe *against the same store* —
+read their docstrings, which name this exact pairing. The lab needs neither, because an empty
+wall has nothing to rouse and no groups to autostart. Reach for the flags when you need to
+look at the **real** wall without it acting; reach for the lab when you need to *drive* one.
+
+What still crosses over, deliberately: the Azure PAT, since `vault.rs` hard-codes
+`dev.skein.studio/azdo-pat`, and the signed-in accounts, since Volery holds no credentials of
+its own (`accounts.md`). Both are read-only from the lab's point of view, and needing to sign
+in again to test a wall would be worse.
+
+The window is not visually branded, because `decorations: false` means the title bar is
+`App.svelte` and the header draws its own name. An empty wall plus the control chip is what
+tells the two apart.
+
+`test/fixtures/bash-described.json` and `…-undescribed.json` are the shape to copy for a
+`feed` fixture: the same real 97-line Bash call, differing in exactly one field, so feeding
+each into a fresh card is a controlled experiment rather than two anecdotes.
+

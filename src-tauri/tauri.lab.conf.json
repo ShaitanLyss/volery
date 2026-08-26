@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Volery Lab",
+  "identifier": "dev.skein.lab",
+  "build": {
+    "beforeDevCommand": "bun run dev:lab",
+    "devUrl": "http://localhost:1421"
+  }
+}
