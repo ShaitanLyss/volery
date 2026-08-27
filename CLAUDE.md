@@ -58,7 +58,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # presets,
                          # commands, copy, widgets, naming, drafts, rousing, quitting, timing,
                          # gears,
-                         # sink, logface, serverlog, buildlog, unreallog,
+                         # sink, gates, logface, serverlog, buildlog, unreallog,
                          # nvim,
                          # guidance,
                          # undo, lineage, update,
@@ -78,7 +78,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # later.rs, pin.rs, spawn.rs,
                               # bang.rs, update.rs, guidance.rs,
                               # quit.rs,
-                              # repair/text.rs,
+                              # repair/text.rs, hooks.rs,
                               # control.rs,
                               # supervisor.rs,
                               # servers.rs, shell.rs, nvim.rs, find.rs, sessions.rs, project.rs,
@@ -88,6 +88,8 @@ cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage reall
 cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
 bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, with your config
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
+bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
+bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs
@@ -123,6 +125,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
+| `gates.md` | whether the tree builds: folding the gate runs cards already make rather than running any, why `PostToolUse` cannot see a failure, what a reading may honestly claim about a tree it only half-watched, and the two faces one record wears | `gates.ts`, `gates.svelte.ts`, `Gatehouse.svelte`, `tools/probe-gates.ts` |
 | `commands.md` | slash commands, why Skein reads only its own names, and clearing a card | `commands.ts`, `Dock.svelte`, `field.svelte.ts` |
 | `guidance.md` | standing instructions: the wall's and a territory's, why they are a system prompt rather than a `CLAUDE.md` or a hook, what a live card does not hear, and why they are instructions rather than a lock | `guidance.rs`, `guidance.ts`, `Guidance.svelte` |
 | `control.md` | the control surface and the two rules that make a green run mean something | `control.rs`, `control.svelte.ts`, `wall.test.ts` |
@@ -239,7 +242,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `update.ts`,
 `unreallog.ts`,
 `gears.ts`,
-`repair.ts`, `toolcall.ts`, `follow.ts`) are pure
+`repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.
