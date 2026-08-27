@@ -596,8 +596,7 @@ thing a test cannot otherwise see.
 
 ### Turns a card may try again by itself
 
-Two failures, and only two. Both share the property that licenses a retry: the request did not
-get a turn out of a model, so re-sending repeats nothing.
+Four failures, and only four.
 
 - **`malformed`** — 400, "The request body is not valid JSON: unexpected end of data: line 1
   column 429454". The conversation was serialised and the body arrived truncated. Both halves
@@ -606,19 +605,81 @@ get a turn out of a model, so re-sending repeats nothing.
   retrying one of those is a loop that ends when the allowance does.
 - **`overloaded`** — 529. One signal is enough here, because "overloaded" is not a word the API
   uses for anything else.
+- **`limited`** — 429, the account's own allowance. The odd one out, and `accounts.md` owns the
+  whole argument: it is a heal because the *fix* is not waiting but moving to another
+  subscription, so each attempt goes to a different account and the ladder ends in a hold
+  rather than a failure.
+- **`dropped`** — the stream died under the turn. No status at all; see below, because it is the
+  only one of the four that does not clear the usual bar the usual way.
 
-**429 is deliberately not on this list.** A rate limit is not weather — it is the account's own
-allowance, the horizon already reports it (`usage.md`), and it clears at a time that is *known*
-rather than guessed at. Retrying into one is asking the same question of a door with its
-opening hour written on it.
+This paragraph used to say **429 is deliberately not on this list**, on the argument that a rate
+limit is not weather — it is the account's own allowance, the horizon already reports it
+(`usage.md`), and it clears at a time that is *known* rather than guessed at. That argument is
+still exactly right and it is still the reason a card does not *wait* on a 429; what changed
+on 2026-08-21 is that Skein grew somewhere else to send it. Keep the reasoning, note what it
+licenses: a 429 is retryable because there is another account, not because the door will open.
 
-Every other failure has to be assumed to have done something. A project card spawns with
-`--dangerously-skip-permissions`, so "send the last thing again" is the most dangerous reflex
-this app could be given; it is affordable only where the thing being repeated demonstrably had
-no effect. Note what that argument does *not* claim: a turn is many requests, and the ones
-before the failing one may well have written files. Re-sending is still right, because the
-retry resumes the same session and the agent reads back what it already did rather than
-starting over blind. What must not happen is a repeat of a request that *itself* had an effect.
+The first three share the property that licenses a retry outright: the request did not get a
+turn out of a model, so re-sending repeats nothing. Every other failure has to be assumed to
+have done something. A project card spawns with `--dangerously-skip-permissions`, so "send the
+last thing again" is the most dangerous reflex this app could be given; it is affordable only
+where the thing being repeated demonstrably had no effect. Note what that argument does *not*
+claim: a turn is many requests, and the ones before the failing one may well have written
+files. Re-sending is still right, because the retry resumes the same session and the agent
+reads back what it already did rather than starting over blind. What must not happen is a
+repeat of a request that *itself* had an effect.
+
+#### `dropped` does not clear that bar the same way, and saying so is the point
+
+The other three are cases where **nothing happened**. A connection lost mid-response is not:
+the model produced a turn, part of it arrived, and there is a window in which a completed
+`tool_use` was among the blocks that landed and was run. Waving that through as "same as a
+529" is how this list would acquire a fifth member it should not have, so the argument is
+made explicitly and it rests on a property of the CLI rather than of the network.
+
+**The CLI commits the partial before it reports the failure.** When a response stream dies
+part-way it does not fail the request and does not retry it — it *finalizes what it has*,
+forcing a `stop_reason` onto the blocks already yielded and writing them to the session, then
+appends a synthesized assistant message (`model: "<synthetic>"`, `isApiErrorMessage: true`,
+`error: "server_error"`) whose whole content is the API Error sentence. A tool that ran has its
+`tool_result` in the session too. So the re-send does not repeat the request: it resumes a
+session that already holds whatever that request achieved, and the agent reads it back. The
+failure this list must keep out is the one whose effect landed *outside* the session and was
+never recorded — an MCP call that charged something, a deploy that fired. A dropped stream is
+not that one, and being able to say which of the two a new kind is, is the test any fifth
+member has to pass.
+
+**How it arrives, and why nothing saw it for months.** The synthesized message is the last of
+the turn, so the `result` reads `subtype: "success"`, `api_error_status: null`,
+**`is_error: true`**, and `result` is the sentence. `endingFor` therefore already said `error`
+and the card already went rust — what was missing was any predicate that matched, because every
+existing one asks for a number and this failure carries none. Read out of claude 2.1.241's
+bundle and confirmed against all 292 session transcripts on this machine: six occurrences in
+three weeks, plus two of `Unable to connect to API (ENOTFOUND)`, which is the same failure one
+layer earlier and is included.
+
+**Deliberately not `Server error mid-response`**, the seventh sentence off the same ternary in
+the same function. That one is the service answering badly rather than the link going, and its
+ladder is the overloaded one. Nothing on this machine has ever produced it, and a predicate
+written for a shape nobody has met is the mistake `wasRateLimited` spent four months making —
+route it to `overloaded` when somebody actually meets one.
+
+**What it cost while nothing retried it.** 2026-08-27T03:21:47 — three cards, 48ms apart, all
+`fail`, $11.14 of turn between them. Each then sat rust until a human or a stray relay message
+poked it two to four minutes later, and one card on 25 Aug was never poked and simply ends
+there. That is the case for the feature and it is worth keeping in figures, because the failure
+is invisible from the wall: a card that has stopped is indistinguishable from a card that
+finished.
+
+**The honest residue.** The text re-sent is `#lastSent` — your prompt again — so a card that had
+already written half an answer is being asked for the whole of it a second time. That is waste
+rather than danger, and the alternative is worse in kind: Volery composing a "carry on" of its
+own puts words in your mouth to save tokens. Measured, it is close to free anyway — four of the
+six had produced nothing but an empty thinking block when the wire went, because the
+"mid-response" wording fires on *any* block having been yielded, an empty one included. If it
+ever does prove wasteful, the refinement available is not a cleverer sentence: Volery folds the
+stream and already knows what the turn produced, so the decision could be made on the turn's
+own shape rather than on the CLI's wording.
 
 **`faultText` is the gate, and it is the one piece here that is easy to leave out.**
 `result.result` on a turn that *succeeded* is the agent's own final message — so without it, a
@@ -627,21 +688,46 @@ re-sends your prompt on the strength of the agent talking about the weather. In 
 that is not hypothetical. Both callers happen to sit behind `ending === "error"` already, so it
 is belt to that braces; it exists because the next caller will not know to stand there.
 
-The two ladders differ because the two failures do. A truncation waits 1s then 4s, and that
-wait is for **you** — a card that fails and re-sends inside the same tick reads as a card that
-did nothing, and the note would be gone before it could be read. An overload starts at **15s**
-and runs 15s → 45s → 2m → 5m, because by the time a 529 reaches a `result` the CLI has already
-spent its own internal backoff on it; a card asking again a second later is asking a question
-that was just asked several times and answered the same way.
+The ladders differ because the failures do, and **the variable that sets each one is how much
+waiting has already been done by somebody else.**
 
-**The overloaded arm is jittered and the truncated one is not**, and the asymmetry is the
-point: an overload is the one failure that arrives at *every card at once*. Twenty cards all
-waiting exactly fifteen seconds and re-sending a whole conversation in the same tick is a
-thundering herd aimed at a service that has just said it is over capacity. Spreading them over
-a quarter of the window is the same instinct as `ROUSE_GAP_MS`. A truncation is one card's
-transport; two cards hitting it together is a coincidence, not a cause. The roll happens once,
-in `#heal`, so the note names the wait the timer actually holds — a card that says "in 15s" and
-goes at 19 is an instrument lying about itself.
+A truncation waits 1s then 4s, and that wait is for **you** — a card that fails and re-sends
+inside the same tick reads as a card that did nothing, and the note would be gone before it
+could be read. An overload starts at **15s** and runs 15s → 45s → 2m → 5m, because by the time
+a 529 reaches a `result` the CLI has already spent its own internal backoff on it; a card
+asking again a second later is asking a question that was just asked several times and answered
+the same way. A rate limit does not wait at all, because the next attempt is a different
+account (`accounts.md`).
+
+A dropped wire runs **5s → 20s → 60s**, three rungs, and both ends of that are measured. The
+CLI spends **no** backoff of its own here — it finalizes the partial and gives up on the first
+drop, which is exactly how three cards produced the error 48ms apart — so nothing is owed to a
+queue and the 15s opening would be Volery inventing a wait nobody asked for. What *is* owed is
+a moment for the link to come back, and one second is not it. Five is: on this machine another
+card was answering normally 3.9s, 5.1s and 14.2s after the three drops that could be timed. The
+whole ladder is under ninety seconds because a link still down after that is not having a blip,
+and every attempt is a whole conversation back up the connection that just failed.
+
+**Two of the four arms are jittered — `overloaded` and `dropped` — and the truncated one is
+not.** The asymmetry is the point, and the two jittered arms are jittered for the same reason
+applied to two different shared things. An overload arrives at *every card at once*, and twenty
+cards re-sending a whole conversation in the same tick is a thundering herd aimed at a service
+that has just said it is over capacity. A dropped wire also arrives at every card at once —
+that is the 03:21:47 triple — but what a herd would saturate there is **the machine's own
+uplink**, which is the thing that just gave out. Same instinct as `ROUSE_GAP_MS` either way. A
+truncation needs none of it: it is one card's transport, and two cards hitting it together is a
+coincidence, not a cause. The roll happens once, in `#heal`, so the note names the wait the
+timer actually holds — a card that says "in 15s" and goes at 19 is an instrument lying about
+itself.
+
+Nothing outside `classify.ts` had to change for the fourth kind, and that is worth noticing
+about the shape rather than about this feature. `conversation.svelte.ts` drives the whole
+decision off `healKindOf`; `#heal`'s `activity` ternary falls through to "trying again…", which
+is already the honest string; `repairWorthTrying` is an allow-list of `malformed` rather than a
+deny-list, so a new kind is excluded from the session repair by default rather than by
+remembering to exclude it. A fifth kind costs the same. **An allow-list is the reason** — the
+deny-list spelling of that function would have quietly run a repair against a conversation that
+had nothing wrong with it.
 
 **A `malformed` failure has two causes and the heal can only fix one of them**, which is what
 `repair.md` is about. A body cut short in transit clears on a retry; characters the

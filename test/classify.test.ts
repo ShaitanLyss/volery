@@ -48,9 +48,11 @@ import {
   wasMalformedRequest,
   wasOverloaded,
   wasRateLimited,
+  wasConnectionDropped,
   healKindOf,
   healDelayMs,
   healNote,
+  healGaveUpNote,
   saySoon,
   HEAL_BUDGET,
   windowForObserved,
@@ -1173,8 +1175,98 @@ describe("wasRateLimited", () => {
   });
 });
 
+describe("wasConnectionDropped", () => {
+  /* Off claude 2.1.241's own ternary, verbatim. The first is the one this was
+     written from: six occurrences across this machine's 292 session
+     transcripts, three of them on three different cards 48ms apart. */
+  const family = [
+    "API Error: Connection lost mid-response. The response above may be incomplete.",
+    "API Error: The response stopped arriving. The response above may be incomplete.",
+    "API Error: Your computer went to sleep mid-response. The response above may be incomplete.",
+    "API Error: Connection lost before a response was produced. Try again.",
+    "API Error: The response stalled before a response was produced. Try again.",
+    "API Error: Your computer went to sleep before a response was produced. Try again.",
+    "API Error: Unable to connect to API (ENOTFOUND)",
+  ];
+
+  /* The result exactly as it arrives, which is the whole difficulty. The CLI
+     finalizes the partial response and appends a synthesized assistant message;
+     that message is then the last of the turn, so is_error is true while
+     subtype still says success and api_error_status is null. There is no number
+     anywhere on it. */
+  const arrives = (text: string) => ({
+    type: "result",
+    subtype: "success",
+    is_error: true,
+    api_error_status: null,
+    result: text,
+  });
+
+  test("every sentence off that ternary, as the result really arrives", () => {
+    for (const text of family) expect(wasConnectionDropped(arrives(text))).toBe(true);
+  });
+
+  test("with no status on it at all — the reason no other predicate saw it", () => {
+    const real = arrives(family[0]!);
+    expect(real.api_error_status).toBeNull();
+    expect(wasMalformedRequest(real)).toBe(false);
+    expect(wasOverloaded(real)).toBe(false);
+    expect(wasRateLimited(real)).toBe(false);
+    expect(wasConnectionDropped(real)).toBe(true);
+  });
+
+  /* The seventh sentence off the same ternary, left out on purpose: that one is
+     the service answering badly rather than the link going, and its ladder is
+     the overloaded one. Nothing on this machine has ever produced it, and a
+     predicate written for a shape nobody has met is the mistake wasRateLimited
+     spent four months making. */
+  test("a mid-stream server error is not this, deliberately", () => {
+    expect(
+      wasConnectionDropped(
+        arrives("API Error: Server error mid-response. The response above may be incomplete."),
+      ),
+    ).toBe(false);
+  });
+
+  /* The second signal earning its place. A tool the agent ran said the words,
+     in a turn that then failed some other way; the CLI's own marker is what
+     separates a message it synthesized from output it merely carried. */
+  test("a tool that said the words is not the wire going", () => {
+    expect(
+      wasConnectionDropped({ is_error: true, result: "curl: (56) connection lost while reading" }),
+    ).toBe(false);
+    expect(
+      wasConnectionDropped({
+        is_error: true,
+        result: "the deploy log says unable to connect to api",
+      }),
+    ).toBe(false);
+  });
+
+  /* faultText's gate, and in this repository it is not hypothetical — the card
+     that wrote this predicate spent an afternoon with those sentences in its
+     final message. */
+  test("an answer *about* a dropped connection is not one", () => {
+    expect(
+      wasConnectionDropped({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result:
+          "API Error: Connection lost mid-response is what the CLI prints when the stream dies.",
+      }),
+    ).toBe(false);
+  });
+
+  test("a clean turn is not an error at all", () => {
+    expect(wasConnectionDropped({ subtype: "success", is_error: false })).toBe(false);
+    expect(wasConnectionDropped({})).toBe(false);
+    expect(wasConnectionDropped(null)).toBe(false);
+  });
+});
+
 describe("healKindOf", () => {
-  test("names which of the three, and nothing else", () => {
+  test("names which of the four, and nothing else", () => {
     expect(healKindOf({ is_error: true, result: "400 not valid json" })).toBe("malformed");
     expect(healKindOf({ is_error: true, result: "529 overloaded" })).toBe("overloaded");
     expect(healKindOf({ is_error: true, result: "429 usage limit reached" })).toBe("limited");
@@ -1191,12 +1283,32 @@ describe("healKindOf", () => {
     expect(healKindOf({ subtype: "success" })).toBeNull();
   });
 
+  test("and the fourth, which carries no status to name it by", () => {
+    expect(
+      healKindOf({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: null,
+        result: "API Error: Connection lost mid-response. The response above may be incomplete.",
+      }),
+    ).toBe("dropped");
+  });
+
   /* Rate limiting wins the tie. Waiting out the overload ladder — five minutes,
      four times — with an idle account sitting there is the worst of both. */
   test("a 429 that also says overloaded is read as the rate limit", () => {
     expect(
       healKindOf({ is_error: true, result: "429 rate_limit_error — overloaded" }),
     ).toBe("limited");
+  });
+
+  /* A status beats a sentence. An overload reported on a stream that then also
+     dropped is still the service, and its ladder is the longer one. */
+  test("a 529 that also lost the connection is read as the overload", () => {
+    expect(
+      healKindOf({ is_error: true, result: "API Error: 529 Overloaded — connection lost" }),
+    ).toBe("overloaded");
   });
 });
 
@@ -1212,6 +1324,18 @@ describe("the heal budgets", () => {
   test("but both are bounded — every attempt is a whole conversation", () => {
     expect(HEAL_BUDGET.malformed).toBeLessThanOrEqual(3);
     expect(HEAL_BUDGET.overloaded).toBeLessThanOrEqual(5);
+  });
+
+  /* Measured: every drop on this machine was over in seconds, another card
+     answering normally 3.9s, 5.1s and 14.2s later. Three rungs cover that
+     several times over, and a link still down after a minute and a half is not
+     having a blip. */
+  test("a dropped wire is bounded too, and its whole ladder is under two minutes", () => {
+    expect(HEAL_BUDGET.dropped).toBeGreaterThanOrEqual(2);
+    expect(HEAL_BUDGET.dropped).toBeLessThanOrEqual(4);
+    let total = 0;
+    for (let n = 1; n <= HEAL_BUDGET.dropped; n++) total += healDelayMs("dropped", n, 1);
+    expect(total).toBeLessThan(120_000);
   });
 });
 
@@ -1257,6 +1381,36 @@ describe("healDelayMs", () => {
   test("a truncation is not jittered — one card's transport, no herd", () => {
     expect(healDelayMs("malformed", 1, 1)).toBe(healDelayMs("malformed", 1, 0));
   });
+
+  /* Seconds, not minutes, and the asymmetry with the overload is the point: by
+     the time a 529 reaches a result the CLI has spent its own backoff on it,
+     and on a dropped stream it has spent none — it finalizes the partial and
+     gives up on the first failure. Nothing has been waited yet when Volery gets
+     it. */
+  test("a dropped wire waits seconds, where an overload waits minutes", () => {
+    expect(healDelayMs("dropped", 1)).toBeGreaterThanOrEqual(1_000);
+    expect(healDelayMs("dropped", 1)).toBeLessThan(healDelayMs("overloaded", 1));
+    expect(healDelayMs("dropped", HEAL_BUDGET.dropped)).toBeLessThan(
+      healDelayMs("overloaded", HEAL_BUDGET.overloaded),
+    );
+  });
+
+  test("and climbs every rung, bounded past the last of them", () => {
+    const rungs = [1, 2, 3].map((n) => healDelayMs("dropped", n));
+    for (let i = 1; i < rungs.length; i++) expect(rungs[i]).toBeGreaterThan(rungs[i - 1]!);
+    expect(healDelayMs("dropped", 99)).toBe(healDelayMs("dropped", 3));
+  });
+
+  /* Jittered, and for the overload's reason applied to a different shared
+     thing: this failure arrives at every card at once — three of them 48ms
+     apart on 27 Aug — and what a herd would saturate here is the machine's own
+     uplink, which is the thing that just gave out. */
+  test("a dropped wire is jittered, because it takes the whole wall at once", () => {
+    const flat = healDelayMs("dropped", 1, 0);
+    const most = healDelayMs("dropped", 1, 1);
+    expect(most).toBeGreaterThan(flat);
+    expect(most).toBeLessThanOrEqual(flat * 1.5);
+  });
 });
 
 describe("saySoon", () => {
@@ -1283,6 +1437,21 @@ describe("healNote", () => {
   test("it is lowercase, like the rest of the wall's prose", () => {
     const note = healNote("malformed", 1, 1_000);
     expect(note).toBe(note.toLowerCase());
+  });
+
+  /* Names the network. This failure arrives with no status on it, so every
+     other line on the card would otherwise have the reader looking at a service
+     that was never the problem. */
+  test("a dropped wire says so, in both lines it gets", () => {
+    const note = healNote("dropped", 1, 5_000);
+    expect(note).toContain("connection");
+    expect(note).toContain("5s");
+    expect(note).toContain(`1 of ${HEAL_BUDGET.dropped}`);
+    expect(note).toBe(note.toLowerCase());
+    const gave = healGaveUpNote("dropped");
+    expect(gave).toContain("connection");
+    expect(gave).toBe(gave.toLowerCase());
+    expect(gave).not.toBe(healGaveUpNote("overloaded"));
   });
 });
 

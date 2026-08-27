@@ -1384,19 +1384,43 @@ export function endingFor(
 
 /* ── turns worth trying again ───────────────────────────────────────────────
  *
- * Two failures, and they are the only two a card may answer by itself. Both
- * share the property that licenses it: the request did not get a turn out of a
- * model, so re-sending repeats nothing. Every other failure has to be assumed
- * to have done something, and a project card spawns with
- * `--dangerously-skip-permissions` — "send the last thing again" is the most
- * dangerous reflex this app could be given, and it is affordable only where the
- * thing being repeated demonstrably had no effect.
+ * Four failures, and they are the only four a card may answer by itself. Every
+ * other one has to be assumed to have done something, and a project card spawns
+ * with `--dangerously-skip-permissions` — "send the last thing again" is the
+ * most dangerous reflex this app could be given, and it is affordable only where
+ * the thing being repeated demonstrably had no effect.
+ *
+ * Three of them share the property that licenses it outright: the request did
+ * not get a turn out of a model, so re-sending repeats nothing.
  *
  * Note what that argument does *not* say. A turn is many requests, and the ones
  * before the failing one may well have written files. Re-sending is still right:
  * the retry resumes the same session, so the agent reads back everything it
  * already did rather than starting the work over blind. What must not happen is
- * a repeat of a request that *itself* had an effect, and neither of these did.
+ * a repeat of a request that *itself* had an effect.
+ *
+ * **`dropped` is the fourth and it does not clear that bar the same way**, and
+ * pretending otherwise would be the way this list gets a fifth member it should
+ * not have. A connection lost mid-response *did* get a turn out of a model — the
+ * partial answer is right there in the transcript, and there is a window in
+ * which a completed `tool_use` was among the blocks that arrived and was run.
+ * It is admitted on the second half of the argument rather than the first, and
+ * the reason is a property of the CLI rather than of the network: **it commits
+ * the partial before it reports the failure.** The blocks that arrived get a
+ * `stop_reason` forced onto them and are written to the session; a tool that ran
+ * has its `tool_result` written there too. So the re-send does not repeat the
+ * request — it resumes a session that already holds whatever that request
+ * achieved, and the agent reads it back. The failure this list must keep out is
+ * the one whose effect landed *outside* the session and was never recorded; a
+ * dropped stream is not that, and it is worth being able to say which of the two
+ * a new kind is before adding it.
+ *
+ * The honest residue: the re-sent text is your prompt again, so a card that had
+ * already written half an answer is being asked for the whole of it a second
+ * time. That is waste rather than danger, and the alternative — Volery composing
+ * a "carry on" of its own — puts words in your mouth to save tokens. Measured
+ * against every occurrence on this machine it is close to free anyway: four of
+ * the six had produced nothing but an empty thinking block when the wire went.
  */
 
 export type HealKind =
@@ -1407,7 +1431,10 @@ export type HealKind =
   /** 429, this account's allowance. Not weather and not transport — the one
    *  failure another *account* fixes, which is why it is a heal at all. See
    *  `.claude/rules/accounts.md`. */
-  | "limited";
+  | "limited"
+  /** The stream died under the turn — the link went, not the service. No
+   *  status at all; see `wasConnectionDropped`. */
+  | "dropped";
 
 /** The error text of a turn that actually failed, lowercased, or "".
  *
@@ -1558,7 +1585,59 @@ export function wasRateLimited(result: any): boolean {
   );
 }
 
-/** Which of the three this was, or null for a failure a card must not touch.
+/** The link under the turn gave out: no status, and the CLI's own sentence.
+ *
+ * **Read out of claude 2.1.241's bundle and confirmed against all 292 session
+ * transcripts on this machine**, because this one cannot be spotted by status —
+ * there is no status. When a response stream dies part-way the CLI does not
+ * fail the request and does not retry it. It *finalizes what it has*: forces a
+ * `stop_reason` onto the blocks already yielded, then appends a synthesized
+ * assistant message — `model: "<synthetic>"`, `isApiErrorMessage: true`,
+ * `error: "server_error"` — whose whole content is one of six sentences off a
+ * single ternary:
+ *
+ * ```text
+ * API Error: Connection lost mid-response. The response above may be incomplete.
+ * API Error: The response stopped arriving. The response above may be incomplete.
+ * API Error: Your computer went to sleep mid-response. The response above …
+ * API Error: Connection lost before a response was produced. Try again.
+ * API Error: The response stalled before a response was produced. Try again.
+ * API Error: Your computer went to sleep before a response was produced. …
+ * ```
+ *
+ * That message is then the last one of the turn, so the `result` reads
+ * `subtype: "success"`, `api_error_status: null`, **`is_error: true`**, and
+ * `result` is the sentence. `endingFor` therefore already says `error` and the
+ * card already goes rust — what was missing was any predicate that matched it,
+ * since every existing one asks for a number.
+ *
+ * Observed six times in three weeks, plus twice as `Unable to connect to API
+ * (ENOTFOUND)`, which is the same failure one layer earlier and is included.
+ * **Deliberately not `Server error mid-response`**, the seventh sentence off
+ * that same ternary: that one is the service answering badly rather than the
+ * link going, and its ladder is the overloaded one. Nothing on this machine has
+ * ever produced it, and a predicate written for a shape nobody has met is the
+ * mistake `wasRateLimited` spent four months making.
+ *
+ * Two signals, for the reason `wasMalformedRequest` uses two. The cause phrase
+ * alone would match a tool's own output — an agent that ran a `curl` which said
+ * `connection lost`, in a turn that then failed some other way, would be read as
+ * having dropped the wire. `API Error:` is the CLI's marker on a message it
+ * synthesized itself, and a tool's stderr does not wear it. `faultText` is still
+ * the gate that keeps an agent *talking* about a dropped connection out. */
+export function wasConnectionDropped(result: any): boolean {
+  const said = faultText(result);
+  if (!said.includes("api error")) return false;
+  return (
+    said.includes("connection lost") ||
+    said.includes("went to sleep") ||
+    said.includes("stopped arriving") ||
+    said.includes("response stalled") ||
+    said.includes("unable to connect to api")
+  );
+}
+
+/** Which of the four this was, or null for a failure a card must not touch.
  *
  *  Rate limiting is tested **first**. A 429 that also happened to carry the
  *  word "overloaded" would otherwise be waited out on the overload ladder — up
@@ -1569,6 +1648,10 @@ export function healKindOf(result: any): HealKind | null {
   if (wasRateLimited(result)) return "limited";
   if (wasMalformedRequest(result)) return "malformed";
   if (wasOverloaded(result)) return "overloaded";
+  /* Last, and it cannot take a tie from the three above it: none of the six
+     sentences it matches carries a status, and none of the three above it
+     matches without one. */
+  if (wasConnectionDropped(result)) return "dropped";
   return null;
 }
 
@@ -1595,6 +1678,14 @@ export const HEAL_BUDGET: Record<HealKind, number> = {
      org-level limit answers the same on every account, and unbounded the card
      would re-send its whole conversation once per account forever. */
   limited: 4,
+  /* Three, and it is the measurement rather than a feel. Every drop on this
+     machine was over in seconds — another card was answering normally 3.9s,
+     5.1s and 14.2s after the three that could be timed — so three attempts
+     spanning about eighty-five seconds cover the observed outage several times
+     over. Not more, because a card whose link is still down after a minute and
+     a half is not having a blip, and every attempt is a whole conversation back
+     up the connection that just failed. */
+  dropped: 3,
 };
 
 /** How long to wait before attempt `n`, and `jitter` is a 0–1 the caller rolls.
@@ -1633,7 +1724,16 @@ export function healDelayMs(kind: HealKind, attempt: number, jitter: number = 0)
      that path is a hold, not a heal. */
   if (kind === "limited") return 1_000;
   if (kind === "malformed") return attempt <= 1 ? 1_000 : 4_000;
-  const ladder = [15_000, 45_000, 120_000, 300_000];
+  /* Both of the remaining kinds are jittered, and for the same reason applied
+     to two different shared things. `dropped` starts at five seconds because
+     that is where the measurement puts it and because — unlike the 529 — the
+     CLI has spent *no* backoff of its own: it finalizes the partial and gives
+     up on the first drop, which is how three cards on this wall produced the
+     error 48ms apart. Nothing has been waited yet when Volery gets it, so
+     nothing is owed to a queue; what is owed is a moment for the link to come
+     back, and a second or two is not it. */
+  const ladder =
+    kind === "dropped" ? [5_000, 20_000, 60_000] : [15_000, 45_000, 120_000, 300_000];
   const base = ladder[Math.min(Math.max(attempt, 1), ladder.length) - 1]!;
   const spread = Math.min(Math.max(jitter, 0), 1);
   return Math.round(base * (1 + 0.25 * spread));
@@ -1659,6 +1759,7 @@ export function saySoon(ms: number): string {
 export function healNote(kind: HealKind, attempt: number, waitMs: number): string {
   const tail = `trying again in ${saySoon(waitMs)} (${attempt} of ${HEAL_BUDGET[kind]})`;
   if (kind === "limited") return `this account is out of allowance — ${tail}`;
+  if (kind === "dropped") return `the connection dropped — ${tail}`;
   return kind === "malformed"
     ? `the request was cut short on the way out — ${tail}`
     : `the api is overloaded — ${tail}`;
@@ -1684,6 +1785,12 @@ export function healGaveUpNote(kind: HealKind): string {
        above the account, and pointing somebody at a reset that is not the one
        stopping them is worse than saying nothing. */
     return `still rate limited after ${HEAL_BUDGET.limited} tries across the accounts — leaving it, this may be a limit above the account`;
+  }
+  /* Names the network rather than the API, which is the whole finding: this
+     failure arrives with no status on it and every other line on the card would
+     otherwise have you looking at a service that was never the problem. */
+  if (kind === "dropped") {
+    return `the connection dropped ${HEAL_BUDGET.dropped} more times — leaving it, send again once the network is back`;
   }
   return kind === "malformed"
     ? `cut short ${HEAL_BUDGET.malformed} more times — leaving it, send again to try once more`
