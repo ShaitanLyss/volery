@@ -6,6 +6,7 @@
   import { untrack } from "svelte";
   import type { Conversation, Line } from "./conversation.svelte";
   import Markdown from "./Markdown.svelte";
+  import Jobs from "./Jobs.svelte";
   import Rail from "./Rail.svelte";
   import ToolCall from "./ToolCall.svelte";
   import { nudgeReading } from "./layout";
@@ -1166,6 +1167,15 @@
       <div class="read-size">text {Math.round(read * 100)}%</div>
     {/if}
   </div>
+
+  <!-- What this card has running in the background, and its output as it
+       arrives. Between the column and the footer because that is the one strip
+       of the panel that does not move while you read — a dev server is started
+       once, hours ago, so its tool call is a long way up a scrollback you would
+       have to go and find, and a pane growing inside the column would fight the
+       follow. Draws nothing at all when the card holds no background work,
+       which is most cards. See `Jobs.svelte` for the poll's argument. -->
+  <Jobs {conv} {watching} />
 
   <footer class="meta-bar">
     <span>{Math.round(conv.ctx * 100)}% context</span>
