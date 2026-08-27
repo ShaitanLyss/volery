@@ -108,6 +108,62 @@ describe("a class means one thing per stylesheet", () => {
   }
 });
 
+/* The second invariant this file holds, and it is the same *kind* of thing: a
+   fact about the CSS that is true across two files and therefore has nowhere
+   else to live.
+ *
+ * `data-text` marks the one thing on the wall a left-drag selects rather than
+ * carries — a log's lines. It is two halves in two files and works only as a
+ * pair: `Canvas.handleOf` has to name the attribute, or the press is read as a
+ * haul and the widget goes with the cursor; and the marked element has to say
+ * `user-select: text`, or the selection it just allowed is refused anyway by
+ * the `user-select: none` on `.surface`, `.glass` and `WidgetNode`'s `.face`.
+ *
+ * Either half alone is silent and looks like the other one's fault. Marker
+ * without CSS is a log widget you can no longer move *or* select — strictly
+ * worse than before the feature. CSS without marker is a selection that starts
+ * and is then dragged out from under itself. Neither is a type error, neither
+ * shows up in `bun run check`, and both are one careless deletion away, so the
+ * pairing is asserted rather than remembered. */
+describe("text you are meant to be able to select", () => {
+  const files = components(SRC);
+
+  /** Components with at least one `data-text` in their markup.
+   *
+   *  Two mentions are not uses and are skipped, or this asks a file for a rule
+   *  it has nothing to put one on. A backticked one is prose — this codebase
+   *  names an attribute in a comment constantly, and a comment explaining the
+   *  marker is not a use of it. A bracketed one is a *selector* for the marker
+   *  rather than the marker: that is `Canvas.handleOf`, which is the other side
+   *  of this pairing and is asserted on its own terms just above. */
+  const marked = files.filter((f) =>
+    /(?<![`[])\bdata-text\b(?![`\]])/.test(
+      readFileSync(f, "utf8").split("<style")[0],
+    ),
+  );
+
+  test("something on the wall carries the marker", () => {
+    /* The same guard the walk above has: a rename that stopped matching would
+       make every assertion below pass by checking nothing. */
+    expect(marked.length).toBeGreaterThan(0);
+  });
+
+  test("the wall's press handler knows the marker", () => {
+    /* Asserted against the source rather than against a pure module, because
+       `handleOf` is a closure inside `Canvas.svelte` and this is the whole of
+       what could be got wrong about it from over here. */
+    const canvas = readFileSync(join(SRC, "lib", "Canvas.svelte"), "utf8");
+    expect(canvas).toContain("[data-text]");
+  });
+
+  for (const file of marked) {
+    test(`${file} lets the marked text be selected`, () => {
+      const css = stylesheet(readFileSync(file, "utf8"));
+      expect(css.replace(/\s+/g, " ")).toContain("user-select: text");
+    });
+  }
+});
+
 describe("the parser this leans on", () => {
   test("reads a rule's selector list", () => {
     expect(topLevelSelectors(".a { color: red }")).toEqual([".a"]);

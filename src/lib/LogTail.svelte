@@ -36,8 +36,15 @@
 
 <!-- Keyed by index rather than by content: a log repeats itself constantly —
      `[3/9] Compile Foo.cpp` twice in one build is ordinary — and a key that
-     collided would drop the second one. -->
-<pre class="log" class:tint>{#each rows as r, i (i)}<span class="ln" data-tone={r.tone}
+     collided would drop the second one.
+
+     `data-text` is what makes a drag across these lines select them instead of
+     carrying the widget off. It is `Canvas.handleOf`'s marker for "this text is
+     here to be read": the press returns `null`, `groundDown` lets it go, and the
+     browser does what it would have done anyway. See the style block below for
+     the half that is this file's, and `.claude/rules/widgets.md` for why a log
+     is the one reading on the wall that owes it. -->
+<pre class="log" class:tint data-text>{#each rows as r, i (i)}<span class="ln" data-tone={r.tone}
     >{#if r.mark}<span class="src">{r.mark}</span> {/if}{#each parseAnsi(r.text) as s}<span
       style:color={s.color === null ? null : ANSI_PALETTE[s.color]}
       style:font-weight={s.bold ? "600" : null}
@@ -70,6 +77,25 @@
     flex-direction: column;
     justify-content: flex-end;
     overflow: hidden;
+    /* The other half of `data-text` above, and the half without which that
+       marker only makes a log inert: `.surface`, `.glass` and `WidgetNode`'s
+       own `.face` each say `user-select: none`, because on this wall a
+       press-and-move is a gesture rather than a selection. An explicit
+       declaration on the element beats an inherited one whatever the
+       specificity, which is the same move `.surface input` already makes for a
+       territory's worktree field — this is the second thing on the wall to want
+       it, and the first that is not a field.
+
+       A log is where that exception is earned. Every other reading on the wall
+       is a number or a word you look at and are done with; a log is a stack
+       trace, a failing assertion, a port already in use — the one thing
+       standing here whose whole value is that it can be carried somewhere else.
+       The cost is real and is the one the sink item asked for: a press on the
+       lines no longer picks the widget up, so a log is moved by its header, its
+       chips or its frame. See `.claude/rules/widgets.md`. */
+    user-select: text;
+    /* So it reads as text before you try it rather than after. */
+    cursor: text;
     /* `pre` rather than `pre-wrap`: a long line is cut rather than wrapped,
        because a stack trace that wrapped to four lines would push three real
        ones off the bottom of a small widget — and on a face whose height is the

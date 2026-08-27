@@ -404,6 +404,44 @@ The shared decisions, each learned on one subject and then true of the others:
   log is monospace and denser, so sharing it would have made the arithmetic wrong about its own
   CSS — which is the one thing it is for. `LogTail`'s `justify-content: flex-end` is what makes
   being wrong about it survivable: overflow spills off the *top*, where it is merely old.
+- **A drag on the lines selects them; a drag anywhere else on the widget still carries it.**
+  The one place on this wall where a press-and-move is not a gesture. Every other reading here
+  is a number or a word you look at and are done with — a log is a stack trace, a failing
+  assertion, a port already in use, and its whole value is that it can be carried somewhere
+  else. A log you cannot copy out of is a log you read once and then retype.
+
+  The mechanism is one entry rather than a new rule, and that is the part worth keeping.
+  `Canvas.handleOf` already had a list of things a press is *not* the wall's — a `data-grip`,
+  and an editable, "where a drag means selecting text". A log's lines are the same sentence
+  with the word "editable" removed, so they are marked `data-text` and join that list;
+  `groundDown` does `if (aim === null && !panning) return` and the browser does what it would
+  have done anyway. No pointer is captured, no gesture starts, nothing about "the press is a
+  click until it has travelled" is touched. Adding a fourth pointer path here would have been
+  a fourth chance to get that rule wrong, and it has already been got wrong three times in
+  three faces (`layout.md`).
+
+  Three consequences, all deliberate:
+
+  - **The pan buttons still reach past it** — `handleOf`'s answer is only consulted for the
+    left button, so the right and middle drag the wall out from under a full-width log exactly
+    as they do everywhere else. A log widget that could not be panned off would be a hole in
+    the wall.
+  - **`user-select` is the other half and is easy to leave off.** `.surface`, `.glass` and
+    `WidgetNode`'s own `.face` each say `user-select: none`, so the marker alone buys a widget
+    that can no longer be moved *or* selected — strictly worse than before. `LogTail`'s `.log`
+    says `user-select: text` (and `cursor: text`, so it reads as text before you try it), which
+    is the same move `.surface input` already makes for a territory's worktree field. Neither
+    half is a type error and neither shows up in `bun run check`, so
+    `test/styles.test.ts` asserts the pairing: every component carrying the marker has the rule,
+    and `Canvas.svelte` names the marker.
+  - **A press on the lines no longer picks the widget up.** That is the trade the ask asked for
+    and it is real: a log widget is selected and moved by its header, its chips or its frame.
+    The header is always there and is never narrow, which is what makes the trade payable.
+
+  It reaches all three logs, not just the server's, and the boundary is drawn at *log text*
+  rather than at *server log text* on purpose — they share `LogTail`, and a build log you could
+  not copy a compiler error out of would be the same bug wearing a second face. `ServerLog`'s
+  `latest` variant carries the marker too, since it is the same lines in the other shape.
 - **Two absences, said differently.** A wall with nothing of this sort on it is a widget with
   nothing to point at yet. A widget naming a subject that has been *deleted* is the one thing that
   must not be papered over by quietly showing the next one's output — the lines would be somebody

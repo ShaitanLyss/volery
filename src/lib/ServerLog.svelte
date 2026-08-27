@@ -110,8 +110,13 @@
   {#if variant === "latest"}
     <!-- One line each rather than a scroll: what a log dropped to the size of a
          card can still say. The silent server gets a row too — it is the
-         interesting one. -->
-    <ul class="lasts">
+         interesting one.
+
+         `data-text` for the same reason `LogTail`'s `pre` carries it: this is
+         the other shape the same lines take, and a widget where the tail could
+         be copied and the last-line reading could not would be one boundary the
+         eye cannot see. -->
+    <ul class="lasts" data-text>
       {#each lasts as l (l.label)}
         <li>
           <span class="src">{l.label}</span>
@@ -168,6 +173,10 @@
     flex-direction: column;
     gap: 0.2rem;
     overflow: hidden;
+    /* The half of `data-text` that lives in CSS — see `LogTail`'s `.log`, where
+       the whole of the reasoning is. */
+    user-select: text;
+    cursor: text;
   }
   .lasts li {
     display: flex;
