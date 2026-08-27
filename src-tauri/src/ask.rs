@@ -747,6 +747,47 @@ pub(crate) fn roster() -> Vec<Value> {
             "start or stop or restart a dev server group, bring it up, kill it, \
              cycle the server after a config change",
         ),
+        /* The forge. These three read oddly wide and it is the one fact about
+           them that is not a fact about this roster: **a card reaching for the
+           forge has usually just failed with `az`**, which cannot reach
+           `dev.azure.com` on this network at all — see `smith.rs`'s header on
+           the TLS interception. So it is searching for the word in its hand,
+           `certificate` or `ssl` or the failed command itself, rather than for
+           a noun it does not know this server has. And nobody thinks
+           "pipelines"; they think "did my build pass".
+
+           **Every build word here is qualified `CI`, `pipeline` or `remote`,
+           and that is a collision fix rather than verbosity.** `server_log`
+           two entries up carries `build error` and `compile failure`, and
+           "my build failed, what happened" is the single likeliest thing
+           anybody types at either of them — while the two answer completely
+           different questions, one reading a dev server's stdout on this
+           machine and one reading a CI run in an Azure DevOps organisation. A
+           card sent to the wrong one does not get an error; it gets a confident
+           answer about the wrong build, which is the worst shape this failure
+           has. Found by 3f08dc99 reading the whole list at once, which is the
+           property that made putting the hints here rather than in each module
+           worth it. **`server_log`'s half is not done** — its hint should say
+           `local` where this one says `CI`, and until somebody is next in this
+           function for their own reasons that asymmetry is known rather than
+           overlooked. */
+        found_by(
+            crate::smith::pipelines_schema(),
+            "azure devops pipelines CI build remote build builds ci status runs \
+             workflow actions did my build pass on CI check the pipeline is the \
+             pipeline green az pipelines certificate error ssl self-signed",
+        ),
+        found_by(
+            crate::smith::reviews_schema(),
+            "pull request PR review reviews approved votes merge conflicts open \
+             PRs is my PR approved who reviewed az repos pr list gh pr list \
+             certificate error",
+        ),
+        found_by(
+            crate::smith::pull_request_schema(),
+            "create pull request open a PR raise a PR edit PR title description \
+             update PR body az repos pr create gh pr create certificate error ssl",
+        ),
     ]
 }
 
@@ -969,6 +1010,56 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             return;
                         }
 
+                        /* `pull_request` is the third, and always. It opens or
+                           edits a pull request on somebody's Azure DevOps
+                           organisation, under the user's own name, on a server
+                           this app does not own — **the first effect on this
+                           server that reaches outside this machine**, and one no
+                           card can take back: it lands on other people's review
+                           queue and nothing here can un-notify anybody.
+
+                           So the decision is taken here for `close`'s reason,
+                           and unconditionally where `close` is conditional. A
+                           card closing one of its own is answered at once
+                           because the wall is the caller's to arrange; there is
+                           no equivalent of "one of its own" for a pull request.
+                           In the roster chain below this would be a write that
+                           never asked, since that arm has already committed to
+                           answering on the spot. `smith::pull_request` decides
+                           once and hands back what to do about it — every
+                           refusal and every argument problem comes back as
+                           `Now`, so nothing reaches a person until the call is
+                           well-formed enough to be worth their attention. */
+                        if tool == crate::smith::PULL_REQUEST_TOOL {
+                            match crate::smith::pull_request(&app, &conversation_id, &args) {
+                                crate::smith::Writing::Now(said) => {
+                                    respond(
+                                        req,
+                                        json!({
+                                            "jsonrpc": "2.0", "id": id,
+                                            "result": { "content": [
+                                                { "type": "text", "text": said }
+                                            ] }
+                                        }),
+                                    );
+                                }
+                                crate::smith::Writing::Ask { question, settle } => {
+                                    let asks = app.state::<Asks>();
+                                    park_and_stream(
+                                        &app,
+                                        &asks,
+                                        &conversation_id,
+                                        &id,
+                                        &question,
+                                        progress,
+                                        req,
+                                        Some(settle),
+                                    );
+                                }
+                            }
+                            return;
+                        }
+
                         let answer = crate::relay::handle(&app, &conversation_id, &tool, &args)
                             .or_else(|| crate::board::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::sink::handle(&app, &conversation_id, &tool, &args))
@@ -989,6 +1080,17 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             .or_else(|| {
                                 crate::servers::handle(&app, &conversation_id, &tool, &args)
                             })
+                            /* The forge's two *readings*, and they belong here
+                               rather than above precisely because they read.
+                               They are slower than the rest of this chain —
+                               `pipelines` makes one request per project in the
+                               organisation, sequentially, against a ten-second
+                               connect timeout — which is affordable for the
+                               reason `servers` is: this parks nobody but its own
+                               caller, on a thread `ask::start` gave it. The
+                               forge's *write* is not in this chain; see the
+                               block above. */
+                            .or_else(|| crate::smith::handle(&app, &conversation_id, &tool, &args))
                             .unwrap_or_else(|| format!("this server has no tool {tool:?}"));
                         respond(
                             req,
