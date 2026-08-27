@@ -639,6 +639,14 @@ t("a question parked over MCP blocks the card, raises the peek, and resumes on a
   );
   expect(blocked.pendingAsk.question).toContain("seam");
   expect(blocked.pendingAsk.options).toEqual(["Keep the seam", "Fold it in"]);
+  /* The agent asked this one, so it is not Skein's. Pinned here because the two
+     kinds of parked call are otherwise identical from outside and they differ in
+     where the answer ends up: an agent's `ask_user` is answered into the
+     transcript, and a question Skein composed — `close` wanting approval for a
+     card the caller did not open — is answered into the tool result instead,
+     with no line drawn. A flipped default would send a test looking in the
+     wrong one of the two places. */
+  expect(blocked.pendingAsk.ours).toBe(false);
   /* Loudest thing a card can be: not an inference from silence, a fact. */
   expect(blocked.tier).toBe("ask");
 

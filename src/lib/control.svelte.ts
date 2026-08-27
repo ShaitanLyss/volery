@@ -244,6 +244,23 @@ function askSnapshot(ask: Conversation["pendingAsk"]) {
        one whose options carry none are the same question, the same card and the
        same tier from outside, and the whole feature lives in the difference. */
     previews: ask.questions.map((q) => panelsOf(q).length),
+    /* Who composed the question, which is one bit and not a reason.
+     *
+     *  True means Skein put the question up and there is no `ask_user` tool call
+     *  behind it — today only `close` wanting approval for a card the caller did
+     *  not open. False means the agent asked, which is every `ask_user`.
+     *
+     *  Here because the two are otherwise the same parked call from outside —
+     *  same card, same tier, same clock, same stepper — and they differ in two
+     *  things a test would want to assert. The answer does not become a line of
+     *  speech in the transcript, deliberately: there is no call for
+     *  `foldTranscript` to find it under, so drawing one would put a line on a
+     *  live card that vanishes the moment it is restored. And the text you send
+     *  is not what the agent receives — Rust composes the tool result from it.
+     *  So a test that checks "the answer reached the agent" has to look at the
+     *  tool result for a `true` ask and at the transcript for a `false` one, and
+     *  this is the only thing that says which. */
+    ours: ask.ours,
   };
 }
 
