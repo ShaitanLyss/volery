@@ -178,6 +178,27 @@ export const SKEIN_PIPELINES_TOOL = "mcp__skein__pipelines";
 export const SKEIN_REVIEWS_TOOL = "mcp__skein__reviews";
 export const SKEIN_PULL_REQUEST_TOOL = "mcp__skein__pull_request";
 
+/** And the music, which a card may *choose* and deliberately cannot drive.
+ *
+ *  `records` is a catalogue search and changes nothing anybody can hear.
+ *  `put_on` is the one tool in the app that alters what the user is listening
+ *  to, and it is bounded rather than trusted: it refuses outright while
+ *  something is playing, because taking a track off is the user's to do. There
+ *  is no pause, stop, skip or volume tool on this server at all — that absence
+ *  is the user's own scoping and not an omission, so nothing here should grow a
+ *  line for one.
+ *
+ *  The tense below matters for the same reason it does for `pull_request`:
+ *  `put_on` is refused whenever the wall is already playing, so the card says
+ *  what was *chosen* rather than claiming it played. The tool's own answer is
+ *  where the outcome is.
+ *
+ *  Same rule as the blocks above — every tool the Rust side registers owes a
+ *  line here. `src-tauri/src/selector.rs` declares these two as
+ *  `pub const *_TOOL`, and `.claude/rules/spotify.md` has the reasoning. */
+export const SKEIN_RECORDS_TOOL = "mcp__skein__records";
+export const SKEIN_PUT_ON_TOOL = "mcp__skein__put_on";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -489,6 +510,19 @@ export function describeTool(name: string, input: any): string {
       }
       const t = arg(input?.title);
       return t ? `wants to open a pull request: ${clip(t, 40)}` : "wants to open a pull request";
+    }
+    /* The music. A search is a reading; putting something on is the only act,
+       and it is refused while the user is listening — hence `chose`. */
+    case SKEIN_RECORDS_TOOL: {
+      const q = arg(input?.query);
+      return q ? `looked up ${clip(q, 28)} on spotify` : "searched spotify";
+    }
+    case SKEIN_PUT_ON_TOOL: {
+      /* The kind is the whole of what a uri carries — there is no title in one
+         — so the line names the shape and not the record. */
+      const kind = /^spotify:([a-z]+):/.exec(arg(input?.uri) ?? "")?.[1];
+      if (!kind) return "chose something to put on";
+      return `chose ${/^[aeiou]/.test(kind) ? "an" : "a"} ${kind} to put on`;
     }
     case "ExitPlanMode":
       return "wants the plan approved";

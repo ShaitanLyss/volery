@@ -38,11 +38,12 @@
 //! process, so the job-object rule has nothing to bite on.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use librespot_connect::{ConnectConfig, Spirc};
+use librespot_connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc};
 use librespot_core::authentication::Credentials;
 use librespot_core::config::DeviceType;
 use librespot_core::{Session, SessionConfig};
@@ -344,6 +345,10 @@ pub async fn spotify_link(app: AppHandle) -> Result<(), String> {
 pub async fn spotify_forget(app: AppHandle) -> Result<(), String> {
     stop_inner(&app);
     crate::vault::clear_at(VAULT_TARGET)?;
+    /* The same argument the session makes one line up: an account that has been
+       forgotten but whose token still answers a `records` search is the app
+       disagreeing with itself. */
+    forget_token();
     let state = app.state::<Spotify>();
     emit(&app, &state, Wire::Closed { fault: None });
     Ok(())
@@ -377,6 +382,11 @@ pub async fn spotify_start(app: AppHandle, name: Option<String>) -> Result<(), S
 
     let device = name.unwrap_or_else(|| "volery".to_string());
     let session = Session::new(SessionConfig::default(), None);
+    /* Keep the token before the session eats it. This exchange has just paid
+       for a round trip against accounts.spotify.com and `records` needs exactly
+       this string, so throwing it away here only to buy another one a moment
+       later is a network call nobody needs. */
+    remember(&token.access_token, token.expires_at);
     let credentials = Credentials::with_access_token(token.access_token);
 
     session
@@ -469,6 +479,158 @@ pub fn spotify_status(state: State<'_, Spotify>) -> Status {
             .map(|r| r.events())
             .unwrap_or_default(),
     }
+}
+
+/* ── choosing what plays ───────────────────────────────────────────────────
+ *
+ * The half of this file that `selector.rs` stands on. Everything
+ * credential-shaped stays here on purpose — `CLIENT_ID`, `SCOPES` and
+ * `VAULT_TARGET` are private to this file, so no second module can grow its own
+ * opinion about how this app signs in to Spotify. */
+
+/// The access token, and the moment it stops working.
+///
+/// `spotify_link` and `spotify_start` both mint one of these and both used to
+/// drop it — the comment above `spotify_link` still says the access token "is
+/// never written down", and that was true when the only thing needing one was a
+/// session. A catalogue search needs one *at search time*, so it is kept.
+///
+/// A `static` rather than a field on `Spotify` because it outlives any session:
+/// a card may search with the player stopped, which is a question about Spotify
+/// rather than about the device. Hanging it off the session would have coupled
+/// the two for no reason and made `records` fail with "not running", which is
+/// not the truth about a search.
+static TOKEN: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// Treat a token as dead this long before it actually is, so one cannot expire
+/// between the check that accepted it and the request that used it. A minute is
+/// far longer than a search takes, and costs at most one extra refresh an hour.
+const SKEW: Duration = Duration::from_secs(60);
+
+fn remember(token: &str, expires_at: Instant) {
+    if let Ok(mut held) = TOKEN.lock() {
+        *held = Some((token.to_string(), expires_at));
+    }
+}
+
+fn forget_token() {
+    if let Ok(mut held) = TOKEN.lock() {
+        *held = None;
+    }
+}
+
+/// A token that works right now, refreshing the stored credential if the cached
+/// one has run out.
+///
+/// Blocking when the cache misses — a round trip against accounts.spotify.com.
+/// Called from the MCP request thread, which `ask::start` gives its own thread
+/// per request, so it parks the card that asked and nothing else on the wall.
+/// **Not to be called from a `#[tauri::command]` that is not `async`**; see
+/// `off_main` in `lib.rs` for what blocking the main thread costs.
+pub(crate) fn access_token() -> Result<String, String> {
+    if let Ok(held) = TOKEN.lock() {
+        if let Some((tok, dies)) = held.as_ref() {
+            if *dies > Instant::now() + SKEW {
+                return Ok(tok.clone());
+            }
+        }
+    }
+
+    let refresh = crate::vault::read_at(VAULT_TARGET).ok_or_else(|| {
+        "no spotify account is linked — the user links one from the wall, and \
+         linking is not something a card can do"
+            .to_string()
+    })?;
+
+    let token = librespot_oauth::OAuthClientBuilder::new(CLIENT_ID, REDIRECT_URI, SCOPES.to_vec())
+        .build()
+        .map_err(|e| format!("could not reach spotify: {e}"))?
+        .refresh_token(&refresh)
+        .map_err(|e| format!("spotify would not renew the sign-in: {e}"))?;
+
+    remember(&token.access_token, token.expires_at);
+    Ok(token.access_token)
+}
+
+/// Whether audio is actually coming out of the wall.
+///
+/// Read off the replay fold rather than asked of librespot, because the wall is
+/// already keeping it: `Replay::transition` holds the last standing state event
+/// and `Wire::Playing` is the only one of the three that makes a sound. That is
+/// `CLAUDE.md`'s rule about folding an event that already exists instead of
+/// adding a fourth thing that goes and looks — and it is why this whole
+/// boundary costs no new state, no poller and no round trip.
+fn audible(state: &Spotify) -> bool {
+    state
+        .replay
+        .lock()
+        .map(|r| matches!(r.transition, Some(Wire::Playing { .. })))
+        .unwrap_or(false)
+}
+
+/// What is on, so a refusal can name it. Empty when nothing is loaded.
+fn now_playing(state: &Spotify) -> String {
+    state
+        .replay
+        .lock()
+        .ok()
+        .and_then(|r| match r.track.as_ref() {
+            Some(Wire::Track { track }) => Some(match track.artists.first() {
+                Some(who) => format!("{} — {}", track.name, who),
+                None => track.name.clone(),
+            }),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Put a selection on, or refuse because the user is listening to something.
+///
+/// The refusal itself is `selector::refuse_while_playing`, which lives over
+/// there so the boundary is one pure testable function; this is the half that
+/// needs the handle. Nothing here emits an event — librespot's own pump will
+/// announce the new track, which is the honest order: the wall draws what
+/// happened rather than what was asked for.
+pub(crate) fn put_on(app: &AppHandle, uri: &str, as_context: bool) -> Result<String, String> {
+    let state = app.state::<Spotify>();
+
+    if let Some(refusal) = crate::selector::refuse_while_playing(
+        audible(state.inner()),
+        Some(&now_playing(state.inner())),
+    ) {
+        return Ok(refusal);
+    }
+
+    let live = state.live.lock().unwrap();
+    let live = live.as_ref().ok_or_else(|| {
+        "the wall's spotify player is not running — the user starts it from the \
+         widget on the wall, and starting it is not something a card can do"
+            .to_string()
+    })?;
+
+    /* `start_playing` is the whole judgement call, and by the time control is
+       here the room is demonstrably silent — so putting something on means it
+       starts, or the tool is a no-op a card cannot tell from success. The
+       reasoning, and what it costs a paused listener, is at the top of
+       `selector.rs`. */
+    let options = LoadRequestOptions {
+        start_playing: true,
+        ..Default::default()
+    };
+    let request = if as_context {
+        LoadRequest::from_context_uri(uri.to_string(), options)
+    } else {
+        LoadRequest::from_tracks(vec![uri.to_string()], options)
+    };
+
+    live.spirc
+        .load(request)
+        .map_err(|e| format!("spotify would not put that on: {e}"))?;
+
+    Ok(format!(
+        "put {uri} on — the wall was quiet, so it is playing now. the user can \
+         pause or change it from the widget; you cannot, by design."
+    ))
 }
 
 /* ── the transport ─────────────────────────────────────────────────────────*/

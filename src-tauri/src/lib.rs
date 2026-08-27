@@ -33,6 +33,7 @@ mod project;
 mod quit;
 mod relay;
 mod repair;
+mod selector;
 mod servers;
 mod sessions;
 mod signin;
