@@ -1403,68 +1403,71 @@ mod tests {
     }
 
     /// Every one of them, or an agent is told about a capability it cannot
-    /// call. Asserted as an ordered list rather than a set, because the order is
-    /// the order they reach the model and the cheap ones belong in front of the
-    /// one that parks.
+    /// call — so what is asserted is that `tools/list` hands `roster()` back
+    /// *whole*, in its own order, with the two tiers not interleaved.
     ///
-    /// **This list had already gone stale, and that is the interesting part.**
-    /// It asserts the roster's exact order, so every tool added to `roster()`
-    /// owes it a line — and the forge's three were registered without one. The
-    /// assertion went on *compiling*, because a `vec!` missing three elements is
-    /// perfectly good Rust, and `cargo test` cannot run on this machine at all
-    /// (0xC0000139 — see `.claude/rules/build.md`), so nothing anywhere could
-    /// say so. Repaired here when the music's two were added, since a card in
-    /// this function for its own reasons is the only thing that was ever going
-    /// to notice.
+    /// **This assertion used to spell the roster out as a flat `vec!`, and that
+    /// is the interesting part.** Written that way it had already gone stale
+    /// once — the forge's three were registered without a line here — and it
+    /// went on *compiling*, because a `vec!` missing three elements is
+    /// perfectly good Rust. It was repaired by hand, and then it rotted a
+    /// second time and harder: the tiering split the roster into a loaded group
+    /// and a discoverable one, which moved `list`, `send`, `take`, `done`,
+    /// `touched` and `recall` past each other, and the hand-written order said
+    /// nothing about it. `cargo test` cannot run on the machine this is written
+    /// on (0xC0000139 — see `.claude/rules/build.md`), so the first thing that
+    /// could say so was the release workflow, which it failed.
     ///
-    /// The lesson generalises past this test: **an exhaustive assertion in a
-    /// suite that cannot be executed is documentation, not a guard.** Where the
-    /// order genuinely matters, prefer a test that derives its expectation from
-    /// `roster()` — as `every_deferred_tool_can_be_found` and
-    /// `the_loaded_tier_is_what_every_turn_pays_for` both do, which is why
-    /// neither of them could rot the same way.
+    /// Twice is the argument. **An exhaustive assertion in a suite that cannot
+    /// be executed is documentation, not a guard**, and one restated by hand is
+    /// a second copy of the roster that no compiler keeps honest — it fails the
+    /// release rather than the change, and it fails it for tidiness rather than
+    /// for a defect. So the expectation is derived, as
+    /// `every_deferred_tool_can_be_found` and
+    /// `the_loaded_tier_is_what_every_turn_pays_for` already derive theirs,
+    /// which is why neither of those could rot either time. What is left is the
+    /// part a handler can genuinely get wrong: filtering the roster, paging it,
+    /// sorting it, or — the one a new tool can cause by being appended in the
+    /// wrong place — putting a loaded tool below a deferred one, which reads to
+    /// the client as the cheap tier ending earlier than it does.
     #[test]
     fn the_roster_tools_are_advertised_beside_the_question() {
         let r = dispatch(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
         let Dispatch::Reply(v) = r else { panic!("expected a reply") };
-        let names: Vec<&str> = v["result"]["tools"]
+        let names: Vec<String> = v["result"]["tools"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|t| t["name"].as_str().unwrap())
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        let expected: Vec<String> = roster()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(
-            names,
-            vec![
-                "ask_user",
-                crate::relay::LIST_TOOL,
-                crate::relay::SEND_TOOL,
-                crate::board::BOARD_TOOL,
-                crate::board::POST_TOOL,
-                crate::board::UNPOST_TOOL,
-                crate::sink::SINK_TOOL,
-                crate::sink::DROP_TOOL,
-                crate::sink::TAKE_TOOL,
-                crate::sink::DONE_TOOL,
-                crate::relay::TOUCHED_TOOL,
-                crate::relay::RECALL_TOOL,
-                crate::limits::ALLOWANCE_TOOL,
-                crate::later::WAKE_TOOL,
-                crate::pin::PIN_TOOL,
-                crate::pin::REPIN_TOOL,
-                crate::pin::PINNED_TOOL,
-                crate::spawn::SPAWN_TOOL,
-                crate::spawn::CLOSE_TOOL,
-                crate::servers::SERVERS_TOOL,
-                crate::servers::SERVER_LOG_TOOL,
-                crate::servers::SERVER_TOOL,
-                crate::smith::PIPELINES_TOOL,
-                crate::smith::REVIEWS_TOOL,
-                crate::smith::PULL_REQUEST_TOOL,
-                crate::selector::RECORDS_TOOL,
-                crate::selector::PUT_ON_TOOL,
-            ]
+            names, expected,
+            "tools/list is not `ask::roster` whole and in order"
         );
+
+        // The question itself leads, since it is the one every card is told
+        // about by name in the paragraph it pays for on every spawn.
+        assert_eq!(names.first().map(String::as_str), Some("ask_user"));
+
+        // The tiers are contiguous: everything `always` before everything
+        // `found_by`.
+        let loaded: Vec<bool> = roster()
+            .iter()
+            .map(|t| t["_meta"]["anthropic/alwaysLoad"] == json!(true))
+            .collect();
+        let split = loaded.iter().position(|l| !l).unwrap_or(loaded.len());
+        for (i, l) in loaded.iter().enumerate().skip(split) {
+            assert!(
+                !l,
+                "`{}` is always-loaded but sits below the deferred tier, which \
+                 starts at `{}` — keep the two groups in `ask::roster` contiguous",
+                names[i], names[split]
+            );
+        }
     }
 
     /// The two that read come before the one that runs things, and that is not
@@ -1504,9 +1507,16 @@ mod tests {
             crate::servers::servers_schema(),
             crate::servers::server_log_schema(),
         ] {
+            /* Folded, because the two spellings that matter are both
+               sentence-initial — `servers` opens the clause with "Costs
+               nobody anything", `server_log` with "Free, and it is what to do
+               *instead* of". Matched case-sensitively this asserted that a
+               description said it was free *and started the sentence in the
+               right place*, so it failed the release on a capital letter. */
             let said = free["description"].as_str().unwrap();
+            let flat = said.to_lowercase();
             assert!(
-                said.contains("cost") || said.contains("Free"),
+                flat.contains("cost") || flat.contains("free"),
                 "a reading tool must say it is free — got: {said}"
             );
         }
