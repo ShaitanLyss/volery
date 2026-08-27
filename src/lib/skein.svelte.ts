@@ -352,6 +352,7 @@ export class Skein {
         conversation_id: string;
         ask_id: string;
         ask: { question?: unknown; options?: unknown; questions?: unknown };
+        ours?: boolean;
       }>("ask:opened", (e) => {
         const c = this.#byId.get(e.payload.conversation_id);
         if (!c) return;
@@ -362,6 +363,7 @@ export class Skein {
           questions,
           answers: blankAnswers(questions),
           dropped: overflowOf(raw),
+          ours: e.payload.ours === true,
           since: Date.now(),
         };
         c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
@@ -379,8 +381,13 @@ export class Skein {
       listen<{ ask_id: string; answered: boolean }>("ask:closed", (e) => {
         for (const c of this.#byId.values()) {
           if (c.pendingAsk?.askId !== e.payload.ask_id) continue;
+          const ours = c.pendingAsk.ours;
           c.pendingAsk = null;
-          if (!e.payload.answered) c.note(NO_ANSWER_NOTE);
+          /* Same bargain one case over: a question Skein put up reports its own
+             outcome through the tool result, which says "nobody answered, so it
+             stays" in more useful words than this note has — and unlike this
+             note, says it in the transcript a restart can reproduce. */
+          if (!e.payload.answered && !ours) c.note(NO_ANSWER_NOTE);
         }
       }),
     );
@@ -1897,6 +1904,15 @@ export class Skein {
     conv.activity = "responding";
     try {
       await invoke("answer_ask", { askId: ask.askId, answer: text });
+      /* Skein's own question is not drawn as something you said, and the flag is
+         the whole of why `PendingAsk` carries one. `close` asking whether a card
+         the caller did not open should go is a question with no `ask_user` call
+         behind it, so there is nothing in the record for a restored card to hang
+         your reply on — `foldTranscript` finds the `close` tool call and its
+         result and no more. The result *is* the record, it says what happened
+         either way, and it folds identically live and off disk. Pushing a line
+         here as well would be one that exists until the next restart. */
+      if (ask.ours) return;
       /* Only once it has landed. The parked request is a local handoff and
          returns in a millisecond, so there is nothing to be gained by drawing
          it optimistically the way `echo` does for a prompt — and an answer

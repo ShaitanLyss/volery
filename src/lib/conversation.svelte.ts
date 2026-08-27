@@ -298,6 +298,20 @@ export type PendingAsk = {
   /** Questions the call carried past `MAX_QUESTIONS`. Drawn, because an agent
    *  that asked six things and got five answers will guess at the sixth. */
   dropped: number;
+  /** Whether Skein composed this question rather than the agent asking it.
+   *
+   *  It changes nothing about how the panel draws and one thing about what the
+   *  transcript keeps. An agent's own `ask_user` is half of an exchange: the
+   *  call is in the transcript and your reply is drawn under it, and
+   *  `foldTranscript` finds both again off disk because the call's tool name is
+   *  `SKEIN_ASK_TOOL`. A question *Skein* put up — `close` wanting approval for
+   *  a card the caller did not open — has no such call to hang off. What the
+   *  agent's transcript holds is a `close` tool call and its result, and the
+   *  result is composed in Rust *from* the answer rather than being it. So
+   *  drawing your click as a line of speech would put a line on a live card
+   *  that vanishes the moment it is restored, which is the seam `history.ts`
+   *  exists to avoid. See `answerAsk`. */
+  ours: boolean;
   since: number;
 };
 
