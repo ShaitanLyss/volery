@@ -49,6 +49,18 @@ const WHO: &str = "azure devops (volery)";
 
 #[cfg(windows)]
 pub fn store(pat: &str) -> Result<(), String> {
+    store_at(TARGET, WHO, pat)
+}
+
+/// The same vault, for a caller that brings its own target.
+///
+/// Added when the Spotify refresh token wanted this treatment and this
+/// reasoning (`spotify.rs`). It is a second *entry*, deliberately not a second
+/// mechanism: one place holds the unsafe block, one place decides the
+/// persistence, and Credential Manager lists both under names that sort
+/// together. Anything else this app ever has to keep belongs here too.
+#[cfg(windows)]
+pub fn store_at(target: &str, who: &str, pat: &str) -> Result<(), String> {
     use windows::core::{HSTRING, PWSTR};
     use windows::Win32::Security::Credentials::{
         CredWriteW, CREDENTIALW, CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE,
@@ -71,8 +83,8 @@ pub fn store(pat: &str) -> Result<(), String> {
         ));
     }
 
-    let target = HSTRING::from(TARGET);
-    let who = HSTRING::from(WHO);
+    let target = HSTRING::from(target);
+    let who = HSTRING::from(who);
     let cred = CREDENTIALW {
         Type: CRED_TYPE_GENERIC,
         TargetName: PWSTR(target.as_ptr() as *mut u16),
@@ -97,10 +109,15 @@ pub fn store(pat: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn read() -> Option<String> {
+    read_at(TARGET)
+}
+
+#[cfg(windows)]
+pub fn read_at(target: &str) -> Option<String> {
     use windows::core::HSTRING;
     use windows::Win32::Security::Credentials::{CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC};
 
-    let target = HSTRING::from(TARGET);
+    let target = HSTRING::from(target);
     let mut out: *mut CREDENTIALW = std::ptr::null_mut();
     /* SAFETY: `out` is a null pointer the API fills with an allocation of its
        own, which is freed below on both paths. Failure — including the ordinary
@@ -129,17 +146,22 @@ pub fn read() -> Option<String> {
 
 #[cfg(windows)]
 pub fn clear() -> Result<(), String> {
+    clear_at(TARGET)
+}
+
+#[cfg(windows)]
+pub fn clear_at(target: &str) -> Result<(), String> {
     use windows::core::HSTRING;
     use windows::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
 
-    let target = HSTRING::from(TARGET);
+    let wide = HSTRING::from(target);
     /* SAFETY: one null-terminated wide string that outlives the call. */
-    match unsafe { CredDeleteW(&target, CRED_TYPE_GENERIC, None) } {
+    match unsafe { CredDeleteW(&wide, CRED_TYPE_GENERIC, None) } {
         Ok(()) => Ok(()),
         /* Deleting a token that is not there is what the caller wanted to be
            true, so it is not an error. `held()` is the only honest way to tell
            the two apart and the front end asks that separately. */
-        Err(_) if !held() => Ok(()),
+        Err(_) if !held_at(target) => Ok(()),
         Err(e) => Err(format!("windows would not delete the token: {e}")),
     }
 }
@@ -152,7 +174,12 @@ pub fn clear() -> Result<(), String> {
 /// snapshot is written to a file.
 #[cfg(windows)]
 pub fn held() -> bool {
-    read().is_some()
+    held_at(TARGET)
+}
+
+#[cfg(windows)]
+pub fn held_at(target: &str) -> bool {
+    read_at(target).is_some()
 }
 
 /* ── everywhere else ───────────────────────────────────────────────────────*/
@@ -174,5 +201,25 @@ pub fn clear() -> Result<(), String> {
 
 #[cfg(not(windows))]
 pub fn held() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn store_at(_target: &str, _who: &str, _pat: &str) -> Result<(), String> {
+    Err("storing a token needs the Windows credential vault".into())
+}
+
+#[cfg(not(windows))]
+pub fn read_at(_target: &str) -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn clear_at(_target: &str) -> Result<(), String> {
+    Err("storing a token needs the Windows credential vault".into())
+}
+
+#[cfg(not(windows))]
+pub fn held_at(_target: &str) -> bool {
     false
 }

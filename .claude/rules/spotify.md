@@ -1,9 +1,11 @@
 ---
 paths:
   - "src/lib/spotify.ts"
+  - "src/lib/spotify.svelte.ts"
   - "src/lib/Spotify.svelte"
   - "src-tauri/src/spotify.rs"
   - "test/spotify.test.ts"
+  - "src-tauri/Cargo.toml"
 ---
 
 # Music on the wall

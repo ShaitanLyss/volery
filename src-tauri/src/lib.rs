@@ -39,6 +39,7 @@ mod signin;
 mod shell;
 mod sink;
 mod spawn;
+mod spotify;
 mod status;
 mod store;
 mod supervisor;
@@ -199,6 +200,10 @@ pub fn run() {
            every launch but the one after you asked for an update. See
            `update.rs` on why the button arms this rather than running it. */
         .manage(update::Arming::default())
+        /* The librespot session, or nothing until somebody asks for one. Held
+           rather than started at launch on purpose: a wall opening should not
+           announce itself on the network as a speaker nobody asked for. */
+        .manage(spotify::Spotify::default())
         .setup(|app| {
             let dir = app
                 .path()
@@ -463,6 +468,12 @@ pub fn run() {
             control::control_real_wheel,
             control::control_real_key,
             status::claude_status,
+            spotify::spotify_link,
+            spotify::spotify_forget,
+            spotify::spotify_start,
+            spotify::spotify_stop,
+            spotify::spotify_status,
+            spotify::spotify_command,
             update::latest_release,
             update::fetch_update,
             update::arm_update,
