@@ -788,6 +788,28 @@ pub(crate) fn roster() -> Vec<Value> {
             "create pull request open a PR raise a PR edit PR title description \
              update PR body az repos pr create gh pr create certificate error ssl",
         ),
+        /* The music. Both hints are written in **the words a person says about
+           music** rather than around either tool's name, because nobody thinks
+           "records" — they think "put something on".
+
+           `put_on`'s hint carries every phrasing that means *choosing* and none
+           that means *driving*: no pause, no skip, no volume, no louder or
+           quieter. That is not an oversight to be tidied up later. A card
+           holding "turn it down" finds nothing on this server, and finding
+           nothing is the correct answer — the user keeps the transport, and this
+           function is the one place an agent actually goes looking, so it is
+           where the scoping has to hold as well as in the schemas. */
+        found_by(
+            crate::selector::records_schema(),
+            "search spotify for music find a song track album playlist artist \
+             what is this song called look up a record catalogue what should we \
+             listen to",
+        ),
+        found_by(
+            crate::selector::put_on_schema(),
+            "put music on play an album put some jazz on choose what plays change \
+             the music start a playlist something to listen to while I work",
+        ),
     ]
 }
 
@@ -1091,6 +1113,18 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                forge's *write* is not in this chain; see the
                                block above. */
                             .or_else(|| crate::smith::handle(&app, &conversation_id, &tool, &args))
+                            /* The music, last for the same reason and on the
+                               same bargain: `records` is a `GET /v1/search`
+                               against api.spotify.com and blocks this thread
+                               while it runs. `put_on` does not go out at all —
+                               it is a local call on the Spirc handle — and it
+                               is *not* the write that needs a block of its own
+                               above, because there is nothing for the user to
+                               approve: it refuses by itself while they are
+                               listening, which is the whole of its restraint. */
+                            .or_else(|| {
+                                crate::selector::handle(&app, &conversation_id, &tool, &args)
+                            })
                             .unwrap_or_else(|| format!("this server has no tool {tool:?}"));
                         respond(
                             req,
@@ -1372,6 +1406,23 @@ mod tests {
     /// call. Asserted as an ordered list rather than a set, because the order is
     /// the order they reach the model and the cheap ones belong in front of the
     /// one that parks.
+    ///
+    /// **This list had already gone stale, and that is the interesting part.**
+    /// It asserts the roster's exact order, so every tool added to `roster()`
+    /// owes it a line — and the forge's three were registered without one. The
+    /// assertion went on *compiling*, because a `vec!` missing three elements is
+    /// perfectly good Rust, and `cargo test` cannot run on this machine at all
+    /// (0xC0000139 — see `.claude/rules/build.md`), so nothing anywhere could
+    /// say so. Repaired here when the music's two were added, since a card in
+    /// this function for its own reasons is the only thing that was ever going
+    /// to notice.
+    ///
+    /// The lesson generalises past this test: **an exhaustive assertion in a
+    /// suite that cannot be executed is documentation, not a guard.** Where the
+    /// order genuinely matters, prefer a test that derives its expectation from
+    /// `roster()` — as `every_deferred_tool_can_be_found` and
+    /// `the_loaded_tier_is_what_every_turn_pays_for` both do, which is why
+    /// neither of them could rot the same way.
     #[test]
     fn the_roster_tools_are_advertised_beside_the_question() {
         let r = dispatch(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
@@ -1407,6 +1458,11 @@ mod tests {
                 crate::servers::SERVERS_TOOL,
                 crate::servers::SERVER_LOG_TOOL,
                 crate::servers::SERVER_TOOL,
+                crate::smith::PIPELINES_TOOL,
+                crate::smith::REVIEWS_TOOL,
+                crate::smith::PULL_REQUEST_TOOL,
+                crate::selector::RECORDS_TOOL,
+                crate::selector::PUT_ON_TOOL,
             ]
         );
     }
