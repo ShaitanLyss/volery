@@ -562,19 +562,52 @@ fn unseen(body: &str) -> bool {
         .is_some_and(|k| k == "ProjectDoesNotExistException")
 }
 
+/// What to do at the far end. Three, because the module now writes as well as
+/// reads — see `smith.rs`.
+///
+/// **A write walks the same ladder as a read, and that is safe for the reason
+/// the ladder exists rather than by luck.** Rotating past a refused credential
+/// means re-sending the request, which for a POST is the one thing you have to
+/// think about twice. It is sound here because every status the walk falls
+/// through on — 401, 403, 404, and the 400 that means "not your project" — is
+/// Azure DevOps declining *before* it did anything: there is no state on the
+/// other side to have half-changed. A 2xx returns immediately, and anything
+/// else is a hard error that ends the pass without a second attempt. So the
+/// worst case is a pull request created by the second rung rather than the
+/// first, and never one created twice.
+#[derive(Clone, Copy, PartialEq)]
+enum Verb {
+    Get,
+    Post,
+    Patch,
+}
+
 /// One GET, signed with whichever rung is accepted, starting from the one that
 /// worked last time for this family.
+fn get(
+    cache: &mut Cache,
+    org: &str,
+    family: &'static str,
+    url: &str,
+) -> Result<serde_json::Value, Denied> {
+    walk(cache, org, family, Verb::Get, url, None)
+}
+
+/// One request, signed with whichever rung is accepted, starting from the one
+/// that worked last time for this family.
 ///
 /// The rotation is what makes "starting from" safe: a remembered rung that has
 /// since stopped working falls through to the others rather than pinning the
 /// failure, and a rung that works is written back. `family` is `"build"` or
 /// `"git"` — the two AzDO scopes that are granted separately and therefore the
 /// two that can disagree about the same credential.
-fn get(
+fn walk(
     cache: &mut Cache,
     org: &str,
     family: &'static str,
+    verb: Verb,
     url: &str,
+    body: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, Denied> {
     /* The ladder is resolved once per organisation and held, because each rung
        costs a process spawn — and it was held *forever*, which is the bug this
@@ -623,11 +656,21 @@ fn get(
     for step in 0..creds.len() {
         let at = (start + step) % creds.len();
         let cred = &creds[at];
-        let call = agent
-            .get(url)
-            .set("Authorization", &cred.header())
-            .set("Accept", "application/json");
-        match call.call() {
+        let call = match verb {
+            Verb::Get => agent.get(url),
+            Verb::Post => agent.post(url),
+            /* `request` rather than a named helper: ureq 2.x has no `patch`, and
+               Azure DevOps' pull request update is a PATCH rather than a PUT
+               because it takes only the fields you are changing. */
+            Verb::Patch => agent.request("PATCH", url),
+        }
+        .set("Authorization", &cred.header())
+        .set("Accept", "application/json");
+        let sent = match body {
+            Some(b) => call.send_json(b.clone()),
+            None => call.call(),
+        };
+        match sent {
             Ok(res) => {
                 cache.rung.insert((org.to_string(), family), at);
                 return res
@@ -688,32 +731,116 @@ fn first_line(body: &str) -> String {
 
 /* ── what the wall is standing on ──────────────────────────────────────────*/
 
-/// The organisation a repository belongs to, or None if it is not on Azure
-/// DevOps at all.
+/// A remote url split into the organisation and whatever path followed it, or
+/// None if it is not on Azure DevOps at all.
 ///
 /// Both spellings, because both are still in the wild: `dev.azure.com/<org>/…`
 /// is what everything issues today and `<org>.visualstudio.com` is what older
 /// clones still carry. The `<user>@` in front of the host — which is how AzDO
 /// writes its own clone urls — is stripped rather than parsed.
-fn org_of(remote: &str) -> Option<String> {
+///
+/// **The `v3` and the port come off in two different places**, which is not a
+/// tidiness problem but the reason the host is trimmed at its colon before it is
+/// matched. Azure DevOps' own Clone → SSH button hands out the scp-like spelling
+/// `git@ssh.dev.azure.com:v3/<org>/…`, where `v3` rides on the *host* half and
+/// is discarded with the port; `ssh://…/v3/<org>/…` puts the same segment on the
+/// path, where it has to be stepped over explicitly.
+fn azdo_parts(remote: &str) -> Option<(String, Vec<String>)> {
     let s = remote.trim();
     let s = s.split_once("://").map(|(_, r)| r).unwrap_or(s);
     let s = s.rsplit_once('@').map(|(_, r)| r).unwrap_or(s);
     let (host, rest) = s.split_once('/')?;
     let host = host.split_once(':').map(|(h, _)| h).unwrap_or(host);
+    let mut parts = rest.split('/').filter(|p| !p.is_empty());
 
     if host.eq_ignore_ascii_case("dev.azure.com") || host.eq_ignore_ascii_case("ssh.dev.azure.com")
     {
-        /* `ssh.dev.azure.com` puts a literal `v3` segment first. */
-        let mut parts = rest.split('/').filter(|p| !p.is_empty());
         let first = parts.next()?;
         let org = if first == "v3" { parts.next()? } else { first };
-        return (!org.is_empty()).then(|| decode(org));
+        if org.is_empty() {
+            return None;
+        }
+        return Some((decode(org), parts.map(decode).collect()));
     }
     if let Some(org) = host.strip_suffix(".visualstudio.com") {
-        return (!org.is_empty()).then(|| org.to_string());
+        if org.is_empty() {
+            return None;
+        }
+        /* The host cannot be percent-encoded, so the organisation arrives
+           already readable here where the path form does not. */
+        return Some((org.to_string(), parts.map(decode).collect()));
     }
     None
+}
+
+/// The organisation a repository belongs to, or None if it is not on Azure
+/// DevOps at all. What the two widgets need, and all they need.
+fn org_of(remote: &str) -> Option<String> {
+    azdo_parts(remote).map(|(org, _)| org)
+}
+
+/// The three names a *write* needs: which organisation, which project, which
+/// repository.
+///
+/// `org_of` above is enough for the widgets, because both of their readings are
+/// org-wide or project-enumerated — the wall asks "what is building anywhere"
+/// and never "what is building here". A pull request is the other shape
+/// entirely: `_apis/git/repositories/{repo}/pullrequests` names all three in its
+/// path, and there is no endpoint that will take a guess at any of them.
+///
+/// **Read off the remote rather than asked for, which is the same rule the
+/// organisation follows** and worth restating because a write is where it is
+/// most tempting to break: a card that could name its own project and repository
+/// could name somebody else's, and then the tool's blast radius is the whole
+/// organisation rather than the territory the card is standing in. See
+/// `smith.rs`, which is the only caller.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Origin {
+    pub(crate) org: String,
+    pub(crate) project: String,
+    pub(crate) repo: String,
+}
+
+/// `Origin` out of a git remote, or None if the remote is not an Azure DevOps
+/// *repository* url.
+///
+/// The two spellings put the project in two different places and one of them
+/// leaves it out altogether:
+///
+/// ```text
+/// dev.azure.com/{org}/{project}/_git/{repo}      the canonical https form
+/// dev.azure.com/{org}/_git/{repo}                project omitted; it is the repo's name
+/// {org}.visualstudio.com/{coll}/{project}/_git/{repo}   the legacy collection form
+/// ssh.dev.azure.com:v3/{org}/{project}/{repo}    ssh, with no `_git` marker at all
+/// ```
+///
+/// So `_git` is the anchor where there is one — the project is the segment
+/// *before* it and the repository the segment after, which gets the legacy
+/// collection form right for free rather than by naming it — and the ssh form
+/// falls back to positional reading, which is the only thing it offers.
+fn origin_of(remote: &str) -> Option<Origin> {
+    let (org, rest) = azdo_parts(remote)?;
+    let (project, repo) = match rest.iter().position(|p| p.as_str() == "_git") {
+        Some(at) => {
+            let repo = rest.get(at + 1)?.clone();
+            /* `dev.azure.com/{org}/_git/{repo}` is a real url and means the
+               project is named the same as the repository. */
+            let project = if at >= 1 { rest[at - 1].clone() } else { repo.clone() };
+            (project, repo)
+        }
+        None => {
+            let project = rest.first()?.clone();
+            /* An ssh remote naming only the project is `.../{org}/{repo}` with
+               the project implied, the same way the https form allows. */
+            let repo = rest.get(1).cloned().unwrap_or_else(|| project.clone());
+            (project, repo)
+        }
+    };
+    let repo = repo.trim_end_matches(".git").to_string();
+    if project.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(Origin { org, project, repo })
 }
 
 /// Percent-decoding, for the org and project names that arrive out of a remote
@@ -847,27 +974,27 @@ fn me_in(cache: &mut Cache, org: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Runs {
-    runs: Vec<Run>,
+    pub(crate) runs: Vec<Run>,
     /// The organisations that were asked, so a wall with no AzDO repo on it can
     /// say *that* rather than saying nothing was running.
-    orgs: Vec<String>,
+    pub(crate) orgs: Vec<String>,
     /// How many project-level requests this reading cost.
-    asked: usize,
+    pub(crate) asked: usize,
     /// Projects no credential on the ladder can see. Reported rather than
     /// merely skipped: an org where four of six projects are invisible to you
     /// draws an empty widget, and "nothing is building" and "you are not on
     /// these projects" are different sentences. The rule the caps follow — a
     /// bound that can hide an answer says so out loud.
-    unseen: usize,
-    fault: Option<String>,
+    pub(crate) unseen: usize,
+    pub(crate) fault: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reviews {
-    reviews: Vec<Review>,
-    orgs: Vec<String>,
-    asked: usize,
+    pub(crate) reviews: Vec<Review>,
+    pub(crate) orgs: Vec<String>,
+    pub(crate) asked: usize,
     /// Repositories no credential can see.
     ///
     /// **Always zero until GitHub arrived**, which is why this half did not have
@@ -877,8 +1004,8 @@ pub struct Reviews {
     /// silence `Runs::unseen` already existed for. The front end had been
     /// defaulting it for this half all along (`#land`, `scan.unseen ?? 0`), so
     /// the number simply starts being true.
-    unseen: usize,
-    fault: Option<String>,
+    pub(crate) unseen: usize,
+    pub(crate) fault: Option<String>,
 }
 
 /* ── the two readings ──────────────────────────────────────────────────────*/
@@ -1019,6 +1146,237 @@ fn read_reviews(cache: &mut Cache, org: &str) -> Result<Vec<Review>, String> {
             })
         })
         .collect())
+}
+
+/* ── one pull request, read and written ────────────────────────────────────
+ *
+ * The first verbs in this file, and the first anywhere on this side of the app.
+ * `azdo.md`'s floor — *a row is a link and nothing else, no re-run, no cancel,
+ * no approve* — is about the **widgets**, and it still holds there: a button on
+ * a list read at a glance is one stray click from a deployment, on a wall whose
+ * agents already run with `--dangerously-skip-permissions`.
+ *
+ * What is here is not that gesture and does not weaken it. These are reached
+ * only from `smith.rs`'s MCP tools, by a card that was asked to open or amend a
+ * pull request, and the floor is redrawn one step in rather than removed:
+ *
+ * **Only what a person would type into a text field.** A title, a description,
+ * and the pull request the two of them belong to. No vote, no completion, no
+ * abandon, no re-run, no cancel, no policy override. Those are the acts that
+ * land under your name on somebody else's work or start a machine moving, and
+ * they are as unavailable to a card here as they are to a click on the wall.
+ *
+ * Why any of it exists is `Cargo.toml`'s note and this file's header: this
+ * network runs TLS interception, `ureq` is built with `native-certs` and reads
+ * the Windows store, and `az` is not — so `az repos pr create` fails here with a
+ * certificate error on a machine where Volery's own requests succeed. The cards
+ * were not being denied a capability on purpose; they were failing to reach a
+ * path this module had already got working. */
+
+/// One pull request in full, which is the only place its **description** is.
+///
+/// The org-wide list `read_reviews` walks does not carry one — probed against
+/// api-version 7.1, `_apis/git/pullrequests` answers with the title, the votes
+/// and the merge status and no body text at all. That is right for a widget and
+/// exactly wrong for the thing a card most often wants to do, which is amend a
+/// description without throwing away what is already in it.
+fn pull_of(cache: &mut Cache, at: &Origin, number: i64) -> Result<serde_json::Value, Denied> {
+    walk(cache, &at.org, "git", Verb::Get, &pull_url(at, Some(number)), None)
+}
+
+/// `…/pullrequests` for a create, `…/pullrequests/{n}` for one that exists.
+///
+/// One composer rather than two format strings three lines apart, because the
+/// part that is easy to get wrong is the same in both and is not the number:
+/// **the repository goes in by name and the project by name**, and Azure DevOps
+/// accepts a guid in either position, so a url built from the wrong one of the
+/// two answers 404 rather than complaining. Both come off the git remote
+/// (`origin_of`), which is the only source in this file that cannot be confused
+/// about which is which.
+fn pull_url(at: &Origin, number: Option<i64>) -> String {
+    let base = format!(
+        "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/pullrequests",
+        encode(&at.org),
+        encode(&at.project),
+        encode(&at.repo),
+    );
+    match number {
+        Some(n) => format!("{base}/{n}?api-version=7.1"),
+        None => format!("{base}?api-version=7.1"),
+    }
+}
+
+/// The branch this repository merges into when nobody says otherwise.
+///
+/// Worth one request rather than a default of `main`, and the reason is that
+/// guessing fails in the expensive direction. A wrong branch name does not 404
+/// — Azure DevOps happily accepts `refs/heads/main` as a target on a repository
+/// whose trunk is `master` and answers 400 with `TargetRefName` in the prose, so
+/// the card would read a validation error about a field it never set. Worse, a
+/// repository with both branches gets a pull request aimed at the wrong one,
+/// which is a real pull request on somebody's list that nobody asked for.
+///
+/// Full `refs/heads/…` as Azure DevOps writes it, which is also the form the
+/// create body wants, so nothing here reassembles a ref.
+fn default_branch_of(cache: &mut Cache, at: &Origin) -> Result<String, Denied> {
+    let url = format!(
+        "https://dev.azure.com/{}/{}/_apis/git/repositories/{}?api-version=7.1",
+        encode(&at.org),
+        encode(&at.project),
+        encode(&at.repo),
+    );
+    let v = walk(cache, &at.org, "git", Verb::Get, &url, None)?;
+    let branch = text(&v, "defaultBranch");
+    if branch.is_empty() {
+        /* An empty repository has no default branch, and it is the one case
+           where there is genuinely nothing to aim at. Said rather than
+           defaulted, because a pull request into a repository with no commits
+           is not a thing a better guess would fix. */
+        return Err(Denied::Said(format!(
+            "{}/{} has no default branch — name `target` explicitly",
+            at.project, at.repo
+        )));
+    }
+    Ok(branch)
+}
+
+/// A ref as Azure DevOps insists on writing it.
+///
+/// Every ref in these payloads is fully qualified (`refs/heads/main`), and a
+/// bare `main` in a create body is not corrected — it is accepted, matches
+/// nothing, and comes back as a 400 about a source branch that does not exist.
+/// A card writes branch names the way people do, so the widening happens here
+/// once rather than in each caller.
+fn full_ref(branch: &str) -> String {
+    let b = branch.trim();
+    if b.starts_with("refs/") {
+        b.to_string()
+    } else {
+        format!("refs/heads/{b}")
+    }
+}
+
+/// Open one.
+///
+/// `isDraft` is passed rather than left out when false, because Azure DevOps'
+/// own default is project policy rather than a documented constant, and a card
+/// that said nothing about draftness should get the ordinary kind of pull
+/// request rather than whichever kind the organisation happens to prefer.
+fn open_pull(
+    cache: &mut Cache,
+    at: &Origin,
+    source: &str,
+    target: &str,
+    title: &str,
+    description: &str,
+    draft: bool,
+) -> Result<serde_json::Value, Denied> {
+    let body = serde_json::json!({
+        "sourceRefName": full_ref(source),
+        "targetRefName": full_ref(target),
+        "title": title,
+        "description": description,
+        "isDraft": draft,
+    });
+    walk(cache, &at.org, "git", Verb::Post, &pull_url(at, None), Some(&body))
+}
+
+/// Change the title, the description, or both, on one that exists.
+///
+/// **Only the fields being changed go in the body**, and that is not an
+/// optimisation. A PATCH here is a merge rather than a replacement, so sending
+/// `description: ""` for a caller who only meant to fix a typo in the title
+/// would silently empty the description — the exact accident an agent is most
+/// likely to have and the least likely to notice, since the answer would look
+/// entirely successful. `None` means *leave it alone* all the way down to the
+/// wire.
+fn amend_pull(
+    cache: &mut Cache,
+    at: &Origin,
+    number: i64,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<serde_json::Value, Denied> {
+    let mut body = serde_json::Map::new();
+    if let Some(t) = title {
+        body.insert("title".into(), serde_json::Value::String(t.to_string()));
+    }
+    if let Some(d) = description {
+        body.insert("description".into(), serde_json::Value::String(d.to_string()));
+    }
+    let body = serde_json::Value::Object(body);
+    walk(cache, &at.org, "git", Verb::Patch, &pull_url(at, Some(number)), Some(&body))
+}
+
+/* ── the seam `smith.rs` reaches through ───────────────────────────────────
+ *
+ * Four functions and a type, and the narrowness is the design. The alternative
+ * was to hand `smith.rs` a signed-request helper and let it compose urls, which
+ * would have been fewer lines here and would have moved the credential ladder's
+ * whole surface into a second file — a module boundary that exists only in the
+ * `pub(crate)` keywords is not one. What crosses is the *acts*: read one, open
+ * one, amend one, and where to aim it. Nothing outside this file composes an
+ * Azure DevOps url or sees a `Cred`.
+ *
+ * Each takes the lock itself, so the one-lock-at-a-time rule stays a fact about
+ * this file. None of them takes GitHub's, because none of them is about GitHub —
+ * see `smith.rs` for why the write half is Azure DevOps only. */
+
+/// Where a project root points, if it points at an Azure DevOps repository.
+///
+/// Uncached, unlike `orgs_for`'s per-root map, and deliberately: this is one
+/// `git` spawn on a deliberate tool call rather than on a twenty-second poll,
+/// and a card that has just switched a remote should not be told about the old
+/// one for five minutes because a widget happened to look first.
+pub(crate) fn origin_for(root: &str) -> Option<Origin> {
+    remote_of(root).as_deref().and_then(origin_of)
+}
+
+/// One pull request in full, including its description.
+pub(crate) fn pull_read(
+    app: &AppHandle,
+    at: &Origin,
+    number: i64,
+) -> Result<serde_json::Value, String> {
+    let state = app.state::<Azdo>();
+    let mut cache = state.0.lock().unwrap();
+    pull_of(&mut cache, at, number).map_err(String::from)
+}
+
+/// The branch this repository merges into by default, fully qualified.
+pub(crate) fn pull_target(app: &AppHandle, at: &Origin) -> Result<String, String> {
+    let state = app.state::<Azdo>();
+    let mut cache = state.0.lock().unwrap();
+    default_branch_of(&mut cache, at).map_err(String::from)
+}
+
+/// Open one, and answer with what Azure DevOps says it created.
+pub(crate) fn pull_open(
+    app: &AppHandle,
+    at: &Origin,
+    source: &str,
+    target: &str,
+    title: &str,
+    description: &str,
+    draft: bool,
+) -> Result<serde_json::Value, String> {
+    let state = app.state::<Azdo>();
+    let mut cache = state.0.lock().unwrap();
+    open_pull(&mut cache, at, source, target, title, description, draft).map_err(String::from)
+}
+
+/// Change the title, the description, or both. `None` leaves a field alone —
+/// see `amend_pull` for why that distinction reaches all the way to the wire.
+pub(crate) fn pull_amend(
+    app: &AppHandle,
+    at: &Origin,
+    number: i64,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let state = app.state::<Azdo>();
+    let mut cache = state.0.lock().unwrap();
+    amend_pull(&mut cache, at, number, title, description).map_err(String::from)
 }
 
 /* ── one run, opened ───────────────────────────────────────────────────────*/
@@ -1269,28 +1627,39 @@ fn detail_of(cache: &mut Cache, id: &str) -> Result<Detail, String> {
 /// the main thread too.
 #[tauri::command]
 pub async fn azdo_runs(app: AppHandle, roots: Vec<String>) -> Result<Runs, String> {
-    crate::off_main(move || {
-        let mut got = {
-            let state = app.state::<Azdo>();
-            let mut cache = state.0.lock().unwrap();
-            runs_with(&mut cache, &roots)
-        };
-        /* The Azure DevOps lock is dropped before the GitHub one is taken, and
-           that is deliberate rather than tidy. Both are held across a whole
-           network pass, so a command that took them in one order while anything
-           else took them in the other would deadlock the wall for as long as two
-           polls — and there would be no way to tell that from the freeze
-           `off_main` was introduced to fix. Never both at once is a rule that
-           needs no ordering to be remembered. */
-        let mine = {
-            let state = app.state::<github::Github>();
-            let mut cache = state.0.lock().unwrap();
-            github::runs_with(&mut cache, &roots)
-        };
-        merge_runs(&mut got, mine);
-        got
-    })
-    .await
+    crate::off_main(move || both_runs(&app, &roots)).await
+}
+
+/// Both forges' runs, merged — the whole of what `azdo_runs` does, apart from
+/// the thread it does it on.
+///
+/// Split out for `smith.rs`, and the split is where the thread rule lands
+/// rather than an evasion of it. `crate::off_main` is about a `#[tauri::command]`
+/// running inline on the thread that paints the wall; an MCP `tools/call` is
+/// already on a thread of its own (`ask::start` gives each request one), so the
+/// tool wants the pass and not the `spawn_blocking` around it. What it does
+/// still owe is the lock discipline below, which is why this is one function
+/// both callers use rather than two that agree today.
+pub(crate) fn both_runs(app: &AppHandle, roots: &[String]) -> Runs {
+    let mut got = {
+        let state = app.state::<Azdo>();
+        let mut cache = state.0.lock().unwrap();
+        runs_with(&mut cache, roots)
+    };
+    /* The Azure DevOps lock is dropped before the GitHub one is taken, and
+       that is deliberate rather than tidy. Both are held across a whole
+       network pass, so a command that took them in one order while anything
+       else took them in the other would deadlock the wall for as long as two
+       polls — and there would be no way to tell that from the freeze
+       `off_main` was introduced to fix. Never both at once is a rule that
+       needs no ordering to be remembered. */
+    let mine = {
+        let state = app.state::<github::Github>();
+        let mut cache = state.0.lock().unwrap();
+        github::runs_with(&mut cache, roots)
+    };
+    merge_runs(&mut got, mine);
+    got
 }
 
 /// One forge's rows folded into the other's reading.
@@ -1386,21 +1755,23 @@ pub fn runs_with(cache: &mut Cache, roots: &[String]) -> Runs {
 /// Off the main thread for the reason `azdo_runs` is.
 #[tauri::command]
 pub async fn azdo_reviews(app: AppHandle, roots: Vec<String>) -> Result<Reviews, String> {
-    crate::off_main(move || {
-        let mut got = {
-            let state = app.state::<Azdo>();
-            let mut cache = state.0.lock().unwrap();
-            reviews_with(&mut cache, &roots)
-        };
-        let mine = {
-            let state = app.state::<github::Github>();
-            let mut cache = state.0.lock().unwrap();
-            github::reviews_with(&mut cache, &roots)
-        };
-        merge_reviews(&mut got, mine);
-        got
-    })
-    .await
+    crate::off_main(move || both_reviews(&app, &roots)).await
+}
+
+/// Both forges' pull requests, merged. Split out for the reason `both_runs` is.
+pub(crate) fn both_reviews(app: &AppHandle, roots: &[String]) -> Reviews {
+    let mut got = {
+        let state = app.state::<Azdo>();
+        let mut cache = state.0.lock().unwrap();
+        reviews_with(&mut cache, roots)
+    };
+    let mine = {
+        let state = app.state::<github::Github>();
+        let mut cache = state.0.lock().unwrap();
+        github::reviews_with(&mut cache, roots)
+    };
+    merge_reviews(&mut got, mine);
+    got
 }
 
 /// One run's stages and steps, from whichever forge the id names.
@@ -1417,18 +1788,20 @@ pub async fn azdo_reviews(app: AppHandle, roots: Vec<String>) -> Result<Reviews,
 /// taken.
 #[tauri::command]
 pub async fn forge_run(app: AppHandle, id: String) -> Result<Detail, String> {
-    crate::off_main(move || {
-        if id.starts_with("github/") {
-            let state = app.state::<github::Github>();
-            let mut cache = state.0.lock().unwrap();
-            github::read_detail(&mut cache, &id)
-        } else {
-            let state = app.state::<Azdo>();
-            let mut cache = state.0.lock().unwrap();
-            detail_of(&mut cache, &id)
-        }
-    })
-    .await?
+    crate::off_main(move || one_run(&app, &id)).await?
+}
+
+/// The routing itself, for the reason `both_runs` is split out.
+pub(crate) fn one_run(app: &AppHandle, id: &str) -> Result<Detail, String> {
+    if id.starts_with("github/") {
+        let state = app.state::<github::Github>();
+        let mut cache = state.0.lock().unwrap();
+        github::read_detail(&mut cache, id)
+    } else {
+        let state = app.state::<Azdo>();
+        let mut cache = state.0.lock().unwrap();
+        detail_of(&mut cache, id)
+    }
 }
 
 pub fn reviews_with(cache: &mut Cache, roots: &[String]) -> Reviews {
@@ -1660,6 +2033,130 @@ mod tests {
         assert_eq!(org_of("git@github.com:ShaitanLyss/skein.git"), None);
         assert_eq!(org_of(""), None);
         assert_eq!(org_of("C:/some/local/path"), None);
+    }
+
+    #[test]
+    fn all_three_names_a_write_needs_come_off_the_same_remotes() {
+        /* The same five spellings the test above asserts an organisation out of.
+           A read needs one of the three and a write needs all three, so every
+           shape that could feed the widgets has to feed `pull_url` as well —
+           and the two ssh spellings are where the project stops being where the
+           https ones put it. */
+        let nova = Origin {
+            org: "LagardereAWPL".into(),
+            project: "NOVA".into(),
+            repo: "NOVA".into(),
+        };
+        for remote in [
+            "https://LagardereAWPL@dev.azure.com/LagardereAWPL/NOVA/_git/NOVA",
+            "https://dev.azure.com/LagardereAWPL/NOVA/_git/NOVA",
+            "https://dev.azure.com/LagardereAWPL/NOVA/_git/NOVA.git",
+            "git@ssh.dev.azure.com:v3/LagardereAWPL/NOVA/NOVA",
+            "ssh://git@ssh.dev.azure.com/v3/LagardereAWPL/NOVA/NOVA",
+        ] {
+            assert_eq!(origin_of(remote).as_ref(), Some(&nova), "{remote}");
+        }
+        /* A project and a repository that are not the same word, which is the
+           case a positional reading of the https form gets wrong. */
+        assert_eq!(
+            origin_of("https://dev.azure.com/LagardereAWPL/RISE/_git/rise-mobile"),
+            Some(Origin {
+                org: "LagardereAWPL".into(),
+                project: "RISE".into(),
+                repo: "rise-mobile".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_project_is_the_repo_when_the_url_leaves_it_out() {
+        /* `dev.azure.com/{org}/_git/{repo}` is a url Azure DevOps issues and
+           accepts, and it means the project is named the same as the repository.
+           Read positionally instead, the project would come out as the literal
+           `_git`. */
+        assert_eq!(
+            origin_of("https://dev.azure.com/LagardereAWPL/_git/NOVA"),
+            Some(Origin {
+                org: "LagardereAWPL".into(),
+                project: "NOVA".into(),
+                repo: "NOVA".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_legacy_collection_form_puts_the_project_before_the_git_marker() {
+        /* `{org}.visualstudio.com/{collection}/{project}/_git/{repo}` — the
+           collection segment is why the project is found by looking *back* from
+           `_git` rather than forward from the organisation. A positional reading
+           would call the collection the project and 404 on every request. */
+        assert_eq!(
+            origin_of("https://LagardereAWPL.visualstudio.com/DefaultCollection/NOVA/_git/NOVA"),
+            Some(Origin {
+                org: "LagardereAWPL".into(),
+                project: "NOVA".into(),
+                repo: "NOVA".into(),
+            })
+        );
+        /* And without one, which is the commoner shape on an old clone. */
+        assert_eq!(
+            origin_of("https://LagardereAWPL.visualstudio.com/NOVA/_git/NOVA"),
+            Some(Origin {
+                org: "LagardereAWPL".into(),
+                project: "NOVA".into(),
+                repo: "NOVA".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn nothing_that_is_not_a_repository_url_becomes_an_origin() {
+        /* A write has to refuse where a read merely returns nothing useful: the
+           organisation alone is enough to poll builds and is not enough to name
+           a pull request, so an org-only url must not become an `Origin` with a
+           guessed project in it. */
+        assert_eq!(origin_of("https://dev.azure.com/LagardereAWPL"), None);
+        assert_eq!(origin_of("https://dev.azure.com/LagardereAWPL/"), None);
+        assert_eq!(origin_of("https://github.com/ShaitanLyss/volery.git"), None);
+        assert_eq!(origin_of("C:/some/local/path"), None);
+        assert_eq!(origin_of(""), None);
+    }
+
+    #[test]
+    fn a_project_with_a_space_survives_into_a_pull_request_url() {
+        /* Decoded out of the remote so it can be compared with what the API
+           calls it, and encoded again on the way back in — the round trip
+           `an_org_with_a_space_survives_the_round_trip` asserts for the
+           organisation, now for all three names at once. */
+        let at =
+            origin_of("https://x@dev.azure.com/TX%20Squad/Design%20System/_git/tokens").unwrap();
+        assert_eq!(at.org, "TX Squad");
+        assert_eq!(at.project, "Design System");
+        assert_eq!(
+            pull_url(&at, Some(41)),
+            "https://dev.azure.com/TX%20Squad/Design%20System/_apis/git/repositories/tokens\
+             /pullrequests/41?api-version=7.1"
+        );
+        assert_eq!(
+            pull_url(&at, None),
+            "https://dev.azure.com/TX%20Squad/Design%20System/_apis/git/repositories/tokens\
+             /pullrequests?api-version=7.1"
+        );
+    }
+
+    #[test]
+    fn a_branch_name_is_widened_to_the_ref_azure_devops_insists_on() {
+        /* A bare `main` in a create body is not corrected by the service — it is
+           accepted, matches no ref, and comes back as a 400 about a source
+           branch that does not exist. A card writes branch names the way people
+           do. */
+        assert_eq!(full_ref("main"), "refs/heads/main");
+        assert_eq!(full_ref("  feature/azdo-tools  "), "refs/heads/feature/azdo-tools");
+        /* Already qualified, and must not be qualified twice. */
+        assert_eq!(full_ref("refs/heads/main"), "refs/heads/main");
+        /* A tag or a pull request ref is left as it is rather than being turned
+           into a branch that does not exist. */
+        assert_eq!(full_ref("refs/tags/v0.13.0"), "refs/tags/v0.13.0");
     }
 
     #[test]
