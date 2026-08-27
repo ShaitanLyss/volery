@@ -452,6 +452,21 @@ export const JOB_NOTE_CAP = 160;
  *  because every search for the text went to the session file and a wire
  *  `system/task_notification` is never written there.
  *
+ *  **And a fourth report was nearly dismissed on the session file agreeing.**
+ *  Chasing sink 1601a7a1 back to the two calls the user had pasted, both read
+ *  as foreground on disk — `input` was `{ command }` and nothing else, no
+ *  `run_in_background` — so "no background job, therefore not this bug" looked
+ *  like a finding. It is a false negative, and `tools/probe-leak.ts` is what
+ *  falsified it: probed 2026-08-27 against claude 2.1.241, a shell call the
+ *  model wrote with `command` alone still raised `system/task_started` and
+ *  `system/task_notification` on the wire, and still recorded no
+ *  `run_in_background` on disk. **Whether a call backgrounded is decided
+ *  somewhere the transcript record does not describe** — so the absence of that
+ *  flag says nothing, and the two fields that carry the whole command are
+ *  `task_started.description` and `task_notification.summary`, neither of which
+ *  reaches the file either. Anything reasoning about a job from a session file
+ *  is reasoning from the half of the story that was written down.
+ *
  *  `clip` rather than a fold, and the flattening is the point rather than a side
  *  effect: what a job did is one line of news. Adding `meta` to `blocksOf`'s
  *  `LONG` kinds would have put `stopped` and `cleared` behind a triangle too,
