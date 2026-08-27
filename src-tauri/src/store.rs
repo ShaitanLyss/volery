@@ -2234,6 +2234,77 @@ pub fn open_readonly(db: &std::path::Path) -> Option<Connection> {
     .ok()
 }
 
+/// Another card standing in the same working tree, still open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sibling {
+    pub conversation_id: String,
+    pub title: String,
+}
+
+/// The other cards standing in this card's working tree.
+///
+/// **"The same working tree" is the row's `cwd` *and* its `worktree` together,
+/// never the `cwd` alone**, and that pairing is the whole correctness of the
+/// guard built on this. A worktree card's row keeps the project root as its
+/// `cwd` and only the child process moves (`worktree.md`) — so two cards on
+/// different branches of one project share a `cwd` and share no files at all,
+/// and a worktree is precisely the escape hatch the refusal recommends.
+/// Comparing `cwd` alone would deny a card for standing beside somebody it
+/// cannot reach, and then advise it to do the thing it had already done.
+///
+/// **A dormant sibling counts, and that is deliberate rather than an oversight
+/// of `closed_at IS NULL`.** CLAUDE.md records that condition being got wrong
+/// twice, both times by matching dormant cards where a *process* was meant.
+/// The question here is not "is anything running" but "is anybody's
+/// uncommitted work sitting in this checkout", and a dormant card's edits are
+/// in the tree exactly as a live card's are. `git stash` destroys them
+/// identically, so counting only live cards would let the wipe through
+/// whenever the victim happened to be asleep.
+///
+/// Empty for the ordinary case — one card in a tree — which is what keeps the
+/// guard silent on a normal wall rather than a thing to be worked around.
+/// Read-only and failure-tolerant like `foreign_staged`: a guard about somebody
+/// else's work must never be the reason a card cannot run a command, so every
+/// unreadable answer is the same as an empty one.
+pub fn siblings_in_tree(db: &std::path::Path, card: &str) -> Vec<Sibling> {
+    let Some(conn) = open_readonly(db) else {
+        return Vec::new();
+    };
+    let Ok((cwd, worktree)) = conn.query_row(
+        "SELECT COALESCE(cwd, ''), COALESCE(worktree, '') FROM conversation WHERE id = ?1",
+        params![card],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ) else {
+        return Vec::new();
+    };
+    /* A card with no directory recorded shares a tree with nobody, and matching
+       on the empty string would gather every other such card into one imaginary
+       tree. */
+    if cwd.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, COALESCE(title, '')
+           FROM conversation
+          WHERE closed_at IS NULL
+            AND id <> ?1
+            AND COALESCE(cwd, '') = ?2
+            AND COALESCE(worktree, '') = ?3
+          ORDER BY rowid",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![card, cwd, worktree], |r| {
+        Ok(Sibling {
+            conversation_id: r.get(0)?,
+            title: r.get(1)?,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
 /// How far back a write counts as still being somebody's work in progress.
 ///
 /// Milliseconds, because `now` is — getting that wrong would make the window

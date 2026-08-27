@@ -202,6 +202,25 @@ fn after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
     args.get(at + 1).map(String::as_str).filter(|v| !v.is_empty())
 }
 
+/// A refusal, in the shape the CLI reads one.
+///
+/// Written once because there are two guards now and there will be a third:
+/// the wrapper is four keys nobody should be retyping, and this module's own
+/// history is what a second copy of a fact costs (`hooks.md`, the matcher that
+/// stopped matching). Probed against 2.1.241: `permissionDecision: "deny"` does
+/// stop a tool call on a card spawned with `--dangerously-skip-permissions`,
+/// and the reason string reaches the model.
+fn deny(reason: String) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    })
+    .to_string()
+}
+
 /// The pure-ish half of `intercept`: a hook payload in, the reply to print out,
 /// or `None` for "say nothing", which is how a hook declines to change anything.
 ///
@@ -242,17 +261,16 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>) -> Option<String> {
 
     if let (Some(card), Some(db)) = (card, db) {
         let cwd = payload.get("cwd").and_then(serde_json::Value::as_str);
-        if let Some(reason) = sweep(command, cwd, card, std::path::Path::new(db)) {
-            return Some(
-                serde_json::json!({
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": reason,
-                    }
-                })
-                .to_string(),
-            );
+        let db = std::path::Path::new(db);
+        /* Two guards, and no command can trip both — one is a commit and the
+           other never is — so the order is a statement about what is at stake
+           rather than a precedence. A swept commit is recoverable: the code is
+           intact and only the message is wrong. A cleaned tree is not. */
+        if let Some(reason) = perilous(command, cwd, card, db) {
+            return Some(deny(reason));
+        }
+        if let Some(reason) = sweep(command, cwd, card, db) {
+            return Some(deny(reason));
         }
     }
 
@@ -466,7 +484,16 @@ pub fn bare_commit(command: &str) -> Option<BareCommit> {
         .find_map(|words| commit_in(words))
 }
 
-fn commit_in(words: &[String]) -> Option<BareCommit> {
+/// Where the subcommand is in a git invocation, and what `-C` said.
+///
+/// Walks past environment assignments, the `git` itself, and git's own options.
+/// Shared by `commit_in` and `tree_wide_in` rather than written out twice —
+/// this module has already paid once for a fact written down in two places
+/// (`hooks.md`, the matcher that stopped matching), and two copies of "what
+/// counts as a git invocation" is the same bet.
+///
+/// `None` for anything that is not git at all.
+fn git_at(words: &[String]) -> Option<(usize, Option<String>)> {
     let mut i = 0;
 
     /* `FOO=bar git commit`, and `env FOO=bar git commit`. An assignment is a
@@ -506,6 +533,11 @@ fn commit_in(words: &[String]) -> Option<BareCommit> {
         }
     }
 
+    Some((i, dir))
+}
+
+fn commit_in(words: &[String]) -> Option<BareCommit> {
+    let (i, dir) = git_at(words)?;
     if words.get(i)?.as_str() != "commit" {
         return None;
     }
@@ -513,6 +545,96 @@ fn commit_in(words: &[String]) -> Option<BareCommit> {
         return None;
     }
     Some(BareCommit { dir })
+}
+
+/// A git invocation that reaches the whole working tree rather than the paths
+/// it names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeWide {
+    /// The subcommand as it was typed, which is what the refusal names back.
+    pub verb: String,
+    /// The `-C` directory, if the invocation gave one.
+    pub dir: Option<String>,
+}
+
+/// Does this command line run a git that throws work away across the whole tree?
+///
+/// **The index guard is not this guard, and the gap between them is the whole
+/// reason this exists.** `bare_commit`/`sweep` catch a *commit* that would
+/// sweep a sibling's **staged** work. `git stash` is not a commit and never
+/// reaches them: it takes every card's uncommitted work out of the checkout in
+/// one stroke, silently, and — since a stash without `-u` carries no untracked
+/// files — a `git clean` beside it is not recoverable at all. Measured
+/// 2026-08-27: one card ran `git stash` in a tree nine cards shared, wiping
+/// nine files across four of them, found only because a card happened to read
+/// back a file it had just written and saw its own changes gone. Sink 7f6bfe2f.
+///
+/// **`--` is the only spelling of "has a pathspec" this accepts**, exactly as
+/// `bare_commit` argues two functions up and for the same reason: telling
+/// `git restore -s HEAD file` from `git restore file` needs the full table of
+/// which options take a value, and one wrong row is a guard that lets the
+/// damage through. The cost of the conservative reading is a call denied with a
+/// message naming the form that was already correct.
+///
+/// **Deliberately absent: `rebase`, `merge`, `pull`, `switch`.** Git refuses
+/// every one of them against a dirty tree of its own accord, so none of them
+/// silently destroys uncommitted work, and denying them would stop legitimate
+/// work to no end. What is here is the set whose whole purpose is to discard.
+pub fn tree_wide(command: &str) -> Option<TreeWide> {
+    commands(&strip_heredocs(command))
+        .iter()
+        .find_map(|words| tree_wide_in(words))
+}
+
+fn tree_wide_in(words: &[String]) -> Option<TreeWide> {
+    let (i, dir) = git_at(words)?;
+    let verb = words.get(i)?.as_str();
+    let rest = &words[i + 1..];
+
+    let discards = match verb {
+        /* `clean` only ever deletes untracked files, and those are exactly what
+           a stash does not carry — so there is nothing to recover them from and
+           no form of it is safe in a tree somebody else is working in. */
+        "clean" => true,
+        /* Everything but reading it. `pop` and `apply` write work back into a
+           tree that has moved on since; `drop` and `clear` destroy the only
+           copy of whatever a previous stash took; a bare `stash` or an explicit
+           `push` takes everybody's at once. `list` and `show` only read. */
+        "stash" => !matches!(operand(rest), Some("list") | Some("show")),
+        /* The pathspec forms are the recovery procedure and have to stay
+           reachable: `git checkout <ref> -- <one file>` is what puts a wiped
+           file back, and a guard that denied it would be denying the way out —
+           which is the property `sweep_reason` argues makes a refusal safe. */
+        "reset" | "checkout" | "restore" => !names_a_path(rest),
+        _ => false,
+    };
+
+    discards.then(|| TreeWide {
+        verb: verb.to_string(),
+        dir,
+    })
+}
+
+/// The first word that is not a flag.
+fn operand(words: &[String]) -> Option<&str> {
+    words
+        .iter()
+        .find(|w| !w.starts_with('-'))
+        .map(String::as_str)
+}
+
+/// Is there a `--` with at least one real path after it?
+///
+/// `.`, `./` and `:/` are not real paths for this purpose — each names the
+/// whole tree, so `git checkout -- .` is the thing being guarded against
+/// wearing the shape of the thing that is allowed.
+fn names_a_path(words: &[String]) -> bool {
+    let Some(at) = words.iter().position(|w| w == "--") else {
+        return false;
+    };
+    words[at + 1..]
+        .iter()
+        .any(|w| !w.is_empty() && w != "." && w != "./" && w != ":/")
 }
 
 /// The command line as a list of simple commands, each already tokenised.
@@ -792,6 +914,100 @@ fn sweep(command: &str, cwd: Option<&str>, card: &str, db: &std::path::Path) -> 
         return None;
     }
     Some(sweep_reason(&root, &foreign))
+}
+
+/// What to say when a command would throw away work this card did not write.
+///
+/// Same contract as `sweep_reason` and for the same reason: **the escape from a
+/// wrong answer is the same command as the fix.** If the guard has misjudged
+/// and there really is nobody else's work in this tree, naming the paths is
+/// still the right way to do what was wanted — so there is nothing to work
+/// around, and no reason for the next agent to go looking for a spelling that
+/// gets past it. Every alternative below is a command that can be run as it
+/// stands.
+///
+/// It names the siblings, because "four other cards are standing in this tree"
+/// is the fact that makes the refusal obvious rather than officious.
+pub fn perilous_reason(tw: &TreeWide, siblings: &[crate::store::Sibling]) -> String {
+    let verb = &tw.verb;
+    let mut msg =
+        format!("volery: `git {verb}` reaches the whole working tree, and you are not alone in it.\n\n");
+
+    msg.push_str(match verb.as_str() {
+        "clean" => {
+            "it deletes untracked files, which are the one thing `git stash` does not keep — \
+             so there would be nothing anywhere to recover them from.\n\n"
+        }
+        "stash" => {
+            "it takes every card's uncommitted work out of the checkout at once, silently and \
+             with no error shown to any of them, and carries no untracked files into the stash \
+             it makes.\n\n"
+        }
+        _ => {
+            "it discards uncommitted work across the whole checkout rather than in the paths \
+             you named.\n\n"
+        }
+    });
+
+    msg.push_str("standing in this same tree right now, with work in it:\n\n");
+    for s in siblings {
+        let short: String = s.conversation_id.chars().take(8).collect();
+        if s.title.is_empty() {
+            msg.push_str(&format!("  card {short}\n"));
+        } else {
+            msg.push_str(&format!("  {} ({short})\n", s.title));
+        }
+    }
+
+    msg.push_str(
+        "\nwhat to do instead:\n\n\
+         - name what you mean. the pathspec forms are not denied:\n\
+         \x20     git checkout <ref> -- <one file>\n\
+         \x20     git reset -q -- <one file>\n\
+         \x20     git restore -- <one file>\n\
+         - reading a stash is fine: `git stash list`, `git stash show`.\n\
+         - want a clean tree to work in? make a worktree rather than clearing this one.\n\
+         - trying to tell whether a build error is yours? it is faster to ask the card that \
+         owns the file — `mcp__skein__board` says who that is and costs nobody a turn.\n\
+         - if you genuinely need this command, ask the user rather than working around it.\n",
+    );
+    msg
+}
+
+/// The guard: is this a tree-wide discard, in a tree somebody else is in?
+///
+/// Cheaper than `sweep`, which has to ask git what is staged — this asks the
+/// wall one question and nothing else. Silent for every ordinary case: a card
+/// working alone, no database, a card with no id in its settings layer.
+fn perilous(command: &str, cwd: Option<&str>, card: &str, db: &std::path::Path) -> Option<String> {
+    let tw = tree_wide(command)?;
+
+    /* A `-C` pointing elsewhere is a *different* tree, and this card's siblings
+       are the wrong answer about it. Rather than resolve that properly — which
+       would mean canonicalizing two paths and being wrong in the direction of a
+       false deny — the guard steps aside unless `-C` demonstrably names the
+       directory the card is already standing in. That is a hole, and it is the
+       safe kind: an unreadable path means allow, never refuse. The case that
+       actually happens is a bare `git stash` where the card stands, and the
+       system prompt covers the rest (`supervisor::append_prompt`). */
+    if let Some(d) = &tw.dir {
+        let same = cwd.is_some_and(|c| {
+            let there = std::path::Path::new(c).join(d);
+            matches!(
+                (std::fs::canonicalize(&there), std::fs::canonicalize(c)),
+                (Ok(a), Ok(b)) if a == b
+            )
+        });
+        if !same {
+            return None;
+        }
+    }
+
+    let siblings = crate::store::siblings_in_tree(db, card);
+    if siblings.is_empty() {
+        return None;
+    }
+    Some(perilous_reason(&tw, &siblings))
 }
 
 /// Ask git something, quietly, and never let it ask anything back.
@@ -1454,6 +1670,142 @@ mod tests {
             Some("../nova")
         );
         assert_eq!(bare_commit("git commit -m x").unwrap().dir, None);
+    }
+
+    fn verb(command: &str) -> Option<String> {
+        tree_wide(command).map(|t| t.verb)
+    }
+
+    /// The command that started all this, in the forms it actually gets typed.
+    #[test]
+    fn a_stash_is_caught_however_it_is_spelled() {
+        for command in [
+            "git stash",
+            "git stash push",
+            "git stash -u",
+            "git stash --include-untracked",
+            "git stash pop",
+            "git stash apply",
+            "git stash drop",
+            "git stash clear",
+            "cd /c/repo && git stash",
+            "git status && git stash && cargo check",
+            "env FOO=1 git stash",
+            "/usr/bin/git stash",
+        ] {
+            assert_eq!(verb(command).as_deref(), Some("stash"), "missed: {command}");
+        }
+    }
+
+    /// `pop` and `drop` are on that list for a reason worth keeping separate
+    /// from the rest: they are how a *recovery* goes wrong. `pop` dumps a stash
+    /// holding several cards' work into a tree that has moved on since, and
+    /// `drop`/`clear` destroy the only copy of it. The morning this guard came
+    /// from, the stash was the sole surviving copy of nine files.
+    #[test]
+    fn reading_a_stash_is_always_allowed() {
+        assert_eq!(verb("git stash list"), None);
+        assert_eq!(verb("git stash show"), None);
+        assert_eq!(verb("git stash show -p stash@{0}"), None);
+    }
+
+    /// The recovery procedure itself. Denying any of these would be denying the
+    /// way out, which is the property that makes refusing safe at all.
+    #[test]
+    fn the_pathspec_forms_are_the_way_out_and_stay_open() {
+        for command in [
+            "git checkout stash@{0} -- src/lib/a.ts",
+            "git checkout HEAD -- src/lib/a.ts src/lib/b.ts",
+            "git reset -q -- src/lib/a.ts",
+            "git restore -- src/lib/a.ts",
+            "git diff stash@{0} -- src/lib/a.ts",
+            "git stash list",
+        ] {
+            assert_eq!(verb(command), None, "wrongly denied: {command}");
+        }
+    }
+
+    /// A whole-tree target wearing the shape of a pathspec. `git checkout -- .`
+    /// has a `--` and is exactly the thing being guarded against.
+    #[test]
+    fn a_dot_after_the_dashes_is_still_the_whole_tree() {
+        assert_eq!(verb("git checkout -- ."), Some("checkout".into()));
+        assert_eq!(verb("git checkout -- ./"), Some("checkout".into()));
+        assert_eq!(verb("git restore -- :/"), Some("restore".into()));
+        assert_eq!(verb("git checkout ."), Some("checkout".into()));
+        assert_eq!(verb("git reset --hard"), Some("reset".into()));
+        assert_eq!(verb("git reset --hard HEAD~1"), Some("reset".into()));
+        assert_eq!(verb("git clean -fd"), Some("clean".into()));
+        assert_eq!(verb("git clean -n"), Some("clean".into()));
+    }
+
+    /// Git refuses all of these against a dirty tree by itself, so none of them
+    /// silently destroys uncommitted work — and denying them would stop real
+    /// work for nothing. If this test is ever changed, the argument on
+    /// `tree_wide` has to be changed with it.
+    #[test]
+    fn the_commands_git_already_guards_are_left_alone() {
+        for command in [
+            "git rebase origin/main",
+            "git merge feat/x",
+            "git pull",
+            "git switch main",
+            "git commit -- a.rs",
+            "git add -A",
+            "git log --oneline",
+            "git status --short",
+            "git worktree add ../tree -b feat/x",
+        ] {
+            assert_eq!(verb(command), None, "wrongly denied: {command}");
+        }
+    }
+
+    /// The same quoting rules the commit guard needs, for the same reason: a
+    /// commit message that talks about `git stash` is prose, not a command.
+    #[test]
+    fn a_stash_inside_a_quote_or_a_heredoc_is_not_a_command() {
+        assert_eq!(verb("echo \"git stash\""), None);
+        assert_eq!(verb("echo 'git stash'"), None);
+        let command = "git commit -F - -- a.rs <<'EOF'\n\
+                       skein: never run git stash in a shared tree\n\
+                       EOF";
+        assert_eq!(verb(command), None);
+    }
+
+    /// `-C` comes back for the reason it does on a commit: it names the tree
+    /// that would actually be harmed, and `perilous` refuses to judge one that
+    /// is not the card's own.
+    #[test]
+    fn the_dash_c_directory_comes_back_for_a_discard() {
+        assert_eq!(
+            tree_wide("git -C ../nova stash").unwrap().dir.as_deref(),
+            Some("../nova")
+        );
+        assert_eq!(tree_wide("git stash").unwrap().dir, None);
+    }
+
+    /// The refusal has to carry its reasoning and a runnable way forward —
+    /// `sweep_reason`'s contract, and what makes denying safe rather than
+    /// obstructive.
+    #[test]
+    fn the_refusal_names_the_cards_and_the_way_out() {
+        let siblings = vec![
+            crate::store::Sibling {
+                conversation_id: "0f1a7eee-1111-2222-3333-444455556666".into(),
+                title: "two verbs".into(),
+            },
+            crate::store::Sibling {
+                conversation_id: "c2304bef-1111-2222-3333-444455556666".into(),
+                title: String::new(),
+            },
+        ];
+        let msg = perilous_reason(&tree_wide("git stash").unwrap(), &siblings);
+        assert!(msg.contains("git stash"), "does not name the command: {msg}");
+        assert!(msg.contains("two verbs (0f1a7eee)"), "does not name the card: {msg}");
+        assert!(msg.contains("card c2304be"), "an untitled card is still named: {msg}");
+        assert!(msg.contains("git checkout <ref> -- <one file>"), "no way out: {msg}");
+        assert!(msg.contains("worktree"), "does not offer a clean tree: {msg}");
+        assert!(msg.contains("ask the user"), "does not route to the user: {msg}");
     }
 
     /// The failure this repository would hit on its very next commit: the house
