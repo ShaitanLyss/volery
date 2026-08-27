@@ -331,7 +331,11 @@ export type SpotifyConfig = {
   progress: boolean
 }
 
-const LAYOUTS: SpotifyLayout[] = ["full", "compact", "bar"]
+/** Exported so a test can assert this and the catalogue's menu are the same
+ *  set — in both directions. A reading the face can draw but the menu does not
+ *  offer is unreachable; one the menu offers but the face cannot draw silently
+ *  becomes "full". See the seam block in `test/spotify.test.ts`. */
+export const LAYOUTS: SpotifyLayout[] = ["full", "compact", "bar"]
 
 /**
  * Runs on every read, like every other opaque `config_json`. A renamed knob or

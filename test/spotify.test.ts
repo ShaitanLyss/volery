@@ -7,6 +7,7 @@ import {
   formatDuration,
   joinArtists,
   normalizeConfig,
+  LAYOUTS,
   positionAt,
   progressAt,
   volumeFromWire,
@@ -17,7 +18,15 @@ import {
 /* Deliberately reaching into the catalogue: the key `normalizeConfig` reads is
    a contract with `widgets.ts`, and a test that restates it by hand is a test
    that cannot notice the two disagreeing. */
-import { VARIANT } from "../src/lib/widgets";
+import {
+  VARIANT,
+  defaultConfig,
+  newWidget,
+  normalizeWidget,
+  optionFor,
+  paramsOf,
+  specFor,
+} from "../src/lib/widgets";
 
 const track = (over: Partial<SpotifyTrack> = {}): SpotifyTrack => ({
   id: "spotify:track:1",
@@ -292,5 +301,57 @@ describe("the widget's config, read the way every opaque column is", () => {
       art: true,
       progress: true,
     });
+  });
+});
+
+/* Written by b2de0761, who owns the catalogue, after the `layout`/`variant` bug
+   above. The distinction they drew is the one that matters: the tests above
+   prove `normalizeConfig` responds to `VARIANT`, and `widgets.test.ts` proves
+   the catalogue offers three readings — and *neither* proves a value leaving
+   that menu arrives at this face. These test the composition. */
+describe("the seam between the catalogue and the face", () => {
+  test("a fresh spotify widget's config is one the face can read", () => {
+    expect(normalizeConfig(defaultConfig("spotify")).layout).toBe("full");
+  });
+
+  /* The readings the catalogue actually offers, asked of the catalogue rather
+     than written down here — a hardcoded list is a third place to get this
+     wrong, and would not notice a fourth reading appearing on either side. */
+  const offered = () => {
+    const spec = specFor("spotify")!;
+    const param = paramsOf(spec).find((p) => p.key === VARIANT)!;
+    expect(param.kind).toBe("choice");
+    return (param as { options: { value: string }[] }).options.map((c) => c.value);
+  };
+
+  test("every reading the menu offers actually reaches the face", () => {
+    /* The one with teeth: a real menu id, through `optionFor`, into the
+       normalizer. A reading the menu offers that the face cannot draw would
+       fall back to "full" in silence — here it fails. */
+    const w = newWidget("spotify", 0, 0);
+    for (const value of offered()) {
+      const patch = optionFor(w, `cfg:${VARIANT}:${value}`);
+      expect(patch).toEqual({ key: VARIANT, value });
+      expect(normalizeConfig({ ...w.config, [patch!.key]: patch!.value }).layout).toBe(value);
+    }
+  });
+
+  test("and the face draws no reading the menu cannot reach", () => {
+    /* The other direction, which the loop above cannot see: a layout the face
+       supports but nothing offers is a feature with no way to turn it on —
+       the catalogue's own "a parameter with no way to reach it does not
+       exist" rule, pointed the other way. */
+    expect([...LAYOUTS].sort()).toEqual([...offered()].sort());
+  });
+
+  test("a reading survives the round trip through the opaque column", () => {
+    /* Through `JSON.stringify` deliberately: `widget.config_json` is an opaque
+       column and this round trip is what happens on every launch, not a
+       hypothetical. */
+    const w = newWidget("spotify", 0, 0);
+    const back = normalizeWidget(
+      JSON.parse(JSON.stringify({ ...w, config: { ...w.config, variant: "bar" } })),
+    );
+    expect(normalizeConfig(back!.config).layout).toBe("bar");
   });
 });
