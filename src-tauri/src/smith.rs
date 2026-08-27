@@ -124,37 +124,27 @@ const RUNS_SHOWN: usize = 20;
 /// review queue into a context window.
 const REVIEWS_SHOWN: usize = 30;
 
-/* ── the words that make these findable ───────────────────────────────────
+/* ── the words that make these findable, and where they live ───────────────
  *
- * `_meta: {"anthropic/searchHint": …}` on each schema, which is the CLI's own
- * per-tool hook — the same `_meta` object that carries `anthropic/alwaysLoad`.
- * Probed by card 3f08dc99 against 2.1.241 while tiering the roster
- * (`tools/probe-tiers.ts`): a tool that is *not* always-loaded reaches a card as
- * a bare name in the deferred listing, and `ToolSearch` is how it is found
- * again. The hint is not rendered into that listing, so it costs **nothing per
- * turn** and feeds only the matching.
+ * Not here — in `ask::roster`, as the second argument to `found_by`, alongside
+ * the tier itself. That is card 3f08dc99's arrangement and it is the right one:
+ * a hint is only useful if it can be read against its neighbours', because the
+ * failure it guards against is two tools claiming the same words. Nine of them
+ * side by side in one list shows that; nine of them scattered through nine
+ * modules does not. `every_deferred_tool_can_be_found` is the test that refuses
+ * a deferred tool with no hint at all.
  *
- * Which is what makes it worth writing carefully. In that probe a deferred tool
- * called `carrier_pigeon` ranked first for "attach image to wall" — a query
- * sharing no token with its name — and the hint was the only thing connecting
- * them. These three are exactly the case that needs it: **a card does not think
- * "pipelines", it thinks "did my build pass"**, and it does not think "reviews",
- * it thinks "is my PR approved". Worse, a card that has just failed with `az` is
- * searching for the word it has in its hand — `az`, `certificate`, `SSL` — so
- * those go in too. The hint is the only place in this file where guessing what
- * somebody will type is the job. */
-
-const SEARCH_HINT_PIPELINES: &str = "azure devops pipelines builds ci status runs \
-    workflow actions build failed did my build pass check the build az pipelines \
-    certificate error ssl self-signed";
-
-const SEARCH_HINT_REVIEWS: &str = "pull request PR review reviews approved votes \
-    merge conflicts open PRs is my PR approved who reviewed az repos pr list gh pr \
-    list certificate error";
-
-const SEARCH_HINT_PULL_REQUEST: &str = "create pull request open a PR raise a PR edit \
-    PR title description update PR body az repos pr create gh pr create certificate \
-    error ssl";
+ * These three had them written in the schema functions first, and one source of
+ * truth beat the co-location argument — `found_by` *overwrites* `_meta`, so
+ * keeping both would have meant two hint texts with the nearer one silently
+ * winning, which is the drift this codebase writes rules against.
+ *
+ * What is worth knowing here rather than there, because it is a fact about
+ * *these* tools: **a card reaching for the forge has usually just failed with
+ * `az`**, so it is searching for the word in its hand — `certificate`, `ssl`,
+ * `az repos pr create` — rather than for a noun it does not know this server
+ * has. And nobody thinks "pipelines"; they think "did my build pass". The hints
+ * carry both, and that is why they read oddly wide. */
 
 /* ── where the caller stands ───────────────────────────────────────────────*/
 
@@ -281,8 +271,7 @@ pub fn pipelines_schema() -> Value {
                          been running\"."
                 }
             }
-        },
-        "_meta": { "anthropic/searchHint": SEARCH_HINT_PIPELINES }
+        }
     })
 }
 
@@ -323,8 +312,7 @@ pub fn reviews_schema() -> Value {
                          with, which is the user's, not about which card did anything."
                 }
             }
-        },
-        "_meta": { "anthropic/searchHint": SEARCH_HINT_REVIEWS }
+        }
     })
 }
 
@@ -413,8 +401,7 @@ pub fn pull_request_schema() -> Value {
                 }
             },
             "required": ["action"]
-        },
-        "_meta": { "anthropic/searchHint": SEARCH_HINT_PULL_REQUEST }
+        }
     })
 }
 
