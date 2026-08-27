@@ -21,6 +21,7 @@ mod github;
 pub mod find;
 mod guidance;
 pub mod hooks;
+mod joblog;
 mod later;
 mod nvim;
 mod limits;
@@ -38,6 +39,7 @@ mod signin;
 mod shell;
 mod sink;
 mod spawn;
+mod status;
 mod store;
 mod supervisor;
 mod update;
@@ -391,6 +393,7 @@ pub fn run() {
             store::settle_job,
             store::forget_jobs,
             store::pending_jobs,
+            joblog::job_output,
             quit::note_busy,
             quit::stay,
             perf::sample_performance,
@@ -457,6 +460,9 @@ pub fn run() {
             control::control_reply,
             control::control_real_click,
             control::control_real_drag,
+            control::control_real_wheel,
+            control::control_real_key,
+            status::claude_status,
             update::latest_release,
             update::fetch_update,
             update::arm_update,
