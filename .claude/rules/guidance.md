@@ -105,6 +105,65 @@ Both travel in `load_studio`'s snapshot rather than behind a command of their ow
 panel lists every territory with a mark against the ones that are saying something, and a
 round trip per territory to draw that list is a list that fills in.
 
+### Only the user writes them, and a card that wanted to is where that was tested
+
+The case arrived properly on 2026-08-27 rather than as a hypothetical, which is why it is
+worth writing down. One card coordinating eleven others through the sink wrote eleven briefs
+each carrying the same ~800 tokens of protocol for this shared tree — commit with explicit
+paths, which gates to run, what `cargo test` cannot do here. The waste is the small half.
+**Three of those paragraphs did not exist when the first four briefs were written**, because
+they were learned from incidents that happened later, so the early cards never got them and
+two of them hit exactly the failures the later text warns about. N copies of a rule have N
+ages, and the oldest is the one already running.
+
+A territory instruction on `skein` would have said it once, correctably, to every card that
+started there. The card that needed it could not write one, and asked whether it should be
+able to. The answer is no, on three grounds and one bill.
+
+- **The frame is the feature.** `compose` says the text came *from the person at the
+  keyboard* — see "The frame around the text is doing work" above, where that sentence exists
+  precisely so an instruction is not read as something the harness wants. A card writing here
+  makes that false in the direction that costs something: a sibling would be handed one
+  agent's working assumptions **in the user's voice**, with nothing on either end able to tell
+  them apart. Volery has its own voice and its own place to use it, `supervisor::append_prompt`,
+  and the two must not be blurred. This one is structural rather than a matter of taste, and
+  it is the one that decides it.
+- **There is one slot per scope, so writing it is destroying prose.** `portage.ts` already
+  reasons this out and lands the other way for the same reason: a carried set is applied only
+  where this wall has none, because applying one over a set one is *replacing* it, "the single
+  thing an import never does", and the nearest precedent that does overwrite (the ambience
+  switch) changes a setting rather than prose somebody wrote. Guidance is on no undo stack
+  either. A tool would be a card doing, unprompted, the one thing an explicit import refuses.
+- **What a coordinator actually wants is narrower than what it would get.** "For the next few
+  hours, in this tree, here is the split protocol" is not a fact about the repository — it is
+  a fact about an afternoon. These are *furniture* by `portage.ts`'s test: they outlive every
+  card on the wall and are waiting for the one you open next week. A protocol for one
+  afternoon written into furniture is a rule nobody remembers to take down, and it is read
+  next month by a card working alone that is told to coordinate with siblings who left.
+  **The board is the right shape for that** — it expires, it says which card posted it, and
+  `unpost` exists. What the board did not have was the room; `board::MAX_BODY` was 1,200 and
+  that same protocol went up cut off mid-sentence with the receipt saying "posted". It is
+  2,400 now, fixed the same day by the same incident.
+- **And the bill.** `mcp_config` sets `alwaysLoad`, so a tool's schema is paid on every spawn
+  of every card. The roster was measured at 38,598 bytes of a 40,000 cap (sink `c64787c2`).
+  A tool used by the few cards that coordinate, charged to every card that never will, is the
+  wrong way round even before the cap.
+
+**So the description carries it instead.** `spawn`'s `prompt` field says three things: that a
+child shares the territory's standing instructions and not only the repository — the old text
+said "your repository and nothing else", which was simply untrue; that what is true of every
+card in a repository belongs there rather than in eleven briefs, and where the user writes it;
+and **the limit, in the same breath**, because a coordinator that asks for an instruction and
+then assumes its running children have it has been misled by being told half. A card already
+running does not hear an edit. It reaches the cards opened next. That is read by exactly the
+cards that need it — one about to open another — rather than by the whole wall.
+
+What is genuinely left undone: a card still cannot brief its own children except by repeating
+itself, only ask. If that turns out to be the wrong side of the line, the shape to build is
+not a write but a **proposal** — `ask.rs` already parks a `tools/call` until the user answers,
+so a card could offer the text and have them approve it, which keeps the frame honest because
+they did approve it. That needs a panel and roster room, and is in the sink rather than here.
+
 ### These are instructions, not a lock
 
 Worth stating because "this project is read-only" is the first thing anybody writes here,

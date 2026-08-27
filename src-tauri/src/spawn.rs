@@ -292,12 +292,21 @@ pub fn spawn_schema() -> Value {
                     "type": "string",
                     "description":
                         "The whole of what the new conversation gets. It shares your \
-                         repository and nothing else — not your context, not what the user \
-                         told you, not what you have worked out — so write it as a brief to \
-                         somebody who has just walked in: what to do, which files, what \
-                         'done' looks like, and anything you have already ruled out. A \
-                         one-line prompt spends a whole card rediscovering what you \
-                         already know."
+                         repository and that territory's standing instructions, and nothing \
+                         else of yours — not your context, not what the user told you, not \
+                         what you have worked out — so write it as a brief to somebody who \
+                         has just walked in: what to do, which files, what 'done' looks \
+                         like, and anything you have already ruled out. A one-line prompt \
+                         spends a whole card rediscovering what you already know.\n\n\
+                         **What is true of every card in that repository does not belong \
+                         here.** How to commit, which gates to run, what to leave alone: \
+                         that is the territory's standing instructions, which the user \
+                         writes once (right-click the territory) and every card started \
+                         there is handed. Opening several cards on one job, ask for those \
+                         rather than repeating a paragraph into each brief — copies drift, \
+                         and the earliest go stale first. A card already running does not \
+                         hear an edit, so they reach the cards you open next and not those \
+                         already on the wall."
                 },
                 "project": {
                     "type": "string",
@@ -1158,6 +1167,33 @@ mod tests {
         /* Omitting it has to read as the normal case, or every spawn arrives
            carrying a project it did not need to name. */
         assert!(d.contains("Omit it and the card stands where you do"), "{d}");
+    }
+
+    /// The brief says what the child gets, so it is the one place that can stop
+    /// a coordinator writing the same protocol into eleven of them.
+    ///
+    /// Measured, 2026-08-27: eleven briefs carrying ~800 identical tokens each,
+    /// three of whose paragraphs did not exist when the first four were written
+    /// — so the early cards never got them and two hit exactly the failures the
+    /// later text warns about. That is the failure this paragraph is aimed at,
+    /// and it is *drift* rather than waste: N copies of a rule have N ages.
+    #[test]
+    fn the_brief_is_not_where_a_repeated_rule_goes() {
+        let d = spawn_schema()["inputSchema"]["properties"]["prompt"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        /* The sentence that was untrue: a child shares the repository *and*
+           whatever the territory is telling every card that starts in it. An
+           agent that believes the brief is the only channel has no reason to
+           look for the other one. */
+        assert!(d.contains("standing instructions"), "{d}");
+        /* And the honest limit, which is the half a coordinator actually needs:
+           `guidance.md`'s "a card already running does not hear an edit" is
+           precisely what bit here — a rule learned at two o'clock could not
+           reach the cards opened at eleven. Without this an agent asks for an
+           instruction and then assumes its running children have it. */
+        assert!(d.contains("already running does not hear"), "{d}");
     }
 
     /// The authority, and what is left of it. Written as a table because the

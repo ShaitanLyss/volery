@@ -138,6 +138,18 @@ answer is the same: bound it, make it visible, and say what it cost.
 - **The brief is the whole of what the child gets** — not the parent's context, not what the
   user said, not what has already been ruled out. The `prompt` field says so in those words,
   because a one-line prompt spends an entire card rediscovering what the parent already knew.
+- **Except it never was the whole of it, and the field used to claim otherwise.** "It shares
+  your repository and nothing else" was untrue: it also shares whatever the territory is
+  telling every card that starts in it (`guidance.md`). The distinction is not pedantry —
+  believing the brief is the only channel is what makes a coordinator write the same paragraph
+  into eleven of them. Measured on 2026-08-27: ~800 identical tokens a brief, and three of
+  those paragraphs did not exist when the first four were written, so the early cards never got
+  them and two hit exactly the failures the later text warns about. **N copies of a rule have N
+  ages**, and the one already running is the oldest. So the field now says where a rule that is
+  true of every card in a repository actually goes, and says in the same breath that a card
+  already running does not hear an edit — a coordinator told only the first half asks for an
+  instruction and then assumes its live children have it. `guidance.md` has why the answer was
+  a clause here rather than a tool for writing one.
 
 ### Rust decides; the wall opens
 
