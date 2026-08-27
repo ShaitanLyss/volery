@@ -1,6 +1,6 @@
 [package]
 name = "skein"
-version = "0.12.0"
+version = "0.13.0"
 description = "A studio wall for every Claude Code conversation at once"
 authors = ["moonlyss"]
 # Read at compile time by `update.rs`, which asks this repository's releases
@@ -56,6 +56,29 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 # types, which nvim uses for every buffer and window handle and which a naive
 # decoder chokes on the moment one appears.
 rmpv = "1"
+# Being the player rather than driving one — see `.claude/rules/spotify.md`,
+# which carries the whole argument including the terms-of-service position.
+#
+# Probed 2026-08-27 on the no-MSVC gnu toolchain: `cargo check` is clean in
+# 1m36s and needs no protoc, no cmake and no C toolchain, because the decoders
+# are `symphonia` (pure Rust) and `rodio` reaches WASAPI through the `windows`
+# crate we already have.
+#
+# `default-features = false` on -playback keeps ALSA, PulseAudio, JACK, SDL and
+# GStreamer out of a Windows build; rodio is the one backend that means anything
+# here.
+librespot-core = "0.8"
+librespot-playback = { version = "0.8", default-features = false, features = ["rodio-backend"] }
+librespot-metadata = "0.8"
+librespot-oauth = "0.8"
+librespot-connect = "0.8"
+# NOTE FOR WHOEVER RUNS `cargo update`: this tree pins `vergen` to 9.0.6 in
+# Cargo.lock and the pin is load-bearing. `librespot-core`'s build script wants
+# `vergen ^9` and `vergen-gitcl ^1`; vergen 9.1.0 moved from `vergen-lib ^0.1.6`
+# to `^9.1.0` — a breaking change inside a minor bump — and the two `Add` traits
+# then unify into one build script and do not match. The error names no Spotify
+# crate at all, which is what makes it worth this comment. Re-pin with
+# `cargo update -p vergen --precise 9.0.6`.
 
 [target.'cfg(windows)'.dependencies]
 # Job objects. A dev server is `npm run dev` spawning node spawning more node;
