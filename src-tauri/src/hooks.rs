@@ -1115,34 +1115,236 @@ fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
 fn standing(payload: &serde_json::Value, card: Option<&str>, db: Option<&str>) -> Option<String> {
     let (card, db) = (card?, db?);
     let event = payload.get("hook_event_name")?.as_str()?;
+    let source = payload.get("source").and_then(serde_json::Value::as_str);
+    let path = std::path::Path::new(db);
+    let now = crate::store::now();
 
-    /* **Only the compaction firing, and the test is here rather than in a
-       matcher.** `SessionStart` also fires on `startup`, `resume` and `clear`,
-       and none of those wants this: at startup there is no context to have lost,
-       and a resumed card is exactly the case `rouse` already handles — it sends
-       `resumePrompt` or `jobsPrompt` naming the lost jobs and then deletes the
-       rows. Answering here as well would say it twice, in two different voices,
-       about the same work. */
-    if event == "SessionStart" {
-        let source = payload.get("source").and_then(serde_json::Value::as_str);
-        if source != Some("compact") {
-            return None;
+    /* **Two questions on one occasion, and they do not want the same
+       occasions.** Background work is only worth raising when the context has
+       demonstrably just lost it; a red gate is worth raising whenever the card
+       is about to do something, and most of all the first time it speaks. So
+       each is asked for separately below and whatever answers is joined. */
+    let mut parts: Vec<String> = Vec::new();
+
+    /* **Only the compaction firing, for the jobs, and the test is here rather
+       than in a matcher.** `SessionStart` also fires on `startup`, `resume` and
+       `clear`, and none of those wants this: at startup there is no context to
+       have lost, and a resumed card is exactly the case `rouse` already handles
+       — it sends `resumePrompt` or `jobsPrompt` naming the lost jobs and then
+       deletes the rows. Answering here as well would say it twice, in two
+       different voices, about the same work. */
+    let jobs_wanted = event != "SessionStart" || source == Some("compact");
+    if jobs_wanted {
+        if let Some(session) = payload.get("session_id").and_then(serde_json::Value::as_str) {
+            let jobs = crate::store::outstanding_jobs(path, card, session);
+            if let Some(text) = standing_work(&jobs, event == "SessionStart", now) {
+                parts.push(text);
+            }
         }
     }
 
-    let session = payload.get("session_id")?.as_str()?;
-    let jobs = crate::store::outstanding_jobs(std::path::Path::new(db), card, session);
-    let text = standing_work(&jobs, event == "SessionStart", crate::store::now())?;
+    /* **Every occasion, for the gates, including a plain `startup`** — which is
+       the one difference from the rule above and the whole point of the feature.
+       A card arriving in a tree somebody else has already broken is the case
+       sink 3ebe1d59 is about: on 2026-08-27 three cards each discovered the same
+       breakage alone, one broadcast it to the whole wall at a turn apiece and
+       then had to retract it, and a fourth ran `git stash` in a shared checkout
+       while trying to work out whether the error was its own. All of that is one
+       fact nobody could read, and the cheapest moment to hand it over is before
+       the first turn is spent. `cwd` is on every payload, and it is the tree the
+       card is actually standing in rather than the one its row remembers. */
+    if let Some(root) = payload.get("cwd").and_then(serde_json::Value::as_str) {
+        let runs = crate::store::gates_in_tree(path, root);
+        if let Some(text) = standing_gates(&runs, card, now) {
+            parts.push(text);
+        }
+    }
 
+    if parts.is_empty() {
+        return None;
+    }
     Some(
         serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": text,
+                "additionalContext": parts.join("\n\n"),
             }
         })
         .to_string(),
     )
+}
+
+/// How stale an observation may be and still be worth handing to a card.
+///
+/// **A stale green presented as current is what made a broadcast need
+/// retracting**, and a stale red is the same error with the sign flipped: a card
+/// told the tree was broken yesterday goes hunting a bug somebody fixed
+/// overnight, which costs it exactly the turn this is trying to save. Six hours
+/// is about a working session — long enough to cover a card that arrives in the
+/// afternoon to a tree broken before lunch, short enough that nothing here ever
+/// speaks about yesterday.
+const GATE_STALE_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// How long an unsettled run may stand before it is more likely orphaned.
+///
+/// A row with no result is either a gate running right now or one whose end
+/// nobody ever saw — the app was closed, the card was interrupted, the process
+/// died. The two are indistinguishable from here and only time tells them apart
+/// at all. Ten minutes is generous against a warm `cargo check --lib` at ~19s
+/// (`.claude/rules/build.md`) and a full `bun run test` at ~6s, so a row older
+/// than this is treated as nothing rather than announced as work in flight.
+const GATE_RUNNING_MS: i64 = 10 * 60 * 1000;
+
+/// What this card ought to know about the gates in the tree it is standing in,
+/// before it spends a turn finding out. Pure, so it can be lifted and run.
+///
+/// **Only ever about somebody else's observation.** Telling a card about a red
+/// gate it watched go red itself is noise — it was there. Every branch below is
+/// therefore conditioned on another card having been the observer, which is also
+/// what makes the answer worth a context slot at all: it is the thing this card
+/// provably cannot know.
+///
+/// **The repetition problem, and the read-only bound on it.** `UserPromptSubmit`
+/// fires on every prompt, so an unconditional reading would repeat itself for as
+/// long as the gate stayed red. The billboard solves the same problem with
+/// `notice_served`, and that is a *write* — which this cannot be, because a hook
+/// is a short-lived second process and `hooks.md` is explicit that it stays a
+/// reader. So the bound is one that can be computed from the rows themselves:
+/// **nothing is said about a gate this card has since observed for itself.** The
+/// moment it runs the gate, it knows first-hand and this falls silent, which is
+/// self-limiting and needs no state. What it costs is a repeat over the handful
+/// of prompts between arriving and running the gate; if that proves noisy the
+/// fix is `notice_served`'s shape and a writer to go with it, not a wider
+/// silence here.
+pub fn standing_gates(
+    runs: &[crate::store::GateRun],
+    me: &str,
+    now: i64,
+) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+
+    /* Rows arrive newest-first from `gates_of`, but sorting is not trusted:
+       this reads "the first settled row for this gate" as the current state,
+       and one row out of order would invert the answer. */
+    let mut gates: Vec<&str> = Vec::new();
+    for r in runs {
+        if !gates.contains(&r.gate.as_str()) {
+            gates.push(r.gate.as_str());
+        }
+    }
+
+    for gate in gates {
+        let mut of_gate: Vec<&crate::store::GateRun> =
+            runs.iter().filter(|r| r.gate == gate).collect();
+        of_gate.sort_by_key(|r| -(r.settled_at.unwrap_or(r.started_at)));
+
+        let settled: Vec<&&crate::store::GateRun> =
+            of_gate.iter().filter(|r| r.outcome != "unknown").collect();
+
+        /* **The silence that makes this bearable.** If this card has settled a
+           run of this gate more recently than anybody else has, it is the one
+           holding the freshest information and has nothing to learn. */
+        if settled.first().is_some_and(|r| r.card == me) {
+            continue;
+        }
+
+        /* Somebody is running it right now, which is worth saying on its own:
+           two cards starting cargo at once is where `Blocking waiting for file
+           lock on package cache` came from that afternoon. */
+        if let Some(live) = of_gate.iter().find(|r| {
+            r.outcome == "unknown"
+                && r.settled_at.is_none()
+                && r.card != me
+                && now - r.started_at < GATE_RUNNING_MS
+        }) {
+            lines.push(format!(
+                "  {} — {} is running it right now (started {} ago). Wait for that rather \
+                 than starting a second one; cargo and bun both take a lock.",
+                gate,
+                who(live),
+                ago(now - live.started_at),
+            ));
+            continue;
+        }
+
+        let Some(last) = settled.first() else { continue };
+        if last.outcome != "failed" {
+            continue;
+        }
+        let at = last.settled_at.unwrap_or(last.started_at);
+        if now - at > GATE_STALE_MS {
+            continue;
+        }
+
+        let scope = if last.scope == "partial" {
+            format!(" (only {}, so this may not be the whole gate)", last.narrowed.as_deref().unwrap_or("part of it"))
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "  {} was RED {} ago{}, run by {} — not by you.\n     $ {}",
+            gate,
+            ago(now - at),
+            scope,
+            who(last),
+            last.command,
+        ));
+        if let Some(d) = &last.detail {
+            /* The tail only, and indented, so it reads as quoted output rather
+               than as something Volery is asserting. */
+            let tail: Vec<&str> = d.lines().rev().take(3).collect();
+            for l in tail.into_iter().rev() {
+                lines.push(format!("     | {l}"));
+            }
+        }
+        /* Flapping is the third waste of that afternoon named directly: the same
+           `cargo update --precise` pin applied and lost three times, with each
+           card assuming a sibling had undone its fix when all three were losing
+           to cargo. Nobody could see the gate going green and red again. */
+        let changes = settled
+            .windows(2)
+            .filter(|w| w[0].outcome != w[1].outcome)
+            .count();
+        if changes > 1 {
+            lines.push(format!(
+                "     this gate has gone green and red {changes} times here — before assuming a \
+                 sibling undid a fix, check whether the fix survives (a `cargo update --precise` \
+                 pin does not; it is re-resolved by the next resolve)."
+            ));
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    let mut s = String::from("<volery-gate-health>\n");
+    s.push_str(
+        "Another card in this working tree has already observed this. You did not cause it and \
+         you do not need to prove that you did not.\n\n",
+    );
+    s.push_str(&lines.join("\n"));
+    s.push_str(
+        "\n\nThis is what was *observed*, attributed and timestamped — not a claim about the \
+         tree right now. Volery only ever sees gates run by cards on this wall, so a gate not \
+         listed here has not been proved green. **Do not run `git stash`, `git checkout -- .` \
+         or any tree-wide git to find out whether a failure is yours**: siblings' uncommitted \
+         work is in this checkout and those commands cannot tell it from yours.\n\
+         </volery-gate-health>",
+    );
+    Some(s)
+}
+
+/// A card by name where there is one, by short id where there is not.
+///
+/// The fallback matters more here than it looks: this table deliberately keeps
+/// no foreign key, so the commonest reason a name is missing is that the card
+/// which made the observation has closed — which is exactly when the
+/// observation is most worth having, and exactly when there is nobody to ask.
+fn who(r: &crate::store::GateRun) -> String {
+    match r.card_name.as_deref() {
+        Some(t) if !t.is_empty() && t != "untitled" => format!("\"{t}\""),
+        _ => format!("card {}", r.card.chars().take(8).collect::<String>()),
+    }
 }
 
 /// The words themselves. Pure, so `cargo test` can read them.
@@ -1424,6 +1626,255 @@ mod tests {
     fn a_card_holding_nothing_is_told_nothing() {
         assert!(standing_work(&[], false, 1_000_000).is_none());
         assert!(standing_work(&[], true, 1_000_000).is_none());
+    }
+
+    /* ── the gates ─────────────────────────────────────────────────────────
+     *
+     * Sink 3ebe1d59. These are the words a card actually reads, so they are
+     * asserted rather than eyeballed — and `.claude/rules/build.md`'s lift
+     * trick runs them for real (`tools/lift-gates.ts`), because a clean
+     * `check-gnu.sh` says nothing whatever about whether a sentence is right.
+     */
+
+    const ME: &str = "aaaaaaaa-1111-4111-8111-111111111111";
+    const OTHER: &str = "bbbbbbbb-2222-4222-8222-222222222222";
+
+    fn gate_run(
+        card: &str,
+        gate: &str,
+        outcome: &str,
+        settled: Option<i64>,
+        started: i64,
+    ) -> crate::store::GateRun {
+        crate::store::GateRun {
+            tool_id: format!("toolu_{card}_{gate}_{started}"),
+            card: card.to_string(),
+            card_name: Some(if card == ME { "mine".into() } else { "lucid otter".into() }),
+            root: "C:/w/skein".to_string(),
+            gate: gate.to_string(),
+            scope: "whole".to_string(),
+            narrowed: None,
+            command: format!("bun run {gate}"),
+            started_at: started,
+            settled_at: settled,
+            outcome: outcome.to_string(),
+            detail: None,
+        }
+    }
+
+    /// The quiet path again, and it has to be the common one here too: a tree
+    /// nobody has run a gate in says nothing, and neither does a green one.
+    #[test]
+    fn a_healthy_tree_is_silent() {
+        let now = 1_000_000;
+        assert!(standing_gates(&[], ME, now).is_none());
+        assert!(
+            standing_gates(&[gate_run(OTHER, "test", "passed", Some(now - 1000), now - 2000)], ME, now)
+                .is_none(),
+            "a green gate is not news"
+        );
+    }
+
+    /// The whole point: a card arriving to a tree somebody else broke is told
+    /// so, told who, and told that it is not its own doing.
+    #[test]
+    fn a_red_gate_somebody_else_saw_is_handed_over_with_its_provenance() {
+        let now = 1_000_000;
+        let out = standing_gates(
+            &[gate_run(OTHER, "cargo-check", "failed", Some(now - 60_000), now - 70_000)],
+            ME,
+            now,
+        )
+        .unwrap();
+        assert!(out.contains("cargo-check was RED"), "{out}");
+        assert!(out.contains("1m ago"), "{out}");
+        assert!(out.contains("lucid otter"), "{out}");
+        assert!(out.contains("not by you"), "{out}");
+    }
+
+    /// **The bound that makes this bearable on every prompt.** `UserPromptSubmit`
+    /// fires per prompt, and a hook cannot write, so it cannot mark a notice
+    /// served the way the billboard does. The read-only substitute is that a card
+    /// which has since observed the gate itself is the one holding the freshest
+    /// information and is told nothing.
+    #[test]
+    fn a_card_that_has_since_run_the_gate_itself_is_told_nothing() {
+        let now = 1_000_000;
+        let runs = vec![
+            gate_run(OTHER, "cargo-check", "failed", Some(now - 60_000), now - 70_000),
+            gate_run(ME, "cargo-check", "failed", Some(now - 10_000), now - 20_000),
+        ];
+        assert!(
+            standing_gates(&runs, ME, now).is_none(),
+            "it watched this go red itself; saying so again is noise"
+        );
+    }
+
+    /// And the inverse, which is the case that must not be silenced with it: my
+    /// observation is *older* than theirs, so theirs is still news.
+    #[test]
+    fn an_older_observation_of_mine_does_not_silence_a_newer_one_of_theirs() {
+        let now = 1_000_000;
+        let runs = vec![
+            gate_run(ME, "cargo-check", "passed", Some(now - 600_000), now - 610_000),
+            gate_run(OTHER, "cargo-check", "failed", Some(now - 60_000), now - 70_000),
+        ];
+        assert!(standing_gates(&runs, ME, now).unwrap().contains("RED"));
+    }
+
+    /// **A stale red is the same error as a stale green with the sign flipped.**
+    /// The broadcast that had to be retracted was retracted for being out of
+    /// date; a card sent hunting a bug somebody fixed overnight loses exactly
+    /// the turn this exists to save.
+    #[test]
+    fn nothing_here_speaks_about_yesterday() {
+        let now = 100 * 60 * 60 * 1000;
+        let old = now - GATE_STALE_MS - 1;
+        assert!(standing_gates(&[gate_run(OTHER, "test", "failed", Some(old), old)], ME, now).is_none());
+    }
+
+    /// Rows are sorted here rather than trusted, because one row out of order
+    /// inverts the answer — and the two writers of this table (the fold as it
+    /// happens, a restore reading it back) have no reason to agree on order.
+    #[test]
+    fn the_newest_settled_run_decides_and_order_is_not_trusted() {
+        let now = 1_000_000;
+        let red = gate_run(OTHER, "test", "failed", Some(now - 100_000), now - 110_000);
+        let green = gate_run(OTHER, "test", "passed", Some(now - 10_000), now - 20_000);
+        for runs in [vec![red.clone(), green.clone()], vec![green, red]] {
+            assert!(
+                standing_gates(&runs, ME, now).is_none(),
+                "the latest word is green, so there is nothing to say"
+            );
+        }
+    }
+
+    /// A gate in flight is its own reading, and it exists to stop the thing that
+    /// actually happened: two cards starting cargo at once, and `Blocking
+    /// waiting for file lock on package cache` all afternoon.
+    #[test]
+    fn a_gate_running_right_now_says_so_rather_than_saying_nothing() {
+        let now = 1_000_000;
+        let out =
+            standing_gates(&[gate_run(OTHER, "cargo-check", "unknown", None, now - 30_000)], ME, now)
+                .unwrap();
+        assert!(out.contains("running it right now"), "{out}");
+        assert!(out.contains("take a lock"), "{out}");
+        assert!(out.contains("lucid otter"), "{out}");
+    }
+
+    /// An unsettled row is either a live run or one whose end nobody ever saw —
+    /// the app was closed, the card interrupted, the process died. Only time
+    /// tells them apart at all, so past the bound it is treated as nothing
+    /// rather than announced as work in flight.
+    #[test]
+    fn an_ancient_unsettled_row_is_not_announced_as_running() {
+        let now = 10_000_000;
+        let then = now - GATE_RUNNING_MS - 1;
+        assert!(standing_gates(&[gate_run(OTHER, "test", "unknown", None, then)], ME, now).is_none());
+    }
+
+    /// My own run is never reported back to me, in either state.
+    #[test]
+    fn my_own_work_is_not_narrated_to_me() {
+        let now = 1_000_000;
+        assert!(standing_gates(&[gate_run(ME, "test", "unknown", None, now - 1000)], ME, now).is_none());
+        assert!(
+            standing_gates(&[gate_run(ME, "test", "failed", Some(now - 1000), now - 2000)], ME, now)
+                .is_none()
+        );
+    }
+
+    /// A partial run says so, because the partial form is the one everybody on
+    /// this machine actually types and "cargo-check is red" would otherwise be
+    /// claiming more than was run.
+    #[test]
+    fn a_partial_run_does_not_claim_the_whole_gate() {
+        let now = 1_000_000;
+        let mut r = gate_run(OTHER, "cargo-check", "failed", Some(now - 1000), now - 2000);
+        r.scope = "partial".into();
+        r.narrowed = Some("no test modules".into());
+        let out = standing_gates(&[r], ME, now).unwrap();
+        assert!(out.contains("only no test modules"), "{out}");
+        assert!(out.contains("may not be the whole gate"), "{out}");
+    }
+
+    /// The third waste of that afternoon, named directly. The pin was applied
+    /// and lost three times and each card assumed a sibling had undone it; all
+    /// three were losing to cargo re-resolving a lock entry.
+    #[test]
+    fn a_flapping_gate_says_so_and_names_the_reason_it_usually_is() {
+        let now = 1_000_000;
+        let runs = vec![
+            gate_run(OTHER, "cargo-check", "failed", Some(now - 10_000), now - 11_000),
+            gate_run(OTHER, "cargo-check", "passed", Some(now - 20_000), now - 21_000),
+            gate_run(OTHER, "cargo-check", "failed", Some(now - 30_000), now - 31_000),
+            gate_run(OTHER, "cargo-check", "passed", Some(now - 40_000), now - 41_000),
+        ];
+        let out = standing_gates(&runs, ME, now).unwrap();
+        assert!(out.contains("green and red"), "{out}");
+        assert!(out.contains("--precise"), "{out}");
+    }
+
+    /// One breakage, one green-again, is news rather than flapping — and calling
+    /// it flapping would cry wolf on the commonest thing that happens to a gate.
+    #[test]
+    fn one_change_is_not_flapping() {
+        let now = 1_000_000;
+        let runs = vec![
+            gate_run(OTHER, "test", "failed", Some(now - 10_000), now - 11_000),
+            gate_run(OTHER, "test", "passed", Some(now - 20_000), now - 21_000),
+        ];
+        let out = standing_gates(&runs, ME, now).unwrap();
+        assert!(!out.contains("green and red"), "{out}");
+    }
+
+    /// **The reading must not read as a claim about the tree right now**, which
+    /// is the failure the retracted broadcast was, and it must steer away from
+    /// the tool that caused the other incident that day.
+    #[test]
+    fn the_reading_states_its_own_limits_and_names_the_banned_escape() {
+        let now = 1_000_000;
+        let out = standing_gates(
+            &[gate_run(OTHER, "cargo-check", "failed", Some(now - 1000), now - 2000)],
+            ME,
+            now,
+        )
+        .unwrap();
+        assert!(out.contains("not a claim about the tree right now"), "{out}");
+        assert!(out.contains("has not been proved green"), "{out}");
+        assert!(out.contains("git stash"), "{out}");
+        assert!(out.starts_with("<volery-gate-health>"), "{out}");
+        assert!(out.ends_with("</volery-gate-health>"), "{out}");
+    }
+
+    /// A card that has closed is the commonest reason a name is missing, and it
+    /// is exactly when the observation matters most and there is nobody to ask.
+    #[test]
+    fn an_observation_outlives_the_card_that_made_it() {
+        let now = 1_000_000;
+        let mut r = gate_run(OTHER, "test", "failed", Some(now - 1000), now - 2000);
+        r.card_name = None;
+        let out = standing_gates(&[r.clone()], ME, now).unwrap();
+        assert!(out.contains("card bbbbbbbb"), "{out}");
+
+        /* And a card still carrying its draft name is not introduced as
+           "untitled", which reads as a fault rather than as a card. */
+        r.card_name = Some("untitled".into());
+        assert!(standing_gates(&[r], ME, now).unwrap().contains("card bbbbbbbb"));
+    }
+
+    /// Two broken gates are two lines, not one merged claim.
+    #[test]
+    fn each_gate_speaks_for_itself() {
+        let now = 1_000_000;
+        let runs = vec![
+            gate_run(OTHER, "cargo-check", "failed", Some(now - 1000), now - 2000),
+            gate_run(OTHER, "test", "failed", Some(now - 3000), now - 4000),
+        ];
+        let out = standing_gates(&runs, ME, now).unwrap();
+        assert!(out.contains("cargo-check was RED"), "{out}");
+        assert!(out.contains("test was RED"), "{out}");
     }
 
     /// Everything the agent in sink fb3e537d needed and did not have: that it
