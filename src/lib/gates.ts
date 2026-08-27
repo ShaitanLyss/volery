@@ -145,11 +145,26 @@ export const MAX_DETAIL = 600;
  * division `azdo.ts` already draws for a forge and `usage.ts` for a price.
  */
 
-/** A gate recogniser: a pattern over one command segment, and what it means. */
+/** A gate recogniser: a pattern over one command segment, and what it means.
+ *
+ *  **Widening and narrowing are orthogonal, and conflating them was a bug.**
+ *  They were one list, with a widening entry breaking out of the loop — so
+ *  `cargo check -p skein_lib --all-targets` was read as covering the whole
+ *  workspace, because `--all-targets` matched first and the `-p` was never
+ *  looked at. A run can perfectly well be *wider in one axis and narrower in
+ *  another*: all targets, of one package. Two fields, asked separately. */
 interface Recogniser {
   gate: string;
   /** Matched against a normalised segment — collapsed whitespace, lowercased. */
   re: RegExp;
+  /** An argument that makes the run cover *more* than its bare form does.
+   *  Without it the run is partial and `withoutWidening` says why. */
+  widens?: RegExp;
+  /** What a run of this gate is missing when `widens` does not match. Named
+   *  here rather than as a `narrows` entry because it is the *absence* of an
+   *  argument, and a pattern cannot match an absence without asserting the
+   *  whole rest of the line. */
+  withoutWidening?: string;
   /** Arguments that narrow the run to less than the gate's whole name. When one
    *  of these matches, the run is `partial` and this is what it is called. */
   narrows?: { re: RegExp; as: string }[];
@@ -169,15 +184,21 @@ const RECOGNISERS: Recogniser[] = [
   {
     gate: "cargo-check",
     re: /\b(cargo\s+check|check-gnu\.sh)\b/,
-    narrows: [
-      /* A bare `cargo check --lib` typechecks no test module, and this
-         repository has written that down twice because a clean run there reads
-         exactly like a clean test run. */
-      { re: /--profile\s+test|--tests|--all-targets/, as: "" },
-      { re: /-p\s+\S+|--package\s+\S+/, as: "one package" },
-    ],
+    /* A bare `cargo check` is `--lib`, which typechecks no test module at all.
+       This repository has written that down twice — `.claude/rules/build.md`
+       and `hooks.md` — because a clean run there reads exactly like a clean
+       test run and is not one. */
+    widens: /--profile\s+test|--tests|--all-targets/,
+    withoutWidening: "no test modules",
+    narrows: [{ re: /\s-p\s+\S+|--package\s+\S+/, as: "one package" }],
   },
-  { gate: "cargo-test", re: /\bcargo\s+test\b/, narrows: [{ re: /\bcargo\s+test\s+\S/, as: "one filter" }] },
+  {
+    gate: "cargo-test",
+    re: /\bcargo\s+test\b/,
+    /* A bare filter, not a flag: `cargo test --release` is the whole suite
+       compiled differently, where `cargo test gates` is a slice of it. */
+    narrows: [{ re: /\bcargo\s+test\s+(?!-)\S/, as: "one filter" }],
+  },
   { gate: "cargo-build", re: /\bcargo\s+build\b/ },
   { gate: "cargo-clippy", re: /\bcargo\s+clippy\b/ },
 
@@ -303,27 +324,18 @@ export function recognise(input: unknown): Gate | null {
       if (!r.re.test(line)) continue;
       let scope: GateScope = "whole";
       let narrowed: string | null = null;
+      /* Widening first, narrowing second, and the order is what makes
+         `cargo check -p one --all-targets` come out as "one package": all
+         targets *of one package* is genuinely partial, and the narrowing is the
+         more specific thing to say about it. */
+      if (r.withoutWidening && !r.widens?.test(line)) {
+        scope = "partial";
+        narrowed = r.withoutWidening;
+      }
       for (const n of r.narrows ?? []) {
         if (!n.re.test(line)) continue;
-        /* An empty `as` widens rather than narrows — `--profile test` on a
-           `cargo check` is the fuller run, not a slice of it. */
-        if (!n.as) {
-          scope = "whole";
-          narrowed = null;
-          break;
-        }
         scope = "partial";
         narrowed = n.as;
-      }
-      /* `cargo check` with no widening argument is `--lib`, which typechecks no
-         test module. Named here rather than as a `narrows` entry because it is
-         the *absence* of an argument, and a pattern cannot match an absence
-         without asserting the whole rest of the line. */
-      if (r.gate === "cargo-check" && scope === "whole" && narrowed === null) {
-        if (!/--profile\s+test|--tests|--all-targets/.test(line)) {
-          scope = "partial";
-          narrowed = "no test modules";
-        }
       }
       return { gate: r.gate, scope, narrowed, command: segment.trim() };
     }
