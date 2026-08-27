@@ -9,6 +9,7 @@ paths:
   - "src-tauri/src/azdo.rs"
   - "src-tauri/src/forge.rs"
   - "src-tauri/src/github.rs"
+  - "src-tauri/src/smith.rs"
   - "src-tauri/src/vault.rs"
 ---
 
@@ -567,6 +568,228 @@ only in a menu is a panel nobody finds at the moment it would help.
   second thing to keep true.
 - It does not report which rung is *in use*, deliberately: the ladder resolves per organisation
   and per endpoint family, so any single answer would be wrong somewhere.
+
+### The forge a card can reach — `smith.rs`
+
+Three MCP tools on the skein server: `pipelines` and `reviews`, which read, and
+`pull_request`, which writes one thing. They exist because of a certificate, and
+that is the whole justification rather than the background to it.
+
+**`az` cannot reach `dev.azure.com` on this network and Volery can.** Everything
+above about the TLS interception is why — `ureq` with `native-certs` reads the
+Windows store where the Netskope root lives, and `az` on this path does not. So
+for as long as the widgets have been quietly succeeding, every card reaching for
+`az pipelines runs list` or `az repos pr create` has been failing with a
+certificate error eight feet away from a working client, and spending turns
+diagnosing something this repository had already written down twice. **The cards
+were not being denied a capability. They were failing to reach a path that
+already worked.** That is the entire content of the feature: no new client, no
+new credential, no second vocabulary — `smith.rs` is a door onto `azdo.rs`.
+
+It is a separate file from `azdo.rs` on the *audience* argument rather than a
+size one. Somebody asking "why did the ladder refuse" opens `azdo.rs`; somebody
+asking "why did the card's `pipelines` tool answer nothing" is asking about the
+tool. Two questions, two files — and `azdo.rs` keeps the ladder private, which is
+the property that mattered when the alternative was handing `smith.rs` a
+signed-request helper. What crosses the seam is *acts* (`origin_for`, `pull_read`,
+`pull_target`, `pull_open`, `pull_amend`) and never a `Cred` or a url. A module
+boundary that exists only in the `pub(crate)` keywords is not one.
+
+#### The floor is redrawn one step in, not removed
+
+The widgets' floor stands exactly as stated above: **a row is a link and nothing
+else.** That argument is about a *button beside a list read at a glance*, on a
+wall whose agents run with `--dangerously-skip-permissions`, and nothing here
+weakens it — there is still no re-run, no cancel and no approve anywhere in the
+app's chrome.
+
+An MCP tool is not that gesture. It is called deliberately, by an agent that was
+asked to do this, and the call is in the transcript. But "not that gesture" is not
+a licence, so the floor moves in rather than away:
+
+> **A card may write only what a person would type into a text field.**
+
+A title, a description, and the pull request they belong to. **No vote, no
+approve, no complete, no auto-complete, no abandon, no re-queue, no cancel, no
+policy override, and no merge under any name.** An `action` the tool does not know
+is refused with that list rather than with a schema error, because the useful
+answer to a model reaching for `merge` is *what the floor is*.
+
+The line being drawn is worth stating precisely, since "reads are safe and writes
+are not" is the obvious reading and is the wrong one: it is **whether the act is
+reversible by the person whose name is on it.** A title is. An approval on
+somebody else's change is not, and belongs where the diff is.
+
+#### And the write asks the user first
+
+`pull_request` parks a real `ask_user` question before it writes anything, using
+`spawn::close`'s mechanism exactly — the decision is taken *before* the transport
+commits to answering, `Writing::Now` / `Writing::Ask` is `Closing`'s shape, and a
+closure does the writing if the answer is yes.
+
+**This is the first effect on that server that is outside this machine**, which is
+the reason. A notice comes down, a sink item goes back, a card is adopted again —
+everything else a card can do to the wall is reversible from inside it. A pull
+request appears on other people's review queue, under the user's own name, on a
+server this app does not own, and a card cannot un-notify anybody. Sink
+`4951f398` is the cautionary case from the other side: the Spotify player is
+green on every gate in this repository and has never made a sound, because
+nothing that gate could check was the thing that mattered. A write into
+somebody's organisation has that shape — every test can pass and the pull request
+can still be one nobody wanted.
+
+Four things about the parking that were decided rather than fallen into:
+
+- **The defaults are resolved before the question, not after.** Working out the
+  source branch and asking the server for the target costs a `git` spawn and one
+  request, and doing it after approval would put a panel up saying "open a pull
+  request" unable to say *from what, into what* — which is most of what somebody
+  is deciding. The question also carries the title, enough of the body to
+  recognise it, and that it goes out under their name; the last is the one an
+  agent would never think to mention and is half the reason to ask.
+- **Only the button is an approval**, `spawn::approved`'s reason: the panel has a
+  free-text field beside its two buttons, so what comes back is arbitrary prose,
+  and reading a yes out of prose works right up until *"yes, but call it
+  something else"* — at which point a pull request exists with the wrong title
+  on it. Anything that is not the button comes back to the agent **verbatim**
+  rather than flattened into a no, because a person who typed a sentence typed it
+  for the agent.
+- **Nothing is re-read on approval, and that is a difference from `spawn::close`
+  rather than an oversight.** Closing a card had to re-check the wall because the
+  card could have started a turn in the ten minutes. Here the only thing that can
+  have changed is on Azure DevOps' side and Azure DevOps is the one that checks
+  it: a duplicate answers 409 naming the existing pull request, an abandoned one
+  answers 404, and both are surfaced. A re-read would be a second opinion about a
+  fact the write itself establishes.
+- **`classify.ts` says "wants to open a pull request", not "opened".** At the
+  moment the call lands nothing has happened, and a card reading the past tense
+  while the question about it was still up would be the transcript claiming an
+  outcome the wall has not got. The tool's own answer is where the outcome is, and
+  it says whether the user agreed.
+
+Consequently `pull_request` is **not** in the `handle` chain — it is dispatched
+from `ask.rs` directly, above it, beside `spawn::close`. Putting it in the chain
+would be a write that never asked, and that arm has already committed to
+answering on the spot.
+
+#### One forge on the way out, two on the way in
+
+The write half is **Azure DevOps only, deliberately**, and it is a floor rather
+than a gap. The section above on the second forge settles it: `gh` is already
+installed and already signed in on any machine somebody works on GitHub from, and
+**`gh pr create` works on this network** — there is no certificate to bypass. So a
+GitHub arm would be a second way to do the same thing plus a second vocabulary of
+errors, for no capability. A card on a GitHub repository is told to use `gh`, *by
+name*, because it is mid-task and what it needs is the thing that does work.
+
+The *readings* answer for both forges, because there it was free — `both_runs` and
+`both_reviews` are `azdo_runs`/`azdo_reviews` with the `off_main` taken off, so
+the tools and the widgets share one vocabulary and one cache. Which is the same
+argument that put GitHub Actions rows in the wall's existing runs list: a card
+asking what is building should not have to know which service hosts its
+repository.
+
+#### The territory is read off the wall, never named
+
+All three are scoped to the project the calling card stands in, and the
+org/project/repo triple comes off that project's own git remote. **A card cannot
+name a repository**, for the reason `spawn.rs` will not take a path: a card that
+could name its own project could name somebody else's, and then a tool that
+writes has the whole organisation as its blast radius instead of the territory it
+was put in. Same rule `servers.rs` states one layer down, reaching a service
+instead of a process. A **chat card is refused outright** — a credential-carrying
+tool is exactly the reach that card kind exists to deny.
+
+`origin_of` is what a write needed and no reading ever did, because every reading
+here is org-wide or project-enumerated and a pull request names all three in its
+url path. Four spellings, and one of them leaves the project out:
+
+```text
+dev.azure.com/{org}/{project}/_git/{repo}              the canonical https form
+dev.azure.com/{org}/_git/{repo}                        project omitted; it is the repo's name
+{org}.visualstudio.com/{coll}/{project}/_git/{repo}    the legacy collection form
+ssh.dev.azure.com:v3/{org}/{project}/{repo}            ssh, with no `_git` marker at all
+```
+
+So **`_git` is the anchor where there is one** — the project is the segment
+*before* it and the repository the one after — which gets the legacy collection
+form right for free rather than by naming it, and reads `{org}/_git/{repo}`
+correctly instead of calling the project `_git`. Read positionally from the
+organisation, three of the four are wrong. `org_of` is now one line over the same
+splitter, and the three assertions that covered every remote shape in the wild are
+what say the refactor kept them.
+
+#### Three things the write side had to learn
+
+- **A write walks the same ladder as a read, and that is safe by argument rather
+  than by luck.** Rotating past a refused credential means re-sending, which for
+  a POST is the thing to think about twice. It is sound because every status the
+  walk falls through on — 401, 403, 404, and the 400 carrying
+  `ProjectDoesNotExistException` — is Azure DevOps declining *before* it did
+  anything: there is no state on the other side to have half-changed. A 2xx
+  returns immediately and anything else ends the pass without a second attempt.
+  Worst case is a pull request created by the second rung rather than the first,
+  never one created twice.
+- **The default branch is asked of the server, never guessed.** Guessing fails in
+  the expensive direction: Azure DevOps accepts `refs/heads/main` as a target on a
+  repository whose trunk is `master` and answers 400 with `TargetRefName` in the
+  prose, so the card reads a validation error about a field it never set — and a
+  repository carrying both branches gets a real pull request aimed at the wrong
+  one, on somebody's list, that nobody asked for. `refs/heads/…` in full, since
+  that is also the form the create body wants, so nothing reassembles a ref.
+  `full_ref` widens a bare `main` for the same reason in miniature: the service
+  does not correct it, it accepts it, matches nothing, and 400s about a source
+  branch that does not exist.
+- **A PATCH here is a merge, so `None` means leave it alone all the way to the
+  wire.** Sending `description: ""` for a caller who only meant to fix a typo in
+  the title would silently empty the description — the accident an agent is most
+  likely to have and least likely to notice, since the answer would look entirely
+  successful. Hence `fields` echoed back in the reply, and the question saying
+  *"the description will be replaced"* rather than only showing the new value.
+
+#### What it costs, and where it sits
+
+`ask::mcp_config`'s `alwaysLoad` is **per-tool** `_meta["anthropic/alwaysLoad"]`
+rather than server-wide — probed against 2.1.241 during the roster tiering — and
+these three are deliberately on the **discoverable** tier. Measured: 2116 +
+1828 + 3587 = **7,535 bytes** as always-loaded schemas, against **67** deferred.
+
+The argument for the tier is not that they are new. The board, the sink and the
+relay are wanted on every turn because a card cannot know whether it needs them
+until it has read them — *"the reflex this fights is not thinking there is
+anything to do."* The forge is the opposite: a card knows from its prompt whether
+it is working on a pipeline or a pull request, and the overwhelming majority of
+turns on this wall touch neither. So the descriptions are written at full length
+rather than compressed, because the full text is what `ToolSearch` hands over the
+one time it is wanted, and that is the only time it is paid for.
+
+Each schema therefore carries `_meta["anthropic/searchHint"]`, and these three
+have a matching problem the rest of the roster does not: **a card reaching for the
+forge has usually just failed with `az`, so it is searching for the word in its
+hand.** The hints carry `certificate error`, `ssl`, `az pipelines`, `az repos pr
+create` and `gh pr create` alongside the domain words — and the natural-language
+forms (`did my build pass`, `is my PR approved`), since nobody searches for the
+noun "pipelines".
+
+#### What is proven, and what is only green
+
+The pure half is genuinely executed: `bun tools/lift-smith.ts` runs 24
+assertions for real on a machine with no MSVC — the remote parser over all six
+url spellings, the url composer, `full_ref`, the branch matcher, the failed-run
+predicate, the single-pull projection, and the whole confirmation gate. It lifts
+from three files and rewrites `crate::azdo::`/`crate::forge::` away, so it proves
+the bodies and cannot prove the paths; `bash tools/check-gnu.sh --tests` is the
+other half and is clean.
+
+**No HTTP request has ever been made.** The readings reuse the code the widgets
+exercise daily, so those are as proven as the widgets are. The write path —
+`walk` with a POST or PATCH, `open_pull`, `amend_pull`, `default_branch_of`,
+`pull_of` — has never touched Azure DevOps. It is recorded here rather than
+discovered later for the reason `4951f398` exists: **a feature green on every gate
+and never once run is a known unknown, and saying so is the only thing that keeps
+it one.** The first real `pull_request` call is the test, and the credential it
+needs is a PAT with **Code (write)** — broader than the Build (read) the widgets
+made you mint, so the first failure to expect is a 403 the token panel fixes.
 
 The control surface has an `azdo` op — `read` takes both readings now rather than waiting out
 the beats, `rows` hands back the lists with each row's *tier* on it, which is the only way to
