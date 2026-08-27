@@ -3748,6 +3748,7 @@ const GATE_KEEP: usize = 50;
 /// codebase has already paid for in `hooks.rs`'s matcher.
 #[tauri::command]
 pub fn open_gate_run(
+    app: tauri::AppHandle,
     store: tauri::State<'_, Store>,
     tool_id: String,
     conversation_id: String,
@@ -3773,6 +3774,13 @@ pub fn open_gate_run(
     )
     .map_err(|e| e.to_string())?;
     prune_gate_runs(&conn, &root, &gate);
+    /* **The lock is dropped before the emit.** A reader woken by this event
+       immediately calls `gate_runs`, which wants the same mutex — emitting while
+       holding it queues that read behind a lock the emitting thread still owns.
+       `board.rs` notes the same hazard in its own words at the bottom of the
+       file. */
+    drop(conn);
+    gates_changed(&app, &root);
     Ok(())
 }
 
@@ -3786,6 +3794,7 @@ pub fn open_gate_run(
 /// swallow it one layer further out.
 #[tauri::command]
 pub fn settle_gate_run(
+    app: tauri::AppHandle,
     store: tauri::State<'_, Store>,
     tool_id: String,
     settled_at: i64,
@@ -3798,7 +3807,43 @@ pub fn settle_gate_run(
         params![tool_id, settled_at, outcome, detail],
     )
     .map_err(|e| e.to_string())?;
+    /* Which tree moved, read back from the row rather than taken from the
+       caller — the front end does not know it (see `open_gate_run`), and a
+       widget told the wrong tree changed would either redraw for nothing or,
+       worse, not redraw at all. `None` when the row is gone, which is the
+       pruned or pre-dating case the UPDATE above already tolerates. */
+    let root: Option<String> = conn
+        .query_row("SELECT root FROM gate_run WHERE tool_id = ?1", params![tool_id], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten();
+    drop(conn);
+    if let Some(root) = root {
+        gates_changed(&app, &root);
+    }
     Ok(())
+}
+
+/// A tree's gate readings moved.
+///
+/// Carries the tree so a widget watching another one need not re-read — the
+/// same economy `board:changed` makes with its `project_id`. Every write to
+/// this table goes through the two commands above, so there is an event for
+/// every change there is and **nothing downstream may poll**: a timer here
+/// would be a poll for news that has already arrived, which is the rule
+/// `board.svelte.ts` states for the billboard and the whole reason this feature
+/// is allowed to exist at all under CLAUDE.md's three-pollers passage.
+fn gates_changed(app: &tauri::AppHandle, root: &str) {
+    /* The trait is brought in here rather than at the top of the file: this is
+       the only thing in `store.rs` that emits, and a file-wide import would
+       suggest the store is generally in the business of telling the wall
+       things. It is not — it is asked. */
+    use tauri::Emitter;
+    #[derive(Clone, serde::Serialize)]
+    struct GatesChanged {
+        root: String,
+    }
+    let _ = app.emit("gates:changed", GatesChanged { root: root.to_string() });
 }
 
 /// Keep the newest `GATE_KEEP` runs of this gate in this tree, drop the rest.
@@ -3823,6 +3868,40 @@ fn prune_gate_runs(conn: &Connection, root: &str, gate: &str) {
 pub fn gate_runs(store: tauri::State<'_, Store>, root: String) -> Result<Vec<GateRun>, String> {
     let conn = store.0.lock().unwrap();
     gates_of(&conn, &root)
+}
+
+/// Which trees anything has ever been observed in, busiest-recent first.
+///
+/// **Asked of the table rather than worked out from the wall**, and that is the
+/// point of it existing at all. The front end knows a card's `cwd` and its
+/// worktree *name*; the `root` column holds the directory the child actually
+/// ran in, which `worktree::run_dir` derives. So a widget cannot enumerate the
+/// trees it should be watching without a second copy of `dir_for`'s spelling —
+/// and the honest list is anyway not "trees the wall has cards in" but "trees
+/// anybody has been seen running a gate in", which is what a reading can
+/// actually speak about.
+///
+/// Deliberately not folded into `gate_runs`: reading every row of every tree to
+/// learn the tree names would be the whole table on the wire on every settle,
+/// where this is one small column. `GATE_KEEP` bounds the rows per gate and not
+/// the number of gates or trees.
+#[tauri::command]
+pub fn gate_trees(store: tauri::State<'_, Store>) -> Result<Vec<String>, String> {
+    let conn = store.0.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT root, MAX(COALESCE(settled_at, started_at)) AS seen
+               FROM gate_run GROUP BY root ORDER BY seen DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
 }
 
 /// The same rows, for a process that is not the app.

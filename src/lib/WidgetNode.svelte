@@ -18,6 +18,7 @@
   import type { Editor } from "./unreallog";
   import type { Sink } from "./sink.svelte";
   import type { Beacon } from "./beacon.svelte";
+  import type { Gates } from "./gates.svelte";
   /* Aliased, because `Run` in this file is already a timer's two numbers off
      `./timing` one line below. Two different `Run`s in one component is the
      kind of collision that reads fine until somebody widens one of them. */
@@ -36,6 +37,7 @@
   import Reviews from "./Reviews.svelte";
   import Billboard from "./Billboard.svelte";
   import Basin from "./Basin.svelte";
+  import Gatehouse from "./Gatehouse.svelte";
   import ServerLog from "./ServerLog.svelte";
   import BuildLog from "./BuildLog.svelte";
   import UnrealLog from "./UnrealLog.svelte";
@@ -50,6 +52,7 @@
     devops,
     billboard,
     sink,
+    gates,
     beacon,
     servers,
     onserverstart,
@@ -89,6 +92,11 @@
     /** The one sink reader behind however many are up — idle, and reading
      *  nothing, until one attaches. */
     sink: Sink;
+    /** The one gate reader behind however many are up — idle, and reading
+     *  nothing, until one attaches. Keyed by tree rather than by project: two
+     *  cards on different worktrees of one project share a project and share no
+     *  files. See `gates.svelte.ts`. */
+    gates: Gates;
     /** The one status reader behind however many claude-status widgets are up.
      *  Idle, and touching the network not at all, until one attaches — and it
      *  asks only while the window is in front. See `beacon.svelte.ts`. */
@@ -293,6 +301,8 @@
         {names}
         onreveal={(id) => onreveal?.("conversation", id)}
       />
+    {:else if widget.kind === "gates"}
+      <Gatehouse {widget} {gates} {names} />
     {:else if widget.kind === "serverlog"}
       <ServerLog {widget} groups={servers} onstart={onserverstart} />
     {:else if widget.kind === "buildlog"}

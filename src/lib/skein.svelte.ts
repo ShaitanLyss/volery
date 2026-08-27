@@ -51,6 +51,7 @@ import { Listeners } from "./listeners";
 import { Flights, type SentEvent } from "./relay.svelte";
 import { Board } from "./board.svelte";
 import { Sink } from "./sink.svelte";
+import { Gates } from "./gates.svelte";
 import { cliCommand, isEffort } from "./commands";
 import { wireOf, type Gear } from "./gears";
 import type { Preset } from "./presets";
@@ -228,6 +229,12 @@ export class Skein {
    *  `flights` is: this is the only place that talks to Rust. */
   board = new Board();
 
+  /** What the gates in each tree were last observed doing. Idle until a widget
+   *  asks — see `gates.svelte.ts`, and `.claude/rules/gates.md` for why the
+   *  recorder behind it is not a fourth poller. Owned here for `board`'s
+   *  reason: this is the only place that talks to Rust. */
+  gates = new Gates();
+
   /** Who opened whom, for the roots the wall draws behind its cards.
    *
    *  Read once at launch and then only ever appended to, because a spawn
@@ -318,6 +325,12 @@ export class Skein {
     this.#nudges.clear();
     for (const t of this.#leaves.values()) clearTimeout(t);
     this.#leaves.clear();
+    /* The gate reader holds no subscription of its own — `keep` above owns that
+       — but it does hold every observed run for every watched tree, which is the
+       busiest table in the app. In dev a superseded Skein is constructed on
+       every file save, and one that kept its rows would be a copy of that table
+       per edit. */
+    this.gates.release();
   }
 
   /** How many subscriptions are live, so the control surface can prove there is
@@ -432,6 +445,17 @@ export class Skein {
       /* Same bargain, one table over. */
       listen<{ project_id: string | null }>("sink:changed", () => {
         void this.sink.refresh();
+      }),
+    );
+
+    keep(
+      /* And again for the gates — but carrying *which tree* moved, because this
+         is the busiest table any widget reads: a card runs gates all day, so a
+         wall with four territories on it must not re-fetch three of them every
+         time the fourth settles a run. `changed` is a no-op unless something is
+         actually watching that tree. */
+      listen<{ root: string }>("gates:changed", (e) => {
+        this.gates.changed(e.payload?.root ?? "");
       }),
     );
 

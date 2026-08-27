@@ -2844,6 +2844,7 @@
         lineage={skein.kin}
         billboard={skein.board}
         sink={skein.sink}
+        gates={skein.gates}
         {beacon}
         {focusedId}
         draft={field.preview}

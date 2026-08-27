@@ -46,6 +46,7 @@
   import type { Flights } from "./relay.svelte";
   import type { Board as Billboards } from "./board.svelte";
   import type { Sink } from "./sink.svelte";
+  import type { Gates } from "./gates.svelte";
   import type { Beacon } from "./beacon.svelte";
   import type { Reading } from "./serverlog";
   import type { Build } from "./buildlog";
@@ -83,6 +84,7 @@
     lineage,
     billboard,
     sink,
+    gates,
     beacon,
     focusedId,
     draft = "",
@@ -152,6 +154,8 @@
     billboard: Billboards;
     /** The one sink reader behind however many are hung up. */
     sink: Sink;
+    /** The one gate reader behind however many are hung up. */
+    gates: Gates;
     /** The one status reader behind however many are hung up, idle until one
      *  attaches. */
     beacon: Beacon;
@@ -1734,6 +1738,7 @@
     {devops}
     {billboard}
     {sink}
+    {gates}
     {beacon}
     servers={servers ?? []}
     onserverstart={(id) => onserverstart?.(id)}

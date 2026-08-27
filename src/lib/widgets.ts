@@ -45,6 +45,7 @@ export type WidgetKind =
   | "reviews"
   | "billboard"
   | "sink"
+  | "gates"
   | "serverlog"
   | "buildlog"
   | "unreallog";
@@ -807,6 +808,72 @@ export const WIDGETS: WidgetSpec[] = [
           { value: "idea", label: "only what should exist" },
           { value: "chore", label: "only the chores" },
           { value: "note", label: "only the notes" },
+        ],
+        "all",
+      ),
+    ],
+  },
+  {
+    /* **`pipelines` draws a remote build's state; this draws the local tree's**,
+       and they are deliberately two widgets rather than one with a variant. The
+       rule the catalogue already applies: a variant is for two readings of one
+       *fact*, and "did CI pass on the branch I pushed" and "does the checkout in
+       front of me compile" are two facts, on two clocks, answering two
+       questions. They are also wanted up at the same time, which is what settles
+       it, since a variant is exclusive.
+
+       Sink 3ebe1d59. What this exists for is the afternoon nobody could tell
+       whether the tree was broken, since when, or whose fault it was: one
+       breakage diagnosed three times over, broadcast to the whole wall and
+       retracted an hour later, and a `git stash` that wiped four cards' work
+       while somebody tried to find out whether an error was their own.
+
+       **Nothing behind it goes and looks**, so it is not the fourth thing on
+       this wall that does. `gates.svelte.ts` is fed by `gates:changed`, which
+       every write to the table emits, and the rows are written because cards run
+       these gates constantly of their own accord — so the face is a fold over
+       events that already arrive. See `.claude/rules/gates.md`.
+
+       Sized like the sink rather than like the logs: a row here is a gate, a
+       verdict, an age and who saw it, which is prose-shaped and does not want a
+       compiler's eighty columns. */
+    kind: "gates",
+    label: "gates",
+    note: "whether the tree builds, and who last saw it do so",
+    box: { w: 320, h: 200 },
+    min: { w: 200, h: 90 },
+    params: [
+      /* Two readings answering different questions. `state` is one line per
+         gate, red first — the wall glanced at, for "is anything broken".
+         `detail` opens the newest failure out with the tail of what it said,
+         which is the reading for a wall hung where you are actually working:
+         not "is anything broken" but "what is broken, and do I already know
+         why".
+
+         No `scope` knob, and here that is more than `billboard`'s reason. A
+         widget belongs to no project, *and* this record is keyed by tree rather
+         than by project — two cards on different worktrees of one project share
+         a project and share no files — so "this project" would be the wrong
+         question even if a widget had a referent for it. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "state", label: "one line per gate" },
+          { value: "detail", label: "the newest failure, opened out" },
+        ],
+        "state",
+      ),
+      /* And this one narrows rather than re-reads, `sink`'s shape. A gate nobody
+         has run is not a gate that passed, so what is drawn by default is
+         whatever has actually been observed; `red` cuts it to what is broken,
+         for a wall where this is a warning light rather than a status board. */
+      choice(
+        "showing",
+        "showing",
+        [
+          { value: "all", label: "every gate seen run" },
+          { value: "red", label: "only what is red" },
         ],
         "all",
       ),

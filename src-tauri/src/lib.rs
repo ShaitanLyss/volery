@@ -403,6 +403,7 @@ pub fn run() {
             store::open_gate_run,
             store::settle_gate_run,
             store::gate_runs,
+            store::gate_trees,
             joblog::job_output,
             quit::note_busy,
             quit::stay,
