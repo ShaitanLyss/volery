@@ -127,6 +127,45 @@ describe("folding librespot's events", () => {
     expect(s.since).toBeNull();
   });
 
+  /* The bug this guards, and it is the one a person actually reported: the
+     browser leg and the session leg were one phase, so the widget went on
+     saying "waiting for the browser…" through a `session.connect` that took
+     four minutes to fail — with the browser long since closed and the token
+     already in the vault. Two phases means the face cannot say the wrong one.
+     Measured 2026-08-28; see `.claude/rules/spotify.md`. */
+  test("the two legs of a sign-in are two phases", () => {
+    const linking = applyEvent(emptyState(), { kind: "linking" }, 0);
+    expect(linking.phase).toBe("linking");
+    expect(describeState(linking)).toBe("waiting for the browser…");
+
+    const opening = applyEvent(linking, { kind: "opening" }, 1000);
+    expect(opening.phase).toBe("opening");
+    expect(describeState(opening)).not.toBe(describeState(linking));
+
+    /* Neither is a session, so neither offers a transport. */
+    expect(canControl(linking)).toBe(false);
+    expect(canControl(opening)).toBe(false);
+  });
+
+  /* Both in-flight legs are cleared by an outcome rather than left standing,
+     which is what `spotify_start` now emits a `closed` for on every failure
+     path — a `linking` nothing ever clears is a face describing a sign-in that
+     stopped happening. */
+  test("a failed sign-in leaves neither leg on screen", () => {
+    const opening = applyEvent(
+      applyEvent(emptyState(), { kind: "linking" }, 0),
+      { kind: "opening" },
+      1000,
+    );
+    const dead = applyEvent(opening, { kind: "closed", fault: "the access points did not answer" }, 2000);
+    expect(dead.phase).toBe("fault");
+    expect(dead.fault).toBe("the access points did not answer");
+
+    const done = applyEvent(opening, { kind: "session", device: "volery" }, 2000);
+    expect(done.phase).toBe("idle");
+    expect(done.fault).toBeNull();
+  });
+
   test("a closed session takes the track with it", () => {
     /* A track left on screen under a dead player is a set of controls that do
        nothing, which is worse than an empty box. */

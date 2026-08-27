@@ -4383,6 +4383,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tiny_http",
+ "tokio",
  "ureq",
  "vergen",
  "windows 0.61.3",

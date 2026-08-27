@@ -197,6 +197,193 @@ reads as the app having forgotten it.
 Not the wall's own database — `store.rs` is an unencrypted SQLite file that `portage.rs`
 exports layouts out of, and a token in a column there travels with them.
 
+## Signing in, and the four minutes nobody could see
+
+Reported 2026-08-28, in the words that matter because they are the symptom:
+*"i clicked sign in, opened browser, i did sign in, now the page shows go back to your
+terminal, but the widget is still stuck on waiting for the browser."*
+
+Three separate things were wrong, and only the third is about Spotify at all. They are written
+out in the order they were found, because the order is the lesson: the visible complaint was
+the least important of them.
+
+### The refresh token rotates, and dropping it poisons the vault
+
+**Spotify's authorization-code-with-PKCE flow rotates the refresh token.** Every successful
+refresh answers with a *new* one and revokes the one that bought it. `spotify_link` stored the
+first correctly; `spotify_start` and `access_token` then each did their own refresh and each
+**threw the new credential away**. So the first refresh after a sign-in retired the only thing
+in the vault, and everything afterwards — a later `spotify_start`, a card's `records` search,
+the next launch — failed against a token Spotify had already killed.
+
+Probed by refreshing the stored credential by hand after one `spotify_start`:
+
+```text
+invalid_grant: Refresh token revoked
+```
+
+It presents as the app having forgotten your account, and the only way out was signing in
+again — **once per launch, for as long as it stood**. Worth noticing how well it hid: the
+failing call is the *second* one, so the sign-in always looked like it worked, and it did.
+
+`refresh_stored` is the fix and being *one* function is most of it. Three call sites each
+holding a copy of "refresh the stored credential" is three places to forget the rotation, and
+two of them had. The write back to the vault is best-effort on purpose: a rotation we could
+not store is a credential that will fail *next* time, and refusing to hand back a token that
+works right now would make that a failure this time as well.
+
+The general shape, which is not about Spotify: **when an exchange hands you a replacement for
+the thing you spent, storing the replacement is part of spending it.** A refresh that reads the
+vault and does not write it is half a transaction, and it type-checks.
+
+### librespot's own bound is four minutes of silence
+
+`Session::connect` and `Spirc::new` were both unbounded, and librespot's internal ceiling is
+nowhere near tight enough to be a reading on a wall. Its `connection::connect` looks like it
+has a timeout and does not:
+
+```rust
+tokio::time::timeout(TIMEOUT, {
+    let socket = crate::socket::connect(host, port, proxy).await?;  // <-- outside it
+    handshake(socket)
+}).await?
+```
+
+The block is evaluated to *produce* the future `timeout` wraps, so the TCP connect is awaited
+before the timeout exists. Only `handshake` is covered. Every connect attempt therefore costs
+the OS its full SYN timeout — 21 seconds here — and `Session::connect` will try six access
+points at two attempts each. Measured 2026-08-28: **253 seconds** to reach *"Tried too many
+access points"*.
+
+So the card was not hung. It was working, silently, for four minutes, and there was no way to
+tell those apart from outside. `CONNECT_BUDGET` is 30s around both calls: generous for a
+reachable access point, which answers in well under a second, and short enough that the answer
+arrives while somebody is still looking at the widget. The two calls are the only reason this
+crate has a direct `tokio` dependency, and its `Cargo.toml` entry says so.
+
+### A failure has to be a state, not only a reply
+
+`spotify_start` returned its failures as `Err` strings and emitted nothing. A returned string
+reaches exactly one caller — whoever pressed the button — while the *wall* has however many
+faces on it and a `Linking` still sitting in the replay. So every other widget, and any face
+that mounted during those four minutes, went on drawing a sign-in that had already failed.
+
+Both commands now emit `Closed { fault }` on every failure path as well as returning it. **A
+reply and a state are different obligations and this subsystem owes both**; the same split the
+event pipeline makes everywhere else.
+
+### Three legs were drawn as one, which is the complaint as written
+
+`deck.link()` awaits three things — the browser, the session, the status read — and `busy`
+covered all of them, with one label: `"waiting for the browser…"`. So the reported symptom was
+literally true and completely misleading. The browser leg had finished six minutes earlier;
+the refresh token was already in the vault, written at the moment the page said *go back to
+your terminal*.
+
+`Wire::Opening` is the fix, and it is a wire event rather than a field on `Deck` on purpose: a
+face that never pressed the button follows along too, which is the whole argument for the
+replay in the first place. `Replay::note` keeps `Linking`/`Opening`/`Session` in one slot,
+because they are the mutually exclusive things a session can be doing and `Closed` resets the
+struct — four states, one slot. The button's own label is now `"signing in…"`, and it is only
+on screen for the blink before the first event arrives.
+
+The rule worth carrying: **a label that guesses which leg is running is a label that is wrong
+for the duration of the longest one.** If a verb has legs, the legs are states.
+
+**The browser leg is still deliberately unbounded**, because the thing it waits on is a
+person. The cost is stated where it lives, above `spotify_link`: abandon the sign-in and
+`busy` stays set for the life of the process, since a blocking accept cannot be cancelled and
+nothing else can take port 5588 back. Everything after that leg is bounded, which is where the
+four minutes actually were.
+
+## It cannot reach Spotify from this machine, and the cause is one line of librespot
+
+This is the part that no amount of fixing the widget makes work, so it is stated plainly.
+Probed 2026-08-28 with `.scratch/spotprobe`, which does its own browser leg and then runs the
+same `session.connect` with `RUST_LOG` wired up:
+
+```text
+INFO  Connecting to AP "ap-gae2.spotify.com:4070"
+DEBUG Connection to "ap-gae2.spotify.com:4070" failed: ... (os error 10060)
+...six access points, two attempts each, ports 4070, 443 and 80...
+ERROR Tried too many access points
+--- FAILED after 253.4s
+```
+
+`10060` is `WSAETIMEDOUT`. The obvious reading is a firewall on 4070 — Spotify's preferred
+access-point port, and the one thing `SessionConfig::ap_port` exists to route around; the
+comment in librespot's own `apresolve.rs` even says *"firewalls only allow certain ports (e.g.
+443 and not 4070)"*. **That reading is wrong, and `ap_port: Some(443)` was probed as a
+variant and failed identically** — 211 seconds, every access point, port 443 only. Do not
+reach for it again.
+
+The cause is the address family:
+
+| | |
+|---|---|
+| `getaddrinfo("ap-gae2.spotify.com")` returns | `2405:6e00:64::68c7:f1ca`, **then** `104.199.241.202` |
+| connect to the IPv6 literal, port 4070 | 21086 ms, then fails |
+| connect to the IPv4 literal, port 4070 | **411 ms, open** |
+
+This machine's Wi-Fi carries a default IPv6 route via a link-local next hop — so the OS
+believes IPv6 works and will not fail fast — and nothing on the other side of it answers. And
+librespot's `socket.rs` is:
+
+```rust
+let socket_addr = (host, port).to_socket_addrs()?.next().ok_or_else(...)?;
+TcpStream::connect(&socket_addr).await?
+```
+
+**`.next()` — the first address, and never any of the others.** No Happy Eyeballs, no
+iteration, no fallback. So every access point resolves to a black hole and times out, on every
+port, and the IPv4 address sitting second in the same list is never tried.
+
+That is upstream's to fix and there is no supported way round it from here. `SessionConfig` has
+six fields and the only lever among them is `proxy`, which speaks HTTP `CONNECT` — so an
+in-app workaround means running our own listener whose whole job is to resolve IPv4 first, for
+one broken network. It has not been built. What has been built is a failure that names the
+right suspect: *"the account and the sign-in are fine, so this is the route to them"*.
+
+Three things a future reader should not have to rediscover:
+
+- **A raw port check from a different resolver lies.** `TcpClient.BeginConnect(host, port)` in
+  .NET reported `ap-gew1.spotify.com:4070` as **open in 330 ms** while librespot was timing out
+  against the same host and port, because .NET tries every address and librespot tries one.
+  That single measurement sent this investigation after a firewall for half an hour.
+- **`ap-gue1.spotify.com:443` answered `early eof`** rather than timing out — one access point
+  whose IPv4 came first, reaching a middlebox that accepts the TCP connection and then kills a
+  protocol it does not recognise. So there is probably a *second* obstacle behind this one, and
+  fixing the address family may not be the end of it.
+- **It may simply work on another network.** The fault is this router's IPv6, not the app's, so
+  nothing here should be hard-coded around it.
+
+### The probe, and why it is a scratch crate
+
+`.scratch/spotprobe` — uncommitted, per `build.md`: `cargo test` does not run on this machine
+and **no exe built from the main crate runs on the gnu target at all** (`0xC0000139` before
+`main`), so a throwaway crate is the only runnable Rust probe here. It grew a `main` from the
+compile-only check that was already there.
+
+```bash
+cd .scratch/spotprobe
+export PATH="/c/cygwin/bin:$PATH" RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu \
+  CC_x86_64_pc_windows_gnu=/c/cygwin/bin/x86_64-w64-mingw32-gcc.exe \
+  CXX_x86_64_pc_windows_gnu=/c/cygwin/bin/x86_64-w64-mingw32-g++.exe \
+  AR_x86_64_pc_windows_gnu=/c/cygwin/bin/x86_64-w64-mingw32-ar.exe
+cargo build --bin spotprobe
+RUST_LOG=librespot=debug ./target/debug/spotprobe.exe           # reads the vault
+RUST_LOG=librespot=debug ./target/debug/spotprobe.exe --link    # its own browser leg
+```
+
+`--link` exists because of the rotation bug above: reading the vault after one `spotify_start`
+gets a revoked token and answers a question about the wrong credential.
+
+**The reason a probe was needed at all is that the app installs no `log` sink.** librespot said
+*"Connecting to AP …"* and *"Tried too many access points"* on every one of those four minutes,
+with `log` macros, into nothing — so the whole of the diagnosis existed at runtime and was
+discarded, and recovering it took a scratch crate and two browser sign-ins. Anything here that
+ever wants to know why Spotify is unhappy pays that again until a sink exists. See the sink.
+
 ## A card may choose what plays, and deliberately cannot drive it
 
 The user asked for this in one line — *"add mcp tools for agents to control the volery

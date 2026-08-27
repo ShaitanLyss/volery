@@ -110,6 +110,14 @@ pub enum Wire {
     Closed { fault: Option<String> },
     #[serde(rename = "linking")]
     Linking,
+    /// Signing in is *done* and the receiver is coming up. A separate state
+    /// from `Linking` because the two were drawn as one, and the one that
+    /// reported this bug was reading "waiting for the browser…" off a widget
+    /// whose browser leg had finished six minutes earlier. Three legs under one
+    /// word is a face that says something false for as long as the longest of
+    /// them takes.
+    #[serde(rename = "opening")]
+    Opening,
     #[serde(rename = "track")]
     Track { track: TrackOut },
     #[serde(rename = "loading")]
@@ -179,7 +187,14 @@ impl Replay {
 
     fn note(&mut self, ev: &Wire) {
         match ev {
-            Wire::Session { .. } => self.session = Some(ev.clone()),
+            /* One slot for the four things the session can be doing, because
+               they are mutually exclusive and a face that mounts halfway
+               through a sign-in should draw the sign-in rather than "not signed
+               in" — the same argument the replay exists for at all. `Closed`
+               resets the whole struct below, which is the fourth. */
+            Wire::Session { .. } | Wire::Linking | Wire::Opening => {
+                self.session = Some(ev.clone())
+            }
             Wire::Track { .. } => self.track = Some(ev.clone()),
             Wire::Playing { .. } | Wire::Paused { .. } | Wire::Loading { .. } => {
                 self.transition = Some(ev.clone())
@@ -315,9 +330,20 @@ fn narrow(ev: PlayerEvent) -> Option<Wire> {
 /// loopback server for the redirect, which is the same shape `signin.rs` uses
 /// for Claude — and the reason neither of them needs a terminal.
 ///
-/// What is kept afterwards is the **refresh** token, and only that: it is the
-/// long-lived half, and the access token it buys is good for an hour and is
-/// never written down.
+/// What is stored is the **refresh** token: the long-lived half, and the only
+/// one worth keeping across a launch. The access token it buys is good for an
+/// hour and is held in `TOKEN` for as long as it lasts, because `records` needs
+/// one at search time — see that static, whose comment corrects the "never
+/// written down" this one used to claim.
+///
+/// **This leg is deliberately unbounded**, because the thing it waits on is a
+/// person: librespot parks a thread on the loopback listener until the redirect
+/// arrives, and a browser tab somebody has not got to yet is not a failure.
+/// The cost is that abandoning the sign-in leaves the deck's `busy` set for the
+/// life of the process, since there is nothing to cancel a blocking accept with
+/// and nothing that could take port 5588 back. Everything *after* this leg is
+/// bounded — see `CONNECT_BUDGET` — which is where the four unexplained
+/// minutes actually were.
 #[tauri::command]
 pub async fn spotify_link(app: AppHandle) -> Result<(), String> {
     {
@@ -333,9 +359,30 @@ pub async fn spotify_link(app: AppHandle) -> Result<(), String> {
             .get_access_token()
             .map_err(|e| format!("spotify would not sign you in: {e}"))
     })
-    .await??;
+    .await?;
+
+    /* Emitted as well as returned, for the reason `spotify_start` gives at
+       length: a `Linking` left standing in the replay is every *other* face on
+       the wall drawing a sign-in that has already failed. */
+    let token = match token {
+        Err(fault) => {
+            let state = app.state::<Spotify>();
+            emit(
+                &app,
+                &state,
+                Wire::Closed {
+                    fault: Some(fault.clone()),
+                },
+            );
+            return Err(fault);
+        }
+        Ok(t) => t,
+    };
 
     crate::vault::store_at(VAULT_TARGET, VAULT_WHO, &token.refresh_token)?;
+    /* The browser leg has just paid for a token exchange; `records` wants
+       exactly this string. Same bargain `refresh_stored` strikes one leg on. */
+    remember(&token.access_token, token.expires_at);
     Ok(())
 }
 
@@ -361,38 +408,76 @@ pub async fn spotify_forget(app: AppHandle) -> Result<(), String> {
 /// events at the front end.
 #[tauri::command]
 pub async fn spotify_start(app: AppHandle, name: Option<String>) -> Result<(), String> {
-    if app.state::<Spotify>().live.lock().unwrap().is_some() {
-        return Ok(()); /* already up; asking twice is not an error */
+    /* Every failure below is emitted as well as returned, and the wrapper is
+       the whole of why: a `?` here reaches only whoever pressed the button,
+       while the *wall* has however many faces on it and a `Linking` sitting in
+       the replay. So a card that never asked, and a widget hung up after the
+       press, both went on drawing "waiting for the browser…" for a sign-in that
+       had already failed. `Closed { fault }` is a state; a returned string is a
+       reply. This subsystem owes both. */
+    let outcome = start_inner(&app, name).await;
+    if let Err(fault) = &outcome {
+        let state = app.state::<Spotify>();
+        emit(
+            &app,
+            &state,
+            Wire::Closed {
+                fault: Some(fault.clone()),
+            },
+        );
     }
+    outcome
+}
 
-    let refresh = crate::vault::read_at(VAULT_TARGET)
-        .ok_or_else(|| "no spotify account is linked".to_string())?;
+/// How long the access-point leg gets before it is called a failure.
+///
+/// librespot bounds itself, but nowhere near tightly enough to be a reading on
+/// a wall: six access points, two attempts each, and only the *handshake* is
+/// inside its own 5s timeout — the TCP connect is not, so every attempt costs
+/// the OS its full SYN timeout. Measured 2026-08-28 on this machine, with a
+/// black-holed route: **253 seconds** to reach "Tried too many access points".
+/// Four minutes of a card looking frozen is not a diagnosis, and the honest
+/// answer arrives long before the exhaustive one — a reachable access point
+/// answers in well under a second.
+const CONNECT_BUDGET: Duration = Duration::from_secs(30);
+
+async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String> {
+    {
+        let state = app.state::<Spotify>();
+        if state.live.lock().unwrap().is_some() {
+            return Ok(()); /* already up; asking twice is not an error */
+        }
+        emit(app, &state, Wire::Opening);
+    }
 
     /* The refresh is a network round trip against accounts.spotify.com. Off the
        main thread for the reason every outbound call in this app is: blocking
-       there stops the whole wall being painted, not just this command. */
-    let token = crate::off_main(move || {
-        librespot_oauth::OAuthClientBuilder::new(CLIENT_ID, REDIRECT_URI, SCOPES.to_vec())
-            .build()
-            .map_err(|e| format!("could not reach spotify: {e}"))?
-            .refresh_token(&refresh)
-            .map_err(|e| format!("spotify would not renew the sign-in: {e}"))
-    })
-    .await??;
+       there stops the whole wall being painted, not just this command.
+       `refresh_stored` is also what keeps the rotated credential — see its own
+       comment, and the bug it records. */
+    let token = crate::off_main(refresh_stored).await??;
 
     let device = name.unwrap_or_else(|| "volery".to_string());
     let session = Session::new(SessionConfig::default(), None);
-    /* Keep the token before the session eats it. This exchange has just paid
-       for a round trip against accounts.spotify.com and `records` needs exactly
-       this string, so throwing it away here only to buy another one a moment
-       later is a network call nobody needs. */
-    remember(&token.access_token, token.expires_at);
     let credentials = Credentials::with_access_token(token.access_token);
 
-    session
-        .connect(credentials.clone(), false)
-        .await
-        .map_err(|e| format!("spotify would not open a session: {e}"))?;
+    /* Bounded, because librespot's own bound is four minutes of silence. The
+       message names both candidates rather than picking one: the rule for this
+       subsystem says an outage is more likely to be Spotify moving than a bug
+       here, and the one time it was measured it was neither — it was this
+       machine's own route to them. */
+    match tokio::time::timeout(CONNECT_BUDGET, session.connect(credentials.clone(), false)).await {
+        Err(_) => {
+            return Err(format!(
+                "spotify's access points did not answer within {}s — the account and the \
+                 sign-in are fine, so this is the route to them: a firewall, a proxy, or \
+                 an address family that goes nowhere",
+                CONNECT_BUDGET.as_secs()
+            ));
+        }
+        Ok(Err(e)) => return Err(format!("spotify would not open a session: {e}")),
+        Ok(Ok(())) => {}
+    }
 
     let backend = audio_backend::find(None).ok_or("no audio backend was built in")?;
     let mixer_fn = mixer::find(None).ok_or("no mixer was built in")?;
@@ -415,9 +500,24 @@ pub async fn spotify_start(app: AppHandle, name: Option<String>) -> Result<(), S
         ..Default::default()
     };
 
-    let (spirc, task) = Spirc::new(connect, session, credentials, player, mixer.clone())
-        .await
-        .map_err(|e| format!("spotify would not accept this device: {e}"))?;
+    /* Bounded on the same argument as the connect above: this reaches the
+       network too — a client token and the dealer websocket — and librespot
+       puts no ceiling on it either. A session that opened and then could not
+       register a device is a different failure and says so. */
+    let (spirc, task) = match tokio::time::timeout(
+        CONNECT_BUDGET,
+        Spirc::new(connect, session, credentials, player, mixer.clone()),
+    )
+    .await
+    {
+        Err(_) => {
+            return Err(format!(
+                "the session opened but spotify did not accept this device within {}s",
+                CONNECT_BUDGET.as_secs()
+            ));
+        }
+        Ok(r) => r.map_err(|e| format!("spotify would not accept this device: {e}"))?,
+    };
 
     tauri::async_runtime::spawn(task);
 
@@ -440,7 +540,7 @@ pub async fn spotify_start(app: AppHandle, name: Option<String>) -> Result<(), S
             mixer,
             device: device.clone(),
         });
-        emit(&app, &state, Wire::Session { device });
+        emit(app, &state, Wire::Session { device });
     }
     Ok(())
 }
@@ -491,9 +591,10 @@ pub fn spotify_status(state: State<'_, Spotify>) -> Status {
 /// The access token, and the moment it stops working.
 ///
 /// `spotify_link` and `spotify_start` both mint one of these and both used to
-/// drop it — the comment above `spotify_link` still says the access token "is
-/// never written down", and that was true when the only thing needing one was a
-/// session. A catalogue search needs one *at search time*, so it is kept.
+/// drop it, on the argument that the access token "is never written down" —
+/// which was true while the only thing needing one was a session. A catalogue
+/// search needs one *at search time*, so it is kept, and `spotify_link`'s own
+/// comment no longer claims otherwise.
 ///
 /// A `static` rather than a field on `Spotify` because it outlives any session:
 /// a card may search with the player stopped, which is a question about Spotify
@@ -511,6 +612,48 @@ fn remember(token: &str, expires_at: Instant) {
     if let Ok(mut held) = TOKEN.lock() {
         *held = Some((token.to_string(), expires_at));
     }
+}
+
+/// Spend the stored credential for a working access token — and **put the
+/// credential Spotify hands back in its place**, which is the whole reason this
+/// is one function rather than the three copies it replaces.
+///
+/// Spotify's authorization-code-with-PKCE flow **rotates the refresh token**:
+/// every successful refresh answers with a *new* one and revokes the one that
+/// bought it. Three call sites here each did the refresh and each dropped the
+/// new token — so the first refresh of a session poisoned the vault, and
+/// everything afterwards failed on a credential Spotify had already retired.
+/// Probed 2026-08-28 by refreshing the stored token by hand after one
+/// `spotify_start`: `invalid_grant: Refresh token revoked`. It reads as the app
+/// having forgotten the account, and the only way out was signing in again —
+/// once per launch, for as long as it stood.
+///
+/// The write is best-effort on purpose. A rotation we could not store is a
+/// credential that will fail *next* time, and refusing to hand back a token
+/// that works right now would turn that into a failure *this* time as well.
+///
+/// Blocking — a round trip against accounts.spotify.com. Callers on the main
+/// thread or a tokio worker owe it an `off_main`; see `lib.rs`.
+fn refresh_stored() -> Result<librespot_oauth::OAuthToken, String> {
+    let refresh = crate::vault::read_at(VAULT_TARGET).ok_or_else(|| {
+        "no spotify account is linked — sign in from the widget on the wall".to_string()
+    })?;
+
+    let token = librespot_oauth::OAuthClientBuilder::new(CLIENT_ID, REDIRECT_URI, SCOPES.to_vec())
+        .build()
+        .map_err(|e| format!("could not reach spotify: {e}"))?
+        .refresh_token(&refresh)
+        .map_err(|e| format!("spotify would not renew the sign-in: {e}"))?;
+
+    /* `build_token` fills this with "" when the response carried none, and its
+       own comment says Spotify always sends one — so an empty string is a
+       Spotify that changed rather than a rotation to store. */
+    if !token.refresh_token.is_empty() && token.refresh_token != refresh {
+        let _ = crate::vault::store_at(VAULT_TARGET, VAULT_WHO, &token.refresh_token);
+    }
+
+    remember(&token.access_token, token.expires_at);
+    Ok(token)
 }
 
 fn forget_token() {
@@ -536,20 +679,19 @@ pub(crate) fn access_token() -> Result<String, String> {
         }
     }
 
-    let refresh = crate::vault::read_at(VAULT_TARGET).ok_or_else(|| {
-        "no spotify account is linked — the user links one from the wall, and \
-         linking is not something a card can do"
-            .to_string()
-    })?;
+    /* Asked before refreshing, only so the wording is right: `refresh_stored`
+       is shared with the wall's own face, whose reader can act on "sign in from
+       the widget", and a card's cannot. Linking is not something a card can do,
+       and a refusal that does not say so sends it looking for a tool. */
+    if !crate::vault::held_at(VAULT_TARGET) {
+        return Err("no spotify account is linked — the user links one from the wall, and \
+                    linking is not something a card can do"
+            .to_string());
+    }
 
-    let token = librespot_oauth::OAuthClientBuilder::new(CLIENT_ID, REDIRECT_URI, SCOPES.to_vec())
-        .build()
-        .map_err(|e| format!("could not reach spotify: {e}"))?
-        .refresh_token(&refresh)
-        .map_err(|e| format!("spotify would not renew the sign-in: {e}"))?;
-
-    remember(&token.access_token, token.expires_at);
-    Ok(token.access_token)
+    /* `refresh_stored` writes the rotated credential back and remembers the
+       access token, so there is nothing left here but handing it over. */
+    Ok(refresh_stored()?.access_token)
 }
 
 /// Whether audio is actually coming out of the wall.

@@ -100,6 +100,13 @@ librespot-connect = "0.8"
 # then unify into one build script and do not match. The error names no Spotify
 # crate at all, which is what makes it worth this comment. Re-pin with
 # `cargo update -p vergen --precise 9.0.6`.
+# Only for `time::timeout`, and only around librespot. `tauri::async_runtime` is
+# a tokio runtime but re-exports no timer, and the two calls into librespot that
+# reach the network — `Session::connect` and `Spirc::new` — are both unbounded:
+# librespot's own `connection::connect` wraps a 5s timeout around the *handshake*
+# and constructs the TCP connect outside it, so every attempt costs the OS its
+# full SYN timeout. Measured 2026-08-28: 253s to exhaust six access points.
+tokio = { version = "1", features = ["time"] }
 
 [target.'cfg(windows)'.dependencies]
 # Job objects. A dev server is `npm run dev` spawning node spawning more node;

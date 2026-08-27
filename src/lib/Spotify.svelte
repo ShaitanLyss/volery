@@ -78,8 +78,15 @@
     <!-- The one case with nothing to report and something to offer. -->
     <div class="empty">
       <p class="say">not signed in</p>
+      <!-- Not "waiting for the browser…": this branch is only drawn *before*
+           the first event of the chain arrives, and `spotify.rs` emits
+           `linking` the moment the browser leg starts — at which point the
+           face leaves this branch and `describe` names the leg it is really
+           on. A label that guessed which leg was running is what put this
+           widget on "waiting for the browser…" long after the browser was
+           done with. -->
       <button class="link" onclick={() => deck.link()} disabled={deck.busy}>
-        {deck.busy ? "waiting for the browser…" : "sign in to spotify"}
+        {deck.busy ? "signing in…" : "sign in to spotify"}
       </button>
     </div>
   {:else}

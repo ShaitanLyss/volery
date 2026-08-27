@@ -107,7 +107,19 @@ export class Deck {
 
   /* ── the verbs ───────────────────────────────────────────────────────────*/
 
-  /** Sign in. Opens the browser; the wait is a person, so it can be a while. */
+  /**
+   * Sign in, then bring the receiver up. Two legs, and the face is told which
+   * one it is on by `spotify.rs` rather than by this class: `spotify_link`
+   * emits `linking` and `spotify_start` emits `opening`, so a face that never
+   * pressed the button follows along too. That is the fix for the bug this
+   * chain caused — `busy` covered all three awaits and the only label it had
+   * was "waiting for the browser…", which a widget went on showing for the four
+   * minutes the *session* leg took to fail.
+   *
+   * The browser leg is unbounded because the wait is a person; everything after
+   * it is bounded in `spotify.rs`, so `busy` can no longer be held for the life
+   * of the process by a network that is not answering.
+   */
   async link() {
     await this.#guard(async () => {
       await invoke("spotify_link");

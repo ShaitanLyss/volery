@@ -18,7 +18,8 @@
  */
 export type SpotifyPhase =
   | "off" /* no session; nothing has been signed in, or it was signed out */
-  | "linking" /* a sign-in is in flight */
+  | "linking" /* the browser leg: waiting on a person */
+  | "opening" /* signed in; the receiver is coming up */
   | "idle" /* signed in, receiver up, nothing playing */
   | "loading" /* a track is on its way */
   | "playing"
@@ -75,6 +76,7 @@ export type SpotifyEvent =
   | { kind: "session"; device: string }
   | { kind: "closed"; fault?: string | null }
   | { kind: "linking" }
+  | { kind: "opening" }
   | { kind: "track"; track: SpotifyTrack }
   | { kind: "loading"; positionMs: number }
   | { kind: "playing"; positionMs: number }
@@ -125,6 +127,13 @@ export function applyEvent(
 
     case "linking":
       return { ...state, phase: "linking", fault: null }
+
+    case "opening":
+      /* The leg after the browser. Kept apart from `linking` because the two
+         were one phase and the face therefore went on saying "waiting for the
+         browser…" through a session start that took four minutes to fail —
+         which is the bug this state exists to make undrawable. */
+      return { ...state, phase: "opening", fault: null }
 
     case "closed":
       /* Everything about what was playing goes with the session: a track left
@@ -281,6 +290,8 @@ export function describe(state: SpotifyState): string {
       return "not signed in"
     case "linking":
       return "waiting for the browser…"
+    case "opening":
+      return "signed in — bringing the receiver up…"
     case "idle":
       return `${state.device} — ready, nothing playing`
     case "loading":
