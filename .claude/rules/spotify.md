@@ -4,6 +4,7 @@ paths:
   - "src/lib/spotify.svelte.ts"
   - "src/lib/Spotify.svelte"
   - "src-tauri/src/spotify.rs"
+  - "src-tauri/src/selector.rs"
   - "test/spotify.test.ts"
   - "src-tauri/Cargo.toml"
 ---
@@ -195,3 +196,124 @@ reads as the app having forgotten it.
 
 Not the wall's own database — `store.rs` is an unencrypted SQLite file that `portage.rs`
 exports layouts out of, and a token in a column there travels with them.
+
+## A card may choose what plays, and deliberately cannot drive it
+
+The user asked for this in one line — *"add mcp tools for agents to control the volery
+spotify, ability to select music. not volume, not play/pause"* — and **the exclusions are the
+design.** Read them as: the user keeps control of their own listening. An agent can put
+something on; it cannot silence them, cannot interrupt them mid-track, and cannot change how
+loud their room is.
+
+`src-tauri/src/selector.rs` is that, and it is named for the role rather than the mechanism:
+in a sound system the *selector* is the person who picks the records. Two tools.
+
+    records     search the catalogue. reading, changes nothing anybody hears.
+    put_on      load a selection. the only act, and it refuses while music is on.
+
+**The irony worth knowing before you edit here: the transport is the part that already
+works.** `spotify_command(verb, value)` has driven play, pause, volume, repeat and seek since
+the integration landed. What did not exist was the half the user actually wanted — nothing
+searched Spotify's catalogue and nothing could load a chosen record. So this was new work in
+the opposite direction from where the code already was, and the temptation while writing it is
+to expose the nine verbs sitting right there. Do not. If a future tool in this file wants one
+"for completeness", that is the instinct the scoping exists to refuse.
+
+### The load leg needs no Web API, which is not the obvious answer
+
+Volery is a librespot Spirc connect device, so the natural reading is that selecting music
+means the Web API's own remote control — `PUT /v1/me/player/play` with a `device_id` and
+`uris`/`context_uri`. It does not. **`Spirc::load` is exposed by `librespot-connect` 0.8** and
+takes the same two shapes that endpoint does; the crate's own doc comments say so outright:
+`LoadRequest::from_context_uri` is the endpoint's `context_uri`, `from_tracks` is its `uris`.
+So a load is a local call on a handle this app is already holding — no second network round
+trip, no device-id juggling, and no Premium requirement *for the load itself*.
+
+**Search is the other way round, and there is no local option at all.** `SpClient` has
+`get_metadata`, `get_context`, `get_playlist`, `get_radio_for_track` and `get_rootlist` — and
+no catalogue search of any kind. So `records` is a real `GET /v1/search`, and that is the only
+reason this subsystem has an HTTP path. It reuses `forge::agent` rather than building a
+client, because that agent exists for a reason about *the network* rather than about Azure
+DevOps: this network intercepts TLS, so it is built with `native-certs`, and its own comment
+argues that duplicating it per provider means two places to be wrong about a corporate proxy.
+Spotify is the third caller and inherits the requirement rather than escaping it.
+
+### The one judgement call, and what it costs
+
+`start_playing` is a **field** on `LoadRequestOptions`, defaulting to false — so loading does
+not inherently start playback, and the user's exclusion is honourable exactly as written. That
+is the good news and it is not the whole story: **a load replaces the current context and
+track**, so it is not transport-neutral either. Dropping a record onto a spinning deck takes
+off whatever was playing, `start_playing: false` or not.
+
+librespot 0.8 offers no way out. `AddToQueue` appears in `spirc.rs` but only as an *inbound*
+dealer command — something a Spotify client tells *us* — and there is no `pub fn add_to_queue`
+on `Spirc`. So "queue it after this track", which would have satisfied both halves, is simply
+not available to build on. Do not go looking again.
+
+So the rule is: **refuse while something is actually playing, and otherwise load and start.**
+Both halves are one argument.
+
+- If the room is silent, putting something on interrupts nothing, and *"put something on"*
+  ought to mean music starts — otherwise the tool is a no-op an agent cannot distinguish from
+  success, which is the worst of both.
+- If the room is not silent, the user is listening to something and an agent does not get to
+  take it off. The refusal **names the track it is protecting** and points at `ask_user`,
+  which keeps the person in the loop by design rather than by hoping.
+
+`refuse_while_playing` is pure and asserted, because on this wall **a refusal is the entire
+guard** — there is nothing downstream to catch an agent that talks its way past one. Same
+argument the billboard's refusals get, and `no_schema_offers_a_transport_verb` additionally
+refuses to let either tool description grow a transport argument.
+
+**The cost, written down rather than left to be discovered:** a *paused* track counts as
+silent, so a load loses the position the user had paused at. That is deliberate — treating
+paused as busy would make the tool refuse almost always, since a device that has ever played
+sits paused for the rest of the day. If it turns out to be the wrong trade, it is the
+`start_playing` value and the `audible` predicate, and nothing else.
+
+### Whether audio is coming out is folded, not asked
+
+`audible` reads `Replay::transition`, which the wall is already keeping, and `Wire::Playing` is
+the only one of the three states that makes a noise. That is `CLAUDE.md`'s standing rule
+applied rather than restated — when the thing you care about emits nothing, fold an event that
+already exists near it — and it is why this whole boundary costs no new state, no poller and
+no round trip. Anything here proposing to *ask* librespot what it is doing owes that argument.
+
+### The access token is now kept, and the comment above `spotify_link` predates it
+
+That comment still says the access token "is never written down". It was true while the only
+thing needing one was a session. A catalogue search needs one *at search time*, so `TOKEN` in
+`spotify.rs` holds it with its `expires_at`, and both `spotify_link` and `spotify_start`
+populate it where the round trip has already been paid for rather than buying a second one a
+moment later.
+
+It is a `static` rather than a field on `Spotify` **because it outlives any session** — a card
+may search with the player stopped, which is a question about the catalogue and not about the
+device. Hanging it off the session would have made `records` answer *"not running"*, which is
+not the truth about a search. A minute of skew, so a token cannot expire between the check
+that accepted it and the request that used it. `spotify_forget` clears it, on the same
+argument the file already makes for the session: a forgotten account whose token still answers
+a search is the app disagreeing with itself.
+
+### A fourth unproven leg, which `4951f398` does not list
+
+Sink `4951f398` records that the integration has never played audio and names three unproven
+legs: the OAuth flow, the token refresh, and playback. **There is a fourth, and it is specific
+to `records`.**
+
+Volery signs in with **librespot's borrowed client id** — Spotify's own desktop one, which is
+how it reaches the `streaming` scope no registered app is granted. Whether tokens minted from
+that client id are accepted by `api.spotify.com/v1/search` is **untested**. It is the one leg
+that would sink the search half alone while leaving `put_on` working, so `fetch_search`
+answers a 403 by saying exactly that rather than reporting an HTTP code — a card that hits it
+should learn what it means rather than go looking in its own arguments.
+
+### Running these tests
+
+`cargo test` cannot run on this machine, and `check-gnu.sh --profile test` only *typechecks*
+the assertions, which reads exactly like a green test run without being one. `bun
+tools/lift-selector.ts` lifts the pure half into a throwaway and actually executes it — 26
+assertions. It regenerates from `selector.rs` every run and keeps nothing, because a copy that
+can go stale will, and it goes on passing while it does. Run it *and* `--profile test`: the
+lift proves the bodies, and only the in-place check proves the paths.
