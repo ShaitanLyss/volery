@@ -74,7 +74,11 @@
     if (!s) return;
     /* Posted to the whole wall, because a notice you write by hand is not
        standing in any one project — you are. */
-    await board.post(s, bodyText.trim() || s, [], null);
+    /* Kept if it did not land. A notice over the caps is refused rather than
+       clipped — see `board.rs::clip` for why yours is and a card's is not —
+       and clearing the field on the way to a fault would lose the only copy
+       of what you wrote to a length limit. `board.fault` says what was over. */
+    if (!(await board.post(s, bodyText.trim() || s, [], null))) return;
     subject = "";
     bodyText = "";
     drafting = false;

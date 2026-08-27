@@ -94,13 +94,84 @@ one path two ways inside a single turn.
 today, but the naive recursion is exponential on a pattern like `**a**a**a**` and this runs on
 every write every card makes.
 
-### Caps
+### Caps, and what a cap does when it is reached
 
-Four notices per card, **refused rather than rotated** — an agent whose oldest notice was
-silently dropped would go on believing the wall had been told. 120 characters of subject, 1200
-of body, 8 globs. Posting the same subject twice **replaces** rather than adding, which is what
-keeps an agent that re-posts once a turn from papering the board with one sentence, and is also
-how a notice says it is still true (`touched_at` moves, so `stale` resets).
+Two numbers, not one: **eight notices per card, of which at most four may carry no `paths`.**
+120 characters of subject, 2400 of body, 8 globs. Posting the same subject twice **replaces**
+rather than adding — which is what keeps an agent that re-posts once a turn from papering the
+board with one sentence, is how a notice says it is still true (`touched_at` moves, so `stale`
+resets), and costs nothing against either cap.
+
+**Why the cap had to be split.** It was one number — four — on the argument that four is more
+than any honest use and few enough that the board stays a page. The second half of that was
+never true: the cap is per *card*, so what bounds the board's length is how many cards are
+live. What it actually buys is that one card cannot paper the board, and eight does that as
+well as four.
+
+What it could not do with one number is price two different objects. A notice with **no**
+`paths` is pure broadcast: every card that reads the board reads it, and it reaches nobody who
+did not think to look. That is what four was written for and four is still right for it. A
+notice **carrying** `paths` is a different thing already — `on_touch` serves it to the card
+writing a covered file and to nobody else, so its cost falls on the one agent it was written
+for. Those are numerous, short-lived and mechanical, and a card coordinating a nine-way split
+legitimately wants more than four of them. Pricing them together squeezed out the useful one.
+
+### A refusal is the whole of the guard here
+
+This is the part worth carrying past this file. `relay.rs` states the rule where `MAX_HOPS`
+used to be: **a refusal must carry its reasoning and a way forward, because an agent told only
+"no" will try a different phrasing of the same message.** A bare quota message is the
+degenerate case — it does not even offer a different phrasing, so what the agent does instead
+is decide the announcement was optional.
+
+And that is worse here than almost anywhere else, because of an asymmetry that is easy to miss.
+A `PreToolUse` deny stops the tool call. **`post` refusing stops an *announcement about* a call
+the agent then makes anyway** — the notice and the edit are two separate acts and only one of
+them was refused. There is nothing downstream to catch it.
+
+Paid for on 2026-08-27: a card claimed `.claude/rules/hooks.md`, was refused for the
+four-notice cap, judged the work small and carried on unclaimed. A sibling committed that file
+minutes later — with an explicit pathspec, which does not help, since `git commit -- <path>`
+commits the *working-tree* content of that path — and took a hundred lines of somebody else's
+work under a message about something else. **In a shared tree the board claim is not
+decoration; it is the only thing standing between two cards and a mixed commit**, and the
+refusal now says exactly that, names the files left unguarded, and lists the caller's own
+notices likeliest-finished-first so `unpost` can be called without a `board` read first.
+
+The refusal for running out of *bare* slots spends its words differently: it points at `paths`,
+because an agent that hits it is one paragraph from the mechanism that actually reaches, and
+because that is the only form of claim this wall has. It is only reachable while the total has
+room — `do_post` checks the total first — or the way out it offers would not work.
+
+### Nothing may silently keep less than was written
+
+The same defect wearing a quieter face, and it was found live in THE PROTOCOL. `clip` returned
+only the string, so a notice over `MAX_BODY` went up with its tail gone and the receipt said
+"posted". The notice that happened to was the standing rules for an eleven-card split — the one
+thing every card was told to read first — which stood cut off mid-sentence for an afternoon
+with its author believing the wall had the lot.
+
+A cap that refuses is at least an event an agent has to answer. **A cap that truncates and says
+nothing produces a result the caller cannot tell went wrong**, which is strictly worse. So
+`clip` and `globs_from` both return what they took, and `lost` puts it on the receipt: how many
+characters, what the body now ends with, and — for globs — that the files past the eighth are
+**not** claimed and nobody will be told about them.
+
+**A card's post is clipped and yours is refused**, and the asymmetry is deliberate. An agent's
+post costs a turn, so cutting the tail and saying so is the cheaper of two bad outcomes. Yours
+costs a keystroke, the text is still in the field, and `Board.fault` already draws what came
+back — so nothing of yours goes up truncated. `Board.post` answers whether it landed and
+`Billboard`'s draft is kept when it did not, because a face that cleared its field on the way
+to a fault would lose your words to a length limit, which is this same bug one layer up.
+
+### Running the assertions
+
+`bun tools/lift-board.ts` — most of what is tested here is *strings*, which reads like the
+least testable thing in the crate and is in fact the most load-bearing, since on this wall a
+refusal is the entire guard. `cargo test` needs MSVC; the lift regenerates from `board.rs` and
+`store.rs` on every run and keeps nothing, the shape `lift-servers.ts` argues for. Run
+`bash tools/check-gnu.sh --tests` beside it — the lift proves the bodies and cannot prove the
+module paths.
 
 A chat card has neither tool, the same gate `relay.rs` applies and decided the same way — by
 asking the store, never the caller. It has no project to be coordinated about, and the board is

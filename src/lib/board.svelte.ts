@@ -78,17 +78,32 @@ export class Board {
   }
 
   /** Put one up as yourself — the one instruction on this wall that reaches
-   *  every agent without costing a turn. */
-  async post(subject: string, body: string, paths: string[] = [], projectId: string | null = null) {
+   *  every agent without costing a turn.
+   *
+   *  Answers whether it landed, and that is not decoration: `post_notice`
+   *  *refuses* a notice over the caps where a card's is clipped (see
+   *  `board.rs::clip`), so there is now a real path where nothing went up. The
+   *  caller has the only copy of what was typed — a face that cleared its
+   *  draft anyway would lose the user's words to a length limit, which is the
+   *  exact failure the refusal exists to stop, one layer up. */
+  async post(
+    subject: string,
+    body: string,
+    paths: string[] = [],
+    projectId: string | null = null,
+  ): Promise<boolean> {
+    let ok = false;
     try {
       await invoke("post_notice", { subject, body, paths, projectId });
       this.fault = null;
+      ok = true;
     } catch (err) {
       this.fault = err instanceof Error ? err.message : String(err);
     }
     /* Forced, because the event is coming and this is the one caller that
        should not wait for the round trip to come back the long way. */
     await this.refresh(true);
+    return ok;
   }
 
   /** Take one down — anybody's. It is your wall. */
