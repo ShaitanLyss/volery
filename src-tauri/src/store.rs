@@ -172,7 +172,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 24;
+const SCHEMA_VERSION: i64 = 25;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -202,6 +202,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (22, migrate_v22),
     (23, migrate_v23),
     (24, migrate_v24),
+    (25, migrate_v25),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1120,6 +1121,47 @@ fn migrate_v24(conn: &Connection) -> Result<(), String> {
     add_column(conn, "conversation", "permission_mode", "TEXT")
 }
 
+/// What a `turn` row *is* — a turn, or money with no turn to attribute it to.
+///
+/// A `result` can carry a cost step and no turn behind it: the CLI answers
+/// `/compact`, `/model` and `/effort` itself, reporting `num_turns: 0` and an
+/// all-zero `usage`. The cost it carries is real — `total_cost_usd` is a
+/// running total of the *process*, so the step is whatever accumulated since
+/// the last turn that had a `result` of its own — but the row written for it
+/// said a turn had cost $13.52 and processed nothing. See `usage.ts::
+/// turnRowKind`, which is where the deciding happens, and `.claude/rules/
+/// usage.md`.
+///
+/// An ALTER with a default, per the note on `SCHEMA_VERSION`.
+///
+/// **The default is `'unknown'`, and that is the whole of the thinking here.**
+/// The obvious choice is `'turn'` — it is what the overwhelming majority of
+/// existing rows are — and it is wrong, because a default is applied to every
+/// row already in the table and would therefore *assert* that each of them was
+/// a turn. On this machine 101 of the 696 rows written since `migrate_v7` began
+/// recording tokens carry no tokens at all, and some of them are precisely the
+/// rows this column exists to distinguish. `'unknown'` asserts nothing.
+///
+/// **And there is deliberately no backfill**, which is the other half of the
+/// same argument and the place it would have been easy to do damage.
+/// `in_tokens = 0 AND out_tokens = 0 AND …` looks like it identifies these
+/// rows and does not: it is the *symptom*, and rows written before
+/// `migrate_v7` show the two apart — those carry zeros because nothing wrote
+/// the columns yet, and they were ordinary turns. `num_turns` is not recorded
+/// anywhere, so for a row already on disk the cause is genuinely unknowable,
+/// and inferring it from the symptom would replace a readable lie with an
+/// unreadable one. `migrate_v2` could backfill because it had the `turn` table
+/// to recover *from*; this has nothing. Historical rows therefore stay exactly
+/// as readable as they are today, which is the honest outcome and costs
+/// nothing.
+///
+/// The default also lands on any future INSERT that forgets the column, and
+/// that is the right direction for the same reason: a row nobody classified
+/// reads as unclassified rather than as a turn.
+fn migrate_v25(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "turn", "kind", "TEXT NOT NULL DEFAULT 'unknown'")
+}
+
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
 /// one. Every failure here is `None` on purpose — a missing row, a locked
 /// database, a width some future build wrote as a negative — because the
@@ -1931,12 +1973,30 @@ fn clear_row(conn: &Connection, id: &str, session_id: &str) -> Result<(), String
 /// are (0.1x against 1.25x input); see `migrate_v7`. `cache_tokens` is their
 /// sum, kept so the column keeps meaning something rather than being left to
 /// rot at whatever it last held.
+///
+/// **And a third argument was not a fact about the turn either, because there
+/// was no turn.** `kind` says whether the row is one — see `migrate_v25` and
+/// `usage.ts::turnRowKind`, which is where the deciding happens, since what a
+/// ledger row *is* is knowledge about a bill rather than about the schema.
+///
+/// It is `Option<String>` and falls to `'unknown'`, which is a deliberate
+/// choice about *which* failure a misspelling causes. Tauri converts camelCase
+/// to snake_case and silently drops a key it does not recognise — the
+/// `lastTier` bug — and a required `String` would then fail to deserialise, the
+/// whole command would error, the front end's `.catch(() => {})` would swallow
+/// it and **no row would be written at all**. That loses the money, which is
+/// the one thing this table exists to keep; the day's figure and the burn
+/// horizon are a SUM over it. So a label that does not arrive costs a label and
+/// never a row. Same shape as `chat.md`'s "unknown falls to `project`": both
+/// directions are wrong, and this is the one whose symptom is visible in the
+/// data rather than absent from it.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn record_turn(
     store: tauri::State<'_, Store>,
     conversation_id: String,
     status_tier: String,
+    kind: Option<String>,
     in_tokens: i64,
     out_tokens: i64,
     cache_read_tokens: i64,
@@ -1946,13 +2006,14 @@ pub fn record_turn(
     let conn = store.0.lock().unwrap();
     conn.execute(
         "INSERT INTO turn
-           (conversation_id, ended_at, status_tier, in_tokens, out_tokens,
+           (conversation_id, ended_at, status_tier, kind, in_tokens, out_tokens,
             cache_read_tokens, cache_write_tokens, cache_tokens, usd)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             conversation_id,
             now(),
             status_tier,
+            row_kind(kind.as_deref()),
             in_tokens,
             out_tokens,
             cache_read_tokens,
@@ -1963,6 +2024,23 @@ pub fn record_turn(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The two labels a `turn` row may carry, and what anything else becomes.
+///
+/// Folded rather than stored verbatim, and this is the one place the two
+/// arguments genuinely conflict. Storing what the caller said would be kinder
+/// to a future build that invents a third kind; folding is kinder to *this*
+/// one, because the column's whole purpose is that a row should not claim to be
+/// something it is not, and `"trun"` sitting in the data is a value that looks
+/// meaningful and is not. There is exactly one writer, so nothing is being
+/// guarded against but a typo — and a typo reads as `unknown`, which is true.
+fn row_kind(said: Option<&str>) -> &'static str {
+    match said {
+        Some("turn") => "turn",
+        Some("spend") => "spend",
+        _ => "unknown",
+    }
 }
 
 /// What this studio has spent since a moment, in dollars — the figure in the
@@ -1992,6 +2070,21 @@ pub fn spend_since(store: tauri::State<'_, Store>, since: i64) -> Result<f64, St
 }
 
 /// The statement itself, so it can be tested without a Tauri app.
+///
+/// **Every `kind` of row, and that is not an omission.** `migrate_v25` split
+/// turns from money-with-no-turn-behind-it, and it is tempting to read this
+/// figure as being about turns and filter. It is not: it is about *money*, and
+/// a `spend` row's dollars were spent on the day they were recorded. The
+/// measurement that settles it is on this wall's own table — on 2026-08-22 two
+/// no-token rows carry $71.31 and $38.64 and are the **whole** of that day's
+/// figure, $109.95 out of $109.95. A `WHERE kind = 'turn'` here would have
+/// reported that day as costing nothing.
+///
+/// Which is also why `kind` was made a column on this table rather than a table
+/// of its own. A separate table is the tidier shape and puts the hazard the
+/// wrong way round: forgetting to filter costs a slightly noisy reading,
+/// forgetting to UNION loses a day's money silently. The default direction of
+/// the mistake matters more here than the tidiness does.
 fn spend_row(conn: &Connection, since: i64) -> Result<f64, String> {
     /* COALESCE because SUM over no rows is NULL, and a day with nothing spent
        in it yet is the normal state at nine in the morning. */
@@ -3334,6 +3427,43 @@ pub fn pending_jobs(
     conversation_id: String,
 ) -> Result<Vec<PendingJob>, String> {
     let conn = store.0.lock().unwrap();
+    jobs_of(&conn, &conversation_id, None)
+}
+
+/// The same rows, for a process that is not the app.
+///
+/// The hook this serves is `hooks::reply`'s `UserPromptSubmit` and
+/// `SessionStart` arms — a short-lived `skein.exe --bash-hook` handing a card
+/// back the background work it has forgotten it started. `open_readonly` for the
+/// reason `foreign_staged` uses it: a reader is a reader, and a second process
+/// running the migration ladder is the one path `store.rs` records as having
+/// locked the app out of its own database.
+///
+/// **Scoped to one session, which `pending_jobs` deliberately is not.** The
+/// command's caller is `rouse`, whose whole question is what the *previous*
+/// process left behind; the hook's is what *this* process is holding, and the
+/// difference matters in both directions. A row from a dead session is work the
+/// resume prompt already tells the card about and then deletes — repeating it
+/// here would say it twice — and if that prompt never went, the row would
+/// otherwise be re-announced on every prompt forever, which is a false claim
+/// with no way of ever becoming true. A session id bounds it to something
+/// provable: the process that started this job is the process asking.
+///
+/// Silent on every failure, like `foreign_staged` and for the same reason — the
+/// caller is advisory, so not knowing is the same as having nothing to say.
+pub fn outstanding_jobs(db: &std::path::Path, card: &str, session: &str) -> Vec<PendingJob> {
+    let Some(conn) = open_readonly(db) else {
+        return Vec::new();
+    };
+    jobs_of(&conn, card, Some(session)).unwrap_or_default()
+}
+
+/// The body both of the above share: rows out, paths derived and checked.
+fn jobs_of(
+    conn: &Connection,
+    conversation_id: &str,
+    session: Option<&str>,
+) -> Result<Vec<PendingJob>, String> {
     /* The directory the card's child *ran* in, which for a worktree card is not
        the `cwd` on its row — the temp task tree is slugged from the same string
        transcripts are, so asking the wrong one hands back a path that is not
@@ -3341,17 +3471,22 @@ pub fn pending_jobs(
        like "the CLI moved its task directory". Taken from the row rather than
        from the caller for the reason `spawn_conversation` takes everything from
        the row: `rouse` is the only caller and it had `cwd` to hand. */
-    let run_dir = session_of(&conn, &conversation_id)
+    let run_dir = session_of(conn, conversation_id)
         .map(|(dir, _)| dir)
         .unwrap_or_default();
+    /* `?2 IS NULL OR session_id = ?2` rather than two prepared statements: the
+       two callers differ in one predicate and nothing else, and a second copy of
+       the column list is a second place for it to drift from the tuple below. */
     let mut stmt = conn
         .prepare(
             "SELECT tool_id, task_id, kind, label, output_path, started_at, session_id
-             FROM job WHERE conversation_id = ?1 ORDER BY started_at",
+             FROM job WHERE conversation_id = ?1
+               AND (?2 IS NULL OR session_id = ?2)
+             ORDER BY started_at",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![conversation_id], |r| {
+        .query_map(params![conversation_id, session], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<String>>(1)?,
@@ -3455,6 +3590,21 @@ pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>, String> {
 /// closed is not somebody to talk to, and an agent offered one would address it
 /// and be told it is not there — a refusal it could have been spared by not
 /// being shown the row.
+///
+/// **`MAX(t.ended_at)` counts every `kind` of turn row, deliberately.** This is
+/// the one query that reads a row *as a turn*, so `migrate_v25` looks like it
+/// owes a `WHERE kind = 'turn'` here, and it does not. What `last_turn_at`
+/// feeds is `relay.rs`'s `idle_seconds` — how long since this card did
+/// anything, read by an agent deciding whether there is somebody there to talk
+/// to. A card that answered `/compact` a minute ago is demonstrably alive, and
+/// filtering would report it as idle for however long the compaction ran. The
+/// `kind` column says what a row *cost*; it does not say whether the card was
+/// awake, and these are two questions.
+///
+/// That is also why `record_turn` is still called for a locally-answered
+/// result rather than the row being skipped. Skipping it would change
+/// `idle_seconds` by the back door — the same behaviour change, arrived at
+/// without deciding to make it.
 ///
 /// Ordered by `born_at` so the list reads in the order the wall was built,
 /// which is the order the cards are in on it.
@@ -4981,6 +5131,109 @@ mod tests {
             0.0,
             "a day with nothing in it yet is zero, not an error"
         );
+    }
+
+    /// The v25 split must not touch the figure it is drawn from. On this wall's
+    /// own table, 2026-08-22 holds exactly two no-token rows — $71.31 and
+    /// $38.64 — and they are the whole of that day: $109.95 out of $109.95. A
+    /// `WHERE kind = 'turn'` in `spend_row` would report that day as free.
+    #[test]
+    fn the_days_spend_counts_a_spend_row_exactly_like_a_turn() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        let row = |at: i64, kind: &str, usd: f64| {
+            conn.execute(
+                "INSERT INTO turn (conversation_id, ended_at, status_tier, kind, usd)
+                 VALUES ('c1', ?1, 'rest', ?2, ?3)",
+                params![at, kind, usd],
+            )
+            .unwrap();
+        };
+        row(100, "spend", 71.31);
+        row(200, "spend", 38.64);
+
+        assert_eq!(
+            (spend_row(&conn, 0).unwrap() * 100.0).round(),
+            10995.0,
+            "the day was entirely spend rows, and it still cost what it cost"
+        );
+
+        row(300, "turn", 10.0);
+        row(400, "unknown", 5.0);
+        assert_eq!(
+            (spend_row(&conn, 0).unwrap() * 100.0).round(),
+            12495.0,
+            "every kind of row, including the label this build did not write"
+        );
+    }
+
+    /// A rung either lands with its number or does not land at all, and
+    /// `add_column` is what lets a database whose version fell behind its
+    /// schema walk itself out. So the rung must survive being run twice — the
+    /// wedge `migrate` describes is exactly a step being re-run.
+    #[test]
+    fn the_kind_rung_is_safe_to_run_again() {
+        let conn = db();
+        // `db()` has already walked the whole ladder, so this is the re-run.
+        migrate_v25(&conn).unwrap();
+        migrate_v25(&conn).unwrap();
+        assert!(has_column(&conn, "turn", "kind").unwrap());
+    }
+
+    /// Every row already on disk predates the column, and the default must not
+    /// assert what those rows were. 101 of the 696 rows written on this machine
+    /// since `migrate_v7` carry no tokens, and some of them are precisely the
+    /// rows the column exists to distinguish — so `'turn'` would have been a
+    /// new lie in place of the old one, and there is nothing to backfill from.
+    #[test]
+    fn rows_that_predate_the_column_say_unknown_rather_than_claiming_to_be_turns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate_v1(&conn).unwrap();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        // A row from before the column existed: a real turn, and one of the
+        // zero-token ones. Nothing on disk can tell them apart.
+        conn.execute(
+            "INSERT INTO turn (conversation_id, ended_at, status_tier, usd)
+             VALUES ('c1', 0, 'rest', 13.52)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v25(&conn).unwrap();
+
+        let kind: String = conn
+            .query_row("SELECT kind FROM turn", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kind, "unknown");
+        let usd: f64 = conn
+            .query_row("SELECT usd FROM turn", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(usd, 13.52, "a relabelling is never a deletion");
+    }
+
+    /// Tauri drops a key it does not recognise — the `lastTier` bug — and a
+    /// required `String` would then fail the whole command, whose caller
+    /// swallows errors: no row, and the money gone from the day's figure. A
+    /// label that does not arrive must cost a label and never a row.
+    #[test]
+    fn a_label_that_did_not_arrive_costs_a_label_and_not_a_row() {
+        assert_eq!(row_kind(Some("turn")), "turn");
+        assert_eq!(row_kind(Some("spend")), "spend");
+        assert_eq!(row_kind(None), "unknown");
+        assert_eq!(row_kind(Some("")), "unknown");
+        assert_eq!(row_kind(Some("trun")), "unknown", "a typo reads as untrue, not as a turn");
+        assert_eq!(row_kind(Some("Turn")), "unknown");
     }
 
     #[test]

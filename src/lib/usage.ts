@@ -391,3 +391,81 @@ export function costStep(total: number, baseline: number): number {
   if (!Number.isFinite(baseline) || baseline < 0) return total;
   return total < baseline ? total : total - baseline;
 }
+
+/* ── what kind of row a settled turn is owed ────────────────────────────────
+ *
+ * `costStep` above answers *how much*, and for a while that was taken to be
+ * the whole question. It is not: a `result` can carry a cost step and no turn
+ * to put it on, and the row written for it said a turn had cost $13.52 and
+ * processed nothing. */
+
+/** The four counts a turn row carries, as `Conversation.lastTurn` holds them. */
+export type TurnTokens = {
+  in: number;
+  out: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+
+/** What a `turn` row *is* — a turn, or money with no turn to attribute it to. */
+export type TurnRow = "turn" | "spend";
+
+/** Which of the two a settled `result` is owed.
+ *
+ *  **`num_turns` is the discriminator, and it is exact rather than a
+ *  heuristic.** It counts round trips to a model, so zero means no model was
+ *  reached — which means no tokens were spent *in this turn*, and any cost
+ *  step on it is therefore money that accumulated earlier in the process and
+ *  had nothing to be booked against until now. Same field `classify.ts`'s
+ *  `localAnswer` and `localCommandAwaiting` already trust for the same reason,
+ *  and probed there: 2026-08-14 against claude 2.1.232
+ *  (`tools/probe-commands.ts`), every locally-answered command reported
+ *  `num_turns: 0`, `duration_api_ms: 0` and an all-zero `usage`, where the
+ *  rate-limited turn beside them still reported 1.
+ *
+ *  Measured on this wall's own `turn` table, over the 696 rows written since
+ *  `migrate_v7` began recording tokens at all: **101 carry no tokens, and 14
+ *  of those carry real money — $148.08.** The distribution is what settles the
+ *  design one level down. On 2026-08-22 the table holds exactly two such rows,
+ *  $71.31 and $38.64, and *they are the whole of that day's figure*: `all_usd`
+ *  and `notok_usd` are both $109.95. So the money cannot be dropped and cannot
+ *  be moved off the day it landed on — a `spend` row is a relabelling, never a
+ *  deletion, and `store::spend_row` goes on summing both kinds. See
+ *  `.claude/rules/usage.md`.
+ *
+ *  **The tokens are consulted as well, and only ever to say `turn`.** A
+ *  `num_turns: 0` result that somehow reported tokens is a turn whatever it
+ *  says about round trips, because the tokens are the evidence something was
+ *  processed. That arm has never been seen; it is here because the failure it
+ *  prevents — a row with real tokens filed as "no turn happened" — destroys
+ *  information, where the arm it guards merely mislabels.
+ *
+ *  **Anything other than a literal zero is a turn**, `undefined` included. A
+ *  CLI that stops sending the field, or an error path that omits it, falls
+ *  back to exactly the behaviour this replaces: the money is attributed and
+ *  the row is as readable as it is today. That is the safe direction — the
+ *  other one files real turns as spend on the strength of a missing field.
+ *
+ *  Note what is deliberately *not* narrowed here: a turn that reached a model
+ *  and then failed reports `num_turns >= 1` and its own tokens, so it stays a
+ *  turn row. `.claude/rules/turns.md` requires that — "the failed attempt is
+ *  still a turn", and a retry that swallowed it would make the day's figure
+ *  understate what the wall spent.
+ *
+ *  Here rather than in `conversation.svelte.ts` or `classify.ts` for the
+ *  reason the price table and `costStep` are here: what a ledger row *is* is
+ *  knowledge about a bill rather than about a stream, and it wants a test. */
+export function turnRowKind(numTurns: unknown, tokens: TurnTokens): TurnRow {
+  if (numTurns !== 0) return "turn";
+  const counted =
+    finite(tokens?.in) +
+    finite(tokens?.out) +
+    finite(tokens?.cacheRead) +
+    finite(tokens?.cacheWrite);
+  return counted > 0 ? "turn" : "spend";
+}
+
+/** A count that can be added up: anything unusable reads as none of them. */
+function finite(n: unknown): number {
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+}

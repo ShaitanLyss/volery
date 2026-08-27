@@ -17,6 +17,7 @@ import {
   share,
   shortModel,
   sum,
+  turnRowKind,
   type Slice,
 } from "../src/lib/usage";
 
@@ -395,5 +396,66 @@ describe("costStep", () => {
     expect(costStep(Number.NaN, 1)).toBe(0);
     expect(costStep(-1, 0)).toBe(0);
     expect(costStep(2, Number.NaN)).toBe(2);
+  });
+});
+
+describe("turnRowKind", () => {
+  const none = { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
+  const real = { in: 1200, out: 340, cacheRead: 98_000, cacheWrite: 4100 };
+
+  /* The case the whole column exists for. `turn 651 18f71b6c 2026-08-25
+     10:30:29 rest in=0 out=0 cread=0 cwrite=0 usd=13.52` — the CLI answered
+     the prompt itself, so the accumulated cost step landed on a turn that had
+     processed nothing. */
+  test("money with no turn behind it is a spend row", () => {
+    expect(turnRowKind(0, none)).toBe("spend");
+  });
+
+  /* `num_turns` counts round trips to a model, so anything above zero is a
+     turn whatever else the result says. Probed 2026-08-14 against claude
+     2.1.232 with tools/probe-commands.ts: every locally-answered command
+     reported 0, the rate-limited turn beside them still reported 1. */
+  test("a turn that reached a model is a turn row", () => {
+    expect(turnRowKind(1, real)).toBe("turn");
+    expect(turnRowKind(14, real)).toBe("turn");
+    /* Including one that reached a model and came back with nothing to show
+       for it — a refusal, an empty answer. It still asked. */
+    expect(turnRowKind(1, none)).toBe("turn");
+  });
+
+  /* turns.md: "the failed attempt is still a turn", and a retry that swallowed
+     it would make the day's figure understate what the wall spent. A turn that
+     errored after reaching a model reports its own tokens and stays a turn. */
+  test("a failed turn that reached a model stays a turn row", () => {
+    expect(turnRowKind(2, { in: 40, out: 0, cacheRead: 190_000, cacheWrite: 0 })).toBe("turn");
+  });
+
+  /* Tokens are consulted only ever to say `turn`. Never seen in the wild; here
+     because filing a row with real tokens as "no turn happened" destroys
+     information, where the arm it guards merely mislabels. */
+  test("tokens outrank a zero round-trip count", () => {
+    expect(turnRowKind(0, real)).toBe("turn");
+    expect(turnRowKind(0, { ...none, cacheRead: 1 })).toBe("turn");
+    expect(turnRowKind(0, { ...none, out: 12 })).toBe("turn");
+  });
+
+  /* A CLI that stops sending the field, or an error path that omits it, falls
+     back to exactly the behaviour this replaced: attributed, and as readable
+     as it was. The other direction would file real turns as spend on the
+     strength of a missing field. */
+  test("anything but a literal zero is a turn", () => {
+    expect(turnRowKind(undefined, none)).toBe("turn");
+    expect(turnRowKind(null, none)).toBe("turn");
+    expect(turnRowKind("0", none)).toBe("turn");
+    expect(turnRowKind(Number.NaN, none)).toBe("turn");
+  });
+
+  /* A count that cannot be added up is not evidence that anything was
+     processed, so it must not talk the row into being a turn. */
+  test("unusable counts are no counts at all", () => {
+    expect(turnRowKind(0, { ...none, in: Number.NaN })).toBe("spend");
+    expect(turnRowKind(0, { ...none, out: -5 })).toBe("spend");
+    expect(turnRowKind(0, { ...none, cacheRead: Number.POSITIVE_INFINITY })).toBe("spend");
+    expect(turnRowKind(0, undefined as never)).toBe("spend");
   });
 });

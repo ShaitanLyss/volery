@@ -434,6 +434,65 @@ the `turn` table rather than the transcripts, and its window is the **local day*
   well, or the two would drift and only one of them would survive a launch. A failed read
   leaves the last figure up: a day that could not be read is not a day that cost nothing,
   and the ground going cold would say it was.
+- **A row that is not a turn says so, and says it in a column rather than a table.** A
+  `result` can carry a cost step and no turn behind it: the CLI answers `/compact`, `/model`
+  and `/effort` itself, reporting `num_turns: 0` and an all-zero `usage`. The cost is honest —
+  `total_cost_usd` is a running total of the *process*, so the step is whatever accumulated
+  since the last `result` that had a turn of its own — but the row written for it said a turn
+  had cost $13.52 and processed nothing. Measured over the 696 rows written here since
+  `migrate_v7` began recording tokens at all: **101 carry no tokens, 14 of them carry real
+  money, $148.08 between them.** Schema v25 adds `turn.kind`; `usage.ts::turnRowKind` decides,
+  and `#persistConv` reads it, since that method already holds both the folded counts and the
+  raw `result`.
+
+  Three decisions, and the distribution of that money is what settles all of them.
+
+  - **`num_turns` is the discriminator, and it is exact rather than a heuristic.** It counts
+    round trips to a model, so zero means none was reached — which means no tokens were spent
+    *in this turn*, and the cost step is therefore money from earlier. Same field
+    `classify.ts::localAnswer` already trusts, and the tokens are consulted only ever to
+    override it *towards* `turn`: a row with real tokens filed as "no turn happened" destroys
+    information, where the arm it guards merely mislabels. Anything other than a literal zero
+    — `undefined` included — is a turn, so a CLI that stops sending the field falls back
+    exactly to the behaviour this replaced. Note what is deliberately not narrowed: a turn
+    that reached a model and *then* failed reports `num_turns >= 1` and its own tokens, so it
+    stays a turn row, which is what `turns.md`'s "the failed attempt is still a turn"
+    requires.
+  - **A column on `turn`, not a table of its own — and the tidier shape is the wrong one.**
+    A separate table reads better and puts the hazard the wrong way round: forgetting to
+    filter costs a slightly noisy reading, forgetting to UNION loses a day's money silently.
+    On 2026-08-22 this wall's table holds exactly two no-token rows, $71.31 and $38.64, and
+    **they are the whole of that day's figure** — $109.95 out of $109.95. So `spend_row` goes
+    on summing every kind, needs no change to do it, and *cannot be forgotten*; a
+    `WHERE kind = 'turn'` there would have reported that day as free. The general shape:
+    **when one of two mistakes is silent and expensive, pick the arrangement where the
+    forgetful path is the cheap one.**
+  - **The default is `'unknown'`, and there is no backfill.** `'turn'` is what almost every
+    existing row is and it would *assert* that, for 101 rows some of which are exactly the
+    ones the column exists to distinguish. Worse, the symptom is not the cause:
+    `in_tokens = 0 AND …` also matches every row written before `migrate_v7`, which carries
+    zeros because nothing wrote the columns yet and *was* an ordinary turn. `num_turns` is
+    recorded nowhere, so for a row already on disk the cause is genuinely unknowable, and
+    inferring it would replace a readable lie with an unreadable one. `migrate_v2` could
+    backfill because it had the `turn` table to recover *from*; this has nothing. Historical
+    rows stay exactly as readable as they were, which costs nothing.
+
+- **The row is still written for a locally-answered result, and `roster`'s `MAX(ended_at)`
+  still counts it.** Skipping the row is the obvious economy — 87 of those 101 carry no money
+  either, pure noise from slash commands — and it would change something else by the back
+  door. `last_turn_at` feeds `relay.rs`'s `idle_seconds`, which an agent reads as *how long
+  since this card did anything*; a card that answered `/compact` a minute ago is demonstrably
+  alive, and filtering would report it idle for however long the compaction ran. What a row
+  *cost* and whether the card was *awake* are two questions, and only the first is what
+  `kind` answers.
+
+- **The label costs a label and never a row.** `record_turn` takes `kind` as an `Option` and
+  falls to `'unknown'`. Tauri drops a key it does not recognise — the `lastTier` bug — and a
+  required `String` would then fail the whole command, whose caller swallows errors: no row,
+  and the money gone from the day's figure that this table is the only source of. Same shape
+  as `chat.md`'s "unknown falls to `project`": both directions are wrong, and this is the one
+  whose symptom is visible in the data rather than absent from it.
+
 - **No index on `turn.ended_at`.** One row per settled turn, summed as a turn settles and
   once when the day rolls; an index would cost a migration to save a fraction of a
   millisecond.
