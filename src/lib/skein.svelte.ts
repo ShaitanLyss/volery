@@ -336,6 +336,7 @@ export class Skein {
         c.ingest(e.payload.event);
         this.#persistConv(c, e.payload.event);
         this.#writeJobs(c);
+        this.#writeGates(c);
         /* After the persist, deliberately. The turn that just broke is a `turn`
            row like any other and belongs in the ledger whether or not it is
            about to be tried again — a retry that swallowed the failed attempt
@@ -2606,6 +2607,45 @@ export class Skein {
           kind: w.kind,
           label: w.label,
           outputPath: w.outputPath,
+        }).catch(() => {});
+      }
+    }
+  }
+
+  /** Write down the gate runs this card has just announced.
+   *
+   *  Sink 3ebe1d59. Drained beside `#writeJobs` and on the same terms — nothing
+   *  awaited, every failure swallowed — because the cost of a lost row is one
+   *  observation missing from a reading nobody has asked for yet, and the cost
+   *  of awaiting it would be the ingest path, on every event, for every card.
+   *
+   *  **No `root` is sent.** `store::open_gate_run` derives the tree from the
+   *  conversation row through `worktree::run_dir`, which is the same pure
+   *  function `supervisor::spawn` uses to decide where the child actually runs.
+   *  The reader on the other side is a hook, and its payload gives it that
+   *  directory rather than the `cwd` on the row — so the two would disagree for
+   *  exactly the worktree cards most likely to be sharing a repository. */
+  #writeGates(c: Conversation) {
+    if (!c.gateWrites.length) return;
+    const writes = c.gateWrites;
+    c.gateWrites = [];
+    for (const w of writes) {
+      if (w.op === "open") {
+        void invoke("open_gate_run", {
+          toolId: w.toolId,
+          conversationId: c.id,
+          gate: w.gate,
+          scope: w.scope,
+          narrowed: w.narrowed,
+          command: w.command,
+          startedAt: w.startedAt,
+        }).catch(() => {});
+      } else {
+        void invoke("settle_gate_run", {
+          toolId: w.toolId,
+          settledAt: w.settledAt,
+          outcome: w.outcome,
+          detail: w.detail,
         }).catch(() => {});
       }
     }

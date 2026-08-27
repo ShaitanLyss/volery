@@ -3732,12 +3732,25 @@ const GATE_KEEP: usize = 50;
 /// `INSERT OR REPLACE` rather than a plain insert, because the `tool_use` id is
 /// the key and a card that somehow announced the same call twice should leave one
 /// row rather than an error the front end has to decide what to do about.
+/// **The tree is derived here, never passed in**, and that is load-bearing
+/// rather than tidy. The reader on the other side is a hook, whose payload gives
+/// it the directory the tool call actually *ran* in — which for a worktree card
+/// is not the `cwd` on its row, since a worktree card's row keeps the project
+/// root as its territory and only the child process moves
+/// (`.claude/rules/worktree.md`). The two sides must produce the same string or
+/// the reading is silently always empty for exactly the cards most likely to be
+/// sharing a repository.
+///
+/// `session_of` already answers it, through `worktree::run_dir`, which is the
+/// one pure function `supervisor::spawn` and `ensure` also agree on. The front
+/// end knows the worktree only by *name* and could not compute this without a
+/// second copy of `dir_for`'s spelling — the fact-written-twice failure this
+/// codebase has already paid for in `hooks.rs`'s matcher.
 #[tauri::command]
 pub fn open_gate_run(
     store: tauri::State<'_, Store>,
     tool_id: String,
     conversation_id: String,
-    root: String,
     gate: String,
     scope: String,
     narrowed: Option<String>,
@@ -3745,6 +3758,12 @@ pub fn open_gate_run(
     started_at: i64,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
+    let Some((root, _)) = session_of(&conn, &conversation_id) else {
+        /* No row means no tree to attribute this to, and a gate run nobody can
+           place is worse than none: it would sort into whatever `root` happened
+           to be passed and report one repository's health to another. */
+        return Ok(());
+    };
     conn.execute(
         "INSERT OR REPLACE INTO gate_run
            (tool_id, conversation_id, root, gate, scope, narrowed, command,

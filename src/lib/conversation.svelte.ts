@@ -58,6 +58,7 @@ import {
   type Compaction,
 } from "./compaction";
 import { costStep } from "./usage";
+import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
@@ -269,6 +270,41 @@ export type JobWrite =
       outputPath: string | null;
     }
   | { op: "settle"; toolId: string };
+
+/** A gate run arriving or settling, on its way to `gate_run`.
+ *
+ *  Sink 3ebe1d59, and this is the whole of why the feature is not a poller: a
+ *  gate announces itself in the stream this class is already folding, so there
+ *  is nothing to go and look at. See `gates.ts`.
+ *
+ *  Two ops rather than one, and the second is not symmetry. A single write on
+ *  the result would lose the state that matters most in a shared tree —
+ *  *somebody is running this gate right now* — which is what `Blocking waiting
+ *  for file lock on package cache` was, repeatedly, on the afternoon this comes
+ *  from. See `store::migrate_v26`. */
+export type GateWrite =
+  | {
+      op: "open";
+      toolId: string;
+      /* No `root`. The tree is derived in `store::open_gate_run` from the
+         conversation row, through the same `worktree::run_dir` the supervisor
+         spawns with — because the reader is a hook whose payload gives it the
+         directory the call actually ran in, and for a worktree card that is not
+         the `cwd` on the row. The front end knows the worktree by name only and
+         computing the path here would be a second copy of `dir_for`'s spelling. */
+      gate: string;
+      scope: string;
+      narrowed: string | null;
+      command: string;
+      startedAt: number;
+    }
+  | {
+      op: "settle";
+      toolId: string;
+      settledAt: number;
+      outcome: "passed" | "failed";
+      detail: string | null;
+    };
 
 /** One item of the agent's own plan, folded from `TaskCreate`/`TaskUpdate`.
  *
@@ -544,6 +580,21 @@ export class Conversation {
    *  rows outlive the process, and a card whose stream just closed is exactly
    *  the one whose jobs nobody will ever hear the end of. */
   jobWrites = $state<JobWrite[]>([]);
+
+  /** Gate runs Skein has not written down yet. Drained beside `jobWrites`.
+   *
+   *  Same bargain as those: nothing awaited, a failed write swallowed. What a
+   *  lost row costs is one observation missing from a reading nobody has asked
+   *  for yet; what awaiting it would cost is the ingest path, on every event,
+   *  for every card on the wall. */
+  gateWrites = $state<GateWrite[]>([]);
+
+  /** Gate calls seen going out and not yet come back, by `tool_use` id.
+   *
+   *  Plain, not `$state` — nothing draws it, and the settle path only needs to
+   *  know *whether* a result belongs to a gate. Bounded by deleting on the
+   *  result, and by the fact that a call without one is a turn that ended. */
+  #gateCalls = new Map<string, true>();
 
   /** The agent's own plan for the turn, in the order the items were created. */
   plan = $state<PlanTask[]>([]);
@@ -1878,6 +1929,34 @@ export class Conversation {
             if (block.name === "Write" && isPlanDocument(block.input?.file_path)) {
               this.planDoc = block.input.file_path;
             }
+            /* **A gate run starting, which is the whole write path of sink
+               3ebe1d59.** Nothing goes and looks: a card runs `bun run test` or
+               `cargo check` of its own accord and says so here, in the stream
+               this method has always folded. The row opens now and settles on
+               the result below, so a run whose end nobody ever saw stays
+               readable as `unknown` rather than silently not existing.
+               `recognise` decides on the *shape* of the input rather than the
+               tool's name, for the reason `hooks.md` records at length — the
+               Windows shell tool is `Bash` on a card and `PowerShell` on a
+               fresh claude, and both names are live on this machine at once. */
+            if (block.id) {
+              const g = recognise(block.input);
+              if (g) {
+                this.#gateCalls.set(block.id, true);
+                this.gateWrites = [
+                  ...this.gateWrites,
+                  {
+                    op: "open",
+                    toolId: block.id,
+                    gate: g.gate,
+                    scope: g.scope,
+                    narrowed: g.narrowed,
+                    command: g.command,
+                    startedAt: Date.now(),
+                  },
+                ];
+              }
+            }
             if ((block.name === "Agent" || block.name === "Task") && block.id) {
               this.#seat(block.id, {
                 persona:
@@ -2269,6 +2348,30 @@ export class Conversation {
              number, a seat's verdict — and the raw text belongs on the line
              whatever any of those make of it. */
           this.#land(b.tool_use_id, said, b.is_error === true);
+
+          /* **A gate settling, and `is_error` is the whole of the verdict.**
+             Reading the exit status the CLI already computed rather than
+             grepping the output for the word "error" is what makes this immune
+             to the failure THE PROTOCOL records from the other end: a
+             `check-gnu.sh` that dies on `cargo: not found` produces no error
+             lines at all, so a grep reports zero and calls it green — "a green
+             that never ran". A tool result knows better and says so. */
+          if (this.#gateCalls.delete(b.tool_use_id)) {
+            const failed = b.is_error === true;
+            this.gateWrites = [
+              ...this.gateWrites,
+              {
+                op: "settle",
+                toolId: b.tool_use_id,
+                settledAt: Date.now(),
+                outcome: failed ? "failed" : "passed",
+                /* Only kept for a failure. A passing gate's output is a
+                   screenful of dots nobody will ever read out of a database,
+                   where a failing one's last lines are the reading. */
+                detail: failed ? detailOf(said) : null,
+              },
+            ];
+          }
 
           /* The receipt for a job we registered provisionally. Either it names
              what was started, or the call ran inline after all and the job goes
