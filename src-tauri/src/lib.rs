@@ -38,6 +38,7 @@ mod sessions;
 mod signin;
 mod shell;
 mod sink;
+mod smith;
 mod spawn;
 mod spotify;
 mod status;
