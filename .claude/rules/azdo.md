@@ -4,14 +4,29 @@ paths:
   - "src/lib/devops.svelte.ts"
   - "src/lib/Pipelines.svelte"
   - "src/lib/Reviews.svelte"
+  - "src/lib/Run.svelte"
   - "src/lib/Keyring.svelte"
   - "src-tauri/src/azdo.rs"
+  - "src-tauri/src/forge.rs"
+  - "src-tauri/src/github.rs"
   - "src-tauri/src/vault.rs"
 ---
 
-# Azure DevOps: pipelines and reviews
+# The forge: pipelines and reviews
 
-#### Azure DevOps: pipelines and reviews
+#### The forge: pipelines and reviews
+
+**There are two forges now, and the file names lag the scope on purpose.** The
+rule, the front-end taxonomy and the Rust commands are all still called `azdo`
+while answering for GitHub as well — the same bargain `dev.skein.studio` and
+`mcp__skein__*` strike in `CLAUDE.md`, and made for the same reason. `azdo_runs`
+is quoted in `control.svelte.ts`'s ops and in `wall.test.ts`; `azdo.ts` is named
+in `CLAUDE.md`'s architecture section and in this file's own frontmatter.
+Renaming them buys a tidier word and costs a rename across files three other
+cards are editing. What is *new* is named for what it is — `forge.rs`,
+`github.rs`, `Run.svelte` — so the vocabulary is right going forward even where
+it is wrong going back. Worth revisiting if a third forge arrives; not worth it
+for the second.
 
 Two instruments for the forge the work actually lives in: `pipelines` — what is building,
 across every project at once — and `reviews` — open pull requests, and which of them want
@@ -193,10 +208,310 @@ own for how it is drawn (`list`, `lanes`, `dots`).
   an approval lands under your name on somebody else's work and belongs where the diff is. Going
   *to* the thing costs nothing and can be taken back. It routes out through
   `Skein.openLink` → `open.rs`, like every link in the transcript.
-- **Five silences, told apart.** A wall with no Azure DevOps repo, a first reading still in
-  flight, a scope that matched nothing, projects your credential is not on, and a genuinely
+- **Five silences, told apart.** A wall with no repo that has pipelines, a first reading still
+  in flight, a scope that matched nothing, projects your credential is not on, and a genuinely
   empty list are five different sentences (`emptySaid`). Getting that wrong is most of what
   would make this read as broken.
+
+  **Two of them stopped naming a service when the second forge arrived**, and the reason is
+  worth keeping. "asking azure devops…" and "no azure devops repo on this wall" were exactly
+  true while there was one forge, and became lies the moment a GitHub repo could satisfy the
+  same widget. The failure mode is the worst kind: a sentence that reads as authoritative and
+  sends you looking for an Azure DevOps problem you do not have. What the widget actually
+  knows is that nothing on this wall has pipelines it can see, so that is what it says.
+  "project" still stands in for an Azure DevOps project and a GitHub repository both, which
+  is the same stand-in `Run.project` makes and for the same reason — it is the coarsest
+  grouping either forge offers under an organisation.
+
+### The second forge
+
+GitHub Actions runs are rows in the **same** runs list and GitHub pull requests
+rows in the same reviews list. Not a second widget, not a `source` knob on the
+existing one.
+
+- **Because the question is "is anything red anywhere", and splitting the answer
+  by which service happens to host the repo is precisely what a wall exists to
+  stop.** The argument that made pipelines and reviews two widgets rather than
+  one — different facts, different clocks, wanted on screen at the same time —
+  says the opposite here: an Azure DevOps build and a GitHub Actions run are the
+  *same* fact from two vendors, and nobody wants two widgets side by side to find
+  out whether anything is broken. This workspace settles it by being half of
+  each: volery is on GitHub, nova/rise/asset_extraction/tx-toolkit on Azure
+  DevOps, all on one wall.
+- **A `source` knob would have been the same mistake wearing a menu.** A knob you
+  have to flip to see the other half of the answer is a knob that is on the wrong
+  setting exactly when something breaks.
+- Nothing in `widgets.ts` changed. The catalogue entries, the `scope` knob and
+  the three variants are all forge-blind and turned out to need no edit at all,
+  which is the cheapest possible evidence that the rows really are the same kind
+  of row.
+
+#### Facts in Rust, judgement in TypeScript — and the line a projection has to cross
+
+Rust reports **each service's own words**, verbatim, and folds nothing.
+`inProgress` from Azure DevOps and `in_progress` from GitHub both arrive as
+themselves; `azdo.ts` dispatches on a `forge` field carried on the row.
+
+The tempting alternative — normalising GitHub into Azure DevOps' vocabulary in
+`github.rs`, so the front end never learns there are two — was rejected, and the
+test that rejects it is worth keeping because every future forge will be argued
+against it:
+
+> **A projection is honest where it is total and lossless. It is a lie where the
+> second forge has states the first has no word for.**
+
+Two projections pass and are done in Rust:
+
+- **`mergeable`.** GitHub's `MERGEABLE`/`CONFLICTING`/`UNKNOWN` correspond
+  exactly to Azure DevOps' `succeeded`/`conflicts`/`queued`. Three to three,
+  nothing left over, nothing invented.
+- **The vote scale.** A five-point approval scale is not knowledge about a forge;
+  `APPROVED` is 10 and `COMMENTED` is 0. `CHANGES_REQUESTED` is **-5 and not
+  -10**, and that is the judgement in it: -10 is *rejected*, somebody saying no
+  to the change, where -5 is *waiting for the author*, a turn passing. Requesting
+  changes on GitHub is how you hand the branch back and it clears when the author
+  pushes. Mapping it to -10 would print "rejected" over the ordinary
+  back-and-forth of a code review, which is the more alarming of the two ways to
+  be wrong.
+
+A run's `conclusion` fails the test outright. GitHub has nine to Azure DevOps'
+four, and `timed_out`, `startup_failure` and `action_required` have no Azure
+DevOps spelling at all. **`action_required` is the one that decides it**: a
+deployment parked waiting for a person to approve it is the wall's amber exactly,
+and under a projection it would have had to become `failed` or `succeeded` —
+both lies about a thing that is simply waiting. `waiting` (the same idea as a
+*status* rather than a conclusion) is the other. Those two states are the whole
+return on carrying two vocabularies.
+
+The reverse gap is recorded rather than papered over: **Azure DevOps expresses an
+approval gate as a `Checkpoint` record inside the timeline, not as a state on the
+build**, so a build waiting at one still reads `inProgress` and `parked` answers
+false. Closing that would mean reading the timeline on every poll — a request per
+running build — to improve the wording on a few rows, so it is left.
+
+#### What did and did not need a forge arm
+
+The split is the evidence the seam is in the right place, and it is worth stating
+as a claim rather than a list: **the questions a wall asks are forge-independent,
+and only the vocabulary is not.**
+
+Untouched, and deliberately not retested per forge: `orderRuns`, `orderReviews`,
+`scopeRuns`, `scopeReviews`, `tallyRuns`, `tallyReviews`, `needsMe`, `elapsed`,
+`reviewTierOf`, `reviewSaid`. A test asserting those still work on a GitHub row
+would be testing that adding a field does not break `.sort`.
+
+Given an arm: `tierOf`, `runSaid`, `landable`, and the new stage/step readings.
+
+- **`landable` is the one that would have shipped as a silent bug.** Azure DevOps
+  marks each reviewer required or optional and does not roll it up, so the answer
+  is arithmetic over the votes. GitHub does the reverse — it will not tell you
+  who is required, branch protection knows and the payload does not — and hands
+  you `reviewDecision` instead. So a GitHub row's votes are genuinely all
+  `required: false`, and running the Azure DevOps arithmetic over them finds an
+  **empty required set and answers vacuously true for every open pull request on
+  GitHub**, including ones with changes requested. It would have looked like
+  working code. Hence `Review.decision`, carried beside the votes because neither
+  half is derivable from the other.
+- **`shortRef` loses something and says so.** GitHub sends `head_branch` bare, so
+  there is nothing to strip — and a tag push arrives as the tag name with no
+  marker (`v0.12.0` reads as a branch). Guessing from the shape was refused: a
+  branch genuinely called `v2` is ordinary, and a row that silently mislabels one
+  is worse than a row that declines to label it.
+- **No GitHub state earns `soft`.** Azure DevOps' `partiallySucceeded` has no
+  Actions equivalent at the run level, because a job that fails without failing
+  the run is `continue-on-error` and Actions reports plain success. The
+  amber-at-half-weight simply never appears on a GitHub row, and nothing was lost
+  — the service does not draw the distinction.
+
+#### The credential is `gh`'s, and there is no ladder
+
+**This was the real design question, and the answer is the opposite of the Azure
+DevOps one.** That side needs a four-rung ladder because none of its credentials
+is reliably enough — GCM's is code-scoped and 401s on builds, which is why a PAT
+must be minted, entered and stored, and why `vault.rs` and `Keyring.svelte` exist
+at all. GitHub needs none of it: `gh` is already installed and already signed in
+on any machine somebody works on GitHub from. Probed 2026-08-27 on this one,
+`gh auth status` reports scopes `gist, read:org, repo, workflow` — and `repo` and
+`workflow` are exactly and only what Actions runs and pull requests want.
+
+So `gh auth token` is the rung, and **what it is not** is the part that makes it
+cheap:
+
+- **Not a second wire format.** `gh` is asked for a *credential*, once an hour,
+  and then got out of the way — every request after it is the same `ureq` call
+  through the same proxy-aware agent Azure DevOps uses. Shelling out to `gh api`
+  per request was the expensive alternative: a process spawn per poll, a second
+  JSON envelope, and `gh`'s own error vocabulary layered over GitHub's.
+- **Not a second secret to manage.** A PAT in the vault would mean a second
+  `Keyring`, a second token to rotate, a second way to be mysteriously
+  unauthorised — for a credential the machine already has. This is exactly the
+  test stated further up for whether a setting deserves a field: *an organisation
+  is derivable from the wall and is read off it; a PAT is derivable from nothing
+  and is asked for.* **A GitHub token is derivable here, so it is not asked for.**
+  That is the same rule reaching its other conclusion, not an exception to it.
+
+`GH_TOKEN`/`GITHUB_TOKEN` are read **ahead** of `gh` — the opposite order to
+`VOLERY_AZDO_PAT`, which is last. The reasoning is not inconsistent: the Azure
+DevOps ladder falls through on refusal, so any rung above the variable is by
+definition one that works, and putting the variable first could only ever mean a
+stale shell profile outranking a sign-in you just did. There is no ladder here —
+one credential, taken or not — so the order is not choosing between two working
+things, it is choosing what "signed in" means. `gh` itself reads `GH_TOKEN` ahead
+of its keyring, so agreeing with the tool is the whole of it.
+
+`gh_names` looks for the binary under every name it goes by, which is the lesson
+`az` cost ten days paid before it could be paid again: a bare program name does
+not consult `PATHEXT`, so a scoop or winget `.cmd` shim is invisible to
+`Command::new`.
+
+#### Pull requests are GraphQL, and it is the cheaper shape as well as the better one
+
+The REST list (`GET /repos/{o}/{r}/pulls`) carries neither `mergeable_state` —
+GitHub computes the merge in the background and reports it only on the single-PR
+endpoint — nor approvals, only `requested_reviewers`, which is who has *not*
+answered. Probed 2026-08-27 against `cli/cli`: a REST row can say a PR is open
+and a draft, and cannot say whether it conflicts, whether it is approved, or
+whether anybody asked for changes. **Three of the six things `reviewSaid`
+exists to say.**
+
+One GraphQL query answers all of it at the same cost — one request per repository
+— and folds the caller's identity in free (`viewer { login }`), which on the
+Azure DevOps side is a second request against `connectionData`. The only price is
+a POST with a body in a module otherwise built on GETs, and the one genuinely
+awkward thing about it, handled in `graphql()`: **GraphQL answers 200 and puts
+the failure in the body**, so treating a 200 as an answer would return an empty
+list and call it a quiet morning.
+
+`reviewRequests` and `latestOpinionatedReviews` are disjoint by construction —
+GitHub moves a person from the first to the second when they submit — so "asked
+and has not answered" arrives already told apart, which is the distinction
+`needsMe` is built on and the one REST cannot make. A team request appears as a
+null reviewer (the query only spreads `... on User`) and is dropped rather than
+guessed at.
+
+#### The costs run the other way round
+
+Azure DevOps: pull requests are org-wide in one call, builds are one request per
+project (six here). GitHub: **both** are one per repository — which is cheaper in
+practice, since the number of GitHub repositories on a wall is one or two against
+six Azure DevOps projects for a single clone.
+
+GitHub's REST core budget is 5000/hour. Runs poll every 20s, so one repository is
+180/hour and nothing to think about, ten is 1800 and still fine, thirty would not
+be. A 403 carrying `x-ratelimit-remaining: 0` is told apart from a 403 meaning
+"not your repository", because the first says *wait* and the second says *you
+cannot*, and confusing them sends you hunting a permission problem you do not
+have. A 404 is the same silence Azure DevOps' `Denied::Unseen` counts — GitHub
+will not admit a private repository exists.
+
+**`Reviews` gained an `unseen` count**, which was structurally always zero while
+pull requests came back org-wide and becomes a real number now that GitHub asks
+per repository. The front end had been defaulting it for this half all along
+(`#land`, `scan.unseen ?? 0`), so the number simply starts being true.
+
+**Azure DevOps' fault wins a tie** when both halves fault, and that is a judgement
+rather than which is checked first: the Azure DevOps half is the one needing a
+credential you go and mint, it is the fault `Pipelines.svelte` matches on to offer
+the keyring button, and a GitHub fault is nearly always `gh auth login` — a
+sentence rather than a panel. Same shape as `get` letting a refusal outrank an
+invisibility.
+
+**One mutex at a time.** `azdo_runs` takes the Azure DevOps lock, drops it, then
+takes the GitHub one. Both are held across a whole network pass, so a command
+taking them in one order while anything else took them in the other would
+deadlock the wall for two polls — indistinguishable from the freeze `off_main`
+exists to prevent. "Never both at once" is a rule that needs no ordering to be
+remembered.
+
+### One run, opened
+
+A left click on a row **opens the run in the app**; the browser is an icon button
+beside it, drawn on hover and `:focus-visible`. That order is the sink item's own
+reading: what you want nine times in ten is *which step went red*, so that is the
+cheap gesture, and the tab you used to open to find it out is one click away for
+the tenth — a log, a diff, an artifact, anything the panel does not draw.
+
+- **The `dots` and `lanes` readings get no icon.** No room at that size, and none
+  needed: a dot opens the panel and the panel carries the link, so the way out
+  exists from every reading without every reading drawing it.
+- **The row and the link are siblings, not nested.** A button inside a button is
+  invalid and the browser resolves it by swallowing one.
+- **A `Pipelines` mounted with no `onrun` still opens the browser.** Which is why
+  the pass-through is written `onrun={onforgerun ? … : undefined}` — an
+  always-truthy wrapper makes the fallback unreachable.
+
+**Two levels on both forges, and that is a decision rather than what either hands
+over.** GitHub gives exactly jobs-and-steps. Azure DevOps gives a flat list of
+records with parent pointers across four types — probed 2026-08-27 against a RISE
+build, 71 records for six stages, in no useful order, `order` meaning *within
+your parent*. The unit both services agree on is the one that runs on an agent
+and owns a log (Azure DevOps' `Job`, GitHub's job), so that is a `Stage` here and
+the leaf below is a `Step`. `Phase` is a 1:1 wrapper and is dropped; `Stage`
+survives as a name prefix, and only when the build has more than one, so a
+single-stage build does not carry the word "Build" down every row. `Checkpoint`
+records are the approval gate's bookkeeping rather than work and are dropped.
+
+A tree of arbitrary depth — faithful to Azure DevOps, padded on GitHub — was the
+alternative and was declined: this is read at a glance in a panel, and a reading
+whose indentation depends on which forge answered is one you decode before you
+can use it.
+
+- **`worthOpening` unfolds one stage for you**: the first that failed, or failing
+  that the first still running. A release pipeline is a dozen stages of which
+  eleven are skipped, so unfolding all of them buries the row you opened the
+  panel for — and unfolding *none* makes you hunt. Null when nothing stands out,
+  because opening something on a run that simply passed would be a guess.
+- **`skipped` is `rest`, and getting that wrong is most of what would make the
+  panel unreadable.** Five of six stages skipped on any given run means a panel
+  that drew them amber would be five-sixths alarm.
+- **Not-started and running are told apart by the start time, not the state.**
+  Azure DevOps says `pending` for both a queued job and one whose agent has not
+  reported. Drawing an unstarted stage celadon claims work is happening that is
+  not.
+- **`succeededWithIssues` is the timeline's spelling of `partiallySucceeded`** —
+  the same service, the same idea, two words, one per level. Both are carried
+  verbatim rather than one being corrected into the other, which is why
+  `stageTierOf` is its own function rather than a reuse of `tierOf`.
+- **`detailSaid` has its own silences**, for the reason `emptySaid` does. A queued
+  build genuinely has no timeline records — Azure DevOps creates them as the
+  agent picks the job up — so "nothing here yet" is the *normal* first few
+  seconds of a run rather than an edge case.
+
+#### The polling is bounded twice
+
+`DETAIL_EVERY` is 5s, faster than either list, and justified by the fact that you
+opened it deliberately and are looking at one run. The first bound is the usual
+one: nothing polls unless a panel is up.
+
+**The second bound is the one that matters — it stops the moment the run stops.**
+A finished run cannot change, so `#pollDetail` clears its own timer when Rust says
+`live: false`. Without it, a panel left open on a build that finished this morning
+would poll a corporate server every five seconds until somebody closed it, which
+is exactly what the whole attach/detach arrangement exists to prevent. `live` is
+answered in Rust rather than re-derived from the stages, because a run whose last
+job has finished is not necessarily finished.
+
+An answer landing for a run the panel has already left is dropped (`opened.id`
+re-checked after the await) — five seconds is long enough for that to be ordinary
+— and `App.svelte` wraps the panel in `{#key openRun.id}` so opening a second run
+tears the first down. Without the key Svelte reuses the component and the
+`$effect` cleanup that stops the poller never fires.
+
+#### What is deliberately left out
+
+**Raw log text.** The sink item asks to "consult the run directly in Volery", and
+a stage/step tree with per-step status and timings answers it — that is what you
+actually go to the browser for when a pipeline goes red. Streaming the logs is a
+much larger job (Azure DevOps pages them per timeline record, GitHub serves a zip
+of the lot) wanting `logface.ts`'s substrate, a scrollback budget and a per-step
+fetch. The external-link button is what covers the gap on purpose: **the one thing
+this panel cannot show you is one click from it.**
+
+**And the floor holds.** No re-run, no cancel, no approve, in the panel any more
+than in the list — the argument does not weaken by the reading getting deeper, and
+it gets stronger the closer you are to the machinery. This wall spawns agents with
+`--dangerously-skip-permissions`; a "re-run failed jobs" button beside a job list
+read at a glance would be the most consequential thing in the app.
 
 ### The token panel
 
