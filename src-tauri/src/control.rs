@@ -167,9 +167,11 @@ fn to_screen(app: &AppHandle, x: f64, y: f64) -> Result<(i32, i32), String> {
 #[cfg(windows)]
 mod win {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
-        MOUSEEVENTF_RIGHTUP, MOUSEINPUT, MOUSE_EVENT_FLAGS,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+        KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+        MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
@@ -229,6 +231,65 @@ mod win {
     }
     pub fn release_middle() {
         button(MOUSEEVENTF_MIDDLEUP);
+    }
+
+    /// One detent of a real wheel is 120, and the sign is Win32's rather than the
+    /// DOM's: **positive `data` here means the wheel rotated away from you**,
+    /// which scrolls *up*. `control_real_wheel` does the flip, once, so the op's
+    /// vocabulary can keep `WheelEvent.deltaY`'s sense and only this line has to
+    /// know that the two disagree.
+    pub fn wheel(data: i32, horizontal: bool) {
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    /* A signed delta in an unsigned field: `mouseData` is a
+                       DWORD that Win32 reads back as a short, so a downward
+                       wheel travels as two's complement rather than as a
+                       negative number. windows-rs types it `u32` and does no
+                       conversion for you. */
+                    mouseData: data as u32,
+                    dwFlags: if horizontal {
+                        MOUSEEVENTF_HWHEEL
+                    } else {
+                        MOUSEEVENTF_WHEEL
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
+    }
+
+    fn key(vk: u16, flags: KEYBD_EVENT_FLAGS) {
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    /* Left at zero deliberately. Chromium reads the scan code for
+                       `KeyboardEvent.code` but takes `key` off the virtual key, and
+                       every binding on this wall is on `key`. A scan code invented
+                       here would be one more thing that could be subtly wrong
+                       without any test noticing. */
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
+    }
+
+    pub fn key_down(vk: u16) {
+        key(vk, KEYBD_EVENT_FLAGS(0));
+    }
+    pub fn key_up(vk: u16) {
+        key(vk, KEYEVENTF_KEYUP);
     }
 }
 
@@ -321,6 +382,198 @@ pub fn control_real_drag(
     #[cfg(not(windows))]
     {
         let _ = (app, x, y, dx, dy, steps, which);
+        Err("real input is implemented for Windows only".into())
+    }
+}
+
+/// A key name in `KeyboardEvent.key`'s spelling → the virtual key that produces
+/// it.
+///
+/// A **closed** vocabulary, and that is the whole design of this function. The
+/// obvious alternative — derive a virtual key from the character and fall back to
+/// something for the rest — produces a harness that presses *nearly* the right
+/// key and a test that fails for a reason nowhere near the assertion. Refusing
+/// what it does not know costs one error message and buys the guarantee that a
+/// green run pressed what it said it pressed.
+///
+/// The names are the DOM's rather than Win32's, because `KeyboardEvent.key` is
+/// the vocabulary every binding in this app is written in (`onGlobalKey`,
+/// `onDraftKey`, the viewer's `onKey`) and the one the synthetic `key` op already
+/// speaks. One spelling for a keystroke, whichever rung presses it.
+pub(crate) fn vk(name: &str) -> Option<u16> {
+    /* The scrollers' keys first — they are why this exists. A synthetic keydown
+       does not make Chromium scroll the focused element, so "End goes to the
+       bottom of the file" was a claim in a comment with nothing able to check
+       it. See the note on `.sheet`'s tabindex in `Spyglass.svelte`. */
+    let named = match name {
+        "End" => 0x23,
+        "Home" => 0x24,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "ArrowLeft" => 0x25,
+        "ArrowUp" => 0x26,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "Escape" => 0x1B,
+        "Enter" => 0x0D,
+        "Tab" => 0x09,
+        "Backspace" => 0x08,
+        "Delete" => 0x2E,
+        "Insert" => 0x2D,
+        " " | "Space" => 0x20,
+        _ => 0,
+    };
+    if named != 0 {
+        return Some(named);
+    }
+    /* A single printable character, which is how a letter binding is spelled on
+       this wall — "e to edit", Ctrl+F, the leader. Upper-cased because the
+       virtual key for a letter *is* its ASCII capital, and the caller may have
+       written either; which case actually arrives at the page is then Shift's
+       business rather than this table's. */
+    let mut chars = name.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        let up = c.to_ascii_uppercase();
+        if up.is_ascii_uppercase() || up.is_ascii_digit() {
+            return Some(up as u16);
+        }
+    }
+    /* F1–F12 are contiguous from 0x70. */
+    if let Some(n) = name.strip_prefix('F').and_then(|d| d.parse::<u16>().ok()) {
+        if (1..=12).contains(&n) {
+            return Some(0x6F + n);
+        }
+    }
+    None
+}
+
+const VK_SHIFT: u16 = 0x10;
+const VK_CONTROL: u16 = 0x11;
+const VK_ALT: u16 = 0x12;
+
+/// A real wheel at a point in the webview.
+///
+/// The rung above `scroll`. `scroll` writes a scroller's `scrollTop` and proves
+/// what the app *remembers* about a position; this proves that a wheel over a
+/// point lands on the scroller you think it does and that the browser then
+/// scrolls it — which is the half a written `scrollTop` assumes and cannot see.
+/// Nested scrollers, a non-passive listener that preventDefaults, and
+/// `overscroll-behavior` are all invisible to the other rung.
+///
+/// `notches` is in detents and carries **`deltaY`'s sign — positive scrolls
+/// down** — so one sense holds across the synthetic `wheel` op and this one. The
+/// flip to Win32's opposite convention happens here and nowhere else.
+#[tauri::command]
+pub fn control_real_wheel(
+    app: AppHandle,
+    x: f64,
+    y: f64,
+    notches: f64,
+    horizontal: Option<bool>,
+) -> Result<(), String> {
+    check_armed()?;
+    #[cfg(windows)]
+    {
+        let sideways = horizontal.unwrap_or(false);
+        let (sx, sy) = to_screen(&app, x, y)?;
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.set_focus();
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        win::move_to(sx, sy);
+        /* The cursor has to have arrived before the wheel is sent: a wheel goes
+           to whatever is under the pointer at the moment it is delivered, not to
+           whatever the last SetCursorPos asked for. */
+        std::thread::sleep(Duration::from_millis(90));
+        let steps = (notches.abs().ceil() as i32).max(1);
+        let per = (notches * 120.0 / steps as f64).round() as i32;
+        for _ in 0..steps {
+            /* Horizontal is the one axis where Win32 and the DOM agree: positive
+               is rightward in both. Vertical is inverted. */
+            win::wheel(if sideways { per } else { -per }, sideways);
+            /* One detent per frame, so a smooth-scroll animation and a
+               deltaY-accumulating pan see a gesture rather than a jump. */
+            std::thread::sleep(Duration::from_millis(24));
+        }
+        std::thread::sleep(Duration::from_millis(120));
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, x, y, notches, horizontal);
+        Err("real input is implemented for Windows only".into())
+    }
+}
+
+/// A real key, with real modifiers.
+///
+/// The rung above the synthetic `key` op, and it exists for the same reason
+/// `real.click` does: a dispatched `KeyboardEvent` proves a handler is connected
+/// and nothing else. It cannot make the browser *act* — the focused scroller does
+/// not move for End, a field does not receive a character, and `preventDefault`
+/// on it prevents nothing, because there was no default there to prevent. So the
+/// app's own claim that a key does something outside its own handlers had no way
+/// to be checked from here.
+///
+/// Modifiers are pressed around the key and released in reverse, which is the
+/// order a hand makes and the order Windows' own modifier state expects.
+#[tauri::command]
+pub fn control_real_key(
+    app: AppHandle,
+    key: String,
+    ctrl: Option<bool>,
+    shift: Option<bool>,
+    alt: Option<bool>,
+    times: Option<u32>,
+) -> Result<(), String> {
+    check_armed()?;
+    let code = vk(&key).ok_or_else(|| {
+        format!(
+            "{key:?} is not a key this surface knows how to press. Names are \
+             KeyboardEvent.key's: End, Home, PageUp, PageDown, the four Arrows, \
+             Escape, Enter, Tab, Backspace, Delete, Insert, Space, a single \
+             character, or F1-F12."
+        )
+    })?;
+    #[cfg(windows)]
+    {
+        let mods: Vec<u16> = [
+            (ctrl.unwrap_or(false), VK_CONTROL),
+            (shift.unwrap_or(false), VK_SHIFT),
+            (alt.unwrap_or(false), VK_ALT),
+        ]
+        .into_iter()
+        .filter_map(|(on, code)| on.then_some(code))
+        .collect();
+
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.set_focus();
+        }
+        /* Longer than the mouse's 60ms, because a keystroke sent before the
+           foreground has actually changed is typed into whatever window was
+           there — and unlike a stray click, that lands in somebody's editor. */
+        std::thread::sleep(Duration::from_millis(120));
+
+        for m in &mods {
+            win::key_down(*m);
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        for _ in 0..times.unwrap_or(1).clamp(1, 64) {
+            win::key_down(code);
+            std::thread::sleep(Duration::from_millis(24));
+            win::key_up(code);
+            std::thread::sleep(Duration::from_millis(24));
+        }
+        for m in mods.iter().rev() {
+            win::key_up(*m);
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        std::thread::sleep(Duration::from_millis(90));
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, code, ctrl, shift, alt, times);
         Err("real input is implemented for Windows only".into())
     }
 }
@@ -579,6 +832,91 @@ mod tests {
         assert!(input_armed(Some("on")));
         assert!(input_armed(Some("TRUE")));
         assert!(input_armed(Some(" yes ")));
+    }
+
+    /* `vk` is the one part of real keyboard input that is a decision rather than
+       a call into Win32, and a wrong entry here is the worst kind of harness
+       bug: the run is green, the key that was pressed is not the key the test
+       names, and the failure lands nowhere near either. */
+
+    #[test]
+    fn the_scrollers_keys_are_the_ones_this_exists_for() {
+        // Why real keyboard input was added at all — a synthetic keydown cannot
+        // move the focused scroller, so these four had no way to be checked.
+        assert_eq!(vk("End"), Some(0x23));
+        assert_eq!(vk("Home"), Some(0x24));
+        assert_eq!(vk("PageDown"), Some(0x22));
+        assert_eq!(vk("PageUp"), Some(0x21));
+    }
+
+    #[test]
+    fn the_arrows_are_in_win32s_order_not_the_dom_reading_order() {
+        // Left, Up, Right, Down — contiguous, and famously not the order anyone
+        // guesses. Transcribing these by eye is exactly how a harness ends up
+        // pressing Up for Down.
+        assert_eq!(vk("ArrowLeft"), Some(0x25));
+        assert_eq!(vk("ArrowUp"), Some(0x26));
+        assert_eq!(vk("ArrowRight"), Some(0x27));
+        assert_eq!(vk("ArrowDown"), Some(0x28));
+    }
+
+    #[test]
+    fn names_are_keyboardevent_keys_spelling() {
+        // One spelling for a keystroke across both rungs: whatever the synthetic
+        // `key` op takes, `real.key` takes. Win32's own names ("VK_NEXT",
+        // "Prior") are deliberately not accepted, so there is no second
+        // vocabulary to keep in step.
+        assert_eq!(vk("Escape"), Some(0x1B));
+        assert_eq!(vk("Enter"), Some(0x0D));
+        assert_eq!(vk("Tab"), Some(0x09));
+        assert_eq!(vk("VK_NEXT"), None);
+        assert_eq!(vk("Prior"), None);
+        assert_eq!(vk("Down"), None);
+    }
+
+    #[test]
+    fn a_letter_is_its_own_capital_in_either_case() {
+        // The bare-letter bindings — "e to edit" in the viewer, Ctrl+F to swap
+        // modes — are written lowercase in the app, and the virtual key is the
+        // capital. Both spellings have to reach the same key.
+        assert_eq!(vk("e"), Some('E' as u16));
+        assert_eq!(vk("E"), Some('E' as u16));
+        assert_eq!(vk("f"), vk("F"));
+        assert_eq!(vk("7"), Some('7' as u16));
+    }
+
+    #[test]
+    fn space_answers_to_both_of_its_names() {
+        // The finder's leader is a space, and `KeyboardEvent.key` spells it as
+        // the character while every human writes "Space".
+        assert_eq!(vk(" "), Some(0x20));
+        assert_eq!(vk("Space"), Some(0x20));
+    }
+
+    #[test]
+    fn function_keys_are_bounded_at_both_ends() {
+        assert_eq!(vk("F1"), Some(0x70));
+        assert_eq!(vk("F12"), Some(0x7B));
+        // Off the end rather than 0x7C, which is a real key (F13) and would be a
+        // silently plausible answer.
+        assert_eq!(vk("F13"), None);
+        assert_eq!(vk("F0"), None);
+    }
+
+    #[test]
+    fn an_unknown_key_is_refused_rather_than_guessed_at() {
+        // The whole argument for a closed table. None of these may resolve to
+        // "nearly right".
+        assert_eq!(vk(""), None);
+        assert_eq!(vk("Meta"), None);
+        assert_eq!(vk("Control"), None);
+        assert_eq!(vk("ArrowSideways"), None);
+        assert_eq!(vk("PageDwn"), None);
+        // Multi-character, so not a single printable either.
+        assert_eq!(vk("ee"), None);
+        // Non-ASCII: a real key on somebody's layout, but not one a virtual-key
+        // code can be derived from without knowing the layout.
+        assert_eq!(vk("é"), None);
     }
 
     #[test]

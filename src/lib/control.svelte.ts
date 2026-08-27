@@ -1132,6 +1132,13 @@ export class Control {
            it into the dock's field, and "the draft changed" alone would not
            show that focus went with it. */
         focusedTag: document.activeElement?.tagName ?? null,
+        /* And which one. A tag alone cannot tell the file viewer's sheet from
+           any other div, and the sheet holding the keyboard is a deliberate
+           arrangement — it is `tabindex="-1"` precisely so the arrows and the
+           page keys scroll the file with no field on screen. Asserting that
+           needs the class, and then `real.key` to see the scroll actually
+           happen. */
+        focusedClass: (document.activeElement as HTMLElement | null)?.className?.toString() ?? null,
       },
       errors: [...this.#errors],
     };
@@ -2429,10 +2436,12 @@ export class Control {
        *  testing `nvimKey` through two layers instead of testing it directly
        *  in `test/nvim.test.ts`, where it already is.
        *
-       *  Note what this op cannot do: it cannot type into nvim the way a person
-       *  does, since the control surface has no way to make a real key reach a
-       *  focused element (see the note in control.md). `keys` reaches the
-       *  process, which is one layer below the thing a person presses. */
+       *  Note what this op does not do: it does not type into nvim the way a
+       *  person does. `real.key` can now put a trusted keystroke into the
+       *  focused element, so that path is reachable — but it goes through the
+       *  editor's own key translation on the way, and `keys` reaches the process
+       *  directly, which is one layer below the thing a person presses. Use this
+       *  to drive nvim and `real.key` to test the translation. */
       editor: async (op) => {
         const what = String(op.do ?? "screen");
         if (what === "edit") {
@@ -2663,6 +2672,253 @@ export class Control {
         });
         target.dispatchEvent(ev);
         return { key: String(op.key ?? "Enter"), defaultPrevented: ev.defaultPrevented };
+      },
+
+      /** The whole pointer ladder, not just the click at the end of it.
+       *
+       *  `click` is `el.click()`, which fires exactly one event, and a great deal
+       *  of this wall hangs off the four *before* it. Every dismissible thing
+       *  closes on `pointerdown` — the context menu's catcher, the overflow
+       *  menu, the dog-ear knobs, the file viewer's window listener — for the
+       *  stated reason that the panel should be gone before whatever is
+       *  underneath decides what the press meant. None of that was reachable:
+       *  `el.click()` on a card leaves an open viewer open, so the one gesture
+       *  those components exist to get right could not be made from outside.
+       *  So could the press half of `Canvas.groundDown`, which is where the
+       *  selection is settled and where four kinds of thing on the wall are
+       *  grabbed.
+       *
+       *  Rung two of three, and it is worth being exact about what it buys. It
+       *  proves the handlers are connected and that the *sequence* is right,
+       *  which is what a dismiss-on-pointerdown is. It does not prove Chromium
+       *  routes a real press this way, and it deliberately cannot cross a drag's
+       *  slop honestly: the first thing `groundMove` does past `DRAG_SLOP` is
+       *  `setPointerCapture`, and a pointer id that no real pointer owns is not
+       *  something a page may capture. So `dx`/`dy` exist, `errors` reports what
+       *  the app threw while they were being delivered, and **a drag you want to
+       *  believe in is `real.drag`** — see `control.md`.
+       *
+       *  `pointerId` is deliberately nowhere near 1. Borrowing the real mouse's
+       *  id would put a fictional pointer into the same slot Chromium tracks the
+       *  actual cursor in, so a synthetic gesture could leave the real one
+       *  captured — a harness that breaks the app it is measuring. */
+      press: async (op) => {
+        const button = Number(op.button ?? 0);
+        const bit = button === 1 ? 4 : button === 2 ? 2 : 1;
+        const target = op.selector ? this.#el(op) : null;
+        const from = target
+          ? (() => {
+              const r = target.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) {
+                throw new Error(`"${op.selector}" has no box — nothing to press`);
+              }
+              return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+            })()
+          : { x: Number(op.x), y: Number(op.y) };
+        /* A bare point aims at whatever is under it, which is what a hand does.
+           A selector aims at the element itself, which is what `click` and
+           `menu` already do — so both spellings keep the behaviour they have
+           elsewhere in this vocabulary. */
+        const at =
+          target ?? document.elementFromPoint(from.x, from.y) ?? document.body;
+
+        const before = this.#errors.length;
+        const id = 947;
+        const send = (type: string, x: number, y: number, buttons: number) => {
+          at.dispatchEvent(
+            new PointerEvent(type, {
+              pointerId: id,
+              pointerType: "mouse",
+              isPrimary: true,
+              button: type === "pointermove" ? -1 : button,
+              buttons,
+              clientX: x,
+              clientY: y,
+              width: 1,
+              height: 1,
+              pressure: buttons === 0 ? 0 : 0.5,
+              ctrlKey: !!op.ctrl,
+              shiftKey: !!op.shift,
+              altKey: !!op.alt,
+              metaKey: !!op.meta,
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+            }),
+          );
+        };
+
+        const dx = Number(op.dx ?? 0);
+        const dy = Number(op.dy ?? 0);
+        const steps = Math.max(1, Number(op.steps ?? (dx || dy ? 12 : 1)));
+
+        send("pointerdown", from.x, from.y, bit);
+        /* A frame between each, because the gesture is read by handlers that
+           write `$state` and then measure the DOM again on the next move —
+           `studio.x` on a pan, the marquee's far corner. Delivering twelve moves
+           inside one microtask is not the sequence a hand makes. */
+        await raf();
+        if (dx || dy) {
+          for (let i = 1; i <= steps; i++) {
+            const t = i / steps;
+            send("pointermove", from.x + dx * t, from.y + dy * t, bit);
+            await raf();
+          }
+        }
+        const to = { x: from.x + dx, y: from.y + dy };
+        send("pointerup", to.x, to.y, 0);
+        await raf();
+        /* And the click at the end, which is what the `click` op was on its own.
+           `auxclick` for the other two buttons, because that is the event the
+           middle button actually has — the dog-ear strip reads it to close a
+           tab. A right-button gesture gets no `contextmenu`; that is `menu`. */
+        if (op.click !== false) {
+          at.dispatchEvent(
+            new MouseEvent(button === 0 ? "click" : "auxclick", {
+              button,
+              buttons: 0,
+              clientX: to.x,
+              clientY: to.y,
+              ctrlKey: !!op.ctrl,
+              shiftKey: !!op.shift,
+              altKey: !!op.alt,
+              metaKey: !!op.meta,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        }
+        await settle();
+        return {
+          at: { x: Math.round(from.x), y: Math.round(from.y) },
+          to: { x: Math.round(to.x), y: Math.round(to.y) },
+          target: at.className?.toString() || at.tagName,
+          travelled: Math.round(Math.hypot(dx, dy)),
+          steps: dx || dy ? steps : 0,
+          /* What the app threw while the ladder was being delivered. A synthetic
+             gesture that trips `setPointerCapture` shows up here rather than as a
+             quietly incomplete drag, which is the difference between "the wall
+             did not move" and "the wall could not be moved this way". */
+          errors: this.#errors.slice(before).map((e) => e.text),
+        };
+      },
+
+      /** Where a scroller is, and where to put it.
+       *
+       *  Rung one of the two that answer "the view had been scrolled". A written
+       *  `scrollTop` is a *real* scroll — it fires the same `scroll` event a
+       *  wheel does, and every listener that folds one hears it identically — so
+       *  this is a seam and not a parallel path. What it does not prove is that
+       *  a gesture *reaches* this scroller; `real.wheel` and `real.key` are that
+       *  rung, and the two are not interchangeable.
+       *
+       *  It exists because a whole behaviour was unreachable without it. The
+       *  file viewer's dog-ears remember where you were reading and put you back
+       *  there (`Spyglass.reading`/`putBack`), and the only scroll the surface
+       *  could cause was the app's own `scrollIntoView` on the line a file was
+       *  opened at — which is the same position the fallback would have chosen.
+       *  So "restored your reading" and "re-centred the line" were the same
+       *  observation from out here, and the feature was confirmed by hand.
+       *
+       *  With no `to` and no `by` it only reads, and that is the common case:
+       *  the assertion worth making is that two readings of the same scroller
+       *  agree, never that one of them is a particular number. A scroll offset
+       *  in pixels is a fact about a font — the same reason `finder.tabs[].read`
+       *  reports whether a place was kept and not what it was. */
+      scroll: async (op) => {
+        const el = this.#el(op);
+        const view = () => ({
+          scrollTop: Math.round(el.scrollTop),
+          scrollHeight: Math.round(el.scrollHeight),
+          clientHeight: Math.round(el.clientHeight),
+        });
+        const max = () => Math.max(0, el.scrollHeight - el.clientHeight);
+        const before = view();
+        const asked = op.to !== undefined || op.by !== undefined;
+
+        if (asked) {
+          /* Refused rather than quietly no-oped. A scroller with nothing below
+             the fold is nearly always the wrong selector, and a reply saying
+             "scrollTop 0, as requested" would read as the app having failed to
+             remember rather than as the test having aimed at a box with no
+             overflow in it. */
+          if (max() === 0) {
+            throw new Error(
+              `"${op.selector}" has no overflow to scroll — ${before.scrollHeight}px of ` +
+                `content inside ${before.clientHeight}px of box`,
+            );
+          }
+          const want =
+            op.to === "top"
+              ? 0
+              : op.to === "bottom"
+                ? max()
+                : op.to !== undefined
+                  ? Number(op.to)
+                  : before.scrollTop + Number(op.by);
+          if (!Number.isFinite(want)) {
+            throw new Error('scroll wants a number, "top" or "bottom" — got ' + String(op.to));
+          }
+          el.scrollTop = Math.max(0, Math.min(max(), want));
+        }
+
+        await settle();
+        const now = view();
+        return {
+          ...now,
+          before: before.scrollTop,
+          max: max(),
+          moved: now.scrollTop !== before.scrollTop,
+          /* How much is below the fold, which is the number every follow-the-tail
+             decision is made from (`follow.ts`'s `slack`). Reported rather than
+             judged here, so a test can assert against `STICK_PX` itself instead
+             of against a second copy of the threshold. */
+          slack: Math.max(0, now.scrollHeight - now.scrollTop - now.clientHeight),
+          atTop: now.scrollTop === 0,
+          atBottom: now.scrollTop >= max(),
+        };
+      },
+
+      /** A real wheel, at a real point. The rung `scroll` is not.
+       *
+       *  Positive `notches` scrolls **down**, which is `deltaY`'s sign and the
+       *  synthetic `wheel` op's — Win32 means the opposite by a positive wheel
+       *  and `control.rs` does the flip, once. */
+      "real.wheel": async (op) => {
+        const p = op.selector
+          ? (() => {
+              const r = this.#el(op).getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) {
+                throw new Error(`"${op.selector}" has no box — nothing to wheel over`);
+              }
+              return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+            })()
+          : { x: Number(op.x), y: Number(op.y) };
+        await invoke("control_real_wheel", {
+          x: p.x,
+          y: p.y,
+          notches: Number(op.notches ?? 3),
+          horizontal: !!op.horizontal,
+        });
+        await settle();
+        return { at: { x: Math.round(p.x), y: Math.round(p.y) } };
+      },
+
+      /** A real key. What `key` cannot do is make the *browser* act — a
+       *  dispatched keydown moves no scroller, so "the arrows scroll the file
+       *  rather than doing nothing", which is why the viewer's sheet is
+       *  focusable at all, had nothing able to check it. */
+      "real.key": async (op) => {
+        const key = String(op.key ?? "");
+        await invoke("control_real_key", {
+          key,
+          ctrl: !!op.ctrl,
+          shift: !!op.shift,
+          alt: !!op.alt,
+          times: Number(op.times ?? 1),
+        });
+        await settle();
+        return { key, times: Number(op.times ?? 1), focusedTag: document.activeElement?.tagName ?? null };
       },
 
       /** The real cursor, the real button. Aim by selector or by CSS point. */

@@ -30,11 +30,16 @@ const DIR = join(process.env.APPDATA ?? "", "dev.skein.studio");
 const CONTROL = join(DIR, "control.json");
 const DB = join(DIR, "skein.db");
 
+/** The checkout this suite is driving. Named once rather than three times: two
+ *  constants below already assumed it, and the file-viewer tests need it a third
+ *  time to open a real file — a wrong spelling in one of three places is a
+ *  failure that reads as the app rather than as the path. */
+const REPO = "C:\\atelier\\skein";
 /** The only place this suite is allowed to create anything. */
-const SCRATCH = "C:\\atelier\\skein\\.scratch";
+const SCRATCH = join(REPO, ".scratch");
 const WALL = join(SCRATCH, "wall");
 /** A real image, already in the repo from the icon work. */
-const IMAGE = "C:\\atelier\\skein\\src-tauri\\icons\\128x128.png";
+const IMAGE = join(REPO, "src-tauri", "icons", "128x128.png");
 
 type Reply = Record<string, any>;
 
@@ -2817,6 +2822,184 @@ t("the ground's own menu offers the way back, named", async () => {
     expect(labels.some((l: string) => l.startsWith("undo moving a widget"))).toBe(true);
     await ctl("key", { selector: ".surface", key: "Escape" });
   });
+});
+
+/* ── the pointer ladder, and a scroller that was moved ────────────────── */
+
+/* Four tests over the two gaps this suite had, and they are arranged as the
+ * ladder `control.md` describes rather than as four independent checks: the
+ * first two run in every run and prove the app's own bookkeeping, the last two
+ * need the mouse lent to them and prove that a gesture reaches the thing it was
+ * aimed at. Neither pair is redundant with the other, and the rule says why. */
+
+/** A long file, so `.sheet` has something below the fold. This one, because a
+ *  test that scrolls a scroller needs overflow and a file in the repo is the
+ *  cheapest reliable source of it — and the control surface's own module is
+ *  three thousand lines, which no theme or reading size is going to shrink into
+ *  one panel. */
+const LONG = "src\\lib\\control.svelte.ts";
+const OTHER = "src\\lib\\follow.ts";
+
+/** How far the viewer is scrolled, without moving it. */
+const sheetAt = async () => (await ctl("scroll", { selector: ".sheet" })).scrollTop;
+
+t("a dog-ear remembers where you were reading, not the line it was opened at", async () => {
+  /* The sink item this test exists for (59f00bee): the tabs remember a reading,
+     and from outside there was no way to build a state where the restored
+     reading *differs* from the open-at-the-line fallback — because a tab's line
+     and its remembered place always agree until something scrolls. The only
+     scroll the surface could cause was the app's own `scrollIntoView` on that
+     same line, so "restored your reading" and "re-centred the line" were one
+     observation. This is that state, built. */
+  await ctl("find", { do: "look-at", cwd: REPO, path: LONG, line: 40 });
+  const centred = await until(
+    "the viewer to open and centre line 40",
+    async () => (await ctl("scroll", { selector: ".sheet" })).scrollTop,
+    (n) => n > 0,
+  );
+
+  /* Somewhere else entirely — the far end of the file, which is nowhere near
+     line 40 whatever the font is doing. A written `scrollTop` is a real scroll:
+     it fires the same `scroll` event a wheel does, and `Spyglass.reading` takes
+     `el.scrollTop` without caring which. */
+  const parked = await ctl("scroll", { selector: ".sheet", to: "bottom" });
+  expect(parked.atBottom).toBe(true);
+  expect(parked.scrollTop).toBeGreaterThan(centred);
+
+  /* Away to another file, which is what turns the first one into a tab carrying
+     a reading. */
+  await ctl("find", { do: "look-at", cwd: REPO, path: OTHER });
+  const away = await snapshot();
+  const tab = away.finder.tabs.find((d: Reply) => d.path === LONG);
+  expect(tab).toBeTruthy();
+  /* The tab says it kept a place, but deliberately not what the place was — a
+     scroll offset in pixels is a fact about a font. Which is exactly why the
+     assertion below is two readings of the same scroller against each other. */
+  expect(tab.read).toBe(true);
+  expect(tab.line).toBe(40);
+
+  /* And back. */
+  await ctl("find", { do: "resume", path: LONG });
+  const back = await until(
+    "the viewer to come back to the tab's own reading",
+    async () => (await ctl("scroll", { selector: ".sheet" })).scrollTop,
+    (n) => n > centred,
+  );
+
+  /* The whole distinction, in two lines. Where we parked, not where the line is:
+     with `putBack` inert this comes back at `centred` and passes every other
+     assertion in this test. A few pixels of slack because coming back re-renders
+     the column and `putBack` writes after a `tick`. */
+  expect(Math.abs(back - parked.scrollTop)).toBeLessThan(8);
+  expect(back).toBeGreaterThan(centred + 100);
+
+  await ctl("find", { do: "hide" });
+});
+
+t("a press dismisses the viewer where a click cannot reach it", async () => {
+  /* The other half of 59f00bee. `click` is `el.click()`, which fires exactly one
+     event — and every dismissible thing on this wall closes on `pointerdown`, on
+     the stated argument that the panel should be gone before whatever is
+     underneath decides what the press meant. So the one gesture those components
+     exist to get right was the one gesture this suite could not make. */
+  await ctl("find", { do: "look-at", cwd: REPO, path: OTHER });
+  expect((await snapshot()).finder.sheet).toContain("follow.ts");
+
+  /* Rung one is not enough, and this asserts that rather than assuming it: a
+     click on the wall leaves the viewer standing, because there is no `click`
+     handler anywhere in the dismissal. If this ever starts closing the panel,
+     the `press` op below has stopped being the only way in and the rule wants
+     revisiting. */
+  await ctl("click", { selector: ".surface" });
+  expect((await snapshot()).finder.open).toBe(true);
+
+  /* Rung two. The same target, the whole ladder. */
+  const press = await ctl("press", { selector: ".surface" });
+  /* Nothing threw on the way through. A synthetic gesture that trips
+     `setPointerCapture` shows up here rather than as a quietly incomplete one. */
+  expect(press.errors).toEqual([]);
+
+  const after = await snapshot();
+  expect(after.finder.open).toBe(false);
+  /* And it left a pill behind, which is the whole reason a stray press is
+     allowed to mean this: leaving no longer costs you the file. */
+  expect(after.finder.tabs.some((d: Reply) => d.path === OTHER)).toBe(true);
+});
+
+ti("a real wheel over the viewer scrolls the file and not the wall", async () => {
+  /* Rung three, and it proves the half the other two assume. `scroll` writes
+     `scrollTop` and therefore cannot see *which* scroller a gesture lands on —
+     and the viewer sits over a wall whose bare wheel zooms, so "the wheel went
+     to the file" is a real claim with a real way to be wrong. */
+  await ctl("find", { do: "look-at", cwd: REPO, path: LONG, line: 1 });
+  await until(
+    "the viewer to open",
+    async () => (await snapshot()).finder.sheet,
+    (p) => typeof p === "string" && p.endsWith("control.svelte.ts"),
+  );
+  const before = await ctl("scroll", { selector: ".sheet" });
+  const view = (await snapshot()).viewport;
+
+  await ctl("real.wheel", { selector: ".sheet", notches: 6 });
+
+  const after = await ctl("scroll", { selector: ".sheet" });
+  /* Positive notches scroll down, which is `deltaY`'s sense and the synthetic
+     `wheel` op's. Win32 means the opposite by a positive wheel and `control.rs`
+     does the flip once — so a regression there lands here as a scroll upward
+     from a scroller already at the top, i.e. as no movement at all. */
+  expect(after.scrollTop).toBeGreaterThan(before.scrollTop);
+
+  /* And the wall did not zoom under it. The pane is not inside `.surface`, but
+     nothing stops a wheel from reaching the window's own listeners. */
+  const now = (await snapshot()).viewport;
+  expect(now.scale).toBe(view.scale);
+  expect(now.y).toBe(view.y);
+
+  await ctl("find", { do: "hide" });
+});
+
+ti("End reaches the bottom of the file, because the sheet holds the keyboard", async () => {
+  /* `.sheet` is `tabindex="-1"` on purpose — the comment above it says "so the
+     arrows scroll the file rather than doing nothing" — and that was a claim
+     nothing could check. A dispatched keydown moves no scroller: there is no
+     default action on a synthetic event to be taken, so End over the control
+     surface did nothing and the app's own handler correctly ignores it ("arrows,
+     page keys, Home and End all mean in a file exactly what they mean in a
+     file"). Only a trusted key can demonstrate the arrangement works. */
+  await ctl("find", { do: "look-at", cwd: REPO, path: LONG, line: 1 });
+  const start = await until(
+    "the viewer to open at the top",
+    async () => await ctl("scroll", { selector: ".sheet" }),
+    (v) => v.max > 0 && v.scrollTop < 40,
+  );
+
+  /* The precondition, asserted rather than assumed — and this is what
+     `focusedClass` is for. `focusedTag` alone answers "DIV", which is every
+     other box on the wall as well. */
+  const focus = await snapshot();
+  expect(focus.dom.focusedTag).toBe("DIV");
+  expect(focus.dom.focusedClass).toContain("sheet");
+
+  await ctl("real.key", { key: "End" });
+
+  const end = await until(
+    "End to carry the reading to the bottom",
+    async () => await ctl("scroll", { selector: ".sheet" }),
+    (v) => v.atBottom,
+  );
+  expect(end.scrollTop).toBeGreaterThan(start.scrollTop);
+
+  /* And Home comes back, so what was measured was the key and not a scroller
+     that had drifted. */
+  await ctl("real.key", { key: "Home" });
+  const home = await until(
+    "Home to bring it back",
+    async () => await ctl("scroll", { selector: ".sheet" }),
+    (v) => v.atTop,
+  );
+  expect(home.scrollTop).toBe(0);
+
+  await ctl("find", { do: "hide" });
 });
 
 /* ── nothing broke on the way past ───────────────────────────────────── */
