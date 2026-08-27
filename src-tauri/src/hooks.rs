@@ -212,6 +212,25 @@ fn after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 /// refused would also be work done for nothing.
 fn reply(raw: &str, card: Option<&str>, db: Option<&str>) -> Option<String> {
     let payload: serde_json::Value = serde_json::from_str(raw).ok()?;
+
+    /* **Which hook this is, decided here rather than by a matcher.** Three
+       events are registered now and all three are registered against
+       everything, for the reason recorded at the top of this file: a matcher is
+       a tool or event name written into configuration where no test can reach
+       it, and when it stops matching it says nothing at all. So the routing is
+       code.
+
+       A payload with no `hook_event_name` falls through to the `PreToolUse`
+       body below, which is what a build that does not send the field should
+       get — the shape check there (does the input carry a `command`) was the
+       whole discriminator before this arm existed and still works on its own. */
+    match payload.get("hook_event_name").and_then(serde_json::Value::as_str) {
+        Some("UserPromptSubmit") | Some("SessionStart") => {
+            return standing(&payload, card, db);
+        }
+        _ => {}
+    }
+
     let mut input = payload.get("tool_input")?.as_object()?.clone();
 
     /* **A shell tool is one with a `command`, not one with a name.** The hook is
@@ -335,9 +354,34 @@ pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>) -> String {
             args.push(FLAG_DB.to_string());
             args.push(dir.join("skein.db").to_string_lossy().into_owned());
         }
+        /* One entry, three events. The binary and the argv are identical for all
+           of them — `reply` routes on `hook_event_name`, which is the whole
+           point of registering broad — so building the object once and naming it
+           three times is not a shortcut, it is the thing that makes a fourth
+           event cost one line and no chance of the three drifting apart. */
+        let entry = serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": exe.to_string_lossy(),
+                "args": args,
+                "timeout": 10,
+            }],
+        });
         root.insert(
             "hooks".into(),
             serde_json::json!({
+                /* The compaction, which is the precise moment a card loses track
+                   of its own background work, and the prompt, which is the
+                   moment it is most likely to be *asked* about it. Both measured
+                   firing under Skein's argv, and `additionalContext` measured
+                   reaching the model from both — `tools/probe-jobs.ts`. Neither
+                   carries a matcher, for the reason the one below does not.
+
+                   These are cheap in the case that matters: `standing` prints
+                   nothing at all unless the `job` table has a row for this
+                   session, which for most cards is never. */
+                "SessionStart": [entry],
+                "UserPromptSubmit": [entry],
                 "PreToolUse": [{
                     /* **No matcher, and that is the whole of a bug this module
                        shipped with.** It was `"Bash"`, which is the name the
@@ -790,6 +834,185 @@ fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
     cmd
 }
 
+/* ── the background work a card has forgotten it started ──────────────────
+ *
+ * Sink fb3e537d, in the words of the agent it happened to: "I was asked whether
+ * I had started the dev server on localhost:3000. I said no — every command in
+ * my visible context was read-only. It was mine: my own transcript has `pnpm
+ * dev` with `run_in_background: true`, three seconds before the process's start
+ * time. The launch happened in an earlier stretch of the session that had been
+ * summarized out of my context." It then spent three other cards' turns asking
+ * who owned the process, and two of them answered confidently and wrongly.
+ *
+ * The shape it named is general: **a long-lived side effect outlives the
+ * context that records it.** Dev servers, watchers, tunnels, `--watch` runners.
+ *
+ * **Volery already held the answer and had never handed it back.** The `job`
+ * table (schema v17) is written on the *receipt* of a background call and the
+ * row is deleted when the job reports in — so the rows outstanding at any moment
+ * are, by construction rather than by a query, exactly the background work whose
+ * fate nobody knows. Until now the only thing that ever read it was `rouse`,
+ * telling a card what its *previous* process had lost. This tells a card what
+ * its *current* process is holding, at the two moments it may have forgotten.
+ *
+ * ### Two occasions, and why both
+ *
+ * `SessionStart` with `source: "compact"` is the precise moment: the context has
+ * just been rebuilt and the summary did not carry the launch. Measured firing
+ * under Skein's argv — see `tools/probe-jobs.ts`, which is where every claim in
+ * this section has its date.
+ *
+ * `UserPromptSubmit` is the backstop, and it is the one that would have caught
+ * the actual incident, because that miss was an *answer to a question*. It fires
+ * next to the words being answered, which is the highest-salience place
+ * anything can be put. It also covers the cases the compaction hook cannot: a
+ * context that was never compacted but is simply long, and a card resumed by a
+ * route `rouse` did not take.
+ *
+ * The cost is a ~5ms process per prompt — prompts are rare against tool calls,
+ * which already pay it — and roughly ninety tokens of context, only when there
+ * is outstanding work at all, which is the uncommon case. When there is none
+ * this prints nothing and the model sees nothing.
+ *
+ * ### What it must not claim
+ *
+ * A row says a job *started* and was never reported finished. It does not say
+ * the job is running, and the difference is not pedantry: Skein only ever learns
+ * a job ended by being told down the stream, so a completion notification that
+ * never arrived leaves a row standing over work that finished an hour ago. So
+ * the wording says **check** rather than asserting, which is the same bargain
+ * `resumePrompt` strikes and for the same reason — the two states are far apart
+ * and only looking distinguishes them.
+ *
+ * The session scope is the other half of not over-claiming, and it lives in
+ * `store::outstanding_jobs`: only rows this very process wrote, so the thing
+ * making the claim is the thing that made the job. */
+
+/// Answer a `SessionStart` or a `UserPromptSubmit` with what this card is
+/// holding, or with nothing at all.
+///
+/// `None` for every ordinary case, and there are many of them: no card id or
+/// database in the argv (a hook layer built by a caller with no card to name),
+/// a `SessionStart` that is not the compaction one, no session on the payload,
+/// and — overwhelmingly the most common — a card with no outstanding background
+/// work. Saying nothing is the whole of the quiet path.
+fn standing(payload: &serde_json::Value, card: Option<&str>, db: Option<&str>) -> Option<String> {
+    let (card, db) = (card?, db?);
+    let event = payload.get("hook_event_name")?.as_str()?;
+
+    /* **Only the compaction firing, and the test is here rather than in a
+       matcher.** `SessionStart` also fires on `startup`, `resume` and `clear`,
+       and none of those wants this: at startup there is no context to have lost,
+       and a resumed card is exactly the case `rouse` already handles — it sends
+       `resumePrompt` or `jobsPrompt` naming the lost jobs and then deletes the
+       rows. Answering here as well would say it twice, in two different voices,
+       about the same work. */
+    if event == "SessionStart" {
+        let source = payload.get("source").and_then(serde_json::Value::as_str);
+        if source != Some("compact") {
+            return None;
+        }
+    }
+
+    let session = payload.get("session_id")?.as_str()?;
+    let jobs = crate::store::outstanding_jobs(std::path::Path::new(db), card, session);
+    let text = standing_work(&jobs, event == "SessionStart", crate::store::now())?;
+
+    Some(
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": event,
+                "additionalContext": text,
+            }
+        })
+        .to_string(),
+    )
+}
+
+/// The words themselves. Pure, so `cargo test` can read them.
+///
+/// `folded` is whether this is the compaction occasion, which is worth one
+/// clause of difference: there, the loss has demonstrably just happened and
+/// saying so is the difference between a reminder and an explanation. On a
+/// prompt it has only *possibly* happened, and claiming otherwise would be
+/// Volery asserting something it does not know.
+///
+/// Wrapped in a tag rather than left as loose prose because it is neither the
+/// user's words nor the agent's — the same reason `blocksOf` marks a compaction
+/// summary as its own kind rather than letting it read as something you typed.
+pub fn standing_work(jobs: &[crate::store::PendingJob], folded: bool, now: i64) -> Option<String> {
+    if jobs.is_empty() {
+        return None;
+    }
+
+    let mut s = String::from("<volery-background-work>\n");
+    s.push_str(if folded {
+        "Your context has just been summarised. This card started background work that has \
+         not reported in, and the summary above does not carry it — Volery's record outlives \
+         your context, which is the whole reason this is here.\n\n"
+    } else {
+        "This card started background work that has not reported in. It may have been \
+         launched in a stretch of this session that was summarised away, in which case this \
+         is the only account of it you have.\n\n"
+    });
+
+    for (i, j) in jobs.iter().enumerate() {
+        s.push_str(&format!(
+            "  {}. {} — {}, started {} ago",
+            i + 1,
+            j.label,
+            j.kind,
+            ago(now - j.started_at),
+        ));
+        if let Some(t) = &j.task_id {
+            s.push_str(&format!(", task {t}"));
+        }
+        s.push('\n');
+        /* The path is only ever here if a file is really at it —
+           `store::pending_jobs` existence-checks a derived one. Sending an agent
+           to read something that is not there reads as the work having vanished
+           rather than as Volery having guessed. */
+        if let Some(p) = &j.output_path {
+            s.push_str(&format!("     output: {p}\n"));
+        }
+    }
+
+    s.push_str(
+        "\nCheck before telling anyone whether it is still running — read the output file, or \
+         use the task id. A job that finished without its completion notification arriving is \
+         still listed here; the row is deleted when that notification lands, and the case this \
+         exists for is the one where it never came.\n</volery-background-work>",
+    );
+    Some(s)
+}
+
+/// How long ago, in the wall's own register: two units at most, and never a
+/// decimal.
+///
+/// Milliseconds in, because `store::now()` is — getting that wrong would report
+/// a four-hour dev server as having started four seconds ago, which is precisely
+/// the reading that would make an agent dismiss it.
+fn ago(ms: i64) -> String {
+    let s = (ms / 1000).max(0);
+    if s < 60 {
+        return format!("{s}s");
+    }
+    let (m, h, d) = (s / 60, s / 3600, s / 86_400);
+    if m < 60 {
+        return format!("{m}m");
+    }
+    if h < 24 {
+        let rest = m % 60;
+        return if rest == 0 { format!("{h}h") } else { format!("{h}h {rest}m") };
+    }
+    let rest = h % 24;
+    if rest == 0 {
+        format!("{d}d")
+    } else {
+        format!("{d}d {rest}h")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +1169,175 @@ mod tests {
         let chat: serde_json::Value = serde_json::from_str(&settings(true, None)).unwrap();
         assert_eq!(chat["permissions"]["allow"][0], "WebSearch");
         assert_eq!(chat["hooks"]["PreToolUse"][0]["hooks"][0]["type"], "command");
+    }
+
+    /// The two occasions a card is handed back the background work it may have
+    /// forgotten. Registered against the same binary with the same argv, and —
+    /// like `PreToolUse` — with no matcher, so nothing can quietly stop matching.
+    #[test]
+    fn the_two_forgetting_hooks_are_registered_the_same_way() {
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None)).unwrap();
+        for ev in ["SessionStart", "UserPromptSubmit"] {
+            let h = &v["hooks"][ev][0];
+            assert!(h.get("matcher").is_none(), "{ev}: a matcher is a name that can rot");
+            assert_eq!(h["hooks"][0]["type"], "command", "{ev}");
+            assert_eq!(h["hooks"][0]["args"][0], FLAG, "{ev}");
+        }
+        /* A chat card gets them too. It can run nothing, so it will never have a
+           row — but the registration must not be the thing that decides that,
+           or the day a chat card gains a tool the guard is silently absent. */
+        let chat: serde_json::Value = serde_json::from_str(&settings(true, None)).unwrap();
+        assert!(chat["hooks"]["UserPromptSubmit"][0]["hooks"][0]["args"][0] == FLAG);
+    }
+
+    fn job(label: &str, kind: &str, task: Option<&str>, path: Option<&str>, at: i64) -> crate::store::PendingJob {
+        crate::store::PendingJob {
+            tool_id: format!("toolu_{label}"),
+            task_id: task.map(str::to_string),
+            kind: kind.to_string(),
+            label: label.to_string(),
+            output_path: path.map(str::to_string),
+            started_at: at,
+        }
+    }
+
+    /// The quiet path, and it is the overwhelmingly common one: a card with no
+    /// outstanding background work is handed nothing at all, so the model sees
+    /// nothing and the prompt costs no context.
+    #[test]
+    fn a_card_holding_nothing_is_told_nothing() {
+        assert!(standing_work(&[], false, 1_000_000).is_none());
+        assert!(standing_work(&[], true, 1_000_000).is_none());
+    }
+
+    /// Everything the agent in sink fb3e537d needed and did not have: that it
+    /// started the thing, how long ago, and where to look.
+    #[test]
+    fn the_forgotten_dev_server_is_named_with_somewhere_to_look() {
+        let now = 100_000_000;
+        let four_hours = now - (4 * 3600 + 12 * 60) * 1000;
+        let out = standing_work(
+            &[job("run the dev server", "command", Some("btuqox9zy"), Some(r"C:\t\btuqox9zy.output"), four_hours)],
+            false,
+            now,
+        )
+        .unwrap();
+
+        assert!(out.contains("run the dev server"));
+        assert!(out.contains("4h 12m ago"), "the age is the whole point of the row: {out}");
+        assert!(out.contains("btuqox9zy"), "the task id is what BashOutput takes");
+        assert!(out.contains(r"C:\t\btuqox9zy.output"));
+        /* Wrapped, because these are neither the user's words nor the agent's. */
+        assert!(out.starts_with("<volery-background-work>"));
+        assert!(out.ends_with("</volery-background-work>"));
+    }
+
+    /// **It must not claim the work is running**, and this is the assertion that
+    /// keeps it honest. A row says a job started and was never reported
+    /// finished; Skein only ever learns a job ended by being told down the
+    /// stream, so a notification that never arrived leaves a row standing over
+    /// work that finished an hour ago. Same bargain `resumePrompt` strikes.
+    #[test]
+    fn it_says_check_rather_than_asserting() {
+        let out = standing_work(&[job("a suite", "command", None, None, 0)], false, 60_000).unwrap();
+        assert!(out.contains("Check before"), "{out}");
+        assert!(
+            out.contains("finished without its completion notification"),
+            "the stale-row case has to be said out loud, or the list reads as a fact: {out}"
+        );
+        assert!(!out.contains("is running"), "no assertion about the present: {out}");
+    }
+
+    /// The compaction occasion says the loss has just happened, because there it
+    /// demonstrably has. On a prompt it has only *possibly* happened, and
+    /// claiming otherwise would be Volery asserting what it does not know.
+    #[test]
+    fn the_two_occasions_differ_by_what_can_be_claimed() {
+        let j = [job("a watcher", "watch", None, None, 0)];
+        let folded = standing_work(&j, true, 60_000).unwrap();
+        let prompt = standing_work(&j, false, 60_000).unwrap();
+        assert!(folded.contains("has just been summarised"), "{folded}");
+        assert!(prompt.contains("may have been"), "{prompt}");
+        assert!(!prompt.contains("has just been summarised"));
+    }
+
+    /// A job with no output file — a `Monitor` or an `Agent` whose derived path
+    /// was not there — is still worth naming. Knowing work was started is the
+    /// point; where to read it is a bonus, and inventing a path would send an
+    /// agent to find nothing, which reads as the work having vanished.
+    #[test]
+    fn a_job_with_nowhere_to_look_is_still_named() {
+        let out = standing_work(&[job("a subagent", "agent", None, None, 0)], false, 60_000).unwrap();
+        assert!(out.contains("a subagent"));
+        assert!(!out.contains("output:"), "no path invented: {out}");
+    }
+
+    #[test]
+    fn several_jobs_are_numbered() {
+        let out = standing_work(
+            &[job("one", "command", None, None, 0), job("two", "command", None, None, 0)],
+            false,
+            60_000,
+        )
+        .unwrap();
+        assert!(out.contains("1. one"));
+        assert!(out.contains("2. two"));
+    }
+
+    /// Milliseconds in. Reporting a four-hour dev server as four seconds old is
+    /// exactly the reading that would make an agent dismiss it.
+    #[test]
+    fn ages_read_in_the_walls_own_register() {
+        assert_eq!(ago(0), "0s");
+        assert_eq!(ago(45_000), "45s");
+        assert_eq!(ago(90_000), "1m");
+        assert_eq!(ago(3_600_000), "1h");
+        assert_eq!(ago((4 * 3600 + 12 * 60) * 1000), "4h 12m");
+        assert_eq!(ago(86_400_000), "1d");
+        assert_eq!(ago(90_000_000), "1d 1h");
+        /* A clock that stepped backwards must not print a negative age. */
+        assert_eq!(ago(-5_000), "0s");
+    }
+
+    /// `SessionStart` fires on `startup`, `resume` and `clear` as well, and none
+    /// of those wants this. A resumed card is `rouse`'s case — it already sends
+    /// a prompt naming the lost jobs and then deletes the rows — so answering
+    /// here too would say it twice about the same work, in two voices.
+    #[test]
+    fn only_the_compaction_firing_of_session_start_answers() {
+        let at = |source: &str| {
+            format!(r#"{{"hook_event_name":"SessionStart","source":"{source}","session_id":"s1"}}"#)
+        };
+        for quiet in ["startup", "resume", "clear"] {
+            assert!(
+                reply(&at(quiet), Some("card"), Some("nowhere.db")).is_none(),
+                "{quiet} must say nothing"
+            );
+        }
+        /* `compact` gets as far as the database, which is not there — so still
+           None, and silently, which is the fail-open this whole module keeps. */
+        assert!(reply(&at("compact"), Some("card"), Some("nowhere.db")).is_none());
+    }
+
+    /// A hook layer with no card named leaves these two doing nothing, the way
+    /// it leaves the index guard doing nothing — there is no card whose jobs
+    /// these would be.
+    #[test]
+    fn the_forgetting_hooks_need_a_card_to_be_about() {
+        let p = r#"{"hook_event_name":"UserPromptSubmit","prompt":"hi","session_id":"s1"}"#;
+        assert!(reply(p, None, None).is_none());
+    }
+
+    /// **The routing must not eat the old path.** A payload from a build that
+    /// sends no `hook_event_name` falls through to the `PreToolUse` body, which
+    /// was the whole discriminator before this arm existed.
+    #[test]
+    fn a_payload_with_no_event_name_still_reaches_the_compensator() {
+        let cmd = r#"{"tool_name":"Bash","tool_input":{"command":"echo 'a\\b'"}}"#;
+        assert!(reply(cmd, None, None).is_some());
+        /* And one that names PreToolUse explicitly reaches it too. */
+        let named = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo 'a\\b'"}}"#;
+        assert!(reply(named, None, None).is_some());
     }
 
     /// Now that the hook fires on every tool, the tool name is what decides
