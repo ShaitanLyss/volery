@@ -2197,7 +2197,13 @@
     if (focusedId === conv.id) {
       focusedId = skein.convs.find((c) => c.id !== conv.id)?.id ?? null;
     }
-    await skein.close(conv);
+    /* Instant, and said out loud rather than left to the default, because the
+       other caller — an agent's `close`, in `Skein`'s `close:asked` listener —
+       is the one that fades and the pair only reads as a decision if both ends
+       say which they are. Your own close needs no fade: your hand is what did
+       it, so a card lingering half-gone is the wall taking a moment to agree
+       with you. See `LEAVE_MS` in `layout.ts`. */
+    await skein.close(conv, "you");
   }
 
   /* The control surface, off unless SKEIN_CONTROL asked for it. It gets the
@@ -2809,6 +2815,7 @@
       <Canvas
         bind:this={canvas}
         convs={skein.convs}
+        leaving={skein.leaving}
         projects={skein.projects}
         {studio}
         {board}

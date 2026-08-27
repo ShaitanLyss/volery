@@ -591,6 +591,28 @@ export function settle(
   };
 }
 
+/** The longest a walk can run — the cap `settle` applies. Named so the fade
+ *  below can be stated against it rather than against a number. */
+export const WALK_CAP_MS = 360;
+
+/** How long a card an agent closed stays on the wall, fading.
+ *
+ *  **Your own close is instant and this is not**, and that asymmetry is the
+ *  whole point rather than a nicety: you closed it, so you already know it went
+ *  and a delay is the wall arguing with your hand. An agent closed it while you
+ *  were reading something else, and a card that vanishes between two glances is
+ *  indistinguishable from one you had misremembered being there. The fade is
+ *  what makes it a departure you can catch out of the corner of an eye.
+ *
+ *  Longer than `WALK_CAP_MS` on purpose. Removing a card reflows the ones after
+ *  it, and those walk into place over at most a walk's length; a fade that
+ *  finished first would leave the wall still visibly rearranging around a gap
+ *  whose cause had already gone, which reads as the wall moving on its own. This
+ *  way the thing that left is still there — dimmer each frame — for the whole of
+ *  the closing-over, and the last thing to finish is the last thing to be seen.
+ *  Not much longer: the card is not the subject and neither is its exit. */
+export const LEAVE_MS = 520;
+
 /** The order a next/previous gesture walks the wall in.
  *
  * Territory by territory, in the order the regions were laid out, and within one

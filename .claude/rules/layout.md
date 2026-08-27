@@ -113,6 +113,18 @@ about it:
 - **A pinned card is in the block and costs nothing.** It did not move, so `settle` gives it
   no distance and no duration; that is also why the duration is a function of distance rather
   than a constant.
+- **And the card that caused the reshuffle may still be there while it happens.** A card *you*
+  closed goes at once and the walk is all there is to see; a card an **agent** closed fades
+  over `LEAVE_MS`, underneath the neighbours walking into its slot, so what the wall draws is
+  closing over a departure rather than filling a gap that appeared from nowhere. `out:leave` in
+  `Canvas.svelte` on the same `.node` the `animate:` is on, and `LEAVE_MS` is stated against
+  `WALK_CAP_MS` in `layout.ts` — longer than the longest walk on purpose, or the reflow would
+  outlast its own cause. The node is put below `Z_CARD` and made untouchable for the duration,
+  which is how a transparent thing can stand here at all: it is the leaving that is
+  transparent, everything solid is in front of it, and the bug `ambience.md`'s rule records was
+  a card that stayed that way rather than one on its way out. Why it is a *transition* and not
+  a card kept in `convs` for half a second — which is the shipped bug in `restore.md` wearing a
+  nicer face — is argued in `restore.md`, "An agent's close fades; yours goes at once".
 
 Cards are placed on a fixed pitch (`SLOT_W`/`SLOT_H`) that does not change with zoom, so
 **every density's card must fit its slot** — `CARD_BOX` in `layout.ts` records the size each

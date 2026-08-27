@@ -19,6 +19,8 @@ import {
   TERRITORY_COLS,
   TERRITORY_W,
   WALL_MIN,
+  LEAVE_MS,
+  WALK_CAP_MS,
   Z_CARD,
   Z_CHIP,
   Z_FRONT,
@@ -554,6 +556,38 @@ describe("semantic zoom", () => {
   });
 });
 
+describe("a card an agent closed, leaving", () => {
+  /* The fade itself is a CSS animation Svelte owns and there is nothing pure to
+     test in it. What *is* pure, and what the effect would silently stop meaning
+     anything if it drifted, is the relation between the two durations — so it is
+     stated here rather than left as two numbers in two files that happen to be
+     in the right order today. */
+
+  test("the fade outlives the reflow it causes", () => {
+    /* Taking a card off the wall walks every card after it into a new slot, and
+       `WALK_CAP_MS` is the longest that can take. A fade that finished first
+       would leave the wall still visibly rearranging around a gap whose cause
+       had already gone — which reads as the wall moving on its own rather than
+       as a card having left it. */
+    expect(LEAVE_MS).toBeGreaterThan(WALK_CAP_MS);
+  });
+
+  test("but it is not in the way", () => {
+    /* The card is not the subject and neither is its exit. Twice a walk is the
+       point past which you are waiting for the wall rather than watching it. */
+    expect(LEAVE_MS).toBeLessThan(WALK_CAP_MS * 2);
+  });
+
+  test("the cap `settle` applies is the cap that is named", () => {
+    /* `WALK_CAP_MS` is only worth anything if it is the number `settle` really
+       uses — a constant beside a duplicated literal is worse than no constant.
+       Far enough that the distance term cannot be what is being measured. */
+    expect(settle({ left: 0, top: 100_000 }, { left: 0, top: 0 }, 1).duration).toBe(
+      WALK_CAP_MS,
+    );
+  });
+});
+
 describe("walking into an emptied slot", () => {
   /** A rect as a browser hands one to a FLIP animation: screen pixels. */
   const at = (left: number, top: number) => ({ left, top });
@@ -588,7 +622,9 @@ describe("walking into an emptied slot", () => {
     expect(near).toBeGreaterThan(0);
     expect(far).toBeGreaterThan(near);
     for (const d of [1, 10, 100, 5000]) {
-      expect(settle(at(0, d), at(0, 0), 1).duration).toBeLessThanOrEqual(360);
+      /* Against the constant rather than the number, so `LEAVE_MS`'s claim to
+         outlive a walk stays true if the cap is ever changed. */
+      expect(settle(at(0, d), at(0, 0), 1).duration).toBeLessThanOrEqual(WALK_CAP_MS);
     }
   });
 

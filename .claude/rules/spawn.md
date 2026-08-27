@@ -376,6 +376,17 @@ three remaining refusals are chosen by.
   once already (`restore.md`), and a second path in Rust would have to keep remembering it. The
   listener's own guard is only that the card is still on the wall — two calls in quick
   succession would otherwise run the bookkeeping twice against a row already closed.
+- **And it closes it visibly, which your own gesture does not.** The listener passes
+  `"agent"`, and that one word is the whole difference between the two callers: a card an
+  agent takes off the wall fades over `LEAVE_MS`, where one you close goes at once. You do not
+  need telling that a card you just closed has gone; an agent closing one while you are reading
+  something else is a change to the wall you had no part in, and on a wall you are meant to be
+  able to look away from, a card that simply is not there any more is indistinguishable from
+  one you had misremembered. The fade is the only thing in this whole gesture that differs by
+  caller — the removal, the ordering, the bookkeeping and the guards are one path — and it is
+  deliberately made of nothing but pixels, because a delay built out of *state* would put the
+  card back in reach of everything the removal exists to take it out of. `restore.md`, "An
+  agent's close fades; yours goes at once", is the argument and the three things it costs.
 - **A card can be both ends now.** With generations unbounded a card may have a root coming
   in and roots going out, and nothing needed changing for it: `familiesOf` groups by parent, so
   such a card simply appears once as somebody's kid and once as somebody's parent. What the

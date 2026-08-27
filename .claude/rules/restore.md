@@ -244,6 +244,73 @@ it. Without `#byId.has`, a card shut during the launch pass is still walked up t
 spawning an agent against a row that has just been marked closed, for a card nothing on the
 wall can see.
 
+#### An agent's close fades; yours goes at once
+
+`close` takes a second argument saying who asked, and it reaches exactly one thing: whether
+the wall *draws* the card leaving. Your own close is instant, and an agent's — `close:asked`,
+from `mcp__skein__close` — fades over `LEAVE_MS`.
+
+The asymmetry is the point rather than a nicety. You closed it, so you already know it went;
+a card lingering half-gone is the wall taking a moment to agree with your hand. An agent
+closed it while you were reading something else, and a card that vanishes between two glances
+is indistinguishable from one you had misremembered being there — which on a wall whose whole
+claim is that you can look away from it is the difference between tidying and losing things.
+
+**And a fade is exactly the shape that would reintroduce the bug above, if it were built out
+of waiting.** It is not. Everything in the section above still happens on the same three lines
+in the same order with no `await` in front of any of it: the card leaves `#byId`, leaves
+`convs`, and its glass spot is forgotten. What fades is the DOM node Svelte keeps alive to run
+an outro on *after* the item behind it has left the keyed block — `out:leave` in
+`Canvas.svelte`, on both the wall's card block and the glass's. So the bookkeeping is not
+delayed by a millisecond and only the pixels linger.
+
+That is the load-bearing distinction and it is worth stating in the general: **a delay you can
+see must be made of pixels with no state behind them.** The tempting shapes all fail on it — a
+card kept in `convs` for half a second is a card `rouse` can still walk up to and wake, that
+an event can still be routed to, that Tab can reach, that the marquee can gather, and that a
+strand can land on; a removal awaited behind a timer is the shipped bug with a nicer face on
+it. `Skein.leaving` is deliberately none of those. It is a list of ids the canvas alone reads,
+asked exactly once per card at outro time, and every question about what is *on* the wall is
+still asked of `convs` or `#byId` — both of which lost the id before `leaving` gained it.
+
+Three things fall out and none of them is free:
+
+- **The mark goes on before the removal**, not after. The canvas reconciles its keyed block a
+  microtask after `convs` changes and asks `leaving` then; an id written afterwards would
+  arrive to find the outro already begun without it. Still nothing awaited — two synchronous
+  statements in the order that makes them true.
+- **The mark has to come off again**, or `leaving` is a list that only grows, one entry per
+  card closed all day. `#leaves` is a timer per card, held and cleared in `detach` for the
+  reason `#heals` is: in dev, a superseded Skein is constructed on every file save. The timer
+  is bookkeeping about a list and not about the drawing — the fade is a CSS animation Svelte
+  owns, which neither waits on it nor is timed by it — so it may be late and nothing is wrong.
+  What it may not be is early, hence `LEAVE_MS` plus a frame's grace.
+- **The fading node is made untouchable and put below the live cards**, both set on the
+  element by the transition function itself, because the block that owned its inline styles has
+  been destroyed and there is nobody left to write them reactively. Untouchable because every
+  gesture on the wall finds its target by `closest("[data-conv]")` from an event, so without it
+  there is half a second after each agent close in which you can focus, drag and right-click a
+  card that exists nowhere but on the screen. Below, because removing a card reflows the ones
+  after it and they walk into its slot: a transparent card drawn *over* the one arriving is
+  `ambience.md`'s one hard rule broken the wrong way round. Underneath, the wall closes over
+  what left and everything solid is in front of the transparent thing rather than seen through
+  it — which is also the honest reading of the rule, whose bug was a card that stayed
+  transparent rather than one that was on its way out.
+
+`LEAVE_MS` is 520 and lives in `layout.ts` beside `settle`, stated against `WALK_CAP_MS`
+rather than as a number: longer than the longest walk, so the thing that left is still there —
+dimmer each frame — for the whole of the closing-over, and shorter than two, because the card
+is not the subject and neither is its exit. `layout.test.ts` holds both ends of that, and
+holds `WALK_CAP_MS` to being the cap `settle` actually applies.
+
+**Opacity and nothing else** — no travel, no scale, no easing. That is what makes
+`prefers-reduced-motion` need no branch here: the house position, settled by the strand in
+`relay.md`, is that reduced motion gets the same mark *held and faded* rather than nothing,
+because what the effect says still needs saying. The way to honour that is to build the effect
+out of the part that survives it, instead of writing a second code path that has to be kept in
+step with the first. A card going quietly is the whole message; there was never any motion in
+it to take away.
+
 ### Setting a card aside
 
 Amber on this wall means *nobody has been back to this in a while* — urgency here is

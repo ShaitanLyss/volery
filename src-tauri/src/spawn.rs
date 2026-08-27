@@ -136,7 +136,11 @@
 //! bookkeeping calls, which is a bug that shipped once already (`restore.md`);
 //! reproducing that ordering in Rust would be a second path that has to keep
 //! remembering it. So this resolves the address, checks the guards and emits
-//! `close:asked`, and the wall closes it exactly as your own gesture does.
+//! `close:asked`, and the wall closes it exactly as your own gesture does — save
+//! for one thing the wall decides for itself, and it is worth knowing about from
+//! here: a card taken off by an agent *fades*, where one you closed goes at once.
+//! Nothing on this side says so or could. The listener passes `"agent"` and the
+//! rest is paint (`restore.md`, "An agent's close fades; yours goes at once").
 
 use serde::Serialize;
 use serde_json::{json, Value};

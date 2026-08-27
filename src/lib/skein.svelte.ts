@@ -45,7 +45,7 @@ import {
 } from "./repair";
 import { Conversation, type ConvKind } from "./conversation.svelte";
 import { foldTranscript, trimOverlap } from "./history";
-import { layout, type Placement } from "./layout";
+import { LEAVE_MS, layout, type Placement } from "./layout";
 import type { Kin } from "./lineage";
 import { Listeners } from "./listeners";
 import { Flights, type SentEvent } from "./relay.svelte";
@@ -153,6 +153,13 @@ export class Skein {
    *  Its territories' own are on `Project.instructions`. See `guidance.ts`. */
   guidance = $state("");
   convs = $state<Conversation[]>([]);
+  /** Cards an agent has just taken off the wall, for as long as their fade
+   *  lasts. **Not a membership list of any kind** — everything that asks what is
+   *  on the wall asks `convs` or `#byId`, and both lost these ids before this
+   *  one gained them. The canvas is the only reader and it uses them for exactly
+   *  one thing: deciding whether the node Svelte is holding open for its outro
+   *  should fade or go at once. See `close`, and `LEAVE_MS` in `layout.ts`. */
+  leaving = $state<string[]>([]);
   groups = $state<GroupRuntime[]>([]);
   fault = $state<string | null>(null);
   loaded = $state(false);
@@ -198,6 +205,11 @@ export class Skein {
    *  work that finished — and collapsing them into one map would silently drop
    *  whichever was owed second. */
   #nudges = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Forgettings waiting to fire, one per card an agent has closed. Held for
+   *  the reason `#heals` is: `leaving` would otherwise be a list that only ever
+   *  grows, one entry per card closed all day, and the timer that trims it would
+   *  outlive this Skein — which in dev is every file save. */
+  #leaves = new Map<string, ReturnType<typeof setTimeout>>();
   #studio: Studio;
   /** Held so `detach` can give them back — see ./listeners.ts for why that
    *  matters to a class with no lifecycle of its own. */
@@ -304,6 +316,8 @@ export class Skein {
     this.#heals.clear();
     for (const t of this.#nudges.values()) clearTimeout(t);
     this.#nudges.clear();
+    for (const t of this.#leaves.values()) clearTimeout(t);
+    this.#leaves.clear();
   }
 
   /** How many subscriptions are live, so the control surface can prove there is
@@ -459,10 +473,17 @@ export class Skein {
          `spawn.rs` has already checked that this card may be closed by that
          one; the guard here is only that it is still on the wall. Two calls in
          quick succession for the same card is otherwise a second round of
-         bookkeeping against a row already marked closed. */
+         bookkeeping against a row already marked closed.
+
+         `"agent"` is the *whole* of what makes this path different, and it is
+         one word rather than a branch on purpose. A card going while you are
+         reading something else has to be visible as a departure or it is
+         indistinguishable from a card you misremembered being there; your own
+         close needs no such thing, because your hand is what did it. See
+         `close`, and `LEAVE_MS`. */
       listen<{ id: string; parent_id: string }>("close:asked", (e) => {
         const conv = this.#byId.get(e.payload.id);
-        if (conv) void this.close(conv);
+        if (conv) void this.close(conv, "agent");
       }),
     );
 
@@ -526,6 +547,26 @@ export class Skein {
           g.health = { ...g.health, [e.payload.label]: e.payload.state };
         },
       ),
+    );
+
+    /* Who asked is the point. `running` is otherwise set optimistically by
+       `startGroup`/`stopGroup`, which is correct while the wall is the only
+       thing that starts a group — and an agent with `mcp__skein__server` is
+       the second thing. Without this the flag says "not started" over a group
+       that is up, and `standing()` draws a start button on it. Deliberately
+       not folded into `server:state`: that answers which server is up, and
+       this answers whether anybody has asked for the group at all — a crashed
+       group is `running: true` with an `exited` health on purpose.
+
+       Health is cleared on the way down for the same reason `stopGroup` clears
+       it: a group taken down reads `idle`, not `exited`. */
+    keep(
+      listen<{ group_id: string; running: boolean }>("server:running", (e) => {
+        const g = this.groups.find((g) => g.group.id === e.payload.group_id);
+        if (!g) return;
+        g.running = e.payload.running;
+        if (!e.payload.running) g.health = {};
+      }),
     );
   }
 
@@ -1409,6 +1450,29 @@ export class Skein {
     conv.pendingNudge = null;
   }
 
+  /** Mark a card as fading, and arrange for the mark to go away again.
+   *
+   *  The timer is bookkeeping about a list, not about the drawing — the fade
+   *  itself is a CSS animation Svelte owns and neither waits on this nor is
+   *  timed by it. So it can be late and nothing is wrong; what it must not be is
+   *  *early*, or the canvas asks a card that is still fading whether it should
+   *  be and is told no. `LEAVE_MS` plus a frame's grace, and a card closed twice
+   *  in quick succession replaces its own handle rather than leaking it — the
+   *  trap `#heals` is keyed against, in a case where it can only ever be the
+   *  same id (`close:asked` fires per card, and the wall's guard is `#byId`). */
+  #leave(id: string) {
+    const old = this.#leaves.get(id);
+    if (old !== undefined) clearTimeout(old);
+    if (!this.leaving.includes(id)) this.leaving = [...this.leaving, id];
+    this.#leaves.set(
+      id,
+      setTimeout(() => {
+        this.#leaves.delete(id);
+        this.leaving = this.leaving.filter((x) => x !== id);
+      }, LEAVE_MS + 120),
+    );
+  }
+
 /* ── which subscription a card spends ──────────────────────────────────
    *
    * `.claude/rules/accounts.md` is the reasoning and `accounts.ts` is every
@@ -2060,12 +2124,36 @@ export class Skein {
    *  `forget` rather than `unpin`, and that is not a detail: `unpin` means "let
    *  it flow again", so it deliberately *keeps* a card's glass spot, and a card
    *  that has gone for good would have left one behind for the rest of the
-   *  session. See `Studio.forget`. */
-  async close(conv: Conversation) {
+   *  session. See `Studio.forget`.
+   *
+   *  ### Who asked, and the one thing it changes
+   *
+   *  `by` is the only difference between your own close and an agent's, and it
+   *  reaches exactly one thing: whether the wall *draws* the card leaving. It
+   *  does not reach the removal, the ordering, the bookkeeping or the guards —
+   *  all of that is one path, below, for the reason `spawn.rs` refuses to close
+   *  a card itself. A gesture with two implementations is a gesture with one
+   *  that remembers the ordering above and one that does not.
+   *
+   *  So `leaving` is a list of ids the canvas alone reads, and it is emphatically
+   *  **not** a second membership list. The card is out of `#byId` and out of
+   *  `convs` on the same three lines it always was — nothing can route an event
+   *  to it, `rouse`'s `#byId.has` guard cannot find it to wake, the Tab cycle
+   *  cannot reach it and no strand can land on it. What is left is a DOM node
+   *  Svelte keeps alive for its outro, painting state that has already gone.
+   *  That is the whole of the fade: the bookkeeping is not delayed by a
+   *  millisecond, only the pixels are. */
+  async close(conv: Conversation, by: "you" | "agent" = "you") {
     /* Or the timer fires against a card that is no longer on the wall, waking a
        process for a conversation this call has just closed. */
     this.#dropHeal(conv);
     this.#dropNudge(conv);
+
+    /* Ahead of the removal, and that is the whole of the timing: the canvas
+       reconciles its keyed block a microtask after `convs` changes and asks this
+       list then, so an id written afterwards would arrive to find the outro
+       already begun without it. Still no `await` anywhere near it. */
+    if (by === "agent") this.#leave(conv.id);
 
     this.#byId.delete(conv.id);
     this.convs = this.convs.filter((c) => c.id !== conv.id);

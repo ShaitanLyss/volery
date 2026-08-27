@@ -7,6 +7,7 @@
     settle,
     wallOrder,
     CARD_BOX,
+    LEAVE_MS,
     Z_CARD,
     Z_CHIP,
     type Laid,
@@ -62,6 +63,7 @@
 
   let {
     convs,
+    leaving = [],
     projects,
     studio,
     board,
@@ -108,6 +110,15 @@
     onadd,
   }: {
     convs: Conversation[];
+    /** Cards an agent has just closed, for as long as their fade lasts.
+     *
+     *  Deliberately **not** part of `convs` and never laid out: they have left
+     *  the wall's state entirely and `Skein.close` is where that ordering is
+     *  argued (see `restore.md`). All this list does is answer, at the one
+     *  moment the question is asked, whether the node Svelte is holding open for
+     *  its outro should fade or go at once. Nothing else here reads it — not the
+     *  layout, not the selection, not the strands' boxes, not the Tab order. */
+    leaving?: readonly string[];
     /** Every project the studio knows, so a territory outlives its last card. */
     projects: Territory[];
     studio: Studio;
@@ -664,6 +675,13 @@
    *  - **An editable**, where a drag means selecting text. `.surface input`
    *    deliberately keeps `user-select: text` for the territory's worktree
    *    field; without this, dragging across it would draw a band instead.
+   *  - **Text put there to be read**, marked `data-text`. A log's lines are the
+   *    case: they are not editable, but a drag across them means the same thing
+   *    it means over an input, and a widget that carried the wall away instead
+   *    was one you could not copy a stack trace out of. Same answer as an
+   *    editable and for the same reason, so it is the same list rather than a
+   *    second rule — and the pan buttons still reach past it, which is what
+   *    keeps the wall readable underneath a full-width log.
    *
    *  Everything else standing on the wall is either a node or bare ground. Note
    *  `.region` deliberately carries no `data-region`, so a press in a
@@ -673,7 +691,11 @@
   function handleOf(target: EventTarget | null): Pick | "ground" | null {
     const el = target as HTMLElement | null;
     if (!el?.closest) return null;
-    if (el.closest("[data-grip], input, textarea, [contenteditable='true']")) {
+    if (
+      el.closest(
+        "[data-grip], [data-text], input, textarea, [contenteditable='true']",
+      )
+    ) {
       return null;
     }
     const node = el.closest<HTMLElement>(
@@ -1233,6 +1255,74 @@
     };
   }
 
+  /** A card leaving the wall, for the one caller that is owed a moment of it.
+   *
+   *  ### Why this is a transition and not a ghost anybody owns
+   *
+   *  The card is already gone. `Skein.close` takes it out of `convs` and
+   *  `#byId` and calls `Studio.forget` before it awaits anything, and that
+   *  ordering is a bug that shipped — `restore.md` has the whole of it, and the
+   *  rule it left behind is that *the part of a gesture the eye is owed must not
+   *  be downstream of an `await`*. A fade is a delay between the gesture and the
+   *  card leaving, so it is exactly the shape that would reintroduce it if it
+   *  were built out of waiting.
+   *
+   *  It is not built out of waiting. What fades is the DOM node Svelte keeps
+   *  alive to run an outro on after the item behind it has left the keyed block
+   *  — so the bookkeeping is not delayed by a millisecond and the paint is the
+   *  only thing that lingers. There is no second membership list to fall out of
+   *  step with `convs`, nothing that could route an event to a card in mid-fade,
+   *  nothing `rouse` could walk up to and wake, nothing the marquee can gather
+   *  and nothing Tab can reach: all of those ask `convs` or the layout derived
+   *  from it, and this node is in neither. It is pixels with no state behind
+   *  them, which is the only thing a fade may safely be made of.
+   *
+   *  ### The two things set on the node by hand
+   *
+   *  Both because the block that owned this element's inline styles has been
+   *  destroyed, so there is nobody left to write them reactively.
+   *
+   *  - **`pointer-events: none`.** A card that has gone must not be clickable,
+   *    and every gesture on the wall finds its target by `closest("[data-conv]")`
+   *    from an event — so making it untargetable is the whole of it. Without it,
+   *    half a second after every agent close there is a card you can focus, drag
+   *    and right-click that no longer exists anywhere but on the screen.
+   *  - **Below the live cards.** Removing a card reflows the ones after it and
+   *    they walk into its slot; a fading card drawn over the one arriving would
+   *    be the wall's one hard rule broken the wrong way round — see
+   *    `ambience.md`, nothing standing on the wall may be transparent, because
+   *    whatever stands here is the only thing occluding the backdrop. Underneath,
+   *    the arrangement is honest: the wall closes over what left, and anything
+   *    solid is in front of the transparent thing rather than seen through it.
+   *    The rule survives in the sense that matters — the exception is a card
+   *    *leaving*, for exactly `LEAVE_MS`, where the transparency **is** the
+   *    information. The bug that rule records was a card that stayed that way.
+   *
+   *  ### Linear, and nothing under `prefers-reduced-motion`
+   *
+   *  No travel, no scale, no easing — opacity and nothing else. That is not
+   *  restraint for its own sake: it means the reduced-motion answer and the
+   *  ordinary one are the same thing, rather than a second code path that has to
+   *  be kept in step. `relay.md`'s strand settled the house position one
+   *  subsystem over — reduced motion gets the same mark, *held and faded*, never
+   *  nothing, because what the effect says still needs saying — and the way to
+   *  honour it here is to build the effect out of the part that survives it. A
+   *  card going quietly is the message; there was never any motion in it. */
+  function leave(node: Element, { id }: { id: string }) {
+    /* The same shape `walk` uses to opt a card out: the directive is on every
+       card because the markup is one, and which of them it means is asked here.
+       Your own close is this branch, and it is the pre-existing behaviour — so
+       a caller that says nothing gets what it has always got. */
+    if (!leaving.includes(id)) return { duration: 0 };
+    const el = node as HTMLElement;
+    el.style.pointerEvents = "none";
+    el.style.zIndex = String(Z_CARD - 1);
+    return {
+      duration: LEAVE_MS,
+      css: (t: number) => `opacity: ${t}`,
+    };
+  }
+
   /** Is this card in hand right now — itself, or inside a territory that is?
    *
    *  Read at `apply()` time, which is a microtask after the pointermove that
@@ -1727,6 +1817,7 @@
           onclickcapture={nodeClickCapture}
           role="presentation"
           animate:walk={{ scale: studio.scale, id: n.conv.id, cwd: n.conv.cwd }}
+          out:leave={{ id: n.conv.id }}
         >
           {@render cardBody(n, studio.lod, studio.scale)}
         </div>
@@ -1792,6 +1883,7 @@
       onclickcapture={nodeClickCapture}
       role="presentation"
       animate:walk={{ scale: 1, id: n.conv.id, cwd: n.conv.cwd }}
+      out:leave={{ id: n.conv.id }}
     >
       {@render cardBody(n, "wall", 1)}
     </div>
