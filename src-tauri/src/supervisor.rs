@@ -110,6 +110,42 @@ fn append_prompt(chat: bool) -> String {
              here and `{MCP_PREFIX}send` puts a message in one card's hands — \
              which costs that agent a turn, so read the board first."
         ));
+        /* The tree, not the index — and this is the half nothing guarded.
+           `hooks::sweep` catches a commit that would sweep a sibling's *staged*
+           work, so `git add -A` and `git commit -a` are already denied. Nothing
+           caught `git stash`, which is not a commit and never reaches that
+           guard: it takes every card's uncommitted work out of the tree in one
+           silent stroke, and does not even carry untracked files into the stash
+           it makes, so a `git clean` beside it is unrecoverable outright.
+
+           Measured 2026-08-27: one card ran `git stash` in a tree nine cards
+           shared, wiping nine files across four of them with no error shown to
+           anybody, and it was found only because a card happened to read back a
+           file it had just written. That card *knew* the tree was shared and
+           reached for the tool anyway while chasing a build error — which is
+           the whole argument for this being a sentence here *and* a deny in
+           `hooks.rs`, rather than either on its own. An instruction does not
+           bind a reflex, and a card that has never read the board is one no
+           instruction reaches at all.
+
+           It says "ask the user" rather than "unless the user asked", because
+           the caveat an agent grants itself is the one it grants while chasing
+           a build error. Routing through `ask_user` costs a question and keeps
+           the judgement with the person whose tree it is.
+
+           Left off a chat card with the rest of this block, and for a reason
+           already written down: a chat card cannot touch a file, so it can
+           never be in a clash — see `chat.md`. */
+        prompt.push_str(
+            "\n\nCards can share one working tree, and then they share its git \
+             index too. Commit with `git commit -- <explicit paths>`, never \
+             `git add -A` or a bare `git commit`. Never run `git stash`, \
+             `git reset`, `git checkout -- .` or `git clean` there — each wipes \
+             every other card's uncommitted work at once, silently, and a stash \
+             does not even keep untracked files. Make a worktree if you need a \
+             clean tree, and if you think you genuinely need one of those \
+             commands, ask the user rather than running it.",
+        );
         /* One sentence for `drop`, where the other tools on this server get
            none, and the asymmetry is the whole reason it is here. `alwaysLoad`
            puts every description in front of the agent — that is the argument
