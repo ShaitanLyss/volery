@@ -14,6 +14,10 @@ import {
   type SpotifyState,
   type SpotifyTrack,
 } from "../src/lib/spotify";
+/* Deliberately reaching into the catalogue: the key `normalizeConfig` reads is
+   a contract with `widgets.ts`, and a test that restates it by hand is a test
+   that cannot notice the two disagreeing. */
+import { VARIANT } from "../src/lib/widgets";
 
 const track = (over: Partial<SpotifyTrack> = {}): SpotifyTrack => ({
   id: "spotify:track:1",
@@ -243,17 +247,38 @@ describe("volume", () => {
 });
 
 describe("the widget's config, read the way every opaque column is", () => {
+  /* The bug this block did not catch the first time, and now cannot miss.
+     `normalizeConfig` read `o.layout` while the catalogue writes `o.variant`,
+     so the reading knob appeared in the right-click, persisted, and did
+     nothing — falling back to "full" on every read. Everything stayed green:
+     these tests passed, `widgets.test.ts` passed, `check` was clean, the widget
+     drew. It was green because it asserted the same wrong key the code used,
+     which is the whole lesson — a test written from the implementation proves
+     the implementation agrees with itself and says nothing about the contract
+     with the other side. So the first test below imports the catalogue's own
+     constant rather than spelling the key out. */
+  test("the key is the catalogue's, not one this file made up", () => {
+    expect(VARIANT).toBe("variant");
+    expect(normalizeConfig({ [VARIANT]: "bar" }).layout).toBe("bar");
+  });
+
+  test("the key the face reads is NOT the key it is stored under", () => {
+    /* `layout` is the field; `variant` is the column. Reading a config keyed
+       the way the face names it must not work, or the seam has drifted back. */
+    expect(normalizeConfig({ layout: "bar" }).layout).toBe("full");
+  });
+
   test("nothing at all is still drawable", () => {
     expect(normalizeConfig(undefined)).toEqual({ layout: "full", art: true, progress: true });
     expect(normalizeConfig(null)).toEqual({ layout: "full", art: true, progress: true });
   });
 
   test("a layout nothing can draw falls back rather than reaching the face", () => {
-    expect(normalizeConfig({ layout: "hologram" }).layout).toBe("full");
+    expect(normalizeConfig({ variant: "hologram" }).layout).toBe("full");
   });
 
   test("a knob that is there is kept", () => {
-    expect(normalizeConfig({ layout: "bar", art: false, progress: false })).toEqual({
+    expect(normalizeConfig({ variant: "bar", art: false, progress: false })).toEqual({
       layout: "bar",
       art: false,
       progress: false,

@@ -340,8 +340,16 @@ const LAYOUTS: SpotifyLayout[] = ["full", "compact", "bar"]
  */
 export function normalizeConfig(raw: unknown): SpotifyConfig {
   const o = (raw ?? {}) as Record<string, unknown>
-  const layout = LAYOUTS.includes(o.layout as SpotifyLayout)
-    ? (o.layout as SpotifyLayout)
+  /* Read out of `variant`, stored as `layout`, and the asymmetry is deliberate
+     — do not "tidy" either side to match the other.
+     `variant` is the catalogue's word: `widgets.ts`'s `VARIANT` key is the one
+     knob the right-click offers directly, and `widgets.test.ts` asserts every
+     widget's first param is called it. `layout` is ours, and is what the face
+     actually reads. Reading `o.layout` here — which this did at first — is the
+     exact failure the catalogue refuses everywhere else: the knob appears in
+     the menu, persists to `config_json`, and silently does nothing. */
+  const layout = LAYOUTS.includes(o.variant as SpotifyLayout)
+    ? (o.variant as SpotifyLayout)
     : "full"
   return {
     layout,
