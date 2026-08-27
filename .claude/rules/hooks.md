@@ -268,3 +268,107 @@ The hook opens that database **read-only**, through `store::open_readonly`, whic
 short-lived process that ran the ladder would be a second writer racing the wall through the
 one path `store.rs` records as having locked the app out of its own database. A reader is a
 reader.
+
+### The third hook: what a card has forgotten it started
+
+`hooks.rs` is no longer two hooks on one event. `SessionStart` and `UserPromptSubmit` are
+registered as well, and both do one thing: hand a card back the background work Volery
+recorded it starting and never saw finish. See sink fb3e537d for the incident and
+`.claude/rules/turns.md` for the table it reads.
+
+**The failure, in the words of the agent it happened to.** "I was asked whether I had started
+the dev server on localhost:3000. I said no — every command in my visible context was
+read-only. It was mine: my own transcript has `pnpm dev` with `run_in_background: true`, three
+seconds before the process's start time. The launch happened in an earlier stretch of the
+session that had been summarized out of my context." It then spent three other cards' turns
+asking who owned the process, and two of them replied with a confidently wrong directory, so
+the wrong answer propagated.
+
+The shape it named is general and worth carrying: **a long-lived side effect outlives the
+context that records it.** Dev servers, watchers, tunnels, `--watch` runners, tailed logs.
+
+**Volery already held the answer and had never handed it back**, which is the whole of why
+this is nine lines of routing rather than a new subsystem. The `job` table is written on the
+*receipt* of a background call and the row is deleted when the job reports in, so the rows
+outstanding at any moment are — by construction rather than by a query — exactly the
+background work whose fate nobody knows. Until now the only reader was `rouse`, telling a card
+what its *previous* process had lost.
+
+#### The two occasions, and why not one
+
+Both were measured under Skein's argv before anything was built on them —
+`tools/probe-jobs.ts`, 2026-08-27 against claude 2.1.241, and every claim below has its date
+there.
+
+- **`SessionStart` with `source: "compact"`** is the precise moment: the context has just been
+  rebuilt and the summary did not carry the launch. It does fire in `--print --input-format
+  stream-json`, which was not obvious — this is not the TUI and `SessionStart` is documented
+  around sessions rather than around folds.
+- **`UserPromptSubmit`** is the backstop, and it is the one that would have caught the actual
+  incident, because that miss was an *answer to a question*. It fires next to the words being
+  answered, which is the highest-salience place anything can be put. It also covers what the
+  compaction hook cannot: a context that was never folded but is simply long, and a card
+  resumed by a route `rouse` did not take.
+
+`additionalContext` reaches the model from both. Asked for a planted token, the model answered
+with one and volunteered that it could see the other, which settles it twice over.
+
+**And the measurement that could have made this worse than the bug.** Skein draws your prompt
+the moment you send it and marks the line `pending` until `--replay-user-messages` echoes it
+back, matched on the *trimmed text* (`Conversation.#claimEcho`). Had `additionalContext` been
+spliced into that echo, no prompt would ever have matched its line again and **every prompt on
+the wall would have sat pending forever** — a regression far larger than the miss being fixed,
+arriving from a direction nobody would look in. Measured: the echo comes back verbatim. The
+general shape, which reaches past this module: **before injecting anything into a stream
+something else is already folding, go and look at what the fold sees.**
+
+One thing the same probe settles in passing: `UserPromptSubmit` does **not** fire for a slash
+command, so `/compact` itself goes through neither hook.
+
+#### What it is not allowed to claim
+
+A row says a job *started* and was never reported finished. It does not say the job is
+running, and the difference is not pedantry: Skein only ever learns a job ended by being told
+down the stream, so a completion notification that never arrived leaves a row standing over
+work that finished an hour ago. So the wording says **check** and names the stale case out
+loud — the same bargain `resumePrompt` strikes, for the same reason. The two states are far
+apart and only looking distinguishes them.
+
+The **session scope** is the other half of not over-claiming, and it lives in
+`store::outstanding_jobs` rather than here. Only rows this very process wrote, so the thing
+making the claim is the thing that made the job. It also keeps this from saying, in a second
+voice, what `rouse` already tells a card about a dead session's jobs and then deletes — and it
+bounds the one way a false claim could otherwise become permanent, since a resume prompt that
+never went would leave rows to be re-announced on every prompt forever, with no way of ever
+becoming true.
+
+`pending_jobs` deliberately keeps the wider scope: its caller is `rouse`, whose whole question
+is what the *previous* process left behind. Two callers, two questions, one body — `jobs_of`.
+
+#### What it costs, which is nearly nothing
+
+A `~5ms` process per prompt, against the per-tool-call one the compensator already pays, and
+prompts are rare against tool calls. Roughly ninety tokens of context, and **only when there
+is outstanding work at all** — a card with none is handed nothing, so the model sees nothing.
+`SessionStart` on `startup`, `resume` and `clear` says nothing either.
+
+#### And no matcher on either, for the third time in this file
+
+Registered against everything; the routing is a `match` on `hook_event_name` at the top of
+`reply`, where `cargo test` can reach it. A payload carrying no event name at all still falls
+through to the compensator, which is what a build that does not send the field should get —
+the shape check below it (does the input carry a `command`) was the whole discriminator before
+this arm existed and still works alone.
+
+`settings` builds the hook entry **once** into a local and names it under three events. Not a
+shortcut: it is what makes a fourth event cost one line, and what stops the three drifting
+apart in the way the copy of a tool name did.
+
+#### Testing Rust on this machine
+
+`cargo test` does not run here at all — `.claude/rules/build.md` has it: the gnu harness exe
+exits `0xC0000139` before a single test runs. What is available is `cargo check`, and the trap
+is that **`bash tools/check-gnu.sh` is `cargo check --lib`, which does not look at
+`#[cfg(test)]` code.** A clean run there says nothing whatever about a test you have just
+written. `bash tools/check-gnu.sh --profile test` does, and costs the same. Everything in this
+module's test block has been through that and nothing has been through an actual run.

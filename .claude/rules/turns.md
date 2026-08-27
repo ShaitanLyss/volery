@@ -681,3 +681,40 @@ card on the wall visibly about to act on its own was the one card Escape could n
 scheduled timer is dropped on `detach`, `clear` and `close` for the same reason `Listeners`
 exists: in dev, `detach` runs on every file save, and a surviving timer is a prompt re-sent by
 an instance whose wall is already gone.
+
+### The job table gets its second and third readers
+
+`pending_jobs` was written for one caller — `rouse`, asking what the previous process left
+behind. Two more now read the same table for the opposite question: **what is this process
+holding right now.** The table did not change; only the number of things that had ever thought
+to look at it.
+
+That is the observation worth carrying out of both sink items (80e0a4ad and fb3e537d), because
+neither needed anything new recorded. **A record written for "what was lost" is also the
+answer to "what is running", and the only difference is the scope you read it at.**
+
+- `store::outstanding_jobs(db, card, session)` — session-scoped, read by `hooks.rs` from a
+  short-lived process, so a card can be handed back the background work its own context has
+  been summarised past. `.claude/rules/hooks.md` owns the argument.
+- The panel's drawer — reads `Conversation.jobs` live for the list and asks `pending_jobs` for
+  the paths of the kinds whose receipt named none. `.claude/rules/panel.md` owns that one.
+
+Both lean on the property this file already states and neither of them could have been built
+without it: **a row means outstanding, and settling deletes it.** No `settled_at`, nothing to
+filter on, no way for the set of rows and the set of unknown-fate jobs to drift apart. A table
+with a status column would have made both of these a query somebody had to get right, and
+therefore a query somebody could get wrong in a way nothing would report.
+
+The one thing that had to be added is `session_id` as a *predicate* rather than only a stored
+value. It was already on the row, for the reason `migrate_v17` gives — a cleared card keeps its
+id and takes a new session, so the output path must be built from the session. Reading it back
+turns out to be what separates the two questions: a row from a dead session is what `rouse`
+wants and is exactly what a live card must not be told about, since `rouse` has already said it
+and deleted the row.
+
+**And `outputPath` finally has a reader.** It has been carried since job persistence landed —
+scraped out of the Bash receipt by `startedJob`, derived and existence-checked by
+`pending_jobs` for the other three kinds, quoted into a resume prompt — and nothing had ever
+opened the file. The drawer does. Note what that does *not* change: the path is still only ever
+handed over if a file is really at it, because sending an agent, or a person, to read something
+that is not there reads as the work having vanished rather than as Volery having guessed.

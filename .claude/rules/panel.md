@@ -793,3 +793,115 @@ in `.claude/rules/finding.md`, which owns the viewer. What belongs here is only 
 it obeys: the links are text with a dotted underline, not coloured, because **colour on this
 wall is status** and a path is not one. Same argument the diff two screens up makes about not
 being red and green.
+
+### Reading what a background job is printing
+
+The panel grows a drawer between the column and the footer, listing what the card has running
+in the background and tailing the output of whichever one you expand. Sink 80e0a4ad: "I can't
+find a way to check the logs of subprocesses of a card — for example a dev server, a
+long-running task. I would like to be able to display the log directly in the transcript."
+
+`jobs.ts` is the arithmetic, `Jobs.svelte` the drawing and the effect, `joblog.rs` the read.
+The record it draws from is `Conversation.jobs`, which `.claude/rules/turns.md` owns; nothing
+new is folded here.
+
+**`Processes.svelte` is not this**, and it was checked before anything was built. It lists a
+card's job object by pid, cpu, memory and age, and can end one — it answers *what is in
+there*, and never *what is it printing*.
+
+#### Why a drawer and not a line in the column
+
+The obvious home is the `Bash` tool call that started it: already in the transcript, already
+openable, already knows its own arguments. It is wrong for two reasons that only appear once
+the thing is actually running.
+
+- **A dev server is started once, hours ago.** Its call is a long way up a scrollback you
+  would have to go and find, which is the opposite of what you want from a running process —
+  the same thing you want from a card, *where is it now*, reachable without hunting.
+- **This panel follows its own tail.** A pane growing in the middle of the column either
+  fights the follow or scrolls out from under you as the turn above it writes.
+
+So it sits in the one strip of the panel that does not move, and is **absent entirely** when
+the card holds no background work, which is most cards most of the time. Nothing is added to a
+panel that has nothing to say. Open, it takes a bounded share (`max-height: 40%`) — the
+transcript is what the panel is for.
+
+One job expanded at a time. Two logs in a strip this size would give each three lines.
+
+#### The poll, which is the fourth in this app and owes an argument
+
+`CLAUDE.md` names exactly three places that go and look rather than fold an event, all three
+because the thing being watched emits nothing, and says anything proposing to be the fourth
+owes one of those shapes and the same argument. A file being appended to by another process is
+squarely that case. The argument:
+
+- **It is not a fourth clock.** The prescription in that section is to find an event that
+  already exists near the thing and fold *that*. The wall's one-second tick is one, is already
+  the only wake-up on an idle machine, and is exactly the cadence a person reading a log
+  wants. So this adds no timer, no lifecycle, and nothing for `Listeners` to release.
+- **What is left over is bounded three ways, any of which switches it off entirely.** Only
+  while a job is *expanded*, so it takes a deliberate act to begin at all; only while
+  `watching`, which is window focus, so a wall left up overnight reads nothing; and never past
+  the job settling, since `conv.jobs` drops it and the drawer goes with it. That makes it the
+  most tightly bounded of the four — the only one that needs an eye on it to exist.
+
+`watching` is passed down rather than subscribed to here, for the reason the panel takes it
+rather than asking: `attention.svelte.ts` already owns the window's focus and a second
+subscription is a second thing to release.
+
+#### Incremental, and the three things that were got wrong first
+
+Each read starts where the last one stopped, so a 40 MB dev-server log costs one read on
+opening and a few hundred bytes a second afterwards. **The seek is Rust's and the fold is
+TypeScript's**, which is a real division rather than an accident: choosing an offset needs the
+file's length, and asking for that from here would be a second round trip per tick for a
+number the read is about to have anyway. The contract between the halves is the offset
+actually read from — the fold compares it against the one it expected — so neither side has to
+trust the other's arithmetic, and both are tested where they live.
+
+- **A log is opened at its end.** `UNREAD` is `-1`, not `0`, because `0` is a real offset and
+  the one a truncated file legitimately takes. Conflating them reads a 40 MB log from the
+  beginning and shows the morning's startup banner as though it were now. Opening at the end
+  means the first chunk begins mid-line, so its leading fragment is dropped — kept, it opens
+  the pane on something that reads as corruption.
+- **Continuity breaks are not spliced.** A file that shrank, and a burst too large for one
+  read, are the same case: what is held is no longer contiguous with what arrived. Both drop
+  what is held rather than gluing on. Splicing shows two halves of different minutes joined at
+  a line boundary, with nothing saying so.
+- **Bytes are trimmed to character boundaries at both ends.** A seek lands mid-sequence about
+  one time in a hundred on non-ASCII output, and a process *still writing* can leave a
+  character half-written on a pipe. `from_utf8_lossy` on an untrimmed window puts a
+  replacement glyph in the middle of a word once every few reads.
+
+A line with no newline yet is held apart from the drawn lines and redrawn rather than appended
+to, or a progress line arriving in three writes becomes three rows.
+
+#### What it says about what it cannot show
+
+Two bounds, and both are stated rather than left to be inferred, on the rule that **a silent
+cap reads as having shown everything**: `missing()` says how much of the file was stepped over
+("4.9 KB earlier isn't shown — opened at the end"), and the foot says how many lines are on
+screen. The in-memory tail is capped at 400 lines — a bound on the *process*, not the pane,
+since unlike a widget on the wall a scrolling panel has no height deciding what fits, and a
+dev server prints all day.
+
+An empty pane has four different things it might mean and they are four different sentences
+(`absence`). The one worth care is `nofile`: a `Monitor` and an `Agent` name no output file in
+their receipt and theirs is derived from the session and the task id, so a CLI that moved its
+task directory lands there — and the honest answer is that the file is not where it should be,
+never an empty pane that reads as a silent process. Same bargain `store::pending_jobs` strikes
+when it existence-checks a derived path.
+
+Tone comes from `buildlog::diagnosticOf`, deliberately and not a fourth copy of the same
+judgement: what a backgrounded command is, nearly always, is a build, a test run or a server —
+which is the subject that function was measured against. The gutter mark is null throughout,
+since every line came down one pipe from one command.
+
+The tail follows itself with `{@attach stickToTail}` and nothing else, which is the rule this
+file already states for every scroller that gains content at the end.
+
+#### One Svelte trap, since it cost ten minutes and names nothing
+
+**A local called `derived` shadows the rune.** Every `$derived` in the component is then parsed
+as `$` applied to that variable, and what `svelte-check` reports is a page of errors about
+`SvelteStore` and `subscribe` — with no mention of runes anywhere in them.
