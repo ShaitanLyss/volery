@@ -125,6 +125,46 @@ upstream; a protocol reimplementation tracks a moving target, so **an outage her
 likely to be Spotify changing something than a bug in this file**, and the failure should say
 so rather than blame the network.
 
+## It builds here, and the one pin that makes that true
+
+Probed 2026-08-27 on this machine — **no MSVC**, `stable-x86_64-pc-windows-gnu`, per
+`build.md`'s rule that a throwaway crate in `.scratch` is the only way to answer a library
+question here (no exe built from the main crate runs on that target). `cargo check --lib`
+against `librespot-core`, `-playback` (rodio backend), `-metadata`, `-oauth` and `-connect`:
+**clean in 1m36s**, with a probe that instantiated `Player::new`, `audio_backend::find` and
+`NoOpVolume` on purpose, so what passed is the API surface and not merely the resolver.
+
+Three things that could have been traps and are not: the decoders are `symphonia`, which is
+pure Rust, so **no `protoc`, no `cmake`, no C toolchain** beyond what the tree already needs;
+`rodio` reaches WASAPI through the `windows` crate; and nothing in the tree spawns a child
+process, so the *"every spawn goes in a job object"* rule has nothing to bite on here.
+
+**The pin.** Out of the box it fails, and the failure names nothing that points at Spotify:
+
+```text
+error[E0277]: the trait bound `vergen::feature::build::Build: vergen_lib::entries::Add`
+              is not satisfied
+error: could not compile `librespot-core` (build script)
+```
+
+`librespot-core`'s build script wants `vergen ^9` and `vergen-gitcl ^1`. Those were one
+family until they were not:
+
+| | depends on |
+|---|---|
+| `vergen 9.0.6` (2025-04-09) | `vergen-lib ^0.1.6` |
+| `vergen 9.1.0` (2026-01-16) | `vergen-lib ^9.1.0` |
+
+A breaking change shipped inside a **minor** bump, so `^9` picks it up. `vergen-gitcl 1.0.8`
+is still on `vergen-lib 0.1.6`, both get unified into one build script, and the two `Add`
+traits are not the same trait. librespot 0.8.0 was published 2025-11-10 and **built fine at
+the time** — it was broken retroactively, three months later, by a crate it does not name.
+
+`Cargo.lock` holds it at `vergen 9.0.6` and that is the whole fix. Worth knowing precisely
+because of how it will come back: **a `cargo update` unpins it**, and the error will arrive
+with no Spotify in it at all. If this reappears, it is this, and the pin is
+`cargo update -p vergen --precise 9.0.6`.
+
 ## Where the credential goes
 
 The refresh material goes in the **Windows credential vault under
