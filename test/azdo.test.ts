@@ -568,9 +568,17 @@ describe("what a github run is", () => {
 
   test("a github branch survives shortRef untouched", () => {
     /* It arrives bare, so there is nothing to strip. The tag marker is
-       unrecoverable and that is a known loss — see the note on `shortRef`. */
+       unrecoverable and that is a known loss — see the note on `shortRef`.
+
+       `v9.9.9` rather than a real-looking version, and that is not arbitrary:
+       this literal was `v0.12.0` and the release bump rewrote it to `v0.13.0`
+       in passing, because the script string-replaces the old version across the
+       tree and a test fixture looks exactly like a version it should update. The
+       assertion did not care, which is the problem — a bump silently editing a
+       test is a bump that could silently edit one that does. A version this
+       project will never reach cannot be matched. */
     expect(shortRef("main")).toBe("main");
-    expect(shortRef("v0.12.0")).toBe("v0.12.0");
+    expect(shortRef("v9.9.9")).toBe("v9.9.9");
     expect(shortRef("refs/heads/main")).toBe("main");
   });
 
