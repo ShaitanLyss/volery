@@ -83,6 +83,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # supervisor.rs,
                               # servers.rs, shell.rs, nvim.rs, find.rs, sessions.rs, project.rs,
                               # usage.rs,
+                              # tunnel.rs,
                               # limits.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
@@ -90,6 +91,7 @@ bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, wit
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
+bun tools/lift-tunnel.ts           # same, for the spotify tunnel's ipv4-first sort
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs
@@ -147,7 +149,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `update.md` | getting onto the newer one: why the installer does the work rather than a plugin, offering nothing when in doubt, and why the exit handler launches it | `update.rs`, `update.ts`, `release.svelte.ts`, `release.yml` |
 | `portage.md` | carrying a wall off and setting one up again: what a layout is and what it deliberately leaves behind, why no id travels and an import only adds, furniture identified by what-and-where, and a territory that arrives pointing nowhere | `portage.ts`, `portage.svelte.ts`, `portage.rs`, `Carry.svelte` |
 | `roster.md` | **design, unbuilt** — drawing something else's work: a wall-level MCP registry, the row contract a server publishes to appear here, and why `tier` is the only vocabulary Volery exports | `roster.ts`, `Roster.svelte`, `mcp.rs` |
-| `spotify.md` | music on the wall: why Volery *is* the player rather than a remote for one, what that costs in Spotify's terms, and the two tools that let a card choose what plays without being able to silence you | `spotify.rs`, `selector.rs`, `spotify.ts`, `Spotify.svelte` |
+| `spotify.md` | music on the wall: why Volery *is* the player rather than a remote for one, what that costs in Spotify's terms, the two tools that let a card choose what plays without being able to silence you, and the loopback tunnel that gets librespot onto an address that answers | `spotify.rs`, `selector.rs`, `tunnel.rs`, `spotify.ts`, `Spotify.svelte` |
 | `build.md` | building without MSVC — the four traps, and what a no-MSVC machine can check | `Cargo.toml`, `tools/*.ps1` |
 
 ## Architecture

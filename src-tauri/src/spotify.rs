@@ -441,6 +441,22 @@ pub async fn spotify_start(app: AppHandle, name: Option<String>) -> Result<(), S
 /// answers in well under a second.
 const CONNECT_BUDGET: Duration = Duration::from_secs(30);
 
+/// The access-point ports to try, in Spotify's own order of preference.
+///
+/// Normally librespot walks this ladder itself — apresolve returns 4070, 443 and
+/// 80 in that order and `ApResolver` pops them in turn. **Setting `proxy` takes
+/// that away**, silently: `port_config` returns `ap_port.unwrap_or(443)` the
+/// moment a proxy is configured, so the whole list gets filtered to one port and
+/// a caller who did not also set `ap_port` has quietly chosen 443 for everybody.
+/// See `tunnel.rs`, which needs the proxy and therefore owes this.
+///
+/// So the ladder is rebuilt here. Both rungs were probed on 2026-08-28 and both
+/// authenticate — 1.94s on 4070, 1.27s on 443 — so this is not about the network
+/// it was found on. It is about the one where 4070 is firewalled, which is the
+/// case `ap_port` exists for at all; 80 is left off because a port that lets a
+/// binary protocol through where 443 did not is a network nobody has met.
+const AP_PORTS: [u16; 2] = [4070, 443];
+
 async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String> {
     {
         let state = app.state::<Spotify>();
@@ -458,26 +474,57 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
     let token = crate::off_main(refresh_stored).await??;
 
     let device = name.unwrap_or_else(|| "volery".to_string());
-    let session = Session::new(SessionConfig::default(), None);
     let credentials = Credentials::with_access_token(token.access_token);
 
-    /* Bounded, because librespot's own bound is four minutes of silence. The
-       message names both candidates rather than picking one: the rule for this
-       subsystem says an outage is more likely to be Spotify moving than a bug
-       here, and the one time it was measured it was neither — it was this
-       machine's own route to them. */
-    match tokio::time::timeout(CONNECT_BUDGET, session.connect(credentials.clone(), false)).await {
-        Err(_) => {
-            return Err(format!(
-                "spotify's access points did not answer within {}s — the account and the \
-                 sign-in are fine, so this is the route to them: a firewall, a proxy, or \
-                 an address family that goes nowhere",
-                CONNECT_BUDGET.as_secs()
-            ));
+    /* Everything goes through our own loopback tunnel, which prefers IPv4 —
+       without it librespot dials the first address `getaddrinfo` hands it and
+       never another, and on the network this was found on that address is a
+       black hole for every access point. `tunnel.rs` has the measurement. */
+    let proxy = crate::tunnel::endpoint()?;
+
+    /* Each rung is a fresh `Session`, because `ap_port` is read off the config a
+       session was built with and a failed one has nothing worth reusing.
+       Bounded per rung, because librespot's own bound is four minutes of
+       silence. */
+    let mut opened = None;
+    let mut fault = String::new();
+    for ap_port in AP_PORTS {
+        let session = Session::new(
+            SessionConfig {
+                proxy: Some(proxy.clone()),
+                ap_port: Some(ap_port),
+                ..Default::default()
+            },
+            None,
+        );
+        match tokio::time::timeout(CONNECT_BUDGET, session.connect(credentials.clone(), false))
+            .await
+        {
+            Ok(Ok(())) => {
+                opened = Some(session);
+                break;
+            }
+            Ok(Err(e)) => fault = format!("on port {ap_port}, spotify said: {e}"),
+            Err(_) => {
+                fault = format!(
+                    "port {ap_port} did not answer within {}s",
+                    CONNECT_BUDGET.as_secs()
+                )
+            }
         }
-        Ok(Err(e)) => return Err(format!("spotify would not open a session: {e}")),
-        Ok(Ok(())) => {}
     }
+
+    /* The message names the route rather than Spotify. This subsystem's rule says
+       an outage is likelier to be Spotify moving than a bug here, and the one
+       time it was measured it was neither — it was which address librespot
+       picked, which is now ours to pick. So what is left when both rungs fail is
+       genuinely the network or the account. */
+    let session = opened.ok_or_else(|| {
+        format!(
+            "could not reach spotify's access points on port {} or {} — {fault}",
+            AP_PORTS[0], AP_PORTS[1]
+        )
+    })?;
 
     let backend = audio_backend::find(None).ok_or("no audio backend was built in")?;
     let mixer_fn = mixer::find(None).ok_or("no mixer was built in")?;

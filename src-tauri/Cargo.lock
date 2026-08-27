@@ -4385,6 +4385,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "ureq",
+ "url",
  "vergen",
  "windows 0.61.3",
 ]

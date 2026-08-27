@@ -5,7 +5,9 @@ paths:
   - "src/lib/Spotify.svelte"
   - "src-tauri/src/spotify.rs"
   - "src-tauri/src/selector.rs"
+  - "src-tauri/src/tunnel.rs"
   - "test/spotify.test.ts"
+  - "tools/lift-tunnel.ts"
   - "src-tauri/Cargo.toml"
 ---
 
@@ -296,11 +298,12 @@ person. The cost is stated where it lives, above `spotify_link`: abandon the sig
 nothing else can take port 5588 back. Everything after that leg is bounded, which is where the
 four minutes actually were.
 
-## It cannot reach Spotify from this machine, and the cause is one line of librespot
+## librespot could not reach Spotify from here, and the fix is a tunnel of our own
 
-This is the part that no amount of fixing the widget makes work, so it is stated plainly.
-Probed 2026-08-28 with `.scratch/spotprobe`, which does its own browser leg and then runs the
-same `session.connect` with `RUST_LOG` wired up:
+This is the one that took the longest and it is the one worth reading, because two
+plausible diagnoses were measured and both were wrong before the third was right.
+
+### What it looked like
 
 ```text
 INFO  Connecting to AP "ap-gae2.spotify.com:4070"
@@ -310,59 +313,125 @@ ERROR Tried too many access points
 --- FAILED after 253.4s
 ```
 
-`10060` is `WSAETIMEDOUT`. The obvious reading is a firewall on 4070 — Spotify's preferred
-access-point port, and the one thing `SessionConfig::ap_port` exists to route around; the
-comment in librespot's own `apresolve.rs` even says *"firewalls only allow certain ports (e.g.
-443 and not 4070)"*. **That reading is wrong, and `ap_port: Some(443)` was probed as a
-variant and failed identically** — 211 seconds, every access point, port 443 only. Do not
-reach for it again.
+`10060` is `WSAETIMEDOUT`.
 
-The cause is the address family:
+### The two wrong answers, kept because they are the ones anyone would reach for
+
+**"Port 4070 is firewalled."** It is the obvious reading — 4070 is Spotify's preferred
+access-point port, `SessionConfig::ap_port` exists precisely to route around a firewall that
+blocks it, and librespot's own `apresolve.rs` says *"firewalls only allow certain ports (e.g.
+443 and not 4070)"*. It is also wrong. `ap_port: Some(443)` was probed as a controlled variant
+and failed **identically** — 211 seconds, every access point, port 443 only. Do not reach for
+it again on its own.
+
+**"This machine's IPv6 route is dead."** Also wrong, and this one was written into the rule and
+the commit message before being checked, which is the mistake worth learning from rather than
+the fact. This machine's IPv6 is fine:
 
 | | |
 |---|---|
-| `getaddrinfo("ap-gae2.spotify.com")` returns | `2405:6e00:64::68c7:f1ca`, **then** `104.199.241.202` |
-| connect to the IPv6 literal, port 4070 | 21086 ms, then fails |
-| connect to the IPv4 literal, port 4070 | **411 ms, open** |
+| `ipv6.google.com` over IPv6 | open, 71 ms |
+| `www.cloudflare.com` over IPv6 | open, 25 ms |
+| `dealer.spotify.com` over IPv6 | open, 32 ms |
 
-This machine's Wi-Fi carries a default IPv6 route via a link-local next hop — so the OS
-believes IPv6 works and will not fail fast — and nothing on the other side of it answers. And
-librespot's `socket.rs` is:
+So there is a working default route and things on the other side of it answer. **A generalised
+claim about the network was made from one host's behaviour, and it was falsifiable in about
+fifteen seconds.** Two of the three wrong turns in this whole investigation were that shape.
+
+### The right answer, which is per-host and one line of librespot
+
+`librespot-core/src/socket.rs`:
 
 ```rust
 let socket_addr = (host, port).to_socket_addrs()?.next().ok_or_else(...)?;
 TcpStream::connect(&socket_addr).await?
 ```
 
-**`.next()` — the first address, and never any of the others.** No Happy Eyeballs, no
-iteration, no fallback. So every access point resolves to a black hole and times out, on every
-port, and the IPv4 address sitting second in the same list is never tried.
+**`.next()` — the first address `getaddrinfo` returns, and never any of the others.** No Happy
+Eyeballs, no iteration, no fallback. And what `getaddrinfo` returns first for a Spotify access
+point, here, is an address that does not answer:
 
-That is upstream's to fix and there is no supported way round it from here. `SessionConfig` has
-six fields and the only lever among them is `proxy`, which speaks HTTP `CONNECT` — so an
-in-app workaround means running our own listener whose whole job is to resolve IPv4 first, for
-one broken network. It has not been built. What has been built is a failure that names the
-right suspect: *"the account and the sign-in are fine, so this is the route to them"*.
+| host | over IPv6 | over IPv4 |
+|---|---|---|
+| `ap-gae2.spotify.com` | timeout, 21086 ms | **open, 30 ms** |
+| `ap-gew1.spotify.com` | timeout | **open, 46 ms** |
+| `apresolve.spotify.com` | timeout | **open, 81 ms** |
+| `api.spotify.com` | timeout | **open, 20 ms** |
+| `dealer.spotify.com` | **open, 32 ms** | open, 29 ms |
 
-Three things a future reader should not have to rediscover:
+Note the last row and the fact that `2600:1901:1:292::` answers where `2600:1901:1:7c5::` does
+not: this is **per address, not per prefix and not per network**. Nothing here should be
+described as "IPv6 is broken", including by whoever revisits it.
 
-- **A raw port check from a different resolver lies.** `TcpClient.BeginConnect(host, port)` in
-  .NET reported `ap-gew1.spotify.com:4070` as **open in 330 ms** while librespot was timing out
-  against the same host and port, because .NET tries every address and librespot tries one.
-  That single measurement sent this investigation after a firewall for half an hour.
-- **`ap-gue1.spotify.com:443` answered `early eof`** rather than timing out — one access point
-  whose IPv4 came first, reaching a middlebox that accepts the TCP connection and then kills a
-  protocol it does not recognise. So there is probably a *second* obstacle behind this one, and
-  fixing the address family may not be the end of it.
-- **It may simply work on another network.** The fault is this router's IPv6, not the app's, so
-  nothing here should be hard-coded around it.
+There is a working address sitting second in every one of those lists, and librespot never
+reaches it. That is the whole bug, and it is what makes preferring IPv4 a fix rather than a
+superstition.
+
+### `tunnel.rs`, and why a proxy rather than a fork
+
+`SessionConfig` has six fields and not one of them is about addresses, so librespot cannot be
+told which family to prefer. But `proxy` changes **which host librespot resolves**: it dials
+the proxy — `127.0.0.1`, one address, no ambiguity — and asks it over HTTP `CONNECT` to reach
+the access point. The address decision moves into code this app owns, which is `tunnel.rs`: a
+loopback `CONNECT` listener that sorts every resolved address IPv4-first and tries them in
+turn.
+
+Measured on the same network, in one session, minutes apart:
+
+| | |
+|---|---|
+| librespot, direct | 253 s, then *"Tried too many access points"* |
+| through the tunnel, `ap_port` 4070 | **connected in 1.94 s**, `Authenticated as 'chronoflo'` |
+| through the tunnel, `ap_port` 443 | **connected in 1.27 s** |
+
+The alternative was vendoring `librespot-core` and fixing `socket.rs` to iterate — the smaller
+diff by far, four lines against a hundred. It was not chosen because this file already argues
+that a protocol reimplementation tracks a moving target: a fork of one has to be re-merged
+forever, and a supported config field costs nothing at upgrade time. That is a trade someone
+made deliberately and it is the thing to re-read rather than re-decide.
+
+Two things the measurement settled beyond the headline:
+
+- **One tunnel covers the resolver too.** `apresolve.spotify.com:443` came through it, so
+  librespot's `HttpClient` honours `config.proxy` as well as the raw AP socket. Nothing else
+  needed pointing at it.
+- **Port 443 is not being interfered with here**, both rungs authenticate, so the single
+  `early eof` an earlier run got from `ap-gue1.spotify.com:443` was not TLS interception. It
+  remains unexplained and it no longer matters, because a rung that fails is now one of two.
+
+### The trap that comes with the proxy, and it is silent
+
+Setting `proxy` **also decides which access-point ports librespot will consider**, and nothing
+at the call site says so. `ApResolver::port_config`:
+
+```rust
+if self.session().config().proxy.is_some() || self.session().config().ap_port.is_some() {
+    Some(self.session().config().ap_port.unwrap_or(443))
+} else { None }
+```
+
+A proxy with no `ap_port` therefore filters the whole list down to port 443 and throws away
+Spotify's preference order (4070, then 443, then 80). So `spotify.rs` sets `ap_port` explicitly
+and walks the ladder itself — `AP_PORTS`, one fresh `Session` per rung, each bounded by
+`CONNECT_BUDGET`. Both rungs were probed and both work, so the ladder is not for this network;
+it is for the one where 4070 really is firewalled, which is the case `ap_port` exists for.
+
+80 is deliberately left off: a network that passes a binary protocol on 80 where it refused it
+on 443 is one nobody has met, and an extra rung is 30 seconds of somebody's evening.
+
+### What is still unproven
+
+`Spirc::new` and actual audio. The session opens and authenticates; the Connect device
+registration and the rodio output path have never run against Spotify. Sink `4951f398` carries
+that, and it is now the whole of what is left in it.
 
 ### The probe, and why it is a scratch crate
 
 `.scratch/spotprobe` — uncommitted, per `build.md`: `cargo test` does not run on this machine
 and **no exe built from the main crate runs on the gnu target at all** (`0xC0000139` before
 `main`), so a throwaway crate is the only runnable Rust probe here. It grew a `main` from the
-compile-only check that was already there.
+compile-only check that was already there, and then an IPv4-first tunnel of its own, which is
+where `tunnel.rs` was written and proved before being brought into the app.
 
 ```bash
 cd .scratch/spotprobe
@@ -376,13 +445,22 @@ RUST_LOG=librespot=debug ./target/debug/spotprobe.exe --link    # its own browse
 ```
 
 `--link` exists because of the rotation bug above: reading the vault after one `spotify_start`
-gets a revoked token and answers a question about the wrong credential.
+gets a revoked token and answers a question about the wrong credential. **It costs a browser
+sign-in every run**, which over one afternoon came to four of them from the user — if this file
+is opened again for a network question, teaching the probe to cache its refresh token is the
+first ten minutes to spend.
+
+The pure half of `tunnel.rs` does not need any of that. `bun tools/lift-tunnel.ts` executes its
+four assertions in under a second with no cargo and no dependencies, which also means it works
+when the dependency graph does not — and for a Spotify file that is not hypothetical, since
+`librespot-core`'s `vergen` conflict had the cargo gate red for every card on this wall for a
+stretch on 2026-08-27.
 
 **The reason a probe was needed at all is that the app installs no `log` sink.** librespot said
 *"Connecting to AP …"* and *"Tried too many access points"* on every one of those four minutes,
-with `log` macros, into nothing — so the whole of the diagnosis existed at runtime and was
-discarded, and recovering it took a scratch crate and two browser sign-ins. Anything here that
-ever wants to know why Spotify is unhappy pays that again until a sink exists. See the sink.
+with `log` macros, into nothing — so the whole diagnosis existed at runtime and was discarded.
+`tunnel.rs::log_line` is the one place holding that shape until a sink exists. See sink
+`7786cf73`.
 
 ## A card may choose what plays, and deliberately cannot drive it
 

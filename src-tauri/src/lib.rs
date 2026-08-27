@@ -45,6 +45,10 @@ mod spotify;
 mod status;
 mod store;
 mod supervisor;
+/* The IPv4-first loopback CONNECT tunnel librespot dials through. Beside
+   `spotify` rather than inside it because it is a listener with a lifetime of
+   its own; see its own header for the measurement that made it necessary. */
+mod tunnel;
 mod update;
 mod usage;
 mod vault;
