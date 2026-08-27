@@ -1201,7 +1201,14 @@ fn globs_from(v: &Value) -> Vec<String> {
     }
 }
 
-fn ago(ms: i64) -> String {
+/// How long ago, in the words a tool answer uses.
+///
+/// `pub(crate)` for `servers.rs`, which owes the same sentence about when a dev
+/// server last printed anything. A second copy would be a second vocabulary —
+/// two tools on one MCP server saying "4m ago" and "4 minutes ago" about the
+/// same span reads as two tools written by two people, which is the argument
+/// `servers::quiet` already makes about `SKEIN_NO_SERVERS` and `SKEIN_NO_WAKE`.
+pub(crate) fn ago(ms: i64) -> String {
     let mins = ms / 60_000;
     if mins < 1 {
         return "just now".into();

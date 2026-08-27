@@ -106,6 +106,14 @@ and WiX and NSIS produce what they produce under MSVC. Four things bite:
   despite `cargo test` being unavailable. It takes a minute and it is the difference between
   believing a parser is right and knowing it.
 
+  **Regenerate the lift from the source file every time; never keep one.** `joblog.rs`'s
+  twelve tests were once run against a lift taken before a constant was threaded through the
+  function under it, so the green they reported was about a version that no longer existed on
+  disk (ac3883e). `tools/lift-servers.ts` is the technique written down as a script rather
+  than a habit — it extracts the items by name out of `servers.rs`, builds, runs, and keeps
+  nothing — and is the shape to copy for another module rather than a tool with a general
+  interface, since which items are pure is a fact about each file.
+
   Without `RUSTUP_TOOLCHAIN` the failure is the misleading one at the top of this section:
   every build script dies with `link: extra operand`, which is a *missing* MSVC linker rather
   than a broken anything.

@@ -203,6 +203,37 @@ describe("describeTool degrades before arguments arrive", () => {
     );
   });
 
+  test("reading a dev server and restarting one do not read alike", () => {
+    /* The guard below catches a tool with *no* phrasing. It cannot catch two
+       tools whose phrasings are indistinguishable, and these three are the pair
+       where that would cost something: `server_log` reads what the wall is
+       already holding and `server` kills a process tree and binds ports. A
+       glance at a card has to tell them apart, or the one line in the panel
+       that would have said "it restarted your dev servers" says something that
+       could equally have been a free read. */
+    expect(describeTool("mcp__skein__servers", {})).toBe("looked over the dev servers");
+    expect(describeTool("mcp__skein__server_log", { group: "dev" })).toBe("read dev's log");
+    expect(describeTool("mcp__skein__server_log", {})).toBe("read a dev server log");
+    expect(
+      describeTool("mcp__skein__server_log", { group: "dev", match: "ECONNREFUSED" }),
+    ).toBe("searched dev's log for ECONNREFUSED");
+    expect(describeTool("mcp__skein__server", { group: "dev", action: "restart" })).toBe(
+      "restarted dev",
+    );
+    expect(describeTool("mcp__skein__server", { group: "dev", action: "stop" })).toBe(
+      "stopped dev",
+    );
+    expect(describeTool("mcp__skein__server", { group: "dev", action: "start" })).toBe(
+      "started dev",
+    );
+    /* An action the schema does not allow still has to draw *something*, and
+       "restarted" is the honest fallback: `do_server` refuses the call outright,
+       so the only thing the card can truthfully report is what was reached for.
+       It must not come out blank or as the wire name. */
+    expect(describeTool("mcp__skein__server", { group: "dev" })).toBe("restarted dev");
+    expect(describeTool("mcp__skein__server", {})).toBe("restarted a dev server group");
+  });
+
   test("the vocabulary is the whole vocabulary, held against the rust that serves it", () => {
     /* The thirteen were not a judgement about which calls matter — they were
        simply never added, one server at a time, and nothing said so. Each MCP

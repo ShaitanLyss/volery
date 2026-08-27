@@ -4,6 +4,7 @@ paths:
   - "src/lib/Servers.svelte"
   - "src/lib/ansi.ts"
   - "src/lib/follow.ts"
+  - "tools/lift-servers.ts"
 ---
 
 # Dev servers
@@ -61,6 +62,120 @@ authored against cmd (`&&`, `%VAR%`), `actions.rs` has been running `cmd /C call
 here all along with no trouble, and `pwsh` would cost the ~4s profile load per server that
 `shell.md` measured. The store held zero `server_group` rows when this changed, so nothing
 stored had to be re-authored — but that is luck, and a future change of shell is a migration.
+
+### A card driving the dev servers
+
+Three tools on the `skein` MCP server — `servers`, `server_log`, `server` — declared in
+`servers.rs` beside the thing they are about, not in a module of their own. `relay.rs`,
+`board.rs` and `sink.rs` each hold their subsystem's state *and* its tools, which is the
+pattern; and a new module would have wanted a `mod` line in `lib.rs`, which is a seam whose
+other half is an untracked file — the exact pair that stopped `main` compiling once already.
+Nothing here is a `#[tauri::command]` and `lib.rs` is untouched.
+
+**Reading is free, acting is not, and the descriptions are where that is said.** `alwaysLoad`
+puts every schema in front of every card at session start, which is what `supervisor::append_prompt`
+is short on the strength of — so the reasoning lives in the description or nowhere. `servers`
+and `server_log` say they cost nothing; `server` says, in those words, that it runs processes
+on the user's machine. `ask.rs` asserts both of those sentences, because a description edited
+down to name its arguments would take the warning off the one tool here that can bind a port
+and nothing else would notice.
+
+- **One acting tool with an `action`, not three.** A **restart is one act and cannot be
+  composed**: `start` releases the old tree with `stopped` already set — so the dying pipes do
+  not report a death the replacement then argues with — and finishes before a single new
+  process is spawned, so the ports are genuinely free. A `server_stop` followed by a
+  `server_start` would race its own ports and report a server that came up fine as having died.
+  So the correct thing is the named thing and the wrong composition is not on offer. The
+  one-letter distance from `servers` is safe in the direction that matters: `server` *requires*
+  `group` and `action`, so a model that meant the list and typed the other gets a schema error
+  rather than a restarted server.
+- **A chat card is refused all three, and the kind is asked of the store.** Not just the one
+  that spawns. A chat card reaches the open web and nothing on this machine, which is the whole
+  content of the kind (`chat.md`); a group is a command line and a working directory on this
+  disk, so `servers` and `server_log` would hand it a list of the machine's directories and the
+  output of processes running on them. Same refusal `relay::do_list` makes one step earlier,
+  same reason, and never on the caller's word — `standing()` asks `roster_one`.
+- **A card sees only its own territory's groups**, and there is deliberately no `scope` knob
+  the way `list` has one. "Every group on the wall" is not a reading anybody needs and is a
+  reach worth not offering.
+- **`start`/`stop` were cut out of the commands** so the tool and the wall take one path. The
+  commands are now thin wrappers. `stop_group` gained an `AppHandle` — injected by Tauri, so
+  nothing in `skein.svelte.ts` changed.
+- **`server:running` is a new event and is not `server:state`.** They answer different
+  questions: `state` is what one server did, `running` is whether anybody has asked for the
+  group at all. Conflating them would break the reading `serverlog.ts::standing` is built on,
+  where a crashed group is `running: true` with an `exited` health *on purpose*. It exists
+  because `GroupRuntime.running` was set optimistically by the front end's own
+  `startGroup`/`stopGroup` — complete while the wall was the only thing that could start a
+  group, and `server` is the second thing. Without it the widget draws a start button over a
+  group an agent brought up.
+
+##### The log an agent reads is not the log the wall draws
+
+Nothing in Rust kept a line until this existed: `server:log` went out as it was pumped and
+`GroupRuntime.log` was the only copy on the machine. That was right while the wall was the only
+reader — a second copy of something already in a rune is a cache to keep in step — and stops
+being right the moment a card can ask, because a tool cannot reach into the front end's state
+and must not be answered by round-tripping through the window. So the pump writes twice, and
+the second write is `Trace` in `Servers`.
+
+- **Two mutexes on `Servers`, and they must stay two.** `running` is held across a kill and a
+  `wait`; `trace` is taken once per line, which on a `pnpm dev` that has just recompiled is a
+  burst of hundreds. One lock would put that burst behind whatever `start` is doing to a
+  process tree, on the pump threads.
+- **Bounded twice, because lines alone is not a bound.** `KEEP_LINES` is 2000 and `MAX_LINE`
+  caps one line at 8 KB, so a line count alone would let one group sit on 16 MB — not a leak,
+  but a ceiling nobody would have chosen, and a minified source-map line reaches it having said
+  very little. `KEEP_BYTES` is 512 KB and whichever bites first is the honest one. `bytes` is
+  carried alongside rather than summed on eviction, since walking the deque would make an
+  append O(n) on the hottest path in the file.
+- **`dropped` is counted and reported.** An answer that silently began in the middle reads as
+  the whole log, and a card would conclude a server never printed something it printed twice.
+- **The record starts again with the tree.** `start` clears the group's `Trace`, because a
+  restart's whole purpose is to ask what it says *this* time — a log that ran on would answer
+  with the failure you just tried to fix, and `dropped` would be counting lines from a process
+  that no longer exists. `stop` keeps the lines and clears only the health, which is what
+  `stopGroup` does one layer up: idle, not exited.
+- **The escapes come off for the agent and stay on for the wall.** `force_colour` asks servers
+  for colour they would otherwise withhold, so every line in the ring may carry SGR sequences —
+  and the one reader that cannot use them is the model. One line, two readers, two right
+  answers. `strip_ansi` is narrow on purpose and narrow in the safe direction: a sequence it
+  does not recognise costs the two characters it read rather than the rest of the line, because
+  a log with a stray `[?25l` in it is legible and one truncated at the first unrecognised byte
+  is not.
+- **`match` filters the ring and then tails it**, in that order, which is the whole reason it
+  is worth having: narrowing the tail would only ever search the sixty lines already being
+  answered with, and the line worth finding is by definition one that scrolled past. It is the
+  cheaper question than raising `lines`, and the description says so.
+- **Which pipe a line came down is not marked in the answer**, for the reason `LogTail` leaves
+  its `tint` off for this subject: half of everything logs perfectly calm prose to stderr, and
+  a tool that annotated those lines as errors would have the model reporting a healthy server
+  as broken. `stderr: true` is there for when the pipe genuinely is the question, and its
+  description says what it does and does not mean.
+- **The header says when the group last spoke**, taken from the whole ring rather than the
+  filtered view. A running group that has printed nothing for forty minutes is either idle and
+  fine or wedged, and a tail alone reads identically in both cases — that number is what lets
+  an agent tell. Taken from the ring because a `match` that happened to hit an old line would
+  otherwise report the server as having gone quiet since.
+
+##### Running these assertions on a machine with no MSVC
+
+`bash tools/check-gnu.sh --profile test` typechecks the `#[cfg(test)]` blocks and executes
+none of them, and a green run of it reads exactly like a green test run. `bun tools/lift-servers.ts`
+is the difference: it lifts the pure items out of `servers.rs` into a throwaway, hands it to
+`rustc --test`, and runs them for real — 11 assertions covering `strip_ansi`, `pick_group` and
+the ring's eviction.
+
+It **regenerates from the source file on every run and keeps nothing**, which is the half that
+matters. `joblog.rs`'s tests were once run against a lift taken before a constant was threaded
+through the function under it, so the green they reported was about a version that no longer
+existed on disk (ac3883e). A copy that can go stale will, and it goes on passing while it does.
+Verified against a deliberate break: breaking `strip_ansi`'s CSI arm in `servers.rs` turns the
+lift red on the next run.
+
+The stub `ServerGroup` it stands up derives `Debug` and `Clone` because the real one does; if
+`pick_group` ever reads a third field the lift stops compiling, which is the right way for a
+stub to fail. See `build.md` for the technique and why `cargo test` is unavailable here at all.
 
 ### Colour without a terminal (`force_colour`)
 

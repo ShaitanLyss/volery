@@ -3655,6 +3655,66 @@ pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// One territory by its id, for a caller that already knows which.
+///
+/// `projects` above answers "what territories are there"; this answers "where
+/// does *this* one live", which is what a dev server needs — a group is started
+/// in the project's `root_path` and a card's own `cwd` is not it, since a card
+/// in a worktree is somewhere else entirely.
+pub fn project_row(conn: &Connection, id: &str) -> Option<ProjectRow> {
+    conn.query_row(
+        "SELECT id, name, root_path FROM project WHERE id = ?1",
+        params![id],
+        |r| Ok(ProjectRow { id: r.get(0)?, name: r.get(1)?, root_path: r.get(2)? }),
+    )
+    .ok()
+}
+
+/// One territory's dev server groups, in the order they start in.
+///
+/// `load_studio` already reads every group on the wall, and this exists rather
+/// than reusing it because the caller is a *tool*: `mcp__skein__servers` wants
+/// one project's groups and `load_studio` would fetch every project, every
+/// conversation and the wall's guidance to get them, under the store lock, on
+/// an MCP thread — a round trip sized for painting the whole wall, to answer a
+/// question about five rows.
+///
+/// Narrowed to a project rather than answering the wall, because that narrowing
+/// is a rule rather than a convenience: a group is a command line on this
+/// machine, and a card may only see and drive its own territory's. See
+/// `.claude/rules/servers.md`.
+///
+/// `ORDER BY start_order` is the same order `load_studio` reads them in, so a
+/// group's position in a tool's answer is its position on the wall.
+pub fn server_groups_for(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<ServerGroup>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, project_id, label, autostart, start_order, spec_json
+               FROM server_group WHERE project_id = ?1 ORDER BY start_order",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id], |r| {
+            let spec: String = r.get(5)?;
+            Ok(ServerGroup {
+                id: r.get(0)?,
+                project_id: r.get(1)?,
+                label: r.get(2)?,
+                autostart: r.get::<_, i64>(3)? != 0,
+                start_order: r.get(4)?,
+                /* Same degradation `load_studio` allows: `spec_json` is an
+                   opaque column, and a group whose spec will not parse is a
+                   group with no servers rather than a read that fails. */
+                servers: serde_json::from_str(&spec).unwrap_or_default(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 /// Every card still on the wall, optionally narrowed to one project.
 ///
 /// Closed cards are left out and that is the whole of the filter: a card you

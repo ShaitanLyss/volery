@@ -138,6 +138,24 @@ export const SKEIN_CLOSE_TOOL = "mcp__skein__close";
 export const SKEIN_WAKE_TOOL = "mcp__skein__wake_me";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
 
+/** And the dev servers, which a card can now read and drive.
+ *
+ *  The first tools on this server that change what is *running on the machine*
+ *  rather than what is written down about it, and the phrasings below are the
+ *  only place the wall says which of the three a card reached for. That matters
+ *  more here than for the billboard: "read the dev server log" and "restarted
+ *  the dev servers" are a glance apart in the transcript and are not remotely
+ *  the same event, and the second is one you would want to have seen without
+ *  opening the call.
+ *
+ *  Same rule as the block above — every tool the Rust side registers owes a line
+ *  here, or it falls to `default` and prints `mcp__skein__server_log` on a card
+ *  whose entire register is lowercase prose. `src-tauri/src/servers.rs` declares
+ *  these three as `pub const *_TOOL`. */
+export const SKEIN_SERVERS_TOOL = "mcp__skein__servers";
+export const SKEIN_SERVER_LOG_TOOL = "mcp__skein__server_log";
+export const SKEIN_SERVER_TOOL = "mcp__skein__server";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -376,6 +394,32 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_ALLOWANCE_TOOL:
       return "checked the allowance";
+    /* The dev servers. `servers` and `server_log` read something the wall is
+       already holding and cost nobody anything; `server` runs processes on this
+       machine, so it gets the specific line — the same asymmetry `spawn` and
+       `close` get above, and for the same reason. "restarted dev" is a thing you
+       would want to have seen from the card without opening the call. */
+    case SKEIN_SERVERS_TOOL:
+      return "looked over the dev servers";
+    case SKEIN_SERVER_LOG_TOOL: {
+      const g = arg(input?.group);
+      const m = arg(input?.match);
+      if (g && m) return `searched ${clip(g, 16)}'s log for ${clip(m, 16)}`;
+      if (m) return `searched a server log for ${clip(m, 20)}`;
+      return g ? `read ${clip(g, 24)}'s log` : "read a dev server log";
+    }
+    case SKEIN_SERVER_TOOL: {
+      const g = arg(input?.group);
+      const said = arg(input?.action);
+      /* The verb is the agent's own word rather than what the call turned out
+         to do — a `start` aimed at a running group releases the old tree first,
+         and the line saying so belongs in the tool's answer where the reasoning
+         is, not on a card where it would read as the wall disagreeing with the
+         agent about what was asked for. */
+      const verb =
+        said === "stop" ? "stopped" : said === "start" ? "started" : "restarted";
+      return g ? `${verb} ${clip(g, 24)}` : `${verb} a dev server group`;
+    }
     case "ExitPlanMode":
       return "wants the plan approved";
     default:

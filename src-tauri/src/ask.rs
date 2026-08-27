@@ -627,6 +627,9 @@ pub(crate) fn dispatch(rpc: &Value) -> Dispatch {
                 crate::pin::pinned_schema(),
                 crate::spawn::spawn_schema(),
                 crate::spawn::close_schema(),
+                crate::servers::servers_schema(),
+                crate::servers::server_log_schema(),
+                crate::servers::server_schema(),
             ] }
         })),
         "ping" => Dispatch::Reply(json!({ "jsonrpc": "2.0", "id": id, "result": {} })),
@@ -802,6 +805,19 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             .or_else(|| crate::later::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::pin::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::spawn::handle(&app, &conversation_id, &tool, &args))
+                            /* Last in the chain and answered on this thread
+                               like the rest of it, which is the thing to check
+                               before adding anything else here: `server` can
+                               spend a second or two killing a process tree and
+                               spawning another, where every other arm returns
+                               in milliseconds. That is affordable only because
+                               `ask::start` gives each request its own thread —
+                               so this parks nobody but its own caller, which is
+                               a card that asked for a restart and can wait for
+                               one. It must not become a `#[tauri::command]`. */
+                            .or_else(|| {
+                                crate::servers::handle(&app, &conversation_id, &tool, &args)
+                            })
                             .unwrap_or_else(|| format!("this server has no tool {tool:?}"));
                         respond(
                             req,
@@ -1049,8 +1065,56 @@ mod tests {
                 crate::pin::PINNED_TOOL,
                 crate::spawn::SPAWN_TOOL,
                 crate::spawn::CLOSE_TOOL,
+                crate::servers::SERVERS_TOOL,
+                crate::servers::SERVER_LOG_TOOL,
+                crate::servers::SERVER_TOOL,
             ]
         );
+    }
+
+    /// The two that read come before the one that runs things, and that is not
+    /// tidiness — it is the same order the descriptions argue for. A model
+    /// scanning this roster meets `servers` and `server_log` first and is told
+    /// by both that they cost nothing; by the time it reaches `server` it has
+    /// already been offered the cheaper question twice.
+    #[test]
+    fn reading_the_dev_servers_is_offered_before_running_them() {
+        let r = dispatch(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
+        let Dispatch::Reply(v) = r else { panic!("expected a reply") };
+        let names: Vec<&str> = v["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        let at = |n: &str| names.iter().position(|x| *x == n).expect("tool is advertised");
+        assert!(at(crate::servers::SERVERS_TOOL) < at(crate::servers::SERVER_TOOL));
+        assert!(at(crate::servers::SERVER_LOG_TOOL) < at(crate::servers::SERVER_TOOL));
+    }
+
+    /// The one tool on this server that starts a process says so where the
+    /// model will read it, rather than leaving it to be inferred from a verb.
+    ///
+    /// Asserted rather than trusted to review, because the whole of "reading is
+    /// free, acting is not" lives in these descriptions — `alwaysLoad` is what
+    /// buys them, and `append_prompt` is short on the strength of it. A
+    /// description edited down to name its arguments would take the warning off
+    /// the one tool here that can bind a port, and nothing else would notice.
+    #[test]
+    fn the_tool_that_runs_things_says_that_it_runs_things() {
+        let s = crate::servers::server_schema();
+        let said = s["description"].as_str().unwrap();
+        assert!(said.contains("runs processes on the"), "got: {said}");
+        for free in [
+            crate::servers::servers_schema(),
+            crate::servers::server_log_schema(),
+        ] {
+            let said = free["description"].as_str().unwrap();
+            assert!(
+                said.contains("cost") || said.contains("Free"),
+                "a reading tool must say it is free — got: {said}"
+            );
+        }
     }
 
     /// The arguments reach the front end whole. Rust reads nothing out of them,
