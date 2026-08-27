@@ -123,6 +123,28 @@ const MODELS: Choice[] = [
   { value: "opusplan", summary: "opus while planning, sonnet while making" },
 ];
 
+/* Why `/plan` is Volery's to answer, when the rule at the top of this file is
+   that unknown names go through untouched.
+
+   Because the CLI knows the name and *refuses* it down this pipe. Probed
+   2026-08-25 against 2.1.241 with Skein's exact argv, sending `/plan` as a
+   `user` message:
+
+     /plan     result.result "/plan isn't available in this environment."
+
+   which is `/resume` and `/rewind`'s answer exactly, and puts this in the case
+   that argument already settled: sending it would leave "isn't available in
+   this environment" in the transcript of a card that has a perfectly good way
+   to do the thing. So this window answers it.
+
+   It is a second name for `/gear planning` rather than a replacement, which is
+   two ways to do one thing and was chosen deliberately. `/gear` is the pair —
+   it can say *making* as well, and it is where the palette shows you that a
+   gear is a thing a card has. `/plan` is the word somebody actually types, and
+   under the old arrangement it matched nothing at all: `matchCommands` is
+   prefix-then-contains, and "gear" contains neither. A verb nobody can guess is
+   a verb nobody uses. */
+
 /** The two gears, and what each one costs you.
  *
  *  The vocabulary is `gears.ts`'s; these are the words the dock says. Kept
@@ -195,6 +217,14 @@ export const COMMANDS: Command[] = [
     needsCard: true,
     by: "skein",
     takesText: true,
+  },
+  {
+    name: "plan",
+    summary: "let this card think, without letting it build",
+    detail:
+      "the same as `/gear planning`, which is the word people reach for — its writing tools come off and the turn ends in a document rather than a diff. `/gear making` is the way back",
+    needsCard: true,
+    by: "skein",
   },
   {
     name: "gear",

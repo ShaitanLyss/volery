@@ -1578,6 +1578,12 @@
          rename that silently only took on the focused card would be the dock
          quietly disagreeing with its own target line. */
       for (const c of on) await skein.rename(c, arg);
+    } else if (cmd.name === "plan") {
+      /* The one direction, which is the whole of what a shortcut is for. Coming
+         back is `/gear making`, and `/plan`'s detail line says so — a verb that
+         is easy to find and hard to undo would be a worse trade than the one
+         that made this exist. */
+      for (const c of on) await skein.setGear(c, "planning");
     } else if (cmd.name === "gear") {
       /* The value is one of `GEAR_CHOICES`, since a command with `choices` is
          incomplete until it has one — but the palette is a help rather than a

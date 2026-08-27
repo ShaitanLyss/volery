@@ -451,3 +451,44 @@ describe("whether a command is still being written", () => {
     expect(stillWriting(clear, "anything")).toBe(false);
   });
 });
+
+describe("/plan, the word people actually type", () => {
+  const plan = COMMANDS.find((c) => c.name === "plan")!;
+
+  test("it exists, is Volery's to run, and needs no value", () => {
+    expect(plan.by).toBe("skein");
+    expect(plan.choices).toBeUndefined();
+    expect(plan.takesText).toBeUndefined();
+    /* So Enter runs it outright rather than opening anything. */
+    expect(stillWriting(plan, "")).toBe(false);
+  });
+
+  test("it resolves bare, which is the only form of it", () => {
+    expect(resolveCommand("/plan")?.cmd.name).toBe("plan");
+    expect(resolveCommand("/plan")?.arg).toBe("");
+  });
+
+  test("and not with an argument, which falls through as prose", () => {
+    /* `/plan the migration` is a sentence for the agent, not a gear change. */
+    expect(resolveCommand("/plan the migration")).toBeNull();
+  });
+
+  /* The failure that made it exist: `matchCommands` is prefix-then-contains,
+     and "gear" contains neither "p" nor "plan", so typing the obvious word
+     opened no palette at all and went to the agent as a prompt. */
+  test("typing it finds it, where before it found nothing", () => {
+    expect(matchCommands("/plan").map((c) => c.name)).toContain("plan");
+    expect(matchCommands("/pla").map((c) => c.name)).toContain("plan");
+    expect(matchCommands("/p").map((c) => c.name)).toContain("plan");
+  });
+
+  test("both ways in still exist, and say different things", () => {
+    /* `/gear` is the pair — it is the one that can also say making. */
+    expect(resolveCommand("/gear planning")?.arg).toBe("planning");
+    expect(resolveCommand("/gear making")?.arg).toBe("making");
+  });
+
+  test("its detail names the way back, since the shortcut is one-way", () => {
+    expect(plan.detail).toContain("/gear making");
+  });
+});
