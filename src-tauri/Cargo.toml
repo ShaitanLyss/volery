@@ -1,6 +1,6 @@
 [package]
 name = "skein"
-version = "0.11.3"
+version = "0.12.0"
 description = "A studio wall for every Claude Code conversation at once"
 authors = ["moonlyss"]
 # Read at compile time by `update.rs`, which asks this repository's releases
