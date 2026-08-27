@@ -465,3 +465,13 @@ a real file to a temp directory and tails it.
 What the lift cannot reach is anything holding a `tauri::State` or a real `Connection`, so
 `reply`'s own arms are still type-checked only. Worth knowing which half of a test block you
 have actually run.
+
+**And the caveat that makes the rest of it safe: a lift is a *copy*, so a green run is
+evidence about the text you lifted and not about the file on disk.** The two drift the moment
+you edit the source, and nothing says so — the stale copy goes on passing. So regenerate it
+from the source file on every run rather than keeping a `lifted.rs` around to re-run, which is
+the same failure as a matcher written down twice and has the same silence. This bit here
+inside an hour: `joblog.rs`'s twelve were first run against a lift taken *before* `UNREAD` was
+threaded into `window`, so the green they reported was about a version of the function that no
+longer existed. Re-lifted from source, they still pass — but that was luck rather than
+method.
