@@ -172,7 +172,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 25;
+const SCHEMA_VERSION: i64 = 26;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -203,6 +203,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (23, migrate_v23),
     (24, migrate_v24),
     (25, migrate_v25),
+    (26, migrate_v26),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1160,6 +1161,72 @@ fn migrate_v24(conn: &Connection) -> Result<(), String> {
 /// reads as unclassified rather than as a turn.
 fn migrate_v25(conn: &Connection) -> Result<(), String> {
     add_column(conn, "turn", "kind", "TEXT NOT NULL DEFAULT 'unknown'")
+}
+
+/// What the gates were last *observed* doing, per tree.
+///
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: a new table
+/// with nothing to backfill — and nothing that *could* be backfilled, since the
+/// whole content of a row is an observation nobody was making before now.
+///
+/// Sink 3ebe1d59. The wall knew everything about its cards and nothing about the
+/// health of the work they were doing, so on 2026-08-27 one broken dependency
+/// was diagnosed independently three times, broadcast to every card, retracted
+/// an hour later, and a `git stash` wiped four cards' uncommitted work while
+/// somebody tried to establish whether a `cargo check` error was pre-existing or
+/// their own. Every one of those was the same missing fact.
+///
+/// **No foreign key and no cascade, and that is the decision this table turns
+/// on.** A `notice` is a standing claim about work in progress, so it dies with
+/// its author and `sweep_notices` is right to delete it. A gate observation is
+/// not a claim about a card at all — "cargo-check was red in this tree at 14:32"
+/// stays exactly as true after the card that saw it has closed, and it is most
+/// valuable precisely then, because the card that could have been asked is gone.
+/// So `conversation_id` is provenance and nothing more, which is the bargain
+/// `sink_item.from_id` already strikes for the same reason.
+///
+/// **Keyed on the tree, not on the project.** Two cards on different worktrees
+/// of one project share a `project_id` and share no files, so a project-scoped
+/// reading would report one card's red gate to another that cannot reach the
+/// code causing it. `hooks::perilous` had to learn the same distinction from the
+/// other side (`.claude/rules/worktree.md`), and got there by comparing `cwd`
+/// *and* `worktree` together. Here the tree arrives already resolved — it is the
+/// `cwd` the tool call actually ran in — so it is stored as the string it is.
+///
+/// **`settled_at IS NULL` is a run whose end nobody saw**, and it is a third
+/// state rather than a failure. `outcome` carries `'unknown'` for it. CLAUDE.md
+/// records `mark_interrupted` getting this wrong twice in the same direction,
+/// each time by widening "interrupted" to something easier to ask, and each time
+/// the cost was the whole wall claiming its last turn had been cut off. A gate
+/// nobody watched the end of is not a red gate.
+///
+/// `scope` and `narrowed` are how much of its own name a run covered. They exist
+/// because `bash tools/check-gnu.sh` is `cargo check --lib`, which looks at no
+/// `#[cfg(test)]` code whatever, and it is the form everybody on this machine
+/// actually types — so the commonest observation available is a partial one, and
+/// a schema that could not say so would be recording "cargo-check passed" for a
+/// run that never compiled a test module. `.claude/rules/build.md` says the same
+/// thing twice about the same command.
+fn migrate_v26(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS gate_run (
+            tool_id          TEXT PRIMARY KEY,
+            conversation_id  TEXT NOT NULL,
+            root             TEXT NOT NULL,
+            gate             TEXT NOT NULL,
+            scope            TEXT NOT NULL,
+            narrowed         TEXT,
+            command          TEXT NOT NULL,
+            started_at       INTEGER NOT NULL,
+            settled_at       INTEGER,
+            outcome          TEXT NOT NULL,
+            detail           TEXT
+        );
+        CREATE INDEX IF NOT EXISTS gate_run_tree ON gate_run(root, gate, started_at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v26: {e}"))
 }
 
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
@@ -3594,6 +3661,213 @@ fn task_output_path(cwd: &str, session_id: &str, task_id: Option<&str>) -> Optio
         .join("tasks")
         .join(format!("{task_id}.output"));
     Some(p.to_string_lossy().into_owned())
+}
+
+/* ── what the gates were seen doing ───────────────────────────────────────
+ *
+ * Sink 3ebe1d59, and `.claude/rules/gates.md` has the design. Two things are
+ * worth having in front of you before reading any of it.
+ *
+ * **Nothing here runs a gate, and nothing here asks whether one passed.** Every
+ * row is written because a card ran a gate of its own accord and the app was
+ * already folding the stream it announced itself on — a `tool_use` block naming
+ * the command, then a `tool_result` carrying `is_error`. So this is not the
+ * fourth thing that goes and looks (CLAUDE.md), and it is not even the "fold an
+ * adjacent event" compromise that passage offers as the fallback: it folds the
+ * exact event. `src/lib/gates.ts` is the only place that knows what a gate
+ * command looks like, and nothing in Rust needs to.
+ *
+ * **Two writes, not one**, and the second is the interesting justification. A
+ * single write on the result would be simpler and would lose the state that
+ * matters most for a shared tree: *somebody is running this gate right now*. On
+ * the afternoon this came from, `Blocking waiting for file lock on package
+ * cache` was observed repeatedly, because cards were starting cargo runs on top
+ * of each other's. A row opened at the call and settled at the result makes that
+ * visible for the price of one extra statement, and it is also the only thing
+ * that lets a run whose end nobody saw be reported as `unknown` rather than
+ * silently not existing.
+ */
+
+/// One observed run of one gate. The wire shape `src/lib/gates.ts` folds.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateRun {
+    pub tool_id: String,
+    pub card: String,
+    /// What the card was called, resolved on the way out rather than stored.
+    ///
+    /// Denormalising it would have been the obvious thing and would go stale the
+    /// moment a card is renamed — and cards here are renamed constantly, since
+    /// `naming.ts` gives one a draft name and then replaces it with the model's
+    /// own. `None` for a row whose card is gone, which is honest and is exactly
+    /// the case the missing foreign key on this table exists to allow.
+    pub card_name: Option<String>,
+    pub root: String,
+    pub gate: String,
+    pub scope: String,
+    pub narrowed: Option<String>,
+    pub command: String,
+    pub started_at: i64,
+    pub settled_at: Option<i64>,
+    pub outcome: String,
+    pub detail: Option<String>,
+}
+
+/// The most rows kept for any one gate in any one tree.
+///
+/// A bound by construction rather than by a sweep somebody has to remember to
+/// call, and counted per gate rather than over the table so a busy gate cannot
+/// evict a quiet one — `cargo-check` run forty times in an afternoon must not
+/// push out the only observation anybody has of `pytest`.
+///
+/// Fifty because the reading that needs history is `flapping`, which wants
+/// enough runs to see a gate going green and red repeatedly, and nothing wants
+/// more than an afternoon of them. A time bound was the alternative and is worse
+/// here: it cannot promise a bound at all, since the table's growth is set by
+/// how many cards are working rather than by the clock.
+const GATE_KEEP: usize = 50;
+
+/// A card has started running a gate. Row opened, outcome not yet known.
+///
+/// `INSERT OR REPLACE` rather than a plain insert, because the `tool_use` id is
+/// the key and a card that somehow announced the same call twice should leave one
+/// row rather than an error the front end has to decide what to do about.
+#[tauri::command]
+pub fn open_gate_run(
+    store: tauri::State<'_, Store>,
+    tool_id: String,
+    conversation_id: String,
+    root: String,
+    gate: String,
+    scope: String,
+    narrowed: Option<String>,
+    command: String,
+    started_at: i64,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO gate_run
+           (tool_id, conversation_id, root, gate, scope, narrowed, command,
+            started_at, settled_at, outcome, detail)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 'unknown', NULL)",
+        params![tool_id, conversation_id, root, gate, scope, narrowed, command, started_at],
+    )
+    .map_err(|e| e.to_string())?;
+    prune_gate_runs(&conn, &root, &gate);
+    Ok(())
+}
+
+/// And its result landed. `passed` or `failed`, with the tail of what it said.
+///
+/// **An UPDATE that touches nothing is not an error.** The row it would settle
+/// is gone when the gate ran before this build existed, or when `prune_gate_runs`
+/// evicted it under a very busy gate, and in both cases the honest outcome is
+/// that this observation is lost rather than that the caller did something wrong.
+/// The front end has no useful response to a failure here and would only have to
+/// swallow it one layer further out.
+#[tauri::command]
+pub fn settle_gate_run(
+    store: tauri::State<'_, Store>,
+    tool_id: String,
+    settled_at: i64,
+    outcome: String,
+    detail: Option<String>,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    conn.execute(
+        "UPDATE gate_run SET settled_at = ?2, outcome = ?3, detail = ?4 WHERE tool_id = ?1",
+        params![tool_id, settled_at, outcome, detail],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Keep the newest `GATE_KEEP` runs of this gate in this tree, drop the rest.
+///
+/// Silent, and deliberately: a table that grew without bound would be a real
+/// fault, and a prune that failed once is not. Ordered by `started_at` rather
+/// than `settled_at` so an unsettled row is evicted on its own age instead of
+/// sorting as though it happened in 1970.
+fn prune_gate_runs(conn: &Connection, root: &str, gate: &str) {
+    let _ = conn.execute(
+        "DELETE FROM gate_run
+          WHERE root = ?1 AND gate = ?2 AND tool_id NOT IN (
+                SELECT tool_id FROM gate_run
+                 WHERE root = ?1 AND gate = ?2
+                 ORDER BY started_at DESC LIMIT ?3)",
+        params![root, gate, GATE_KEEP as i64],
+    );
+}
+
+/// Every gate run observed in one tree, newest first. The user's face.
+#[tauri::command]
+pub fn gate_runs(store: tauri::State<'_, Store>, root: String) -> Result<Vec<GateRun>, String> {
+    let conn = store.0.lock().unwrap();
+    gates_of(&conn, &root)
+}
+
+/// The same rows, for a process that is not the app.
+///
+/// The hook this serves is `hooks::reply`'s `UserPromptSubmit` arm — telling a
+/// card, unprompted and before it has spent a turn finding out, that a gate in
+/// this tree was already red when it arrived. `open_readonly` for
+/// `outstanding_jobs`' reason, which is the reason stated at length in
+/// `hooks.md`: a reader is a reader, and a short-lived second process running
+/// the migration ladder is the one path `store.rs` records as having locked the
+/// app out of its own database.
+///
+/// Silent on every failure, like `outstanding_jobs` and `foreign_staged`. The
+/// caller is advisory, so not knowing is the same as having nothing to say — and
+/// a hook that failed loudly would be a hook that broke a card's turn over a
+/// reading it did not ask for.
+pub fn gates_in_tree(db: &std::path::Path, root: &str) -> Vec<GateRun> {
+    let Some(conn) = open_readonly(db) else {
+        return Vec::new();
+    };
+    gates_of(&conn, root).unwrap_or_default()
+}
+
+/// The body both of the above share.
+///
+/// `LEFT JOIN`, not `JOIN`, and that is the missing foreign key showing up in
+/// the query: a row whose card has been forgotten is still a true observation
+/// about the tree and must survive the join. An inner join here would silently
+/// delete exactly the history that outlives the cards — which is the half of
+/// this table that is worth anything.
+fn gates_of(conn: &Connection, root: &str) -> Result<Vec<GateRun>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT g.tool_id, g.conversation_id, c.title, g.root, g.gate, g.scope,
+                    g.narrowed, g.command, g.started_at, g.settled_at, g.outcome, g.detail
+               FROM gate_run g
+               LEFT JOIN conversation c ON c.id = g.conversation_id
+              WHERE g.root = ?1
+              ORDER BY g.started_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![root], |r| {
+            Ok(GateRun {
+                tool_id: r.get(0)?,
+                card: r.get(1)?,
+                card_name: r.get(2)?,
+                root: r.get(3)?,
+                gate: r.get(4)?,
+                scope: r.get(5)?,
+                narrowed: r.get(6)?,
+                command: r.get(7)?,
+                started_at: r.get(8)?,
+                settled_at: r.get(9)?,
+                outcome: r.get(10)?,
+                detail: r.get(11)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
 }
 
 /* ── the roster ───────────────────────────────────────────────────────────
