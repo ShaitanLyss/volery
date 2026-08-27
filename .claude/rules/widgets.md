@@ -18,6 +18,10 @@ paths:
   - "src/lib/BuildLog.svelte"
   - "src/lib/unreallog.ts"
   - "src/lib/UnrealLog.svelte"
+  - "src/lib/status.ts"
+  - "src/lib/Status.svelte"
+  - "src/lib/beacon.svelte.ts"
+  - "src-tauri/src/status.rs"
 ---
 
 # Widgets, the clock, and the performance meter
@@ -239,6 +243,137 @@ right-click carries `processes…` for the same list with room to read it (`Proc
 - **A mute and a mark, never a colour.** An orphan is not a failure; rust would say the card
   had broken when what happened is a process lost the thing above it. Same reading `set aside`
   already settles.
+
+#### Whether Claude itself is up
+
+`status.claude.com`, on the wall it is a fact about. The two widgets above it read what the
+allowance has left and how fast it is going; this one answers what neither can — the wall has
+gone quiet and the turns are failing, so **is it me or is it them?** That question currently
+costs a browser tab, an ambiguous search and a minute, which is a question people answer by
+guessing.
+
+`status.rs` asks and answers in facts; `status.ts` is pure and holds every judgement — the two
+ladders, the ordering, the colour, the wording, the cadence. Same split as `limits.rs` against
+`limits.ts`: the part that will be argued about is the policy, and an argument is worth having
+against tests. The holder is `beacon.svelte.ts` and **not** `status.svelte.ts`, which on this
+filesystem is the same import specifier as `Status.svelte` — the trap `release.svelte.ts` is
+named around, and `svelte-check` refuses it outright.
+
+##### The polling argument, which is the whole of this widget
+
+It is the **fourth** thing on this wall that goes and looks, so it owes CLAUDE.md's shape.
+Statuspage emits nothing a desktop process can hear, and the page's own "subscribe to updates"
+offers four things, none of which is a way for *this process* to be told:
+
+- **Webhook** needs an inbound URL. A desktop app behind NAT has none, and giving it one means
+  a public listener plus a hosted relay to forward through — a service to stand up and keep
+  alive, so that a 2 KB GET can be avoided.
+- **Email and Slack** arrive in a person's inbox, not in a process.
+- **Atom/RSS** is still a poll, with a *worse* answer: a feed of incident **history**, bigger
+  on the wire, resolved entries mixed in, and silent about the current indicator when nothing
+  has happened lately — which is the state this widget is in almost all the time. Polling a
+  feed to learn that nothing is wrong is polling for less.
+
+So it goes and looks, and the rule is *fold an event that already exists near the fact, then
+bound the residue*. **Two** are folded here, which is one more than the update check has:
+
+- **You coming back to the window** (`attention.focused`), exactly as `release.svelte.ts` does
+  it, and for its reason: a wall left on a second monitor for a week asks nothing, and the
+  moment you look is the moment the answer is worth having.
+- **A card's turn ending in an error**, and this is the better of the two. Volery *is* a Claude
+  Code client, so an outage arrives on this wall as turns failing — a `result` already folded
+  into `Conversation.ending`. "Is it me or is it them?" is the entire widget, and a card going
+  rust is when somebody wants it answered. `App.svelte` watches the *count* of errored cards so
+  the effect fires on one more going rust rather than on every unrelated fold, and `rouse` goes
+  through the same floor a focus does — a territory of six cards failing in the same second is
+  one ask, not six.
+
+The residue is bounded three ways, and **the third is where this parts company with the update
+check.** There the rule is *stop for good once there is something to say*, on the observation
+that no further ask can change the answer. That does not transfer, because **an outage
+resolves**: the moment there is something to say is the moment the answer starts changing, and
+a widget latched on amber would be worse than no widget. So the third bound is not a stop but a
+cadence that **tightens with the news** (`PACE` in `status.ts`):
+
+- only while the window is in front;
+- never twice inside `FLOOR`, one minute, whatever provoked it;
+- and the backstop is **fifteen minutes while green, two while not**. Fifteen is
+  `release.svelte.ts`'s number on purpose — two instruments asking the internet on two rhythms
+  is two numbers to reason about instead of one.
+
+`unknown` — we could not reach the page — takes the **two-minute** pace, and that is the rung
+the classification exists to get right. Not knowing is not a quiet state: either the network is
+back and the answer is a second away, or it is not and the widget is telling you something
+true. Backing off there would make the one case where the instrument is useful the one case
+where it is slowest.
+
+Worst case is therefore a window you never leave during an outage: thirty asks an hour, of a
+static CDN-fronted document, only while somebody is looking at it. A wall with no status widget
+up asks **nothing** — `attach`/`detach`, the same bargain `Meter`, `Ledger`, `DevOps` and
+`Board` strike.
+
+It deliberately does **not** reach `attention`. A degraded status is not a card asking you a
+question, and spending the taskbar flash and the peek window on the weather would train you to
+ignore both.
+
+##### A failure is a reading, not silence
+
+The deliberate opposite of the update check, where every failure leaves the header as it was.
+An update nobody could check for is a fact about plumbing, and an app that reported its own
+inability to check would be an app talking about itself. A status page nobody could reach is
+**evidence about the thing you are asking after** — so it is kept and drawn, and the last good
+reading is *replaced* rather than left standing. A green dot over a failed ask is the one
+dishonest thing this widget could do.
+
+The same argument sets the age in the header. `page.updated_at` and *when this wall asked* are
+different facts, and conflating them is what `Reading.at` exists to prevent: a status page
+untouched for a week is normal, a reading taken a week ago is not. Past `STALE` — thirty
+minutes, deliberately twice the calm backstop, so a watched wall never sees it — the age is
+marked, because the only way to get there is to have been away.
+
+##### Colour, for once, is the design rather than the constraint
+
+Chrome is achromatic and colour is reserved for status; this face *is* status, so Statuspage's
+ladder maps onto the five existing `--st-*` tokens and nothing is invented. Two ladders come
+off the wire — one for the site, one per component — and `status.ts` folds both onto one
+six-rung `Grade`, because a face that had to know both would draw the same news two ways.
+
+| grade | token | why |
+|---|---|---|
+| `well` | `--st-work` | celadon, the wall's "alive and fine" |
+| `watch` | `--st-soft` | the page's `minor` is a half-signal, and this is amber at half bloom |
+| `wrong` | `--st-ask` | full amber — something wants attention |
+| `broken` | `--st-fail` | rust |
+| `planned` | `--st-rest` | maintenance is not a fault; the reading `set aside` already settles |
+| `unknown` | `--paper-faint` | **not a status colour, and must not become one** |
+
+That last row is the one that would be a bug rather than a preference. Not having reached the
+page is the *absence* of a reading; drawing it in any of the five would be the widget inventing
+news. For the same reason every unrecognised word from either ladder grades as `unknown` rather
+than as `well` — a rung Statuspage adds tomorrow, read as "all fine", would have this saying the
+opposite of the truth in the one case it exists for.
+
+Four smaller calls, each of which would be a bug the other way round:
+
+- **The page's own sentence, verbatim.** "All Systems Operational", Title Case and all. This app
+  does not paraphrase somebody else's status page. The per-component word *is* ours
+  (`sayGrade`), because that is our summary of an enum rather than a restatement of a claim.
+- **The indicator leads, but a component can drag it down.** The page is entitled to call one
+  degraded component a `minor`, and it knows things this does not. But it has been observed to
+  say `none` while a component says it is down — the gap between a component being flipped and
+  an incident being opened — and "All Systems Operational" printed over a rust row is a widget
+  arguing with itself.
+- **Worst first, then the page's own order.** The box you drag it to is the setting (`rowsFor`),
+  so a widget cut to three rows must show the three that matter — `perf.ts` putting orphans
+  above cost, one file over. On a green day every grade is equal and `position` alone decides,
+  so nothing shuffles while all is well. Group rows are dropped (a heading is not a service) and
+  so is a component the page marks `only_show_if_degraded` while it is well, which is the page
+  saying "do not put this in front of people unless it matters".
+- **No `incidents` variant**, and it is the `reviews` `scope` argument: a face empty on every
+  ordinary day is a face nobody looks at, and by the time it had something to say the habit of
+  glancing at it would be gone. The incident is drawn *inside* both readings when there is one.
+  The `only what is not operational` narrowing is the same shape done safely — the face says how
+  many it is keeping back, so a blank pane is never a widget that looks broken.
 
 #### Three logs, one substrate
 

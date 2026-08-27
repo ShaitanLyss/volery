@@ -24,6 +24,7 @@
   import { Meter } from "./lib/meter.svelte";
   import { crowds } from "./lib/crowds.svelte";
   import { releases } from "./lib/release.svelte";
+  import { Beacon } from "./lib/beacon.svelte";
   import { READY_LINE, sayOffer } from "./lib/update";
   import { Ledger } from "./lib/ledger.svelte";
   import { DevOps } from "./lib/devops.svelte";
@@ -208,6 +209,15 @@
      the only thing in the app besides `git fetch` that leaves the machine, and a
      wall nobody is looking at must not be polling a corporate server. */
   const devops = new DevOps();
+  /* And whether Claude itself is up, behind however many status widgets are on
+     the wall. Idle — and touching the network not at all — until one attaches,
+     and then only while the window is in front. It is the fourth thing in this
+     app that goes and looks rather than folding an event, so it owes CLAUDE.md's
+     argument: two events near the fact *are* folded (focus, just below, and a
+     card's turn going rust), and the leftover backstop tightens with the news
+     rather than stopping, because unlike a release an outage resolves. The whole
+     of it is in `status.ts` and `.claude/rules/widgets.md`. */
+  const beacon = new Beacon();
   /* Which organisations to ask about, read off the wall rather than configured:
      the AzDO orgs worth watching are the ones whose repos are standing on it.
      Injected as a function, the way `Cycle.watched` and `Widgets.others` are, so
@@ -336,6 +346,7 @@
     devops.stop();
     crowds.stop();
     releases.release();
+    beacon.release();
   });
 
   /* Learn what each territory can do, and forget the ones that leave.
@@ -392,6 +403,33 @@
      one is there; every failure of it is silence in the header. */
   $effect(() => {
     releases.watch(attention.focused);
+  });
+
+  /* And whether Claude itself is up, off the same event and for the same reason
+     — with one difference that is the whole of why this is not a second copy of
+     the check above. A release, once found, cannot un-happen, so that one stops
+     for good; an outage resolves, so this one must be able to go back to green
+     and its backstop *tightens* while there is something to say rather than
+     halting. `beacon.svelte.ts` holds the three bounds. Costs nothing on a wall
+     with no status widget on it: with nobody attached, `watch` schedules
+     nothing. */
+  $effect(() => {
+    beacon.watch(attention.focused);
+  });
+
+  /* The second event folded into it, and the better of the two: a card's turn
+     ending in an error.
+
+     Volery is a Claude Code client, so an outage arrives on this wall as turns
+     failing — which is a `result` already folded into `Conversation.ending`, and
+     is the exact moment somebody wants "is it me or is it them?" answered. The
+     count is the dependency rather than the endings themselves, so this runs
+     when one more card goes rust (or one fewer, which is news of the same kind)
+     and not on every unrelated fold. `rouse` goes through the same floor a focus
+     does, so a territory of six cards failing together is one ask. */
+  $effect(() => {
+    void skein.convs.filter((c) => c.ending === "error").length;
+    untrack(() => beacon.rouse());
   });
 
   /* And what version each project is on, for the same reason and off the same
@@ -2776,6 +2814,7 @@
         lineage={skein.kin}
         billboard={skein.board}
         sink={skein.sink}
+        {beacon}
         {focusedId}
         draft={field.preview}
         draftIds={targetIds}

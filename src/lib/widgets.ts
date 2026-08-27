@@ -39,6 +39,7 @@ export type WidgetKind =
   | "pomodoro"
   | "usage"
   | "burn"
+  | "status"
   | "pipelines"
   | "reviews"
   | "billboard"
@@ -522,6 +523,88 @@ export const WIDGETS: WidgetSpec[] = [
          here, and two instruments disagreeing about the trip would be worse
          than one repeating it. */
       toggle("odometer", "what these five hours have burned", true),
+    ],
+  },
+  {
+    /* Whether Claude itself is up, off `status.claude.com`.
+     *
+     * The third instrument in a row about the thing this wall is made of, and
+     * the only one whose subject is somebody else's machine: the two above it
+     * read what the allowance has left and how fast it is going, and this one
+     * answers the question those two cannot — the wall has gone quiet and the
+     * turns are failing, so is it me or is it them? A question with an obvious
+     * answer that costs a browser tab, an ambiguous search and a minute is a
+     * question people answer by guessing.
+     *
+     * It is the fourth thing on this wall that goes and *looks*, which is a
+     * thing CLAUDE.md makes you argue for. The argument is in `status.ts` and
+     * written out in `.claude/rules/widgets.md`; the short of it is that two
+     * events near the fact are folded — you coming back to the window, and a
+     * card's turn ending in an error — and the leftover backstop tightens with
+     * the news rather than stopping, because an outage resolves.
+     *
+     * And it is the one face in the catalogue where the house colour rule is
+     * not a constraint but the whole design: chrome is achromatic and colour is
+     * reserved for status, and this *is* status, so Statuspage's ladder maps
+     * onto the five `--st-*` tokens with nothing invented. `toneOf` is that
+     * mapping and the sixth rung, `unknown`, is deliberately achromatic — not
+     * having reached the page is the absence of a reading, and drawing it in
+     * any status colour would be the widget inventing news. */
+    kind: "status",
+    label: "claude status",
+    note: "whether claude itself is up, and which part of it is not",
+    box: { w: 262, h: 168 },
+    min: { w: 132, h: 62 },
+    params: [
+      /* Two readings of one page, and they answer the two halves of the
+         question separately. `overall` is the headline and the dot — the wall's
+         "is it them", legible at the size of a card and green almost always.
+         `parts` is every service on one line each, which is the half that
+         matters once the answer is yes: the API being degraded and the Console
+         being degraded are very different afternoons.
+
+         No `incidents` reading, deliberately, and it is the `reviews` scope
+         argument one file over: a face that is empty on every ordinary day is a
+         face nobody looks at, and by the time it had something to say the habit
+         of glancing at it would be gone. An incident is drawn *inside* both
+         readings when there is one, which is where it is actually wanted. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "overall", label: "the headline" },
+          { value: "parts", label: "every service, one line each" },
+        ],
+        "overall",
+      ),
+      /* And this one narrows rather than re-reads, the way `sink`'s and the
+         three logs' do. Only on the list, because "only what is wrong" has no
+         meaning applied to a single headline — a knob that did nothing there
+         would read as broken rather than as absent, which is the whole reason
+         `Guard` exists.
+
+         It is the setting that makes this furniture rather than an instrument:
+         a widget that is blank all week and grows a rust line the morning
+         something breaks is the reading you want hanging in the corner. The
+         face says how many it is keeping back, so a blank pane is never a
+         widget that looks broken. */
+      choice(
+        "showing",
+        "showing",
+        [
+          { value: "all", label: "every service" },
+          { value: "ill", label: "only what is not operational" },
+        ],
+        "all",
+        { key: VARIANT, is: ["parts"] },
+      ),
+      /* Off by default, and the argument is the same one the editor log's
+         timestamps make. A maintenance window three weeks out is not a reading
+         of *now* and this is an instrument about now — but it is exactly what
+         somebody planning a Friday deploy wants, and the page publishes it, so
+         hiding it outright would be this widget deciding something it is not
+         entitled to decide. */
+      toggle("upcoming", "scheduled maintenance", false),
     ],
   },
   {

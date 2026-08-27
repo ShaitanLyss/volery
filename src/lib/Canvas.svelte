@@ -45,6 +45,7 @@
   import type { Flights } from "./relay.svelte";
   import type { Board as Billboards } from "./board.svelte";
   import type { Sink } from "./sink.svelte";
+  import type { Beacon } from "./beacon.svelte";
   import type { Reading } from "./serverlog";
   import type { Build } from "./buildlog";
   import type { Editor } from "./unreallog";
@@ -79,6 +80,7 @@
     lineage,
     billboard,
     sink,
+    beacon,
     focusedId,
     draft = "",
     draftIds = [],
@@ -138,6 +140,9 @@
     billboard: Billboards;
     /** The one sink reader behind however many are hung up. */
     sink: Sink;
+    /** The one status reader behind however many are hung up, idle until one
+     *  attaches. */
+    beacon: Beacon;
     /** The one Azure DevOps connection behind the pipelines and reviews
      *  widgets, idle until one of them attaches. */
     devops: DevOps;
@@ -1634,6 +1639,7 @@
     {devops}
     {billboard}
     {sink}
+    {beacon}
     servers={servers ?? []}
     onserverstart={(id) => onserverstart?.(id)}
     builds={builds ?? []}

@@ -17,6 +17,7 @@
   import type { Build } from "./buildlog";
   import type { Editor } from "./unreallog";
   import type { Sink } from "./sink.svelte";
+  import type { Beacon } from "./beacon.svelte";
   import { duoPatch, frameOf, runPatch, specFor, type Widget } from "./widgets";
   import type { Duo, Run } from "./timing";
   import Clock from "./Clock.svelte";
@@ -25,6 +26,7 @@
   import Pomodoro from "./Pomodoro.svelte";
   import Usage from "./Usage.svelte";
   import Speedo from "./Speedo.svelte";
+  import Status from "./Status.svelte";
   import Pipelines from "./Pipelines.svelte";
   import Reviews from "./Reviews.svelte";
   import Billboard from "./Billboard.svelte";
@@ -43,6 +45,7 @@
     devops,
     billboard,
     sink,
+    beacon,
     servers,
     onserverstart,
     builds,
@@ -80,6 +83,10 @@
     /** The one sink reader behind however many are up — idle, and reading
      *  nothing, until one attaches. */
     sink: Sink;
+    /** The one status reader behind however many claude-status widgets are up.
+     *  Idle, and touching the network not at all, until one attaches — and it
+     *  asks only while the window is in front. See `beacon.svelte.ts`. */
+    beacon: Beacon;
     /** Every dev server group on the wall, flat. Unlike the four holders above
      *  there is nothing to attach to and no sampler to run: the lines arrive as
      *  `server:log` events for the panel's sake and a log widget is a second
@@ -236,6 +243,8 @@
       <Usage {widget} {ledger} />
     {:else if widget.kind === "burn"}
       <Speedo {widget} {ledger} />
+    {:else if widget.kind === "status"}
+      <Status {widget} {beacon} onopen={(url) => onopen?.(url)} />
     {:else if widget.kind === "pipelines"}
       <Pipelines
         {widget}
