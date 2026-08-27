@@ -36,21 +36,42 @@ use crate::store::{RosterRow, Store};
 pub const LIST_TOOL: &str = "list";
 pub const SEND_TOOL: &str = "send";
 
-/// How far a message may travel before the exchange is stopped.
-///
-/// Six is a conversation and not a loop. Two agents can hand something back and
-/// forth indefinitely at a turn and an API call apiece, with nothing on the wall
-/// saying why the allowance is going — this is the wall's answer, and the
-/// refusal says to report to the user rather than simply going quiet, because an
-/// agent told only "no" will try a different phrasing of the same message.
-const MAX_HOPS: i64 = 6;
-
 /// How many `send` calls one card may make in a minute.
 ///
 /// Counted per call and not per recipient, which is the whole reason a
 /// broadcast is one call: fanning out to twelve cards deliberately is a thing
 /// somebody asked for, and twelve separate sends in a second is a card in a
 /// loop that has not noticed.
+///
+/// # Where `MAX_HOPS`' lesson lives now
+///
+/// There was a second guard beside this one — a cap on how far a single
+/// exchange could travel, six hops — removed 2026-08-27 at the user's request.
+/// `later.rs` and `spawn.rs` cite it *by name* for the half of it that was
+/// always the durable part, so it is restated here, where a grep for
+/// `MAX_HOPS` still lands: **a refusal must carry its reasoning and a way
+/// forward, because an agent told only "no" will try a different phrasing of
+/// the same message.** Every refusal in this file and in `spawn.rs` is written
+/// to that rule, and it is the rule those comments are reaching for.
+///
+/// The cap itself went because it could not tell the two cases apart. Its own
+/// comment claimed "six is a conversation and not a loop", and that was the
+/// mistake: six substantive hands back and forth is roughly what negotiating
+/// one shared file between two cards costs, and the exchange it actually
+/// stopped was a hand-off of `hooks.rs` in the middle of being agreed. **Depth
+/// was never the signal.** A loop is two agents saying the same thing to each
+/// other; a long exchange is two agents converging. Nothing in a hop count
+/// separates them, so the guard could only ever fire on both.
+///
+/// What still bounds the failure it was aimed at: this rate limit bounds a
+/// burst, and `broadcast && hops > 0` below bounds fan-out — which was always
+/// the N²/N³ half the hop cap explicitly did not touch. What is no longer
+/// bounded is a *slow* two-card loop, a turn apiece, under this rate limit.
+/// That is deliberate: stopping a real conversation was the more expensive of
+/// the two failures, and it is the one that was actually happening.
+///
+/// `chain` and `hops` are still carried and still stored. They cost nothing,
+/// the broadcast guard reads `hops`, and `relay.ts` draws a chain.
 const MAX_SENDS: usize = 6;
 const SEND_WINDOW: Duration = Duration::from_secs(60);
 
@@ -519,12 +540,10 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
         Some(i) => (i.chain.clone(), i.hops + 1),
         None => (crate::store::uuid_v4(), 0),
     };
-    if hops > MAX_HOPS {
-        return format!(
-            "this exchange has already gone {MAX_HOPS} hops between cards, so it was not \
-             sent. Stop relaying and tell the user what is unresolved."
-        );
-    }
+    /* No cap on how far this has travelled. There was one — six hops — and it
+       stopped genuine coordination rather than a loop; see `MAX_SENDS`. `hops`
+       is still counted, because the broadcast guard below is a different
+       question and needs it. */
 
     if let Some(wait) = throttled(&relays, caller) {
         return format!(

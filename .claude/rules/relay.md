@@ -49,10 +49,31 @@ label a strand whose endpoint has since been closed.
 The failure mode this had to survive is not a lost message. It is a spiral of them, at a turn
 and an API call apiece, with nothing on the wall saying where the allowance went.
 
-- **Hops.** Delivering to a card marks it with the chain it is now acting inside; anything it
-  sends while that turn is open inherits the chain at +1. Past six, the send is refused with a
-  sentence telling the agent to stop and report to the user — because an agent told only "no"
-  will try a different phrasing of the same message.
+- **Hops are counted and no longer capped.** Delivering to a card marks it with the chain it
+  is now acting inside; anything it sends while that turn is open inherits the chain at +1.
+  There was a cap of six on that, and it was **removed 2026-08-27** because it stopped
+  coordination rather than a spiral. Its own comment claimed "six is a conversation and not a
+  loop"; the exchange that finally hit it was two cards negotiating a hand-off of `hooks.rs`,
+  six substantive messages in, mid-agreement — which is roughly what settling one shared file
+  between two cards actually costs.
+
+  **Depth was never the signal, and that is the part worth keeping.** A loop is two agents
+  saying the same thing to each other; a long exchange is two agents converging. A hop count
+  cannot tell those apart, so it could only ever fire on both — and the one it fired on was
+  the good one, since a genuine exchange is the one that reliably gets that deep. A guard that
+  cannot distinguish its target from its opposite is not a conservative guard, it is a coin
+  toss with a bias toward punishing real work.
+
+  What is left bounding the original failure: the **rate** limit below bounds a burst, and
+  **broadcast-is-hop-0** bounds fan-out, which was always the N²/N³ half the cap explicitly
+  did not touch. What is genuinely no longer bounded is a *slow* two-card loop, a turn apiece,
+  under the rate limit. That was accepted deliberately — stopping a real conversation was the
+  more expensive of the two failures and the one actually happening.
+
+  **The half of it that outlived it** is cited by name from `later.rs` and `spawn.rs`, so it
+  is restated on `MAX_SENDS` where a grep for `MAX_HOPS` still lands: a refusal must carry its
+  reasoning and a way forward, because an agent told only "no" will try a different phrasing
+  of the same message.
 - **The mark's lifetime is the bit that is arguable.** It is cleared on a turn *close*, and a
   message written to a card that is already mid-turn is queued by the CLI *behind* that turn,
   so its close is not ours. `Inbound::pending` therefore counts two in that case. It is not
@@ -247,9 +268,14 @@ Waking instead was the alternative and is the more consistent rule; it was not t
 an agent that can spend a process and an API turn on six sleeping cards without anybody asking
 is the wrong default. `wake: true` is available and says what it costs.
 
-**`chain` and `hops` are stored, not only held in `Relays`.** A queued message delivered at
-tomorrow's launch is the sixth hop of something, and a restart that reset it to zero would be
-a way to buy six more hops by crashing.
+**`chain` and `hops` are stored, not only held in `Relays`.** This used to be a guard in its
+own right — a queued message delivered at tomorrow's launch is the sixth hop of something, and
+a restart that reset it to zero was a way to buy six more hops by crashing. With the cap gone
+that argument goes with it, and they are still stored for two reasons that do not depend on
+it: `broadcast && hops > 0` is a live guard that has to survive a restart the same way, and
+`relay.ts` draws a chain. Cheap either way, and a counter nobody enforces is the right thing
+to keep — it is what any future guard that can actually tell a loop from a conversation would
+be built on.
 
 ## The strand
 
