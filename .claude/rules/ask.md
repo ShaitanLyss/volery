@@ -195,11 +195,15 @@ only `auto` weighs the definitions against 10% of the context window). So every 
 arrives at a card as a bare name behind a `ToolSearch` step with its schema withheld — which
 costs this server more than most, because everything that makes the billboard work is *in*
 the descriptions: that reading it is free where a `send` costs the other agent a turn, that a
-notice wants `paths`, that `unpost` is the half nobody else can do for you. `mcp_config` sets
+notice wants `paths`, that `unpost` is the half nobody else can do for you. `mcp_config` set
 **`alwaysLoad`**, which exempts the whole server whatever `ENABLE_TOOL_SEARCH` says and does
-not count toward `auto`'s threshold either, so skein does not compete for budget with
+not count toward `auto`'s threshold either, so skein did not compete for budget with
 whatever else the machine has configured. ~9KB of schema per spawn, and the CLI's own
 documentation names this case: a small number of tools wanted on every turn.
+
+That last clause is the one that expired. It was six tools; it became twenty-two, and the
+flag is per-tool now — see **Two tiers** below, which is what `alwaysLoad` grew into and why
+the server-level field is gone.
 
 **Wrong.** The `--append-system-prompt` said `ask_user`, `board`, `post`, `list`, `send` —
 and not one of those is a name a card can call, since the CLI prefixes every MCP tool with
@@ -221,6 +225,81 @@ has to grow back. Both comments say so, from both ends.
 The general shape, and it is a different one from this file's other lesson: **a capability an
 agent cannot see is indistinguishable from one it declined to use.** Neither half of this
 produced an error, a log line, or a failed call — only a wall whose billboard stayed empty.
+
+#### Two tiers, because the flag above stopped being affordable
+
+`alwaysLoad` was a good bargain at six tools and ~9KB. On 2026-08-27 it was **22 tools and
+38,598 bytes, on every spawn of every card**, with 1,402 bytes left under the test's ceiling
+and a queue of tools waiting behind it. The test is the reason this is written down rather
+than discovered later: it was authored with the instruction that tripping it is a
+conversation and not a bump, and that is exactly what happened.
+
+**The flag has a per-tool half.** `_meta["anthropic/alwaysLoad"]` on a `tools/list` entry
+exempts that tool alone. Read out of the 2.1.241 binary as
+`alwaysLoad: e.config.alwaysLoad===!0 || M._meta?.["anthropic/alwaysLoad"]===!0` and then
+confirmed live by `tools/probe-tiers.ts`. Note the **union**: a server-level `alwaysLoad`
+wins over every per-tool decision under it, so `mcp_config`'s field is *absent* rather than
+`false`, and `the_server_claims_no_tier_of_its_own` keeps it that way. Putting it back would
+silently restore the old cost with every tier still declared and every other test still green.
+
+**What a deferred tool costs is its name.** `formatDeferredToolLine` is
+`function iFa(e){ return e.name }`, and the listing the model receives is one bare name per
+line — no description, no parameters. ~25 bytes against a roster average of ~1,750. That
+ratio is the whole argument; nothing else about tiering would be worth the complexity.
+
+**Who is loaded is a rule, not a taste.** Every tool `supervisor::append_prompt` names must
+be loaded, or the one paragraph every card pays for points at identifiers whose schemas were
+withheld — which is the *first* failure in the section above wearing a new face, and
+`the_prompt_names_only_tools_the_server_advertises` guards the names but not their contents.
+That fixes `ask_user`, `board`, `post`, `unpost`, `list`, `send`, `drop`. `sink` joins them
+because reading the pile is the other half of `drop`, and a card told to file findings and
+not told it can read them files duplicates.
+
+Then three on a different argument, and it is the one `append_prompt` already makes for
+`drop`: **a description is only read by an agent that has thought to look for a tool.** `pin`,
+`wake_me` and `allowance` exist to replace something an agent does wrongly by *default* —
+writing a path into the transcript, sleeping inside a turn, guessing at the budget. Nothing
+in a schema reaches a reflex and nothing in `ToolSearch` reaches one either, because the
+failure is not searching at all. Everything else is a capability a card knows it wants from
+the prompt it was given, and is deferred.
+
+**A deferred tool without a search hint is one nobody finds**, and this is the failure the
+tiering introduces. It is silent in the worst way: the tool registers, dispatches, passes
+every test, and is never reached. `_meta["anthropic/searchHint"]` is *not* rendered into the
+listing — it costs nothing per turn — and it decides the ranking. Probed as a controlled
+pair, one query, the hint the only difference: with it the tool ranked **first** for a query
+sharing no token with its name; without it, it did not place in the top five.
+`every_deferred_tool_can_be_found` refuses one without.
+
+**Write the hint as the words of the problem, not the name of the solution.** The case that
+taught this is the forge tools in `smith.rs`: a card reaching for one has usually just failed
+with `az`, so it is searching for `certificate error` or `az repos pr create` — the thing in
+its hand — and nobody thinks *"pipelines"*, they think *"did my build pass"*. A skein tool's
+name is a single ordinary word (`touched`, `recall`, `take`) chosen to read well in a
+sentence rather than to be searched for, so the hint is carrying the entire load. The
+corollary is that hints **collide**, and only whoever can see the whole list can tell:
+`server_log`'s "build error" and a CI tool's "build failed" are the same query and different
+machines, and a card sent to the wrong one gets a confident answer about the wrong build.
+
+Two consequences worth stating because both were nearly got wrong:
+
+- **The assertion had to move with the thing it measures.** Counting the `tools/list` payload
+  was right only while the payload *was* the standing cost. With tiering it counts schema
+  nobody is charged for, and would go red over tools that are free.
+  `the_loaded_tier_is_what_every_turn_pays_for` counts the loaded tier instead. A budget has
+  to be levied on the thing being spent.
+- **Only the server-level flag put a config in the CLI's blocking-connect bucket**
+  (`Vk(t,(f)=>f.alwaysLoad===!0)` → `L_u(!1, …)`), so on paper this trades away the guarantee
+  that the tools are present when the turn-1 prompt is built. It does not, and it was checked
+  rather than assumed: stalling `tools/list` for 6s and then 25s — five times the 5s connect
+  cap — left the loaded tier in the turn-1 prompt every time, and `MCP_CONNECTION_NONBLOCKING=0`
+  changed nothing observable. The wait was free here for the same reason it was pointless:
+  this is a loopback listener `Asks::port` has already answered for before anything spawns.
+
+The trade to weigh when moving a tool out of the loaded tier is the one both comments state
+from either end: **bytes taken off the roster may have to be paid back in `append_prompt`,
+which is charged on the same turns** — and paid there in a copy that can drift out of step
+with the schema. It is only worth making for a tool that paragraph does not name.
 
 #### Several questions in one call
 
