@@ -156,6 +156,28 @@ export const SKEIN_SERVERS_TOOL = "mcp__skein__servers";
 export const SKEIN_SERVER_LOG_TOOL = "mcp__skein__server_log";
 export const SKEIN_SERVER_TOOL = "mcp__skein__server";
 
+/** And the forge, which a card can now read — and write one thing to.
+ *
+ *  The two readings are ordinary. `pull_request` is the first tool on this
+ *  server whose effect is **outside this machine**: it opens or edits a pull
+ *  request on somebody's Azure DevOps organisation, under the user's own name.
+ *  That is why it asks first (`smith::pull_request` parks a real `ask_user`
+ *  question, the way `close` does), and it is why the line below says *wants
+ *  to*: at the moment the call lands nothing has happened yet, and a card
+ *  reading "opened a pull request" while a question about it was still up would
+ *  be the transcript claiming an outcome it has not got.
+ *
+ *  Deliberately not in `ASK_TOOLS`, for exactly the reason `SKEIN_ASK_TOOL` is
+ *  not: it parks and resumes in place, so a turn whose question was answered
+ *  would otherwise settle `asked` and stay amber.
+ *
+ *  Same rule as the two blocks above — every tool the Rust side registers owes a
+ *  line here. `src-tauri/src/smith.rs` declares these three as
+ *  `pub const *_TOOL`, and `.claude/rules/azdo.md` has the reasoning. */
+export const SKEIN_PIPELINES_TOOL = "mcp__skein__pipelines";
+export const SKEIN_REVIEWS_TOOL = "mcp__skein__reviews";
+export const SKEIN_PULL_REQUEST_TOOL = "mcp__skein__pull_request";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -181,6 +203,23 @@ export function textOf(content: unknown): string {
 export function clip(s: string, n: number): string {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length > n ? flat.slice(0, n - 1) + "…" : flat;
+}
+
+/** A pull request number out of a tool call's arguments, or null.
+ *
+ *  Its own reader rather than `arg`, which takes strings only — `pull` is an
+ *  integer in the schema, so `arg` answered null for every call that had one and
+ *  the line silently fell back to "read the pull requests" on a call that had
+ *  named one. **And a string is accepted too**, because arguments arrive as
+ *  `input_json_delta` fragments a model composed: a `"41"` is what it meant, and
+ *  the transcript refusing to say so over a pair of quotes is the wrong place to
+ *  be strict.
+ *
+ *  Non-positive is null. A `0` is not a pull request and neither is a `-1`, and
+ *  drawing `!0` on a card is worse than saying nothing. */
+function pullNumber(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v.trim()) : v;
+  return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : null;
 }
 
 /** Turn a tool call into the one line of prose that goes under the title.
@@ -419,6 +458,37 @@ export function describeTool(name: string, input: any): string {
       const verb =
         said === "stop" ? "stopped" : said === "start" ? "started" : "restarted";
       return g ? `${verb} ${clip(g, 24)}` : `${verb} a dev server group`;
+    }
+    /* The forge. `pipelines` and `reviews` are readings and say so plainly; the
+       third is the only tool on this server that reaches outside the machine,
+       and the wording is the point — see the note above
+       `SKEIN_PULL_REQUEST_TOOL`. */
+    case SKEIN_PIPELINES_TOOL: {
+      const r = arg(input?.run);
+      const b = arg(input?.branch);
+      if (r) return "looked into one pipeline run";
+      if (b) return `checked what ${clip(b, 24)} built`;
+      return input?.failed === true
+        ? "looked for a broken pipeline"
+        : "looked over the pipelines";
+    }
+    case SKEIN_REVIEWS_TOOL: {
+      const n = pullNumber(input?.pull);
+      if (n) return `read pull request !${n}`;
+      return input?.mine === true
+        ? "looked over its own pull requests"
+        : "looked over the pull requests";
+    }
+    case SKEIN_PULL_REQUEST_TOOL: {
+      /* `wants to`, not `did`. The call parks on a question and nothing has
+         happened when this line is drawn — the tool's own answer is where the
+         outcome is, and it says whether the user agreed. */
+      const n = pullNumber(input?.pull);
+      if (arg(input?.action) === "update") {
+        return n ? `wants to edit pull request !${n}` : "wants to edit a pull request";
+      }
+      const t = arg(input?.title);
+      return t ? `wants to open a pull request: ${clip(t, 40)}` : "wants to open a pull request";
     }
     case "ExitPlanMode":
       return "wants the plan approved";

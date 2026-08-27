@@ -234,6 +234,65 @@ describe("describeTool degrades before arguments arrive", () => {
     expect(describeTool("mcp__skein__server", {})).toBe("restarted a dev server group");
   });
 
+  test("a pull request it wants to open is not one it has opened", () => {
+    /* The tense is the whole of this. `mcp__skein__pull_request` parks on an
+       `ask_user` question the way `close` does, so at the moment the call lands
+       *nothing has happened* — and a card that read "opened a pull request"
+       while the question about it was still up would be the transcript claiming
+       an outcome the wall has not got. The two readings beside it are free and
+       say so plainly, which is also what keeps them a glance apart from the one
+       that reaches outside this machine. */
+    expect(describeTool("mcp__skein__pull_request", { action: "create" })).toBe(
+      "wants to open a pull request",
+    );
+    expect(
+      describeTool("mcp__skein__pull_request", {
+        action: "create",
+        title: "expose the forge to cards",
+      }),
+    ).toBe("wants to open a pull request: expose the forge to cards");
+    expect(describeTool("mcp__skein__pull_request", { action: "update", pull: 41 })).toBe(
+      "wants to edit pull request !41",
+    );
+    expect(describeTool("mcp__skein__pull_request", { action: "update" })).toBe(
+      "wants to edit a pull request",
+    );
+    /* No action yet — arguments stream in as `input_json_delta`, so every case
+       has to draw something before they land. It must not come out blank, and it
+       must not claim an edit it might turn out not to be. */
+    expect(describeTool("mcp__skein__pull_request", {})).toBe("wants to open a pull request");
+  });
+
+  test("the two forge readings say what they read", () => {
+    expect(describeTool("mcp__skein__pipelines", {})).toBe("looked over the pipelines");
+    expect(describeTool("mcp__skein__pipelines", { failed: true })).toBe(
+      "looked for a broken pipeline",
+    );
+    expect(describeTool("mcp__skein__pipelines", { branch: "feature/azdo-tools" })).toBe(
+      "checked what feature/azdo-tools built",
+    );
+    expect(
+      describeTool("mcp__skein__pipelines", { run: "azdo/LagardereAWPL/969d50af/2515" }),
+    ).toBe("looked into one pipeline run");
+    expect(describeTool("mcp__skein__reviews", {})).toBe("looked over the pull requests");
+    expect(describeTool("mcp__skein__reviews", { mine: true })).toBe(
+      "looked over its own pull requests",
+    );
+    expect(describeTool("mcp__skein__reviews", { pull: 41 })).toBe("read pull request !41");
+    /* `pull` is an integer in the schema and `arg` takes strings only, so the
+       obvious reader answered null for every call that had named one and the
+       line quietly fell back to the list. A model that wrote it as a string
+       meant the same thing. */
+    expect(describeTool("mcp__skein__reviews", { pull: "41" })).toBe("read pull request !41");
+    /* And a number that is not a pull request draws nothing rather than `!0`. */
+    expect(describeTool("mcp__skein__reviews", { pull: 0 })).toBe(
+      "looked over the pull requests",
+    );
+    expect(describeTool("mcp__skein__reviews", { pull: -1 })).toBe(
+      "looked over the pull requests",
+    );
+  });
+
   test("the vocabulary is the whole vocabulary, held against the rust that serves it", () => {
     /* The thirteen were not a judgement about which calls matter — they were
        simply never added, one server at a time, and nothing said so. Each MCP
