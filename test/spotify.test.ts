@@ -1,0 +1,271 @@
+import { expect, test, describe } from "bun:test";
+import {
+  applyEvent,
+  canControl,
+  describe as describeState,
+  emptyState,
+  formatDuration,
+  joinArtists,
+  normalizeConfig,
+  positionAt,
+  progressAt,
+  volumeFromWire,
+  volumeToWire,
+  type SpotifyState,
+  type SpotifyTrack,
+} from "../src/lib/spotify";
+
+const track = (over: Partial<SpotifyTrack> = {}): SpotifyTrack => ({
+  id: "spotify:track:1",
+  name: "Cirrus",
+  artists: ["Bonobo"],
+  album: "The North Borders",
+  durationMs: 300_000,
+  art: null,
+  explicit: false,
+  kind: "track",
+  ...over,
+});
+
+/** A state that is playing, stamped at `t`. */
+const playing = (t = 1000, over: Partial<SpotifyState> = {}): SpotifyState => ({
+  ...emptyState(),
+  phase: "playing",
+  track: track(),
+  positionMs: 0,
+  since: t,
+  ...over,
+});
+
+describe("where the playhead is", () => {
+  /* librespot only speaks on transitions, so every reading between two of them
+     is arithmetic against the wall clock. This is the whole reason nothing here
+     polls, and therefore the part most worth pinning down. */
+
+  test("a playing track advances with the clock", () => {
+    const s = playing(1000);
+    expect(positionAt(s, 1000)).toBe(0);
+    expect(positionAt(s, 6000)).toBe(5000);
+  });
+
+  test("a paused track does not move, however long you look at it", () => {
+    const s: SpotifyState = { ...playing(1000), phase: "paused", positionMs: 42_000, since: null };
+    expect(positionAt(s, 6000)).toBe(42_000);
+    expect(positionAt(s, 9_000_000)).toBe(42_000);
+  });
+
+  test("the playhead never runs past the end of the track", () => {
+    /* The honest residue of interpolating: a track that ends while nothing is
+       listening would otherwise report a position its own duration does not
+       contain, and the progress bar would leave the box. */
+    const s = playing(0);
+    expect(positionAt(s, 999_999_999)).toBe(300_000);
+    expect(progressAt(s, 999_999_999)).toBe(1);
+  });
+
+  test("a clock that went backwards does not rewind the track", () => {
+    const s = playing(5000);
+    expect(positionAt(s, 4000)).toBe(0);
+  });
+
+  test("progress is zero when there is nothing to be along", () => {
+    expect(progressAt(emptyState(), 1234)).toBe(0);
+    expect(progressAt({ ...playing(0), track: track({ durationMs: 0 }) }, 5000)).toBe(0);
+  });
+});
+
+describe("folding librespot's events", () => {
+  test("playing stamps the clock, pausing unstamps it", () => {
+    const a = applyEvent(emptyState(), { kind: "track", track: track() }, 0);
+    const b = applyEvent(a, { kind: "playing", positionMs: 0 }, 1000);
+    expect(b.phase).toBe("playing");
+    expect(b.since).toBe(1000);
+
+    const c = applyEvent(b, { kind: "paused", positionMs: 5000 }, 6000);
+    expect(c.phase).toBe("paused");
+    expect(c.since).toBeNull();
+    expect(c.positionMs).toBe(5000);
+  });
+
+  /* The bug this guards. A `seeked` says where the playhead is and says nothing
+     about whether it is moving — so restamping `since` unconditionally would
+     start a *paused* track advancing on screen, under a pause button, with the
+     audio silent. Scrubbing while paused is exactly how you would find it. */
+  test("seeking while paused does not start the track moving", () => {
+    const paused: SpotifyState = { ...playing(1000), phase: "paused", since: null };
+    const after = applyEvent(paused, { kind: "seeked", positionMs: 90_000 }, 7000);
+    expect(after.positionMs).toBe(90_000);
+    expect(after.since).toBeNull();
+    expect(positionAt(after, 60_000)).toBe(90_000);
+  });
+
+  test("seeking while playing restamps, so the new position is the one that advances", () => {
+    const after = applyEvent(playing(1000), { kind: "seeked", positionMs: 90_000 }, 7000);
+    expect(after.since).toBe(7000);
+    expect(positionAt(after, 9000)).toBe(92_000);
+  });
+
+  test("a new track pins the playhead at zero and leaves it still", () => {
+    /* The `track` event arrives before the first `playing`. Carrying the old
+       position over would show the new track already part-played. */
+    const s = applyEvent(playing(1000, { positionMs: 120_000 }), { kind: "track", track: track({ id: "b", name: "Kong" }) }, 5000);
+    expect(s.track?.name).toBe("Kong");
+    expect(s.positionMs).toBe(0);
+    expect(s.since).toBeNull();
+  });
+
+  test("a closed session takes the track with it", () => {
+    /* A track left on screen under a dead player is a set of controls that do
+       nothing, which is worse than an empty box. */
+    const s = applyEvent(playing(1000), { kind: "closed", fault: null }, 2000);
+    expect(s.phase).toBe("off");
+    expect(s.track).toBeNull();
+    expect(s.since).toBeNull();
+  });
+
+  test("a closed session carrying a fault says so, and keeps it readable", () => {
+    const s = applyEvent(playing(1000), { kind: "closed", fault: "spotify dropped the connection" }, 2000);
+    expect(s.phase).toBe("fault");
+    expect(s.fault).toBe("spotify dropped the connection");
+  });
+
+  test("stopping keeps the session but drops what was playing", () => {
+    const s = applyEvent(playing(1000), { kind: "stopped" }, 2000);
+    expect(s.phase).toBe("idle");
+    expect(s.track).toBeNull();
+  });
+
+  test("a position past the end of the track is clamped as it lands", () => {
+    const s = applyEvent(playing(0), { kind: "playing", positionMs: 900_000 }, 0);
+    expect(s.positionMs).toBe(300_000);
+  });
+
+  /* `$state` invalidates readers by comparing the new value against the old, so
+     a fold that mutated in place would bump nothing and the face would paint
+     once and then never again — the trap CLAUDE.md records against the editor's
+     grid, in a second place that could grow it. */
+  test("every fold returns a fresh object", () => {
+    const before = playing(1000);
+    const after = applyEvent(before, { kind: "volume", volume: 32767 }, 2000);
+    expect(after).not.toBe(before);
+    expect(before.volume).toBe(1);
+  });
+
+  test("an event from a newer build is ignored rather than guessed at", () => {
+    const before = playing(1000);
+    const after = applyEvent(before, { kind: "quantum-shuffle" } as never, 2000);
+    expect(after).toEqual(before);
+  });
+
+  test("shuffle and repeat are carried straight through", () => {
+    let s = applyEvent(playing(1000), { kind: "shuffle", shuffle: true }, 0);
+    expect(s.shuffle).toBe(true);
+    s = applyEvent(s, { kind: "repeat", repeat: "track" }, 0);
+    expect(s.repeat).toBe("track");
+  });
+});
+
+describe("readings", () => {
+  test("minutes and seconds, and an hour once there is one", () => {
+    expect(formatDuration(0)).toBe("0:00");
+    expect(formatDuration(9_000)).toBe("0:09");
+    expect(formatDuration(222_000)).toBe("3:42");
+    expect(formatDuration(3_723_000)).toBe("1:02:03");
+  });
+
+  test("a duration never shows a second the track has not reached", () => {
+    /* Floor rather than round: 3:41.9 is still 3:41, and a reading that gets
+       there first is an instrument you stop trusting. */
+    expect(formatDuration(221_999)).toBe("3:41");
+  });
+
+  test("nonsense durations read as zero rather than NaN", () => {
+    expect(formatDuration(-5)).toBe("0:00");
+    expect(formatDuration(NaN)).toBe("0:00");
+  });
+
+  test("artists join, and a long tail is counted rather than shown", () => {
+    expect(joinArtists(["Bonobo"])).toBe("Bonobo");
+    expect(joinArtists(["A", "B", "C"])).toBe("A, B, C");
+    expect(joinArtists(["A", "B", "C", "D", "E"])).toBe("A, B, C +2");
+  });
+
+  test("empty artist names do not become empty commas", () => {
+    expect(joinArtists(["Bonobo", "", "  "])).toBe("Bonobo");
+    expect(joinArtists([])).toBe("");
+  });
+
+  test("the line under the controls says what is true", () => {
+    expect(describeState(emptyState())).toBe("not signed in");
+    expect(describeState({ ...emptyState(), phase: "idle", device: "volery" })).toBe(
+      "volery — ready, nothing playing",
+    );
+    expect(describeState(playing(0))).toBe("Bonobo");
+    expect(describeState({ ...emptyState(), phase: "fault", fault: "premium is required" })).toBe(
+      "premium is required",
+    );
+  });
+
+  test("a fault with nothing to say still says something", () => {
+    expect(describeState({ ...emptyState(), phase: "fault", fault: null })).toBe(
+      "something went wrong",
+    );
+  });
+
+  test("the transport is live only when there is something to transport", () => {
+    expect(canControl(emptyState())).toBe(false);
+    expect(canControl({ ...emptyState(), phase: "idle" })).toBe(false);
+    expect(canControl(playing(0))).toBe(true);
+    expect(canControl({ ...playing(0), phase: "paused" })).toBe(true);
+  });
+});
+
+describe("volume", () => {
+  test("the ends are the ends", () => {
+    expect(volumeFromWire(0)).toBe(0);
+    expect(volumeFromWire(65535)).toBe(1);
+    expect(volumeToWire(0)).toBe(0);
+    expect(volumeToWire(1)).toBe(65535);
+  });
+
+  test("it survives the round trip either way round", () => {
+    for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+      expect(volumeFromWire(volumeToWire(v))).toBeCloseTo(v, 4);
+    }
+  });
+
+  test("out of range is clamped rather than allowed into the mixer", () => {
+    expect(volumeToWire(4)).toBe(65535);
+    expect(volumeToWire(-1)).toBe(0);
+    expect(volumeFromWire(999_999)).toBe(1);
+    expect(volumeFromWire(NaN)).toBe(0);
+  });
+});
+
+describe("the widget's config, read the way every opaque column is", () => {
+  test("nothing at all is still drawable", () => {
+    expect(normalizeConfig(undefined)).toEqual({ layout: "full", art: true, progress: true });
+    expect(normalizeConfig(null)).toEqual({ layout: "full", art: true, progress: true });
+  });
+
+  test("a layout nothing can draw falls back rather than reaching the face", () => {
+    expect(normalizeConfig({ layout: "hologram" }).layout).toBe("full");
+  });
+
+  test("a knob that is there is kept", () => {
+    expect(normalizeConfig({ layout: "bar", art: false, progress: false })).toEqual({
+      layout: "bar",
+      art: false,
+      progress: false,
+    });
+  });
+
+  test("a knob of the wrong type does not become one", () => {
+    /* This is the shape that would put `undefined` inside a frame loop. */
+    expect(normalizeConfig({ art: "yes", progress: 1 })).toEqual({
+      layout: "full",
+      art: true,
+      progress: true,
+    });
+  });
+});
