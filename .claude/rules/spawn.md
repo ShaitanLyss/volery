@@ -271,6 +271,103 @@ card passes under it rather than across its title, with no rim arithmetic to get
   `spawn:asked` rather than by asking again; `Lineage.svelte` has no poll in it and
   `spawn::lineage` is called exactly once per launch.
 
+## Being told a child has stopped
+
+A card that opened nine cards had one way to learn whether they had finished: call `list`, read
+the tiers, guess. Measured on 2026-08-27 — about a dozen calls over an afternoon, and **twice
+it acted on a reading that had already moved**, once relaying a wrong conclusion to eight
+cards. A turn each way, and a wrong instruction at the end of it.
+
+**Nothing here polls, and the argument is `CLAUDE.md`'s standing one.** Both halves already
+existed and had never been joined: parentage is the `spawned` table, and settling is an
+*event* — `result` closes a turn, and `supervisor::persist_turn` is the one place both
+boundaries already go through. `relay::turn_closed` was already hung off it; `spawn::settling`
+is the second thing on the same hook, for the same reason the first one is there rather than
+in the reader thread. A second site watching for that transition is a second site to get the
+`stream_event` storm wrong.
+
+### "At rest" is not "finished", and that is the whole difficulty
+
+A card goes to rest between **every** pair of turns. A notice per transition would cost the
+parent a turn every time a child paused for breath — the spiral `relay.md` guards against,
+arriving through a door it does not watch. What a parent wants is *stopped, and not about to
+start again*, and nothing on the wire says that. So the event is folded and what is left over
+is bounded four ways, each aimed at a different failure:
+
+- **A grace.** A rest is tellable only after `SETTLE_GRACE_MS` — two minutes — and any turn
+  opening inside it cancels the whole thing. Note what this does *not* have to outlast: a tool
+  call does not close a turn, so a child grinding through a build is never at rest to begin
+  with. What it has to survive is the gap before a queued relay, a `wake_me`, or the
+  `<task-notification>` the CLI injects when a background job lands, measured at a ten-second
+  median in `supervisor::turn_mark`'s note. Two minutes is deliberately on the generous side:
+  being late costs latency the parent was already paying, and being early costs a wrong
+  conclusion passed on, which is the incident.
+- **Coalescing.** Due settles are grouped by parent and go as **one** message. Eleven children
+  finishing within a minute of each other is the case this was built for, and eleven messages
+  would be eleven turns — the fan-out failure, reproduced by the thing meant to fix it.
+- **A floor.** `SETTLE_APART_MS` between two notices to one parent, and anything due inside it
+  is **held rather than dropped** — its due time is pushed to the end of the floor, where it
+  joins the next batch. Five minutes lands on twelve an hour, which is `later::MAX_SERVED`
+  reached from the other direction. Said as an interval rather than as a count on purpose:
+  one number, and it cannot be off by one.
+- **Verified in the moment before it is sent.** The batch is re-read against the live wall, so
+  a child that started speaking again inside the grace, or was closed, drops out. Acting on a
+  reading of the wall that has moved is the exact failure this exists to remove, and it would
+  be a strange thing to reproduce inside the fix. `store::lineage` does most of that work
+  already — it answers only pairs with *both* ends still open, so a parent that has itself
+  been closed says nothing and a child closed inside the grace vanishes, one query standing in
+  for three guards.
+
+### What it deliberately does not do
+
+- **It does not rouse, and it does not queue.** A dormant parent gets nothing. `later.rs`
+  queues a wake into the inbox because somebody *asked* to be woken; the same argument runs
+  the other way here — nobody asked for this, its whole value is being timely, and a card that
+  has stopped should not come back tomorrow to be told about work that finished today. It
+  calls `list` when it wakes, as it would have anyway.
+- **It keeps nothing on disk.** A pending settle is about a card running *now*; across a
+  restart there is no parent to tell and no child still going, so a table would only be a way
+  to deliver stale news. A plain map, and no migration.
+- **It asks for nothing back.** The envelope says so in words. A parent that replies has spent
+  the turn the whole mechanism was built to save.
+- **It does not start a fourth poller.** `sweep` rides `later::spawn_waker`'s existing tick.
+  The settle itself is folded off an event; the only thing left wanting a clock is a *moment
+  arriving*, which is `later.rs`'s own justification for the tick that already runs — five
+  seconds against delays measured in minutes. A second thread doing the identical thing at the
+  identical interval would be a second thing to get wrong, for nothing.
+
+### The envelope wears a mark the panel already knows
+
+`[skein relay] from the wall —`, a fourth shape beside `HEADED`, `ORPHANED` and `NOTICE` in
+`relay.ts`, rather than a mark of its own. **`later.rs` is the cautionary case and it is one
+file over**: `WAKE_MARK` is its own string, chosen so the fold could tell "another agent asked
+me to" from "I asked myself to" — and the front end never learned it, so a wake is still drawn
+as a prompt you typed. A shape under a mark that is already recognised cannot fail that way.
+`relayFrom` names *the wall* rather than falling through to "another card", because nothing
+sent this and the panel inventing an author is the one thing that file exists to prevent.
+
+The prose carries three things a test holds it to: what settled, **how many of the parent's
+cards are still working** — as a fraction, since "2 still working" and "2 of 9 still working"
+are different amounts of knowing and only the second ends the round of `list` calls — and that
+quiet is evidence rather than a report. That last one is the half that stops the notice being
+worse than nothing: two minutes of silence is not the same fact as having finished, so the
+envelope says to `recall` what the card actually said before concluding anything from it.
+
+### What has actually been run, and what has not
+
+`cargo test` does not exist on this machine (`build.md`). `tools/lift-spawn.ts` lifts the pure
+half — the envelope, the list, the naming, the two bounds — into a throwaway `rustc --test`
+and **really runs six assertions**; and the real Rust envelope has been piped through the real
+`relay.ts` reader, so both ends of that contract are checked against each other rather than
+against a transcription of each other.
+
+**The fold and the delivery have never run.** `settling`, `stirring`, `sweep` and `notice`
+want an `AppHandle` and a store, and are typechecked only. So what is unproven is: that a
+`result` on a spawned card really reaches `settling`, that the grace really survives a
+`<task-notification>`, and that `supervisor::deliver` puts the notice where a parent reads it.
+Stated here rather than left to be discovered, for sink `4951f398`'s reason — a known unknown
+is cheaper than a rediscovered one.
+
 ## Closing one again
 
 `close` had one rule for its whole first life, out of the `spawned` table: **a card may close

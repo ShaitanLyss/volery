@@ -247,6 +247,14 @@ pub fn spawn_waker(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
         serve_due(&app);
+        /* The other thing in this codebase whose only remaining question is
+           whether a moment has arrived — a parent waiting to be told its
+           children have stopped (`spawn::sweep`). It rides this tick rather
+           than starting one of its own: the delays there are minutes against
+           this five seconds, and a second thread doing the identical thing at
+           the identical interval would be a second thing to get wrong. Nothing
+           is polled *for* — the settle itself is folded off `persist_turn`. */
+        crate::spawn::sweep(&app);
     });
 }
 

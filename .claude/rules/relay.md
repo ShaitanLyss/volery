@@ -188,6 +188,16 @@ second mechanism beside it would be a second thing for `relay.ts` to learn to dr
   because `relay.ts` reads a sender's name out of that envelope and there is nobody at the
   other end of this one. The envelope also says nobody is waiting on a reply, or the agent
   answers it.
+  - **And that is the one call here worth arguing with**, because the front end never learned
+    the mark. `relay.ts` recognises `RELAY_MARK` and nothing else, so a wake arrives in the
+    panel drawn as **a prompt you typed** — precisely the bug that file's header says it
+    exists to prevent, wearing the one dress it does not check for. The reasoning was sound
+    (there is no sender, so a sender's envelope would be a lie) and it stopped one step short:
+    what was needed was not a second mark but a second *shape* under the first. `spawn.rs`'s
+    settle notice took that road instead — `[skein relay] from the wall —`, a fourth
+    recogniser beside `HEADED` / `ORPHANED` / `NOTICE`, named as *the wall* rather than
+    falling through to "another card". **A new kind of unbidden prompt owes a shape under
+    `RELAY_MARK`, not a mark of its own**, unless it also intends to teach the panel.
 - **The loop it has to survive is a card that re-arms forever**, at a turn and an API call
   apiece — the failure `relay.rs`'s guards exist for, arriving by a road they cannot see:
   every wake is hop zero, because the card is talking to itself. So the guard is a **rate**,

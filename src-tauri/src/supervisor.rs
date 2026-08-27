@@ -771,6 +771,13 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
        to get the `stream_event` storm wrong. */
     if !open {
         crate::relay::turn_closed(app, id);
+        /* And the same argument again, from the other end: telling a parent its
+           child has stopped needs exactly this transition and nothing else, so
+           it is folded here rather than watched for anywhere. `spawn.rs` has why
+           a stop is not the same fact as a rest. */
+        crate::spawn::settling(app, id);
+    } else {
+        crate::spawn::stirring(id);
     }
 }
 

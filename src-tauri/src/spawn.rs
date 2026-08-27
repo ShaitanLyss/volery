@@ -1129,6 +1129,295 @@ pub fn spawned_by(app: AppHandle, id: String) -> Result<Option<String>, String> 
     Ok(crate::store::spawner_of(&conn, &id))
 }
 
+/* ── telling a parent its children have stopped ─────────────────────────────
+ *
+ * A card that opened nine cards had one way to find out whether they had
+ * finished: call `list`, read the tiers, guess. Measured on 2026-08-27 — about
+ * a dozen calls over an afternoon, and **twice it acted on a reading that had
+ * already moved**, once relaying a wrong conclusion to eight cards. That is a
+ * turn each way and a wrong instruction at the end of it.
+ *
+ * Both halves of the answer were already here and had never been joined.
+ * Parentage is a table (`spawned`), and settling is an **event**: `result`
+ * closes a turn, `supervisor::persist_turn` is the one place both boundaries
+ * already go through, and `relay::turn_closed` is already hung off it. So
+ * nothing here polls for the thing it cares about — `CLAUDE.md`'s standing rule
+ * exactly, *look for an event that already exists near it and fold that*.
+ *
+ * ### "at rest" is not "finished", and that is the whole difficulty
+ *
+ * A card goes to rest between **every** pair of turns. A notice per transition
+ * would cost the parent a turn every time a child paused for breath, which is
+ * the spiral `relay.rs` guards against arriving through a door it does not
+ * watch. What a parent wants is *stopped, and not about to start again*, and
+ * nothing on the wire says that — so what is folded is the event and what is
+ * left over is bounded, in four ways, each aimed at a different failure:
+ *
+ * 1. **A grace.** A rest only becomes tellable after `SETTLE_GRACE_MS` of
+ *    silence, and any turn opening inside it cancels the whole thing
+ *    (`stirring`). A tool call does not close a turn, so a child grinding
+ *    through a build is never at rest to begin with; what this actually has to
+ *    outlast is the gap before a queued relay, a `wake_me`, or the
+ *    `<task-notification>` the CLI injects when a background job lands —
+ *    measured at a ten-second median in `supervisor::turn_mark`'s note.
+ * 2. **Coalescing.** Due settles are grouped by parent and go as *one* message.
+ *    Eleven children finishing within a minute of each other is the case this
+ *    was built for, and eleven messages would be eleven turns.
+ * 3. **A floor.** `SETTLE_APART_MS` between two notices to one parent. Anything
+ *    due inside it does not go and is not lost — its due time is pushed to the
+ *    end of the floor, where it joins the next batch. Five minutes is the cap
+ *    said as an interval rather than as a count, and it lands on twelve an hour,
+ *    which is `later::MAX_SERVED` arrived at from the other direction.
+ * 4. **Verified in the moment before it is sent.** The batch is re-read against
+ *    the live wall — a child that started again inside the grace, or was closed,
+ *    drops out. Sending a reading that has moved is the exact failure this
+ *    exists to remove, and it would be an odd thing to reproduce.
+ *
+ * ### What it deliberately does not do
+ *
+ * - **It does not rouse.** A dormant parent is not written to and nothing is
+ *   queued for it; the notice is dropped. `later.rs` queues a wake because
+ *   somebody *asked* for one, and the same argument runs the other way here:
+ *   nobody asked for this, its whole value is being timely, and a card that has
+ *   stopped should not come back tomorrow to be told about work that finished
+ *   today. It calls `list` when it wakes, as it would have anyway.
+ * - **It keeps nothing on disk.** A pending settle is about a card that is
+ *   running *now*; across a restart there is no parent to tell and no child
+ *   still going, so a table would only be a way to deliver stale news. Hence a
+ *   plain map rather than a row, and no migration.
+ * - **It asks for nothing back.** The envelope says so in words, because a
+ *   parent that answers a notice has spent the turn this was built to save.
+ */
+
+/// How long a child must have been quiet before it counts as stopped.
+///
+/// Two minutes. The cost of being late is latency the parent was paying anyway;
+/// the cost of being early is a wrong conclusion relayed onward, which is the
+/// incident. So it is set on the generous side of what the gaps above need.
+const SETTLE_GRACE_MS: i64 = 2 * 60 * 1_000;
+
+/// The least time between two notices to one parent. See the note above.
+const SETTLE_APART_MS: i64 = 5 * 60 * 1_000;
+
+/// A rest waiting to see whether it is a stop.
+struct Settling {
+    parent_id: String,
+    /// When it becomes tellable — pushed out by the floor rather than dropped.
+    due_at: i64,
+}
+
+#[derive(Default)]
+struct Brood {
+    /// child id → the rest it is currently sitting in.
+    pending: std::collections::HashMap<String, Settling>,
+    /// parent id → when it was last told anything.
+    told_at: std::collections::HashMap<String, i64>,
+}
+
+static BROOD: std::sync::OnceLock<std::sync::Mutex<Brood>> = std::sync::OnceLock::new();
+
+fn brood() -> &'static std::sync::Mutex<Brood> {
+    BROOD.get_or_init(Default::default)
+}
+
+/// A turn has opened on a card, so it has not stopped after all.
+///
+/// Called on the *transition* only, from `supervisor::persist_turn` — which is
+/// the reason this is not written to watch the stream itself. `stream_event`
+/// arrives thousands of times a turn and every one of them says "open".
+pub fn stirring(id: &str) {
+    if let Ok(mut b) = brood().lock() {
+        b.pending.remove(id);
+    }
+}
+
+/// A turn has closed on a card. If another card opened it, start the grace.
+///
+/// The parent is asked of the store rather than remembered, for
+/// `guidance::for_conversation`'s reason one file over: a thing carried in
+/// memory is a thing every future path has to remember to carry, and this one
+/// would be wrong for exactly the cards restored at launch.
+pub fn settling(app: &AppHandle, id: &str) {
+    let Some(store) = app.try_state::<Store>() else {
+        return;
+    };
+    let parent_id = {
+        let Ok(conn) = store.0.lock() else { return };
+        crate::store::spawner_of(&conn, id)
+    };
+    let Some(parent_id) = parent_id else { return };
+    if let Ok(mut b) = brood().lock() {
+        b.pending.insert(
+            id.to_string(),
+            Settling { parent_id, due_at: crate::store::now() + SETTLE_GRACE_MS },
+        );
+    }
+}
+
+/// Everything that has gone quiet long enough, delivered.
+///
+/// Called from `later::spawn_waker`'s loop rather than from a thread of its own,
+/// and that is the point: **this adds no poller.** The event is folded in
+/// `settling`; the only thing left needing a clock is a moment *arriving*, which
+/// is `later.rs`'s own justification for the tick that already runs — "a moment
+/// arriving is not something that happens to anything" — at a granularity of
+/// five seconds against delays measured in minutes. A second thread doing the
+/// identical thing at the identical interval would be a second thing to get
+/// wrong, for nothing.
+pub fn sweep(app: &AppHandle) {
+    let now = crate::store::now();
+
+    /* Taken out of the map as they are read, before anything is delivered, for
+       `later::serve_due`'s reason: a notice lost is a parent that goes back to
+       calling `list`, where one delivered twice is two turns spent on the same
+       nothing. Wrong in the cheap direction on purpose. */
+    let mut by_parent: std::collections::HashMap<String, Vec<String>> = Default::default();
+    {
+        let Ok(mut b) = brood().lock() else { return };
+        let due: Vec<String> = b
+            .pending
+            .iter()
+            .filter(|(_, s)| s.due_at <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for child in due {
+            let Some(parent) = b.pending.get(&child).map(|s| s.parent_id.clone()) else {
+                continue;
+            };
+            let last = b.told_at.get(&parent).copied().unwrap_or(i64::MIN);
+            /* The floor, and it holds rather than drops — a child that settled
+               four minutes after its sibling is still news, it is just news that
+               travels with whatever else has happened by then. */
+            if now.saturating_sub(last) < SETTLE_APART_MS {
+                if let Some(s) = b.pending.get_mut(&child) {
+                    s.due_at = last.saturating_add(SETTLE_APART_MS);
+                }
+                continue;
+            }
+            b.pending.remove(&child);
+            by_parent.entry(parent).or_default().push(child);
+        }
+    }
+
+    for (parent, children) in by_parent {
+        let Some(text) = notice(app, &parent, &children) else {
+            continue;
+        };
+        /* A dormant parent gets nothing and nothing is kept — see the note
+           above. The entries are already out of the map, which is what makes
+           that true rather than merely intended. */
+        if crate::supervisor::deliver(app, &parent, &text).is_ok() {
+            if let Ok(mut b) = brood().lock() {
+                b.told_at.insert(parent, now);
+            }
+        }
+    }
+}
+
+/// What one parent is told, or `None` if by now there is nothing to say.
+///
+/// This is the verification pass, and it runs against the wall as it is *now*
+/// rather than as it was when the grace was armed.
+fn notice(app: &AppHandle, parent_id: &str, just_settled: &[String]) -> Option<String> {
+    let store = app.try_state::<Store>()?;
+    let sup = app.state::<crate::supervisor::Supervisor>();
+
+    /* `lineage` is the pairs with **both** ends still open, so a parent that has
+       itself been closed answers with nothing and a child closed inside the
+       grace drops out — one query doing the work of three guards. Filtering
+       here rather than adding a `children_of` to `store.rs`: the table is small,
+       this runs at most once per parent per five minutes, and it is one fewer
+       shared file to be inside. */
+    let (kin, titles) = {
+        let conn = store.0.lock().ok()?;
+        let kin: Vec<String> = crate::store::lineage(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, p)| p == parent_id)
+            .map(|(c, _)| c)
+            .collect();
+        let titles: std::collections::HashMap<String, String> = kin
+            .iter()
+            .filter_map(|c| crate::store::roster_one(&conn, c).map(|r| (c.clone(), r.title)))
+            .collect();
+        (kin, titles)
+    };
+
+    let mut settled: Vec<String> = Vec::new();
+    for c in just_settled {
+        if !kin.contains(c) {
+            continue; // closed, or its parent was, since the grace was armed
+        }
+        if sup.liveness(c).1 {
+            continue; // speaking again in the moment before this went out
+        }
+        settled.push(named(c, titles.get(c)));
+    }
+    if settled.is_empty() {
+        return None;
+    }
+
+    /* The number the parent was really calling `list` for. Answering it here is
+       what lets one notice end the question rather than start a round of them. */
+    let busy = kin.iter().filter(|c| sup.liveness(c).1).count();
+    Some(envelope(&settled, busy, kin.len()))
+}
+
+/// A card as a notice names it: its title, and the handle that addresses it.
+///
+/// Both, because they answer different questions — the title is what the parent
+/// recognises and the handle is what `recall`, `send` and `close` take.
+fn named(id: &str, title: Option<&String>) -> String {
+    let handle = crate::relay::handle_of(id);
+    match title.map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        Some(t) => format!("\"{t}\" ({handle})"),
+        None => format!("an untitled card ({handle})"),
+    }
+}
+
+/// The message itself.
+///
+/// Pure, so both ends of the round trip can be asserted — the same bargain
+/// `relay::envelope` and `later::envelope` strike, and the reason the front end
+/// can recognise this off the words alone.
+fn envelope(settled: &[String], busy: usize, kin: usize) -> String {
+    let mark = crate::relay::RELAY_MARK;
+    let what = if settled.len() == 1 {
+        format!("A card you opened has stopped: {}.", settled[0])
+    } else {
+        format!("{} cards you opened have stopped: {}.", settled.len(), list(settled))
+    };
+    /* Said as a fraction rather than as a count, because "3 still working" and
+       "3 of 9 still working" are different amounts of knowing and the second is
+       the one that ends the question. */
+    let rest = match busy {
+        0 if kin == settled.len() => " Nothing else you opened is working.".to_string(),
+        0 => " None of your other cards is working either.".to_string(),
+        1 => format!(" 1 of your {kin} is still working."),
+        n => format!(" {n} of your {kin} are still working."),
+    };
+    format!(
+        "{mark} from the wall —\n\n{what}{rest}\n\n\
+         (This came from the wall rather than from anybody, so nobody is waiting on a \
+         reply and there is nothing to acknowledge. It is sent so you do not have to keep \
+         calling `list`. **Quiet is evidence, not a report**: a card is silent here for \
+         {} minutes, which is not the same as having finished — `recall` what it actually \
+         said before you conclude anything from it or pass it on, and `close` it once it \
+         has plainly reported. If there is nothing to do about this, do nothing.)",
+        SETTLE_GRACE_MS / 60_000
+    )
+}
+
+/// Names in a line, with an `and` where a reader expects one.
+fn list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1464,6 +1753,115 @@ mod tests {
            satisfy a schema. */
         assert_eq!(close_schema()["inputSchema"]["required"].as_array().unwrap().len(), 1);
         assert!(close_schema()["inputSchema"]["properties"]["why"].is_object());
+    }
+
+    /* ── what a parent is told when its children stop ─────────────────────── */
+
+    /// The envelope has to wear the mark the front end already recognises, or
+    /// it is drawn in the user's own register as something they typed.
+    ///
+    /// `later.rs` is the cautionary case and it is one file over: `WAKE_MARK` is
+    /// its own string, chosen so the fold could tell "another agent asked me to"
+    /// from "I asked myself to" — and the front end never learned it, so a wake
+    /// is still drawn as a prompt you wrote. A fourth shape under a mark that is
+    /// already recognised cannot fail that way.
+    #[test]
+    fn the_wall_speaks_in_an_envelope_the_panel_already_knows() {
+        let text = envelope(&["\"a\" (aaaaaaaa)".into()], 0, 1);
+        assert!(text.starts_with(crate::relay::RELAY_MARK), "{text}");
+        /* The header `relay.ts::WALL` matches. Asserted as the literal line
+           rather than as a prefix, because the regex there is anchored and a
+           stray word before the dash would fall through to "another card" —
+           the panel inventing an author for a line that has none. */
+        assert!(text.contains("from the wall —\n\n"), "{text}");
+        /* And the trailing note `relayBody` strips, which must be matched
+           whole at the other end. */
+        assert!(text.contains("\n\n(This came from the wall"), "{text}");
+    }
+
+    /// The three things the prose has to carry, each of which is a failure if
+    /// it is missing.
+    #[test]
+    fn the_notice_answers_the_question_that_was_being_polled() {
+        let text = envelope(&["\"tiering\" (3f08dc99)".into()], 2, 9);
+        /* What settled. */
+        assert!(text.contains("\"tiering\" (3f08dc99)"), "{text}");
+        /* How many are left, as a fraction — "2 still working" and "2 of 9
+           still working" are different amounts of knowing, and the second is
+           the one that ends the round of `list` calls this exists to replace. */
+        assert!(text.contains("2 of your 9 are still working"), "{text}");
+        /* That no answer is wanted. A parent that replies to this has spent
+           the turn the whole mechanism was built to save — the spiral
+           `relay.rs` guards against, arriving through a door it does not
+           watch. */
+        assert!(text.contains("nobody is waiting on a reply"), "{text}");
+        /* And the honest limit, which is the half that stops the notice being
+           worse than nothing: quiet is not the same fact as finished, and the
+           incident behind this item was a parent relaying a wrong conclusion
+           to eight cards. */
+        assert!(text.contains("Quiet is evidence, not a report"), "{text}");
+        assert!(text.contains("`recall`"), "{text}");
+    }
+
+    /// One card, several cards, and the case where the parent's whole brood has
+    /// gone quiet — which is the sentence it was really waiting for.
+    #[test]
+    fn it_counts_in_words_a_reader_expects() {
+        let one = envelope(&["\"a\" (aaaaaaaa)".into()], 3, 4);
+        assert!(one.contains("A card you opened has stopped:"), "{one}");
+        assert!(one.contains("3 of your 4 are still working"), "{one}");
+
+        let two = envelope(&["\"a\" (aaaaaaaa)".into(), "\"b\" (bbbbbbbb)".into()], 1, 5);
+        assert!(two.contains("2 cards you opened have stopped:"), "{two}");
+        assert!(two.contains("\"a\" (aaaaaaaa) and \"b\" (bbbbbbbb)"), "{two}");
+        /* Singular, because "1 of your 5 are still working" is the kind of
+           sentence that makes a reader distrust the number beside it. */
+        assert!(two.contains("1 of your 5 is still working"), "{two}");
+
+        /* The whole brood, and the notice says so plainly rather than making
+           the parent subtract. */
+        let all = envelope(&["\"a\" (aaaaaaaa)".into(), "\"b\" (bbbbbbbb)".into()], 0, 2);
+        assert!(all.contains("Nothing else you opened is working."), "{all}");
+    }
+
+    #[test]
+    fn names_are_listed_the_way_they_are_said_aloud() {
+        let n = |s: &str| s.to_string();
+        assert_eq!(list(&[]), "");
+        assert_eq!(list(&[n("a")]), "a");
+        assert_eq!(list(&[n("a"), n("b")]), "a and b");
+        assert_eq!(list(&[n("a"), n("b"), n("c")]), "a, b, and c");
+    }
+
+    /// Both, because they answer different questions: the title is what the
+    /// parent recognises and the handle is what `recall`, `send` and `close`
+    /// take. A notice carrying only one of them costs a `list` call to use.
+    #[test]
+    fn a_card_is_named_by_title_and_by_handle() {
+        let id = "3f08dc99-1111-4111-8111-111111111111";
+        assert_eq!(named(id, Some(&"tiering".to_string())), "\"tiering\" (3f08dc99)");
+        /* A card that has not named itself yet is the normal case for a child
+           in its first minutes, and it still has to be addressable. */
+        assert_eq!(named(id, None), "an untitled card (3f08dc99)");
+        assert_eq!(named(id, Some(&"   ".to_string())), "an untitled card (3f08dc99)");
+    }
+
+    /// The two numbers are the whole of the bounding, so they are pinned
+    /// against what they are each for rather than left as bare constants.
+    #[test]
+    fn the_grace_outlasts_a_pause_and_the_floor_bounds_the_cost() {
+        /* Longer than the gap before a `<task-notification>` lands — measured
+           at a ten-second median in `supervisor::turn_mark`'s note — and longer
+           than `later::MIN_DELAY_S`, so the shortest wake a card can arm still
+           cancels its own settle. */
+        assert!(SETTLE_GRACE_MS >= 60 * 1_000, "a pause must not read as a stop");
+        /* Twelve an hour, which is `later::MAX_SERVED` reached from the other
+           direction — said as an interval rather than as a count, so there is
+           one number and it cannot be off by one. */
+        assert_eq!(60 * 60 * 1_000 / SETTLE_APART_MS, 12);
+        /* And the grace has to fit inside the floor, or a notice would be due
+           again before the previous one was allowed out. */
+        assert!(SETTLE_GRACE_MS < SETTLE_APART_MS);
     }
 
     fn wall() -> Vec<crate::store::ProjectRow> {

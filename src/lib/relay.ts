@@ -29,18 +29,27 @@ export type RelayFrom = {
   project: string | null;
 };
 
-/* Three shapes. A sender can be closed between writing a message and its
+/* Four shapes. A sender can be closed between writing a message and its
  * recipient waking up to read it, so the second keeps the handle — still the
- * only thing that identifies what said it. And the third is not a message at
+ * only thing that identifies what said it. The third is not a message at
  * all: a standing notice off the billboard, which came to find this card
- * because it edited a file the notice covers (`board.rs::on_touch`). One mark
- * and one recogniser for all three, deliberately — the panel's job is the same
- * in every case, which is to say this was not you. */
+ * because it edited a file the notice covers (`board.rs::on_touch`). And the
+ * fourth has no author anywhere — the wall telling a parent that cards it
+ * opened have stopped (`spawn::envelope`), which is a fold over an event rather
+ * than anything anybody wrote.
+ *
+ * One mark and one recogniser for all four, deliberately — the panel's job is
+ * the same in every case, which is to say this was not you. The alternative for
+ * the last two was a mark apiece, and `later.rs` took it: `[skein wake]` is its
+ * own string and the front end never learned it, so a wake is still drawn as
+ * something you typed. A shape under a mark that is already recognised cannot
+ * go wrong that way. */
 const HEADED =
   /^\[skein relay\] from "(.*?)" \(([0-9a-f]{4,36})\)(?: in (.+?))? —\s*$/;
 const ORPHANED =
   /^\[skein relay\] from a card that has since been closed \(([0-9a-f]{4,36})\) —\s*$/;
 const NOTICE = /^\[skein relay\] from the billboard —/;
+const WALL = /^\[skein relay\] from the wall —/;
 
 export function isRelayPrompt(text: string): boolean {
   return text.trimStart().startsWith(RELAY_MARK);
@@ -64,6 +73,10 @@ export function relayFrom(text: string): RelayFrom | null {
      because a notice outlives the card that posted it — see `board_envelope`.
      What the cap wants to say is where it came from, and that is the board. */
   if (NOTICE.test(head)) return { name: "the billboard", handle: "", project: null };
+  /* No handle and no card, and that is not a degradation — nothing sent this.
+     Naming the wall is what stops it reading as "from another card", which
+     would be the panel inventing an author for a line that has none. */
+  if (WALL.test(head)) return { name: "the wall", handle: "", project: null };
   return { name: "another card", handle: "", project: null };
 }
 
@@ -84,6 +97,7 @@ export function relayBody(text: string): string {
   const note = Math.max(
     body.lastIndexOf("\n\n(This came from another agent"),
     body.lastIndexOf("\n\n(This is a standing notice"),
+    body.lastIndexOf("\n\n(This came from the wall"),
   );
   if (note !== -1) body = body.slice(0, note);
   return body.trim();

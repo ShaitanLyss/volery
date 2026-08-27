@@ -116,6 +116,37 @@ describe("the fold's cap", () => {
   });
 });
 
+/* The fourth shape, and the only one with no author at all: the wall telling a
+ * parent that cards it opened have stopped. Transcribed from `spawn::envelope`
+ * the same way `envelope` above transcribes `relay::envelope` — the two ends
+ * agreeing is the whole contract, and there is nothing to import across it. */
+const settled = (what: string) =>
+  `${RELAY_MARK} from the wall —\n\n${what}\n\n` +
+  "(This came from the wall rather than from anybody, so nobody is waiting on " +
+  "a reply and there is nothing to acknowledge.)";
+
+describe("a notice from the wall", () => {
+  const one = settled('A card you opened has stopped: "roster tiering" (3f08dc99). 2 of your 9 are still working.');
+
+  test("is drawn as not-you, like every other thing wearing this mark", () => {
+    expect(isRelayPrompt(one)).toBe(true);
+  });
+
+  /* The point of the fourth shape. Falling through to the catch-all would say
+     "from another card", which is the panel inventing an author for a line that
+     has none — the one thing this file exists to stop, in a new dress. */
+  test("names the wall rather than inventing a card", () => {
+    expect(relayFrom(one)).toEqual({ name: "the wall", handle: "", project: null });
+    expect(relayCap(one)).toBe("from the wall");
+  });
+
+  test("keeps what it says and drops the note addressed to the model", () => {
+    expect(relayBody(one)).toBe(
+      'A card you opened has stopped: "roster tiering" (3f08dc99). 2 of your 9 are still working.',
+    );
+  });
+});
+
 describe("handles", () => {
   /* Must agree with `relay::handle_of`, which is what the agent is given and
      what it sends back. */
