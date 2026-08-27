@@ -17,6 +17,27 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Not used by our own `build.rs` — this is here to *constrain* somebody else's.
+#
+# `librespot-core`'s build script wants `vergen ^9` and `vergen-gitcl ^1`. Those
+# were one family until vergen 9.1.0 (2026-01-16) moved from `vergen-lib ^0.1.6`
+# to `vergen-lib ^9.1.0` — a breaking change inside a *minor* bump, so `^9` picks
+# it up. `vergen-gitcl 1.0.8` is still on 0.1.6, both land in one build script,
+# and the two `Add` traits are not the same trait:
+#
+#   error[E0277]: the trait bound `vergen::feature::build::Build:
+#                 vergen_lib::entries::Add` is not satisfied
+#
+# librespot 0.8.0 was published 2025-11-10 and built fine at the time; it was
+# broken retroactively by a crate it does not name, which is what makes this
+# worth eleven lines of comment.
+#
+# An `=` requirement in the manifest rather than a `Cargo.lock` pin, deliberately:
+# a lock pin is undone by the next re-resolution (`cargo update`, or simply
+# adding a dependency), and the error it comes back with mentions no Spotify
+# crate at all. Declaring the constraint here is the only form of it that
+# survives. Drop it when librespot's build-deps agree again.
+vergen = "=9.0.6"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
