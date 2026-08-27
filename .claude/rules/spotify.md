@@ -162,10 +162,27 @@ is still on `vergen-lib 0.1.6`, both get unified into one build script, and the 
 traits are not the same trait. librespot 0.8.0 was published 2025-11-10 and **built fine at
 the time** — it was broken retroactively, three months later, by a crate it does not name.
 
-`Cargo.lock` holds it at `vergen 9.0.6` and that is the whole fix. Worth knowing precisely
-because of how it will come back: **a `cargo update` unpins it**, and the error will arrive
-with no Spotify in it at all. If this reappears, it is this, and the pin is
-`cargo update -p vergen --precise 9.0.6`.
+**The fix is `vergen = "=9.0.6"` in `[build-dependencies]`** — declared to constrain somebody
+else's build script rather than because our own `build.rs` wants it.
+
+It was a `Cargo.lock` pin first, and that is the part worth keeping, because the lock pin is
+the obvious answer and it does not hold. **A lock entry is re-resolved by the next `cargo
+update` *or simply by adding a dependency*.** It was applied and lost three times in one
+afternoon; two other cards independently diagnosed the resulting error from scratch and one
+broadcast to the whole wall that the Rust gate could not pass for anybody. With the
+requirement in the manifest instead, `cargo update -p vergen` answers
+
+```text
+Downgrading vergen v9.1.0 -> v9.0.6 (available: v9.1.0)
+```
+
+— it can no longer move, and one `vergen-lib` remains in the graph.
+
+The general shape, which is not about Spotify: **a constraint you can only express in a
+lockfile is a constraint that survives exactly until somebody runs a routine command.** If a
+transitive version genuinely matters, say so in the manifest, where re-resolution has to obey
+it — and say *why* beside it, because an `=` requirement with no explanation is the thing a
+future tidy-up deletes.
 
 ## Where the credential goes
 
