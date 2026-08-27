@@ -91,40 +91,51 @@ pub fn client_timeout_ms() -> u64 {
 /// — they cost nothing, they are what an older build reads, and a deadline that
 /// no longer fires first is still the one that fires if the feeding stops.
 ///
-/// **`alwaysLoad` is why an agent knows these tools have descriptions at all.**
+/// **There is deliberately no `alwaysLoad` here, and that is the tiering.**
+///
 /// Tool search is on by default in the CLI and is *not* threshold-gated when
 /// `ENABLE_TOOL_SEARCH` is unset — read out of 2.1.235, where unset and `auto`
 /// are different modes and only `auto` weighs the definitions against 10% of the
-/// window. So without this flag every tool here reaches a card as a bare name
-/// behind a `ToolSearch` step, with its schema withheld. That is worse for this
-/// server than for most, because everything that makes the billboard work is
-/// *in* the descriptions: that reading it is free where a `send` costs the other
+/// window. So a tool with nothing said about it reaches a card as a bare name
+/// behind a `ToolSearch` step, with its schema withheld. For some of this server
+/// that is intolerable, because everything that makes the billboard work is *in*
+/// the descriptions: that reading it is free where a `send` costs the other
 /// agent a turn, that a notice wants `paths` on it, that `unpost` is the half
-/// nobody else can do for you. None of it was reaching the wall.
+/// nobody else can do for you.
 ///
-/// One flag exempts the whole server — the CLI loads every tool from it at
-/// session start whatever `ENABLE_TOOL_SEARCH` says, and an exempt tool does not
-/// count toward `auto`'s threshold either, so skein does not compete for budget
-/// with whatever else the machine has configured. What buys the cost back is
-/// that the descriptions are where the reasoning lives, so
-/// `supervisor::append_prompt` does not have to carry it.
+/// This field used to say `true`, which exempted the whole server, and the
+/// argument for it was first made of six tools and ~9KB. By 2026-08-27 it was 22
+/// tools and **38,598 bytes on every spawn of every card** — a fifth of it one
+/// paragraph inside `ask_user` repeated four times — with 1,402 bytes left under
+/// the ceiling and a queue of tools waiting to be added. The test did what it
+/// was written to do: it made that a conversation rather than a bump.
 ///
-/// **The cost is paid per spawn and is asserted rather than remembered.** The
-/// argument for this flag was first made of six tools and ~9KB; the roster has
-/// more than doubled since and gains tools faster than this comment gets read,
-/// so a number written here would be wrong within the week and would go on
-/// sounding authoritative. `the_roster_stays_inside_what_alwaysLoad_costs` holds
-/// the ceiling instead. A tool that trips it is not a number to raise — it is
-/// the moment to ask whether every tool on this server is wanted on every turn,
-/// which is the only claim `alwaysLoad` rests on. Startup then
-/// waits on this server, capped at 5s — free here, since it is an HTTP listener
-/// on loopback that `Asks::port` has already answered for by the time anything
-/// spawns.
+/// The answer was not to raise the number, and it was not to drop the flag
+/// either. **The flag has a per-tool half**, which nobody here had asked the CLI
+/// about: `_meta["anthropic/alwaysLoad"]` on an individual `tools/list` entry
+/// exempts that tool alone, and the client takes the *union* —
+/// `e.config.alwaysLoad===!0 || M._meta?.["anthropic/alwaysLoad"]===!0`, read out
+/// of the 2.1.241 binary. Which is also why this field has to be *absent* rather
+/// than `false`: setting it here would win over every tier below it and the
+/// roster would go back to costing all of itself. See `ask::always` and
+/// `ask::roster` for who is in which tier and on what argument.
 ///
-/// `supervisor::append_prompt` is short *because* of this, and says so: with the
-/// descriptions in front of the agent, the one paragraph every card pays for
-/// need not restate them. Taking this flag off makes that paragraph the whole of
-/// what a card knows about the board.
+/// **What came off with the flag was a bounded startup wait, and it was never
+/// being used.** Only a server-level flag puts a config in the CLI's
+/// blocking-connect bucket (`Vk(t,(f)=>f.alwaysLoad===!0)` → `L_u(!1, …)`), so
+/// on paper this trades the guarantee that the tools are present when the turn-1
+/// prompt is built. `tools/probe-tiers.ts` went and looked: stalling `tools/list`
+/// for 6s and then 25s — five times the 5s connect cap — left the loaded tier in
+/// the turn-1 prompt every time, and `MCP_CONNECTION_NONBLOCKING=0`, which would
+/// force the wait back on, changed nothing observable. The wait was free here for
+/// the same reason it was pointless: this is an HTTP listener on loopback that
+/// `Asks::port` has already answered for by the time anything spawns.
+///
+/// `supervisor::append_prompt` is short because the tools it names are all in
+/// the loaded tier, which is a rule `roster` states and keeps rather than a
+/// coincidence. Anything moved out of that tier has to be paid for in that
+/// paragraph instead, in the copy that can silently drift out of step with the
+/// schema — so the trade is only worth making for tools it does not name.
 pub fn mcp_config(port: u16, conversation_id: &str) -> Value {
     json!({
         "mcpServers": {
@@ -132,7 +143,6 @@ pub fn mcp_config(port: u16, conversation_id: &str) -> Value {
                 "type": "http",
                 "url": format!("http://127.0.0.1:{port}/mcp/{conversation_id}"),
                 "timeout": client_timeout_ms(),
-                "alwaysLoad": true,
             }
         }
     })
@@ -209,7 +219,45 @@ pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Resu
 /// contains it. The description is doing real work: the model has spent its
 /// whole life describing layouts in prose to a terminal, and left to itself will
 /// keep doing that beside an empty `preview` field.
-fn preview_schema() -> Value {
+///
+/// **Written out once and pointed at three times, because `ask_user` was a
+/// fifth of the whole roster and most of it was this paragraph repeated.** The
+/// field appears at four places in one payload — beside `question`, beside each
+/// `option`, and both again inside `questions[]` — and `option_schema` is
+/// itself emitted twice, so the full text was reaching the model four times per
+/// spawn of every card at 1,354 bytes a copy. Measured 2026-08-27: 5,416 bytes,
+/// 14% of `tools/list`, spent saying one thing four times.
+///
+/// `full` is the one canonical copy and it sits on the *top-level* `preview` —
+/// the simplest form of the call, and the one place a caller reads before it
+/// has decided whether it wants `questions[]` at all. The other three name it
+/// rather than restating it. The pointer is worth more than a truncation would
+/// be: the constraints are what stop an agent reaching for a framework or a
+/// font, and a reader that is told where they are can go and get them, where a
+/// reader given half of them does not know a half is missing.
+fn preview_schema(full: bool) -> Value {
+    if !full {
+        return json!({
+            "type": "object",
+            "description":
+                "Optional. A design shown full-size instead of described, same as \
+                 the `preview` beside `question` at the top level of this tool — \
+                 see that one for what it renders in, what is forbidden, and the \
+                 viewport to compose for. Same shape: `html` is required, `css` \
+                 and `js` are optional.",
+            "properties": {
+                "html": { "type": "string", "description": "The body markup." },
+                "css": { "type": "string", "description": "A stylesheet for it." },
+                "js": {
+                    "type": "string",
+                    "description":
+                        "Script, only where the decision turns on interaction. It \
+                         does not run until the user asks it to."
+                }
+            },
+            "required": ["html"]
+        });
+    }
     json!({
         "type": "object",
         "description":
@@ -270,7 +318,11 @@ fn option_schema() -> Value {
                         "One short line on what picking this means. Not a paragraph — \
                          this is drawn on a button."
                 },
-                "preview": preview_schema()
+                /* Terse, and this is the copy that would have cost most: an
+                   option's preview is the flagship use — several designs side
+                   by side — but `option_schema` is emitted at both levels, so
+                   the full text here is paid for twice. */
+                "preview": preview_schema(false)
             },
             "required": ["label"]
         }
@@ -321,7 +373,7 @@ fn tool_schema() -> Value {
                                      Markdown is fine."
                             },
                             "options": option_schema(),
-                            "preview": preview_schema()
+                            "preview": preview_schema(false)
                         },
                         "required": ["question"]
                     }
@@ -333,7 +385,10 @@ fn tool_schema() -> Value {
                          for when there is only one decision. Markdown is fine."
                 },
                 "options": option_schema(),
-                "preview": preview_schema()
+                /* The one full copy. Top level rather than one of the nested
+                   sites because it is the form a caller reads first, and the
+                   three pointers name it by this position. */
+                "preview": preview_schema(true)
             }
         }
     })
@@ -556,6 +611,145 @@ fn park_and_stream(
     closed(real && delivered);
 }
 
+/// Mark a tool as wanted on every turn, whatever tool search would otherwise do.
+///
+/// `_meta["anthropic/alwaysLoad"]` is the per-tool half of what `mcp_config`
+/// used to say once for the whole server. Read out of the 2.1.241 binary —
+/// `alwaysLoad: e.config.alwaysLoad===!0 || M._meta?.["anthropic/alwaysLoad"]===!0`
+/// — and confirmed live by `tools/probe-tiers.ts`, which put the flag on two of
+/// four tools and watched the other two arrive as bare names.
+///
+/// It is applied here, at the roster, rather than inside each schema function,
+/// so the tier is one list you can read top to bottom. A tool's own module
+/// should not have to know how expensive the wall's prompt is.
+fn always(mut schema: Value) -> Value {
+    schema["_meta"]["anthropic/alwaysLoad"] = json!(true);
+    schema
+}
+
+/// What to match a deferred tool on, when an agent goes looking for a capability
+/// rather than a name.
+///
+/// **Not rendered into the deferred listing, and load-bearing anyway** — which
+/// is the whole reason a discoverable tier is affordable. `formatDeferredToolLine`
+/// is `function iFa(e){ return e.name }`, so a deferred tool costs its name and
+/// nothing else per turn; the hint is read only by `ToolSearch`'s matcher.
+///
+/// Probed as a controlled pair on 2026-08-27 (`probe-tiers.ts --search-only`,
+/// with and without, one query, everything else identical): with a hint the tool
+/// ranked **first** for a query sharing no token with its name; without one it
+/// did not place in the top five at all. So a hint is not decoration. **A tool
+/// in the deferred tier and carrying no hint is a tool nobody will find**, and
+/// `every_deferred_tool_can_be_found` refuses one.
+///
+/// They are written wide on purpose. A card reaching for one of these is
+/// usually holding the words of its own problem rather than the name of the
+/// tool — "is anyone in my way" long before "touched" — so the hints carry the
+/// question as well as the noun.
+fn found_by(mut schema: Value, hint: &str) -> Value {
+    schema["_meta"]["anthropic/searchHint"] = json!(hint);
+    schema
+}
+
+/// Every tool this server advertises, in two tiers.
+///
+/// **The critical tier is not a taste, it is a rule**: every tool
+/// `supervisor::append_prompt` names must be here, or the one paragraph every
+/// card pays for points at identifiers whose schemas were withheld —
+/// `the_prompt_names_only_tools_the_server_advertises` guards the names and
+/// this guards their descriptions. That is `ask_user`, `board`, `post`,
+/// `unpost`, `list`, `send`, `drop` exactly. `sink` joins them because reading
+/// the pile is the other half of `drop`, and a card told to file findings and
+/// not told it can read them will file duplicates.
+///
+/// The three after that are there on a different argument, and it is the one
+/// `append_prompt` already makes for `drop`: **a description is only read by an
+/// agent that has thought to look for a tool**, and these three exist to
+/// replace something an agent does wrongly by *default*. `pin` fights writing a
+/// path into the transcript, `wake_me` fights sleeping inside a turn,
+/// `allowance` fights guessing at the budget. Nothing in a schema reaches a
+/// reflex, and nothing in `ToolSearch` reaches one either, because the failure
+/// is not searching in the first place.
+///
+/// Everything below is a capability a card knows it wants from the prompt it
+/// was given — it is working on a pull request, or it is not — and those are
+/// deferred with a hint. Measured 2026-08-27: 22 tools cost 38,598 bytes on
+/// every spawn of every card; this arrangement costs what
+/// `the_loaded_tier_is_what_every_turn_pays_for` asserts.
+pub(crate) fn roster() -> Vec<Value> {
+    vec![
+        // ── loaded: named by `append_prompt`, so their schemas must be here ──
+        always(tool_schema()),
+        always(crate::board::board_schema()),
+        always(crate::board::post_schema()),
+        always(crate::board::unpost_schema()),
+        always(crate::sink::sink_schema()),
+        always(crate::sink::drop_schema()),
+        always(crate::relay::list_schema()),
+        always(crate::relay::send_schema()),
+        // ── loaded: reflex-shaped, where not looking is the failure ──
+        always(crate::pin::pin_schema()),
+        always(crate::later::wake_schema()),
+        always(crate::limits::allowance_schema()),
+        // ── discoverable: a card knows from its prompt whether it wants these ──
+        found_by(
+            crate::sink::take_schema(),
+            "claim a sink item before starting it; hold, assign, take, release, \
+             unclaim, is anyone already doing this",
+        ),
+        found_by(
+            crate::sink::done_schema(),
+            "mark a sink item finished, settled, resolved, close it out, tick it \
+             off, I fixed the bug that was filed",
+        ),
+        found_by(
+            crate::relay::touched_schema(),
+            "who else has edited this file, other agents, conflict, clash, is \
+             anyone in my way, am I about to work over somebody, recent writes",
+        ),
+        found_by(
+            crate::relay::recall_schema(),
+            "what did another card do or say, read its words, catch up on a \
+             conversation, what happened there, without costing it a turn",
+        ),
+        found_by(
+            crate::pin::repin_schema(),
+            "update or move or remove an image already on the wall, replace a \
+             screenshot with a newer render, take a picture down",
+        ),
+        found_by(
+            crate::pin::pinned_schema(),
+            "what images has this card put on the wall, what have I pinned \
+             already, list my pins before pinning another",
+        ),
+        found_by(
+            crate::spawn::spawn_schema(),
+            "open another card, start a second conversation, delegate a separate \
+             job, run work in parallel, hand something to a new agent",
+        ),
+        found_by(
+            crate::spawn::close_schema(),
+            "take a card off the wall, close a conversation I opened, tidy up a \
+             child card that has finished and reported",
+        ),
+        found_by(
+            crate::servers::servers_schema(),
+            "dev servers, is the server running, what is on localhost, ports, \
+             vite next pnpm dev bun run dev, did it start",
+        ),
+        found_by(
+            crate::servers::server_log_schema(),
+            "server output, build error, stack trace, compile failure, why did \
+             the dev server fall over, read the log",
+        ),
+        found_by(
+            crate::servers::server_schema(),
+            "start or stop or restart a dev server group, bring it up, kill it, \
+             cycle the server after a config change",
+        ),
+    ]
+}
+
 /// What a JSON-RPC message means, decided without touching the network so it
 /// can be tested directly.
 #[derive(Debug, PartialEq)]
@@ -607,30 +801,7 @@ pub(crate) fn dispatch(rpc: &Value) -> Dispatch {
         })),
         "tools/list" => Dispatch::Reply(json!({
             "jsonrpc": "2.0", "id": id,
-            "result": { "tools": [
-                tool_schema(),
-                crate::relay::list_schema(),
-                crate::relay::send_schema(),
-                crate::board::board_schema(),
-                crate::board::post_schema(),
-                crate::board::unpost_schema(),
-                crate::sink::sink_schema(),
-                crate::sink::drop_schema(),
-                crate::sink::take_schema(),
-                crate::sink::done_schema(),
-                crate::relay::touched_schema(),
-                crate::relay::recall_schema(),
-                crate::limits::allowance_schema(),
-                crate::later::wake_schema(),
-                crate::pin::pin_schema(),
-                crate::pin::repin_schema(),
-                crate::pin::pinned_schema(),
-                crate::spawn::spawn_schema(),
-                crate::spawn::close_schema(),
-                crate::servers::servers_schema(),
-                crate::servers::server_log_schema(),
-                crate::servers::server_schema(),
-            ] }
+            "result": { "tools": roster() }
         })),
         "ping" => Dispatch::Reply(json!({ "jsonrpc": "2.0", "id": id, "result": {} })),
         "tools/call" => Dispatch::Call {
@@ -952,20 +1123,86 @@ mod tests {
         assert_eq!(args["to"], "aaaaaaaa");
     }
 
-    /// Every schema on this server, on every spawn of every card, because
-    /// `mcp_config` sets `alwaysLoad` — so the roster's total size is a running
-    /// cost of having the wall open rather than a cost of using a tool. 40KB is
-    /// a budget and not a measurement: it was ~26KB when this was written, which
-    /// leaves room for the tools somebody is halfway through adding and none for
-    /// pretending nobody notices. Tripping it is a conversation, not a bump.
+    /// What a turn actually pays for, which is no longer the whole roster.
+    ///
+    /// **This assertion used to measure the wrong thing, and only because the
+    /// two were once the same number.** `mcp_config` set `alwaysLoad` on the
+    /// server, so every byte of `tools/list` reached every card and the payload
+    /// size *was* the standing cost. With the tiering, a deferred tool reaches a
+    /// card as its name and nothing else — `formatDeferredToolLine` is
+    /// `function iFa(e){ return e.name }`, confirmed verbatim by
+    /// `tools/probe-tiers.ts` — so measuring the payload would now count schema
+    /// that nobody is charged for, and would go red over tools that are free.
+    /// A budget has to be levied on the thing being spent.
+    ///
+    /// 24KB is a budget and not a measurement: the loaded tier was ~18KB when
+    /// this was written, which leaves room for a tool somebody is halfway
+    /// through adding and none for pretending nobody notices. Tripping it is
+    /// still a conversation rather than a bump — but the conversation is now a
+    /// different one, because there is somewhere else to put a tool. The first
+    /// question is no longer "do we want this at all", it is **"does a card have
+    /// to know this exists without being told?"** If not, it goes in the
+    /// deferred tier with a hint and costs ~25 bytes.
     #[test]
-    fn the_roster_stays_inside_what_always_load_costs() {
-        let r = dispatch(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
-        let Dispatch::Reply(v) = r else { panic!("expected a reply") };
-        let bytes = v["result"]["tools"].to_string().len();
+    fn the_loaded_tier_is_what_every_turn_pays_for() {
+        let loaded: Vec<Value> = roster()
+            .into_iter()
+            .filter(|t| t["_meta"]["anthropic/alwaysLoad"] == json!(true))
+            .collect();
+        let bytes = json!(loaded).to_string().len();
         assert!(
-            bytes < 40_000,
-            "the roster is {bytes} bytes of schema on every spawn — see mcp_config"
+            bytes < 24_000,
+            "the loaded tier is {bytes} bytes of schema on every spawn of every \
+             card — see ask::roster, and ask whether the new tool is one a card \
+             must know exists without being told"
+        );
+    }
+
+    /// A tool in the deferred tier and carrying no hint is a tool nobody finds.
+    ///
+    /// This is the failure the tiering introduces, and it is silent: the tool is
+    /// registered, it dispatches, every other test passes, and no agent ever
+    /// reaches it. `ToolSearch` matches on the name and on
+    /// `_meta["anthropic/searchHint"]`, and a skein tool's name is a single
+    /// ordinary word — `touched`, `recall`, `take` — chosen to read well in a
+    /// sentence rather than to be searched for.
+    ///
+    /// Probed as a controlled pair on 2026-08-27 rather than assumed: same
+    /// query, same two deferred tools, the hint the only difference. With one,
+    /// the tool ranked **first** for a query sharing no token with its name;
+    /// without one it did not place in the top five. So the hint is the whole of
+    /// whether the second tier is a tier or an oubliette.
+    #[test]
+    fn every_deferred_tool_can_be_found() {
+        for t in roster() {
+            if t["_meta"]["anthropic/alwaysLoad"] == json!(true) {
+                continue;
+            }
+            let name = t["name"].as_str().unwrap_or("?");
+            let hint = t["_meta"]["anthropic/searchHint"].as_str().unwrap_or("");
+            assert!(
+                hint.len() > 40,
+                "`{name}` is deferred with no usable search hint, so nothing will \
+                 find it — give it one in `ask::roster` or load it"
+            );
+        }
+    }
+
+    /// Absent, not `false`, and the difference is the whole feature.
+    ///
+    /// The client takes the union of the two flags, so a server-level
+    /// `alwaysLoad` would win over every per-tool decision below it and quietly
+    /// put the roster back to costing all of itself — with every test here still
+    /// green, because the tiers would all still be *declared*. Nothing else
+    /// would say so.
+    #[test]
+    fn the_server_claims_no_tier_of_its_own() {
+        let cfg = mcp_config(1234, "abc");
+        let server = &cfg["mcpServers"]["skein"];
+        assert!(
+            server.get("alwaysLoad").is_none(),
+            "mcp_config set alwaysLoad — that exempts the whole server and \
+             `ask::roster`'s tiering stops meaning anything"
         );
     }
 
