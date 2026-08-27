@@ -364,11 +364,104 @@ this arm existed and still works alone.
 shortcut: it is what makes a fourth event cost one line, and what stops the three drifting
 apart in the way the copy of a tool name did.
 
+### The fourth guard: the tree cards share, not only the index
+
+The section above about the index has a hole in it, and on 2026-08-27 somebody fell through.
+`bare_commit`/`sweep` catch a **commit** that would take a sibling's **staged** work. `git
+stash` is not a commit, never reaches that guard, and does something worse: it takes every
+card's uncommitted work out of the checkout in one stroke — silently, with no error shown to
+any of the cards it just emptied.
+
+One card ran it in a tree nine cards shared, wiping nine files across four of them. It was
+found only because a card happened to read back a file it had just written and saw its own
+changes gone. **The card that ran it knew the tree was shared**; it reached for the tool
+anyway while trying to work out whether a `cargo check` error was pre-existing or its own —
+which is a reasonable question a shared tree gives you no safe tool for. Sink 7f6bfe2f.
+
+**The guard covered the recoverable failure and not the fatal one**, which is the shape worth
+carrying. A swept commit leaves the code intact and only the message wrong. A cleaned tree
+leaves nothing: `git stash` without `-u` carries **no untracked files**, so a `git clean`
+beside it has no stash to recover from at all. At the time of the incident that tree held ten
+untracked files holding whole subsystems in progress.
+
+`tree_wide` is the detector and `perilous` the guard. Denied: `stash` (except `list` and
+`show`), `clean`, and the whole-tree forms of `reset`, `checkout` and `restore`.
+
+- **Gated on a sibling actually existing.** `store::siblings_in_tree` asks whether another
+  open card stands in this tree, and an empty answer means silence. A card working alone is
+  never denied and a single-card wall is unchanged — the same property `foreign_staged` has,
+  and what keeps a guard from being a thing to work around.
+- **The tree is `cwd` *and* `worktree` together, never `cwd` alone.** A worktree card's row
+  keeps the project root as its `cwd` and only the child process moves (`worktree.md`), so two
+  cards on different branches of one project share a `cwd` and share no files. Comparing `cwd`
+  alone would deny a card for standing beside somebody it cannot reach — and then advise it to
+  make a worktree, which it had already done.
+- **A dormant sibling counts.** CLAUDE.md records `closed_at IS NULL` being got wrong twice,
+  both times by matching dormant cards where a *process* was meant. Here the question is not
+  "is anything running" but "is anybody's uncommitted work in this checkout", and a sleeping
+  card's edits sit in the tree exactly like a live one's. Counting only live cards would let
+  the wipe through whenever the victim happened to be asleep.
+- **Every pathspec form stays open**, and that is what makes refusing safe here in exactly the
+  way `sweep_reason` argues. `git checkout <ref> -- <one file>` *is* the recovery procedure;
+  a guard that denied it would be denying the way out. `--` is the only spelling of "has a
+  pathspec" accepted, for `bare_commit`'s reason — the conservative reading costs a denial
+  naming the correct form, where one wrong row in the table of which options take a value
+  costs the damage. So `git restore src/a.ts` is denied and `git restore -- src/a.ts` is not.
+- **`.`, `./` and `:/` are not paths.** `git checkout -- .` has a `--` and is precisely the
+  thing being guarded against wearing the shape of the thing that is allowed.
+- **`rebase`, `merge`, `pull` and `switch` are deliberately absent.** Git refuses every one of
+  them against a dirty tree of its own accord, so none silently destroys uncommitted work, and
+  denying them would stop real work to no end. What is on the list is the set whose whole
+  purpose is to discard.
+- **`stash pop`, `drop` and `clear` are on it too**, which is not obvious. They are how a
+  *recovery* goes wrong: `pop` dumps a stash holding several cards' work into a tree that has
+  moved on since, and `drop`/`clear` destroy the only copy of what a previous stash took. On
+  the morning this came from, the stash was the sole surviving copy of nine files.
+- **`-C` elsewhere is not judged.** A `-C` naming a different directory is a different tree,
+  and this card's siblings are the wrong answer about it. Rather than canonicalize two paths
+  and risk a false deny, `perilous` steps aside unless `-C` demonstrably names the directory
+  the card already stands in. A hole, and the safe kind: unreadable means allow.
+
+**`git_at` is factored out of `commit_in`** so both guards share one idea of what a git
+invocation is, and `deny` is written once for the two of them. This module has already paid
+for a fact written down in two places — the matcher, above — and "what counts as git" is the
+same bet.
+
+**It is deliberately a sentence *and* a lock.** `supervisor::append_prompt` tells every
+project card not to reach for these commands (`6636197`). That alone would not have stopped
+this: the card that ran `git stash` already knew. And the lock alone would make the first a
+card hears of it a denied tool call, which costs a turn and reads as obstruction. An
+instruction does not bind a reflex; a card that never read the board is one no instruction
+reaches. The refusal names the sibling cards, offers the worktree, and ends in commands that
+run as they stand — including "ask the user", because the caveat an agent grants itself is the
+one it grants while chasing a build error.
+
 #### Testing Rust on this machine
 
 `cargo test` does not run here at all — `.claude/rules/build.md` has it: the gnu harness exe
-exits `0xC0000139` before a single test runs. What is available is `cargo check`, and the trap
-is that **`bash tools/check-gnu.sh` is `cargo check --lib`, which does not look at
+exits `0xC0000139` before a single test runs. Two things follow, and the second is better news
+than it looks.
+
+**The trap: `bash tools/check-gnu.sh` is `cargo check --lib`, which does not look at
 `#[cfg(test)]` code.** A clean run there says nothing whatever about a test you have just
-written. `bash tools/check-gnu.sh --profile test` does, and costs the same. Everything in this
-module's test block has been through that and nothing has been through an actual run.
+written — a clean gate and a test block full of errors are the same reading.
+`bash tools/check-gnu.sh --profile test` does look, and costs the same.
+
+**And type-checking is not the ceiling.** The lift trick in `build.md` runs these for real,
+because it uses no cargo and therefore no dependency graph and no linker configuration —
+which is the whole reason `cargo test` fails here:
+
+```bash
+export RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu
+rustc --test --edition 2021 -o h.exe lifted.rs && ./h.exe
+```
+
+Copy the pure functions and their `mod tests` into one file, stub whatever they borrow from
+the crate — for this module that is `store::PendingJob`, six fields — and they run. All seven
+of `standing_work`'s and `ago`'s tests execute and pass that way, which is a different and
+stronger claim than "it compiles". `joblog.rs`'s twelve do too, including the one that writes
+a real file to a temp directory and tails it.
+
+What the lift cannot reach is anything holding a `tauri::State` or a real `Connection`, so
+`reply`'s own arms are still type-checked only. Worth knowing which half of a test block you
+have actually run.

@@ -92,7 +92,10 @@ pub struct Chunk {
 /// - **ordinary** — exactly where they stopped.
 fn window(size: i64, from: i64, cap: i64) -> (i64, i64) {
     let cap = cap.clamp(1, MAX_READ);
-    let at = if from < 0 || from > size {
+    /* Any negative is unread, not only `UNREAD` itself. The constant is named
+       rather than the bare `< 0` written twice: it is half a wire format shared
+       with `jobs.ts`, and a magic number here is the half that could drift. */
+    let at = if from <= UNREAD || from > size {
         (size - cap).max(0)
     } else if size - from > cap {
         size - cap
