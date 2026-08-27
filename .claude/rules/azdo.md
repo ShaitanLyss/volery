@@ -461,9 +461,42 @@ can use it.
   eleven are skipped, so unfolding all of them buries the row you opened the
   panel for — and unfolding *none* makes you hunt. Null when nothing stands out,
   because opening something on a run that simply passed would be a guess.
+- **A stage that produced no job is still a row, and finding that out is the
+  whole return on running the flattening against a real build.** Probed
+  2026-08-27 against RISE build 2515: thirteen stages went in and **five rows
+  came out**. A stage that was skipped — or has not been reached yet — has a
+  `Stage` record and a `Phase` record and *no `Job` record at all*, so nine of
+  the thirteen were invisible.
+
+  That is tolerable for a post-mortem and wrong for the thing this panel is for:
+  on a running release pipeline you could see what had happened and nothing of
+  what was still to come, so a thirteen-stage run drew four rows with no
+  indication there were nine more — the opposite of live progress. The stage now
+  stands in for its own missing job, carrying its own state and result and no
+  steps, because it genuinely has none. Fourteen rows out of the same payload.
+
+  **No fixture would have caught this**, and that is the transferable half. The
+  record order as it arrives is meaningless (`order` means *within your parent*),
+  so a hand-written timeline would have been written to match whatever the code
+  already did. `flatten_timeline` is split out from `read_timeline` precisely so
+  it can be run against a real payload — see the note there, and `build.md` for
+  the `rustc --test` throwaway that is the only way to *execute* an assertion on
+  a machine with no MSVC.
+
 - **`skipped` is `rest`, and getting that wrong is most of what would make the
-  panel unreadable.** Five of six stages skipped on any given run means a panel
-  that drew them amber would be five-sixths alarm.
+  panel unreadable.** Nine of thirteen stages skipped on that one run means a
+  panel that drew them amber would be two-thirds alarm. `stageSaid` gives them
+  the word "skipped" so the muting reads as deliberate rather than as a stage
+  that says nothing.
+
+- **Pipeline order comes off the `Stage` record's `order`, which is the only
+  global ordering Azure DevOps gives.** A Job's own `order` is within its parent
+  and says nothing about the build, so rows sort by (stage order, start time,
+  order within stage) — with an unstarted job sorting *after* the ones that ran,
+  since a zero start time would otherwise put the work still to come above the
+  work already done. A job with no `Stage` above it sorts last, which is Azure
+  DevOps' implicit finalization job and does in fact run last, so the fallback
+  happens to be the truth rather than a shrug.
 - **Not-started and running are told apart by the start time, not the state.**
   Azure DevOps says `pending` for both a queued job and one whose agent has not
   reported. Drawing an unstarted stage celadon claims work is happening that is

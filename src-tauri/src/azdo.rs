@@ -1058,14 +1058,26 @@ fn read_timeline(cache: &mut Cache, org: &str, project: &str, build: &str) -> Re
     let v = get(cache, org, "build", &url)?;
     let empty = Vec::new();
     let records = v.get("records").and_then(|r| r.as_array()).unwrap_or(&empty);
+    Ok(flatten_timeline(records))
+}
 
-    /* Record id -> (type, name, parent), so a job can walk up to whichever
+/// The flattening itself, apart from the request that fetched it.
+///
+/// Split out for the reason `runs_with` is split from `azdo_runs`: it is the
+/// only intricate logic in this file that is not a parser, and on a machine with
+/// no MSVC the only way to *run* an assertion is to lift a pure function into a
+/// throwaway `rustc --test` (see `.claude/rules/build.md`). Verified 2026-08-27
+/// against a real 71-record RISE timeline that way — six stages, eleven jobs,
+/// four Checkpoints — which is not something a hand-written fixture would have
+/// got right, since the record order as it arrives is meaningless.
+fn flatten_timeline(records: &[serde_json::Value]) -> Vec<Stage> {
+    /* Record id -> (type, name, parent, order), so a job can walk up to whichever
        Stage it sits under however many Phases are in between.
        Owned rather than borrowed out of the parsed body: the walk below is a
-       closure over this map, and keeping `&str` into `v` means a lifetime
+       closure over this map, and keeping `&str` into the JSON means a lifetime
        argument threaded through a function whose whole job is to be read once.
        Seventy-one short strings is not a cost worth a fight. */
-    let mut by_id: HashMap<String, (String, String, String)> = HashMap::new();
+    let mut by_id: HashMap<String, (String, String, String, i64)> = HashMap::new();
     for r in records {
         let Some(id) = r.get("id").and_then(|i| i.as_str()) else { continue };
         by_id.insert(
@@ -1074,19 +1086,24 @@ fn read_timeline(cache: &mut Cache, org: &str, project: &str, build: &str) -> Re
                 text(r, "type"),
                 text(r, "name"),
                 r.get("parentId").and_then(|p| p.as_str()).unwrap_or("").to_string(),
+                r.get("order").and_then(|o| o.as_i64()).unwrap_or(0),
             ),
         );
     }
 
-    let stage_named = |from: &str| -> Option<String> {
+    /* The Stage a record sits under, and where that stage comes in the build.
+       `order` on a Stage is its position in the pipeline, which is the only
+       global ordering Azure DevOps gives us — a Job's own `order` is within its
+       parent and says nothing about the build. */
+    let stage_of = |from: &str| -> Option<(String, i64)> {
         /* Bounded by the record count rather than trusting the parent chain to
            be acyclic — this is somebody else's data structure and a cycle in it
            would be an infinite loop inside a poll. */
         let mut at = from.to_string();
         for _ in 0..by_id.len() {
-            let (kind, name, parent) = by_id.get(&at)?;
+            let (kind, name, parent, order) = by_id.get(&at)?;
             if kind == "Stage" {
-                return Some(name.clone());
+                return Some((name.clone(), *order));
             }
             at = parent.clone();
         }
@@ -1118,7 +1135,18 @@ fn read_timeline(cache: &mut Cache, org: &str, project: &str, build: &str) -> Re
         ));
     }
 
-    let mut out: Vec<(i64, i64, Stage)> = Vec::new();
+    /* Sort key: which stage, then when the job started, then its order within
+       the stage. A job with no start time sorts *after* the ones that ran rather
+       than before — a zero would put the work still to come above the work
+       already done. */
+    let key = |stage_order: i64, started: i64, order: i64| {
+        (stage_order, if started == 0 { i64::MAX } else { started }, order)
+    };
+
+    let mut out: Vec<((i64, i64, i64), Stage)> = Vec::new();
+    /* Which stages produced a job, so the pass below can tell which did not. */
+    let mut covered: Vec<String> = Vec::new();
+
     for r in records {
         if r.get("type").and_then(|t| t.as_str()) != Some("Job") {
             continue;
@@ -1126,16 +1154,32 @@ fn read_timeline(cache: &mut Cache, org: &str, project: &str, build: &str) -> Re
         let Some(id) = r.get("id").and_then(|i| i.as_str()) else { continue };
         let name = text(r, "name");
         let parent = r.get("parentId").and_then(|p| p.as_str()).unwrap_or("");
-        let name = match (stages_in_build > 1, stage_named(parent)) {
-            (true, Some(stage)) if stage != name => format!("{stage} · {name}"),
+        let under = stage_of(parent);
+        if let Some((stage, _)) = &under {
+            if !covered.contains(stage) {
+                covered.push(stage.clone());
+            }
+        }
+        /* The stage's name in front, but only when the build has more than one —
+           a single-stage build should not carry the word "Build" down every row —
+           and only when it is not simply the job's name again, which is what a
+           one-job stage usually is. */
+        let name = match (stages_in_build > 1, &under) {
+            (true, Some((stage, _))) if stage != &name => format!("{stage} · {name}"),
             _ => name,
         };
         let mut steps = tasks.remove(id).unwrap_or_default();
         steps.sort_by_key(|(order, _)| *order);
         let started = stamp(r, "startTime");
         out.push((
-            started,
-            r.get("order").and_then(|o| o.as_i64()).unwrap_or(0),
+            /* A job with no Stage above it goes last. Azure DevOps' implicit
+               finalization job is exactly this and it does run last, so the
+               fallback happens to be the truth rather than a shrug. */
+            key(
+                under.map(|(_, o)| o).unwrap_or(i64::MAX),
+                started,
+                r.get("order").and_then(|o| o.as_i64()).unwrap_or(0),
+            ),
             Stage {
                 name,
                 status: text(r, "state"),
@@ -1147,12 +1191,44 @@ fn read_timeline(cache: &mut Cache, org: &str, project: &str, build: &str) -> Re
         ));
     }
 
-    /* By when it started, and a job that has not started yet goes last rather
-       than first — a zero sorts before everything, which would put the work
-       still to come above the work already done. `order` breaks the tie, since
-       jobs queued in the same second are ordinary. */
-    out.sort_by_key(|(started, order, _)| (if *started == 0 { i64::MAX } else { *started }, *order));
-    Ok(out.into_iter().map(|(_, _, s)| s).collect())
+    /* **A stage that produced no job is still a row**, and finding that out is
+       the whole return on running this against a real build rather than a
+       fixture. Probed 2026-08-27 against RISE build 2515: thirteen stages went
+       in and five rows came out, because a stage that was skipped — or has not
+       been reached yet — has a `Stage` record and a `Phase` record and **no
+       `Job` record at all**. Nine of the thirteen were invisible.
+
+       That is tolerable for a post-mortem and wrong for the thing this panel is
+       for. On a running release pipeline you could see what had happened and not
+       what was still to come, so a thirteen-stage run showed four rows with
+       nothing to say there were nine more — which is the opposite of live
+       progress. So the stage stands in for its own missing job, carrying its own
+       state and result and no steps, because it genuinely has none. */
+    for r in records {
+        if r.get("type").and_then(|t| t.as_str()) != Some("Stage") {
+            continue;
+        }
+        let name = text(r, "name");
+        if covered.contains(&name) {
+            continue;
+        }
+        let started = stamp(r, "startTime");
+        let order = r.get("order").and_then(|o| o.as_i64()).unwrap_or(0);
+        out.push((
+            key(order, started, 0),
+            Stage {
+                name,
+                status: text(r, "state"),
+                result: text(r, "result"),
+                started_at: started,
+                finished_at: stamp(r, "finishTime"),
+                steps: Vec::new(),
+            },
+        ));
+    }
+
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.into_iter().map(|(_, s)| s).collect()
 }
 
 /// `azdo/{org}/{project}/{build}` back into its three parts.
