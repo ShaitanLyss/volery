@@ -62,7 +62,7 @@ import {
   resumePrompt,
   rouseOrder,
 } from "./rousing";
-import { dayStart } from "./usage";
+import { dayStart, turnRowKind } from "./usage";
 import type { Studio } from "./studio.svelte";
 
 export type Project = {
@@ -2548,9 +2548,17 @@ export class Skein {
          this turn spent, and `costUsd` is the session's running total. Both
          were being written here as if they were per-turn facts, which is what
          made the table unreadable — see `store.rs::record_turn`. */
+      /* And whether the row is a turn at all. `ev.num_turns` is the
+         discriminator and `usage.ts::turnRowKind` is the deciding — read here
+         rather than folded onto `lastTurn`, because this is the method that
+         holds both halves already: the folded counts on the card *and* the raw
+         `result`, which it is reading `ev.type` off two lines up. A `kind` on
+         `lastTurn` would be a third copy of a fact neither the card nor the
+         transcript ever asks about. */
       void invoke("record_turn", {
         conversationId: c.id,
         statusTier: c.tier,
+        kind: turnRowKind(ev.num_turns, c.lastTurn),
         inTokens: c.lastTurn.in,
         outTokens: c.lastTurn.out,
         cacheReadTokens: c.lastTurn.cacheRead,

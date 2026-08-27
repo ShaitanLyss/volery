@@ -880,11 +880,15 @@ export class Conversation {
    *  process has taken no other. So that is the step, and the clamp is gone
    *  along with the case it was standing in for.
    *
-   *  Note what this does not fix: a `result` carrying a cost and no `usage` at
-   *  all (a prompt the CLI answered itself — see `#claimLocalCommand`) still
-   *  books the accumulated step onto a turn with no tokens to explain it. Four
-   *  of those on 2026-08-24. They are honest about the money and misleading
-   *  about the turn. */
+   *  A `result` carrying a cost and no `usage` at all — a prompt the CLI
+   *  answered itself, see `#claimLocalCommand` — still lands here with the
+   *  accumulated step and no tokens to explain it, and that is now correct
+   *  rather than misleading: the *row* is what was wrong, and it is no longer
+   *  written as a turn. `usage.ts::turnRowKind` reads `result.num_turns` and
+   *  `Skein.#persistConv` books such a result as a `spend` row instead (schema
+   *  v25). Deliberately not folded onto this field — nothing here or in the
+   *  transcript ever asks the question, and `#persistConv` already holds both
+   *  the counts and the raw event. See `.claude/rules/usage.md`. */
   lastTurn = $state({ in: 0, out: 0, cacheRead: 0, cacheWrite: 0, usd: 0 });
   #costAtLastTurn = 0;
 
