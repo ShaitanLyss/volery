@@ -31,6 +31,7 @@
   import Usage from "./Usage.svelte";
   import Speedo from "./Speedo.svelte";
   import Status from "./Status.svelte";
+  import Spotify from "./Spotify.svelte";
   import Pipelines from "./Pipelines.svelte";
   import Reviews from "./Reviews.svelte";
   import Billboard from "./Billboard.svelte";
@@ -262,6 +263,12 @@
       <Speedo {widget} {ledger} />
     {:else if widget.kind === "status"}
       <Status {widget} {beacon} onopen={(url) => onopen?.(url)} />
+    {:else if widget.kind === "spotify"}
+      <!-- The one arm here that takes no holder: the face reaches `deck` — a
+           module-level singleton with refcounted attach/detach — directly,
+           rather than having one threaded down through `Canvas` and `App` for
+           the single instrument on this wall that nothing else reads. -->
+      <Spotify {widget} />
     {:else if widget.kind === "pipelines"}
       <Pipelines
         {widget}

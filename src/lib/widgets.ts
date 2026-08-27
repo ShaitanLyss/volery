@@ -37,6 +37,7 @@ export type WidgetKind =
   | "performance"
   | "timer"
   | "pomodoro"
+  | "spotify"
   | "usage"
   | "burn"
   | "status"
@@ -369,6 +370,50 @@ export const WIDGETS: WidgetSpec[] = [
         ],
         "ring",
       ),
+    ],
+  },
+  {
+    /* What is playing, and the transport for it.
+     *
+     * Placed here, at the end of the run of instruments that are about *the
+     * room* — a clock, a timer, a pomodoro — rather than alphabetically or at
+     * the end. This list is the order the right-click offers them in, so it is
+     * an editorial sequence rather than a set: the things you hang up because
+     * of how the afternoon feels, then the meters, then the services, then the
+     * agents' own notes, then the logs. A record player belongs with the first
+     * group and nowhere near the second.
+     *
+     * The one widget here whose face reaches its holder directly rather than
+     * being handed one. `deck.svelte.ts` is a module-level singleton with
+     * refcounted attach/detach, so the arm in `WidgetNode` is one line and no
+     * prop threads down through `Canvas` and `App` — which is right for the
+     * only instrument on the wall that nothing else needs to see. Owns no
+     * timer either: every reading is a pure function of `clock.t`. See
+     * `spotify.ts`. */
+    kind: "spotify",
+    label: "spotify",
+    note: "what is playing, and the transport for it",
+    box: { w: 248, h: 150 },
+    min: { w: 150, h: 46 },
+    params: [
+      /* Three readings, and the smallest is the reason there are three: a
+         `bar` is a strip you sit on a shelf under something else, so it drops
+         the art and the transport and keeps the title and the playhead. A knob
+         rather than a width breakpoint, because a widget's size is something
+         you chose by dragging it and guessing from the width would override
+         that. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "full", label: "art, transport and times" },
+          { value: "compact", label: "smaller art, no times" },
+          { value: "bar", label: "a strip — title and playhead" },
+        ],
+        "full",
+      ),
+      toggle("art", "album art", true),
+      toggle("progress", "the playhead", true),
     ],
   },
   {
