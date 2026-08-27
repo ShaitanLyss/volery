@@ -77,35 +77,59 @@
 //!
 //! ### And closing one again
 //!
-//! `close` is the other end, and the `spawned` table is the whole of its
-//! authority: **a card may close what it opened and nothing else.** Not the card
-//! that opened it, not a sibling, not one of the user's, and not itself. That
-//! single condition is what makes the tool safe enough to exist without a rate
-//! limit or a confirmation of its own: every card it can reach is one it asked
-//! for, so the worst it can do is undo its own work.
+//! `close` is the other end, and it used to have exactly one rule: **a card may
+//! close what it opened and nothing else.** Not the card that opened it, not a
+//! sibling, not one of the user's, and not itself. That single condition was
+//! what made the tool safe enough to exist without a rate limit or a
+//! confirmation of its own — every card it could reach was one it had asked for,
+//! so the worst it could do was undo its own work.
 //!
-//! It was written while `MAX_LIVE` still bit: a parent that had read its child's
-//! report held a slot it could not use, and its only move was to ask the user to
-//! close a card the user never opened. That cap is off now, and the tool matters
-//! more rather than less — it is the only thing that clears a finished card off
-//! the wall without the user doing it by hand, and with no cap on how many
-//! children one card may have, tidying up is the whole of what keeps the wall
-//! readable. Two further guards (`may_close`) are the difference between tidying
-//! up and losing work:
+//! **That rule was right about the danger and wrong about the wall.** It was
+//! written while `MAX_LIVE` still bit, when the case in front of it was a parent
+//! holding a slot it could not use. With the caps off, the failure this runs
+//! into first is the opposite one: nothing clears a finished card except the
+//! user doing it by hand, and on a wall of twenty cards the ones plainly worth
+//! tidying are mostly *not* the caller's. An agent that could see a dead card
+//! and not name it had one move — say so in prose and hope somebody acted — and
+//! tidying that has to be asked for in prose is tidying that does not happen.
 //!
-//! - **Set aside is refused.** It is the one flag on a card that is an explicit
-//!   human intention rather than a fact about the work — the user saying they
-//!   are coming back to it — and an agent quietly tidying that away is the app
-//!   overruling the person.
-//! - **Mid-turn is refused.** An agent part-way through does not stop cleanly:
-//!   the card would come back tomorrow being asked to pick up a turn that was
-//!   killed for a slot. Waiting costs the parent nothing.
+//! So the authority moved rather than came off. **A card may name any card, and
+//! parentage now decides who says yes rather than whether anyone can.**
+//!
+//! - **A card it opened** closes at once, exactly as before.
+//! - **Any other card** parks the `tools/call` and puts the question to the
+//!   user — which card, who wants it gone, the reason the caller gave, and what
+//!   closing actually does. Approved, it closes; declined, the caller is told
+//!   they were asked and said no. Same mechanism as `ask_user`, because it *is*
+//!   `ask_user`'s mechanism: `ask::park_and_stream` gained one parameter so
+//!   something other than a question can hold a request open. See
+//!   `.claude/rules/ask.md`.
+//!
+//! Nothing closes on an agent's word alone that did not close on it before. What
+//! changed is that a refusal became a question with a default of no, which is
+//! the difference between a tool that cannot help and one that can offer.
+//!
+//! Three cards are still refused outright rather than put to anybody, and the
+//! test of which is whether a person could usefully answer (`may_close`):
+//!
+//! - **Itself.** A card tidying itself away would take its own transcript off
+//!   the wall at the moment the user might be reading it, and it is the user's
+//!   wall.
+//! - **Set aside.** It is the one flag on a card that is an explicit human
+//!   intention rather than a fact about the work — the user saying they are
+//!   coming back to it. Asking them to approve overriding a decision they have
+//!   already made is not a question, it is nagging.
+//! - **Mid-turn.** An agent part-way through does not stop cleanly, and a person
+//!   cannot judge from a one-line question whether the turn matters either — so
+//!   putting it to them would be handing over a decision with the evidence left
+//!   out. Waiting costs the caller nothing.
 //!
 //! And what it is not: **closing is not deleting.** The row is marked rather
 //! than removed and the transcript stays where Claude Code wrote it, so the
 //! session can be adopted back (`sessions.rs`). The description says so in those
-//! words, because an agent that thinks the tool destroys work will avoid one it
-//! should use, and one that thinks it is free will use it carelessly.
+//! words, and the *question* says so again in its own, because an agent that
+//! thinks the tool destroys work will avoid one it should use — and a user asked
+//! whether to "close" something they cannot see will say no to all of them.
 //!
 //! The wall does the closing, for the reason it does the opening — and here it
 //! matters more. `Skein.close` takes the card off the wall *before* the three
@@ -301,21 +325,29 @@ pub fn close_schema() -> Value {
     json!({
         "name": CLOSE_TOOL,
         "description":
-            "Take a card **you opened** off the wall, when the work you opened it for is \
-             done. Only one of your own: not your own card, not the card that opened you, \
-             not a card of the user's — the same record that says a card was yours to open \
-             is the whole of the authority to close it.\n\n\
+            "Take a card off the wall, when the work it was opened for is done.\n\n\
+             **A card you opened closes on your say-so. Any other card asks the user \
+             first** — the call stops, they are shown which card, who wants it gone and the \
+             reason you gave, and they decide. So you may name any card on the wall, and \
+             naming one that is not yours is not an error: it is you offering, which is the \
+             right thing to do about a card that has plainly finished. What you must not do \
+             is treat that as free. Every ask spends the user's attention and parks your own \
+             turn until they answer, so offer where you would have said 'that one looks \
+             done' out loud, and not card by card down a wall you have never read.\n\n\
              **This is not deleting anything.** The card leaves the wall and its process \
              ends; the transcript stays exactly where Claude Code wrote it and the session \
              can be adopted back at any time. What you are taking is the space and the \
-             attention, which is the thing worth tidying: a child left standing after it has \
-             reported is a card the user has to read past on a wall where everything is \
+             attention, which is the thing worth tidying: a card left standing after it has \
+             reported is one the user has to read past on a wall where everything is \
              supposed to be live work.\n\n\
-             Say what you closed and why, in the reply where you closed it. A card \
-             disappearing from the wall with nothing said about it is the user losing track \
-             of their own studio. It is refused while that card is mid-turn — an agent \
-             part-way through editing a repository does not stop cleanly — and refused for \
-             a card the user has set aside, which is them saying they are coming back to it.",
+             Say what you closed and why, in the reply where you closed it — and say so too \
+             when you asked and they said no. A card disappearing from the wall with nothing \
+             said about it is the user losing track of their own studio.\n\n\
+             Three cards are refused outright rather than put to anybody: **your own**, \
+             since tidying yourself away takes your transcript off the wall while the user \
+             may be reading it; a card that is **mid-turn**, because an agent part-way \
+             through does not stop cleanly; and one the user has **set aside**, which is \
+             them saying they are coming back to it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -323,7 +355,18 @@ pub fn close_schema() -> Value {
                     "type": "string",
                     "description":
                         "Which card, by the handle `spawn` gave you or `list` reports, or by \
-                         its exact title. It must be one you opened."
+                         its exact title. It may be any card on the wall; one you did not \
+                         open is put to the user before anything happens to it."
+                },
+                "why": {
+                    "type": "string",
+                    "description":
+                        "One line on why this card should go — what it finished, or what \
+                         makes it dead. Ignored for a card you opened, and the whole of what \
+                         the user has to go on for one you did not: they are being asked \
+                         about a card they may not have looked at in hours, and a question \
+                         carrying no reason is one they can only answer by going and reading \
+                         it. Say what happened, not that it is tidy."
                 }
             },
             "required": ["card"]
@@ -331,11 +374,14 @@ pub fn close_schema() -> Value {
     })
 }
 
-/// Why a card cannot be closed, when it cannot.
+/// Why a card cannot be closed, whoever asked.
+///
+/// All three are about the card or the caller rather than about parentage, so
+/// none of them is a thing to put to the user — see `may_close`.
 #[derive(Debug, PartialEq)]
 enum NotYours {
-    /// The caller did not open it.
-    Somebody,
+    /// The caller named itself.
+    Yourself,
     /// The user parked it.
     Aside,
     /// An agent is part-way through something on it.
@@ -347,15 +393,17 @@ impl NotYours {
     /// in this file follows: an agent told only "no" tries a different phrasing.
     fn say(&self, title: &str) -> String {
         match self {
-            NotYours::Somebody => format!(
-                "{title:?} was not opened by this card, so it is not yours to close — the \
-                 record of who opened what is the whole of what this tool goes on. If it \
-                 should be closed, say so and let the user do it."
+            NotYours::Yourself => format!(
+                "{title:?} is this card. Tidying yourself away would take your own \
+                 transcript off the wall at the moment the user might be reading it, and \
+                 it is their wall — so this is the one card `close` will not name. Say you \
+                 are finished and leave the gesture to them."
             ),
             NotYours::Aside => format!(
                 "the user has set {title:?} aside, which is them saying they mean to come \
-                 back to it. That outranks tidying up, so it stays. Tell them you would have \
-                 closed it and why."
+                 back to it. That outranks tidying up, so it stays — and it is not \
+                 something to ask them about either, since they have already answered it. \
+                 Tell them you would have closed it and why."
             ),
             NotYours::Working => format!(
                 "{title:?} is mid-turn. Killing an agent part-way through does not stop it \
@@ -367,62 +415,229 @@ impl NotYours {
     }
 }
 
-/// Whether this card may take that one off the wall.
+/// What this card may do about that one.
+#[derive(Debug, PartialEq)]
+enum Reach {
+    /// It opened it. Off the wall, now.
+    Mine,
+    /// Somebody else's. Not a refusal any more — a thing to put to the user.
+    Theirs,
+    /// No, and here is why.
+    No(NotYours),
+}
+
+/// Whether this card may take that one off the wall, and on whose say-so.
 ///
 /// Pure, because it is the most consequential decision in the file and the one
-/// worth being able to assert. Three questions, and **the order is deliberate**:
-/// parentage is asked first, so a card that names somebody else's card is told
-/// only that it is not theirs. Answering "it is mid-turn" or "the user set that
-/// aside" first would be this tool reporting on a card the caller has no
-/// standing to ask about — small, but the wrong direction to leak in.
+/// worth being able to assert.
 ///
-/// - **`spawner` is the whole of the authority**, out of the same table the
-///   one-generation guard reads. A card may close what it opened and nothing
-///   else: not the card that opened *it*, not a sibling, not an unrelated card,
-///   and not itself — a card tidying itself away would take its own transcript
-///   off the wall at the moment the user might be reading it, and it is the
-///   user's wall. `None` (nobody opened it) therefore also refuses, which is
-///   what protects every card you opened yourself.
+/// **Parentage used to be the authority and is now only the question of who
+/// decides.** For the tool's first life a card could close what it opened and
+/// nothing else, full stop — which is what made the tool safe enough to exist
+/// without a confirmation of its own, since every card it could reach was one it
+/// had asked for. What that cost was the case it was written for: on a wall of
+/// twenty cards the ones worth tidying are mostly *not* the caller's, and the
+/// agent's only move was to say so in prose and hope somebody did it by hand.
+/// Tidying that has to be asked for in prose is tidying that does not happen.
+///
+/// So the bound moved rather than came off. A card may **name** any card, and
+/// naming one it did not open parks the call and puts the question to the user
+/// (`close_question`, and `.claude/rules/ask.md` for what parking is). Nothing
+/// closes on an agent's word alone that did not close on it before, and the
+/// thing that used to be a refusal is now a question with a default of no.
+///
+/// **The order changed with it.** Parentage used to be asked first,
+/// deliberately, so a card naming somebody else's card was told only that it was
+/// not theirs rather than what that card was doing. That argument was about
+/// standing — a caller with no business asking should learn nothing — and it
+/// dissolves the moment a card may name any card: the three refusals below are
+/// now things every caller is entitled to hear, and hearing "it is mid-turn" is
+/// what tells an agent to wait rather than to rephrase. They are asked first for
+/// a second reason as well, which is the stronger one: **none of them is a
+/// question worth putting to a person.**
+///
+/// - **Itself is refused outright.** A card tidying itself away would take its
+///   own transcript off the wall at the moment the user might be reading it, and
+///   it is the user's wall. Stated rather than left to fall out of `mid_turn` —
+///   a caller is inside a turn by definition while it is making this call, so
+///   the refusal would be *emergent*, and an emergent guard is one that
+///   disappears the day something unrelated changes about turn marking.
 /// - **Set aside outranks tidying up.** It is the one flag on a card that is an
 ///   explicit human intention rather than a fact about the work: the user saying
-///   they are coming back to this. See `restore.md`.
-/// - **Mid-turn is refused rather than warned about.** A parent wanting a free
-///   slot must not be able to buy one with a child's half-written file, and it
-///   cannot judge from outside whether the turn matters. Waiting costs it
-///   nothing; the alternative costs work.
+///   they are coming back to this. Asking them to approve overriding a decision
+///   they have already made is not a question, it is nagging. See `restore.md`.
+/// - **Mid-turn is refused rather than warned about or asked about.** An agent
+///   part-way through does not stop cleanly, and a person cannot judge from a
+///   one-line question whether the turn matters either — so putting it to them
+///   would be handing over a decision with the evidence left out. Waiting costs
+///   the caller nothing; the alternative costs work.
+///
+/// `spawner` is out of the same table the one-generation guard reads. `None` —
+/// nobody opened it, which is true of every card the user opened themselves — is
+/// `Theirs` rather than a refusal, and that is the whole of the change.
 fn may_close(
+    target: &str,
     spawner: Option<&str>,
     caller: &str,
     aside: bool,
     mid_turn: bool,
-) -> Option<NotYours> {
-    if spawner != Some(caller) {
-        return Some(NotYours::Somebody);
+) -> Reach {
+    if target == caller {
+        return Reach::No(NotYours::Yourself);
     }
     if aside {
-        return Some(NotYours::Aside);
+        return Reach::No(NotYours::Aside);
     }
     if mid_turn {
-        return Some(NotYours::Working);
+        return Reach::No(NotYours::Working);
     }
-    None
+    if spawner == Some(caller) {
+        Reach::Mine
+    } else {
+        Reach::Theirs
+    }
 }
 
-fn do_close(app: &AppHandle, caller: &str, args: &Value) -> String {
-    let Some(want) = args.get("card").and_then(Value::as_str) else {
-        return "no `card` was named, so nothing was closed".into();
-    };
+/// The two things the user may say, and the exact words a click sends.
+///
+/// `LEAVE_IT` is never matched on to decide anything — everything that is not
+/// `CLOSE_IT` leaves the card standing — so it is here to be *offered*, and read
+/// back only to tell a deliberate no from a person who typed something else.
+const CLOSE_IT: &str = "close it";
+const LEAVE_IT: &str = "leave it open";
 
+/// Did the user actually approve this?
+///
+/// Exact, and nothing looser, because the panel has a free-text field beside the
+/// two buttons (`Ask.svelte`) and what comes back is therefore arbitrary prose.
+/// Reading a yes out of prose is a thing that works until "yes, but let it
+/// finish the commit" or "no, close the other one" — and the failure mode is a
+/// card taken off the wall on a sentence that said not to. So the only approval
+/// is the button. Every other answer is carried back to the agent **verbatim**
+/// (`declined`) rather than flattened into a no: the user has said something,
+/// and the agent is the thing standing there able to act on it.
+///
+/// Case and surrounding space are folded, since neither is a decision.
+fn approved(answer: &str) -> bool {
+    answer.trim().eq_ignore_ascii_case(CLOSE_IT)
+}
+
+/// The most of the caller's reason that reaches the question.
+///
+/// Short on purpose: this is one line in a panel, not a report. An agent with
+/// more to say than this has somewhere better to say it — the reply where it
+/// tells the user what it closed.
+const MAX_WHY: usize = 300;
+
+/// The question that goes up when a card names a card it did not open.
+///
+/// Composed here rather than in the front end because the panel draws whatever
+/// arrives and knows nothing about cards — `AskOpened::ask` is opaque by design
+/// — and it is written to the standard `ask_user` asks are held to. The user is
+/// being asked about a card they may not have looked at in hours, so the
+/// question carries **which card**, **who wants it gone**, **why**, and **what
+/// closing actually does**; the last because "close" reads as destroying
+/// something and does not.
+fn close_question(target: &str, handle: &str, by: &str, why: Option<&str>) -> Value {
+    let said = match why {
+        Some(w) => format!(" It says: {w:?}."),
+        /* Named as an absence rather than skipped. A question that simply
+           carries no reason reads as a card that needed none, and this is the
+           one thing on the panel the user cannot go and find out for
+           themselves. */
+        None => " It gave no reason.".to_string(),
+    };
+    json!({
+        "questions": [{
+            "header": "close a card",
+            "question": format!(
+                "{by:?} wants to close {target:?} ({handle}), which is not a card it \
+                 opened.{said}\n\nClosing takes the card off the wall and ends its \
+                 process. It does not delete anything — the transcript stays where Claude \
+                 Code wrote it and the session can be adopted back at any time."
+            ),
+            "options": [
+                {
+                    "label": CLOSE_IT,
+                    "detail": "Take it off the wall. The transcript is kept."
+                },
+                {
+                    "label": LEAVE_IT,
+                    "detail": "It stays. The agent is told you said so."
+                }
+            ]
+        }]
+    })
+}
+
+/// What the caller is told when the user says no, or says something else.
+///
+/// The old refusal — "it is not yours to close, so say so and let the user do
+/// it" — cannot be reused here even though the outcome is the same, because it
+/// is no longer true: the user *was* asked. Telling an agent to go and ask them
+/// is how a card ends up asking twice about one card. What it needs instead is
+/// the fact, the words, and then to be left alone.
+fn declined(title: &str, answer: &str) -> String {
+    let said = answer.trim();
+    if said.eq_ignore_ascii_case(LEAVE_IT) {
+        return format!(
+            "the user was asked and said to leave {title:?} open, so it stays. That is an \
+             answer rather than this tool refusing you — do not ask again about the same \
+             card, and say in your reply that you offered."
+        );
+    }
+    /* Anything else at all, including an approval this function should never
+       have been handed: not the button, not closed. Written as a total function
+       rather than a partial one because its one caller is a closure on a parked
+       request, where a panic takes the request with it and the card waits out
+       the client's whole timeout for a reply that is never coming. */
+    format!(
+        "{title:?} was not closed. The user picked neither option; what they said was: \
+         {said:?}. Act on that rather than on the closing — they are talking to you about \
+         the card, and it is still on the wall."
+    )
+}
+
+/// What the caller is told when nobody ever answered.
+fn unanswered(title: &str) -> String {
+    format!(
+        "nobody answered, so {title:?} stays on the wall. Either the question stood for ten \
+         minutes or this card was dismissed while it was up. Carry on with your own \
+         judgement, and mention that you would have closed it."
+    )
+}
+
+/// Everything closing a card turns on, read from the store and the supervisor in
+/// one pass.
+struct Facts {
+    id: String,
+    title: String,
+    spawner: Option<String>,
+    aside: bool,
+    mid_turn: bool,
+    /// How many cards the caller has opened that are still on the wall, this one
+    /// included.
+    children: i64,
+}
+
+/// What the wall says about a card *right now*, addressed however the caller
+/// wrote it. `Err` carries the sentence to answer the call with.
+///
+/// **Every path reads this afresh**, the one resuming ten minutes after the
+/// question went up included. A card that was idle when the user was asked can
+/// be mid-turn by the time they answer, and an approval is approval to close
+/// that card — not a licence over whatever is running under its id now.
+fn facts(app: &AppHandle, caller: &str, want: &str) -> Result<Facts, String> {
     let Some(store) = app.try_state::<Store>() else {
-        return "the store is unavailable".into();
+        return Err("the store is unavailable".into());
     };
     let Ok(conn) = store.0.lock() else {
-        return "the store is unavailable".into();
+        return Err("the store is unavailable".into());
     };
 
     let rows = match crate::store::roster(&conn, None) {
         Ok(rows) => rows,
-        Err(e) => return format!("could not read the wall: {e}"),
+        Err(e) => return Err(format!("could not read the wall: {e}")),
     };
     /* `relay::resolve`, so a card is addressed here exactly as it is addressed
        to be sent to — including the refusal of an ambiguous title, which for
@@ -430,46 +645,158 @@ fn do_close(app: &AppHandle, caller: &str, args: &Value) -> String {
        card with the same name. */
     let target = match crate::relay::resolve(&rows, want) {
         Ok(r) => r,
-        Err(e) => return format!("{e}. Nothing was closed."),
+        Err(e) => return Err(format!("{e}. Nothing was closed.")),
     };
+    let id = target.id.clone();
+    let title = target.title.clone();
 
     /* Asked of the supervisor rather than of the row, because a row says what a
        card *is* and only the process map says whether anything is running —
        `relay.rs` reads the same pair for the same reason. */
-    let (_, mid_turn) = app
-        .state::<crate::supervisor::Supervisor>()
-        .liveness(&target.id);
-    if let Some(no) = may_close(
-        crate::store::spawner_of(&conn, &target.id).as_deref(),
-        caller,
-        crate::store::is_aside(&conn, &target.id),
+    let (_, mid_turn) = app.state::<crate::supervisor::Supervisor>().liveness(&id);
+
+    Ok(Facts {
+        spawner: crate::store::spawner_of(&conn, &id),
+        aside: crate::store::is_aside(&conn, &id),
         mid_turn,
-    ) {
-        return no.say(&target.title);
-    }
+        children: crate::store::live_children_of(&conn, caller),
+        id,
+        title,
+    })
+}
 
-    let id = target.id.clone();
-    let title = target.title.clone();
-    /* There is deliberately no `note` argument. The obvious one — a line on why
-       it was closed, stamped on the row — would be a column nothing on this wall
-       renders, and the description already asks for that sentence in the one
-       place the user will actually read it: the reply where the agent says what
-       it closed. */
-    let mine = crate::store::live_children_of(&conn, caller) - 1;
-    drop(conn);
-
+/// Take it off the wall and say so.
+///
+/// There is deliberately no `note` argument on the tool for this. The obvious
+/// one — a line on why it was closed, stamped on the row — would be a column
+/// nothing on this wall renders, and the description already asks for that
+/// sentence in the one place the user will actually read it: the reply where the
+/// agent says what it closed. `why` earns its place for the opposite reason. It
+/// is read by a person, in the question, at the moment they decide.
+fn take_off(app: &AppHandle, caller: &str, f: &Facts, asked: bool) -> String {
     let _ = app.emit(
         "close:asked",
-        CloseAsked { id: id.clone(), parent_id: caller.to_string() },
+        CloseAsked {
+            id: f.id.clone(),
+            parent_id: caller.to_string(),
+        },
     );
 
+    let title = &f.title;
+    let handle = crate::relay::handle_of(&f.id);
+    let kept = "Its transcript stays where it is and the session can be adopted back, so this \
+                is the card going away rather than the work.";
+    if asked {
+        /* No count of the caller's own children here, and that is not an
+           omission: this card was never one of them, so a number about them
+           answers a question nobody asked. What is worth saying instead is whose
+           decision it was, since the agent now owes the user a reply and has to
+           attribute it correctly. */
+        return format!(
+            "the user approved it — closing {title:?} ({handle}), a card you did not open. \
+             {kept} Say in your reply that you asked and they agreed."
+        );
+    }
+    let mine = f.children - 1;
     format!(
-        "closing {title:?} ({}) — the wall is taking it off. Its transcript stays where it \
-         is and the session can be adopted back, so this is the card going away rather than \
-         the work. You have {mine} of your own still open. Tell the user which one you closed \
-         and what it finished.",
-        crate::relay::handle_of(&id)
+        "closing {title:?} ({handle}) — the wall is taking it off. {kept} You have {mine} of \
+         your own still open. Tell the user which one you closed and what it finished."
     )
+}
+
+/// What a `close` call turns out to be.
+pub(crate) enum Closing {
+    /// Answer the tool call with this, now.
+    Now(String),
+    /// Put this question up and wait. `settle` composes the reply from whatever
+    /// comes back, and does the closing if it is a yes.
+    Ask {
+        question: Value,
+        settle: crate::ask::Settle,
+    },
+}
+
+/// The `close` tool, as far as it can be decided without a person.
+///
+/// Called from `ask.rs` directly rather than through `handle`, because this is
+/// the one tool on that server besides `ask_user` whose answer may not be ready
+/// yet. The decision has to be taken *before* the transport commits to answering
+/// on the spot, and it must be taken once — two readings of the same wall are
+/// two things to keep in step.
+pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
+    let Some(want) = args.get("card").and_then(Value::as_str) else {
+        return Closing::Now("no `card` was named, so nothing was closed".into());
+    };
+
+    let f = match facts(app, caller, want) {
+        Ok(f) => f,
+        Err(e) => return Closing::Now(e),
+    };
+
+    match may_close(&f.id, f.spawner.as_deref(), caller, f.aside, f.mid_turn) {
+        Reach::No(no) => Closing::Now(no.say(&f.title)),
+        Reach::Mine => Closing::Now(take_off(app, caller, &f, false)),
+        Reach::Theirs => {
+            let why = args
+                .get("why")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+                .map(|w| clip(w, MAX_WHY));
+            /* Who is asking, by the name the user knows it by. A handle would be
+               correct and unreadable — the whole difficulty of this question is
+               that it is about two cards at once, and one of them is the card
+               the user is looking at. */
+            let by = facts(app, caller, caller)
+                .map(|me| me.title)
+                .unwrap_or_else(|_| format!("card {}", crate::relay::handle_of(caller)));
+            let question = close_question(
+                &f.title,
+                &crate::relay::handle_of(&f.id),
+                &by,
+                why.as_deref(),
+            );
+
+            let caller = caller.to_string();
+            let id = f.id.clone();
+            let title = f.title.clone();
+            Closing::Ask {
+                question,
+                settle: Box::new(move |app, answer| {
+                    let Some(answer) = answer else {
+                        return unanswered(&title);
+                    };
+                    if !approved(answer) {
+                        return declined(&title, answer);
+                    }
+                    /* Approved — and now read the wall again rather than acting
+                       on what it said ten minutes ago. Addressed by id and not
+                       by what the caller originally wrote: the card the user was
+                       asked about is the card that closes, whatever else has
+                       arrived since answering to the same title. */
+                    let f = match facts(app, &caller, &id) {
+                        Ok(f) => f,
+                        Err(_) => {
+                            return format!(
+                                "the user approved it, but {title:?} is no longer on the \
+                                 wall — it went while the question was up. Nothing to do."
+                            )
+                        }
+                    };
+                    match may_close(&f.id, f.spawner.as_deref(), &caller, f.aside, f.mid_turn) {
+                        /* An approval does not survive the card having started
+                           work in the meantime, and that is the whole reason the
+                           re-read is here rather than a tidiness. */
+                        Reach::No(no) => format!(
+                            "the user approved it, but it cannot be closed now: {}",
+                            no.say(&f.title)
+                        ),
+                        _ => take_off(app, &caller, &f, true),
+                    }
+                }),
+            }
+        }
+    }
 }
 
 /// Where a `project` argument says the child stands, decided against the wall's
@@ -749,10 +1076,16 @@ fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// The roster chain's half of this server's two tools, which is one of them.
+///
+/// `close` is deliberately absent and is routed by `ask.rs` before the chain is
+/// reached, because it may have to park — see `close`. Routing it here as well
+/// would be a second path to the same decision and the one that drifts is the
+/// one nobody is looking at, so there is exactly one; `the_two_ends_are_routed`
+/// asserts that the tool the server advertises is the tool that dispatch names.
 pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) -> Option<String> {
     match tool {
         SPAWN_TOOL => Some(do_spawn(app, conversation_id, args)),
-        CLOSE_TOOL => Some(do_close(app, conversation_id, args)),
         _ => None,
     }
 }
@@ -823,82 +1156,274 @@ mod tests {
         assert!(d.contains("Omit it and the card stands where you do"), "{d}");
     }
 
-    /// The authority, and the whole of it. Written as a table because the
+    /// The authority, and what is left of it. Written as a table because the
     /// interesting cases are the ones that are *nearly* allowed.
+    ///
+    /// Parentage decides who says yes, not whether the answer can be yes at all
+    /// — so the row that used to be the whole point of this test (a card naming
+    /// a card it did not open) is now `Theirs`, which is a question rather than
+    /// a refusal.
     #[test]
-    fn a_card_may_close_what_it_opened_and_nothing_else() {
+    fn a_card_closes_its_own_and_offers_the_rest() {
         let me = "parent";
-        assert_eq!(may_close(Some(me), me, false, false), None);
+        let it = "child";
+        assert_eq!(may_close(it, Some(me), me, false, false), Reach::Mine);
 
         /* A sibling — opened by the same card, but not by this one. */
-        assert_eq!(may_close(Some("other"), me, false, false), Some(NotYours::Somebody));
+        assert_eq!(may_close(it, Some("other"), me, false, false), Reach::Theirs);
         /* The card that opened *me*. Parentage runs one way. */
-        assert_eq!(may_close(Some("grandparent"), me, false, false), Some(NotYours::Somebody));
-        /* Itself, which is what a card asking to be tidied away looks like from
-           here: nothing opened it, or something else did. */
-        assert_eq!(may_close(None, me, false, false), Some(NotYours::Somebody));
-        /* And every card the user opened, which is nearly all of them. */
-        assert_eq!(may_close(None, "anyone", false, false), Some(NotYours::Somebody));
+        assert_eq!(
+            may_close("grandparent", Some("great"), me, false, false),
+            Reach::Theirs
+        );
+        /* And every card the user opened, which is nearly all of them and is
+           the case the whole change is for. */
+        assert_eq!(may_close(it, None, me, false, false), Reach::Theirs);
+        assert_eq!(may_close(it, None, "anyone", false, false), Reach::Theirs);
     }
 
-    /// Both of these are cards it *did* open, so parentage is not what stops it.
+    /// The one card that is refused rather than offered, and it is the caller.
+    ///
+    /// Asserted for its own sake because the refusal would otherwise be
+    /// *emergent* — a card is inside a turn while it is making this call, so
+    /// `mid_turn` would catch it today and stop catching it the day anything
+    /// about turn marking changes.
     #[test]
-    fn a_child_can_still_be_out_of_reach() {
+    fn a_card_may_not_tidy_itself_away() {
         let me = "parent";
-        assert_eq!(may_close(Some(me), me, true, false), Some(NotYours::Aside));
-        assert_eq!(may_close(Some(me), me, false, true), Some(NotYours::Working));
+        assert_eq!(
+            may_close(me, Some("whoever"), me, false, false),
+            Reach::No(NotYours::Yourself)
+        );
+        /* Even where every other signal says it would be fine. */
+        assert_eq!(may_close(me, Some(me), me, false, false), Reach::No(NotYours::Yourself));
     }
 
-    /// The order is not cosmetic: a card naming somebody else's card learns only
-    /// that it is not theirs, rather than being told what that card is doing.
+    /// Both of these are refusals rather than questions, and they hold for any
+    /// card — the caller's own, a sibling's, one of the user's. Putting either
+    /// to a person would be asking them to override a decision they have already
+    /// made, or to judge a turn they cannot see.
     #[test]
-    fn a_stranger_is_told_nothing_about_the_card_it_named() {
-        let no = may_close(Some("other"), "parent", true, true);
-        assert_eq!(no, Some(NotYours::Somebody));
-        let said = no.unwrap().say("somebody else's work");
-        assert!(!said.contains("aside"), "{said}");
-        assert!(!said.contains("mid-turn"), "{said}");
+    fn aside_and_mid_turn_are_refused_whoever_asks() {
+        let me = "parent";
+        for spawner in [Some(me), Some("other"), None] {
+            assert_eq!(
+                may_close("card", spawner, me, true, false),
+                Reach::No(NotYours::Aside)
+            );
+            assert_eq!(
+                may_close("card", spawner, me, false, true),
+                Reach::No(NotYours::Working)
+            );
+        }
+    }
+
+    /// The order, which flipped with the authority. Parentage used to be asked
+    /// first so that a stranger learned nothing about the card it named; now
+    /// every caller may name any card, so the useful answer is the specific one
+    /// — "wait for it" rather than "not yours", which is the difference between
+    /// an agent that waits and one that rephrases.
+    #[test]
+    fn a_card_that_cannot_go_says_why_rather_than_who() {
+        let no = may_close("card", Some("other"), "parent", false, true);
+        assert_eq!(no, Reach::No(NotYours::Working));
+        let Reach::No(no) = no else { unreachable!() };
+        let said = no.say("somebody else's work");
+        assert!(said.contains("mid-turn"), "{said}");
+        assert!(said.contains("Wait"), "{said}");
     }
 
     /// Every refusal carries its reasoning and a way forward, per `MAX_HOPS`.
     #[test]
     fn every_refusal_says_what_to_do_instead() {
-        for no in [NotYours::Somebody, NotYours::Aside, NotYours::Working] {
+        for no in [NotYours::Yourself, NotYours::Aside, NotYours::Working] {
             let said = no.say("the card");
             assert!(said.contains("the card"), "{said}");
             /* Either hand it back to the user, or wait — never a bare no. */
             assert!(
-                said.contains("user") || said.contains("Wait"),
+                said.contains("user")
+                    || said.contains("them")
+                    || said.contains("Wait"),
                 "a refusal with no way forward gets rephrased and retried: {said}"
             );
         }
+        /* And the two that are refusals rather than questions have to say so,
+           or an agent reads them as the ask having gone against it and reports
+           to the user that they declined something they were never shown. */
+        assert!(NotYours::Aside.say("x").contains("already answered it"));
     }
 
-    /// The two things an agent has to understand before calling this, and the
+    /// Only the button is a yes.
+    ///
+    /// The panel has a free-text field beside the options, so the answer is
+    /// arbitrary prose — and a card must not come off the wall on a sentence
+    /// that said not to.
+    #[test]
+    fn nothing_but_the_button_approves() {
+        assert!(approved(CLOSE_IT));
+        /* Case and space are folded; neither is a decision. */
+        assert!(approved("  Close It  "));
+        assert!(approved("CLOSE IT"));
+
+        assert!(!approved(LEAVE_IT));
+        assert!(!approved(""));
+        /* The sentences that would have been read as approval by anything
+           looking for a yes inside prose. Each of these means something the
+           agent has to act on, and none of them means close it. */
+        assert!(!approved("yes, but let it finish the commit first"));
+        assert!(!approved("yes"));
+        assert!(!approved("close it after the tests pass"));
+        assert!(!approved("no, close it? no"));
+        assert!(!approved("don't close it"));
+    }
+
+    /// What the user is asked has to stand on its own — they may not have looked
+    /// at this card in hours, and the panel is all they get.
+    #[test]
+    fn the_question_carries_both_cards_the_reason_and_the_stakes() {
+        let q = close_question("sink: the push chip", "7081456c", "tidying up", Some("it shipped"));
+        let text = q["questions"][0]["question"].as_str().unwrap();
+        /* Which card, and by an address they can go and look at. */
+        assert!(text.contains("sink: the push chip"), "{text}");
+        assert!(text.contains("7081456c"), "{text}");
+        /* Who wants it gone — one of these two cards is the one they are
+           looking at, and the question is unreadable without saying which. */
+        assert!(text.contains("tidying up"), "{text}");
+        /* Why. */
+        assert!(text.contains("it shipped"), "{text}");
+        /* And that this is not destroying anything, because "close" reads as
+           though it is and a user who thinks so answers no to all of them. */
+        assert!(text.contains("does not delete"), "{text}");
+        assert!(text.contains("adopted back"), "{text}");
+
+        let opts = q["questions"][0]["options"].as_array().unwrap();
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0]["label"], CLOSE_IT);
+        assert_eq!(opts[1]["label"], LEAVE_IT);
+    }
+
+    /// A missing reason is drawn as an absence rather than left out. A question
+    /// carrying no reason at all reads as a card that needed none.
+    #[test]
+    fn a_question_with_no_reason_says_so() {
+        let q = close_question("a card", "abcd1234", "somebody", None);
+        let text = q["questions"][0]["question"].as_str().unwrap();
+        assert!(text.contains("gave no reason"), "{text}");
+    }
+
+    /// `normalizeAsk` is the front end's, and this payload has to survive it —
+    /// one question, two options, both with a label. The shape is asserted here
+    /// because nothing in Rust reads it back and a typo would reach the user as
+    /// a panel with nothing to click.
+    #[test]
+    fn the_question_is_shaped_the_way_the_panel_reads_one() {
+        let q = close_question("a card", "abcd1234", "somebody", None);
+        let qs = q["questions"].as_array().expect("questions is a list");
+        assert_eq!(qs.len(), 1);
+        assert!(qs[0]["header"].as_str().is_some_and(|h| !h.is_empty()));
+        assert!(qs[0]["question"].as_str().is_some_and(|t| !t.is_empty()));
+        for o in qs[0]["options"].as_array().unwrap() {
+            assert!(o["label"].as_str().is_some_and(|l| !l.trim().is_empty()));
+            assert!(o["detail"].as_str().is_some_and(|d| !d.trim().is_empty()));
+        }
+    }
+
+    /// A no is a decision the user made, and the agent has to be able to tell it
+    /// from this tool refusing — otherwise it goes and asks them in prose for
+    /// the thing it has just been told about.
+    #[test]
+    fn a_decline_reads_as_an_answer_rather_than_a_refusal() {
+        let said = declined("a card", LEAVE_IT);
+        assert!(said.contains("a card"), "{said}");
+        assert!(said.contains("was asked"), "{said}");
+        assert!(said.contains("do not ask again"), "{said}");
+    }
+
+    /// Anything that is not one of the two buttons is carried back word for
+    /// word. The user has said something, and the agent is the thing standing
+    /// there able to act on it — flattening it to "declined" throws away the
+    /// only part that was worth having.
+    #[test]
+    fn what_the_user_typed_reaches_the_agent() {
+        let said = declined("a card", "close the other one, this one is still building");
+        assert!(said.contains("close the other one, this one is still building"), "{said}");
+        assert!(said.contains("still on the wall"), "{said}");
+        /* Including — defensively — an approval, which this function's caller
+           never hands it. It is total rather than partial because that caller is
+           a closure on a parked HTTP request, where a panic loses the reply and
+           the card waits out the client's whole timeout for nothing. */
+        assert!(!declined("a card", CLOSE_IT).is_empty());
+    }
+
+    /// Nobody answered is its own outcome and not a no: the agent should say it
+    /// would have closed the card, rather than reporting that the user declined.
+    #[test]
+    fn an_unanswered_question_is_not_a_refusal() {
+        let said = unanswered("a card");
+        assert!(said.contains("a card"), "{said}");
+        assert!(said.contains("nobody answered"), "{said}");
+        assert!(said.contains("own judgement"), "{said}");
+    }
+
+    /// The three things an agent has to understand before calling this, and the
     /// one it has to be told to do afterwards.
     #[test]
     fn closing_says_what_it_is_and_what_it_is_not() {
         let s = close_schema();
         assert_eq!(s["name"], CLOSE_TOOL);
         let d = s["description"].as_str().unwrap();
-        /* Without this it reaches for the tool on any card it can name. */
-        assert!(d.contains("you opened"), "{d}");
+        /* The new shape, and it has to be legible in both halves: it may name
+           any card, *and* naming one that is not its own costs a question. An
+           agent that reads only the first half tidies a wall it has not read. */
+        assert!(d.contains("closes on your say-so"), "{d}");
+        assert!(d.contains("asks the user first"), "{d}");
+        assert!(d.contains("parks your own"), "{d}");
         /* Without this it either avoids a tool it should use, believing it
            destroys work, or uses it carelessly, believing it is free. */
         assert!(d.contains("not deleting"), "{d}");
         assert!(d.contains("adopted back"), "{d}");
         /* And the wall must not lose a card silently — the same sentence
-           `spawn` owes for the same reason, one direction over. */
+           `spawn` owes for the same reason, one direction over. Now owed for
+           the refusal too, since an offer the user declined is also a thing
+           that happened to their wall. */
         assert!(d.contains("Say what you closed"), "{d}");
+        assert!(d.contains("said no"), "{d}");
+        /* The three that are refused outright have to be named, or the agent
+           learns them one failed call at a time. */
+        assert!(d.contains("mid-turn"), "{d}");
+        assert!(d.contains("set aside"), "{d}");
     }
 
-    /// `spawn` and `close` are two ends of one thing and one handler answers
-    /// both; a tool the server lists and cannot route is a call that comes back
-    /// as "no such tool".
+    /// The reason is the whole of what the user has to go on, so the field has
+    /// to say so — an optional argument described as optional is one a model
+    /// leaves out.
     #[test]
-    fn the_two_ends_are_both_routed() {
+    fn the_reason_field_says_who_reads_it() {
+        let d = close_schema()["inputSchema"]["properties"]["why"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(d.contains("may not have looked at"), "{d}");
+        assert!(d.contains("what it finished"), "{d}");
+    }
+
+    /// `spawn` and `close` are two ends of one thing, and they are routed in two
+    /// different places — `close` may have to park, so `ask.rs` reaches it
+    /// before the roster chain and `handle` deliberately does not know it. A
+    /// tool the server lists and nobody routes is a call that comes back as "no
+    /// such tool", so the names are asserted against the schemas that advertise
+    /// them.
+    #[test]
+    fn the_two_ends_are_routed() {
         assert_ne!(SPAWN_TOOL, CLOSE_TOOL);
+        assert_eq!(spawn_schema()["name"], SPAWN_TOOL);
+        assert_eq!(close_schema()["name"], CLOSE_TOOL);
         assert_eq!(close_schema()["inputSchema"]["required"][0], "card");
+        /* `why` is offered and not required: a card closing one of its own
+           never needs it, and demanding it there would be a field written to
+           satisfy a schema. */
+        assert_eq!(close_schema()["inputSchema"]["required"].as_array().unwrap().len(), 1);
+        assert!(close_schema()["inputSchema"]["properties"]["why"].is_object());
     }
 
     fn wall() -> Vec<crate::store::ProjectRow> {

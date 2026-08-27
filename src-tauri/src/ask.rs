@@ -148,6 +148,21 @@ pub struct Asks {
 struct AskOpened {
     conversation_id: String,
     ask_id: String,
+    /// Whether Skein composed this question rather than the agent asking it.
+    ///
+    /// One bit, and it exists to keep the transcript honest rather than to
+    /// change how the panel draws. An agent's `ask_user` is half of an exchange:
+    /// the call is in the transcript, your reply is drawn under it, and
+    /// `history.ts` finds both again off disk because the call's tool name is
+    /// `SKEIN_ASK_TOOL`. A question *Skein* put up — `close` wanting approval
+    /// for a card the caller did not open — has no such call. The agent's
+    /// transcript holds a `close` tool call and its result, and the result is
+    /// composed here from the answer rather than being the answer. So drawing
+    /// your click as a line of speech would put a line on a live card that
+    /// vanishes the moment it is restored, which is precisely the seam
+    /// `history.ts` exists to avoid. The wall reads this and stays quiet; the
+    /// tool result is the record, and it is the same one either way.
+    ours: bool,
     /// The tool call's arguments, exactly as they arrived.
     ///
     /// Rust decides nothing about what a question *is* — `asking.ts` owns the
@@ -366,6 +381,7 @@ fn open_ask(
     asks: &Asks,
     conversation_id: &str,
     args: &Value,
+    ours: bool,
 ) -> (String, Receiver<String>) {
     let ask_id = crate::store::uuid_v4();
     let (tx, rx) = mpsc::channel::<String>();
@@ -377,6 +393,7 @@ fn open_ask(
             conversation_id: conversation_id.to_string(),
             ask_id: ask_id.clone(),
             ask: args.clone(),
+            ours,
         },
     );
 
@@ -402,6 +419,22 @@ fn chunk(w: &mut dyn Write, body: &str) -> std::io::Result<()> {
     w.flush()
 }
 
+/// What the answer *means*, for a parked call that is not `ask_user`.
+///
+/// `ask_user` needs none of this: the reply to the agent is the answer, word for
+/// word, because the agent asked the question and the words are the whole of
+/// what it wanted. `close` is the other shape — Skein composed the question, so
+/// the answer is a decision rather than a message, and something has to turn it
+/// into the sentence the tool call returns *and do the closing on the way*.
+/// That belongs to the tool, not to the transport, which is why this is a
+/// closure the caller supplies rather than a second arm in here.
+///
+/// `None` for the answer is the question never having been answered — the ten
+/// minutes ran out, or the card was dismissed. Passed rather than the sentence
+/// itself, so nothing downstream has to match on Skein's own prose to find out
+/// whether a person actually decided anything.
+pub(crate) type Settle = Box<dyn FnOnce(&AppHandle, Option<&str>) -> String + Send>;
+
 /// Park a question on its own request until the UI answers, speaking every
 /// `FEED_EVERY` so the client is still listening when it does.
 fn park_and_stream(
@@ -412,8 +445,9 @@ fn park_and_stream(
     args: &Value,
     progress: Option<Value>,
     req: tiny_http::Request,
+    settle: Option<Settle>,
 ) {
-    let (ask_id, rx) = open_ask(app, asks, conversation_id, args);
+    let (ask_id, rx) = open_ask(app, asks, conversation_id, args, settle.is_some());
     let forget = || {
         asks.pending.lock().unwrap().remove(&ask_id);
     };
@@ -494,11 +528,22 @@ fn park_and_stream(
     };
 
     let real = answer != TIMED_OUT && answer != DISMISSED;
+    /* The settle runs *here*, on the parking thread, after the answer is in and
+       before the reply goes out — which is what makes a `close` genuinely
+       deferred rather than merely delayed. It is also the last moment at which
+       the wall is still current: ten minutes have passed, and the card the user
+       was asked about may since have started a turn, been set aside, or gone.
+       So `spawn::close` re-reads all of it rather than trusting what it saw
+       when it composed the question. */
+    let reply = match settle {
+        Some(decide) => decide(app, if real { Some(answer.as_str()) } else { None }),
+        None => answer.clone(),
+    };
     let delivered = chunk(
         &mut *w,
         &sse(&json!({
             "jsonrpc": "2.0", "id": id,
-            "result": { "content": [{ "type": "text", "text": answer }] }
+            "result": { "content": [{ "type": "text", "text": reply }] }
         })),
     )
     .and_then(|()| w.write_all(b"0\r\n\r\n"))
@@ -689,13 +734,13 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                         args,
                         progress,
                     } => {
-                        /* Only `ask_user` parks, and only a park needs a stream:
-                           everything else is answered on this thread and returns
-                           in milliseconds, well inside every clock either side
-                           of this connection has. Which is also why the roster
-                           tools were put on this server rather than beside it —
-                           a call that is not a question costs nothing here, and
-                           the client already trusts this endpoint. */
+                        /* Two tools park, and everything else is answered on
+                           this thread and returns in milliseconds, well inside
+                           every clock either side of this connection has. Which
+                           is also why the roster tools were put on this server
+                           rather than beside it — a call that is not a question
+                           costs nothing here, and the client already trusts this
+                           endpoint. */
                         if tool == "ask_user" {
                             let asks = app.state::<Asks>();
                             park_and_stream(
@@ -706,7 +751,47 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 &args,
                                 progress,
                                 req,
+                                None,
                             );
+                            return;
+                        }
+
+                        /* `close` is the second, and only sometimes: a card
+                           closing one of its own is answered at once as it
+                           always was, and only a card naming somebody else's
+                           puts a question up and waits. So the decision cannot
+                           live in the roster chain below — that arm has already
+                           committed to answering — and it must not be taken
+                           twice either, since two readings of the same wall are
+                           two things to keep in step. `spawn::close` decides
+                           once and hands back what to do about it. */
+                        if tool == crate::spawn::CLOSE_TOOL {
+                            match crate::spawn::close(&app, &conversation_id, &args) {
+                                crate::spawn::Closing::Now(said) => {
+                                    respond(
+                                        req,
+                                        json!({
+                                            "jsonrpc": "2.0", "id": id,
+                                            "result": { "content": [
+                                                { "type": "text", "text": said }
+                                            ] }
+                                        }),
+                                    );
+                                }
+                                crate::spawn::Closing::Ask { question, settle } => {
+                                    let asks = app.state::<Asks>();
+                                    park_and_stream(
+                                        &app,
+                                        &asks,
+                                        &conversation_id,
+                                        &id,
+                                        &question,
+                                        progress,
+                                        req,
+                                        Some(settle),
+                                    );
+                                }
+                            }
                             return;
                         }
 

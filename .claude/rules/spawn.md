@@ -261,50 +261,116 @@ card passes under it rather than across its title, with no rim arithmetic to get
 
 ## Closing one again
 
-`close`, and the `spawned` table is the whole of its authority: **a card may close what it
-opened and nothing else.** Not the card that opened it, not a sibling, not one of the user's,
-and not itself. One condition, out of the same table the one-generation guard reads — which is
-what lets this tool exist with no rate limit and no confirmation of its own, since every card
-it can reach is one it asked for — the worst it can do is undo its own work.
+`close` had one rule for its whole first life, out of the `spawned` table: **a card may close
+what it opened and nothing else.** Not the card that opened it, not a sibling, not one of the
+user's, and not itself. One condition, read out of the same table the one-generation guard
+reads — which is what let the tool exist with no rate limit and no confirmation of its own,
+since every card it could reach was one it had asked for. The worst it could do was undo its
+own work.
 
-It was written while `MAX_LIVE` still bit: a parent that had read its child's report held a
-slot it could not use, and its only move was to ask the user to close a card the user never
-opened. With both caps off the tool matters more rather than less — it is the only thing that
-takes a finished card off the wall without the user doing it by hand, and on a wall with no
-cap on it, tidying up is the whole of what keeps the thing readable. Which is also the wall's
-side of the bet: what replaced the numbers is that you can see it, so what an agent owes is to
-leave nothing standing that has stopped meaning anything.
+**That rule was right about the danger and wrong about the wall**, and the way it was wrong is
+worth keeping because it is a shape that recurs. It was written while `MAX_LIVE` still bit,
+when the case in front of it was a parent holding a slot it could not use — so the authority
+was drawn around exactly that case and no wider. With both caps off, the failure the tool runs
+into *first* is the opposite one: nothing clears a finished card except the user doing it by
+hand, and on a wall of twenty cards the ones plainly worth tidying are mostly **not** the
+caller's. An agent looking at a card that has obviously stopped meaning anything had one move
+— say so in prose, and hope somebody acted on it. Tidying that has to be asked for in prose is
+tidying that does not happen, which is the wall filling up with dead cards while every card on
+it is behaving correctly.
 
-- **`may_close` is pure and the order in it is deliberate.** Parentage first, so a card that
-  names somebody else's card is told only that it is not theirs — answering "it is mid-turn" or
-  "the user set that aside" first would be this tool reporting on a card the caller has no
-  standing to ask about. Small, but the wrong direction to leak in, and there is a test.
-- **Set aside is refused.** It is the one flag on a card that is an explicit human intention
-  rather than a fact about the work (`restore.md`), and an agent tidying it away is the app
-  overruling the person quietly.
-- **Mid-turn is refused rather than warned about.** An agent part-way through does not stop
-  cleanly — a file half written, a command that may or may not have run — and the wall would
-  come back tomorrow asking that card to pick up a turn that was killed for a slot. The parent
-  cannot judge from outside whether the turn matters, and waiting costs it nothing. Asked of
-  the supervisor rather than of the row, because only the process map knows what is running.
-- **Closing is not deleting**, and the description says so in those words. The row is marked
-  and the transcript stays where Claude Code wrote it, so the session can be adopted back. An
-  agent that believes the tool destroys work will avoid one it should use; one that believes it
-  is free will use it carelessly.
-- **Only its own children, which now means only its own generation.** With `ONE_GENERATION`
-  off a card can have grandchildren, and it cannot close one: `spawner_of` names the middle
-  card, not it. That is the right answer rather than a gap — the authority is "you opened it",
-  and a card that did not open something has no standing over it however far down the chain it
-  is. What it can do is close the middle card, and the wall does the rest: the grandchildren
-  stay standing on their own, and their roots retract, because a root whose parent has left is
-  a pair `familiesOf` drops.
+So the authority moved rather than came off. **A card may name any card, and parentage decides
+who says yes rather than whether anyone can.**
+
+- **A card it opened** closes at once, exactly as before. Nothing about that path changed.
+- **Any other card** parks the `tools/call` and puts the question to the user. Approved, it
+  closes; declined, the caller is told it was asked and the answer was no.
+
+Nothing closes on an agent's word alone that did not close on it before. What changed is that
+a refusal became a question with a default of no — the difference between a tool that cannot
+help and one that can offer. The general shape, since it is not really about `close`: **when a
+guard exists to stop an agent acting unilaterally, the alternative to refusing is asking, and
+refusing is only right where there is nobody who could usefully answer.** Which is the test the
+three remaining refusals are chosen by.
+
+- **`may_close` is pure, three-valued, and the order in it changed with the authority.**
+  `Reach::Mine`, `Reach::Theirs`, `Reach::No(_)`. Parentage used to be asked *first*, so a card
+  naming somebody else's card was told only that it was not theirs — answering "it is mid-turn"
+  first would have been the tool reporting on a card the caller had no standing to ask about.
+  That argument was about standing and **it dissolves the moment a card may name any card**: a
+  caller entitled to name it is entitled to know why it cannot go, and "wait for it to finish"
+  is what makes an agent wait where "not yours" makes it rephrase. So the three refusals are
+  asked first now, and for a second reason that is the stronger one — none of them is a
+  question worth putting to a person.
+- **Itself is refused outright, and is stated rather than left to fall out.** A card tidying
+  itself away would take its own transcript off the wall at the moment the user might be
+  reading it, and it is the user's wall. `mid_turn` would catch it today, since a caller is
+  inside a turn by definition while making this call — which is exactly why it is written down
+  separately. An *emergent* guard is one that disappears the day something unrelated changes
+  about turn marking, and nothing would fail loudly when it did.
+- **Set aside is refused, and deliberately not asked about.** It is the one flag on a card that
+  is an explicit human intention rather than a fact about the work (`restore.md`). Asking the
+  user to approve overriding a decision they have already made is not a question, it is
+  nagging — so the refusal says the user has *already answered it*, or an agent reads the
+  refusal as the ask having gone against it and reports a decline that never happened.
+- **Mid-turn is refused rather than warned about or asked about.** An agent part-way through
+  does not stop cleanly — a file half written, a command that may or may not have run — and the
+  wall would come back tomorrow asking that card to pick up a turn that was killed for a slot.
+  The caller cannot judge from outside whether the turn matters, and **neither can the user from
+  a one-line question**, which is what rules it out as something to ask: putting it to them
+  would be handing over a decision with the evidence left out. Asked of the supervisor rather
+  than of the row, because only the process map knows what is running.
+- **The wall is re-read when the answer comes back, and that is not tidiness.** Ten minutes may
+  pass between the question going up and the click. A card that was idle when the user was asked
+  can be mid-turn by the time they answer, so `facts` runs again inside the settle and
+  `may_close` is asked again — an approval is approval to close *that card*, not a licence over
+  whatever is running under its id now. It re-resolves **by id**, not by the address the caller
+  originally wrote, so a second card that has since arrived answering to the same title cannot
+  inherit the approval. A card that has gone in the meantime answers that there is nothing to do.
+- **Only the button is a yes.** The panel has a free-text field beside the options
+  (`Ask.svelte`), so what comes back is arbitrary prose, and `approved` matches the exact label
+  and nothing else. Reading a yes out of prose works until "yes, but let it finish the commit"
+  or "no, close the other one" — and the failure is a card taken off the wall on a sentence that
+  said not to. Every other answer is carried back to the agent **verbatim** rather than
+  flattened into a no: the user has said something, and the agent is the thing standing there
+  able to act on it. A deliberate "leave it open" is told apart from typed prose, because an
+  agent that cannot tell a decision from a refusal goes and asks in prose for the thing it has
+  just been told.
+- **The refusal text could not be reused for the decline.** "It is not yours to close, so say so
+  and let the user do it" is the same *outcome* and a false *statement* once the user has been
+  asked — and an agent told to go and ask them is an agent that asks twice about one card. The
+  decline says it was put to them, what they said, and to stop.
+- **`why` earns its place where `note` did not.** There is still no `note` argument — a line on
+  why it was closed, stamped on the row, would be a column nothing on this wall renders, and the
+  sentence belongs in the reply the description asks for. `why` is the opposite case: it is read
+  by a *person*, in the question, at the moment they decide, about a card they may not have
+  looked at in hours. Optional, because a card closing one of its own never needs it, and named
+  as an absence in the question when it is missing — a question that simply carries no reason
+  reads as a card that needed none.
+- **Only its own children, which now means only its own generation** — for the *immediate* path.
+  With `ONE_GENERATION` off a card can have grandchildren, and `spawner_of` names the middle
+  card rather than it, so closing one is an ask like any other card's. That is the right answer
+  rather than a gap. What it can still do unilaterally is close the middle card, and the wall
+  does the rest: the grandchildren stay standing on their own and their roots retract, because a
+  root whose parent has left is a pair `familiesOf` drops.
 - **The address is `relay::resolve`**, the same function `send` uses — including its refusal of
   an ambiguous title, which here is the difference between closing the right card and closing
   one that shares its name. `resolve` became `pub(crate)` for this: what a written address
   means is one question and must have one answer.
-- **No `note` argument.** The obvious one — a line on why it was closed, stamped on the row —
-  would be a column nothing on this wall renders. The sentence belongs in the reply, which the
-  description asks for and which the user actually reads.
+- **Closing is not deleting**, and now three things say so in those words: the description, the
+  module note, and — the one that matters most — **the question itself**. An agent that believes
+  the tool destroys work will avoid one it should use; a *user* who thinks "close" means destroy
+  says no to every one of them, and they are the one who cannot go and check.
+- **`close` is routed by `ask.rs` and not by `spawn::handle`.** It is the second tool on that
+  server whose answer may not be ready yet, so the decision has to be taken before the transport
+  commits to answering on the spot. `handle` deliberately does not know `CLOSE_TOOL` any more —
+  two routes to one decision is one route that drifts, and the one nobody is looking at is the
+  one that does.
+- **What bounds the asking is the caller's own turn.** A close that asks parks the calling
+  card's `tools/call`, so a card can have at most one outstanding question and pays for it with
+  the turn it is in. That is the same bound `ask_user` has and it is a real one — a loop of
+  close-asks is a card that never gets to make a second call. It is not a bound on *nuisance*,
+  which is why the description spends a paragraph on when to offer rather than relying on it.
 - **The wall does the closing**, for the reason it does the opening and more so: `Skein.close`
   takes the card off the wall *before* its three bookkeeping calls, which is a bug that shipped
   once already (`restore.md`), and a second path in Rust would have to keep remembering it. The

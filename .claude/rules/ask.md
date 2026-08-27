@@ -139,6 +139,51 @@ Consequence for `classify.ts`: the `asked` ending is currently unreachable via t
 amber means *has been waiting too long* — urgency decays with neglect against a single
 one-second `clock` rune shared by all cards.
 
+#### Parking a call that is not a question (`Settle`, `ours`)
+
+`ask_user` needed the parking, but nothing about the parking is specific to a question, and
+`close` turned out to want it — a card naming a card it did not open now asks the user instead
+of refusing (`.claude/rules/spawn.md`). Rather than a second listener with a second timeout and
+a second set of keep-alive arithmetic, `park_and_stream` gained one parameter.
+
+- **`settle` is what the answer *means*, and it is the caller's business rather than the
+  transport's.** `ask_user` passes `None`: the reply to the agent is the answer, word for word,
+  because the agent wrote the question and the words are the whole of what it wanted. `close`
+  passes a closure — Skein composed that question, so the answer is a *decision*, and something
+  has to turn it into the sentence the tool call returns **and do the closing on the way**. The
+  boundary drawn is the same one this file draws everywhere else: `ask.rs` stays the transport
+  and decides nothing about what any tool means.
+- **It runs on the parking thread, after the answer and before the reply.** That is what makes
+  a deferred close genuinely deferred rather than merely delayed, and it is also the last moment
+  at which the wall is still current — see `spawn.md` for why `close` re-reads everything there
+  rather than trusting what it saw ten minutes earlier.
+- **Unanswered is passed as `None`, not as the sentence.** The timeout and the dismissal each
+  have prose of their own (`TIMED_OUT`, `DISMISSED`), and a settle that had to match on Skein's
+  own wording to find out whether a person decided anything would be the same duplicated-string
+  bargain `answerNote` strikes with the CLI — worth it there, where there is no alternative, and
+  gratuitous here, where a boolean crosses the same call.
+- **The routing is in the dispatch arm, not in the roster chain.** `spawn::handle` deliberately
+  no longer knows `CLOSE_TOOL`: the chain below has already committed to answering on the spot,
+  so a tool that *might* park has to be reached before it. And the decision must be taken once —
+  two readings of the same wall are two things to keep in step.
+
+**`AskOpened::ours` is the other half, and it is about the transcript rather than the panel.**
+The panel draws a Skein-composed question exactly as it draws an agent's; nothing there needs to
+know. What needs to know is the fold. An agent's `ask_user` is half of an exchange — the call is
+in the transcript, your reply is drawn under it, and `foldTranscript` finds both again off disk
+because the call's tool name is `SKEIN_ASK_TOOL` (`history.ts`, the `asked` set). A question
+Skein put up has no such call to hang off: what the agent's transcript holds is a `close` tool
+call and its result, and the result is composed *from* the answer rather than being it. So
+`answerAsk` pushing your click as a line of speech would draw a line on a live card that
+vanishes the moment it is restored — precisely the seam `history.ts` exists to avoid, and the
+reason `conversation.svelte.ts`'s `PendingAsk` carries the flag rather than the panel doing.
+The same goes for the `NO_ANSWER_NOTE` on an ask that closed unanswered: the tool result says
+"nobody answered, so it stays" in more useful words, and unlike the note it says them somewhere
+a restart can reproduce.
+
+The flag defaults to false on anything that does not set it, which is what keeps the control
+surface's synthetic `ask:opened` (`control.svelte.ts`) meaning what it always meant.
+
 #### A tool the agent can see, under a name it can call
 
 Two failures, found together on 2026-08-19 from one symptom — agents barely touching the
