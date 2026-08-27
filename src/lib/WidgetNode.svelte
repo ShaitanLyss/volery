@@ -18,6 +18,10 @@
   import type { Editor } from "./unreallog";
   import type { Sink } from "./sink.svelte";
   import type { Beacon } from "./beacon.svelte";
+  /* Aliased, because `Run` in this file is already a timer's two numbers off
+     `./timing` one line below. Two different `Run`s in one component is the
+     kind of collision that reads fine until somebody widens one of them. */
+  import type { Run as ForgeRun } from "./azdo";
   import { duoPatch, frameOf, runPatch, specFor, type Widget } from "./widgets";
   import type { Duo, Run } from "./timing";
   import Clock from "./Clock.svelte";
@@ -60,6 +64,7 @@
     onreveal,
     onopen,
     onkeyring,
+    onforgerun,
   }: {
     widget: Widget;
     selected: boolean;
@@ -128,6 +133,18 @@
      *  which is the one fault on this wall you can act on. Routed for the same
      *  reason `onopen` is. */
     onkeyring?: () => void;
+    /** Open one forge run's insides over the wall. Routed out rather than drawn
+     *  in the widget for the reason `onkeyring` is: which panel is on screen is
+     *  the studio's business, and a pipelines widget can be dropped to the size
+     *  of a card, where a job list would not fit at all.
+     *
+     *  Named for the subsystem rather than `onrun`, which in this file already
+     *  means a timer's run and a build's — the same collision `onbuildrun` was
+     *  spelled around, and the precedent this follows. The asymmetry at the call
+     *  site is therefore deliberate: `onforgerun` comes *in* to this component,
+     *  and plain `onrun` goes *down* to `Pipelines`, where there is only one kind
+     *  of run and nothing to spell around. */
+    onforgerun?: (run: ForgeRun) => void;
   } = $props();
 
   /** A timer's own state rides in its config, so setting a run is an ordinary
@@ -250,6 +267,7 @@
         {widget}
         {devops}
         onopen={(url) => onopen?.(url)}
+        onrun={onforgerun ? (run) => onforgerun?.(run) : undefined}
         onkeyring={onkeyring ? () => onkeyring?.() : undefined}
       />
     {:else if widget.kind === "reviews"}
