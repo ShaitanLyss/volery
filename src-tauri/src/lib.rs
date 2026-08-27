@@ -9,6 +9,11 @@ mod board;
 /// the form "what does this service actually do".
 pub mod azdo;
 mod control;
+/// The rows a forge answers in, and the two providers that fill them. `forge`
+/// is vocabulary-neutral on purpose — see its header for the line between a
+/// projection that is honest and one that is a lie.
+mod forge;
+mod github;
 /// Public so `examples/find-probe.rs` can drive the real search rather than a
 /// copy of it — the same arrangement `azdo` has, and the convention
 /// `tools/probe-context.ts` sets for questions of the form "what does this
@@ -46,6 +51,7 @@ use actions::Runs;
 use ask::Asks;
 use bang::Bangs;
 use azdo::Azdo;
+use github::Github;
 use control::Control;
 use perf::Meter;
 use pin::Pins;
@@ -174,6 +180,11 @@ pub fn run() {
            the credential ladder, so a wall with neither on it never spawns a
            `git credential` and never holds a token. */
         .manage(Azdo::default())
+        /* Empty until the same widgets ask, and separate from `Azdo` so that a
+           wall with no GitHub repository on it holds nothing at all. Cleared
+           alongside it by `release_azdo`, which is what makes a fresh
+           `gh auth login` take effect without a restart. */
+        .manage(Github::default())
         /* Zero until the wall reports otherwise, which is the honest
            answer: a quit in the first seconds of a launch has nothing to
            warn about. See `quit.rs`. */
@@ -395,6 +406,7 @@ pub fn run() {
             azdo::azdo_token,
             azdo::set_azdo_token,
             azdo::clear_azdo_token,
+            azdo::forge_run,
             store::list_ambience,
             store::save_ambience,
             store::activate_ambience,

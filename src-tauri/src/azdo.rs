@@ -72,9 +72,13 @@
 //!   perfectly on the developer's home wifi, which is the worst shape a bug can
 //!   have — hence the note above `ureq` in Cargo.toml as well as this one.
 
+use crate::forge::{
+    agent, encode, output, quiet, remote_of, stamp, text, Detail, Forge, Review, Run, Stage, Step,
+    Vote,
+};
+use crate::github;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -126,9 +130,6 @@ const BUILDS_PER_PROJECT: usize = 25;
 /// Open pull requests asked for per organisation. Above any real number; the
 /// API caps its own page at 101 without it.
 const PRS_PER_ORG: usize = 200;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Default)]
 pub struct Azdo(Mutex<Cache>);
@@ -238,31 +239,6 @@ impl Cred {
     fn same_as(&self, other: &Cred) -> bool {
         self.kind == other.kind && self.secret == other.secret
     }
-}
-
-/* ── shelling out ──────────────────────────────────────────────────────────
- *
- * Both credential sources are other people's programs. Same `quiet` as
- * `project.rs`: a GUI app spawning a console program flashes a black window
- * unless it says not to, and this runs on a poll. */
-
-#[cfg(windows)]
-fn quiet(cmd: &mut Command) -> &mut Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    cmd.creation_flags(CREATE_NO_WINDOW)
-}
-#[cfg(not(windows))]
-fn quiet(cmd: &mut Command) -> &mut Command {
-    cmd
-}
-
-fn output(cmd: &mut Command) -> Option<String> {
-    let out = quiet(cmd).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Base64, written out rather than pulled in. It is eleven lines, it is used in
@@ -534,13 +510,6 @@ fn ladder(org: &str) -> Vec<Cred> {
 
 /* ── asking ────────────────────────────────────────────────────────────────*/
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(CONNECT_TIMEOUT)
-        .timeout_read(READ_TIMEOUT)
-        .build()
-}
-
 /// Why a request came back with no answer.
 ///
 /// Two variants because two of these are *not the same thing to a reader*. A
@@ -767,25 +736,6 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Percent-*encoding*, for putting a name back into a url path. Only the
-/// characters that would change the shape of the request; a project called
-/// `TX Development Squad` is the case this exists for.
-fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => out.push(c),
-            _ => {
-                let mut buf = [0u8; 4];
-                for b in c.encode_utf8(&mut buf).as_bytes() {
-                    out.push_str(&format!("%{b:02X}"));
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Every distinct Azure DevOps organisation the wall is standing on.
 ///
 /// Order is the wall's own, deduplicated — so a studio with six NOVA cards and
@@ -802,17 +752,16 @@ fn orgs_for(cache: &mut Cache, roots: &[String]) -> Vec<String> {
         let org = match known {
             Some(o) => o,
             None => {
-                let found = Path::new(root)
-                    .is_dir()
-                    .then(|| {
-                        output(
-                            Command::new("git")
-                                .current_dir(root)
-                                .args(["remote", "get-url", "origin"]),
-                        )
-                    })
-                    .flatten()
-                    .and_then(|r| org_of(&r));
+                /* `forge::remote_of` rather than a `git` spawned here, and
+                   that is a fix rather than a tidy-up: this call had no
+                   `GIT_TERMINAL_PROMPT=0` and no `credential.interactive=false`
+                   on it, which every other shell-out in the app sets and which
+                   `from_git` forty lines down sets for exactly this reason. A
+                   background poll must never ask a question, and `remote
+                   get-url` not authenticating *today* is a property of today's
+                   git rather than a guarantee. Sharing the one reader with
+                   `github.rs` is the smaller half of the reason. */
+                let found = remote_of(root).as_deref().and_then(org_of);
                 cache.orgs.insert(root.clone(), (found.clone(), now));
                 found
             }
@@ -887,118 +836,7 @@ fn me_in(cache: &mut Cache, org: &str) -> String {
     id
 }
 
-/* ── epoch from an ISO stamp ───────────────────────────────────────────────
- *
- * Azure DevOps writes the same shape Claude Code does, so this is `usage.rs`'s
- * parser and nothing more. It is duplicated rather than shared for now because
- * the two modules disagree about what an unparseable stamp means — there it
- * drops a record, here it is a run with no start time yet, which is an ordinary
- * state for a queued build. */
-
-fn epoch_ms(ts: &str) -> i64 {
-    let n = |a: usize, z: usize| -> Option<i64> { ts.get(a..z)?.parse().ok() };
-    let parse = || -> Option<i64> {
-        let (y, mo, d) = (n(0, 4)?, n(5, 7)?, n(8, 10)?);
-        let (h, mi, s) = (n(11, 13)?, n(14, 16)?, n(17, 19)?);
-        if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
-            return None;
-        }
-        let frac = if ts.as_bytes().get(19) == Some(&b'.') {
-            n(20, 23).unwrap_or(0)
-        } else {
-            0
-        };
-        Some((days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + s) * 1000 + frac)
-    };
-    parse().unwrap_or(0)
-}
-
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if m > 2 { m - 3 } else { m + 9 };
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-fn text(v: &serde_json::Value, key: &str) -> String {
-    v.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
-}
-
-fn stamp(v: &serde_json::Value, key: &str) -> i64 {
-    v.get(key).and_then(|v| v.as_str()).map(epoch_ms).unwrap_or(0)
-}
-
 /* ── what comes back ───────────────────────────────────────────────────────*/
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Run {
-    /// Stable across polls and unique across organisations, so the front end can
-    /// key a list on it without a second thought.
-    id: String,
-    org: String,
-    project: String,
-    pipeline: String,
-    /// The build number as Azure DevOps composed it (`20260814.3`).
-    number: String,
-    /// `notStarted` | `inProgress` | `completed` | `cancelling` | `postponed`.
-    status: String,
-    /// `succeeded` | `partiallySucceeded` | `failed` | `canceled`, and empty
-    /// while it is still running. Deliberately not folded into `status` here —
-    /// that folding is a judgement and judgements are `azdo.ts`'s.
-    result: String,
-    /// `refs/heads/main`, verbatim. Shortening it is a wording decision.
-    branch: String,
-    by: String,
-    queued_at: i64,
-    started_at: i64,
-    finished_at: i64,
-    url: String,
-    /// Whether the caller is the one who asked for it.
-    mine: bool,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Vote {
-    by: String,
-    /// Azure DevOps' own scale: 10 approved, 5 approved with suggestions,
-    /// 0 no vote, -5 waiting for the author, -10 rejected.
-    vote: i64,
-    required: bool,
-}
-
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Review {
-    id: String,
-    org: String,
-    project: String,
-    repo: String,
-    number: i64,
-    title: String,
-    by: String,
-    draft: bool,
-    /// `succeeded` | `conflicts` | `queued` | `rejectedByPolicy` | `notSet`.
-    merge: String,
-    /// The branch it wants to land on, verbatim.
-    target: String,
-    created_at: i64,
-    url: String,
-    /// Set to complete itself once its policies pass — so it is waiting on a
-    /// build rather than on a person, which is a different row to draw.
-    auto: bool,
-    mine: bool,
-    /// Whether the caller is on it as a reviewer, and what they have said. Both,
-    /// because "asked and has not answered" and "not asked" are different states
-    /// that a vote of 0 cannot tell apart on its own.
-    reviewing: bool,
-    my_vote: i64,
-    votes: Vec<Vote>,
-}
 
 /// What one reading came to, including how it failed.
 ///
@@ -1030,6 +868,16 @@ pub struct Reviews {
     reviews: Vec<Review>,
     orgs: Vec<String>,
     asked: usize,
+    /// Repositories no credential can see.
+    ///
+    /// **Always zero until GitHub arrived**, which is why this half did not have
+    /// the field: Azure DevOps answers pull requests for a whole organisation in
+    /// one call, so there was no per-project request to be refused. GitHub asks
+    /// per repository and a private one the credential is not on is exactly the
+    /// silence `Runs::unseen` already existed for. The front end had been
+    /// defaulting it for this half all along (`#land`, `scan.unseen ?? 0`), so
+    /// the number simply starts being true.
+    unseen: usize,
     fault: Option<String>,
 }
 
@@ -1057,7 +905,12 @@ fn read_runs(cache: &mut Cache, org: &str, project: &Project) -> Result<Vec<Run>
             let build_id = b.get("id")?.as_i64()?;
             let by = b.get("requestedFor").cloned().unwrap_or_default();
             Some(Run {
-                id: format!("{org}/{}/{build_id}", project.id),
+                /* The forge goes in front, because this string is now a handle
+                   as well as a key: `forge_run` takes it apart to know who to
+                   ask. Both forges' ids are slash-separated and the same shape,
+                   so the prefix is the only thing telling them apart. */
+                id: format!("azdo/{org}/{}/{build_id}", project.id),
+                forge: Forge::Azdo.as_str(),
                 org: org.to_string(),
                 project: project.name.clone(),
                 pipeline: b
@@ -1132,7 +985,8 @@ fn read_reviews(cache: &mut Cache, org: &str) -> Result<Vec<Review>, String> {
                 .and_then(|a| a.iter().find(|r| !me.is_empty() && text(r, "id") == me));
 
             Some(Review {
-                id: format!("{org}/{repo_id}/{number}"),
+                id: format!("azdo/{org}/{repo_id}/{number}"),
+                forge: Forge::Azdo.as_str(),
                 org: org.to_string(),
                 project: text(&project, "name"),
                 repo: text(repo, "name"),
@@ -1157,9 +1011,170 @@ fn read_reviews(cache: &mut Cache, org: &str) -> Result<Vec<Review>, String> {
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0),
                 votes,
+                /* Empty, and not a gap. Azure DevOps marks each reviewer
+                   required or not, so `landable` computes the rollup from the
+                   votes; GitHub refuses to say who is required and answers the
+                   rollup instead. See `forge::Review::decision`. */
+                decision: String::new(),
             })
         })
         .collect())
+}
+
+/* ── one run, opened ───────────────────────────────────────────────────────*/
+
+/// A build's timeline, flattened to the two levels `forge.rs` draws.
+///
+/// **Azure DevOps answers with a flat list and parent pointers, not a tree**,
+/// and rebuilding one is most of this function. Probed 2026-08-27 against a RISE
+/// build: 71 records across four `type`s — `Stage`, `Phase`, `Job`, `Task` —
+/// with `parentId` naming the record above and `order` meaning *within your
+/// parent*, so the list as it arrives is in no useful order at all.
+///
+/// What is kept and why:
+///
+/// - **`Job` becomes a stage**, because it is the unit that runs on an agent and
+///   owns a log, which is what GitHub's job is too. That correspondence is the
+///   whole reason a two-level reading is honest rather than a truncation.
+/// - **`Task` becomes a step**, under the job that is its parent.
+/// - **`Phase` is dropped.** It is a one-to-one wrapper around its Job in every
+///   pipeline probed — a matrix would make it one-to-many, and then the Jobs
+///   under it are the interesting rows anyway, which is exactly what keeping the
+///   Job level gives.
+/// - **`Stage` survives as a prefix** on the job's name, and only when the build
+///   has more than one. A six-stage release pipeline reads as `Deploy to Test ·
+///   VerifyTestJob`; a single-stage build is not made to carry the word "Build"
+///   down every row for nothing.
+/// - **`Checkpoint` is dropped.** It is the approval gate's own bookkeeping and
+///   not work — four of them in that build, all called `Checkpoint`, none of
+///   which a person reading a failed pipeline wants a row for.
+fn read_timeline(cache: &mut Cache, org: &str, project: &str, build: &str) -> Result<Vec<Stage>, Denied> {
+    let url = format!(
+        "https://dev.azure.com/{}/{}/_apis/build/builds/{}/timeline?api-version=7.1",
+        encode(org),
+        encode(project),
+        encode(build),
+    );
+    let v = get(cache, org, "build", &url)?;
+    let empty = Vec::new();
+    let records = v.get("records").and_then(|r| r.as_array()).unwrap_or(&empty);
+
+    /* Record id -> (type, name, parent), so a job can walk up to whichever
+       Stage it sits under however many Phases are in between.
+       Owned rather than borrowed out of the parsed body: the walk below is a
+       closure over this map, and keeping `&str` into `v` means a lifetime
+       argument threaded through a function whose whole job is to be read once.
+       Seventy-one short strings is not a cost worth a fight. */
+    let mut by_id: HashMap<String, (String, String, String)> = HashMap::new();
+    for r in records {
+        let Some(id) = r.get("id").and_then(|i| i.as_str()) else { continue };
+        by_id.insert(
+            id.to_string(),
+            (
+                text(r, "type"),
+                text(r, "name"),
+                r.get("parentId").and_then(|p| p.as_str()).unwrap_or("").to_string(),
+            ),
+        );
+    }
+
+    let stage_named = |from: &str| -> Option<String> {
+        /* Bounded by the record count rather than trusting the parent chain to
+           be acyclic — this is somebody else's data structure and a cycle in it
+           would be an infinite loop inside a poll. */
+        let mut at = from.to_string();
+        for _ in 0..by_id.len() {
+            let (kind, name, parent) = by_id.get(&at)?;
+            if kind == "Stage" {
+                return Some(name.clone());
+            }
+            at = parent.clone();
+        }
+        None
+    };
+
+    let stages_in_build = records
+        .iter()
+        .filter(|r| r.get("type").and_then(|t| t.as_str()) == Some("Stage"))
+        .count();
+
+    /* Tasks first, grouped under the job that owns them, so the jobs pass below
+       can take its own without a second walk. */
+    let mut tasks: HashMap<&str, Vec<(i64, Step)>> = HashMap::new();
+    for r in records {
+        if r.get("type").and_then(|t| t.as_str()) != Some("Task") {
+            continue;
+        }
+        let Some(parent) = r.get("parentId").and_then(|p| p.as_str()) else { continue };
+        tasks.entry(parent).or_default().push((
+            r.get("order").and_then(|o| o.as_i64()).unwrap_or(0),
+            Step {
+                name: text(r, "name"),
+                status: text(r, "state"),
+                result: text(r, "result"),
+                started_at: stamp(r, "startTime"),
+                finished_at: stamp(r, "finishTime"),
+            },
+        ));
+    }
+
+    let mut out: Vec<(i64, i64, Stage)> = Vec::new();
+    for r in records {
+        if r.get("type").and_then(|t| t.as_str()) != Some("Job") {
+            continue;
+        }
+        let Some(id) = r.get("id").and_then(|i| i.as_str()) else { continue };
+        let name = text(r, "name");
+        let parent = r.get("parentId").and_then(|p| p.as_str()).unwrap_or("");
+        let name = match (stages_in_build > 1, stage_named(parent)) {
+            (true, Some(stage)) if stage != name => format!("{stage} · {name}"),
+            _ => name,
+        };
+        let mut steps = tasks.remove(id).unwrap_or_default();
+        steps.sort_by_key(|(order, _)| *order);
+        let started = stamp(r, "startTime");
+        out.push((
+            started,
+            r.get("order").and_then(|o| o.as_i64()).unwrap_or(0),
+            Stage {
+                name,
+                status: text(r, "state"),
+                result: text(r, "result"),
+                started_at: started,
+                finished_at: stamp(r, "finishTime"),
+                steps: steps.into_iter().map(|(_, s)| s).collect(),
+            },
+        ));
+    }
+
+    /* By when it started, and a job that has not started yet goes last rather
+       than first — a zero sorts before everything, which would put the work
+       still to come above the work already done. `order` breaks the tie, since
+       jobs queued in the same second are ordinary. */
+    out.sort_by_key(|(started, order, _)| (if *started == 0 { i64::MAX } else { *started }, *order));
+    Ok(out.into_iter().map(|(_, _, s)| s).collect())
+}
+
+/// `azdo/{org}/{project}/{build}` back into its three parts.
+fn split_id(id: &str) -> Result<(String, String, String), String> {
+    let mut parts = id.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("azdo"), Some(o), Some(p), Some(b), None)
+            if !o.is_empty() && !p.is_empty() && !b.is_empty() =>
+        {
+            Ok((o.to_string(), p.to_string(), b.to_string()))
+        }
+        _ => Err(format!("not an azure devops run id: {id}")),
+    }
+}
+
+fn detail_of(cache: &mut Cache, id: &str) -> Result<Detail, String> {
+    let (org, project, build) = split_id(id)?;
+    let stages = read_timeline(cache, &org, &project, &build).map_err(String::from)?;
+    /* Asked of the jobs rather than of the build, for the reason `github.rs`
+       gives: the build is a second request and the answer is the same. */
+    let live = stages.iter().any(|s| s.status != "completed");
+    Ok(Detail { id: id.to_string(), forge: Forge::Azdo.as_str(), stages, live, fault: None })
 }
 
 /// Everything running, across every organisation the wall stands on.
@@ -1179,11 +1194,66 @@ fn read_reviews(cache: &mut Cache, org: &str) -> Result<Vec<Review>, String> {
 #[tauri::command]
 pub async fn azdo_runs(app: AppHandle, roots: Vec<String>) -> Result<Runs, String> {
     crate::off_main(move || {
-        let state = app.state::<Azdo>();
-        let mut cache = state.0.lock().unwrap();
-        runs_with(&mut cache, &roots)
+        let mut got = {
+            let state = app.state::<Azdo>();
+            let mut cache = state.0.lock().unwrap();
+            runs_with(&mut cache, &roots)
+        };
+        /* The Azure DevOps lock is dropped before the GitHub one is taken, and
+           that is deliberate rather than tidy. Both are held across a whole
+           network pass, so a command that took them in one order while anything
+           else took them in the other would deadlock the wall for as long as two
+           polls — and there would be no way to tell that from the freeze
+           `off_main` was introduced to fix. Never both at once is a rule that
+           needs no ordering to be remembered. */
+        let mine = {
+            let state = app.state::<github::Github>();
+            let mut cache = state.0.lock().unwrap();
+            github::runs_with(&mut cache, &roots)
+        };
+        merge_runs(&mut got, mine);
+        got
     })
     .await
+}
+
+/// One forge's rows folded into the other's reading.
+///
+/// The order the rows end up in does not matter much here — `orderRuns` in
+/// `azdo.ts` sorts the whole list by how much it wants you, and it has never
+/// cared which service a row came off. What matters is the three numbers beside
+/// them: `asked` is requests that left the machine and must count both, `unseen`
+/// is silences and must count both, and `fault` is the one line the widget has
+/// room for.
+///
+/// **Azure DevOps' fault wins a tie**, and that is a judgement rather than an
+/// accident of which is checked first. The Azure DevOps half is the one that
+/// needs a credential you have to go and mint — it is the fault the keyring
+/// button is offered for, and `Pipelines.svelte` matches on its wording to
+/// decide whether to offer one. A GitHub fault is nearly always `gh auth login`,
+/// which is a sentence rather than a panel. Hiding the actionable half behind
+/// the self-explanatory one is the same mistake `get` avoids when it lets a
+/// credential refusal outrank an invisibility.
+fn merge_runs(into: &mut Runs, from: github::Scan<Run>) {
+    into.runs.extend(from.rows);
+    into.orgs.extend(from.orgs);
+    into.asked += from.asked;
+    into.unseen += from.unseen;
+    if into.fault.is_none() {
+        into.fault = from.fault;
+    }
+    into.runs.sort_by(|a, b| b.queued_at.cmp(&a.queued_at));
+}
+
+fn merge_reviews(into: &mut Reviews, from: github::Scan<Review>) {
+    into.reviews.extend(from.rows);
+    into.orgs.extend(from.orgs);
+    into.asked += from.asked;
+    into.unseen += from.unseen;
+    if into.fault.is_none() {
+        into.fault = from.fault;
+    }
+    into.reviews.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 }
 
 /// The reading itself, apart from the command that carries it — so
@@ -1241,11 +1311,48 @@ pub fn runs_with(cache: &mut Cache, roots: &[String]) -> Runs {
 #[tauri::command]
 pub async fn azdo_reviews(app: AppHandle, roots: Vec<String>) -> Result<Reviews, String> {
     crate::off_main(move || {
-        let state = app.state::<Azdo>();
-        let mut cache = state.0.lock().unwrap();
-        reviews_with(&mut cache, &roots)
+        let mut got = {
+            let state = app.state::<Azdo>();
+            let mut cache = state.0.lock().unwrap();
+            reviews_with(&mut cache, &roots)
+        };
+        let mine = {
+            let state = app.state::<github::Github>();
+            let mut cache = state.0.lock().unwrap();
+            github::reviews_with(&mut cache, &roots)
+        };
+        merge_reviews(&mut got, mine);
+        got
     })
     .await
+}
+
+/// One run's stages and steps, from whichever forge the id names.
+///
+/// **The forge is read off the id rather than passed alongside it**, which keeps
+/// the front end from having to know there is a choice: a row carries a string,
+/// the string is enough, and a widget that has just been handed a row cannot get
+/// the pairing wrong. Both providers refuse an id with the other's prefix rather
+/// than half-reading it, so a routing mistake says so instead of 404ing
+/// confusingly.
+///
+/// Off the main thread for the reason every other command here is, and with the
+/// same one-lock-at-a-time rule: only one provider is asked, so only one is
+/// taken.
+#[tauri::command]
+pub async fn forge_run(app: AppHandle, id: String) -> Result<Detail, String> {
+    crate::off_main(move || {
+        if id.starts_with("github/") {
+            let state = app.state::<github::Github>();
+            let mut cache = state.0.lock().unwrap();
+            github::read_detail(&mut cache, &id)
+        } else {
+            let state = app.state::<Azdo>();
+            let mut cache = state.0.lock().unwrap();
+            detail_of(&mut cache, &id)
+        }
+    })
+    .await?
 }
 
 pub fn reviews_with(cache: &mut Cache, roots: &[String]) -> Reviews {
@@ -1269,6 +1376,10 @@ pub fn reviews_with(cache: &mut Cache, roots: &[String]) -> Reviews {
         reviews,
         orgs,
         asked,
+        /* Always zero on this half: pull requests come back org-wide in one
+           call, so there is no per-project request here to be refused. The
+           GitHub half is where the number comes from. */
+        unseen: 0,
         fault,
     }
 }
@@ -1287,6 +1398,13 @@ pub fn reviews_with(cache: &mut Cache, roots: &[String]) -> Reviews {
 pub async fn release_azdo(app: AppHandle) -> Result<(), String> {
     crate::off_main(move || {
         *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
+        /* Both, because the front end has one connection and detaching from it
+           means the wall has stopped asking anything of anybody. A GitHub token
+           left cached here would be a credential held by an app with no face
+           reading it, which is the property this command exists to keep. It is
+           also what makes a fresh `gh auth login` take effect without restarting
+           the app — the same thing it already did for `az login`. */
+        *app.state::<github::Github>().0.lock().unwrap() = github::Cache::default();
     })
     .await
 }
@@ -1539,6 +1657,7 @@ mod tests {
 
     #[test]
     fn an_azure_devops_stamp_becomes_a_number() {
+        use crate::forge::epoch_ms;
         /* The shape the build API writes — seven fractional digits, where
            Claude Code writes three. */
         assert_eq!(epoch_ms("2025-08-26T00:16:35.9795575Z"), 1_756_167_395_979);
