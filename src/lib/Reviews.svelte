@@ -95,7 +95,15 @@
   {#if half.fault && !half.rows.length}
     <p class="fault" title={half.fault}>{half.fault}</p>
   {:else if !shown.length}
-    <p class="quiet">{emptySaid("reviews", half.ready, half.orgs, scope !== "all")}</p>
+    <!-- `half.unseen` is passed now, where it used to be left to default. It was
+         structurally always zero while Azure DevOps answered pull requests
+         org-wide in one call; GitHub asks per repository, so a private one the
+         credential is not on is a silence this face can now genuinely have —
+         and "no open pull requests" over a repo that refused to answer is the
+         face claiming to know something it does not. -->
+    <p class="quiet">
+      {emptySaid("reviews", half.ready, half.orgs, scope !== "all", half.unseen)}
+    </p>
   {:else if variant === "dots"}
     <div class="dots">
       {#each shown as r (r.id)}

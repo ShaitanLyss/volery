@@ -6,11 +6,26 @@
  * `usage.rs`/`usage.ts` draw, and the same argument: a taxonomy is knowledge
  * about a service, and knowledge is testable without a browser.
  *
- * So this file holds essentially all Azure-DevOps-specific knowledge, the way
+ * So this file holds essentially all forge-specific knowledge, the way
  * `classify.ts` holds all Claude-specific knowledge: the status vocabulary, the
  * vote scale, what a merge status means, how a run is ordered against another
- * one, and what any of it is called in prose. If a second forge ever matters —
- * GitHub checks, GitLab pipelines — this is the file that grows an interface.
+ * one, and what any of it is called in prose. `CLAUDE.md` said that if a second
+ * forge ever mattered this is the file that would grow an interface, and it has:
+ * **GitHub arrived, and it grew a `forge` discriminator rather than a second
+ * file.**
+ *
+ * The shape that took is worth stating, because it is the one a third forge will
+ * be argued against. Rust reports each service's own words — `inProgress` from
+ * Azure DevOps, `in_progress` from GitHub — and folds nothing, so every function
+ * here that touches a *state* dispatches on `r.forge` and every function that
+ * touches something the two genuinely share does not. Ordering, tallying,
+ * scoping and `needsMe` are all in the second group and were not touched at all,
+ * which is the evidence the seam is in the right place: the questions a wall asks
+ * turn out to be forge-independent, and only the vocabulary is not.
+ *
+ * The alternative — normalising GitHub into Azure DevOps' words in Rust — would
+ * have left this file untouched and been a lie. See `forge.rs` for the test a
+ * projection has to pass to be allowed, and for the two that pass it.
  *
  * Pure — no runes, no DOM, no `invoke` — so all of it has direct Bun tests.
  *
@@ -24,17 +39,27 @@
 
 /* ── what comes off the wire ───────────────────────────────────────────────*/
 
+/** Which service answered. The discriminator every state-reading function here
+ *  switches on — see the header. */
+export type Forge = "azdo" | "github";
+
 export type Run = {
   id: string;
+  forge: Forge;
   org: string;
   project: string;
   pipeline: string;
   number: string;
-  /** `notStarted` | `inProgress` | `completed` | `cancelling` | `postponed`. */
+  /** Azure DevOps: `notStarted` | `inProgress` | `completed` | `cancelling` |
+   *  `postponed`. GitHub: `queued` | `in_progress` | `completed` | `waiting` |
+   *  `requested` | `pending`. */
   status: string;
-  /** `succeeded` | `partiallySucceeded` | `failed` | `canceled`, or empty. */
+  /** Azure DevOps: `succeeded` | `partiallySucceeded` | `failed` | `canceled`.
+   *  GitHub: `success` | `failure` | `cancelled` | `skipped` | `timed_out` |
+   *  `action_required` | `neutral` | `stale` | `startup_failure`. Empty while it
+   *  is still going, on both. */
   result: string;
-  /** `refs/heads/main`, verbatim. */
+  /** `refs/heads/main` from Azure DevOps, a bare `main` from GitHub. */
   branch: string;
   by: string;
   queuedAt: number;
@@ -48,6 +73,7 @@ export type Vote = { by: string; vote: number; required: boolean };
 
 export type Review = {
   id: string;
+  forge: Forge;
   org: string;
   project: string;
   repo: string;
@@ -65,6 +91,10 @@ export type Review = {
   reviewing: boolean;
   myVote: number;
   votes: Vote[];
+  /** GitHub's rolled-up `approved` | `changesRequested` | `reviewRequired`, and
+   *  empty for Azure DevOps, which marks reviewers required instead. Two halves
+   *  of the same fact, neither derivable from the other — see `landable`. */
+  decision: string;
 };
 
 /** The wall's own four, from `classify.ts`. Named rather than imported because
@@ -78,7 +108,31 @@ export type Tier = "work" | "ask" | "soft" | "rest" | "fail";
  *  the two states that look finished and are not: a build being cancelled is
  *  still holding an agent, and a postponed one is still going to happen. */
 export function running(r: Run): boolean {
+  /* Both services happen to spell the terminal state `completed`, which makes
+     this look like it needs no dispatch. It is written as one anyway, because
+     the agreement is a coincidence rather than a contract: Azure DevOps' other
+     four states and GitHub's other five have nothing in common, and a third
+     forge saying `finished` would slip through a bare inequality silently. */
   return r.status !== "completed";
+}
+
+/** Is this run waiting for a person rather than for a machine?
+ *
+ * GitHub has a state Azure DevOps does not: `waiting`, a workflow parked because
+ * an environment needs somebody to approve the deployment. Nothing is running,
+ * nothing has failed, and it will sit there for ever until a human acts — which
+ * is the definition of the wall's amber and the reason `action_required` and
+ * this are the two GitHub states that most justify not folding the vocabulary.
+ *
+ * Azure DevOps expresses the same idea as a Checkpoint record inside the
+ * timeline rather than as a state on the build, so a build waiting at an
+ * approval gate still reads `inProgress`. That is a real gap and it is left
+ * alone deliberately: the fix is reading the timeline on every poll, which is a
+ * request per running build, and the widget would be paying it for every row to
+ * improve the wording on a few. */
+export function parked(r: Run): boolean {
+  if (r.forge !== "github") return false;
+  return r.status === "waiting" || (r.status === "completed" && r.result === "action_required");
 }
 
 /** What a run is, as one of the wall's four.
@@ -93,6 +147,7 @@ export function running(r: Run): boolean {
  * A cancelled run is `rest` for the reason a stopped card is: nothing went
  * wrong, and somebody did it on purpose. */
 export function tierOf(r: Run): Tier {
+  if (r.forge === "github") return githubTier(r);
   if (running(r)) return "work";
   switch (r.result) {
     case "failed":
@@ -112,8 +167,59 @@ export function tierOf(r: Run): Tier {
   }
 }
 
+/** What a GitHub run is, as one of the wall's four.
+ *
+ * Nine conclusions against Azure DevOps' four, which is the whole argument for
+ * carrying both vocabularies rather than folding one into the other.
+ *
+ * - **`action_required` and `waiting` are amber**, and they are the states that
+ *   justify the whole arrangement: a deployment parked waiting for somebody to
+ *   approve it is the wall's `ask` exactly, and it has no Azure DevOps spelling
+ *   to have been folded into. Under a projection it would have become `failed`
+ *   or `succeeded`, and both are lies about a thing that is simply waiting.
+ * - **`timed_out` and `startup_failure` are rust**, with `failure`. A run that
+ *   hit the wall clock or could not start its own job did not produce what it
+ *   was for, whatever the reason reads like.
+ * - **`skipped`, `stale`, `cancelled` and `neutral` are `rest`.** Nothing went
+ *   wrong in any of them: a skipped run was excluded by its own conditions, a
+ *   stale one was superseded by a newer commit, a neutral one ran and declined
+ *   to assert anything. Drawing any of them red would be the widget inventing a
+ *   fault, which is the thing `tierOf` has refused to do since it was written.
+ *
+ * There is no GitHub state that earns `soft`. Azure DevOps' `partiallySucceeded`
+ * — the build worked and something non-blocking did not — has no Actions
+ * equivalent at the run level, because a job that fails without failing the run
+ * is `continue-on-error` and Actions reports the run as plain success. So the
+ * amber-at-half-weight simply never appears on a GitHub row, and that is honest
+ * rather than a gap: nothing was lost, the service does not draw the
+ * distinction. */
+function githubTier(r: Run): Tier {
+  if (r.status === "waiting") return "ask";
+  if (running(r)) return "work";
+  switch (r.result) {
+    case "failure":
+    case "timed_out":
+    case "startup_failure":
+      return "fail";
+    case "action_required":
+      return "ask";
+    case "success":
+    case "cancelled":
+    case "skipped":
+    case "stale":
+    case "neutral":
+      return "rest";
+    default:
+      /* Same floor the Azure DevOps arm keeps: an unrecognised state is muted,
+         never red. A widget that invents faults is a widget you stop trusting,
+         and GitHub adds conclusions faster than this file will hear about it. */
+      return "rest";
+  }
+}
+
 /** How a run is said, in the fewest words that are still true. */
 export function runSaid(r: Run): string {
+  if (r.forge === "github") return githubSaid(r);
   switch (r.status) {
     case "notStarted":
       return "queued";
@@ -133,6 +239,50 @@ export function runSaid(r: Run): string {
       return "failed";
     case "canceled":
       return "cancelled";
+    default:
+      return "finished";
+  }
+}
+
+/** The same, in GitHub's vocabulary.
+ *
+ * Deliberately the *same words out* as the Azure DevOps arm wherever the two
+ * mean the same thing — "running", "passed", "failed". The vocabularies are kept
+ * apart on the wire so nothing is lost; they are brought together here, which is
+ * the layer where a person reads them, and a widget that said "in_progress" on
+ * one row and "running" on the next would be leaking an implementation detail
+ * onto the wall. */
+function githubSaid(r: Run): string {
+  switch (r.status) {
+    case "queued":
+    case "requested":
+      return "queued";
+    case "in_progress":
+      return "running";
+    case "waiting":
+      return "waiting for approval";
+    case "pending":
+      return "pending";
+  }
+  switch (r.result) {
+    case "success":
+      return "passed";
+    case "failure":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "timed_out":
+      return "timed out";
+    case "startup_failure":
+      return "could not start";
+    case "action_required":
+      return "needs approval";
+    case "skipped":
+      return "skipped";
+    case "stale":
+      return "superseded";
+    case "neutral":
+      return "neutral";
     default:
       return "finished";
   }
@@ -216,6 +366,23 @@ export function reviewTierOf(r: Review): Tier {
  * the build alone. */
 export function landable(r: Review): boolean {
   if (r.draft || r.merge === "conflicts" || r.merge === "rejectedByPolicy") return false;
+  /* **The two forges answer opposite halves of this and neither can be derived
+     from the other**, which is why `decision` is carried beside the votes rather
+     than computed from them.
+
+     Azure DevOps marks each reviewer required or optional and does not roll it
+     up, so the question is arithmetic over the votes — and excluding the
+     optional ones is the judgement that makes the answer useful, since a PR held
+     open for a courtesy reviewer on leave is not blocked.
+
+     GitHub does the reverse: it will not tell you who is required — branch
+     protection knows, the pull request payload does not — and hands you the
+     rollup instead. So a GitHub row's votes are genuinely all `required: false`,
+     and running the Azure DevOps arithmetic over them would find an empty
+     required set and answer *vacuously true* for every open pull request on
+     GitHub, including ones with changes requested. That is the bug this branch
+     exists to prevent, and it is the kind that looks like working code. */
+  if (r.forge === "github") return r.decision === "approved";
   const required = r.votes.filter((v) => v.required);
   if (required.some((v) => v.vote <= WAITING_FOR_AUTHOR)) return false;
   return required.every((v) => v.vote >= APPROVED_WITH_SUGGESTIONS);
@@ -234,6 +401,192 @@ export function reviewSaid(r: Review): string | null {
   if (r.auto) return "auto-completing";
   if (r.mine && landable(r)) return "ready";
   return null;
+}
+
+/* ── one run, opened ───────────────────────────────────────────────────────
+ *
+ * The other half of what the pipelines widget is for. The list says a build
+ * failed; this says which job, and which step of it — which is the question you
+ * had to open a browser tab for, and the one the sink item asked to bring
+ * in-app.
+ *
+ * Two levels on both forges, normalised in Rust — see `forge.rs` for why the
+ * depth is a decision rather than what either service hands over. What is left
+ * here is the same job this file has always done: turning each service's words
+ * into one of the wall's four tiers, and into prose.
+ *
+ * **Raw logs are deliberately not here, and this is the line the ask was read
+ * against.** The sink item asks to "consult the run directly in Volery" rather
+ * than opening the browser, and a stage/step tree with per-step status and
+ * timings answers that: it is what you actually go to the browser to see when a
+ * pipeline goes red — *which step*. Streaming the log text is a different and
+ * much larger job (Azure DevOps pages logs per record, GitHub serves a zip of
+ * them), and it would want `logface.ts`'s substrate, a scrollback budget and a
+ * per-step fetch. It is left out on purpose and the external-link button is what
+ * covers it: the one thing this panel cannot show you is one click from it. */
+
+/** One step of one stage — an Azure DevOps `Task`, a GitHub step. */
+export type Step = {
+  name: string;
+  status: string;
+  result: string;
+  startedAt: number;
+  finishedAt: number;
+};
+
+/** The unit that runs on an agent and owns a log: an Azure DevOps `Job`, a
+ *  GitHub job. Named `Stage` because that is what it reads as in a panel. */
+export type Stage = {
+  name: string;
+  status: string;
+  result: string;
+  startedAt: number;
+  finishedAt: number;
+  steps: Step[];
+};
+
+export type Detail = {
+  id: string;
+  forge: Forge;
+  stages: Stage[];
+  /** Whether the run was still going when this reading was taken. Rust's answer
+   *  rather than one re-derived here, because a run whose last job has finished
+   *  is not necessarily finished — see `forge.rs`. */
+  live: boolean;
+  fault: string | null;
+};
+
+/** What one stage or step is, as one of the wall's four.
+ *
+ * The same shape as `tierOf` one level down, and deliberately a separate
+ * function rather than a clever reuse: a *run* and a *job* are described by
+ * different vocabularies even within one service. Azure DevOps' timeline says
+ * `succeededWithIssues` where the build above it says `partiallySucceeded` —
+ * the same service, the same idea, two spellings — and a shared function would
+ * have had to know both anyway while pretending the levels agreed.
+ *
+ * `skipped` is the state that matters most to get right here, because it is
+ * everywhere: a release pipeline draws six stages of which five are skipped on
+ * any given run, and a panel that drew those amber or red would be five-sixths
+ * alarm. It is `rest`, and `stageSaid` gives it a word so the muting reads as
+ * deliberate rather than as a stage that says nothing. */
+export function stageTierOf(s: Step | Stage, forge: Forge): Tier {
+  if (s.status !== "completed") {
+    /* Not started yet and currently running are both "not finished", and they
+       are told apart by the start time rather than by the state — Azure DevOps
+       says `pending` for both a queued job and one whose agent has not reported,
+       and GitHub says `queued`. A stage with no start time has not begun, and
+       drawing it celadon would claim work is happening that is not. */
+    return s.startedAt ? "work" : "rest";
+  }
+  if (forge === "github") {
+    switch (s.result) {
+      case "failure":
+      case "timed_out":
+      case "startup_failure":
+        return "fail";
+      case "action_required":
+        return "ask";
+      default:
+        return "rest";
+    }
+  }
+  switch (s.result) {
+    case "failed":
+      return "fail";
+    /* The timeline's spelling of `partiallySucceeded`. Same amber-at-half-weight
+       the build-level arm gives it, and the reason both spellings are carried
+       verbatim rather than one being corrected into the other in Rust. */
+    case "succeededWithIssues":
+      return "soft";
+    default:
+      return "rest";
+  }
+}
+
+/** A stage or step, in a word. Empty when the state is the ordinary one and the
+ *  colour has already said it — a panel that writes "succeeded" down forty rows
+ *  is forty rows of width spent on nothing. */
+export function stageSaid(s: Step | Stage, forge: Forge): string {
+  if (s.status !== "completed") return s.startedAt ? "running" : "waiting";
+  if (forge === "github") {
+    switch (s.result) {
+      case "failure":
+        return "failed";
+      case "timed_out":
+        return "timed out";
+      case "startup_failure":
+        return "could not start";
+      case "action_required":
+        return "needs approval";
+      case "skipped":
+        return "skipped";
+      case "cancelled":
+        return "cancelled";
+      default:
+        return "";
+    }
+  }
+  switch (s.result) {
+    case "failed":
+      return "failed";
+    case "succeededWithIssues":
+      return "issues";
+    case "skipped":
+      return "skipped";
+    case "canceled":
+      return "cancelled";
+    case "abandoned":
+      return "abandoned";
+    default:
+      return "";
+  }
+}
+
+/** How long a stage or step took, or has been going, in milliseconds.
+ *
+ * `elapsed`'s logic one level down, with the same rule about what is being
+ * measured — but *not* the same function, because a run has a queue time to fall
+ * back on and a step does not. A step that has not started has no duration at
+ * all rather than a duration measured from something else, which is why this
+ * returns 0 there and the face draws nothing. */
+export function stageTook(s: Step | Stage, now: number): number {
+  if (!s.startedAt) return 0;
+  const to = s.status === "completed" ? s.finishedAt || s.startedAt : now;
+  return Math.max(0, to - s.startedAt);
+}
+
+/** Which stage a person opening this panel is actually looking for.
+ *
+ * The first that failed, or failing that the first still running — because a
+ * panel opened on a red pipeline is opened to find out *what broke*, and a
+ * twelve-stage run puts that anywhere in the list. Null when nothing stands out,
+ * which is the ordinary case for a run that passed and the case where opening
+ * anything by default would be a guess.
+ *
+ * Returned rather than acted on: whether to scroll to it, open it or mark it is
+ * the face's business. */
+export function worthOpening(d: Detail): Stage | null {
+  const broke = d.stages.find((s) => stageTierOf(s, d.forge) === "fail");
+  if (broke) return broke;
+  return d.stages.find((s) => s.status !== "completed" && s.startedAt) ?? null;
+}
+
+/** What the detail panel says when it has no stages to draw.
+ *
+ * The same discipline `emptySaid` keeps, and for the same reason: a run whose
+ * jobs have not been created yet, a run that never started one, and a reading
+ * still in flight are three different sentences, and answering all three with an
+ * empty box is what makes a panel read as broken. A queued build genuinely has
+ * no timeline records at all — Azure DevOps creates them as the agent picks the
+ * job up — so this is the *normal* state for the first seconds of a run, not an
+ * edge case. */
+export function detailSaid(d: Detail | null, run: Run): string {
+  if (!d) return "asking…";
+  if (d.fault) return d.fault;
+  if (d.stages.length) return "";
+  if (running(run)) return "waiting for an agent to pick it up";
+  return "this run recorded no jobs";
 }
 
 /* ── narrowing what is shown ───────────────────────────────────────────────*/
@@ -338,7 +691,17 @@ export function tallyReviews(reviews: Review[]): Tally {
  * `refs/heads/` and `refs/pull/` are noise on every single row — every branch
  * has one — and what is left is the name somebody actually typed. Tags keep
  * their marker, because a build of a tag and a build of a branch of the same
- * name are different things and the row has no other way to say which. */
+ * name are different things and the row has no other way to say which.
+ *
+ * **GitHub sends a bare name and this cannot recover the marker**, which is a
+ * real loss rather than an oversight, and it is worth knowing about rather than
+ * papering over. `head_branch` on a workflow run is `main` for a branch push and
+ * `v0.12.0` for a tag push, with nothing distinguishing them — verified against
+ * this repo's own release runs, where the tag build reads as a branch called
+ * `v0.12.0`. Guessing from the shape (a leading `v`, a dotted number) was
+ * considered and refused: a branch genuinely called `v2` is ordinary, and a row
+ * that silently mislabels one is worse than a row that declines to label it.
+ * The unprefixed name is returned as it arrived. */
 export function shortRef(ref: string): string {
   if (ref.startsWith("refs/heads/")) return ref.slice(11);
   if (ref.startsWith("refs/tags/")) return `tag ${ref.slice(10)}`;
@@ -397,9 +760,18 @@ export function emptySaid(
   scoped: boolean,
   unseen = 0,
 ): string {
-  if (!ready) return "asking azure devops…";
-  if (!orgs.length) return "no azure devops repo on this wall";
+  if (!ready) return "asking…";
+  /* Named neither service, now that there are two. "no azure devops repo on this
+     wall" was exactly true while there was one forge and became a lie the moment
+     a GitHub repo could satisfy the same widget — and the failure mode is the
+     worst kind, a sentence that reads as authoritative and sends you looking for
+     an Azure DevOps problem you do not have. What the widget actually knows is
+     that nothing on this wall has pipelines it can see. */
+  if (!orgs.length) return "no repo on this wall with pipelines";
   if (unseen > 0 && !scoped) {
+    /* "project" covers an Azure DevOps project and a GitHub repository both,
+       which is the same stand-in `Run.project` makes and for the same reason:
+       it is the coarsest grouping either forge offers under an organisation. */
     return unseen === 1
       ? "1 project your credential is not on"
       : `${unseen} projects your credential is not on`;

@@ -70,6 +70,7 @@
   import Themes from "./lib/Themes.svelte";
   import Accounts from "./lib/Accounts.svelte";
   import Keyring from "./lib/Keyring.svelte";
+  import RunPanel from "./lib/Run.svelte";
   import Guidance from "./lib/Guidance.svelte";
   import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
   import { foldChrome, type Fold, type Measured } from "./lib/chrome";
@@ -690,6 +691,12 @@
      fault line, which is where you actually find out you need one — a panel only
      in the menu is a panel nobody finds at the moment it would help. */
   let showKeyring = $state(false);
+  /* The run whose insides are on screen, if any. The *row* rather than its id,
+     because the panel draws the run's own heading — pipeline, branch, who, how
+     long — out of the row it was opened from, and re-fetching a row we were
+     handed would be asking the network for something already in hand. The
+     connection holds the stages; this holds which run they are of. */
+  let openRun = $state<import("./lib/azdo").Run | null>(null);
 
   /* Standing instructions — what you tell every card once instead of every
      turn. `null` while shut; open it *at* a scope, since the same panel is
@@ -2072,7 +2079,8 @@
          "give the wall the key back", not "throw away what I aimed this at".
          Letting go of the card there would leave a written prompt pointed at
          nothing, so the draft survives and a second press does the deselect. */
-      if (menu || showImport || showThemes || showAccounts || showKeyring || guiding) return;
+      if (menu || showImport || showThemes || showAccounts || showKeyring || openRun || guiding)
+        return;
       if (isTyping(e.target)) {
         (e.target as HTMLElement).blur();
         return;
@@ -2720,6 +2728,20 @@
     <Themes onclose={() => (showThemes = false)} />
   {/if}
 
+  {#if openRun}
+    <!-- Keyed on the run's id, so opening a second run from behind the panel
+         tears the old one down and builds a new one. Without the key Svelte
+         reuses the component, and its `$effect` cleanup — the thing that stops
+         the five-second poller — never fires for the run being left. -->
+    {#key openRun.id}
+      <RunPanel
+        run={openRun}
+        {devops}
+        onopen={(url) => void skein.openLink(url)}
+        onclose={() => (openRun = null)}
+      />
+    {/key}
+  {/if}
   {#if showKeyring}
     <Keyring {devops} onclose={() => (showKeyring = false)} />
   {/if}
@@ -2800,6 +2822,7 @@
         onreveal={revealRow}
         onopen={(url) => void skein.openLink(url)}
         onkeyring={() => (showKeyring = true)}
+        onforgerun={(run) => (openRun = run)}
         onplan={(conv, path) => {
           /* Rooted at the plans directory rather than at the card's project,
              because that is where the document is and the viewer refuses to

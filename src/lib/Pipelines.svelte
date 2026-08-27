@@ -16,7 +16,21 @@
    * `--dangerously-skip-permissions`, so a button here that started a deployment
    * would be the most consequential thing in the app and would sit one stray
    * click away from a list you are reading at a glance. Going *to* the pipeline
-   * is a click that costs nothing and can be taken back. */
+   * is a click that costs nothing and can be taken back.
+   *
+   * **Where a row goes changed, and the floor did not.** A left click used to
+   * leave the app for the browser; it now opens the run *here* — which jobs ran,
+   * which step failed — and the browser is an icon button beside it. Both are
+   * still looking. The order matters and is the sink item's own reading: the
+   * thing you want nine times in ten is which step went red, and that is now the
+   * cheap gesture, while the tab you opened to find it out is still one click
+   * away for the tenth — a log, a diff, an artifact, anything this panel
+   * deliberately does not draw.
+   *
+   * The `dots` and `lanes` readings get no icon of their own. There is no room
+   * for one at that size, and none is needed: a dot opens the panel and the
+   * panel carries the link, so the way out exists from every reading without
+   * every reading having to draw it. */
 
   import { clock } from "./conversation.svelte";
   import type { DevOps } from "./devops.svelte";
@@ -41,6 +55,7 @@
     widget,
     devops,
     onopen,
+    onrun,
     onkeyring,
   }: {
     widget: Widget;
@@ -49,6 +64,11 @@
      *  than invoked here for the reason the process meter's `onreveal` is: where
      *  a click goes is the studio's to decide, not an instrument's. */
     onopen: (url: string) => void;
+    /** Open a run's insides over the wall. Routed out rather than drawn here for
+     *  the reason `onkeyring` is: which panel is on screen is the studio's
+     *  business, and this widget can be dropped to the size of a card, where a
+     *  job list would not fit at all. */
+    onrun?: (run: Run) => void;
     /** Ask for the token panel. Routed out rather than reached for, the same way
      *  `onopen` is: which panel is on screen is the studio's business, and this
      *  widget can be dropped to the size of a card, where a field would not
@@ -94,6 +114,15 @@
     return [...by.entries()].slice(0, wanted).map(([project, runs]) => ({ project, runs }));
   });
 
+  /** What a click on a run does. The panel when there is somewhere to route it,
+   *  and the browser when there is not — so a `Pipelines` mounted without an
+   *  `onrun` (a test harness, a future caller) still does the useful thing
+   *  rather than nothing at all. */
+  function pick(r: Run) {
+    if (onrun) onrun(r);
+    else onopen(r.url);
+  }
+
   function why(r: Run): string {
     const who = shortName(r.by);
     const when = running(r) ? `${runSaid(r)} for ${took(elapsed(r, now))}` : runSaid(r);
@@ -105,7 +134,10 @@
 
 <div class="pipes" data-variant={variant}>
   <header>
-    <span class="what">{half.orgs.length === 1 ? half.orgs[0] : "azure devops"}</span>
+    <!-- One organisation names itself; several are not worth naming one of, and
+         "azure devops" stopped being true the moment a GitHub owner could be in
+         that list. -->
+    <span class="what">{half.orgs.length === 1 ? half.orgs[0] : "pipelines"}</span>
     <!-- Two numbers, and only when they are not zero. A header that always says
          `0 running 0 failed` is a header you stop reading; one that is bare
          until something is happening is one you notice. -->
@@ -141,7 +173,7 @@
           data-tier={tierOf(r)}
           class:going={running(r)}
           title={why(r)}
-          onclick={() => onopen(r.url)}
+          onclick={() => pick(r)}
           aria-label={why(r)}
         ></button>
       {/each}
@@ -159,7 +191,7 @@
                   data-tier={tierOf(r)}
                   class:going={running(r)}
                   title={why(r)}
-                  onclick={() => onopen(r.url)}
+                  onclick={() => pick(r)}
                   aria-label={why(r)}
                 ></button>
               {/each}
@@ -171,12 +203,31 @@
   {:else}
     <ul class="rows">
       {#each rows as r (r.id)}
-        <li>
-          <button class="row" data-tier={tierOf(r)} title={why(r)} onclick={() => onopen(r.url)}>
+        <!-- The row and the link are siblings rather than nested, because a
+             button inside a button is invalid and the browser resolves it by
+             swallowing one of them. -->
+        <li class="line">
+          <button class="row" data-tier={tierOf(r)} title={why(r)} onclick={() => pick(r)}>
             <span class="mark" class:going={running(r)}></span>
             <span class="label">{r.pipeline}</span>
             <span class="ref">{shortRef(r.branch)}</span>
             <span class="when">{took(elapsed(r, now))}</span>
+          </button>
+          <!-- Drawn only on hover and focus. It is the tenth-time gesture, and a
+               column of arrows down a list read at a glance would be nine rows
+               of chrome for one row's use — but it must stay reachable from the
+               keyboard, so `:focus-visible` shows it too. -->
+          <button
+            class="out"
+            title="open in the browser"
+            aria-label="open {r.pipeline} in the browser"
+            onclick={() => onopen(r.url)}
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M6 3h7v7" />
+              <path d="M13 3 7 9" />
+              <path d="M11 10.5V13H3V5h2.5" />
+            </svg>
           </button>
         </li>
       {/each}
@@ -264,6 +315,50 @@
   .row.more {
     cursor: default;
     color: var(--paper-mute);
+  }
+
+  /* The row and its link, side by side. The link takes no width until it is
+     wanted, so the row is exactly as wide as it was before this existed. */
+  .line {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+  }
+  .line .row {
+    flex: 1;
+    min-width: 0;
+  }
+  .out {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 2px;
+    background: none;
+    color: var(--paper-faint);
+    opacity: 0;
+    overflow: hidden;
+    cursor: pointer;
+  }
+  .line:hover .out,
+  .out:focus-visible {
+    width: 1.15rem;
+    opacity: 1;
+  }
+  .out:hover {
+    background: var(--raised);
+    color: var(--paper);
+  }
+  .out svg {
+    width: 0.68rem;
+    height: 0.68rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   button.row:hover {
     background: var(--raised);

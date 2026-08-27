@@ -26,7 +26,7 @@
  * different application. */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Review, Run } from "./azdo";
+import type { Detail, Review, Run } from "./azdo";
 
 /** How often the runs list is refreshed while something is watching it.
  *
@@ -41,6 +41,22 @@ const RUNS_EVERY = 20_000;
  *  PR that appeared thirty seconds ago is not news, and a vote landing is not
  *  something anybody is waiting at the wall to see. */
 const REVIEWS_EVERY = 60_000;
+
+/** How often an *open* run's insides are refreshed while it is still going.
+ *
+ * Faster than either list, and the justification is that you are looking at it:
+ * a panel you opened deliberately, on one run, is the one place on this wall
+ * where a five-second lag is noticeable. It costs one request against one run,
+ * where the runs list costs one per project.
+ *
+ * **And it stops the moment the run stops.** That is the half that makes the
+ * cadence affordable rather than the number itself — see `#pollDetail`. A
+ * finished run cannot change, so a panel left open on last Tuesday's build asks
+ * nothing of anybody, however long it sits there. The wall's standing rule is
+ * that a poller is bounded by somebody watching; this one is bounded twice, and
+ * the second bound is the one that matters, because the first would keep a
+ * five-second timer alive on a panel nobody has looked at since lunch. */
+const DETAIL_EVERY = 5_000;
 
 type RunsScan = {
   runs: Run[];
@@ -78,9 +94,30 @@ class Half<T> {
   unseen = $state(0);
 }
 
+/** The run whose insides are on screen, if any.
+ *
+ * One at a time, and that is the deliberate shape rather than a limitation.
+ * Which panel is over the wall is the studio's business — the arrangement
+ * `Keyring` already has — and a wall that could open three run panels at once
+ * would be a wall where closing them is a chore. The `id` is the whole of the
+ * identity because a run id already names its forge (`azdo/…`, `github/…`), so
+ * nothing here has to know there is a choice.
+ *
+ * Held on the connection rather than in a component, so that reopening the same
+ * run redraws what is already in hand instead of blanking for a beat — and so
+ * that the timer is stopped by the same object that started it. */
+class Opened {
+  id = $state("");
+  detail = $state<Detail | null>(null);
+  /** The command itself failing, as opposed to a fault the reading carried. */
+  fault = $state<string | null>(null);
+  at = $state(0);
+}
+
 export class DevOps {
   runs = new Half<Run>();
   reviews = new Half<Review>();
+  opened = new Opened();
 
   /** Where to look for organisations — the wall's project roots, injected the
    *  way `Cycle.watched` and `Widgets.others` are.
@@ -97,6 +134,8 @@ export class DevOps {
   #reviewTimer: ReturnType<typeof setInterval> | null = null;
   #runBusy = false;
   #reviewBusy = false;
+  #detailTimer: ReturnType<typeof setInterval> | null = null;
+  #detailBusy = false;
 
   /** How many widgets are asking for each, for the control surface's snapshot. */
   get watchers(): { runs: number; reviews: number } {
@@ -105,6 +144,13 @@ export class DevOps {
 
   get polling(): boolean {
     return !!this.#runTimer || !!this.#reviewTimer;
+  }
+
+  /** Whether an open run is still being watched, for the snapshot. Reported
+   *  apart from `polling` for the reason `meter.sampling` is: a timer that is
+   *  running for a different reason is a different fact. */
+  get watchingRun(): boolean {
+    return !!this.#detailTimer;
   }
 
   attachRuns(id: string) {
@@ -127,6 +173,73 @@ export class DevOps {
     if (this.#reviewTimer) return;
     this.#reviewTimer = setInterval(() => void this.#pollReviews(), REVIEWS_EVERY);
     void this.#pollReviews();
+  }
+
+  /* ── one run, opened ─────────────────────────────────────────────────────*/
+
+  /** Open a run, or re-open the one already open.
+   *
+   *  Re-opening the same id keeps the stages that are already drawn and refreshes
+   *  them underneath, rather than clearing to "asking…" and back — the same
+   *  bargain `stop` strikes when it keeps the rows. Opening a *different* one
+   *  clears, because drawing the previous run's jobs under a new run's title for
+   *  a beat is worse than drawing nothing. */
+  openRun(id: string) {
+    if (this.opened.id !== id) {
+      this.opened.id = id;
+      this.opened.detail = null;
+      this.opened.fault = null;
+    }
+    if (!this.#detailTimer) {
+      this.#detailTimer = setInterval(() => void this.#pollDetail(), DETAIL_EVERY);
+    }
+    void this.#pollDetail();
+  }
+
+  closeRun() {
+    this.#stopDetail();
+    this.opened.id = "";
+    this.opened.detail = null;
+    this.opened.fault = null;
+  }
+
+  #stopDetail() {
+    if (this.#detailTimer) clearInterval(this.#detailTimer);
+    this.#detailTimer = null;
+  }
+
+  async #pollDetail() {
+    const id = this.opened.id;
+    if (!id || this.#detailBusy) return;
+    this.#detailBusy = true;
+    try {
+      const got = await invoke<Detail>("forge_run", { id });
+      /* The panel may have been closed, or moved to another run, while this was
+         in flight — five seconds is long enough for that to be ordinary rather
+         than theoretical. Landing the answer anyway would draw one run's jobs
+         under another's title. */
+      if (this.opened.id !== id) return;
+      this.opened.detail = got;
+      this.opened.fault = null;
+      this.opened.at = Date.now();
+      /* **The second bound, and the one that matters.** A finished run cannot
+         change, so there is nothing further to ask and the timer comes off —
+         leaving the panel drawn, and the app asking nothing. Without this, a run
+         panel left open on a build that finished this morning would poll a
+         corporate server every five seconds until somebody closed it, which is
+         the exact shape the whole `attach`/`detach` arrangement exists to
+         prevent. */
+      if (!got.live) this.#stopDetail();
+    } catch (err) {
+      if (this.opened.id !== id) return;
+      this.opened.fault = String(err);
+      /* A reading that failed is not a run that finished, so the timer stays: a
+         network blip should heal itself on the next beat. The rows already drawn
+         stay too — same rule as `#land`. */
+      this.opened.at = Date.now();
+    } finally {
+      this.#detailBusy = false;
+    }
   }
 
   detach(id: string) {
@@ -155,6 +268,11 @@ export class DevOps {
     if (this.#reviewTimer) clearInterval(this.#reviewTimer);
     this.#runTimer = null;
     this.#reviewTimer = null;
+    /* The detail timer goes with them. It is not tied to a widget's attach, so
+       nothing else would ever stop it — a superseded generation left ticking by
+       a hot reload would poll a run panel nobody can see, which is exactly the
+       `Listeners` hazard this method exists for. */
+    this.#stopDetail();
     this.#runWatchers.clear();
     this.#reviewWatchers.clear();
     void this.#release();

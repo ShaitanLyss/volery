@@ -75,6 +75,7 @@
     onreveal,
     onopen,
     onkeyring,
+    onforgerun,
     ambience,
     flights,
     lineage,
@@ -154,6 +155,10 @@
     onopen?: (url: string) => void;
     /** Ask for the Azure DevOps token panel, from the pipelines face's fault. */
     onkeyring?: () => void;
+    /** A run to open over the wall, on its way from a pipelines widget to the
+     *  studio. The canvas carries it and does not read it — same as
+     *  `onkeyring`. */
+    onforgerun?: (run: import("./azdo").Run) => void;
     /** What the wall does when nobody is asking it anything, or null for a bare
      *  one. Drawn inside the surface rather than in App, so it covers exactly
      *  the wall and never the transcript you are reading. */
@@ -1652,6 +1657,7 @@
     {onreveal}
     {onopen}
     {onkeyring}
+    {onforgerun}
     onupdate={(patch) => widgets.update(w.id, glass ? glassPatch(patch) : patch)}
     onremove={() => void widgets.remove(w.id)}
   />

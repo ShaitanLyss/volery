@@ -128,7 +128,10 @@ pub struct Cache {
 /// it once rather than twice. `Hash` is deliberately *not* derived alongside it:
 /// a derived hash would disagree with this equality, which is a contract
 /// violation, and nothing here uses a `Repo` as a key.
-#[derive(Clone)]
+///
+/// `Debug` is here for `assert_eq!`, which needs it on both sides — the tests
+/// below compare two `Option<Repo>` to pin the case-folding down.
+#[derive(Clone, Debug)]
 pub struct Repo {
     owner: String,
     name: String,
