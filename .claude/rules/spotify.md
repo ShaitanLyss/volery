@@ -410,14 +410,19 @@ if self.session().config().proxy.is_some() || self.session().config().ap_port.is
 } else { None }
 ```
 
-A proxy with no `ap_port` therefore filters the whole list down to port 443 and throws away
-Spotify's preference order (4070, then 443, then 80). So `spotify.rs` sets `ap_port` explicitly
-and walks the ladder itself — `AP_PORTS`, one fresh `Session` per rung, each bounded by
-`CONNECT_BUDGET`. Both rungs were probed and both work, so the ladder is not for this network;
-it is for the one where 4070 really is firewalled, which is the case `ap_port` exists for.
+A proxy with no `ap_port` therefore filters the whole list down to one port. So `spotify.rs`
+sets it explicitly — `AP_PORT`, which is **443, and not as a preference**.
 
-80 is deliberately left off: a network that passes a binary protocol on 80 where it refused it
-on 443 is one nobody has met, and an extra rung is 30 seconds of somebody's evening.
+> **What was written here first, and was wrong.** This said `spotify.rs` "walks the ladder
+> itself — `AP_PORTS`", tried 4070 then 443, and reasoned: *both rungs were probed and both
+> work, so the ladder is not for this network; it is for the one where 4070 really is
+> firewalled.* Every clause of that is true about the **access point** and false about a
+> session, because the same filter applies to the `dealer` and `spclient` lists and apresolve
+> publishes those on 443 alone. `ap_port: Some(4070)` therefore empties the dealer list and the
+> session dies a second after authenticating. The ladder is gone and there is nothing to
+> ladder. See *Audio, at last* below, which is where that was measured — and note that the
+> probe which "proved" both rungs called `session.connect` and stopped, which is the same
+> mistake twice in one afternoon.
 
 ### `Spirc::new` opens the session itself, and connecting first breaks it
 
@@ -467,20 +472,19 @@ proven as it passed — but "proven" meant *proven in the probe*, and the probe 
 make. **A probe that exercises a different call sequence from the app has not tested the app.**
 `.scratch/spotprobe` would have caught this the moment it went one line further.
 
-#### What the fix costs, and why the ladder moved
+#### What the fix costs
 
-One attempt is now one `Spirc::new` — session, client token, dealer, device — and `AP_PORTS`
-wraps *that* rather than a bare connect. Each rung is a complete independent attempt and needs
-its own `Session` (`ap_port` is read off the config a session was built with) and its own
-`Player` (a player is bound to the session it was built against). `SinkBuilder` and `MixerFn`
-are plain `fn` pointers, so they are `Copy` and cost nothing per rung.
+One attempt is now one `Spirc::new` — session, client token, dealer, device — bounded by
+`CONNECT_BUDGET`, and there is exactly one of them: one `Session`, one `Player`, no ladder. It
+was briefly a ladder around this call, which is recorded above as the wrong turn it was.
 
-The one thing to know about a *failed* rung: it drops its `Player`, and `Drop for Player` calls
-`handle.join()` — a blocking wait, on a tokio worker, which this codebase otherwise has a
-standing rule against. It is left inline and the argument is written at the call site: a rung
-that never authenticated never asked the backend for a device, so the player thread is parked
-on an empty command channel and the join returns immediately. **If a rung ever begins failing
-after playback has started, that reasoning stops holding** and the drop wants `off_main`.
+The one thing to know about a *failed* attempt: it drops its `Player` inside `Spirc::new`, and
+`Drop for Player` calls `handle.join()` — a blocking wait, on a tokio worker, which this
+codebase otherwise has a standing rule against. It is left inline and the argument is written
+at the call site: an attempt that never authenticated never asked the backend for a device, so
+the player thread is parked on an empty command channel and the join returns immediately. **If
+this ever begins failing after playback has started, that reasoning stops holding** and the
+drop wants `off_main`.
 
 ### What was still unproven, and no longer is
 
