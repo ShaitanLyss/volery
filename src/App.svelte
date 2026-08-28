@@ -1946,6 +1946,32 @@
       await shell.toggle(shellCwd());
       return;
     }
+    /* **Ctrl+F belongs to whatever it was opened over, and never to the
+       browser.** Above the two panel guards below, and swallowed
+       unconditionally, which is the half that matters: the webview's own find
+       bar searches the *whole document* — the header, every card title, every
+       widget on the wall, the dock — and draws Chromium's chrome over an app
+       built on having none. The user asked for it gone *everywhere* (sink
+       776a4d34), so the key is taken even where there is nothing to hand it to.
+       A find that works in some places and summons the browser's in others is
+       worse than either.
+
+       Then it is routed by what is open, which is the "based on where it was
+       opened" half. The shell has no search of its own yet and gets silence
+       rather than the browser's. The finder's ctrl+F is a different question
+       entirely — it swaps that panel's two modes — and `Spyglass.svelte` has
+       already answered it by the time this runs, so this only has to stop the
+       default. The transcript is the one thing that answers it today.
+
+       `Transcript.hunt` focuses the field *and selects what is in it*, so a
+       second press means "search for something else" rather than losing what
+       you typed, which is what every find bar does. */
+    if ((e.key === "f" || e.key === "F") && (e.ctrlKey || e.metaKey) && !e.altKey) {
+      e.preventDefault();
+      if (!shell.open && !finder.open && focused && showDetail) transcript?.hunt();
+      return;
+    }
+
     /* An open shell owns the keyboard. Every branch below is aimed at the wall
        or at the reading, and the two that reach past a field regardless —
        ctrl+arrow's scroll and ctrl+0's reading size — would otherwise fire

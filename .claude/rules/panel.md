@@ -233,6 +233,53 @@ it may be part of. `toolcall.ts` is pure and decides *what* is shown and in what
   The `[Image: original 3200x2000, displayed at 2000x1250. …]` note is a *different* record and
   stays dropped (`isImageNote`): it is coordinate arithmetic addressed to the model, it carries
   `isMeta` on disk, and it was being drawn as something the user had typed.
+### Finding a word in what you are reading
+
+Ctrl+F used to reach the *webview's* own find bar, which is the wrong tool twice over: it
+searches the whole document — the header, every card title, every widget on the wall, the dock
+— and it draws Chromium's chrome over an app whose whole premise is having none. The user
+asked for it gone everywhere and for a find that belongs to whatever it was opened over (sink
+776a4d34). The transcript is the first of those and for now the only one.
+
+- **The key is swallowed unconditionally, above the shell and finder guards.** `App.svelte`'s
+  ladder takes Ctrl+F even where there is nothing to hand it to, because a find that works in
+  some places and summons the browser's in others is worse than either. Then it is *routed*:
+  the shell has no search of its own yet and gets silence; the finder's Ctrl+F is a different
+  question — it swaps that panel's two modes — and `Spyglass.svelte` has already answered it by
+  the time the window handler runs, so this only has to stop the default.
+- **`hunt.ts` is plain case-insensitive substring, deliberately not `finding.ts`'s scorer.** A
+  file finder scores candidates because it is answering "which of these did you mean" from a
+  few characters. Ctrl+F answers "where does this word appear", and a fuzzy match there is a
+  find that jumps to places the word is not. Different question, different matcher, and they
+  share no code on purpose.
+- **Matches are counted, blocks are scrolled to.** "3 of 17" has to mean seventeen occurrences
+  or stepping through it skips some — so `huntBlocks` carries spans per block and `matchAt` is
+  the mapping between the two. `MIN_QUERY` is 2: one character matches most of any transcript,
+  which is noise rather than a reading, and the panel draws something per match.
+- **A closed fold is searched, and landing there opens it.** `hunt.ts::textOf` looks inside a
+  run of tool calls, because the alternative is a find that reports a word absent from a
+  transcript containing it — and `carry` un-shuts and opens the fold before scrolling, or the
+  panel would say "here" and show a collapsed line. A call's *result* is deliberately not
+  searched: it can be twenty thousand characters of a file that was read, and a match in it is
+  not a place in the conversation.
+- **Block-level, not character-level, and that is the one real limit.** A `text` line is
+  rendered markdown, so highlighting inside it means reaching into `Markdown.svelte`'s output —
+  a much larger surface traded for a nicer highlight. A match bands its block; the current one
+  bands brighter and takes an outline. Achromatic, because colour on this wall is status and a
+  search is not one; the single exception is the tally going rust when the word is not there,
+  which *is* a result.
+- **`.blk` is `display: contents`**, so an anchor per block costs no layout — the column's flex
+  still sees the block itself. Which means the wrapper has no box: the band is drawn on the
+  child (`> :global(*)`), and `carry` scrolls `firstElementChild` rather than the wrapper,
+  because `scrollIntoView` on a boxless element silently does nothing.
+- **The bar floats over the column rather than sitting above it.** Opening a find must not
+  reflow the thing you are searching. It is at the top because a match is scrolled to the
+  *centre*, so a bar at the foot would be the one place a match can never be.
+- **Escape and Enter are stopped from propagating.** Escape on this wall interrupts a card's
+  turn, and closing a find bar must not also stop an agent — the same care `Bump.svelte` takes.
+  Every other key is stopped too, or a printable one would reach the wall's ladder and land in
+  the focused card's draft.
+
 - **A copied diff is a `diff` fence.** Each row is its own element so it can carry a background,
   which makes every row a block, and blocks are joined with a blank line — so an eight-line edit
   came out of the clipboard sixteen lines tall with the shape of the change gone. `copy.ts` has a

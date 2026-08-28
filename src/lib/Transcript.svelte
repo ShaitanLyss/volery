@@ -30,6 +30,7 @@
     longFold,
     type Block,
   } from "./transcript";
+  import { MIN_QUERY, huntBlocks, huntCap, matchAt, stepTo, tally } from "./hunt";
   import { selectionMarkdown } from "./copy";
   /* The judgement, and the slack it is made with, are shared with every other
      scroller that follows its own tail — see follow.ts. The wiring is not: this
@@ -164,6 +165,125 @@
   }
 
   let scroller: HTMLDivElement | undefined = $state();
+
+  /* ── finding a word in what you are reading ──────────────────────────────
+   *
+   * Ctrl+F used to reach the webview's own find bar, which searched the *whole
+   * document* — the header, every card title, every widget on the wall — and
+   * drew Chromium's chrome over an app that has none. Asked for by the user
+   * (sink 776a4d34). The arithmetic is `hunt.ts`, pure and tested; this is the
+   * field, the stepping and the scroll.
+   *
+   * Both columns at once, past and live, because "this transcript" is what the
+   * panel is showing and the split into history and live is an implementation
+   * detail of how it got there. */
+  let hunting = $state(false);
+  let query = $state("");
+  let mark = $state(0);
+  let field: HTMLInputElement | undefined = $state();
+
+  const searchable = $derived([...past, ...live]);
+  const found = $derived(hunting ? huntBlocks(searchable, query) : []);
+  const matches = $derived(tally(found));
+  const cap = $derived(huntCap(query, matches, mark));
+  /** Which block keys carry a match — read in the markup, so a band is one
+   *  lookup rather than a scan per block. */
+  const lit = $derived(new Set(found.map((f) => f.key)));
+  /** The block the cursor is in, for the brighter of the two bands. */
+  const here = $derived(matchAt(found, mark)?.key ?? null);
+
+  /** Open the find bar, or put the cursor back in it if it is already open.
+   *
+   *  Exported because Ctrl+F is a *global* binding — `App.svelte` owns the
+   *  ladder and swallows the key everywhere so the browser never sees it — and
+   *  because pressing it twice should select what you typed rather than clear
+   *  it, which is what every find bar does. */
+  export function hunt() {
+    hunting = true;
+    /* After the field exists. A `tick` would do, and a frame is what the rest of
+       this component already waits on. */
+    requestAnimationFrame(() => {
+      field?.focus();
+      field?.select();
+    });
+  }
+
+  function unhunt() {
+    hunting = false;
+    query = "";
+    mark = 0;
+    /* Back to the column, or the next keystroke goes nowhere — the field was
+       holding focus and the panel's own keys are read on the scroller. */
+    scroller?.focus();
+  }
+
+  /** Carry the view to the match at `mark`.
+   *
+   *  Opens the fold it is in first, which is the half that makes searching a
+   *  closed fold honest: `hunt.ts::textOf` deliberately looks inside one, so a
+   *  match there is real and landing on a collapsed line would be the panel
+   *  saying "here" and showing nothing.
+   *
+   *  `pinned = -1` and `stopGlide()` for the reason `step` does it: this is you
+   *  changing your mind about where the view should be, and the follow would
+   *  otherwise write the tail straight over it on the next event. */
+  function carry() {
+    const at = matchAt(found, mark);
+    if (!at || !scroller) return;
+    stopGlide();
+    pinned = -1;
+    following = false;
+    if (shut[at.key]) delete shut[at.key];
+    if (!open[at.key]) open[at.key] = true;
+    requestAnimationFrame(() => {
+      const wrap = scroller?.querySelector<HTMLElement>(`[data-hunt="${CSS.escape(at.key)}"]`);
+      /* The *child*, not the wrapper. `.blk` is `display: contents`, which is
+         what makes an anchor per block free — and an element with no box has
+         nothing for `scrollIntoView` to scroll to, so aiming at the wrapper
+         silently does nothing at all. */
+      const el = wrap?.firstElementChild ?? wrap;
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  }
+
+  function stepMatch(by: number) {
+    if (matches === 0) return;
+    mark = stepTo(matches, mark, by);
+    carry();
+  }
+
+  /** The field's own keys. Enter steps, shift+Enter steps back, Escape leaves.
+   *
+   *  Stopped from propagating, all of them: Escape on this wall interrupts a
+   *  card's turn, and closing a find bar must not also stop an agent — the same
+   *  care `Bump.svelte` takes with its own Escape. */
+  function onHuntKey(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      unhunt();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      stepMatch(e.shiftKey ? -1 : 1);
+      return;
+    }
+    /* Everything else is typing, and must not reach the wall's ladder — a
+       printable key there goes into the focused card's draft. */
+    e.stopPropagation();
+  }
+
+  /* A new query starts from the first match rather than from wherever the last
+     one left the cursor, and lands on it without being asked. Keyed on the
+     query alone: stepping changes `mark` and must not re-trigger this. */
+  $effect(() => {
+    const q = query;
+    if (!hunting) return;
+    mark = 0;
+    if (q.trim().length >= MIN_QUERY) carry();
+  });
 
   /** How long after the last scroll event a view being carried counts as having
    *  arrived. Chromium's smooth scroll emits all the way to the end, so this is
@@ -927,6 +1047,18 @@
      so the rails list the same places whatever is open. -->
 {#snippet column(blocks: Block[])}
   {#each blocks as b (b.key)}
+    <!-- A wrapper per block, and only so a find has something to scroll to.
+         `display: contents` so it is invisible to layout — the column's own
+         flex still sees the block itself, which is what keeps this from being a
+         reflow in exchange for a feature. The band is drawn on the wrapper
+         rather than on the block, because a block is four different elements
+         depending on what it is and one of them is a component. -->
+    <div
+      class="blk"
+      data-hunt={b.key}
+      class:found={lit.has(b.key)}
+      class:here={here === b.key}
+    >
     {#if b.kind === "line"}
       {@render one(b.line, lineKey(b.line, b.key))}
     {:else if b.kind === "long"}
@@ -1030,6 +1162,7 @@
         {/if}
       </div>
     {/if}
+    </div>
   {/each}
 {/snippet}
 
@@ -1054,6 +1187,44 @@
        inside `.lines` it would be pinned to the text rather than to the panel,
        and would slide off the top the moment you scrolled up. -->
   <div class="reading">
+    <!-- Finding a word in what you are reading. Over the column rather than
+         above it, so opening it does not reflow the thing you are searching —
+         the one gesture where the text moving under you is the worst possible
+         answer. It sits at the top because a match is scrolled to the *centre*,
+         so a bar at the foot would be the one place a match can never be. -->
+    {#if hunting}
+      <div class="hunt">
+        <input
+          bind:this={field}
+          bind:value={query}
+          class="q"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="find in this transcript"
+          aria-label="find in this transcript"
+          onkeydown={onHuntKey}
+        />
+        <span class="tally" class:none={query.trim().length >= MIN_QUERY && matches === 0}
+          >{cap}</span
+        >
+        <button
+          type="button"
+          class="hstep"
+          disabled={matches === 0}
+          title="previous match — shift+enter"
+          onclick={() => stepMatch(-1)}>↑</button
+        >
+        <button
+          type="button"
+          class="hstep"
+          disabled={matches === 0}
+          title="next match — enter"
+          onclick={() => stepMatch(1)}>↓</button
+        >
+        <button type="button" class="hstep" title="close — escape" onclick={unhunt}>×</button>
+      </div>
+    {/if}
     <div
       class="lines"
       bind:this={scroller}
@@ -1274,6 +1445,97 @@
     flex-direction: column;
   }
 
+  /* ── the find bar ──────────────────────────────────────────────────────
+     Chrome, so achromatic: colour on this wall is status and a search is not
+     one. The single exception is `.tally.none`, which is a *result* — the word
+     is not here — and takes the same rust every other failed reading does. */
+  .hunt {
+    position: absolute;
+    z-index: 3;
+    top: 0.3rem;
+    right: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.3rem;
+    /* Opaque. It stands over the column, and nothing standing over something
+       else on this wall may be transparent. */
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    box-shadow: 0 3px 10px color-mix(in srgb, var(--ink) 45%, transparent);
+  }
+  .hunt .q {
+    width: 13rem;
+    font-family: var(--util);
+    font-size: calc(0.68rem * var(--read, 1));
+    line-height: 1.4;
+    padding: 0.1rem 0.35rem;
+    color: var(--paper);
+    background: var(--well);
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+  }
+  .hunt .q:focus {
+    outline: none;
+    border-color: var(--paper-faint);
+  }
+  .hunt .tally {
+    min-width: 5.5rem;
+    font-family: var(--util);
+    font-size: calc(0.6rem * var(--read, 1));
+    color: var(--paper-mute);
+    white-space: nowrap;
+  }
+  .hunt .tally.none {
+    /* The one coloured thing in this bar, and it is a *result* rather than
+       chrome: the word is not in this transcript. Same rust every other failed
+       reading on the wall takes. */
+    color: var(--st-fail);
+  }
+  .hunt .hstep {
+    font-family: var(--util);
+    font-size: 0.7rem;
+    line-height: 1;
+    padding: 0.15rem 0.3rem;
+    color: var(--paper-dim);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .hunt .hstep:hover:not(:disabled) {
+    color: var(--paper);
+    border-color: var(--edge);
+  }
+  .hunt .hstep:disabled {
+    color: var(--paper-faint);
+    cursor: default;
+  }
+
+  /* One wrapper per block, and `display: contents` is the whole of why it is
+     affordable: the column's flex layout still sees the block itself, so this
+     adds an anchor to scroll to and changes nothing about how anything sits.
+
+     Which means the band cannot be a background — a `display: contents` element
+     has no box to paint. It is drawn on the block inside instead, which is the
+     one thing a wrapper can still reach. */
+  .blk {
+    display: contents;
+  }
+  /* Every match, quietly. A found block is a place worth noticing while you
+     scan; it is not where you are. */
+  .blk.found > :global(*) {
+    background: color-mix(in srgb, var(--paper) 7%, transparent);
+    border-radius: 2px;
+  }
+  /* And where you are, which has to be findable at a glance in a column of
+     them. Still achromatic — brighter rather than coloured. */
+  .blk.here > :global(*) {
+    background: color-mix(in srgb, var(--paper) 15%, transparent);
+    outline: 1px solid var(--paper-faint);
+    outline-offset: 1px;
+  }
   /* Quiet, achromatic, and clear of the 9px scrollbar. Opaque because it sits
      over the last lines of the answer, and raised off the well rather than
      outlined in anything brighter: it is a way out of where you are, not a

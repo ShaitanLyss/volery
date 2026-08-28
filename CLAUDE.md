@@ -55,6 +55,7 @@ bun run tauri build      # bundle
 
 bun run test             # the pure suites: ansi, classify, layout, pick, glass, specs, history, menu,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
+                         # hunt,
                          # presets,
                          # commands, copy, widgets, naming, drafts, rousing, quitting, timing,
                          # gears,
@@ -119,7 +120,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `repair.md` | mending a conversation a tool call made unsendable: the two causes behind one 400, taking the bad characters out, and the original kept until the card has moved on | `repair.ts`, `repair/mod.rs`, `repair/text.rs` |
 | `restore.md` | painting the wall from SQLite, rousing dormant cards, setting one aside, scrollback and adopting sessions Skein did not start | `rousing.ts`, `skein.svelte.ts`, `history.ts`, `sessions.rs` |
 | `theme.md` | how the reading is set: a theme as a diff against `tokens.css`, the revert guarantee, the eleven knobs and why each is arguable, deriving and carrying one off the machine | `theme.ts`, `theme.svelte.ts`, `Themes.svelte`, `tokens.css` |
-| `panel.md` | the transcript: markdown parsing, folding tool calls, opening one to see its arguments and result, panel width, reading size, the two rails, keyboard scrolling, following the tail | `Transcript.svelte`, `Markdown.svelte`, `markdown.ts`, `outline.ts`, `follow.ts`, `transcript.ts`, `toolcall.ts`, `ToolCall.svelte`, `copy.ts` |
+| `panel.md` | the transcript: markdown parsing, folding tool calls, opening one to see its arguments and result, panel width, reading size, the two rails, keyboard scrolling, following the tail, finding a word in it | `Transcript.svelte`, `Markdown.svelte`, `markdown.ts`, `outline.ts`, `follow.ts`, `transcript.ts`, `toolcall.ts`, `ToolCall.svelte`, `copy.ts`, `hunt.ts` |
 | `layout.md` | territories, the flow, pinning, the two-box viewport, `CARD_BOX`, the three pointer gestures, one selection over four kinds and the band that draws it, and an agent putting an image on the wall beside its card | `layout.ts`, `pick.ts`, `Canvas.svelte`, `studio.svelte.ts`, `images.svelte.ts`, `pin.rs` |
 | `undo.md` | taking it back: one shape for four realms, the boundary that keeps prompts and the viewport off the stack, why a drag is one press, and the image file that is no longer deleted with its row | `undo.ts`, `undo.svelte.ts` |
 | `widgets.md` | the widget catalogue and its knobs, the clock, the performance meter, and the four logs over one substrate — including the app's own, and why it had none until 2026-08-28 | `widgets.ts`, `WidgetNode.svelte`, `Clock.svelte`, `perf.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`, `unreallog.ts`, `applog.ts`, `applog.rs` |
@@ -243,6 +244,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
 `undo.ts`, `finding.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
+`hunt.ts`,
 `applog.ts`,
 `nvim.ts`,
 `guidance.ts`,
