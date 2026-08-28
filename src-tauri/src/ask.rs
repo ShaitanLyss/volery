@@ -739,8 +739,10 @@ pub(crate) fn roster() -> Vec<Value> {
         ),
         found_by(
             crate::servers::server_log_schema(),
-            "server output, build error, stack trace, compile failure, why did \
-             the dev server fall over, read the log",
+            "local dev server output on this machine, local build error, local \
+             compile failure, stack trace, vite next pnpm dev tsc output, why \
+             did the dev server fall over, read the log — not a CI or pipeline \
+             run",
         ),
         found_by(
             crate::servers::server_schema(),
@@ -767,10 +769,14 @@ pub(crate) fn roster() -> Vec<Value> {
            answer about the wrong build, which is the worst shape this failure
            has. Found by 3f08dc99 reading the whole list at once, which is the
            property that made putting the hints here rather than in each module
-           worth it. **`server_log`'s half is not done** — its hint should say
-           `local` where this one says `CI`, and until somebody is next in this
-           function for their own reasons that asymmetry is known rather than
-           overlooked. */
+           worth it. **`server_log`'s half is now done too** (sink a0106918):
+           every build word in its hint is qualified `local`, `on this machine`
+           or named after a local tool, and it ends by saying what it is *not*.
+           The pair reads as a pair — `CI`/`pipeline`/`remote` against
+           `local`/`dev server` — which is the property worth keeping, since the
+           matcher scores text and a qualifier only separates two tools if both
+           of them carry one. Qualify only the winner and the loser still ranks
+           on the bare noun. */
         found_by(
             crate::smith::pipelines_schema(),
             "azure devops pipelines CI build remote build builds ci status runs \
