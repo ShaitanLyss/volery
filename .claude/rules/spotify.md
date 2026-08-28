@@ -482,12 +482,13 @@ that never authenticated never asked the backend for a device, so the player thr
 on an empty command channel and the join returns immediately. **If a rung ever begins failing
 after playback has started, that reasoning stops holding** and the drop wants `off_main`.
 
-### What is still unproven
+### What was still unproven, and no longer is
 
-Audio. The session opens, authenticates and registers a device; nothing has yet decoded a byte
-or opened the output. Sink `4951f398` carries that, and it is now the whole of what is left in
-it — and given the two bugs found in the two legs before it, the honest expectation is that
-this one has its own.
+Audio ran on 2026-08-28 — see the section below, which is the four further faults between a
+registered device and a sound. What remains unproven is the **catalogue search**: `records`
+answers `UnknownIssuer` against a host that presents a genuine DigiCert chain to every other
+client on this machine. Sink `d10f77e3` predicted a 403 from the borrowed client id and that
+question is still unanswered, because the request never gets far enough to be refused.
 
 ### The probe, and why it is a scratch crate
 
@@ -525,6 +526,134 @@ stretch on 2026-08-27.
 with `log` macros, into nothing — so the whole diagnosis existed at runtime and was discarded.
 `tunnel.rs::log_line` is the one place holding that shape until a sink exists. See sink
 `7786cf73`.
+
+## Audio, at last — and the four things between a session and a sound
+
+2026-08-28. Sink `4951f398` said the player had never made a sound. It does now, and the path
+from "the device registered" to "i hear music" had **four** more faults in it. They are worth
+reading together, because three of the four failed *silently* and the fourth lied.
+
+### `ap_port` filters the dealer too, and the dealer is 443-only
+
+0.14.4 registered a device and then `put_on` answered:
+
+```text
+spotify would not put that on: Internal error { channel closed }
+```
+
+A closed channel means the Spirc *task* has exited — `SpircTask::run` loops on
+`!session.is_invalid() && !self.shutdown` — so the handle in `Live` was pointing at nothing.
+The probe printed the cause on the way past:
+
+```text
+WARN  apresolve] Failed to resolve all access points, using fallbacks
+ERROR spirc] starting dealer failed: No access point available for endpoint dealer
+DEBUG spirc] drop Spirc[0]
+```
+
+**`ApResolver::process_ap_strings` applies the port filter to every endpoint list, not just to
+access points.** `dealer` and `spclient` go through the same `filter_port`, and apresolve
+publishes those on one port only. Measured:
+
+| endpoint | ports offered |
+|---|---|
+| `accesspoint` | 4070, 443, 80 |
+| `dealer` | **443 only** |
+| `spclient` | **443 only** |
+
+So `ap_port: Some(4070)` empties the dealer list — and empties it *again* when `apresolve`
+adds its fallbacks, since those are filtered by the same rule. The dealer never starts, the
+Spirc task exits within a second, and what is left is a live-looking handle over nothing.
+
+Under a proxy there is therefore exactly **one** workable value, and `AP_PORT` is 443. Not a
+preference: 4070 is broken. A network that blocks 443 blocks the dealer as well, so there is
+nothing here to ladder and the ladder that was here has gone.
+
+**It was a ladder because a probe lied**, and this is the second time in one afternoon:
+`[4070, 443]` was written on measurements that showed *both* rungs authenticating — because
+the probe called `session.connect` and stopped, and the access point is the one endpoint 4070
+is valid for. The same mistake as `Spirc::new` above, made *while fixing it*. Twice from one
+habit is no longer bad luck: **exercise the whole call, not the leg you are thinking about.**
+
+### A task that ends is a session that ended, and nobody was listening
+
+`spotify_start` spawned the Spirc task and dropped the `JoinHandle`. So when the task exited,
+the wall was told nothing: the widget went on drawing *"ready, nothing playing"* over a device
+that no longer existed, and the only way to discover it was to try to use it.
+
+The task ending **is** the event — it happens exactly when the session goes invalid or is shut
+down — so it is folded rather than polled, which is CLAUDE.md's standing rule applied in a
+place it had simply been skipped. `start_inner` now awaits the task and emits
+`Closed { fault }`, taking `live` with it. `stop_inner` has already taken `live` on a
+deliberate stop, so a stop is not reported as a fault.
+
+Worth noticing the shape: **the fix is available without knowing the cause.** A wall that had
+been folding this from the start would have shown the dealer failure the moment it happened,
+instead of presenting a healthy-looking device for four minutes.
+
+### A registered device is not an *active* device
+
+With the dealer up, `load` was accepted and nothing played:
+
+```text
+INFO  spirc] active device is <> with session <1pXQQEKINFEl7eJ7KjvKAv>
+WARN  spirc] SpircCommand::Load(..) will be ignored while Not Active
+```
+
+`Spirc::load` returns `Ok` and the task discards the command. So the tool reported success, the
+card believed it, and the room stayed quiet — **the worst failure shape there is**, and exactly
+what `selector.rs` argues against when it says a refusal must be distinguishable from success.
+
+`Spirc::activate()` is the missing call and `put_on` makes it unconditionally: it is idempotent,
+answering an already-active device with a warning and no change. Note what activating means —
+Volery becomes the active Connect device, so it takes playback from whatever else was holding
+it. That is consistent with what `put_on` is for and with its refusal while the *wall* is
+already playing, but it is a fact about somebody's phone and it is recorded here rather than
+discovered.
+
+### The volume curve was applied twice
+
+The first sound this app ever made was reported as *"i hear music / low tho"*, and librespot
+had said why several hundred lines earlier:
+
+```text
+DEBUG mixer::mappings] Input volume 32767 mapped to: 3.16%
+```
+
+`VolumeCtrl::default()` is `Log(60 dB)`, and `ConnectConfig`'s default volume is
+`u16::MAX / 2`. So the slider's midpoint arrives as −30 dB:
+
+| slider | Log(60) — the default | Cubic(60) | Linear |
+|---|---|---|---|
+| 25% | 0.56% | 1.58% | 25% |
+| **50%** | **3.16%** (−30 dB) | 12.5% (−18 dB) | 50% (−6 dB) |
+| 75% | 17.8% | 42.2% | 75% |
+
+`VolumeCtrl::Linear`, and the argument is not "log is too aggressive" — it is that **Spotify
+has already applied a curve.** Connect volume is a plain 0..65535 device level; the perceptual
+shaping happens in the slider you actually drag, in Spotify's own client, before the number
+reaches us. A second curve underneath it is double-mapping, and 3.16% is what double-mapping
+costs. It also stops the wall disagreeing with itself: `spotify.ts`'s `volumeFromWire` is
+`v / 65535`, so any curve here is a reading that contradicts the number beside it.
+
+Confirmed by the same log line afterwards: `Input volume 32767 mapped to: 50.00%`.
+
+### What the probe had to grow to find any of this
+
+All four were found in one run of `.scratch/spotprobe`, once it did the *whole* of
+`spotify_start` — session, `Player`, `Spirc`, `activate`, `load` — and then sat for 45 seconds
+printing player events, with a half-second watch on `session.is_invalid()` and a marked line
+for the moment the Spirc task ended. That last one is what separated "the session died" from
+"the task exited while the session was fine", which is the difference between two entirely
+different bugs.
+
+It also caches its refresh token to `refresh.txt` now, so it costs no browser sign-in. Four of
+them in one afternoon was the argument; the rotation is written back on every run or the cache
+is dead after the first.
+
+None of this needed to be a probe. Every line quoted above was emitted by librespot at
+`INFO`, `WARN` or `ERROR` while the app was running, into a `log` sink the app does not
+install. Sink `7786cf73`.
 
 ## A card may choose what plays, and deliberately cannot drive it
 

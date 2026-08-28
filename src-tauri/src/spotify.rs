@@ -49,7 +49,7 @@ use librespot_core::config::DeviceType;
 use librespot_core::{Session, SessionConfig};
 use librespot_metadata::audio::UniqueFields;
 use librespot_playback::audio_backend;
-use librespot_playback::config::{AudioFormat, PlayerConfig};
+use librespot_playback::config::{AudioFormat, PlayerConfig, VolumeCtrl};
 use librespot_playback::mixer::{self, Mixer, MixerConfig};
 use librespot_playback::player::{Player, PlayerEvent};
 
@@ -446,21 +446,41 @@ pub async fn spotify_start(app: AppHandle, name: Option<String>) -> Result<(), S
 /// Two rungs, so the worst case a person waits is twice this.
 const CONNECT_BUDGET: Duration = Duration::from_secs(30);
 
-/// The access-point ports to try, in Spotify's own order of preference.
+/// The one port everything can be on, and **443 is not a preference here — it is
+/// the only value that works.**
 ///
-/// Normally librespot walks this ladder itself — apresolve returns 4070, 443 and
-/// 80 in that order and `ApResolver` pops them in turn. **Setting `proxy` takes
-/// that away**, silently: `port_config` returns `ap_port.unwrap_or(443)` the
-/// moment a proxy is configured, so the whole list gets filtered to one port and
-/// a caller who did not also set `ap_port` has quietly chosen 443 for everybody.
-/// See `tunnel.rs`, which needs the proxy and therefore owes this.
+/// Setting `proxy` (which `tunnel.rs` requires) makes `ApResolver::port_config`
+/// return `ap_port.unwrap_or(443)`, and `process_ap_strings` then filters *every*
+/// endpoint list by it. Not just the access points — the **dealer** and
+/// **spclient** lists go through the same filter, and apresolve offers those on
+/// one port only. Measured 2026-08-28:
 ///
-/// So the ladder is rebuilt here. Both rungs were probed on 2026-08-28 and both
-/// authenticate — 1.94s on 4070, 1.27s on 443 — so this is not about the network
-/// it was found on. It is about the one where 4070 is firewalled, which is the
-/// case `ap_port` exists for at all; 80 is left off because a port that lets a
-/// binary protocol through where 443 did not is a network nobody has met.
-const AP_PORTS: [u16; 2] = [4070, 443];
+/// | endpoint | ports offered |
+/// |---|---|
+/// | `accesspoint` | 4070, 443, 80 |
+/// | `dealer` | **443 only** |
+/// | `spclient` | **443 only** |
+///
+/// So `ap_port: Some(4070)` empties the dealer list, and empties it again when
+/// `apresolve` adds its fallbacks, because those are filtered by the same rule.
+/// `Spirc::new` then dies on `No access point available for endpoint dealer`,
+/// its task exits immediately, and every later `put_on` answers *"channel
+/// closed"* against a handle whose task is gone. That is what shipped in 0.14.4
+/// and it looked nothing like a port problem: the session authenticated, the
+/// widget said "ready, nothing playing", and there was no session at all.
+///
+/// This was a ladder, `[4070, 443]`, on the reasoning that 4070 is Spotify's own
+/// first preference and a firewall might block it. Both rungs had been probed
+/// and both "worked" — because the probe called `session.connect` and stopped,
+/// and the access point is the one endpoint 4070 is valid for. **The same
+/// mistake as the `Spirc::new` bug one section down, made again while fixing
+/// it**: a probe that runs a different sequence from the app has not tested the
+/// app. Two failures from one habit in one afternoon is the argument for
+/// exercising the whole call, not the leg you are thinking about.
+///
+/// There is nothing to ladder. A network that blocks 443 blocks the dealer too,
+/// and no choice here recovers from that.
+const AP_PORT: u16 = 443;
 
 async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String> {
     {
@@ -510,93 +530,104 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
        outer failure is how you find out what the inner one was**, and a leg
        that has never run is not a leg that works.
 
-       So the whole attempt is one call now, and the ladder is around that. Each
-       rung is a complete, independent try — its own `Session`, because `ap_port`
-       is read off the config a session was built with; its own `Player`, because
-       a player is bound to the session it was built against. */
-    let mut live = None;
-    let mut fault = String::new();
-
-    for ap_port in AP_PORTS {
-        let session = Session::new(
-            SessionConfig {
-                proxy: Some(proxy.clone()),
-                ap_port: Some(ap_port),
-                ..Default::default()
-            },
-            None,
-        );
-
-        let mixer = mixer_fn(MixerConfig::default())
-            .map_err(|e| format!("could not open the mixer: {e}"))?;
-
-        /* position_update_interval stays None — see the note at the top of the
-           file. `backend` is a plain `fn` pointer (`SinkBuilder`), so it is Copy
-           and each rung gets its own without any cloning ceremony. */
-        let player = Player::new(
-            PlayerConfig::default(),
-            session.clone(),
-            mixer.get_soft_volume(),
-            move || backend(None, AudioFormat::default()),
-        );
-        let events = player.get_player_event_channel();
-
-        let connect = ConnectConfig {
-            name: device.clone(),
-            device_type: DeviceType::Computer,
+       So the whole attempt is one call. There is no port ladder around it — see
+       `AP_PORT` for why there is exactly one value that can work. */
+    let session = Session::new(
+        SessionConfig {
+            proxy: Some(proxy.clone()),
+            ap_port: Some(AP_PORT),
             ..Default::default()
-        };
+        },
+        None,
+    );
 
-        /* Bounded, because librespot bounds none of this and its own worst case
-           is four minutes of silence. One budget for the whole attempt now,
-           since one call is the whole attempt.
+    /* **Linear, not librespot's default.** `VolumeCtrl::default()` is
+       `Log(60 dB)`, which maps a half-volume slider to *3.16%* amplitude —
+       measured 2026-08-28 from librespot's own log line, `Input volume 32767
+       mapped to: 3.16%`, and reported as "i hear music / low tho" the first time
+       audio ever came out of this app.
+       |  slider | Log(60) | Cubic(60) | Linear |
+       |---|---|---|---|
+       |  50% | 3.16% (-30dB) | 12.5% (-18dB) | 50% (-6dB) |
+       The curve is wrong here rather than merely aggressive, and the reason is
+       that **Spotify has already applied one**. Connect volume is a plain
+       0..65535 device level; the perceptual shaping happens in the slider you
+       actually drag, in Spotify's own client, before the number is sent. Putting
+       a second curve under it is double-mapping, which is the whole of the 3%.
+       It also makes the wall honest: `spotify.ts`'s `volumeFromWire` is
+       `v / 65535`, so any curve here is a reading that disagrees with the
+       number beside it. */
+    let mixer = mixer_fn(MixerConfig {
+        volume_ctrl: VolumeCtrl::Linear,
+        ..Default::default()
+    })
+    .map_err(|e| format!("could not open the mixer: {e}"))?;
 
-           A rung that fails drops its `Player` here, and `Drop for Player` joins
-           the player thread — a blocking wait on a tokio worker, which this
-           codebase otherwise has a rule against. It is left inline deliberately:
-           a rung that never authenticated never asked the backend for a device,
-           so the thread is parked on an empty command channel and the join is
-           immediate. If a rung ever starts failing *after* playback has begun,
-           that reasoning stops holding. */
-        match tokio::time::timeout(
-            CONNECT_BUDGET,
-            Spirc::new(
-                connect,
-                session,
-                credentials.clone(),
-                player,
-                mixer.clone(),
-            ),
-        )
-        .await
-        {
-            Ok(Ok((spirc, task))) => {
-                live = Some((spirc, task, events, mixer));
-                break;
-            }
-            Ok(Err(e)) => fault = format!("on port {ap_port}, spotify said: {e}"),
-            Err(_) => {
-                fault = format!(
-                    "port {ap_port} did not answer within {}s",
-                    CONNECT_BUDGET.as_secs()
-                )
-            }
+    /* position_update_interval stays None — see the note at the top of the file.
+       `backend` is a plain `fn` pointer (`SinkBuilder`), so it is Copy. */
+    let player = Player::new(
+        PlayerConfig::default(),
+        session.clone(),
+        mixer.get_soft_volume(),
+        move || backend(None, AudioFormat::default()),
+    );
+    let mut events = player.get_player_event_channel();
+
+    let connect = ConnectConfig {
+        name: device.clone(),
+        device_type: DeviceType::Computer,
+        ..Default::default()
+    };
+
+    /* Bounded, because librespot bounds none of this and its own worst case is
+       four minutes of silence. */
+    let (spirc, task) = match tokio::time::timeout(
+        CONNECT_BUDGET,
+        Spirc::new(connect, session, credentials, player, mixer.clone()),
+    )
+    .await
+    {
+        Err(_) => {
+            return Err(format!(
+                "spotify did not answer within {}s",
+                CONNECT_BUDGET.as_secs()
+            ))
         }
-    }
+        Ok(Err(e)) => return Err(format!("spotify would not open a session: {e}")),
+        Ok(Ok(v)) => v,
+    };
 
-    /* The message names the route rather than Spotify. This subsystem's rule
-       says an outage is likelier to be Spotify moving than a bug here, and the
-       one time it was measured it was neither — it was which address librespot
-       picked, which is now ours to pick. So what is left when both rungs fail is
-       genuinely the network, the account, or Spotify. */
-    let (spirc, task, mut events, mixer) = live.ok_or_else(|| {
-        format!(
-            "could not open a spotify session on port {} or {} — {fault}",
-            AP_PORTS[0], AP_PORTS[1]
-        )
-    })?;
-
-    tauri::async_runtime::spawn(task);
+    /* **Awaited rather than abandoned**, and that is the whole of the second bug
+       0.14.4 shipped. The handle used to be dropped on the floor, so when the
+       Spirc task ended the wall was told nothing: the widget went on saying
+       "ready, nothing playing" over a device that no longer existed, and the
+       only way to find out was to try to use it and get "channel closed" back
+       from a handle whose task was gone.
+       A task ending is the session ending — `SpircTask::run` loops until the
+       session goes invalid or it is told to shut down — so it is exactly the
+       event `Closed` exists for. Folding it is CLAUDE.md's standing rule applied
+       where it had been skipped: the event already existed and nobody listened.
+       `stop_inner` has taken `live` already on a deliberate stop, so this leaves
+       the state alone in that case rather than reporting a shutdown as a fault. */
+    let ended = app.clone();
+    tauri::async_runtime::spawn(async move {
+        task.await;
+        let state = ended.state::<Spotify>();
+        let was_live = state.live.lock().map(|l| l.is_some()).unwrap_or(false);
+        if !was_live {
+            return; /* someone asked for this; `spotify_stop` has said so. */
+        }
+        let _ = state.live.lock().map(|mut l| l.take());
+        emit(
+            &ended,
+            &state,
+            Wire::Closed {
+                fault: Some(
+                    "the spotify session ended — the wall is no longer a device".to_string(),
+                ),
+            },
+        );
+    });
 
     /* One pump, ending when librespot closes the channel — which it does when
        the player is dropped, so there is nothing here to leak or to release. */
@@ -841,6 +872,22 @@ pub(crate) fn put_on(app: &AppHandle, uri: &str, as_context: bool) -> Result<Str
     } else {
         LoadRequest::from_tracks(vec![uri.to_string()], options)
     };
+
+    /* **Activate first, or the load is dropped on the floor.** A registered
+       Connect device is not an *active* one, and `SpircTask` answers a load it
+       is given while inactive with
+           WARN  SpircCommand::Load(..) will be ignored while Not Active
+       — a warning, into a log this app does not install a sink for, and `load`
+       itself still returns `Ok`. So without this the tool reported success, the
+       card believed it, and nothing played. Measured 2026-08-28; it is the last
+       of the four legs sink `4951f398` listed and the only one that failed
+       *silently*.
+       Unconditional because it is idempotent: already-active answers with its
+       own warning and changes nothing. */
+    live
+        .spirc
+        .activate()
+        .map_err(|e| format!("spotify would not make the wall the active device: {e}"))?;
 
     live.spirc
         .load(request)
