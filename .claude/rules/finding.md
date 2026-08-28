@@ -186,6 +186,47 @@ The preview beside the list is deliberately **not** rendered, in either mode. It
 show you *where* a hit is, and that is a line number and a column; a rendered document has
 neither.
 
+### A file it draws rather than reads
+
+An image or a film opens *as one*. Before 2026-08-28 it did not: `read_text` sniffs the head
+for a NUL, a PNG has one, and the viewer said **"not a text file — nothing to read here"** —
+which is the right sentence for a `.exe` and the wrong one for a screenshot, since that is a
+file it can show perfectly well. Sink 28409145.
+
+- **Two lists, and they have to agree.** `finding.ts`'s `IMAGES`/`VIDEOS` answer "ask Rust for
+  bytes instead of text"; `find::media_type` answers "and here is the MIME string". The seam
+  has nothing to import across it, the same arrangement `relay.ts` has with `relay.rs` — so
+  `agrees with the Rust half about every extension` reads the table **out of `find.rs`'s
+  source** rather than transcribing it, and asserts the two sets non-empty first so it cannot
+  pass by having parsed nothing.
+- **By name here, by content there, and that is not inconsistent.** Sniffing bytes answers *is
+  this text*, which an extension cannot be trusted about because a file with no extension is
+  perfectly normal. The extension answers *which element should draw this*, which only the name
+  can say — there is no byte pattern separating a file the webview renders from one it shows a
+  broken-image glyph for.
+- **A `data:` URL, not the asset protocol, and that is a containment decision.**
+  `tauri.conf.json` enables `assetProtocol` scoped to `$APPDATA/references/**` — pinned images,
+  which Volery itself put there. A project root is chosen at runtime and that scope is static
+  configuration, so reaching one would mean widening it to `**` — and it would route around
+  `safe_join`, which is the only thing between the viewer and every file on this machine. The
+  bytes come through Rust past the same join every other read uses. `a_media_read_cannot_climb_out_of_the_project`
+  is the guard.
+- **`MEDIA_CAP` is 16 MB and it is *said* rather than truncated.** Half a PNG is not a smaller
+  PNG, it is a broken one, and an `img` that fails to decode reads as a bug in the viewer
+  rather than as a file that is too big. Over the cap the panel gives the size and offers `e`,
+  which opens it outside — so the answer is never "no".
+- **`svg` is in neither list**, and it is the omission worth knowing. It is text, so the viewer
+  already opens it and shows what it contains, which is the more useful reading of a file you
+  are looking at in a code viewer. It is also a document that can carry script in an app whose
+  `csp` is `null`.
+- **A video gets `controls` and nothing else** — no autoplay, no loop, no muted-autoplay trick.
+  Opening a file in a viewer is a reading gesture, and a film that starts playing because you
+  looked at it is the panel doing something you did not ask for.
+- **`media` sits on `Sheet` beside `text`, not in a second cache.** The viewer's whole subject
+  is "the file you are looking at" and there is exactly one of those; a separate cache would be
+  two eviction policies and two ways to be stale. `binary` stays *false* for media, because
+  that word means "cannot be shown at all" and the viewer already has a sentence for it.
+
 ### Getting there from a transcript
 
 The finder finds files; the place you most often want to *look* at one is while reading what an

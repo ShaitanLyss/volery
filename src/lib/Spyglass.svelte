@@ -442,7 +442,9 @@
       <span class="dir">{p.dir}</span><span class="name">{p.name}</span>
       {#if finder.sheetLine !== null}<span class="at">:{finder.sheetLine}</span>{/if}
       <span class="grow"></span>
-      {#if !finder.sheet.binary}<span class="note">e to edit</span>{/if}
+      {#if !finder.sheet.binary}<span class="note"
+          >e to {finder.sheet.media ? "open" : "edit"}</span
+        >{/if}
       <span class="note">{(finder.sheet.bytes / 1024).toFixed(1)} kB</span>
     </div>
     <!-- Focusable so it can hold the keyboard with no field on screen, and so
@@ -454,7 +456,33 @@
       tabindex="-1"
       role="document"
     >
-      {#if finder.sheet.binary}
+      {#if finder.sheet.media}
+        <!-- A file the viewer draws rather than reads. Before the `binary` arm,
+             which is the sentence for a file that cannot be shown at all — an
+             image is not that, and saying "nothing to read here" over a
+             screenshot was the whole of sink 28409145.
+
+             The bytes come through `find::read_media` on a `data:` URL rather
+             than through Tauri's asset protocol, because that protocol is scoped
+             to `$APPDATA/references/**` and widening it to reach a project would
+             route around `safe_join` — see the note on `MEDIA_CAP`.
+
+             A video gets `controls` and nothing else: no autoplay, no loop, no
+             muted-autoplay trick. Opening a file in a viewer is a reading
+             gesture, and a film that starts playing because you looked at it is
+             the panel doing something you did not ask for. -->
+        {#if finder.sheet.media.tooLarge}
+          <p class="empty">
+            {(finder.sheet.bytes / (1024 * 1024)).toFixed(1)} MB — too large to draw here.
+            press <kbd>e</kbd> to open it outside.
+          </p>
+        {:else if finder.sheet.media.kind === "video"}
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video class="media" src={finder.sheet.media.dataUrl} controls></video>
+        {:else}
+          <img class="media" src={finder.sheet.media.dataUrl} alt={finder.sheet.path} />
+        {/if}
+      {:else if finder.sheet.binary}
         <p class="empty">not a text file — nothing to read here</p>
       {:else if finder.rendered}
         <!-- The repo's own renderer, so a rule reads here exactly as an agent's
@@ -515,6 +543,20 @@
       <div class="preview">
         {#if !finder.preview}
           <p class="empty">nothing selected</p>
+        {:else if finder.preview.media}
+          <!-- The same reading as the viewer, at preview size. Before `binary`
+               for the same reason: "not a text file" over a screenshot is the
+               sentence sink 28409145 was about. `contain` rather than the
+               viewer's full width, because this pane is a glance while you move
+               down the list and a tall capture would push the rows away. -->
+          {#if finder.preview.media.tooLarge}
+            <p class="empty">{(finder.preview.bytes / (1024 * 1024)).toFixed(1)} MB</p>
+          {:else if finder.preview.media.kind === "video"}
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video class="peek" src={finder.preview.media.dataUrl} controls></video>
+          {:else}
+            <img class="peek" src={finder.preview.media.dataUrl} alt={finder.preview.path} />
+          {/if}
         {:else if finder.preview.binary}
           <p class="empty">not a text file</p>
         {:else}
@@ -823,6 +865,35 @@
      line-numbered gutter. The transcript's own reading size and leading,
      because it is the same act of reading — and a measure, because a rule read
      across 150 characters is one you lose your place in. */
+  /* A picture or a film in the viewer. Undressed, for the reason the
+     transcript's own `.shot` is: whatever this is has its own frame, and the
+     panel dressing it would be competing with the thing it was opened to show.
+     `max-width: 100%` and `height: auto` so a 4K capture sits inside the panel
+     without it ever scrolling sideways, and `--edge` underneath because a pale
+     image on pale paper has no boundary at all otherwise. */
+  .media {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+    background: var(--edge);
+    outline: 1px solid var(--edge);
+    outline-offset: -1px;
+  }
+  /* The preview pane's version. Bounded in height as well as width: this is a
+     glance taken while moving down a list, and a tall capture that pushed the
+     rows off the pane would make the list unusable to get to it. */
+  .peek {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    height: auto;
+    object-fit: contain;
+    margin: 0 auto;
+    background: var(--edge);
+    outline: 1px solid var(--edge);
+    outline-offset: -1px;
+  }
   .sheet.prose {
     padding: 1.2rem 1.8rem 3rem;
     font-family: var(--body);

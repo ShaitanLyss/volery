@@ -46,12 +46,14 @@ import {
 import {
   type FindMode,
   type Hit,
+  type MediaKind,
   type Row,
   LAPSE_MS,
   chord,
   fileRows,
   grepRows,
   isMarkdown,
+  mediaKindOf,
   moveIn,
 } from "./finding";
 
@@ -114,6 +116,14 @@ export type Sheet = {
   truncated: boolean;
   binary: boolean;
   bytes: number;
+  /** An image or a film, as a `data:` URL — see `find::read_media`.
+   *
+   *  On the same record as `text` rather than in a second cache, because the
+   *  viewer's whole job is "the file you are looking at" and there is exactly
+   *  one of those. `text` stays empty for these and `binary` stays false: it is
+   *  not text, and it is also not the unreadable thing `binary` means, which is
+   *  the case the viewer already had a sentence for. */
+  media?: { kind: MediaKind; dataUrl: string; tooLarge: boolean };
 };
 
 export class Finder {
@@ -558,13 +568,7 @@ export class Finder {
     const held = this.#sheets.get(path);
     if (held) return held;
     try {
-      const out = await invoke<{
-        text: string;
-        truncated: boolean;
-        binary: boolean;
-        bytes: number;
-      }>("read_file_text", { root: this.root, path });
-      const sheet: Sheet = { path, ...out };
+      const sheet = await this.#fetch(path);
       /* Oldest out first — a Map keeps insertion order, so the first key is the
          least recently *added*. Not strictly an LRU, and it does not need to be
          at eight entries. */
@@ -578,6 +582,44 @@ export class Finder {
       this.fault = String(err);
       return null;
     }
+  }
+
+  /** One file off Rust, as whichever of the two things it is.
+   *
+   *  Split out of `#read` so the cache above stays one shape: an image and a
+   *  source file are the same kind of thing to the viewer — the file you are
+   *  looking at — and giving media its own cache would mean two eviction
+   *  policies and two ways to be stale.
+   *
+   *  Decided by name (`mediaKindOf`), which must agree with `find::media_type`.
+   *  A file this side thinks is media and Rust does not gets an error string
+   *  rather than a wrong drawing, which is the failure worth having. */
+  async #fetch(path: string): Promise<Sheet> {
+    if (mediaKindOf(path)) {
+      const out = await invoke<{
+        dataUrl: string;
+        kind: MediaKind;
+        bytes: number;
+        tooLarge: boolean;
+      }>("read_file_media", { root: this.root, path });
+      return {
+        path,
+        text: "",
+        truncated: false,
+        /* Not `binary`. That word means "this cannot be shown at all", and the
+           viewer has a sentence for it; this is a file it shows very well. */
+        binary: false,
+        bytes: out.bytes,
+        media: { kind: out.kind, dataUrl: out.dataUrl, tooLarge: out.tooLarge },
+      };
+    }
+    const out = await invoke<{
+      text: string;
+      truncated: boolean;
+      binary: boolean;
+      bytes: number;
+    }>("read_file_text", { root: this.root, path });
+    return { path, ...out };
   }
 
   /** Open the selected row — or a named one — in the viewer. */

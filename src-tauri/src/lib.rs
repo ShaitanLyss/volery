@@ -104,6 +104,60 @@ use tauri::{Emitter, Manager};
 ///
 /// The `Err` here is a `JoinError` — the closure panicked — and never the work's
 /// own failure, which travels in `R` as it always did.
+/// Base64, written out rather than pulled in.
+///
+/// Eleven lines against a dependency in the tree of an app that is careful about
+/// its tree, which is the same bargain `azdo.rs` struck when it wrote this — and
+/// `base64` is already in `Cargo.lock` twice as a transitive of librespot, so
+/// adding it directly would pin a third version of eleven lines.
+///
+/// Here rather than in either caller because there are two now, in modules with
+/// nothing to do with each other: `azdo::Cred` builds a `Basic` header, and
+/// `find::read_media` puts a project's image on a `data:` URL for the viewer. A
+/// general utility living in a service file is fine until the second caller and
+/// misleading afterwards.
+///
+/// Standard alphabet with padding — no URL-safe variant, because neither caller
+/// wants one and an encoder that guesses which is being asked for is worse than
+/// two functions. `base64_pads_the_way_everything_else_does` is the guard, and
+/// the padding is the half worth having a test for: a `Basic` header short by an
+/// `=` is a 401 that looks like a wrong password.
+pub(crate) fn base64(bytes: &[u8]) -> String {
+    const SET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(SET[((n >> (18 - i * 6)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod base64_tests {
+    use super::base64;
+
+    /// Came here with the function it tests. The padding is the part that
+    /// matters: a `Basic` header short by an `=` is a 401 that reads as a wrong
+    /// password, and a `data:` URL short by one is an image that does not decode.
+    #[test]
+    fn base64_pads_the_way_everything_else_does() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+}
+
 pub(crate) async fn off_main<F, R>(work: F) -> Result<R, String>
 where
     F: FnOnce() -> R + Send + 'static,
@@ -478,6 +532,7 @@ pub fn run() {
             find::find_files,
             find::find_grep,
             find::read_file_text,
+            find::read_file_media,
             portage::write_layout_file,
             portage::read_layout_file,
             portage::missing_roots,

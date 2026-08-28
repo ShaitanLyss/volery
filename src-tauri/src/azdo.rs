@@ -241,25 +241,15 @@ impl Cred {
     }
 }
 
-/// Base64, written out rather than pulled in. It is eleven lines, it is used in
-/// exactly one place, and the alternative is a dependency in the tree of an app
-/// that is careful about its tree.
-fn base64(bytes: &[u8]) -> String {
-    const SET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
-        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(SET[((n >> (18 - i * 6)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
+/// Base64. Moved to `crate::base64` the day it got a second caller.
+///
+/// It lived here, written out rather than pulled in, on the argument that it is
+/// eleven lines used in exactly one place. The first half of that is still true
+/// and the second stopped being: `find::read_media` needs one to put a project's
+/// image on a data URL. Two callers in unrelated modules is the signal that a
+/// general utility is sitting in a service file, so it went to `lib.rs` beside
+/// `off_main`, and its test went with it.
+use crate::base64;
 
 /* ── the ladder ────────────────────────────────────────────────────────────*/
 
@@ -2215,17 +2205,6 @@ mod tests {
         ));
         assert!(!unseen("<html>418 from a proxy</html>"));
         assert!(!unseen(""));
-    }
-
-    #[test]
-    fn base64_pads_the_way_everything_else_does() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foob"), "Zm9vYg==");
-        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
     }
 
     #[test]

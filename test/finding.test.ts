@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -21,6 +22,9 @@ import {
   viewLines,
   windowAround,
   type Hit,
+  mediaKindOf,
+  IMAGES,
+  VIDEOS,
 } from "../src/lib/finding";
 
 /* ── the leader ───────────────────────────────────────────────────────────── */
@@ -601,5 +605,66 @@ describe("finding places in a tool result", () => {
     for (let i = 1; i < found.length; i++) {
       expect(found[i].from).toBeGreaterThanOrEqual(found[i - 1].to);
     }
+  });
+});
+
+/* Which files the viewer draws instead of reading. Sink 28409145 — it opened a
+ * PNG and said "not a text file — nothing to read here", which is the sentence
+ * for a file that cannot be shown at all rather than for one it shows well. */
+describe("a file the viewer draws", () => {
+  test("is recognised by extension, either kind", () => {
+    expect(mediaKindOf("docs/shot.png")).toBe("image");
+    expect(mediaKindOf("a/b/c.JPEG")).toBe("image");
+    expect(mediaKindOf("clip.webm")).toBe("video");
+    expect(mediaKindOf("demo.MOV")).toBe("video");
+  });
+
+  test("and a source file is not one", () => {
+    expect(mediaKindOf("src/lib/finding.ts")).toBeNull();
+    expect(mediaKindOf("notes.md")).toBeNull();
+    expect(mediaKindOf("archive.zip")).toBeNull();
+    expect(mediaKindOf("song.mp3")).toBeNull();
+  });
+
+  /* No extension at all is normal — an extensionless file is why `read_text`
+     sniffs bytes rather than trusting a name — and it is never media. */
+  test("a file with no extension is read, not drawn", () => {
+    expect(mediaKindOf("Makefile")).toBeNull();
+    expect(mediaKindOf("LICENSE")).toBeNull();
+    expect(mediaKindOf(".gitignore")).toBe(null);
+  });
+
+  /* The one deliberate omission, and it is in neither list. An SVG is text, so
+     the viewer already opens it and shows what it contains, and it is a document
+     that can carry script in an app whose `csp` is null. */
+  test("an svg is text and stays text", () => {
+    expect(mediaKindOf("icon.svg")).toBeNull();
+    expect(IMAGES.has("svg")).toBe(false);
+    expect(VIDEOS.has("svg")).toBe(false);
+  });
+
+  /* The other end of this table is `find::media_type` in Rust, and there is
+     nothing to import across the seam — only the two agreeing. Read out of the
+     source rather than transcribed, so a type added on one side and not the
+     other fails here instead of at a broken-image glyph. */
+  test("agrees with the Rust half about every extension", () => {
+    const rust = readFileSync("src-tauri/src/find.rs", "utf8");
+    const fn = rust.slice(rust.indexOf("pub(crate) fn media_type"));
+    const body = fn.slice(0, fn.indexOf("\n}"));
+
+    const images = new Set<string>();
+    const videos = new Set<string>();
+    for (const m of body.matchAll(/^\s*((?:"[a-z0-9]+"\s*\|?\s*)+)=>\s*\("[^"]+",\s*"(image|video)"\)/gm)) {
+      for (const q of m[1].matchAll(/"([a-z0-9]+)"/g)) {
+        (m[2] === "image" ? images : videos).add(q[1]);
+      }
+    }
+
+    /* Non-empty, or this test passes by having parsed nothing — the vacuity
+       trap build.md's third rule is about. */
+    expect(images.size).toBeGreaterThan(3);
+    expect(videos.size).toBeGreaterThan(2);
+    expect([...images].sort()).toEqual([...IMAGES].sort());
+    expect([...videos].sort()).toEqual([...VIDEOS].sort());
   });
 });

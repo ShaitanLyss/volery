@@ -482,9 +482,149 @@ pub async fn read_file_text(root: String, path: String) -> Result<FileText, Stri
     crate::off_main(move || read_text(&root, &path)).await?
 }
 
+/* -- looking at one that is not text -------------------------------------- */
+
+/// The most of a picture or a film this will carry.
+///
+/// 16 MB of file, which is about 22 MB of base64 in the webview. Generous for an
+/// image and mean for a video, deliberately in both directions: a screenshot or a
+/// diagram is what this is for, and a file that has to be *streamed* is one the
+/// viewer should decline rather than swallow.
+///
+/// **A data URL rather than the asset protocol, and that is a containment
+/// decision.** `tauri.conf.json` enables `assetProtocol` scoped to
+/// `$APPDATA/references/**` -- pinned images, which Volery itself put there.
+/// Widening that to reach a project would mean widening it to `**`, since
+/// project roots are chosen at runtime and the scope is static configuration --
+/// and it would route around `safe_join`, which is the only thing standing
+/// between the viewer and every file on this machine. So the bytes come through
+/// Rust, past the same join every other read goes through, and the cap is what
+/// makes that affordable.
+const MEDIA_CAP: u64 = 16 * 1024 * 1024;
+
+/// What the viewer needs to draw a file it cannot read as text.
+#[derive(Serialize)]
+pub struct FileMedia {
+    /// `data:image/png;base64,...`, or empty when `too_large`.
+    #[serde(rename = "dataUrl")]
+    data_url: String,
+    /// `image` or `video` -- which element to draw, decided from the extension
+    /// here so the front end needs no second copy of the table.
+    kind: String,
+    bytes: u64,
+    /// Over `MEDIA_CAP`. Said rather than truncated: half a PNG is not a smaller
+    /// PNG, it is a broken one, and an `img` that fails to decode looks like a
+    /// bug in the viewer rather than like a file that is too big.
+    #[serde(rename = "tooLarge")]
+    too_large: bool,
+}
+
+/// The media type for an extension, and `None` for anything this will not draw.
+///
+/// An allow-list, and short on purpose. The webview will attempt anything it is
+/// handed, so the question is not "what might work" but "what is worth putting
+/// on a data URL" -- and every entry here is something the viewer can be relied
+/// on to draw rather than to show a broken-image glyph for.
+///
+/// `svg` is deliberately absent, and it is the interesting omission: an SVG is a
+/// document that can carry script, and this app has `csp: null`. It is also
+/// *text*, so the existing viewer already opens it and shows exactly what it
+/// contains -- which is the more useful reading of a file you are looking at in
+/// a code viewer anyway.
+pub(crate) fn media_type(path: &str) -> Option<(&'static str, &'static str)> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => ("image/png", "image"),
+        "jpg" | "jpeg" => ("image/jpeg", "image"),
+        "gif" => ("image/gif", "image"),
+        "webp" => ("image/webp", "image"),
+        "bmp" => ("image/bmp", "image"),
+        "ico" => ("image/x-icon", "image"),
+        "avif" => ("image/avif", "image"),
+        "mp4" | "m4v" => ("video/mp4", "video"),
+        "webm" => ("video/webm", "video"),
+        "ogv" => ("video/ogg", "video"),
+        "mov" => ("video/quicktime", "video"),
+        _ => return None,
+    })
+}
+
+/// One image or film out of the project, as a data URL.
+///
+/// The extension decides, unlike `read_text` which sniffs the bytes -- and the
+/// two are not inconsistent. Sniffing answers "is this text", which an extension
+/// cannot be trusted about because an extensionless file is normal. This answers
+/// "which element should draw this", which only the name can say: there is no
+/// byte pattern distinguishing a file the webview will render from one it
+/// will not.
+pub fn read_media(root: &str, path: &str) -> Result<FileMedia, String> {
+    let Some((mime, kind)) = media_type(path) else {
+        return Err(format!("{path} is not an image or a video this viewer draws"));
+    };
+    let full = safe_join(root, path)?;
+    let bytes = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
+    if bytes > MEDIA_CAP {
+        return Ok(FileMedia {
+            data_url: String::new(),
+            kind: kind.to_string(),
+            bytes,
+            too_large: true,
+        });
+    }
+    let data = std::fs::read(&full).map_err(|e| format!("could not read {path}: {e}"))?;
+    Ok(FileMedia {
+        data_url: format!("data:{mime};base64,{}", crate::base64(&data)),
+        kind: kind.to_string(),
+        bytes,
+        too_large: false,
+    })
+}
+
+/// The command, which is `read_media` off the main thread and nothing else.
+///
+/// `off_main` for the reason every read here has it, and more so: this one
+/// base64-encodes up to 16 MB, which is real CPU rather than a file read, and
+/// doing it on the thread that paints the wall would freeze every card for as
+/// long as it took.
+#[tauri::command]
+pub async fn read_file_media(root: String, path: String) -> Result<FileMedia, String> {
+    crate::off_main(move || read_media(&root, &path)).await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The table decides by name, and the omissions are the interesting half.
+    #[test]
+    fn the_viewer_draws_what_it_can_and_declines_the_rest() {
+        assert_eq!(media_type("shot.png"), Some(("image/png", "image")));
+        assert_eq!(media_type("a/b/c.JPG"), Some(("image/jpeg", "image")));
+        assert_eq!(media_type("clip.webm"), Some(("video/webm", "video")));
+
+        /* Text, and already openable -- plus a document that can carry script
+           in an app with `csp: null`. See `media_type`. */
+        assert_eq!(media_type("icon.svg"), None);
+        /* Not something the webview draws. */
+        assert_eq!(media_type("notes.md"), None);
+        assert_eq!(media_type("archive.zip"), None);
+        assert_eq!(media_type("song.mp3"), None);
+        /* No extension at all is normal, and is not media. */
+        assert_eq!(media_type("Makefile"), None);
+    }
+
+    /// A media read goes through the same join every other read does, which
+    /// is the whole reason this is a Rust command rather than the asset
+    /// protocol.
+    #[test]
+    fn a_media_read_cannot_climb_out_of_the_project() {
+        let root = "C:\\atelier\\skein";
+        assert!(read_media(root, "..\\..\\Windows\\shell32.dll").is_err());
+        assert!(read_media(root, "C:\\Windows\\explorer.exe").is_err());
+        /* And a path inside the project that is simply not media is refused
+           by name, before anything is opened. */
+        assert!(read_media(root, "src/lib/finding.ts").is_err());
+    }
 
     #[test]
     fn a_relative_path_joins_onto_its_root() {

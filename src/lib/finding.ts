@@ -513,6 +513,42 @@ export function isMarkdown(path: string): boolean {
   return MARKDOWN.has(path.slice(at + 1).toLowerCase());
 }
 
+/** The extensions the viewer draws rather than reads.
+ *
+ *  **Must agree with `find::media_type`**, which is the half that decides the
+ *  MIME string and does the reading. Two lists rather than one, and the seam is
+ *  the same one `relay.ts` has with `relay.rs`: there is nothing to import
+ *  across it, only the two agreeing. This side answers "ask Rust for bytes
+ *  instead of text" and needs no MIME at all, so it is a set of extensions and
+ *  not a table — a copy of the table would be a second place to get a media type
+ *  wrong.
+ *
+ *  `svg` is deliberately in neither. It is text, so the existing viewer already
+ *  opens it and shows what it contains — which is the more useful reading of a
+ *  file you are looking at in a code viewer — and it is a document that can
+ *  carry script in an app whose `csp` is null. See `find::media_type`. */
+export const IMAGES = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
+export const VIDEOS = new Set(["mp4", "m4v", "webm", "ogv", "mov"]);
+
+export type MediaKind = "image" | "video";
+
+/** Which element would draw this file, or `null` for one to read as text.
+ *
+ *  By name rather than by content, and that is not the same call `read_text`
+ *  makes when it sniffs for a NUL. Sniffing answers "is this text", which an
+ *  extension cannot be trusted about, because a file with no extension at all is
+ *  perfectly normal. This answers "which element should draw it", which only the
+ *  name can say — there is no byte pattern that distinguishes a file the webview
+ *  will render from one it will show a broken-image glyph for. */
+export function mediaKindOf(path: string): MediaKind | null {
+  const at = path.lastIndexOf(".");
+  if (at === -1) return null;
+  const ext = path.slice(at + 1).toLowerCase();
+  if (IMAGES.has(ext)) return "image";
+  if (VIDEOS.has(ext)) return "video";
+  return null;
+}
+
 /* ── reaching the viewer from somewhere else ──────────────────────────────── */
 
 /** A path an agent wrote, reduced to one the viewer can open — or null.
