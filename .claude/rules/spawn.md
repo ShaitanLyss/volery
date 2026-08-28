@@ -400,23 +400,48 @@ a refusal became a question with a default of no — the difference between a to
 help and one that can offer. The general shape, since it is not really about `close`: **when a
 guard exists to stop an agent acting unilaterally, the alternative to refusing is asking, and
 refusing is only right where there is nobody who could usefully answer.** Which is the test the
-three remaining refusals are chosen by.
+two remaining refusals are chosen by — and the test that eventually took a third one away, since
+"may this card close itself" has an obvious person to ask.
 
-- **`may_close` is pure, three-valued, and the order in it changed with the authority.**
-  `Reach::Mine`, `Reach::Theirs`, `Reach::No(_)`. Parentage used to be asked *first*, so a card
+- **`may_close` is pure, four-valued, and the order in it changed with the authority.**
+  `Reach::Mine`, `Reach::Theirs`, `Reach::Itself`, `Reach::No(_)`. Parentage used to be asked *first*, so a card
   naming somebody else's card was told only that it was not theirs — answering "it is mid-turn"
   first would have been the tool reporting on a card the caller had no standing to ask about.
   That argument was about standing and **it dissolves the moment a card may name any card**: a
   caller entitled to name it is entitled to know why it cannot go, and "wait for it to finish"
-  is what makes an agent wait where "not yours" makes it rephrase. So the three refusals are
-  asked first now, and for a second reason that is the stronger one — none of them is a
+  is what makes an agent wait where "not yours" makes it rephrase. So the refusals are
+  asked first now, and for a second reason that is the stronger one — neither of them is a
   question worth putting to a person.
-- **Itself is refused outright, and is stated rather than left to fall out.** A card tidying
-  itself away would take its own transcript off the wall at the moment the user might be
-  reading it, and it is the user's wall. `mid_turn` would catch it today, since a caller is
-  inside a turn by definition while making this call — which is exactly why it is written down
-  separately. An *emergent* guard is one that disappears the day something unrelated changes
-  about turn marking, and nothing would fail loudly when it did.
+- **Itself is offered, not refused — and this one was got wrong twice, in opposite
+  directions.** It used to be a flat no: a card tidying itself away takes its own transcript
+  off the wall at the moment the user might be reading it, and it is the user's wall. That
+  argument is entirely about *whose decision it is*, which is the argument for an `ask_user`
+  rather than for a refusal, and it failed the very test stated two paragraphs up — there is
+  plainly somebody who could usefully answer.
+
+  It was found from the outside, which is the useful part. A user told their card to close
+  itself; the card quoted this refusal at them; they replied that self-close does work and
+  simply asks for approval; the card deferred to them and tried it, and the tool refused. The
+  documented behaviour was exactly what happened, **and the rule was still wrong.** "Any card
+  I name gets an approval prompt" is a very natural compression of three tiers, and it was
+  wrong for precisely the case people reach for most — a card asking to be tidied away is the
+  commonest thing a finished card wants. Sink f3f49d9d.
+
+  **The check stays above `mid_turn`, and that is now load-bearing in the other direction.** A
+  caller is inside a turn by definition while making this call, so a self-close that fell
+  through to that arm would be refused every single time: the old behaviour, reached by
+  accident, passing every other assertion, and indistinguishable from the feature not
+  existing. `a_card_may_offer_itself_even_though_it_is_mid_turn` pins the ordering with a
+  `mid_turn: true` row, and `bun tools/lift-spawn.ts` runs it — the reason to actually execute
+  it rather than typecheck it is that this is a bug about *ordering*, which compiles either way.
+  `aside` stays above both, because being set aside is the user having already answered this,
+  and that is as true of a card asking about itself as of any other.
+
+  What the user sees is a different sentence, decided in `close_question` from the two titles
+  rather than by a second branch in `close`: naming the same card twice — `"release notes"
+  wants to close "release notes", which is not a card it opened` — is true of every clause and
+  reads as a fault in the wall. The self wording says the one thing that is genuinely
+  different, which is that the transcript on screen is the one that goes.
 - **Set aside is refused, and deliberately not asked about.** It is the one flag on a card that
   is an explicit human intention rather than a fact about the work (`restore.md`). Asking the
   user to approve overriding a decision they have already made is not a question, it is

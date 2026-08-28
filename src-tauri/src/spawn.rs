@@ -356,11 +356,14 @@ pub fn close_schema() -> Value {
              Say what you closed and why, in the reply where you closed it — and say so too \
              when you asked and they said no. A card disappearing from the wall with nothing \
              said about it is the user losing track of their own studio.\n\n\
-             Three cards are refused outright rather than put to anybody: **your own**, \
-             since tidying yourself away takes your transcript off the wall while the user \
-             may be reading it; a card that is **mid-turn**, because an agent part-way \
-             through does not stop cleanly; and one the user has **set aside**, which is \
-             them saying they are coming back to it.",
+             **You may offer yourself, the same as any other card.** It is put to the \
+             user like anything else — say in the reply that you have offered, since your \
+             transcript may be what they are looking at while they answer, and it will be \
+             gone if they say yes.\n\n\
+             Two cards are refused outright rather than put to anybody: one that is \
+             **mid-turn**, because an agent part-way through does not stop cleanly; and one \
+             the user has **set aside**, which is them saying they are coming back to it. \
+             Both hold however asks, your own card included.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -393,8 +396,6 @@ pub fn close_schema() -> Value {
 /// none of them is a thing to put to the user — see `may_close`.
 #[derive(Debug, PartialEq)]
 enum NotYours {
-    /// The caller named itself.
-    Yourself,
     /// The user parked it.
     Aside,
     /// An agent is part-way through something on it.
@@ -406,12 +407,6 @@ impl NotYours {
     /// in this file follows: an agent told only "no" tries a different phrasing.
     fn say(&self, title: &str) -> String {
         match self {
-            NotYours::Yourself => format!(
-                "{title:?} is this card. Tidying yourself away would take your own \
-                 transcript off the wall at the moment the user might be reading it, and \
-                 it is their wall — so this is the one card `close` will not name. Say you \
-                 are finished and leave the gesture to them."
-            ),
             NotYours::Aside => format!(
                 "the user has set {title:?} aside, which is them saying they mean to come \
                  back to it. That outranks tidying up, so it stays — and it is not \
@@ -435,6 +430,21 @@ enum Reach {
     Mine,
     /// Somebody else's. Not a refusal any more — a thing to put to the user.
     Theirs,
+    /// The caller itself. Also a question, and its own variant for two reasons
+    /// that are both about not being `Theirs`.
+    ///
+    /// The question is worded differently — "this card is asking to be closed"
+    /// rather than one card wanting another gone — because the user is being
+    /// asked about the card they are probably looking at, and a sentence naming
+    /// the same title twice reads as a bug.
+    ///
+    /// And it must skip the mid-turn refusal, which is the load-bearing half. A
+    /// card is inside a turn *by definition* while it is making this call, so a
+    /// self-close that fell through to `mid_turn` would be refused every single
+    /// time, which is the old behaviour reached by accident instead of on
+    /// purpose. Checked ahead of `mid_turn` rather than exempted inside it, so
+    /// nothing about turn marking can quietly turn this back off.
+    Itself,
     /// No, and here is why.
     No(NotYours),
 }
@@ -469,12 +479,25 @@ enum Reach {
 /// a second reason as well, which is the stronger one: **none of them is a
 /// question worth putting to a person.**
 ///
-/// - **Itself is refused outright.** A card tidying itself away would take its
-///   own transcript off the wall at the moment the user might be reading it, and
-///   it is the user's wall. Stated rather than left to fall out of `mid_turn` —
-///   a caller is inside a turn by definition while it is making this call, so
-///   the refusal would be *emergent*, and an emergent guard is one that
-///   disappears the day something unrelated changes about turn marking.
+/// - **Itself is now offered rather than refused**, and this is the one that
+///   changed (sink f3f49d9d). It used to be a flat no, on the argument that a
+///   card tidying itself away takes its own transcript off the wall while the
+///   user may be reading it. That argument is about whose decision it is — and
+///   the answer to "whose decision is it" is an `ask_user`, which is exactly
+///   what every other card already gets. A user hit this from the other side: they
+///   told their card to close itself, the card quoted this refusal at them, they
+///   said self-close does work and simply asks, the card deferred to them and
+///   tried it, and the tool refused. The documented behaviour was what happened,
+///   and the rule was still wrong — "any card I name gets an approval prompt" is
+///   a very natural compression of three tiers, and it was wrong for exactly the
+///   case people reach for most, since a card asking to be tidied away is the
+///   commonest thing a finished card wants.
+///
+///   It is checked **before** `mid_turn`, which is the load-bearing detail: a
+///   caller is inside a turn by definition while making this call, so a
+///   self-close falling through to that arm would be refused every time — the
+///   old behaviour reached by accident rather than on purpose. Stated as its own
+///   arm so nothing about turn marking can quietly turn it back off.
 /// - **Set aside outranks tidying up.** It is the one flag on a card that is an
 ///   explicit human intention rather than a fact about the work: the user saying
 ///   they are coming back to this. Asking them to approve overriding a decision
@@ -495,11 +518,16 @@ fn may_close(
     aside: bool,
     mid_turn: bool,
 ) -> Reach {
-    if target == caller {
-        return Reach::No(NotYours::Yourself);
-    }
+    /* Ahead of everything, including the caller naming itself: being set aside
+       is the user having already answered this question, and that is as true of
+       a card asking about itself as of any other. */
     if aside {
         return Reach::No(NotYours::Aside);
+    }
+    /* Before `mid_turn`, and that is the whole of what makes a self-close
+       reachable — see `Reach::Itself`. */
+    if target == caller {
+        return Reach::Itself;
     }
     if mid_turn {
         return Reach::No(NotYours::Working);
@@ -552,6 +580,11 @@ const MAX_WHY: usize = 300;
 /// closing actually does**; the last because "close" reads as destroying
 /// something and does not.
 fn close_question(target: &str, handle: &str, by: &str, why: Option<&str>) -> Value {
+    /* `by == target` is a card offering itself, and the sentence has to change
+       rather than name the same title twice — "X wants to close X" reads as a
+       bug in the wall. It also says the one thing that is different about
+       answering yes here: the transcript on screen is the one that goes. */
+    let itself = by == target;
     let said = match why {
         Some(w) => format!(" It says: {w:?}."),
         /* Named as an absence rather than skipped. A question that simply
@@ -563,12 +596,22 @@ fn close_question(target: &str, handle: &str, by: &str, why: Option<&str>) -> Va
     json!({
         "questions": [{
             "header": "close a card",
-            "question": format!(
-                "{by:?} wants to close {target:?} ({handle}), which is not a card it \
-                 opened.{said}\n\nClosing takes the card off the wall and ends its \
-                 process. It does not delete anything — the transcript stays where Claude \
-                 Code wrote it and the session can be adopted back at any time."
-            ),
+            "question": if itself {
+                format!(
+                    "{target:?} ({handle}) is asking to be closed — it says its work is \
+                     done.{said}\n\nThis is the card itself asking, so saying yes takes \
+                     the transcript you may be reading off the wall. It does not delete \
+                     anything — the transcript stays where Claude Code wrote it and the \
+                     session can be adopted back at any time."
+                )
+            } else {
+                format!(
+                    "{by:?} wants to close {target:?} ({handle}), which is not a card it \
+                     opened.{said}\n\nClosing takes the card off the wall and ends its \
+                     process. It does not delete anything — the transcript stays where \
+                     Claude Code wrote it and the session can be adopted back at any time."
+                )
+            },
             "options": [
                 {
                     "label": CLOSE_IT,
@@ -749,7 +792,11 @@ pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
     match may_close(&f.id, f.spawner.as_deref(), caller, f.aside, f.mid_turn) {
         Reach::No(no) => Closing::Now(no.say(&f.title)),
         Reach::Mine => Closing::Now(take_off(app, caller, &f, false)),
-        Reach::Theirs => {
+        /* Both go to the user, and by the same path deliberately: the only
+           difference between offering yourself and offering somebody else's card
+           is how the sentence reads, which `close_question` decides from the two
+           titles rather than from a second branch here. */
+        Reach::Theirs | Reach::Itself => {
             let why = args
                 .get("why")
                 .and_then(Value::as_str)
@@ -1511,27 +1558,46 @@ mod tests {
         assert_eq!(may_close(it, None, "anyone", false, false), Reach::Theirs);
     }
 
-    /// The one card that is refused rather than offered, and it is the caller.
+    /// A card may offer itself, and the ordering is what makes that reachable.
     ///
-    /// Asserted for its own sake because the refusal would otherwise be
-    /// *emergent* — a card is inside a turn while it is making this call, so
-    /// `mid_turn` would catch it today and stop catching it the day anything
-    /// about turn marking changes.
+    /// This used to assert the opposite — a flat refusal — and the reason it
+    /// changed is in `may_close`'s own doc: a user told their card to close
+    /// itself, the card quoted the refusal at them, and they were right that it
+    /// should simply ask (sink f3f49d9d).
+    ///
+    /// **`mid_turn: true` is the case worth reading.** A caller is inside a turn
+    /// by definition while it is making this call, so if the self check sat below
+    /// `mid_turn` every self-close would be refused — the old behaviour reached
+    /// by accident, passing every other test, and indistinguishable from this
+    /// feature not existing.
     #[test]
-    fn a_card_may_not_tidy_itself_away() {
+    fn a_card_may_offer_itself_even_though_it_is_mid_turn() {
         let me = "parent";
-        assert_eq!(
-            may_close(me, Some("whoever"), me, false, false),
-            Reach::No(NotYours::Yourself)
-        );
-        /* Even where every other signal says it would be fine. */
-        assert_eq!(may_close(me, Some(me), me, false, false), Reach::No(NotYours::Yourself));
+        assert_eq!(may_close(me, Some("whoever"), me, false, false), Reach::Itself);
+        assert_eq!(may_close(me, Some(me), me, false, false), Reach::Itself);
+        /* The one that would regress silently. */
+        assert_eq!(may_close(me, None, me, false, true), Reach::Itself);
     }
 
-    /// Both of these are refusals rather than questions, and they hold for any
-    /// card — the caller's own, a sibling's, one of the user's. Putting either
-    /// to a person would be asking them to override a decision they have already
-    /// made, or to judge a turn they cannot see.
+    /// And being set aside still outranks it, which is why that check is above
+    /// the self check rather than below it: the user has already answered this
+    /// question, and that is as true of a card asking about itself as of any
+    /// other.
+    #[test]
+    fn a_card_set_aside_cannot_offer_itself_either() {
+        let me = "parent";
+        assert_eq!(may_close(me, None, me, true, false), Reach::No(NotYours::Aside));
+        assert_eq!(may_close(me, None, me, true, true), Reach::No(NotYours::Aside));
+    }
+
+    /// Both of these are refusals rather than questions, whoever is named.
+    /// Putting either to a person would be asking them to override a decision
+    /// they have already made, or to judge a turn they cannot see.
+    ///
+    /// One exception, and it is above rather than a hole in this: `mid_turn` does
+    /// not refuse the *caller's own* card, because a caller is always mid-turn.
+    /// `a_card_may_offer_itself_even_though_it_is_mid_turn` is that case;
+    /// `aside` has no exception and holds for the caller too.
     #[test]
     fn aside_and_mid_turn_are_refused_whoever_asks() {
         let me = "parent";
@@ -1544,6 +1610,40 @@ mod tests {
                 may_close("card", spawner, me, false, true),
                 Reach::No(NotYours::Working)
             );
+        }
+    }
+
+    /// The question names the card twice or it names it once, and which one
+    /// depends on whether a card is offering itself.
+    ///
+    /// Worth asserting rather than reading, because the failure is a sentence
+    /// like `"release notes" wants to close "release notes", which is not a card
+    /// it opened` — true of every clause and unreadable as a question about the
+    /// wall. The self wording also has to say the one thing that is genuinely
+    /// different: the transcript on screen is the one that goes.
+    #[test]
+    fn a_card_offering_itself_is_asked_about_differently() {
+        let mine = close_question("release notes", "ab12cd34", "release notes", Some("all done"));
+        let said = mine["questions"][0]["question"].as_str().expect("a question");
+        assert!(said.contains("is asking to be closed"), "{said}");
+        assert!(said.contains("the card itself asking"), "{said}");
+        assert!(said.contains("you may be reading"), "{said}");
+        assert!(!said.contains("not a card it"), "the other wording leaked in: {said}");
+        assert!(said.contains("all done"), "the reason is still carried: {said}");
+
+        let theirs = close_question("release notes", "ab12cd34", "the gate watcher", None);
+        let said = theirs["questions"][0]["question"].as_str().expect("a question");
+        assert!(said.contains("wants to close"), "{said}");
+        assert!(said.contains("not a card it"), "{said}");
+        assert!(said.contains("gave no reason"), "{said}");
+
+        /* Both offer the same two answers — the wording changes, the decision
+           does not. */
+        for q in [&mine, &theirs] {
+            let opts = q["questions"][0]["options"].as_array().expect("options");
+            assert_eq!(opts.len(), 2);
+            assert_eq!(opts[0]["label"], CLOSE_IT);
+            assert_eq!(opts[1]["label"], LEAVE_IT);
         }
     }
 
@@ -1565,7 +1665,7 @@ mod tests {
     /// Every refusal carries its reasoning and a way forward, per `MAX_HOPS`.
     #[test]
     fn every_refusal_says_what_to_do_instead() {
-        for no in [NotYours::Yourself, NotYours::Aside, NotYours::Working] {
+        for no in [NotYours::Aside, NotYours::Working] {
             let said = no.say("the card");
             assert!(said.contains("the card"), "{said}");
             /* Either hand it back to the user, or wait — never a bare no. */
