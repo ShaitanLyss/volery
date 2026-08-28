@@ -77,6 +77,39 @@ Colour on this wall means urgency and means the same thing in every direction yo
 widget that let a feed choose its own colours would be the first thing here to break that, and
 the standing rule about decorative colour would have nothing left to stand on.
 
+**Row order is the server's, and Volery does not re-sort.** Decided 2026-08-28, before the code
+exists, which is the right way round — sink e2cb0a2d raised it while the RISE half was being
+built and it would have been settled by accident otherwise.
+
+The argument is the one `tier` already makes, one step further. RISE returns rows ordered
+`fail, ask, soft, work, rest`, which is deliberately **not** `azdo.ts`'s `WEIGHT`
+(`ask, fail, work, soft, rest`) — two rungs differ, and RISE's reasoning is specific to what it
+publishes: for a ticket the question is "does this need me to act", so one in motion is the one
+nobody need look at, and `soft` (neglected) therefore outranks `work` (moving). That reasoning
+is right for tickets and would be wrong for pipeline runs. Which is the point: **the ordering
+is domain knowledge the publishing server has and this repository does not** — the same reason
+nothing here can know what a P2 is worth.
+
+So the array order in the resource *is* the display order. Consequences worth stating, because
+each is a thing somebody will otherwise be tempted to add:
+
+- **Nothing is added to the contract.** No `weight`, no `rank`, no per-row number. A published
+  weight would be a second way to say the same thing and the two would disagree the first time
+  a server sorted its own array differently from the numbers it stamped on it. Order is already
+  a total ordering and JSON arrays already carry it.
+- **`azdo.ts`'s `WEIGHT` stays where it is and does not become shared.** It is Volery sorting
+  *Volery's own* readings, which it owns the taxonomy for. Exporting it would be exporting a
+  ranking of tickets nobody here has ever seen.
+- **`Roster.svelte` must therefore not sort, group or stable-sort by tier** — and this is the
+  line most likely to be crossed by somebody being helpful, because grouping a mixed list by
+  colour looks like an improvement right up until it silently overrules the server's judgement
+  about which of two rows matters more. The widget's own knobs may still *filter* (a `showing`
+  scope reaches through the template) and may cap length; neither reorders what is left.
+- **A server with no opinion gets what it asked for.** Publishing in whatever order its
+  database returned is a choice too, and drawing that faithfully is the honest answer to a feed
+  that did not think about it — better than Volery inventing a ranking and making it look
+  considered.
+
 **`ref` is a string the same server understands**, and it is why this is not a read-only pane.
 A row can be handed to a card, and what lands in the dock is a prompt naming the ticket for
 tools the card already has — because the registry entry that fed the widget is the entry that
@@ -148,3 +181,5 @@ of places for it to be.
 - **Where a row goes when you click it.** `href` opens a browser, which is the obvious answer
   and the least interesting one. The `ref` route — dropping it on a card — is the reason the
   field exists and is unbuilt.
+- ~~**Who owns row order.**~~ Settled 2026-08-28: the server's, and Volery does not re-sort.
+  See "Row order is the server's" above.
