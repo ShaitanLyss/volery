@@ -23,8 +23,9 @@ every card on it, and a territory's is waiting for the card you open in it next 
 
 ### It is a system prompt, and the three alternatives are all worse
 
-`--append-system-prompt`, one flag, composed in `guidance::compose` and passed in
-`supervisor::spawn_now` beside the `--settings` layer. What was considered instead:
+`--append-system-prompt`, **one flag for the whole appended prompt**, composed in
+`supervisor::system_prompt` and passed in `spawn_now` beside the `--settings` layer.
+`guidance::compose` builds this feature's half of it. What was considered instead:
 
 - **Writing a `CLAUDE.md`.** This app does not write to the user's repository. A
   project-level instruction arriving as a tracked file ends up in a commit and then in a
@@ -37,6 +38,26 @@ every card on it, and a territory's is waiting for the card you open in it next 
   and pays for all of them on every turn.
 - **A `UserPromptSubmit` hook.** The same accumulation, once per turn instead of once per
   wake.
+
+**"One flag" is a constraint, not a description, and reading it as a description is how
+this feature spent a day being inert.** `--append-system-prompt` is last-one-wins.
+`spawn_now` had a second one a hundred lines below this one for the MCP roster paragraph
+(`supervisor::append_prompt`), so the guidance — passed first — was discarded on every card
+that had an ask server, which is every card. Both call sites were locally correct and far
+apart; this rule said "one flag" and was believed.
+
+Nothing could have said otherwise. It is not observable from outside a card, the panel
+reports what is *stored* rather than what was sent, and `tools/probe-guidance.ts` passes one
+flag of its own — so it stayed green and proved a mechanism nobody doubted. It was found by
+a card reading its own system prompt and saying the block was not there (sink a88048d9).
+
+So there is now exactly one place that appends: `system_prompt(chat, ask, standing)`, which
+returns `None` when there is nothing to say rather than an empty argument, and orders the
+tooling first and the person's words last. `everything_appended_to_the_prompt_survives_being_composed`
+asserts both halves are present and that theirs comes second; `bun tools/lift-roster.ts`
+runs it, since `cargo test` does not execute on this machine. **Anything else that ever
+wants to append to a card's system prompt goes through that function** — a second flag is
+not a second instruction, it is the first one being thrown away.
 
 The system prompt is the one place a standing instruction can sit without being said
 twice. It costs no transcript, no tokens per turn, and nothing has to be rewritten when

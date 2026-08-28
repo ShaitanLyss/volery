@@ -107,6 +107,42 @@ const MCP_PREFIX: &str = "mcp__skein__";
 /// is still advertised, `the_prompt_names_only_tools_the_server_advertises` still
 /// passes, and the description simply is not there — which is this paragraph
 /// becoming the whole of what a card knows, silently, one tier edit away.
+/// Everything appended to a card's system prompt, as the one argument the CLI
+/// will actually read.
+///
+/// `--append-system-prompt` is last-one-wins, so this exists to make "two
+/// things to append" impossible to express. Both callers used to pass their own
+/// and the person's standing instructions lost every time.
+///
+/// **Order: the tooling first, their words last.** Two reasons, and they agree.
+/// The roster paragraph is about how to use this studio and is the same on every
+/// card; the standing instructions are the person's own, are the more specific
+/// of the two, and are the thing that must not read as a footnote to a paragraph
+/// about tool names. It is also the order `guidance::compose` already argues for
+/// internally when the wall's instructions and a territory's disagree — the more
+/// specific and more human one goes last and wins.
+///
+/// `ask` is whether the MCP server actually came up. With no server the roster
+/// paragraph would name tools that are not there, which is the failure
+/// `the_prompt_names_only_tools_the_server_advertises` guards from the other
+/// direction — so it is left out, and the standing instructions still go.
+fn system_prompt(chat: bool, ask: bool, standing: Option<String>) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if ask {
+        parts.push(append_prompt(chat));
+    }
+    if let Some(text) = standing {
+        let text = text.trim();
+        if !text.is_empty() {
+            parts.push(text.to_string());
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("\n\n"))
+}
+
 fn append_prompt(chat: bool) -> String {
     let mut prompt = format!(
         "When you need a decision that only the user can make, call \
@@ -502,10 +538,8 @@ fn spawn_now(
        share and says nothing, but the wall's instructions are facts about the
        person at the keyboard and do not stop being true because a card has no
        repository in front of it. */
-    if let Some(text) = crate::guidance::for_conversation(&app.state::<crate::store::Store>(), &id)
-    {
-        cmd.args(["--append-system-prompt", &text]);
-    }
+    let standing =
+        crate::guidance::for_conversation(&app.state::<crate::store::Store>(), &id);
 
     /* Which subscription this card spends. `CLAUDE_SECURESTORAGE_CONFIG_DIR`
        selects the credential store and *only* the store — `CLAUDE_CONFIG_DIR`
@@ -589,7 +623,29 @@ fn spawn_now(
            only; the config above carries the same number again for the idle
            watchdog, which no variable here reaches — see ask::mcp_config. */
         cmd.env("MCP_TOOL_TIMEOUT", crate::ask::client_timeout_ms().to_string());
-        cmd.args(["--append-system-prompt", &append_prompt(chat)]);
+    }
+
+    /* **One flag, or one of them is silently thrown away.** This used to be two
+       `--append-system-prompt` arguments — the standing instructions above and
+       the roster paragraph in the block just past — and the CLI keeps only the
+       last occurrence, so the person's own instructions never reached a single
+       card that had an ask server. Reported from inside one (sink a88048d9) with
+       both scopes set in the store and no `# Standing instructions` block in its
+       prompt, and confirmed the same way: a card spawned by this wall could read
+       the roster paragraph in its own prompt and not the wall's guidance.
+
+       Nothing said so, and nothing could. `tools/probe-guidance.ts` proved the
+       flag lands and survives `--resume`, which is true and was never the
+       question — it passes *one*. The two call sites were far apart in this
+       function and each was locally correct. `system_prompt` is the seam, so
+       there is now one place that can be wrong and a test that reads it.
+
+       Note the shape of what shipped: the guidance was dropped exactly when the
+       ask server was up, which is always, so the feature was inert rather than
+       flaky. A conditional second flag is worse than an unconditional one — it
+       looks like it works in the one configuration nobody runs. */
+    if let Some(text) = system_prompt(chat, ask_port != 0, standing) {
+        cmd.args(["--append-system-prompt", &text]);
     }
 
     cmd.stdin(Stdio::piped())
@@ -1578,6 +1634,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The bug this whole seam exists for: `--append-system-prompt` is
+    /// last-one-wins, this function used to be two of them, and the person's
+    /// own standing instructions were the one that lost — on every card that
+    /// had an ask server, which is every card (sink a88048d9).
+    ///
+    /// Asserted as *containment of both*, not as a literal string, for the
+    /// reason `the_roster_tools_are_advertised_beside_the_question` derives its
+    /// expectation: a restated copy of the composed prompt would be a second
+    /// source of truth that no compiler keeps honest.
+    #[test]
+    fn everything_appended_to_the_prompt_survives_being_composed() {
+        let standing = "# Standing instructions\n\nMy name is Lyss.";
+        for chat in [false, true] {
+            let out = system_prompt(chat, true, Some(standing.to_string()))
+                .expect("something to say");
+            assert!(
+                out.contains(standing),
+                "the standing instructions were dropped (chat={chat}): {out}"
+            );
+            assert!(
+                out.contains(&format!("{MCP_PREFIX}ask_user")),
+                "the roster paragraph was dropped (chat={chat}): {out}"
+            );
+            /* Their words last — see the doc comment. A footnote to a paragraph
+               about tool names is not where a person's own instructions go. */
+            assert!(
+                out.find(standing) > out.find(&format!("{MCP_PREFIX}ask_user")),
+                "the standing instructions must come after the tooling: {out}"
+            );
+        }
+    }
+
+    /// Each half stands alone, because each is genuinely absent sometimes: a
+    /// wall with no guidance set, and a spawn where the ask server did not come
+    /// up. Neither may take the other down with it.
+    #[test]
+    fn either_half_of_the_prompt_can_be_missing() {
+        let standing = "do the thing".to_string();
+
+        let no_guidance = system_prompt(false, true, None).expect("the roster alone");
+        assert!(no_guidance.contains(&format!("{MCP_PREFIX}board")));
+
+        /* No ask server: naming tools that are not there is the failure
+           `the_prompt_names_only_tools_the_server_advertises` guards from the
+           other side, so the roster goes and the instructions still land. */
+        let no_ask = system_prompt(false, false, Some(standing.clone())).expect("the guidance alone");
+        assert_eq!(no_ask, standing);
+        assert!(!no_ask.contains(MCP_PREFIX));
+
+        /* Nothing to say is `None` rather than an empty argument. A bare
+           `--append-system-prompt ""` is a flag the CLI still reads. */
+        assert!(system_prompt(false, false, None).is_none());
+        assert!(system_prompt(false, false, Some("   ".to_string())).is_none());
     }
 
     /// Advertised is not enough, and `append_prompt`'s own doc comment leans on

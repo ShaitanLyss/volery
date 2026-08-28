@@ -28,6 +28,30 @@
  * untrue about their own instructions — which is the one lie this feature can
  * tell that nobody would catch, since you cannot see a system prompt from the
  * outside. That is what this file is for.
+ *
+ * ### What this probe cannot see, and did not
+ *
+ * **It passes one `--append-system-prompt`, and the app passed two.** Both
+ * claims above are true; neither was ever the question. `supervisor::spawn` had
+ * a second flag for the MCP roster paragraph a hundred lines further down, the
+ * CLI keeps only the last occurrence, and the guidance — passed first — was
+ * discarded on every card that had an ask server, which is every card. So this
+ * probe was green throughout and the feature was inert (sink a88048d9, fixed by
+ * `supervisor::system_prompt`, which composes both into one argument and is
+ * asserted by `everything_appended_to_the_prompt_survives_being_composed`).
+ *
+ * The lesson is about probes rather than about this flag: **a probe that
+ * isolates one variable proves a mechanism, not a configuration.** This one
+ * built its own argv, and the argv the app builds was the thing that was wrong.
+ * Where a probe's whole purpose is to answer "what does the CLI do on Skein's
+ * exact argv" — which is what `tools/probe-context.ts` is the pattern for — the
+ * argv has to come from the same place the app's does, or the two drift and the
+ * probe attests to the wrong command line.
+ *
+ * A cheap improvement if anyone is next in here: pass the flag *twice* with two
+ * different sentinels and record which one lands. That is the assertion that
+ * would have caught this, it costs one turn, and the answer is worth writing
+ * down whichever way it comes out.
  */
 
 const CWD = import.meta.dir + "/../.scratch/guidance-probe";
