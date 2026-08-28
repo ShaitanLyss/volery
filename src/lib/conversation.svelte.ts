@@ -20,6 +20,7 @@ import {
   HEAL_BUDGET,
   type HealKind,
   isCompactSummary,
+  isApiErrorMessage,
   isImageNote,
   isStopNote,
   skillBody,
@@ -1890,8 +1891,15 @@ export class Conversation {
            The turn and the echoes above are settled first and deliberately: a
            refusal is proof the process had our prompt, which is exactly what
            `#settleEchoes` is asserting. What it is not is proof anybody
-           answered it. */
-        if (ev.is_api_error_message === true) break;
+           answered it.
+
+           Asked through `classify.ts` rather than off the field, because the
+           disk spells it `isApiErrorMessage` and `history.ts` needs the same
+           question answered — where it draws the sentence as an `error` line
+           instead of dropping it, since a session file carries no `result` for
+           the error line to have come from. One predicate, two folds, which is
+           what stops the halves drifting; see sink 999cadb7. */
+        if (isApiErrorMessage(ev)) break;
 
         for (const block of ev.message?.content ?? []) {
           if (block.type === "text" && block.text?.trim()) {

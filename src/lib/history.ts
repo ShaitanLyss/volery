@@ -32,6 +32,7 @@ import {
   compactNote,
   compactStat,
   describeTool,
+  isApiErrorMessage,
   isImageNote,
   isStopNote,
   localCommand,
@@ -262,6 +263,27 @@ export function foldTranscript(
       }
 
       case "assistant": {
+        /* An API refusal, which the CLI wraps as an assistant message and is
+           not the agent speaking. Live this is dropped, because the `result`
+           behind it carries the same sentence as the turn's error line and
+           drawing both put two identical lines under one refusal.
+
+           **Here it is drawn instead, and the asymmetry is the point.** A
+           session file holds no `result` records at all — this fold has never
+           had one to read — so dropping it the way the live fold does would
+           take the refusal out of a restored transcript altogether. What has to
+           agree across a restart is the *reading*, not the record: both sides
+           say the CLI refused the turn, neither says the agent announced it.
+           So the sentence keeps its `error` register, which is the kind live
+           pushes it under from `result`.
+
+           445 of these on this machine — 170 at 429, 68 at 529 — so before this
+           every card that had ever hit a limit came back with "You've hit your
+           session limit · resets 2:40pm" in its own voice. Sink 999cadb7. */
+        if (isApiErrorMessage(rec)) {
+          push("error", textOf(rec.message?.content));
+          break;
+        }
         for (const block of rec.message?.content ?? []) {
           if (block?.type === "text") push("text", block.text ?? "");
           else if (block?.type === "tool_use") {

@@ -29,6 +29,7 @@ import {
   endsOnQuestion,
   isCompactSummary,
   skillBody,
+  isApiErrorMessage,
   isImageNote,
   isStopNote,
   isTaskNotification,
@@ -1930,5 +1931,35 @@ describe("the note the CLI writes when it downsizes an image", () => {
     expect(isImageNote("look at the screenshot")).toBe(false);
     expect(isImageNote("")).toBe(false);
     expect(isImageNote("[]")).toBe(false);
+  });
+});
+
+/* One question, two spellings — the wire says `is_api_error_message` and the
+ * disk says `isApiErrorMessage`, and both folds have to answer it. */
+describe("a message the CLI wrote rather than a model", () => {
+  test("is recognised under the name the wire uses", () => {
+    expect(isApiErrorMessage({ is_api_error_message: true })).toBe(true);
+  });
+
+  test("and under the name the disk uses", () => {
+    expect(isApiErrorMessage({ isApiErrorMessage: true })).toBe(true);
+  });
+
+  /* The whole reason it is one predicate: a fold that knew only its own
+     spelling would draw a refusal as the agent's own voice on the other side of
+     a restart, which is what `history.ts` did for 268 records here. */
+  test("neither fold can answer this differently from the other", () => {
+    const wire = { is_api_error_message: true };
+    const disk = { isApiErrorMessage: true };
+    expect(isApiErrorMessage(wire)).toBe(isApiErrorMessage(disk));
+  });
+
+  test("and an ordinary message is not one", () => {
+    expect(isApiErrorMessage({})).toBe(false);
+    expect(isApiErrorMessage({ is_api_error_message: false })).toBe(false);
+    expect(isApiErrorMessage({ isApiErrorMessage: false })).toBe(false);
+    /* Truthy is not true: the flag is a boolean in the schema, and reading a
+       string as one would make `"false"` a refusal. */
+    expect(isApiErrorMessage({ isApiErrorMessage: "true" as unknown })).toBe(false);
   });
 });

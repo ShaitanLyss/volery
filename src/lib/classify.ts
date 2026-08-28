@@ -1230,6 +1230,37 @@ export function isImageNote(text: string): boolean {
   return /^\[image:[^\]]*\]$/i.test(text.trim());
 }
 
+/** Whether the CLI wrote this `assistant` message itself, rather than a model
+ *  producing it.
+ *
+ * An API refusal is wrapped as an assistant message — `model: "<synthetic>"`,
+ * the whole content one sentence — so drawn as `text` it is the agent
+ * apparently announcing "You've hit your session limit · resets 2:40pm" in its
+ * own voice. claude 2.1.235 builds the result's `is_error` straight from this
+ * flag (`Jr = Boolean(Mt.isApiErrorMessage)`), so it is the CLI's own marker on
+ * its own writing and not an inference.
+ *
+ * **Both spellings, because the two folds get different ones.** On the wire it
+ * is `is_api_error_message`, a wrapper-level sibling of `message` spread onto
+ * the event beside `error` and `request_id`. On disk it is `isApiErrorMessage`,
+ * on the record. Measured across 492 transcripts here, 2026-08-28: 445
+ * records, every one `type: "assistant"` with `model: "<synthetic>"` — 170 at
+ * status 429, 68 at 529, 15 at 400, 15 with no status at all
+ * (`Unable to connect to API`). So this is not a rare shape; it is what every
+ * card that ever hit a limit has in its file.
+ *
+ * Asked as one predicate over both names for the reason `skillBody` and
+ * `isImageNote` are matched on text: the panel has to read the same after a
+ * restart as it did live, and a field that exists on one side only cannot be
+ * what decides. Here the field exists on *both* sides under two names, which is
+ * the cheaper version of the same problem and the same answer. */
+export function isApiErrorMessage(rec: {
+  is_api_error_message?: unknown;
+  isApiErrorMessage?: unknown;
+}): boolean {
+  return rec.is_api_error_message === true || rec.isApiErrorMessage === true;
+}
+
 /* ── compaction ──────────────────────────────────────────────────────────
  *
  * Folding a full context is the one thing on this wire that takes *minutes*

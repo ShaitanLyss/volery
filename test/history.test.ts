@@ -227,6 +227,43 @@ describe("what a transcript carries that the wire never does", () => {
     ]);
   });
 
+  test("an api refusal keeps its error register instead of the agent's voice", () => {
+    /* The CLI wraps a refusal as an assistant message with `model:
+       "<synthetic>"`, so drawn as `text` it is the agent apparently announcing
+       its own rate limit. 268 of these on this machine, 170 of them 429s, which
+       means every card that had ever hit a limit came back saying it.
+
+       Live the message is dropped, because the `result` behind it carries the
+       same sentence as the turn's error line. A session file has no `result`
+       records at all, so dropping it here would lose the refusal entirely — the
+       reading is what has to agree across a restart, not the record. Both sides
+       say the CLI refused; neither says the agent spoke. */
+    const refusal =
+      "You've hit your session limit \u00b7 resets 2:40pm (Australia/Sydney) \u00b7 progress saved";
+    const h = foldTranscript(
+      jsonl(
+        user("carry on with the migration"),
+        {
+          type: "assistant",
+          isApiErrorMessage: true,
+          apiErrorStatus: 429,
+          message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: refusal }] },
+        },
+        user("swap to the other account"),
+        {
+          type: "assistant",
+          message: { role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "on it" }] },
+        },
+      ),
+    );
+    expect(h.lines).toEqual([
+      { kind: "you", text: "carry on with the migration" },
+      { kind: "error", text: refusal },
+      { kind: "you", text: "swap to the other account" },
+      { kind: "text", text: "on it" },
+    ]);
+  });
+
   test("an image-resize note is dropped, on both sides of a restart", () => {
     /* The one in this family whose bug was live-only. On disk it carries
        `isMeta`, so the block above `switch` had always dropped it; the live
