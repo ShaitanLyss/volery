@@ -23,8 +23,10 @@ import {
   HEAL_BUDGET,
   type HealKind,
   isCompactSummary,
+  RETRY_NOTE,
   isApiErrorMessage,
   isImageNote,
+  isRetryNudge,
   isStopNote,
   skillBody,
   jobLabel,
@@ -2291,6 +2293,19 @@ export class Conversation {
                not show it either. No turn is opened, for the reason the job note
                above gives. */
             if (isImageNote(said)) break;
+            /* A tool call the model wrote as prose, which the CLI noticed and
+               asked for again. Drawn rather than dropped: the malformed call is
+               already above this as text — `<question>…</question>` where an
+               `ask_user` should have been — and without a line saying so it sits
+               there unexplained, while the retry request itself was being drawn
+               as something you had typed. See `isRetryNudge`, sink f7d17e44.
+
+               No turn is opened, for the reason the job note below gives: the
+               agent is about to speak again and that speech opens one. */
+            if (isRetryNudge(said)) {
+              this.#push("meta", RETRY_NOTE);
+              break;
+            }
             /* A background job reporting in, which is the CLI talking about the
                conversation rather than words anybody typed — the same shape and
                the same hazard as the stop note above. Without this the raw

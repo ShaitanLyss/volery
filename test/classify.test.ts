@@ -30,7 +30,9 @@ import {
   isCompactSummary,
   skillBody,
   MAX_IMAGE_CHARS,
+  RETRY_NOTE,
   isApiErrorMessage,
+  isRetryNudge,
   isImageNote,
   picturesOf,
   isStopNote,
@@ -2048,5 +2050,40 @@ describe("the pictures in a result", () => {
     expect(picturesOf("a bare string")).toEqual([]);
     expect(picturesOf(null)).toEqual([]);
     expect(picturesOf([])).toEqual([]);
+  });
+});
+
+/* The sixth member of the family, and the only one drawn rather than dropped —
+ * because what it explains is already on the page. See `isRetryNudge`. */
+describe("the nudge after a malformed tool call", () => {
+  const real =
+    "The previous response failed to produce a valid tool call. Please retry the tool call now.";
+
+  test("is known on sight, verbatim from this machine's transcripts", () => {
+    expect(isRetryNudge(real)).toBe(true);
+    expect(isRetryNudge(`  ${real}  `)).toBe(true);
+  });
+
+  /* Matched on the middle rather than the whole sentence: the wording around it
+     is the CLI's and will drift, and this is the part that names the event. */
+  test("survives the wording around it changing", () => {
+    expect(isRetryNudge("Your last response failed to produce a valid tool call.")).toBe(true);
+    expect(isRetryNudge("failed to produce a valid tool call")).toBe(true);
+  });
+
+  test("and is not confused with anything else in the family", () => {
+    expect(isRetryNudge("[Request interrupted by user]")).toBe(false);
+    expect(isRetryNudge("[Image: original 3200x2000, displayed at 2000x1250.]")).toBe(false);
+    expect(isRetryNudge("the tool call failed")).toBe(false);
+    expect(isRetryNudge("")).toBe(false);
+  });
+
+  /* The line it pushes is the wall's prose, not the CLI's: lowercase, quiet, and
+     about the event rather than about "the previous response", which means
+     nothing to somebody reading a column. */
+  test("says what happened in the wall's own register", () => {
+    expect(RETRY_NOTE).toBe("a tool call came out malformed — asked for again");
+    expect(RETRY_NOTE).toBe(RETRY_NOTE.toLowerCase());
+    expect(RETRY_NOTE.length).toBeLessThan(60);
   });
 });

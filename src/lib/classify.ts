@@ -1294,6 +1294,40 @@ export function isImageNote(text: string): boolean {
   return /^\[image:[^\]]*\]$/i.test(text.trim());
 }
 
+/** The nudge the CLI writes when a model's tool call came out malformed.
+ *
+ * ```text
+ * The previous response failed to produce a valid tool call. Please retry the tool call now.
+ * ```
+ *
+ * The sixth member of the family `isStopNote`, `parseTaskNotification`,
+ * `localCommand`, `skillBody` and `isImageNote` belong to — a `user` record the
+ * user did not type — and it arrives with `isMeta: true` on disk and no such
+ * field on the wire, which is why it is matched on its words like all of them.
+ *
+ * **Drawn rather than dropped, and that is the point of it.** When this happens
+ * the model has emitted its tool call *as prose*, so the transcript already
+ * carries a wall of `<question>…</question>` and `<parameter name="options">`
+ * where an answer should be — which is what sink f7d17e44 reported, a failed
+ * `ask_user` appearing as text. That text is genuinely what the agent said and
+ * is not ours to hide. What was missing is the sentence explaining it: without
+ * this line the XML sits there unaccounted for, and the retry request was
+ * additionally drawn in *your* register, as though you had typed it.
+ *
+ * So both folds push a `meta` line here. `RETRY_NOTE` rather than the CLI's own
+ * sentence, because the wall's prose is lowercase and quiet and because "the
+ * previous response" means nothing to somebody reading a column — the useful
+ * fact is that a call came out malformed and is being made again.
+ *
+ * Matched on the distinctive middle rather than the whole sentence: the wording
+ * around it is the CLI's and will drift, and `failed to produce a valid tool
+ * call` is the part that names the event. */
+export const RETRY_NOTE = "a tool call came out malformed — asked for again";
+
+export function isRetryNudge(text: string): boolean {
+  return /failed to produce a valid tool call/i.test(text.trim());
+}
+
 /** Whether the CLI wrote this `assistant` message itself, rather than a model
  *  producing it.
  *

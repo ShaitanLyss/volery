@@ -32,8 +32,10 @@ import {
   compactNote,
   compactStat,
   describeTool,
+  RETRY_NOTE,
   isApiErrorMessage,
   isImageNote,
+  isRetryNudge,
   isStopNote,
   localCommand,
   parseTaskNotification,
@@ -168,6 +170,15 @@ export function foldTranscript(
     if (rec.isMeta === true) {
       if (rec.type !== "user") continue;
       const injected = textOf(rec.message?.content);
+      /* The second injected thing worth reading, and for a different reason than
+         a skill: this one *explains* what is already on the page. A malformed
+         tool call is drawn above it as the agent's own prose, and without a line
+         saying so the XML is unaccounted for. Live it is pushed from the `user`
+         arm below, by the same predicate — see `isRetryNudge`. */
+      if (isRetryNudge(injected)) {
+        push("meta", RETRY_NOTE);
+        continue;
+      }
       const skill = skillBody(injected);
       if (!skill) continue;
       push("skill", injected, skill.name || undefined);
@@ -252,6 +263,12 @@ export function foldTranscript(
            drifting. A transcript written by some other client, or a future one
            that stops setting the flag, reads the same here as it does live. */
         if (isImageNote(said)) break;
+        /* And the retry nudge, for a transcript whose records carry no `isMeta`
+           — one predicate answering on both sides, as above. */
+        if (isRetryNudge(said)) {
+          push("meta", RETRY_NOTE);
+          break;
+        }
         /* And when it was a local command. `/compact` alone writes two of
            these with nothing to mark them, so the transcript carried a block of
            `<command-name>` XML as something you had typed — and since

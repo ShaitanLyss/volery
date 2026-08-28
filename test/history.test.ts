@@ -264,6 +264,35 @@ describe("what a transcript carries that the wire never does", () => {
     ]);
   });
 
+  test("a malformed tool call is explained rather than left as a wall of XML", () => {
+    /* When this happens the model has written its tool call as prose, so the
+       transcript already carries `<question>…</question>` where an answer should
+       be — which is what sink f7d17e44 reported. That text is what the agent
+       said and is not ours to hide; what was missing is the sentence accounting
+       for it, and the retry request was additionally drawn in the user's own
+       register. Drawn on both sides, so the column reads the same after a
+       restart — asserted with the flag and without it. */
+    const nudge =
+      "The previous response failed to produce a valid tool call. Please retry the tool call now.";
+    const h = foldTranscript(
+      jsonl(
+        user("commit those two units separately"),
+        assistant([{ type: "text", text: "<question>How do you want it?</question>" }]),
+        user(nudge, { isMeta: true }),
+        assistant([{ type: "text", text: "asking properly this time" }]),
+        /* No flag: a transcript from a build that does not set it. */
+        user(nudge),
+      ),
+    );
+    expect(h.lines).toEqual([
+      { kind: "you", text: "commit those two units separately" },
+      { kind: "text", text: "<question>How do you want it?</question>" },
+      { kind: "meta", text: "a tool call came out malformed — asked for again" },
+      { kind: "text", text: "asking properly this time" },
+      { kind: "meta", text: "a tool call came out malformed — asked for again" },
+    ]);
+  });
+
   test("a screenshot comes back off disk as well as on the wire", () => {
     /* The seam this file exists for. A `Read` of a PNG carries the image inside
        the `tool_result` and no text beside it, so a fold that read results for
