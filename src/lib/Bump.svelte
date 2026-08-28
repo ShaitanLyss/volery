@@ -93,9 +93,28 @@
 <div class="arc">
   {#each choices as c, i (c.id)}
     {@const at = spots[i]}
+    <!-- **The resting position is here, not in the transition**, and that is the
+         whole of what was wrong with this. A Svelte `css` transition applies its
+         styles only while it is running; the moment the fan finished, Svelte took
+         the inline transform off and all three items snapped back to the `left:
+         0; top: 0` of a zero-sized `.arc` — stacked exactly on top of each other
+         on the button's centre, so what you saw was the last one in DOM order.
+         `patch` is last, which is why the report was "only showing patch, missing
+         major and minor" (sink c9f8e6bd). Nothing was missing; two of them were
+         underneath the third.
+
+         The transition's own `css` ends at this same value with a no-op
+         `scale(1)`, so the animation hands over to the static style without a
+         jump — and the `-50%` pair stays inside the transform for the reason
+         `fan` already gives: it is what the transform writes, so centring it in
+         CSS would be overwritten on the first frame and then restored on the
+         last, which is the same bug one layer along. -->
     <button
       class="pick"
       title={c.title}
+      style:transform="translate(calc(-50% + {at.dx.toFixed(2)}px), calc(-50% + {at.dy.toFixed(
+        2,
+      )}px))"
       transition:fan={{ dx: at.dx, dy: at.dy, i }}
       onclick={() => onpick(c.id)}
     >
@@ -126,6 +145,9 @@
      transparent. */
   .pick {
     position: absolute;
+    /* The centre of the button this fanned out of. Everything past this is the
+       per-item `transform` written inline — see the note on the element, and
+       do not move that offset in here. */
     left: 0;
     top: 0;
     pointer-events: auto;

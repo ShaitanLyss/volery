@@ -202,3 +202,69 @@ describe("the parser this leans on", () => {
     expect(bare).toEqual(["ghost", "ghost"]);
   });
 });
+
+/* A second invariant in the same file, and the same kind of bug: valid CSS,
+ * clean typecheck, and wrong only when you look at the running app.
+ *
+ * A Svelte `css` transition applies its styles **only while it is running**. So
+ * an absolutely-positioned element whose resting offset comes from the
+ * transition and from nowhere else looks correct for the length of the animation
+ * and then snaps to its origin. `Bump.svelte`'s three arc items did exactly
+ * that: `.pick` was `position: absolute; left: 0; top: 0`, the fan wrote the
+ * offsets, and when it finished all three stacked on the button's centre — so
+ * the wall showed the last one in DOM order and the bump chip appeared to offer
+ * `patch` alone (sink c9f8e6bd). Nothing was missing; two were underneath.
+ *
+ * Checked by reading the source rather than by rendering, which is the same
+ * bargain the collision test above strikes: this suite has no DOM, and the
+ * property is visible in the text. */
+describe("an element positioned by a transition", () => {
+  /** Which elements carry a `transition:` directive, with their markup. */
+  function transitioned(source: string): string[] {
+    const markup = source.slice(0, source.indexOf("<style") + 1 || undefined);
+    const out: string[] = [];
+    const re = /<(\w[\w-]*)\b[^>]*?\btransition:[^>]*>/gs;
+    for (const m of markup.matchAll(re)) out.push(m[0]);
+    return out;
+  }
+
+  test("also says where it rests when it is not transitioning", () => {
+    const offenders: string[] = [];
+    for (const file of components(SRC)) {
+      const source = readFileSync(file, "utf8");
+      for (const el of transitioned(source)) {
+        /* Only a transition that moves the thing. An `opacity`-only fade needs
+           no resting offset, and neither does one on a statically-placed node —
+           so the test is scoped to a transition whose element is absolutely
+           positioned by a class this stylesheet defines with `left`/`top` at an
+           origin. That is more than this suite can see, so the rule is narrowed
+           to the honest, checkable half: an element carrying BOTH a transition
+           and an inline `style:transform` is fine, and one carrying a transition
+           whose component's CSS contains `position: absolute` and no
+           `style:transform` anywhere is worth a human look. */
+        if (!/\btransition:\w+=\{\{[^}]*\bd[xy]\b/.test(el)) continue;
+        if (/style:transform=/.test(el)) continue;
+        offenders.push(`${file}: ${el.slice(0, 80)}…`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("recognises the shape it is looking for", () => {
+    /* The bug, as it was written. */
+    const bad = '<div><button transition:fan={{ dx: 1, dy: 2, i: 0 }}>x</button></div><style>.p{}</style>';
+    expect(transitioned(bad)).toHaveLength(1);
+    expect(/style:transform=/.test(transitioned(bad)[0])).toBe(false);
+
+    /* And the fix. */
+    const good =
+      '<div><button style:transform="translate(1px,2px)" transition:fan={{ dx: 1, dy: 2, i: 0 }}>x</button></div><style>.p{}</style>';
+    expect(/style:transform=/.test(transitioned(good)[0])).toBe(true);
+  });
+
+  test("leaves a transition that only fades alone", () => {
+    const fade = '<div><p transition:slide>x</p></div><style>.p{}</style>';
+    const el = transitioned(fade)[0];
+    expect(/\btransition:\w+=\{\{[^}]*\bd[xy]\b/.test(el)).toBe(false);
+  });
+});
