@@ -66,6 +66,81 @@ const CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
 /// what the upstream project registered.
 const REDIRECT_URI: &str = "http://127.0.0.1:5588/login";
 
+/// The same address again, as something `TcpStream::connect` will take.
+///
+/// Two spellings of one fact, which is a thing to be uneasy about — so
+/// `the_knock_reaches_the_listener_we_started` asserts they agree. They must:
+/// `knock` exists to unblock *librespot's* listener, and a knock on the wrong
+/// port is a sign-in that still hangs and a stranger's socket opened for no
+/// reason.
+const LOOPBACK: &str = "127.0.0.1:5588";
+
+/// How long the browser leg gets before the wall stops waiting for it.
+///
+/// The thing being waited on is a person, so this is generous where
+/// `CONNECT_BUDGET` is brisk: signing in to Spotify can mean a password
+/// manager, a second factor, and a browser that opened behind the window. Three
+/// minutes is longer than any of that and far shorter than "forever", which is
+/// what it used to be.
+///
+/// **Reported by the user, having been written down here first as an acceptable
+/// cost.** `spotify_link`'s comment said the leg was unbounded on the argument
+/// that a browser tab somebody has not got to yet is not a failure — true, and
+/// it quietly meant that closing the tab, or failing the sign-in, left the deck
+/// `busy` for the life of the process with port 5588 held and no way back but
+/// restarting the app. A documented cost is still a cost.
+const LINK_BUDGET: Duration = Duration::from_secs(180);
+
+/// Unstick librespot's sign-in listener by **being** the connection it is
+/// waiting for.
+///
+/// `librespot_oauth::get_access_token` parks on a blocking
+/// `listener.incoming().next()`, on a thread inside `spawn_blocking`. There is
+/// nothing to cancel it with: dropping the future does not stop the thread, and
+/// tokio cannot interrupt blocking work. The port stays bound, so even a
+/// front end that gave up could not offer a retry — the second attempt would
+/// fail to bind.
+///
+/// So this satisfies the accept instead of cancelling it. Connect, close, say
+/// nothing. librespot's `read_line` returns zero bytes, `request_line` is empty,
+/// and
+///
+/// ```ignore
+/// let redirect_url = request_line.split_whitespace().nth(1)
+///     .ok_or(OAuthError::AuthCodeListenerParse)?;
+/// ```
+///
+/// returns **before** it writes any response — so the thread unwinds, the
+/// listener drops, and 5588 is free. `get_access_token` then answers with a
+/// parse error, which `spotify_link` turns into prose about giving up rather
+/// than reporting librespot's word for it.
+///
+/// Best effort throughout: nothing listening is the ordinary case (the leg
+/// already finished), and a knock that fails has cost a closed socket.
+fn knock() {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let Ok(mut addrs) = LOOPBACK.to_socket_addrs() else {
+        return;
+    };
+    let Some(addr) = addrs.next() else { return };
+    if let Ok(socket) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+        let _ = socket.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Stop waiting for the browser, now, because you said so.
+///
+/// Not routed through the deck's `busy` guard on the front end, and it must not
+/// be: the whole point is to be usable while a `spotify_link` is in flight
+/// holding that flag. It needs no shared state either — the knock lands on
+/// librespot's listener and the in-flight `spotify_link` fails on its own and
+/// tidies up after itself, which is one path for the timeout and the button
+/// rather than two that must agree.
+#[tauri::command]
+pub async fn spotify_cancel_link() -> Result<(), String> {
+    crate::off_main(knock).await
+}
+
 /// `streaming` is the one that matters and the one a custom client id cannot
 /// have. The rest are what a face needs to draw the thing it is controlling.
 const SCOPES: &[&str] = &[
@@ -336,14 +411,17 @@ fn narrow(ev: PlayerEvent) -> Option<Wire> {
 /// one at search time — see that static, whose comment corrects the "never
 /// written down" this one used to claim.
 ///
-/// **This leg is deliberately unbounded**, because the thing it waits on is a
-/// person: librespot parks a thread on the loopback listener until the redirect
-/// arrives, and a browser tab somebody has not got to yet is not a failure.
-/// The cost is that abandoning the sign-in leaves the deck's `busy` set for the
-/// life of the process, since there is nothing to cancel a blocking accept with
-/// and nothing that could take port 5588 back. Everything *after* this leg is
-/// bounded — see `CONNECT_BUDGET` — which is where the four unexplained
-/// minutes actually were.
+/// **This leg waits on a person, so it waits generously and not forever.**
+/// It was once unbounded, on the argument that a browser tab somebody has not
+/// got to yet is not a failure. That is true and it was the wrong conclusion:
+/// close the tab, or fail the sign-in, and the deck stayed `busy` for the life
+/// of the process with port 5588 held — no retry, no message, restart the app.
+/// Reported as *"it just stays stuck on waiting for the browser forever"*.
+///
+/// `LINK_BUDGET` bounds it and `knock` is what makes bounding it possible at
+/// all; `spotify_cancel_link` is the same mechanism with a button on it, for
+/// when you know already. Everything *after* this leg is bounded by
+/// `CONNECT_BUDGET`, which is where the four unexplained minutes were.
 #[tauri::command]
 pub async fn spotify_link(app: AppHandle) -> Result<(), String> {
     {
@@ -351,15 +429,32 @@ pub async fn spotify_link(app: AppHandle) -> Result<(), String> {
         emit(&app, &state, Wire::Linking);
     }
 
-    let token = crate::off_main(move || {
+    /* Boxed so it can be polled again after the timeout rather than dropped.
+       That is the load-bearing half: dropping it would leave the blocking thread
+       running with port 5588 still bound, and the retry this whole change exists
+       to enable would fail to bind. `knock` unsticks it, and then it is *awaited*
+       so the port is demonstrably free before this returns. */
+    let mut task = Box::pin(crate::off_main(move || {
         librespot_oauth::OAuthClientBuilder::new(CLIENT_ID, REDIRECT_URI, SCOPES.to_vec())
             .open_in_browser()
             .build()
             .map_err(|e| format!("could not start the sign-in: {e}"))?
             .get_access_token()
             .map_err(|e| format!("spotify would not sign you in: {e}"))
-    })
-    .await?;
+    }));
+
+    let token = match tokio::time::timeout(LINK_BUDGET, &mut task).await {
+        Ok(done) => done?,
+        Err(_) => {
+            knock();
+            let _ = task.await;
+            Err(format!(
+                "gave up waiting for the browser after {} minutes — press sign in \
+                 again when you are ready",
+                LINK_BUDGET.as_secs() / 60
+            ))
+        }
+    };
 
     /* Emitted as well as returned, for the reason `spotify_start` gives at
        length: a `Linking` left standing in the replay is every *other* face on
@@ -983,4 +1078,43 @@ pub fn spotify_command(
     };
 
     done.map_err(|e| format!("spotify would not do that: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `knock` opens a socket to `LOOPBACK` in order to unstick a listener
+    /// librespot opened at `REDIRECT_URI`. Two spellings of one port, and if
+    /// they ever drift the failure is a sign-in that still hangs plus a
+    /// connection to whatever else happens to be on the other number — neither
+    /// of which looks like a typo in a constant.
+    #[test]
+    fn the_knock_reaches_the_listener_we_started() {
+        assert!(
+            REDIRECT_URI.contains(LOOPBACK),
+            "REDIRECT_URI {REDIRECT_URI} does not carry the address knock() dials ({LOOPBACK})"
+        );
+        /* And it really is an address, not merely a substring that reads like
+           one — `knock` feeds it to `to_socket_addrs`. */
+        use std::net::ToSocketAddrs;
+        let addr = LOOPBACK
+            .to_socket_addrs()
+            .expect("LOOPBACK must resolve")
+            .next()
+            .expect("LOOPBACK must yield an address");
+        assert!(addr.ip().is_loopback(), "the knock must stay on this machine");
+    }
+
+    /// Generous against a person, not against a network. The point of the
+    /// number is that it is not infinity; the point of *this* is that nobody
+    /// tightens it to something that fails a real sign-in.
+    #[test]
+    fn the_browser_leg_waits_longer_than_a_person_takes() {
+        assert!(
+            LINK_BUDGET >= Duration::from_secs(120),
+            "a password manager and a second factor take longer than this"
+        );
+        assert!(LINK_BUDGET > CONNECT_BUDGET, "a person is slower than an access point");
+    }
 }

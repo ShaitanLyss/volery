@@ -192,6 +192,28 @@ export class Deck {
     });
   }
 
+  /**
+   * Stop waiting for the browser.
+   *
+   * **Deliberately not inside `#guard`.** Every other verb here is, because two
+   * of the same verb at once is a mistake — but this one exists precisely to be
+   * usable while a `spotify_link` is in flight holding `busy`, and a cancel
+   * that waited its turn behind the thing it cancels would never run at all.
+   *
+   * It needs no bookkeeping: the in-flight `link()` fails on its own once the
+   * listener is unstuck, emits `Closed`, and clears `busy` through its own
+   * `finally`. One path for the button and the timeout rather than two that
+   * have to agree. See `knock` in `spotify.rs`.
+   */
+  async cancelLink() {
+    try {
+      await invoke("spotify_cancel_link");
+    } catch {
+      /* Nothing to say and nothing to do: the leg it was going to unstick has
+         already finished if this failed, which is the outcome asked for. */
+    }
+  }
+
   async forget() {
     await this.#guard(async () => {
       await invoke("spotify_forget");

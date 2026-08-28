@@ -497,6 +497,7 @@ pub fn run() {
             applog::app_log,
             update::latest_release,
             spotify::spotify_play,
+            spotify::spotify_cancel_link,
             selector::spotify_search,
             update::latest_tag,
             update::fetch_update,

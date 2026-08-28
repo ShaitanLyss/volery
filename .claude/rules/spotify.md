@@ -292,11 +292,53 @@ on screen for the blink before the first event arrives.
 The rule worth carrying: **a label that guesses which leg is running is a label that is wrong
 for the duration of the longest one.** If a verb has legs, the legs are states.
 
-**The browser leg is still deliberately unbounded**, because the thing it waits on is a
-person. The cost is stated where it lives, above `spotify_link`: abandon the sign-in and
-`busy` stays set for the life of the process, since a blocking accept cannot be cancelled and
-nothing else can take port 5588 back. Everything after that leg is bounded, which is where the
-four minutes actually were.
+### And the browser leg, which was left unbounded on purpose and should not have been
+
+Everything after the browser was bounded, which is where the four minutes were — so the
+browser leg itself was left alone, on the argument that the thing it waits on is a *person* and
+a tab somebody has not got to yet is not a failure. The cost was written down rather than
+fixed, above `spotify_link`: abandon the sign-in and `busy` stays set for the life of the
+process, since a blocking accept cannot be cancelled and nothing else can take port 5588 back.
+
+It was reported a day later, in the plainest possible terms: *"if I don't complete sign in fast
+enough or it fails, it just stays stuck on waiting for the browser forever."* **A documented
+cost is still a cost**, and writing one down is not the same as deciding it is acceptable —
+which is the thing to take from this rather than anything about OAuth. The tell was there in
+the note itself: it described a state with no way out and no message, which is the shape this
+whole file spent an afternoon removing from every other leg.
+
+#### You cannot cancel a blocking accept, so satisfy it instead
+
+`librespot_oauth::get_access_token` parks on `listener.incoming().next()`, on a thread inside
+`spawn_blocking`. Dropping the future does not stop the thread; tokio cannot interrupt blocking
+work; and while that thread lives, 5588 stays bound — so even a front end that gave up could
+not offer a retry, because the second attempt would fail to bind. That is why "just add a
+timeout" is not a fix on its own and why the leg looked unfixable.
+
+`knock` is the way through: **connect to the port ourselves and close**. librespot's `read_line`
+returns zero bytes, `request_line` is empty, and
+
+```rust
+let redirect_url = request_line.split_whitespace().nth(1)
+    .ok_or(OAuthError::AuthCodeListenerParse)?;
+```
+
+returns *before* writing any response — so the thread unwinds, the listener drops, and the port
+is free. One mechanism serves both users of it: `LINK_BUDGET` (three minutes, generous against a
+person rather than against a network) and `spotify_cancel_link`, which is the same knock with a
+button on it for when you already know.
+
+Two details that are load-bearing rather than tidy:
+
+- **The task is boxed and awaited after the knock, not dropped.** Dropping it would return from
+  the command with the blocking thread still holding 5588, and the retry this whole change
+  exists to enable would fail to bind. Awaiting it is what makes the port demonstrably free
+  before the error reaches the front end.
+- **`deck.cancelLink` is outside the `busy` guard**, alone among the deck's verbs. It exists to
+  be pressed while a `spotify_link` is in flight holding that flag; a cancel that queued behind
+  the thing it cancels would never run. It needs no bookkeeping either — the in-flight `link()`
+  fails on its own, emits `Closed`, and clears `busy` in its own `finally`, so the button and
+  the timeout are one path rather than two that have to agree.
 
 ## librespot could not reach Spotify from here, and the fix is a tunnel of our own
 

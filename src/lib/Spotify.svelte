@@ -186,7 +186,20 @@
            offer but searching is exactly what you want, and a player face whose
            only affordance appears after you have already started something is a
            face you cannot start anything from. -->
-      {#if deckState.phase !== "linking" && deckState.phase !== "opening"}
+      {#if deckState.phase === "linking"}
+        <!-- The way out of a sign-in that is not going to finish. Drawn only
+             during the browser leg, because that is the only wait on this face
+             that is a *person* rather than a network — everything else is
+             bounded in seconds and gives up on its own.
+
+             It reaches `deck.cancelLink`, which is deliberately outside the
+             busy guard: a cancel that queued behind the thing it cancels would
+             never run. There is a three-minute timeout behind it too; this is
+             for when you already know. -->
+        <button class="give" onclick={() => void deck.cancelLink()} title="stop waiting for the browser">
+          give up
+        </button>
+      {:else if deckState.phase !== "opening"}
         <button class="find" class:on={open} onclick={toggleSearch} title="search spotify">
           ⌕
         </button>
@@ -351,6 +364,14 @@
      is a button you press twice. Achromatic — this is chrome, not status. */
   .find.on {
     color: var(--paper);
+  }
+
+  /* Wider than the glyph buttons beside it because it is words, and quiet
+     because giving up on a sign-in is not a failure worth colouring — the wall
+     reserves colour for what a thing is doing. */
+  .give {
+    font-size: 0.7rem;
+    letter-spacing: 0.02em;
   }
 
   .search {
