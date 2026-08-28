@@ -28,7 +28,9 @@ import {
   applyEvent,
   emptyState,
   volumeToWire,
+  worthSearching,
   type SpotifyEvent,
+  type SpotifyHit,
   type SpotifyState,
 } from "./spotify";
 
@@ -103,6 +105,68 @@ export class Deck {
     const at = Date.now();
     for (const ev of wire.replay ?? []) next = applyEvent(next, ev, at);
     this.state = next;
+  }
+
+  /* ── searching ───────────────────────────────────────────────────────────*/
+
+  /** The rows the face draws, and what the search is doing. */
+  hits = $state<SpotifyHit[]>([]);
+  searching = $state<"idle" | "searching" | "done" | "failed">("idle");
+  searchFault = $state<string | null>(null);
+
+  /** Rising, so a slow answer cannot land on top of a faster later one.
+   *
+   *  Type "bon", then "bonobo": two searches are in flight and the first may
+   *  come back second. Without this the list would settle on the answer to a
+   *  query nobody is still looking at, which reads as the search being wrong
+   *  rather than late. */
+  #searchId = 0;
+
+  async search(query: string) {
+    if (!worthSearching(query)) {
+      this.hits = [];
+      this.searching = "idle";
+      this.searchFault = null;
+      return;
+    }
+    const mine = ++this.#searchId;
+    this.searching = "searching";
+    this.searchFault = null;
+    try {
+      const hits = await invoke<SpotifyHit[]>("spotify_search", { query });
+      if (mine !== this.#searchId) return; /* a later query owns the list */
+      this.hits = hits;
+      this.searching = "done";
+    } catch (e) {
+      if (mine !== this.#searchId) return;
+      this.hits = [];
+      this.searching = "failed";
+      this.searchFault = String(e);
+    }
+  }
+
+  clearSearch() {
+    this.#searchId++;
+    this.hits = [];
+    this.searching = "idle";
+    this.searchFault = null;
+  }
+
+  /** Put a result on, because the *user* asked.
+   *
+   *  `spotify_play` rather than the `put_on` a card reaches — that one refuses
+   *  while something is playing, which is the guard protecting this person from
+   *  an agent and would be nonsense applied to the person themselves. See its
+   *  comment in `spotify.rs`. */
+  async play(uri: string) {
+    try {
+      await invoke("spotify_play", { uri });
+      return true;
+    } catch (e) {
+      this.searchFault = String(e);
+      this.searching = "failed";
+      return false;
+    }
   }
 
   /* ── the verbs ───────────────────────────────────────────────────────────*/

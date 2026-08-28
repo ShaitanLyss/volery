@@ -677,6 +677,48 @@ the opposite direction from where the code already was, and the temptation while
 to expose the nine verbs sitting right there. Do not. If a future tool in this file wants one
 "for completeness", that is the instinct the scoping exists to refuse.
 
+### The wall searches too, and it is a *different door* from the card's
+
+Asked for plainly: *"you should add a search btn to the widget so that i can also manually
+search for music."* The widget now has a magnifier, a field and a list of results you click.
+
+Almost all of it is shared with `records` and `put_on` — `clean_types`, `search_url`, the limit
+clamp, `parse_hits`, `normalize_uri`, `is_context`. What is emphatically **not** shared is the
+refusal, and that asymmetry is the point rather than an oversight.
+
+`put_on` consults `refuse_while_playing` and stops when the room is not silent. That guard is
+the user's own scoping, in their words: an agent may choose music but may not take off what
+somebody is listening to. Applied to the person themselves it is nonsense — a search result you
+clicked that refused because something was already playing would be the app telling you not to
+change your mind. So `spotify_play` shares the load and none of the refusal.
+
+**Two commands rather than one with a `force` flag**, and that is the whole security argument
+in this subsystem: a flag is a thing an agent can set. The distinction between "you asked" and
+"a card asked" has to live in *which command exists*, because nothing downstream can tell them
+apart. Anything tempted to merge them should read `selector.rs`'s header first.
+
+Two smaller decisions worth their lines:
+
+- **`spotify_search` stops where `records` starts rendering.** `records` turns hits into prose
+  because its reader is a language model reading a tool result; a widget wants rows. So they
+  part company at exactly the point that is about the audience, and share every judgement that
+  is about Spotify.
+- **The magnifier is drawn whenever there is a session**, which is wider than `canControl`.
+  With nothing loaded there is no transport to offer, but searching is precisely what you want
+  — a player whose only affordance appears *after* you have started something is one you cannot
+  start anything from.
+
+The debounce and the rising `#searchId` in `deck.svelte.ts` are one idea in two halves: a
+person types faster than a round trip completes, so "bon" and "bonobo" are both in flight and
+the first may answer second. Without the stamp the list settles on the answer to a query nobody
+is looking at any more, which reads as the search being wrong rather than late.
+
+One residue, recorded rather than left to be found: `Hit` gained `serde::Serialize` so the rows
+can cross to the widget, and that broke `tools/lift-selector.ts`, whose whole virtue is linking
+nothing but `serde_json` so it runs when the dependency graph does not. The lift now strips
+that one named derive — narrowly, because `build.md` warns that a lift quietly dropping
+`#[derive(PartialEq)]` would compile into a different thing and say so only at the assertion.
+
 ### The load leg needs no Web API, which is not the obvious answer
 
 Volery is a librespot Spirc connect device, so the natural reading is that selecting music

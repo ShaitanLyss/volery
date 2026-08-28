@@ -37,22 +37,29 @@
     normalizeConfig,
     positionAt,
     progressAt,
+    sayHit,
+    sayResults,
   } from "./spotify";
   import type { Widget } from "./widgets";
 
   let { widget }: { widget: Widget } = $props();
 
   const cfg = $derived(normalizeConfig(widget.config));
-  const state = $derived(deck.state);
+  /* Named `deckState` and not `state`, which is what it wants to be called:
+     a local binding called `state` turns every `$state(...)` in this file into
+     `$`-prefixed store access on it, and svelte-check refuses the file with an
+     error about `subscribe` that names neither rune nor store. Worth the four
+     extra characters everywhere below. */
+  const deckState = $derived(deck.state);
 
   /* The wall's own tick, and nothing else. `clock.t` is snapped to the second
      rather than being whatever `Date.now()` said when the timer fired, which is
      what makes a countdown step by exactly one — so every reading below is a
      pure function of it and this face owns no timer at all. */
-  const elapsed = $derived(positionAt(state, clock.t));
-  const fraction = $derived(progressAt(state, clock.t));
-  const live = $derived(canControl(state));
-  const playing = $derived(state.phase === "playing");
+  const elapsed = $derived(positionAt(deckState, clock.t));
+  const fraction = $derived(progressAt(deckState, clock.t));
+  const live = $derived(canControl(deckState));
+  const playing = $derived(deckState.phase === "playing");
 
   /* Derived rather than captured once: `widget` is a prop, and reading `.id` at
      setup would pin this face to whichever widget it happened to draw first. */
@@ -64,17 +71,76 @@
   });
   onDestroy(() => deck.detach(id));
 
+  /* The search, which is only ever open because you asked for it — a player
+     widget that showed a search box at rest would be a search box with a player
+     attached. `open` is local to this face rather than on `deck`, because two
+     widgets on the wall are two places you might be looking and only one of
+     them is being typed into. The *results* are on `deck`, since those are an
+     answer from Spotify rather than a thing about this box. */
+  let open = $state(false);
+  let query = $state("");
+  let field = $state<HTMLInputElement | null>(null);
+
+  function toggleSearch() {
+    open = !open;
+    if (open) {
+      /* After the paint that creates it. */
+      queueMicrotask(() => field?.focus());
+    } else {
+      query = "";
+      deck.clearSearch();
+    }
+  }
+
+  /* Debounced, because a search is a network round trip and a person types
+     faster than one completes. `deck.search` also stamps each ask so a slow
+     early answer cannot land on a later query — the two together are what stop
+     the list flickering between two words. */
+  let typing: ReturnType<typeof setTimeout> | null = null;
+  function onType() {
+    if (typing !== null) clearTimeout(typing);
+    const mine = query;
+    typing = setTimeout(() => void deck.search(mine), 250);
+  }
+  onDestroy(() => {
+    if (typing !== null) clearTimeout(typing);
+  });
+
+  function onSearchKey(e: KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      toggleSearch();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (typing !== null) clearTimeout(typing);
+      void deck.search(query);
+    }
+  }
+
+  async function pick(uri: string) {
+    if (await deck.play(uri)) {
+      /* Closed on success only. A failure leaves the list up with the reason
+         under it, because the thing you were trying to do is still the thing
+         you want. */
+      open = false;
+      query = "";
+      deck.clearSearch();
+    }
+  }
+
+  const note = $derived(sayResults(deck.searching, deck.hits.length, deck.searchFault));
+
   function scrub(e: MouseEvent) {
-    if (!state.track) return;
+    if (!deckState.track) return;
     const el = e.currentTarget as HTMLElement;
     const r = el.getBoundingClientRect();
     const at = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-    void deck.seek(at * state.track.durationMs);
+    void deck.seek(at * deckState.track.durationMs);
   }
 </script>
 
 <div class="sp" data-layout={cfg.layout}>
-  {#if state.phase === "off"}
+  {#if deckState.phase === "off"}
     <!-- The one case with nothing to report and something to offer. -->
     <div class="empty">
       <p class="say">not signed in</p>
@@ -91,18 +157,18 @@
     </div>
   {:else}
     <div class="head">
-      {#if cfg.art && state.track?.art}
-        <img class="art" src={state.track.art} alt="" />
+      {#if cfg.art && deckState.track?.art}
+        <img class="art" src={deckState.track.art} alt="" />
       {/if}
       <div class="what">
-        <p class="title" title={state.track?.name ?? ""}>
-          {state.track?.name ?? (state.phase === "idle" ? "nothing playing" : "…")}
+        <p class="title" title={deckState.track?.name ?? ""}>
+          {deckState.track?.name ?? (deckState.phase === "idle" ? "nothing playing" : "…")}
         </p>
-        <p class="say" class:fault={state.phase === "fault"}>{describe(state)}</p>
+        <p class="say" class:fault={deckState.phase === "fault"}>{describe(deckState)}</p>
       </div>
     </div>
 
-    {#if cfg.progress && state.track}
+    {#if cfg.progress && deckState.track}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div class="rail" onclick={scrub}>
@@ -110,17 +176,56 @@
       </div>
       <div class="times">
         <span>{formatDuration(elapsed)}</span>
-        <span>{formatDuration(state.track.durationMs)}</span>
+        <span>{formatDuration(deckState.track.durationMs)}</span>
       </div>
     {/if}
 
-    {#if live}
-      <div class="transport">
+    <div class="transport">
+      <!-- Drawn whenever there is a session, which is a wider condition than
+           `canControl` on purpose: with nothing loaded there is no transport to
+           offer but searching is exactly what you want, and a player face whose
+           only affordance appears after you have already started something is a
+           face you cannot start anything from. -->
+      {#if deckState.phase !== "linking" && deckState.phase !== "opening"}
+        <button class="find" class:on={open} onclick={toggleSearch} title="search spotify">
+          ⌕
+        </button>
+      {/if}
+      {#if live}
         <button onclick={() => deck.prev()} title="previous">‹‹</button>
         <button class="big" onclick={() => deck.playPause()} title={playing ? "pause" : "play"}>
           {playing ? "❚❚" : "▶"}
         </button>
         <button onclick={() => deck.next()} title="next">››</button>
+      {/if}
+    </div>
+
+    {#if open}
+      <div class="search">
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          bind:this={field}
+          bind:value={query}
+          oninput={onType}
+          onkeydown={onSearchKey}
+          placeholder="search spotify…"
+          spellcheck="false" />
+        {#if note}
+          <p class="say" class:fault={deck.searching === "failed"}>{note}</p>
+        {/if}
+        {#if deck.hits.length > 0}
+          <ul class="hits">
+            {#each deck.hits as hit (hit.uri)}
+              <li>
+                <button onclick={() => pick(hit.uri)} title={hit.uri}>
+                  <span class="kind">{hit.kind}</span>
+                  <span class="name">{hit.title}</span>
+                  <span class="by">{sayHit(hit)}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -239,6 +344,101 @@
 
   .transport .big {
     font-size: 1rem;
+  }
+
+  /* The magnifier reads as pressed while the box is open, because the box may
+     be scrolled out of view in a `bar` layout and a toggle that shows no state
+     is a button you press twice. Achromatic — this is chrome, not status. */
+  .find.on {
+    color: var(--paper);
+  }
+
+  .search {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+    min-height: 0;
+  }
+
+  .search input {
+    background: var(--surface);
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+    color: var(--paper);
+    font: inherit;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.4rem;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .search input:focus {
+    outline: none;
+    border-color: var(--paper-dim);
+  }
+
+  .hits {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    /* The wall is zoomable and a widget has a fixed slot, so the list scrolls
+       rather than growing the card past the box `CARD_BOX` records for it. */
+    max-height: 9rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+
+  .hits button {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas: "kind name" "kind by";
+    column-gap: 0.4rem;
+    align-items: baseline;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 3px;
+    color: var(--paper-dim);
+    font: inherit;
+    padding: 0.2rem 0.3rem;
+    cursor: pointer;
+  }
+
+  .hits button:hover {
+    background: var(--surface);
+    color: var(--paper);
+  }
+
+  .hits .kind {
+    grid-area: kind;
+    font-family: var(--util);
+    font-size: 0.58rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--paper-faint);
+    align-self: center;
+    min-width: 3.2rem;
+  }
+
+  .hits .name {
+    grid-area: name;
+    font-size: 0.78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hits .by {
+    grid-area: by;
+    font-size: 0.68rem;
+    color: var(--paper-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .empty {

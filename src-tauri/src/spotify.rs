@@ -671,6 +671,53 @@ pub async fn spotify_stop(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Put something on, because **you** asked — which is a different question from
+/// a card asking, and deliberately a different door.
+///
+/// `put_on` consults `selector::refuse_while_playing` and stops if the room is
+/// not silent. That guard is the user's own scoping, in their words: an agent
+/// may choose music but may not take off what somebody is listening to. It
+/// would be nonsense applied here. **You are the person it protects**, and a
+/// search result you clicked that refused to play because something was already
+/// playing would be the app telling you not to change your mind.
+///
+/// So this shares the load and shares nothing of the refusal, and the asymmetry
+/// is the design rather than an oversight. Anything tempted to collapse the two
+/// into one command with a `force` flag should read `selector.rs`'s header
+/// first: a flag is a thing an agent can set.
+#[tauri::command]
+pub async fn spotify_play(app: AppHandle, uri: String) -> Result<(), String> {
+    let (uri, kind) = crate::selector::normalize_uri(&uri)?;
+    let as_context = crate::selector::is_context(&kind);
+
+    let state = app.state::<Spotify>();
+    let live = state.live.lock().unwrap();
+    let live = live
+        .as_ref()
+        .ok_or_else(|| "spotify is not running — sign in from the widget first".to_string())?;
+
+    let options = LoadRequestOptions {
+        start_playing: true,
+        ..Default::default()
+    };
+    let request = if as_context {
+        LoadRequest::from_context_uri(uri, options)
+    } else {
+        LoadRequest::from_tracks(vec![uri], options)
+    };
+
+    /* Activate first, for the reason `put_on` gives at length: a registered
+       device is not an active one, and a load handed to an inactive Spirc is
+       discarded with a warning while `load` still answers `Ok`. */
+    live.spirc
+        .activate()
+        .map_err(|e| format!("spotify would not make the wall the active device: {e}"))?;
+    live.spirc
+        .load(request)
+        .map_err(|e| format!("spotify would not put that on: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn spotify_status(state: State<'_, Spotify>) -> Status {
     let live = state.live.lock().unwrap();

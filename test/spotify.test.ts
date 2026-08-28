@@ -10,6 +10,9 @@ import {
   LAYOUTS,
   positionAt,
   progressAt,
+  sayHit,
+  sayResults,
+  worthSearching,
   volumeFromWire,
   volumeToWire,
   type SpotifyState,
@@ -392,5 +395,54 @@ describe("the seam between the catalogue and the face", () => {
       JSON.parse(JSON.stringify({ ...w, config: { ...w.config, variant: "bar" } })),
     );
     expect(normalizeConfig(back!.config).layout).toBe("bar");
+  });
+});
+
+/* ── the widget's own search ───────────────────────────────────────────────*/
+
+describe("searching from the wall rather than from a card", () => {
+  const hit = (over: Record<string, string> = {}) => ({
+    kind: "track",
+    uri: "spotify:track:1",
+    title: "After Dark",
+    by: "mikeeysmind",
+    extra: "4:48",
+    ...over,
+  });
+
+  test("the line under a result joins only the halves that exist", () => {
+    expect(sayHit(hit())).toBe("mikeeysmind \u00b7 4:48");
+    /* A playlist has no artist and a sparse track has no extra — neither may
+       leave a stray separator behind, which is the whole reason this is one
+       function rather than a template in the markup. */
+    expect(sayHit(hit({ by: "" }))).toBe("4:48");
+    expect(sayHit(hit({ extra: "" }))).toBe("mikeeysmind");
+    expect(sayHit(hit({ by: "", extra: "" }))).toBe("");
+    expect(sayHit(hit({ by: "   ", extra: "  " }))).toBe("");
+  });
+
+  test("an empty query is never worth a round trip", () => {
+    /* Enter on an empty box is the commonest keystroke in any search field. */
+    expect(worthSearching("")).toBe(false);
+    expect(worthSearching("   ")).toBe(false);
+    expect(worthSearching("a")).toBe(true);
+    /* No opinion about length beyond emptiness: Spotify's own search language
+       is rich enough that guessing at "too short" would refuse real queries. */
+    expect(worthSearching("artist:coltrane year:1965")).toBe(true);
+  });
+
+  test("the results area says nothing before you have asked anything", () => {
+    /* An empty box with "no results" under it is an accusation. */
+    expect(sayResults("idle", 0, null)).toBeNull();
+    expect(sayResults("searching", 0, null)).toBe("searching\u2026");
+    expect(sayResults("done", 3, null)).toBeNull();
+    expect(sayResults("done", 0, null)).toBe("nothing found");
+  });
+
+  test("a failed search says why, and says something even when it cannot", () => {
+    expect(sayResults("failed", 0, "spotify would not renew the sign-in")).toBe(
+      "spotify would not renew the sign-in",
+    );
+    expect(sayResults("failed", 0, null)).toBe("the search did not work");
   });
 });

@@ -229,7 +229,9 @@ pub(crate) fn clean_types(asked: Option<&str>) -> String {
 
 /// One row of a search answer, flattened out of whichever bucket it came from
 /// so rendering does not need to know four shapes.
-#[derive(Debug, PartialEq)]
+/// Serialises because the widget's own search draws these directly — the same
+/// rows `records` renders into prose for a card. One parse, two faces.
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub(crate) struct Hit {
     pub kind: String,
     pub uri: String,
@@ -492,6 +494,37 @@ pub(crate) fn refuse_while_playing(playing: bool, now: Option<&str>) -> Option<S
 /// one and nothing else on the wall. **It must not become a
 /// `#[tauri::command]`** without `async` — see the note in `ask.rs`'s handle
 /// chain and `off_main` in `lib.rs`.
+/// Search, for the wall's own face rather than for a card.
+///
+/// `records` renders its hits into prose because its reader is a language model
+/// reading a tool result. A widget wants rows. So this shares every judgement
+/// with it — `clean_types`, `search_url`, the limit clamp, `parse_hits` — and
+/// differs only in stopping before the rendering, which is the part that is
+/// about the audience rather than about Spotify.
+///
+/// `async`, so the network round trip goes through `off_main` and cannot hold
+/// the thread that paints every card on the wall. See CLAUDE.md.
+#[tauri::command]
+pub async fn spotify_search(
+    query: String,
+    types: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<Hit>, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let types = clean_types(types.as_deref());
+    let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+
+    crate::off_main(move || {
+        let token = crate::spotify::access_token()?;
+        let body = fetch_search(&token, &search_url(&query, &types, limit))?;
+        Ok(parse_hits(&body))
+    })
+    .await?
+}
+
 fn fetch_search(token: &str, url: &str) -> Result<Value, String> {
     match crate::forge::agent()
         .get(url)

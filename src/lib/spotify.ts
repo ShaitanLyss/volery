@@ -331,6 +331,68 @@ export function volumeToWire(v: number): number {
   return Math.round(Math.min(1, Math.max(0, v)) * 65535)
 }
 
+/* ── searching ─────────────────────────────────────────────────────────────*/
+
+/** One row of a search result. Mirrors `Hit` in `selector.rs`. */
+export type SpotifyHit = {
+  kind: string
+  uri: string
+  title: string
+  /** Artists, or a playlist's owner. Empty for a kind that has no such thing. */
+  by: string
+  /** An album's year, a track's length, a playlist's size. Empty when there is none. */
+  extra: string
+}
+
+/**
+ * The line a result draws under its title.
+ *
+ * Both fields are optional at the source — a playlist has no artist, a track
+ * Spotify knows little about has no extra — so this is the one place that
+ * decides what a missing half looks like, rather than each of them leaving a
+ * stray separator behind.
+ */
+export function sayHit(hit: SpotifyHit): string {
+  const parts = [hit.by, hit.extra].map((p) => p.trim()).filter((p) => p.length > 0)
+  return parts.join(" · ")
+}
+
+/**
+ * Whether a search is worth sending.
+ *
+ * Trimmed and non-empty, and that is the whole rule — Spotify's own search
+ * language is rich enough (`artist:coltrane year:1965`) that guessing at what
+ * is "too short" here would refuse queries that work. The empty case matters
+ * because Enter on an empty box is the commonest keystroke in any search field
+ * and it must not cost a round trip.
+ */
+export function worthSearching(query: string): boolean {
+  return query.trim().length > 0
+}
+
+/**
+ * What the results area says when it is not showing results.
+ *
+ * `null` means draw nothing at all, which is the state before anybody has
+ * searched — an empty box with "no results" under it is an accusation.
+ */
+export function sayResults(
+  state: "idle" | "searching" | "done" | "failed",
+  count: number,
+  fault: string | null,
+): string | null {
+  switch (state) {
+    case "idle":
+      return null
+    case "searching":
+      return "searching…"
+    case "failed":
+      return fault ?? "the search did not work"
+    case "done":
+      return count === 0 ? "nothing found" : null
+  }
+}
+
 /* ── the widget's knobs ────────────────────────────────────────────────────*/
 
 /** What the face shows. `full` wants room; `bar` is a strip you can sit on a shelf. */
