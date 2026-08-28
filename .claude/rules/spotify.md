@@ -419,11 +419,75 @@ it is for the one where 4070 really is firewalled, which is the case `ap_port` e
 80 is deliberately left off: a network that passes a binary protocol on 80 where it refused it
 on 443 is one nobody has met, and an extra rung is 30 seconds of somebody's evening.
 
+### `Spirc::new` opens the session itself, and connecting first breaks it
+
+The tunnel landed in 0.14.3, the session authenticated, and the widget then said:
+
+```text
+spotify would not accept this device: service unavailable (session is not connected)
+```
+
+— about a session that had just connected perfectly well. The message is honest and reads as
+nonsense, which is worth a moment: `Error::unavailable` renders as *"service unavailable"* and
+the inner text is librespot's `SessionError::NotConnected`, so the sentence is two error
+vocabularies stacked and neither is describing what happened.
+
+**`Spirc::new` connects.** From `librespot-connect-0.8.0/src/spirc.rs`, after nine
+`dealer().listen_for(...)` registrations:
+
+```rust
+// pre-acquire client_token, preventing multiple request while running
+let _ = session.spclient().client_token().await?;
+
+// Connect *after* all message listeners are registered
+session.connect(credentials, true).await?;
+```
+
+The ordering in that comment is the *reason* it is done there — a listener registered after the
+connect would miss the cluster update that arrives immediately on it. So the caller must hand
+`Spirc::new` an **unconnected** session and let it do the connecting. `spotify_start` did not:
+it connected first, and then `Session::connect`'s tail
+
+```rust
+self.0.tx_connection.set(tx_connection).map_err(|_| SessionError::NotConnected)?;
+```
+
+found a `OnceCell` that was already set. `NotConnected` is what a *second* connect returns, not
+a disconnected session.
+
+**This shipped with the integration and was unreachable for a day.** Until `tunnel.rs` existed
+the *first* connect never succeeded on the network this was written on, so control never
+reached the second one. Fixing the outer failure is how the inner one was found, and that is
+the shape to carry rather than the specific bug: **a leg that has never run is not a leg that
+works**, and the sink item's list of "unproven legs" was measuring exactly the right thing.
+
+There is a smaller lesson beside it. The four legs were verified in order and each was declared
+proven as it passed — but "proven" meant *proven in the probe*, and the probe called
+`session.connect` and stopped there, which is precisely the call the app was not supposed to
+make. **A probe that exercises a different call sequence from the app has not tested the app.**
+`.scratch/spotprobe` would have caught this the moment it went one line further.
+
+#### What the fix costs, and why the ladder moved
+
+One attempt is now one `Spirc::new` — session, client token, dealer, device — and `AP_PORTS`
+wraps *that* rather than a bare connect. Each rung is a complete independent attempt and needs
+its own `Session` (`ap_port` is read off the config a session was built with) and its own
+`Player` (a player is bound to the session it was built against). `SinkBuilder` and `MixerFn`
+are plain `fn` pointers, so they are `Copy` and cost nothing per rung.
+
+The one thing to know about a *failed* rung: it drops its `Player`, and `Drop for Player` calls
+`handle.join()` — a blocking wait, on a tokio worker, which this codebase otherwise has a
+standing rule against. It is left inline and the argument is written at the call site: a rung
+that never authenticated never asked the backend for a device, so the player thread is parked
+on an empty command channel and the join returns immediately. **If a rung ever begins failing
+after playback has started, that reasoning stops holding** and the drop wants `off_main`.
+
 ### What is still unproven
 
-`Spirc::new` and actual audio. The session opens and authenticates; the Connect device
-registration and the rodio output path have never run against Spotify. Sink `4951f398` carries
-that, and it is now the whole of what is left in it.
+Audio. The session opens, authenticates and registers a device; nothing has yet decoded a byte
+or opened the output. Sink `4951f398` carries that, and it is now the whole of what is left in
+it — and given the two bugs found in the two legs before it, the honest expectation is that
+this one has its own.
 
 ### The probe, and why it is a scratch crate
 

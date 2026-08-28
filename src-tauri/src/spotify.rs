@@ -429,16 +429,21 @@ pub async fn spotify_start(app: AppHandle, name: Option<String>) -> Result<(), S
     outcome
 }
 
-/// How long the access-point leg gets before it is called a failure.
+/// How long one attempt at bringing the receiver up gets before it is called a
+/// failure. One attempt is one `Spirc::new`, which opens the session, takes a
+/// client token, registers the dealer listeners and asks for a device.
 ///
-/// librespot bounds itself, but nowhere near tightly enough to be a reading on
-/// a wall: six access points, two attempts each, and only the *handshake* is
-/// inside its own 5s timeout — the TCP connect is not, so every attempt costs
-/// the OS its full SYN timeout. Measured 2026-08-28 on this machine, with a
-/// black-holed route: **253 seconds** to reach "Tried too many access points".
-/// Four minutes of a card looking frozen is not a diagnosis, and the honest
-/// answer arrives long before the exhaustive one — a reachable access point
-/// answers in well under a second.
+/// librespot bounds none of it, and its *internal* bound on the access-point
+/// leg alone is nowhere near tight enough to be a reading on a wall: six access
+/// points, two attempts each, and only the handshake sits inside its own 5s
+/// timeout — the TCP connect is built outside it, so every attempt costs the OS
+/// its full SYN timeout. Measured 2026-08-28 with a black-holed address:
+/// **253 seconds** to reach "Tried too many access points". Four minutes of a
+/// card looking frozen is not a diagnosis, and the honest answer arrives long
+/// before the exhaustive one — through the tunnel a reachable access point
+/// authenticates in about two.
+///
+/// Two rungs, so the worst case a person waits is twice this.
 const CONNECT_BUDGET: Duration = Duration::from_secs(30);
 
 /// The access-point ports to try, in Spotify's own order of preference.
@@ -482,12 +487,36 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
        black hole for every access point. `tunnel.rs` has the measurement. */
     let proxy = crate::tunnel::endpoint()?;
 
-    /* Each rung is a fresh `Session`, because `ap_port` is read off the config a
-       session was built with and a failed one has nothing worth reusing.
-       Bounded per rung, because librespot's own bound is four minutes of
-       silence. */
-    let mut opened = None;
+    let backend = audio_backend::find(None).ok_or("no audio backend was built in")?;
+    let mixer_fn = mixer::find(None).ok_or("no mixer was built in")?;
+
+    /* **`Spirc::new` opens the session itself** — `spirc.rs`, right after it has
+       registered its dealer listeners:
+
+           // Connect *after* all message listeners are registered
+           session.connect(credentials, true).await?;
+
+       and the ordering in that comment is the reason it is done there rather
+       than by the caller. So this must NOT connect first. It used to, and the
+       second connect then failed on a `OnceCell` that was already set —
+       `tx_connection.set(..).map_err(|_| SessionError::NotConnected)` — which
+       surfaced as the splendidly misleading *"spotify would not accept this
+       device: service unavailable (session is not connected)"* about a session
+       that was connected perfectly well.
+
+       That bug shipped with the integration and was unreachable until 0.14.3,
+       because until the tunnel existed the *first* connect never succeeded on
+       the network it was written on. Worth remembering the shape: **fixing an
+       outer failure is how you find out what the inner one was**, and a leg
+       that has never run is not a leg that works.
+
+       So the whole attempt is one call now, and the ladder is around that. Each
+       rung is a complete, independent try — its own `Session`, because `ap_port`
+       is read off the config a session was built with; its own `Player`, because
+       a player is bound to the session it was built against. */
+    let mut live = None;
     let mut fault = String::new();
+
     for ap_port in AP_PORTS {
         let session = Session::new(
             SessionConfig {
@@ -497,11 +526,52 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
             },
             None,
         );
-        match tokio::time::timeout(CONNECT_BUDGET, session.connect(credentials.clone(), false))
-            .await
+
+        let mixer = mixer_fn(MixerConfig::default())
+            .map_err(|e| format!("could not open the mixer: {e}"))?;
+
+        /* position_update_interval stays None — see the note at the top of the
+           file. `backend` is a plain `fn` pointer (`SinkBuilder`), so it is Copy
+           and each rung gets its own without any cloning ceremony. */
+        let player = Player::new(
+            PlayerConfig::default(),
+            session.clone(),
+            mixer.get_soft_volume(),
+            move || backend(None, AudioFormat::default()),
+        );
+        let events = player.get_player_event_channel();
+
+        let connect = ConnectConfig {
+            name: device.clone(),
+            device_type: DeviceType::Computer,
+            ..Default::default()
+        };
+
+        /* Bounded, because librespot bounds none of this and its own worst case
+           is four minutes of silence. One budget for the whole attempt now,
+           since one call is the whole attempt.
+
+           A rung that fails drops its `Player` here, and `Drop for Player` joins
+           the player thread — a blocking wait on a tokio worker, which this
+           codebase otherwise has a rule against. It is left inline deliberately:
+           a rung that never authenticated never asked the backend for a device,
+           so the thread is parked on an empty command channel and the join is
+           immediate. If a rung ever starts failing *after* playback has begun,
+           that reasoning stops holding. */
+        match tokio::time::timeout(
+            CONNECT_BUDGET,
+            Spirc::new(
+                connect,
+                session,
+                credentials.clone(),
+                player,
+                mixer.clone(),
+            ),
+        )
+        .await
         {
-            Ok(Ok(())) => {
-                opened = Some(session);
+            Ok(Ok((spirc, task))) => {
+                live = Some((spirc, task, events, mixer));
                 break;
             }
             Ok(Err(e)) => fault = format!("on port {ap_port}, spotify said: {e}"),
@@ -514,57 +584,17 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
         }
     }
 
-    /* The message names the route rather than Spotify. This subsystem's rule says
-       an outage is likelier to be Spotify moving than a bug here, and the one
-       time it was measured it was neither — it was which address librespot
+    /* The message names the route rather than Spotify. This subsystem's rule
+       says an outage is likelier to be Spotify moving than a bug here, and the
+       one time it was measured it was neither — it was which address librespot
        picked, which is now ours to pick. So what is left when both rungs fail is
-       genuinely the network or the account. */
-    let session = opened.ok_or_else(|| {
+       genuinely the network, the account, or Spotify. */
+    let (spirc, task, mut events, mixer) = live.ok_or_else(|| {
         format!(
-            "could not reach spotify's access points on port {} or {} — {fault}",
+            "could not open a spotify session on port {} or {} — {fault}",
             AP_PORTS[0], AP_PORTS[1]
         )
     })?;
-
-    let backend = audio_backend::find(None).ok_or("no audio backend was built in")?;
-    let mixer_fn = mixer::find(None).ok_or("no mixer was built in")?;
-    let mixer = mixer_fn(MixerConfig::default())
-        .map_err(|e| format!("could not open the mixer: {e}"))?;
-
-    /* position_update_interval stays None — see the note at the top of the file. */
-    let player = Player::new(
-        PlayerConfig::default(),
-        session.clone(),
-        mixer.get_soft_volume(),
-        move || backend(None, AudioFormat::default()),
-    );
-
-    let mut events = player.get_player_event_channel();
-
-    let connect = ConnectConfig {
-        name: device.clone(),
-        device_type: DeviceType::Computer,
-        ..Default::default()
-    };
-
-    /* Bounded on the same argument as the connect above: this reaches the
-       network too — a client token and the dealer websocket — and librespot
-       puts no ceiling on it either. A session that opened and then could not
-       register a device is a different failure and says so. */
-    let (spirc, task) = match tokio::time::timeout(
-        CONNECT_BUDGET,
-        Spirc::new(connect, session, credentials, player, mixer.clone()),
-    )
-    .await
-    {
-        Err(_) => {
-            return Err(format!(
-                "the session opened but spotify did not accept this device within {}s",
-                CONNECT_BUDGET.as_secs()
-            ));
-        }
-        Ok(r) => r.map_err(|e| format!("spotify would not accept this device: {e}"))?,
-    };
 
     tauri::async_runtime::spawn(task);
 
