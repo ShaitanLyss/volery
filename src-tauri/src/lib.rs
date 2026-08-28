@@ -485,6 +485,7 @@ pub fn run() {
             spotify::spotify_status,
             spotify::spotify_command,
             update::latest_release,
+            update::latest_tag,
             update::fetch_update,
             update::arm_update,
         ])

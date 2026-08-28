@@ -132,6 +132,49 @@ surface's snapshot and drawn nowhere — an app that reported its own inability 
 updates, in its own chrome, every launch, would be nagging about its plumbing. The one failure
 that *is* drawn is one you asked for: a download that broke after you pressed the button.
 
+### The tag is free; the release is not
+
+Fifteen minutes between asks was reported as too slow, and it was: 0.14.4 was published at
+10:18 and reached the header at about 10:38. The number was not timidity, it was the price —
+unauthenticated `api.github.com` is sixty requests an hour **from one address**, so four an
+hour was the whole cost argument.
+
+Two measurements, 2026-08-28, changed what that argument is worth:
+
+- **The budget is shared and mostly gone.** The egress here is a corporate Netskope address
+  (`163.116.215.93`), and `/rate_limit` reported 42 of 60 already spent by other traffic,
+  minutes into the window. Polling harder would push a bucket somebody else keeps emptying to
+  zero — and since every failure here is silence by design, a rate limit and "no update" look
+  identical. Spending more would have made the reported symptom *worse*.
+- **Conditional requests buy nothing.** With `If-None-Match`, a `304 Not Modified` still
+  decrements `X-RateLimit-Remaining` — probed, 20 → 19 → 18. ETags save bandwidth and no
+  headroom, which is worth writing down because the opposite is widely assumed.
+
+What dissolves it is that **github.com is not api.github.com**. `HEAD /{repo}/releases/latest`
+answers `302` with `Location: .../releases/tag/v0.14.4` and `Cache-Control: no-cache`, and
+spends none of the API budget — probed, three in a row left `used` at 44. So `latest_tag` is
+the common tick and it is free; `latest_release` is spent only once the tag says something
+changed, because only the API knows whether there is an installer that can be driven.
+
+That is what pays for `BACKSTOP` at sixty seconds instead of fifteen minutes, and `FLOOR` at
+twenty seconds instead of five. `RESOLVE_FLOOR` is the new one and it guards the only budget
+left: a newer tag exists, so every tick wants to resolve it, and the API is refusing. Without
+it that is sixty API requests an hour into an empty bucket, for an answer that is failing the
+same way each time.
+
+`tag_from_location` is pure and asserted, because it reads somebody else's header and decides
+what version this app believes exists. Every shape that is not exactly a release-tag URL is
+`None` — the doubt rule this module is built on, one layer down.
+
+### It could only reach the hosts that were being spied on
+
+Not a cadence problem and worth finding here rather than in a forge: for a while this app
+trusted exactly **one** certificate authority. `forge::tls` has the measurement and the fix;
+what matters from this file's side is that `latest_release` and `latest_tag` both go through
+`forge::tls_config()` now, and that `api.github.com` *working* was the thing that hid it —
+GitHub is intercepted on this network, so the update check was the one caller that could not
+have noticed.
+
 ### The installer is launched by the exit handler, not by the button
 
 Because **quitting can be refused**. A wall with background work on it asks before it goes

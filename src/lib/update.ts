@@ -21,6 +21,16 @@ export type Latest = {
   assets: { name: string; url: string; size: number }[];
 };
 
+/** What `latest_tag` answers with. Mirrors `update::Peek`.
+ *
+ *  The cheap half of the question — a tag off github.com's redirect, which
+ *  costs none of the API budget. `Latest` is only asked for once this says
+ *  there is a reason to. See `latest_tag` in `update.rs` for the measurement. */
+export type Peek = {
+  running: string;
+  tag: string;
+};
+
 /** An update worth offering: the version, and the file that would install it. */
 export type Offer = {
   version: string;

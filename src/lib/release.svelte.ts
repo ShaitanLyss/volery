@@ -28,12 +28,9 @@
  * moment the answer is worth having. Three bounds, and each is doing a job:
  *
  *   - **Only while the window is in front.** A wall left open on a second
- *     monitor for a week asks nothing. This is the whole of the cost argument:
- *     unauthenticated GitHub is sixty an hour from one address, and asking only
- *     while somebody is looking is what keeps a long-running wall from spending
- *     any of it.
- *   - **A floor between asks** (`FLOOR`), so alt-tabbing forty times costs one
- *     question rather than forty. The pending ask is rescheduled, never queued.
+ *     monitor for a week asks nothing.
+ *   - **A floor between asks** (`FLOOR`), so a burst of focus events is one
+ *     question. The pending ask is rescheduled, never queued.
  *   - **It stops for good once there is something to say.** `unanswered` in
  *     `update.ts` is that rule, and it is the tightest bound of the three: not a
  *     saving, but the observation that no further ask can change the answer.
@@ -42,9 +39,30 @@
  * never fire again. It runs only while focused, so it is bounded by the first
  * rule rather than beside it.
  *
- * One thing this does not need, and it is worth knowing why: `latest_release` is
- * `async`, so it goes through `spawn_blocking` and cannot hold the main thread.
- * Were it not, repeating it would be the `azdo_runs` freeze all over again —
+ * ### What made the numbers small, and it was not nerve
+ *
+ * Those bounds were once doing a second job: paying for a request. Unauthenticated
+ * `api.github.com` is sixty an hour **from one address**, so a quarter of an hour
+ * between asks was the cost argument rather than a guess about how fast anybody
+ * needed telling. It was reported as too slow and it was — 0.14.4 was published
+ * at 10:18 and reached the header around 10:38.
+ *
+ * The way out was not to spend more of the budget but to stop spending it.
+ * `latest_tag` asks **github.com**, not the API: `HEAD /{repo}/releases/latest`
+ * answers `302` with the tag in `Location`, and costs none of the sixty. So the
+ * common tick — no newer tag — is free, and `latest_release` is spent only once
+ * something has actually changed. That is what pays for a sixty-second backstop.
+ *
+ * It matters more here than the arithmetic suggests, because that budget is not
+ * this app's alone: measured 2026-08-28, the egress this runs behind is a
+ * corporate Netskope address with 42 of its 60 already spent by other traffic.
+ * On a bucket somebody else keeps emptying, **every failure here is silence by
+ * design** — so a rate limit and "no update" look identical, and polling harder
+ * would have made the reported symptom worse rather than better.
+ *
+ * One thing this does not need, and it is worth knowing why: both asks are
+ * `async`, so they go through `spawn_blocking` and cannot hold the main thread.
+ * Were they not, repeating them would be the `azdo_runs` freeze all over again —
  * every card on the wall unpainted for the length of a network request. See
  * CLAUDE.md on `off_main` before making anything here more frequent.
  *
@@ -60,11 +78,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  isNewer,
   offerFrom,
   sayProgress,
   unanswered,
   type Latest,
   type Offer,
+  type Peek,
   type Stage,
 } from "./update";
 
@@ -75,19 +95,46 @@ export type { Stage };
 
 /** The least time between two asks.
  *
- *  Five minutes, so coming back to the window is free however often you do it.
- *  It is a floor rather than a debounce: the pending ask is moved, not queued, so
- *  forty alt-tabs inside five minutes cost one question. */
-const FLOOR = 5 * 60 * 1000;
+ *  Twenty seconds, and it is only still here to stop a burst of focus events
+ *  becoming a burst of requests. It used to be five minutes, because an ask
+ *  spent one of sixty API requests an hour; the ask is now github.com's
+ *  redirect, which costs none of them, so the floor no longer has a budget to
+ *  protect. It is a floor rather than a debounce: the pending ask is moved, not
+ *  queued. */
+const FLOOR = 20 * 1000;
 
 /** And the backstop, for a window that is never left.
  *
- *  Fifteen minutes. It only runs while the window is in front, so the arithmetic
- *  that matters is four questions an hour against the sixty an hour
- *  unauthenticated GitHub allows one address — and only until there is something
- *  to say, at which point it stops for good. A release is not cut often enough
- *  for a tighter number to buy anything a person would notice. */
-const BACKSTOP = 15 * 60 * 1000;
+ *  **Sixty seconds, down from fifteen minutes**, and the reason it can be is
+ *  that the question got cheap rather than that the old number was timid. See
+ *  `latest_tag` in `update.rs`: the tag comes off a `302` from github.com and
+ *  spends nothing of the API's per-address budget, so asking once a minute costs
+ *  what asking four times an hour used to.
+ *
+ *  Fifteen minutes was reported, correctly, as too long — 0.14.4 was published
+ *  at 10:18 and appeared in the header at about 10:38, because the ticks from
+ *  that launch fell at 10:01, 10:16 and 10:31 and only the last of them could
+ *  have seen it. Averaging seven and a half minutes late is not what "asked when
+ *  you are looking at it" ought to feel like.
+ *
+ *  Still only while the window is in front, and still stopping for good once
+ *  there is something to say. */
+const BACKSTOP = 60 * 1000;
+
+/** How often the *expensive* question may be asked, when the cheap one says
+ *  there is a reason to.
+ *
+ *  This is the one budget left to protect, and it protects it in the case that
+ *  actually threatens it: a newer tag exists, so every tick wants to resolve it,
+ *  and the API is refusing. Without a floor of its own that is sixty API
+ *  requests an hour into a bucket that is already empty — pinning it there for
+ *  everyone else behind the same address, and for no gain, since the answer that
+ *  is failing is the same answer each time.
+ *
+ *  Measured 2026-08-28: the egress this was written on is a Netskope address
+ *  shared company-wide, with 42 of its 60 already spent by other traffic minutes
+ *  into the window. The budget is real and it is not ours alone. */
+const RESOLVE_FLOOR = 5 * 60 * 1000;
 
 export class Releases {
   /** The update worth taking, or null — which is every launch but a few. */
@@ -103,6 +150,9 @@ export class Releases {
   /** When the last question actually went out, for the floor to measure from.
    *  Zero means never, so the first call asks immediately. */
   #askedAt = 0;
+  /** And when the *expensive* one last did, which is a separate clock because it
+   *  is a separate budget. See `RESOLVE_FLOOR`. */
+  #resolvedAt = 0;
 
   /** Tell this whether the window is in front. Everything follows from that.
    *
@@ -137,6 +187,21 @@ export class Releases {
   async check() {
     this.#askedAt = Date.now();
     try {
+      /* The cheap question first, and on the overwhelmingly common launch it is
+         the only one asked: there is no newer tag, so no API request is spent
+         and the next tick is free too. `latest_tag` is a `302` from github.com
+         rather than anything on `api.github.com` — see its comment for why that
+         distinction is the whole of why this can be asked once a minute. */
+      const peek = await invoke<Peek | null>("latest_tag");
+      if (!peek || !isNewer(peek.tag, peek.running)) return;
+
+      /* There is something newer. Only now is the API worth spending, because
+         only the API knows whether there is an installer this app can drive —
+         a tag is a version, not an offer, and `offerFrom` still refuses one
+         with no `-setup.exe` beside it. */
+      if (Date.now() - this.#resolvedAt < RESOLVE_FLOOR) return;
+      this.#resolvedAt = Date.now();
+
       const latest = await invoke<Latest | null>("latest_release");
       const offer = offerFrom(latest);
       /* Asked again after the reply went out, not before: this is the guard

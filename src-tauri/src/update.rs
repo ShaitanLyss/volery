@@ -118,10 +118,112 @@ pub struct Latest {
     pub assets: Vec<Asset>,
 }
 
+/// The newest tag and this build's version, and nothing else.
+///
+/// The cheap half of the question. See `latest_tag`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Peek {
+    pub running: String,
+    pub tag: String,
+}
+
+/// The tag out of the `Location` github.com answers a `/releases/latest` with.
+///
+/// Pure so it can be asserted, because it reads somebody else's header and
+/// decides what version this app thinks exists. Anything that is not exactly a
+/// release-tag URL for a repository is `None` — the doubt rule this whole module
+/// is built on, one layer down: a `Location` we cannot read is silence, not a
+/// guess.
+fn tag_from_location(location: &str) -> Option<String> {
+    let (_, tag) = location.trim_end_matches('/').split_once("/releases/tag/")?;
+    /* One segment. A `Location` carrying a path after the tag is not a shape
+       github.com produces, and following it would be inventing a version. */
+    if tag.is_empty() || tag.contains('/') {
+        return None;
+    }
+    Some(tag.to_string())
+}
+
+/// Is there a newer tag? Asked of **github.com**, not of the API, because the
+/// API's budget on a corporate network is not this app's to spend.
+///
+/// `GET https://api.github.com/...` is 60 requests an hour **from one address**,
+/// and on the network this was written for that address is a Netskope egress
+/// shared with an entire company. Measured 2026-08-28 from `163.116.215.93`:
+/// 42 of the 60 already spent, minutes into the window, by nobody here. So the
+/// old cadence was not merely slow — a quarter of an hour between asks, of a
+/// bucket somebody else keeps emptying, and **every failure of it is silence by
+/// design**. An update that never appears and a rate limit look identical.
+///
+/// Conditional requests do not buy a way out, which was worth measuring rather
+/// than assuming: with `If-None-Match`, a `304 Not Modified` still decrements
+/// `X-RateLimit-Remaining` (probed 2026-08-28, 20 → 19 → 18). ETags save
+/// bandwidth here and no headroom at all.
+///
+/// What does buy a way out is that **github.com is not api.github.com**.
+/// `HEAD /{repo}/releases/latest` answers `302` with
+/// `Location: .../releases/tag/v0.14.4` and `Cache-Control: no-cache`, and it
+/// spends none of the API budget — probed the same day, three of them in a row
+/// left `used` at 44. So the tag is free to ask for as often as anyone likes,
+/// and `latest_release` is spent only once something has actually changed.
+///
+/// Not a replacement for it: this says *what version*, and nothing about whether
+/// there is an installer that can be driven. The offer still needs the API, and
+/// still refuses when the asset is not there.
+#[tauri::command]
+pub async fn latest_tag() -> Result<Option<Peek>, String> {
+    crate::off_main(|| {
+        let Some(repo) = repo() else { return Ok(None) };
+        let url = format!("https://github.com/{repo}/releases/latest");
+
+        /* `redirects(0)` is the entire point: the answer *is* the redirect, and
+           an agent that followed it would fetch a page of HTML to learn nothing
+           the header already said. */
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(ASK_TIMEOUT)
+            .timeout_read(ASK_TIMEOUT)
+            .tls_config(crate::forge::tls_config())
+            .redirects(0)
+            .build();
+
+        let res = agent
+            .head(&url)
+            .set("User-Agent", concat!("volery/", env!("CARGO_PKG_VERSION")))
+            .call();
+
+        /* ureq hands back 3xx as `Ok` when redirects are off and 4xx/5xx as
+           `Error::Status`, and both carry a response — so the header is read the
+           same way from either arm rather than only from the happy one. */
+        let response = match res {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r,
+            Err(e) => return Err(format!("could not ask GitHub about releases: {e}")),
+        };
+
+        let Some(location) = response.header("location") else {
+            /* A repository with no releases redirects to the releases page
+               instead, which carries no tag. Not a failure — the honest state of
+               a fork, same as `latest_release`'s empty tag. */
+            return Ok(None);
+        };
+
+        Ok(tag_from_location(location).map(|tag| Peek {
+            running: env!("CARGO_PKG_VERSION").to_string(),
+            tag,
+        }))
+    })
+    .await?
+}
+
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(ASK_TIMEOUT)
         .timeout_read(ASK_TIMEOUT)
+        /* Shared with the forges, and not optional: without it this trusts the
+           one interception CA the machine's policy leaves valid for server auth,
+           which happens to cover `api.github.com` and hid the problem for
+           hours. `forge::tls_config` has the measurement. */
+        .tls_config(crate::forge::tls_config())
         .build()
 }
 
@@ -488,5 +590,44 @@ mod tests {
     #[test]
     fn nothing_armed_is_the_ordinary_case_and_not_a_failure() {
         assert_eq!(Arming::default().take(), None);
+    }
+
+    /// The shape github.com actually answers with, probed 2026-08-28:
+    /// `HEAD /ShaitanLyss/volery/releases/latest` → `302`,
+    /// `Location: https://github.com/ShaitanLyss/volery/releases/tag/v0.14.4`.
+    #[test]
+    fn the_tag_comes_off_the_redirect() {
+        assert_eq!(
+            tag_from_location("https://github.com/ShaitanLyss/volery/releases/tag/v0.14.4")
+                .as_deref(),
+            Some("v0.14.4")
+        );
+        /* A trailing slash is not a different answer. */
+        assert_eq!(
+            tag_from_location("https://github.com/o/r/releases/tag/v1.2.3/").as_deref(),
+            Some("v1.2.3")
+        );
+        /* The `v` is left on, because `update.ts` owns stripping it and two
+           places deciding what a version looks like is one too many. */
+        assert!(tag_from_location("https://github.com/o/r/releases/tag/v1.2.3")
+            .is_some_and(|t| t.starts_with('v')));
+    }
+
+    /// Every unreadable `Location` is silence rather than a guess — the same
+    /// doubt rule the rest of this module is built on. A wrong answer here
+    /// downloads four megabytes and closes a wall.
+    #[test]
+    fn an_unreadable_location_offers_nothing() {
+        /* A repository with no releases at all redirects to the index. */
+        assert_eq!(tag_from_location("https://github.com/o/r/releases"), None);
+        assert_eq!(tag_from_location("https://github.com/o/r/releases/tag/"), None);
+        assert_eq!(tag_from_location(""), None);
+        assert_eq!(tag_from_location("https://example.com/"), None);
+        /* Not a shape github.com produces, and following it would be inventing
+           a version out of somebody else's header. */
+        assert_eq!(
+            tag_from_location("https://github.com/o/r/releases/tag/v1.2.3/extra"),
+            None
+        );
     }
 }
