@@ -127,6 +127,19 @@ pub fn wake_schema() -> Value {
 /// that envelope and there is nobody at the other end of this. Its own words, so
 /// the fold can tell "another agent asked me to" from "I asked myself to",
 /// which are different things for a reader of the transcript to know.
+///
+/// **That reasoning is right and it stopped one step short for a fortnight.**
+/// Nothing in `src/` knew this string, so a wake fell through to the plain
+/// `user` arm and was drawn in your own register — the one outcome the mark
+/// exists to prevent, reached by not being read rather than by being read
+/// wrongly. Fixed 2026-08-28 (sink af952612): `relay.ts` exports `WAKE_MARK`
+/// against this constant and `isRelayPrompt` answers to both marks, so the
+/// panel says "this was not you" for a wake as it does for a relay, and
+/// `relayFrom` names the author as you-earlier rather than as another card.
+///
+/// So a new mark is affordable, and the bill is two lines in `relay.ts` — but
+/// it is only affordable if it is paid. **Anything here that ever invents a
+/// third mark owes the same edit in the same commit.**
 pub const WAKE_MARK: &str = "[skein wake]";
 
 fn envelope(note: &str, waited: i64) -> String {
@@ -366,6 +379,31 @@ mod tests {
         assert!(text.contains("10 minutes ago"), "{text}");
         /* And that nobody is waiting on a reply, or the agent answers it. */
         assert!(text.contains("nobody is waiting"));
+    }
+
+    /// The other end of this envelope is a regex in `src/lib/relay.ts`, and
+    /// there is nothing to import across that seam — only the two agreeing.
+    /// They did not agree for a fortnight and nothing said so, because
+    /// disagreeing costs no error: the front end simply drew the wake as
+    /// something the user typed (sink af952612).
+    ///
+    /// So the *shape* is asserted here rather than only the mark. `relay.ts`'s
+    /// `WAKE` matches the first line whole and lifts the elapsed phrase out of
+    /// it for the fold cap; `relayBody` drops the trailing paragraph by its
+    /// opening words. Both are pinned by `test/relay.test.ts`'s `woken()`, and
+    /// this is the half of the pair that lives beside the writer.
+    #[test]
+    fn the_envelope_is_the_shape_the_front_end_parses() {
+        let text = envelope("look at the deploy", 600);
+        let head = text.lines().next().expect("a first line");
+        assert_eq!(
+            head, "[skein wake] you asked to be woken about this 10 minutes ago, and it is now:",
+            "relay.ts's WAKE regex matches this line whole — if it changes, change both"
+        );
+        assert!(
+            text.contains("\n\n(This is your own note to yourself"),
+            "relayBody drops the model's paragraph by these words: {text}"
+        );
     }
 
     #[test]

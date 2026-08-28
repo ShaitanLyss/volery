@@ -62,7 +62,7 @@ import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
 import { UNNAMED } from "./naming";
 import { effortAnswer, isEffort, type Effort } from "./commands";
-import { isRelayPrompt, relayCap } from "./relay";
+import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
 import type { Answers, AskQuestion } from "./asking";
 import { capInput, landed, type ToolCall } from "./toolcall";
@@ -2326,7 +2326,14 @@ export class Conversation {
             if (isRelayPrompt(said)) {
               this.#push("relay", said, undefined, relayCap(said));
               if (!this.working) this.#beginTurn();
-              this.activity = "reading a message";
+              /* The one reading on the card where the five shapes are not
+                 interchangeable. A wake came from nobody — the card asked the
+                 wall for it — so "reading a message" would name a sender that
+                 does not exist, on the front of the card, which is the same lie
+                 in miniature that the `relay` kind exists to prevent. */
+              this.activity = isWakePrompt(said)
+                ? "picking something back up"
+                : "reading a message";
               break;
             }
             if (!this.#claimEcho(said)) this.#push("you", said);

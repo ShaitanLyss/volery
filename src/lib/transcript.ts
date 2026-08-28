@@ -17,6 +17,7 @@
 
 import { clip } from "./classify";
 import type { Line } from "./conversation.svelte";
+import { isWakePrompt } from "./relay";
 import {
   JOBS_CAP,
   RESUME_CAP,
@@ -234,7 +235,13 @@ export function longFold(line: Line): { cap: string; hint: string } {
   if (line.kind === "relay") {
     return {
       cap: line.note ?? "from another card",
-      hint: "what another card on this wall sent here",
+      /* The one place the family's four-shapes-one-recogniser bargain does not
+         hold: "another card sent this" is false of a wake, which nobody sent
+         and which this card asked for itself. The cap already says so; the hint
+         would have contradicted it. */
+      hint: isWakePrompt(line.text)
+        ? "the note you left yourself, handed back"
+        : "what another card on this wall sent here",
     };
   }
   return {

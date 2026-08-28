@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   RELAY_MARK,
+  WAKE_MARK,
   handleOf,
   isRelayPrompt,
+  isWakePrompt,
   relayBody,
   relayCap,
   relayFrom,
@@ -144,6 +146,60 @@ describe("a notice from the wall", () => {
     expect(relayBody(one)).toBe(
       'A card you opened has stopped: "roster tiering" (3f08dc99). 2 of your 9 are still working.',
     );
+  });
+});
+
+/* The fifth shape, and the only one under the other mark: a note you left
+ * yourself, handed back when the time came. Transcribed from `later::envelope`
+ * — which is the whole contract, since the string is written by Rust and read
+ * here and there is nothing to import across it. If that format changes, the
+ * `WAKE` regex degrades to "you, earlier" rather than to "you typed this", and
+ * the last test below is what pins that. */
+const woken = (ago: string, note: string) =>
+  `${WAKE_MARK} you asked to be woken about this ${ago}, and it is now:\n\n${note}\n\n` +
+  "(This is your own note to yourself, handed back by the wall — nobody else " +
+  "wrote it and nobody is waiting on a reply. If the thing you were waiting for " +
+  "still has not happened, `wake_me` again rather than sleeping; if it has, " +
+  "carry on and say so.)";
+
+describe("a wake", () => {
+  const one = woken("8 minutes ago", "check whether the release pipeline went green");
+
+  /* The bug this whole describe is the guard for: `later.rs` gave a wake its
+     own mark on purpose and nothing in src/ knew the string, so it fell through
+     to the plain `user` arm and was drawn as something you typed. */
+  test("is drawn as not-you, even though it is under the other mark", () => {
+    expect(isRelayPrompt(one)).toBe(true);
+    expect(isWakePrompt(one)).toBe(true);
+  });
+
+  test("is not confused with a relay in either direction", () => {
+    expect(isWakePrompt(sample)).toBe(false);
+    expect(isWakePrompt("have a look at store.rs")).toBe(false);
+    expect(isRelayPrompt("have a look at store.rs")).toBe(false);
+  });
+
+  /* Naming you rather than "another card" is the point of it having its own
+     shape at all — `later.rs` is right that there is nobody at the other end,
+     and a cap saying "from another card" would be the panel inventing one. */
+  test("names you as the author, and carries how long ago you asked", () => {
+    expect(relayFrom(one)).toEqual({ name: "you, 8 minutes ago", handle: "", project: null });
+    expect(relayCap(one)).toBe("from you, 8 minutes ago");
+    expect(relayCap(one).length).toBeLessThan(40);
+  });
+
+  test("keeps the note you wrote and drops the paragraph addressed to the model", () => {
+    expect(relayBody(one)).toBe("check whether the release pipeline went green");
+  });
+
+  /* Degrades the way `relayFrom` degrades everywhere else: a header this build
+     cannot parse is still a line you did not type, so it loses the elapsed
+     phrase and keeps the one fact that matters. */
+  test("degrades to you-earlier when the header changes shape", () => {
+    const odd = `${WAKE_MARK} time is up:\n\nlook at the deploy`;
+    expect(isRelayPrompt(odd)).toBe(true);
+    expect(relayFrom(odd)).toEqual({ name: "you, earlier", handle: "", project: null });
+    expect(relayCap(odd)).toBe("from you, earlier");
   });
 });
 

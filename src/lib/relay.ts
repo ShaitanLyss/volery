@@ -19,6 +19,24 @@
 /** The first line of every relayed message. Must match `relay::RELAY_MARK`. */
 export const RELAY_MARK = "[skein relay]";
 
+/** The first line of a wake. Must match `later::WAKE_MARK`.
+ *
+ *  Its own string rather than a relay envelope, and `later.rs` is right about
+ *  why: there is nobody at the other end of a wake, so a header naming a sender
+ *  would be a lie. What was missing was this end. Nothing in `src/` knew the
+ *  string, so a wake fell through to the plain `user` arm and was drawn in your
+ *  own register, in your own card, with nothing on the page saying you had not
+ *  typed it — the exact bug this file exists to prevent, wearing the one dress
+ *  it did not check for.
+ *
+ *  It is recognised *here*, beside the relay, rather than as a sixth line kind
+ *  in the panel: the panel's job is identical in every case and it is to say
+ *  this was not you. Only the cap and the hint differ, and both are one
+ *  function each. And the mark is not being changed to a relay one, however
+ *  tidy that would be — every transcript already on this machine carries
+ *  `[skein wake]`, and `history.ts` reads those back off disk. */
+export const WAKE_MARK = "[skein wake]";
+
 /** Who a message came from, as far as the envelope says. */
 export type RelayFrom = {
   /** The sender's title when it was sent, which is not necessarily its title
@@ -41,18 +59,41 @@ export type RelayFrom = {
  * One mark and one recogniser for all four, deliberately — the panel's job is
  * the same in every case, which is to say this was not you. The alternative for
  * the last two was a mark apiece, and `later.rs` took it: `[skein wake]` is its
- * own string and the front end never learned it, so a wake is still drawn as
- * something you typed. A shape under a mark that is already recognised cannot
- * go wrong that way. */
+ * own string, and for a fortnight the front end did not know it, so a wake was
+ * drawn as something you typed. A shape under a mark that is already recognised
+ * cannot go wrong that way — which is the argument, and it is an argument about
+ * cost rather than about correctness. The fifth shape below is under the second
+ * mark and is read correctly now (sink af952612); what it cost was a constant,
+ * a regex, a predicate and a branch in `transcript.ts`, none of which the first
+ * four needed. */
 const HEADED =
   /^\[skein relay\] from "(.*?)" \(([0-9a-f]{4,36})\)(?: in (.+?))? —\s*$/;
 const ORPHANED =
   /^\[skein relay\] from a card that has since been closed \(([0-9a-f]{4,36})\) —\s*$/;
 const NOTICE = /^\[skein relay\] from the billboard —/;
 const WALL = /^\[skein relay\] from the wall —/;
+/* The fifth shape, and the only one under the other mark. `later::envelope`
+   writes "…woken about this 5 minutes ago, and it is now:"; the elapsed phrase
+   is the one thing in that header worth keeping, so it is lifted into the name
+   and ends up in the fold cap rather than being stripped with the line. */
+const WAKE = /^\[skein wake\] you asked to be woken about this (.+?), and it is now:\s*$/;
 
+/** Whether this line is one somebody other than you put in your card.
+ *
+ *  Five shapes under two marks. The name is what it decides — the `relay` line
+ *  kind — rather than what wrote it; a wake is not a relay and is still not
+ *  yours, and `isWakePrompt` is what tells them apart afterwards. */
 export function isRelayPrompt(text: string): boolean {
-  return text.trimStart().startsWith(RELAY_MARK);
+  const t = text.trimStart();
+  return t.startsWith(RELAY_MARK) || t.startsWith(WAKE_MARK);
+}
+
+/** Whether it is a wake specifically — a note you left yourself, handed back.
+ *
+ *  Asked by `transcript.ts` for the fold's hint, which is the one place where
+ *  "another card sent this" and "you asked for this" are not interchangeable. */
+export function isWakePrompt(text: string): boolean {
+  return text.trimStart().startsWith(WAKE_MARK);
 }
 
 /** Who sent it, or `null` for anything that is not one of ours.
@@ -65,6 +106,13 @@ export function isRelayPrompt(text: string): boolean {
 export function relayFrom(text: string): RelayFrom | null {
   if (!isRelayPrompt(text)) return null;
   const head = text.trimStart().split("\n", 1)[0] ?? "";
+  /* Before the relay shapes, since it is under the other mark entirely. The
+     author of a wake is this card, earlier — which is a real answer and not a
+     degradation, so it is named rather than falling through to "another card".
+     A header this build cannot parse still says it was a wake. */
+  const w = WAKE.exec(head);
+  if (w) return { name: `you, ${w[1]}`, handle: "", project: null };
+  if (isWakePrompt(text)) return { name: "you, earlier", handle: "", project: null };
   const m = HEADED.exec(head);
   if (m) return { name: m[1], handle: m[2], project: m[3] ?? null };
   const o = ORPHANED.exec(head);
@@ -98,6 +146,7 @@ export function relayBody(text: string): string {
     body.lastIndexOf("\n\n(This came from another agent"),
     body.lastIndexOf("\n\n(This is a standing notice"),
     body.lastIndexOf("\n\n(This came from the wall"),
+    body.lastIndexOf("\n\n(This is your own note to yourself"),
   );
   if (note !== -1) body = body.slice(0, note);
   return body.trim();
@@ -113,6 +162,13 @@ export function relayCap(text: string): string {
   const from = relayFrom(text);
   return from ? `from ${from.name}` : "from another card";
 }
+
+/* One more shape under this mark and the comment above the four is still the
+   whole argument: a mark apiece is what let `[skein wake]` be written by Rust
+   and read by nobody for as long as it took somebody to be in `later.rs` for
+   another reason. Anything new that puts words in a card that the user did not
+   type belongs in `isRelayPrompt` on the day it is written, not the day it is
+   noticed. */
 
 /** What a card is called on the roster, given only its id.
  *
