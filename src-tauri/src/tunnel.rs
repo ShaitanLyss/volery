@@ -55,11 +55,13 @@
 //! } else { None }
 //! ```
 //!
-//! A proxy with no `ap_port` therefore filters the whole list down to port 443
-//! and throws away Spotify's own preference order (4070, then 443, then 80). So
-//! `spotify.rs` sets `ap_port` explicitly and tries the ladder itself — see
-//! `AP_PORTS` there. Anyone setting `proxy` here without an `ap_port` has
-//! silently picked 443 for everybody.
+//! A proxy with no `ap_port` therefore filters the whole list down to one port.
+//! So `spotify.rs` sets it explicitly — see `AP_PORT` there, which is 443 and is
+//! **not a preference**: the filter applies to the `dealer` and `spclient` lists
+//! too, and apresolve publishes those on 443 alone. Anyone setting `proxy` here
+//! without an `ap_port` has silently picked 443 for everybody; anyone setting it
+//! to 4070 has silently emptied the dealer list, which is a session that
+//! authenticates and then dies a second later.
 //!
 //! ### Bounds
 //!
@@ -154,14 +156,17 @@ fn ensure() -> Result<u16, String> {
     Ok(port)
 }
 
-/// Nowhere to put this yet — the app installs no `log` sink at all, which is the
-/// gap that made the failure above take a scratch crate and two sign-ins to
-/// diagnose. Kept as one function so that when a sink exists this is one edit.
-/// See the sink item.
+/// One function, so that installing a sink was one edit — which it was.
+///
+/// This used to be an `eprintln!` behind `#[cfg(debug_assertions)]`, i.e.
+/// nothing at all in the build anybody runs, because the app installed no `log`
+/// sink and there was nowhere for a line to go. `applog.rs` is that sink now, so
+/// these reach the app log widget like everything else. Kept as a function
+/// rather than inlining `warn!` at four call sites because the *next* thing this
+/// wants — a per-connection id, so two simultaneous tunnels can be told apart —
+/// is again one edit here.
 fn log_line(what: &str) {
-    let _ = what;
-    #[cfg(debug_assertions)]
-    eprintln!("skein: spotify tunnel: {what}");
+    log::warn!(target: "volery::tunnel", "{what}");
 }
 
 /// Split a `CONNECT` target into host and port.

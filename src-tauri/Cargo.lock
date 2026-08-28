@@ -4373,6 +4373,7 @@ dependencies = [
  "librespot-metadata",
  "librespot-oauth",
  "librespot-playback",
+ "log",
  "portable-pty",
  "rmpv",
  "rusqlite",

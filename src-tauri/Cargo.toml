@@ -79,6 +79,13 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 # which silently works for whatever Netskope decrypts and fails `UnknownIssuer`
 # for whatever it passes through. `webpki-roots` puts the ordinary public set
 # back; `native-certs` keeps the corporate CA. Neither is optional.
+# The `log` facade, so `applog.rs` can install a sink for it. Every dependency
+# in this graph already logs through it — librespot loudly and usefully — and
+# until 2026-08-28 all of it went nowhere, which cost a day. See `applog.rs`.
+# `std` is not on by default and `set_boxed_logger` lives behind it — the error
+# without it says "not found in `log`" and names no feature, which is the usual
+# shape of a missing one.
+log = { version = "0.4", features = ["std"] }
 webpki-roots = "0.26"
 rustls-native-certs = "0.7"
 # nvim own UI protocol, which is msgpack-RPC over three pipes — see `nvim.rs`.

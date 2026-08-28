@@ -9,6 +9,10 @@ paths:
   - "src/lib/perf.ts"
   - "src/lib/meter.svelte.ts"
   - "src-tauri/src/perf.rs"
+  - "src/lib/applog.ts"
+  - "src/lib/journal.svelte.ts"
+  - "src/lib/AppLog.svelte"
+  - "src-tauri/src/applog.rs"
   - "src/lib/logface.ts"
   - "src/lib/LogFace.svelte"
   - "src/lib/LogTail.svelte"
@@ -375,7 +379,7 @@ Four smaller calls, each of which would be a bug the other way round:
   The `only what is not operational` narrowing is the same shape done safely — the face says how
   many it is keeping back, so a blank pane is never a widget that looks broken.
 
-#### Three logs, one substrate
+#### Three logs, one substrate — and then a fourth
 
 Three widgets read a stream of lines somebody else is producing: a dev server group, a build or
 test run, and a running Unreal editor. They are **three kinds rather than three variants of
@@ -603,6 +607,93 @@ go and ask.
   not. That is the whole reason to open it from here, so it is in the word rather than left as a
   surprise. Routed to `actions.run(root, "editor")` rather than invoked in the face, which buys
   the fault bar and the poll kick for free.
+
+#### And a fourth, which is the app itself
+
+Added 2026-08-28. Three logs read a stream somebody *else* produces; this one reads the
+process's own. It is the plainest member of the family and the argument for it is not about
+widgets at all.
+
+**Until this existed, Volery installed no `log` sink.** `grep -rn "env_logger\|tauri_plugin_log\|log::set" src-tauri/src`
+found two comments about other programs' loggers and no logger of its own, so every `info!`,
+`warn!` and `error!` in every dependency was formatted and dropped on the floor — and the app
+is `windows_subsystem = "windows"`, so even a stderr fallback goes nowhere.
+
+That cost a day. Spotify would not connect, and librespot was explaining why the entire time,
+on a twenty-one-second cadence:
+
+```text
+INFO  Connecting to AP "ap-gae2.spotify.com:4070"
+ERROR Tried too many access points
+ERROR starting dealer failed: No access point available for endpoint dealer
+WARN  SpircCommand::Load(..) will be ignored while Not Active
+DEBUG Input volume 32767 mapped to: 3.16%
+```
+
+Every one of those is a whole bug's diagnosis. Recovering them took a throwaway cargo crate and
+four browser sign-ins from the user. The last two sting most: *"ignored while Not Active"* was
+a tool reporting success while nothing played, and *"mapped to: 3.16%"* was the answer to "why
+is it so quiet" sitting in a line nobody could read.
+
+##### What it is, and the three bounds
+
+`applog.rs` is a `log::Log` over a bounded ring plus an event; `applog.ts` is pure and decides
+what a line *means*; `journal.svelte.ts` is the one subscription behind however many faces.
+
+- **`KEEP` lines and no more**, front and back, and deliberately the same number. A front end
+  that kept more would claim to remember lines a fresh `app_log()` could not produce, so a
+  reload would silently shorten the history and read as data loss.
+- **`Info` by default.** Not timidity: every line quoted above is `info` or worse except the
+  two `debug`s, and `debug` across this dependency graph is thousands of lines a second from
+  `wry` alone. `SKEIN_LOG` raises it — `SKEIN_LOG=debug`, or `SKEIN_LOG=librespot=debug` to
+  raise one family and leave the rest alone, which is what you want nine times in ten.
+  `parse_spec` is pure and asserted, including that the *longest* target prefix wins so a
+  narrow rule is not defeated by the order it was written in.
+- **The dot reads the whole log, not the last line.** One error four hundred lines back is
+  still the most important thing this widget knows; a dot that went green again because the
+  next line was routine would be hiding it.
+
+##### Two traps in writing a logger, both silent
+
+**A logger that logs is a stack overflow.** `app.emit` runs through Tauri and `serde`, and
+anything in that path reaching for `log!` re-enters the sink on the same thread. The guard is a
+thread-local latch rather than a mutex, because a mutex would deadlock instead of recursing —
+which is worse, since it takes the thread with it.
+
+**The ring must not be held across the emit.** `emit` is not ours and its cost is not knowable
+from here; holding the lock across it would queue every logging thread in the process behind
+whatever Tauri is doing. The line is cloned out and the guard dropped first — the same
+discipline `off_main` exists for one layer up.
+
+##### The casing trap, paid for a third time
+
+`journal.svelte.ts`, not `applog.svelte.ts`. A `*.svelte.ts` named after its component
+collides with it on this filesystem and `svelte-check` refuses the program outright:
+
+```text
+File name '.../applog.svelte' differs from already included file name
+'.../AppLog.svelte' only in casing.
+```
+
+`deck.svelte.ts` and `waterfall.svelte.ts` are both named around this already, and it was
+walked into again here *while writing the paragraph warning about it*. The lesson is not the
+casing rule, which everybody here knows; it is that **naming a `*.svelte.ts` after its
+component is the default move, and the default move is wrong.** Name it for what it holds.
+
+##### What this deliberately does not do yet
+
+**It does not survive a crash.** The ring is in memory, so the one exit that actually loses
+work loses the log explaining it too. That is the same shape CLAUDE.md records against
+`set_mid_turn` — *code that runs at exit is exactly the code a crash skips* — and the answer is
+the same: write as you go, to a rolling file under `%APPDATA%\dev.skein.studio`. It is not
+built because the ring answers the question that prompted it and a file is a second set of
+decisions (rotation, size, what happens when the disk is full) that deserve their own
+afternoon. Whoever takes it should know the in-memory half is not the argument against it.
+
+**And nothing folds the log into a fault message.** When `spotify_start` fails, the last few
+`librespot` lines are the diagnosis and the user still has to go and look at a widget for them.
+Attaching them to the returned string would be a genuine improvement and is a smaller change
+than the file.
 
 #### The sweep
 

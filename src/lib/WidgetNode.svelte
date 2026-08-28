@@ -39,6 +39,7 @@
   import Basin from "./Basin.svelte";
   import Gatehouse from "./Gatehouse.svelte";
   import ServerLog from "./ServerLog.svelte";
+  import AppLog from "./AppLog.svelte";
   import BuildLog from "./BuildLog.svelte";
   import UnrealLog from "./UnrealLog.svelte";
 
@@ -309,6 +310,9 @@
       <BuildLog {widget} {builds} onrun={onbuildrun} />
     {:else if widget.kind === "unreallog"}
       <UnrealLog {widget} {editors} onopen={oneditoropen} />
+    {:else if widget.kind === "applog"}
+      <!-- No props: the subject is the process, and there is only one. -->
+      <AppLog {widget} />
     {/if}
   </div>
 

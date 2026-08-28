@@ -1,4 +1,7 @@
 mod actions;
+/* The app's own log. Installed first thing in `setup`, because anything said
+   before it lands nowhere — see the module's own note. */
+mod applog;
 mod ask;
 mod accounts;
 mod bang;
@@ -211,6 +214,13 @@ pub fn run() {
            announce itself on the network as a speaker nobody asked for. */
         .manage(spotify::Spotify::default())
         .setup(|app| {
+            /* First, and before anything that can fail: a failure in `setup` is
+               exactly the failure nobody can reproduce on demand, and until
+               this line runs every `log!` in the process goes nowhere. It
+               cannot itself fail in a way worth stopping for — see
+               `applog::install`. */
+            applog::install(app.handle().clone());
+
             let dir = app
                 .path()
                 .app_data_dir()
@@ -484,6 +494,7 @@ pub fn run() {
             spotify::spotify_stop,
             spotify::spotify_status,
             spotify::spotify_command,
+            applog::app_log,
             update::latest_release,
             spotify::spotify_play,
             selector::spotify_search,

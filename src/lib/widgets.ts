@@ -48,6 +48,7 @@ export type WidgetKind =
   | "gates"
   | "serverlog"
   | "buildlog"
+  | "applog"
   | "unreallog";
 
 export type Choice = { value: string; label: string };
@@ -952,6 +953,46 @@ export const WIDGETS: WidgetSpec[] = [
         ],
         "all",
       ),
+    ],
+  },
+  {
+    /* The fourth log, and the only one with no subject to pick — there is one
+       process and it says one stream of things. So no chooser, no `FOLLOW`, and
+       the whole knob surface is how much of it to show.
+
+       It exists because until 2026-08-28 this app installed no `log` sink at
+       all, and a day went into recovering lines librespot had been emitting the
+       whole time. `applog.rs` has that account; the short version is that the
+       app's own diagnosis was the one thing the wall could not show you. */
+    kind: "applog",
+    label: "app log",
+    note: "what volery and its dependencies are saying about themselves",
+    box: { w: 380, h: 200 },
+    min: { w: 200, h: 90 },
+    params: [
+      /* A floor rather than a set of checkboxes: levels are ordered, and
+         "warn or worse" is the question people actually have. `problems` is
+         the exception and earns its place — errors *and* warnings with the
+         chatter gone is the reading you want when something has just broken,
+         and it is not expressible as a floor because `info` sits between them
+         and nothing. */
+      choice(
+        VARIANT,
+        "showing",
+        [
+          { value: "all", label: "everything the sink let through" },
+          { value: "problems", label: "only errors and warnings" },
+          { value: "error", label: "errors" },
+          { value: "warn", label: "warn and worse" },
+          { value: "info", label: "info and worse" },
+          { value: "debug", label: "debug and worse" },
+        ],
+        "all",
+      ),
+      /* The gutter costs real width on a narrow widget, and on a wall where
+         this is pinned small the lines matter more than which module said
+         them — the full target is still on the row's title. */
+      toggle("marks", "show which module said it", true),
     ],
   },
   {
