@@ -223,6 +223,37 @@ nobody has touched genuinely reports none) makes the answer unknown rather than
 infinite: the hold stands and the next allowance poll is what releases it. So a
 hold has two ways out, a timer and a poll, and needs neither to be reliable.
 
+**And a third, which is the wall opening again — because for a long time the hold
+did not survive that at all.** `conv.held` was `$state` with no column behind it,
+so closing Volery while cards were holding lost the prompt outright. They came
+back **idle** rather than held; the 60s sweep is guarded by
+`convs.some(c => c.held)`, so nothing ever retried them; the per-card timer had
+died with the process. No fault, no note, no rust — the only trace was a
+`pending` echo line from hours before, and the card looked entirely ordinary. Six
+of them on the user's wall on 2026-08-27, reported as *"they were on a different
+account, and they didn't automatically swap when an account freed up"*, which is
+what it looks like from the outside and named the wrong mechanism: the swap works,
+and there was nothing left to swap. Sink 10a2d3c5 diagnosed it as the wall never
+acting on `availableAt`, which had not been true since v0.10.0; fad16c9c is the
+real one.
+
+`held_text`, `held_why` and `held_until` are `migrate_v27`. Three columns rather
+than a JSON blob, deliberately against the `widget.config_json` bargain: that one
+is right where the front end owns a shape that may change and a normalizer can
+degrade it to something drawable, and here degrading means "no prompt held",
+which is exactly the loss. **Written at `#hold`, not at shutdown** — the lesson
+`store::set_mid_turn` paid for one file over: bookkeeping that records how far
+something got must not be deferred to after the getting there, because code that
+runs at exit is the code a crash skips. `#writeHold` is one function for both
+edges so there is no way to write half of it, and it reads `conv.held` rather
+than taking arguments, which makes "cleared it and then wrote the old text"
+unsayable.
+
+On load, `Skein` re-arms the precise timer from `held_until` and releases anything
+already past *at once* rather than letting it wait out a sweep for a door that
+opened while the app was shut. `#rearmHold` is shared with `#hold` for that
+reason — the inline version was why a restored hold would have had no timer.
+
 Escape on a held card drops the hold and the prompt with it, which is the same
 gesture and the same meaning it already has on a card waiting to heal
 (`skein.svelte.ts::stop`). A card waiting on your account's clock is a card

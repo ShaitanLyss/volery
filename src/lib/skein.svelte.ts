@@ -668,6 +668,30 @@ export class Skein {
       this.groups = s.server_groups.map((g) => new GroupRuntime(g));
       this.loaded = true;
 
+      /* Holds that came back with the wall. Two things are owed them, and the
+         60s sweep is only one of them: it will reach a held card eventually, but
+         a card whose door opened while the app was shut would sit there for up
+         to a minute looking as though it were still waiting on a window that has
+         already rolled — and the timer that would have been precise about it died
+         with the last process.
+
+         So the timers are re-armed from what was stored, and anything already
+         past is released at once. `releaseHeld` polls before deciding, so this is
+         one allowance read for the whole wall rather than one per card, and it is
+         safe to call when nothing is due. See `store::migrate_v27`. */
+      const heldNow = this.convs.filter((c) => c.held);
+      if (heldNow.length > 0) {
+        const now = Date.now();
+        /* `until === null` is a blocker that named no reset, which is exactly
+           the case the sweep exists for — nothing to aim at, so leave it. */
+        const due = heldNow.some((c) => c.held!.until === null || c.held!.until <= now);
+        for (const c of heldNow) {
+          const until = c.held!.until;
+          if (until !== null && until > now) this.#rearmHold(c, until);
+        }
+        if (due) void this.releaseHeld();
+      }
+
       /* What each card was told while the app was shut. Behind the painted
          wall, like the scrollback below and for the same reason: an inbox mark
          is worth having and is worth nothing on the first frame. */
@@ -1652,15 +1676,40 @@ export class Skein {
       until: choice.until,
     };
     conv.activity = conv.held.why;
+    /* Written here, at the edge where the hold begins, rather than at shutdown.
+       That is the lesson `store::set_mid_turn` paid for: bookkeeping that records
+       how far something got must not be deferred to after the getting there,
+       because code that runs at exit is exactly the code a crash skips. A hold
+       saved only on a clean quit is a hold lost by the one exit that loses work.
+       See `store::migrate_v27`. */
+    this.#writeHold(conv);
 
+    if (choice.until === null) {
+      /* Nothing to aim at, so nothing to arm — and the old timer has to go
+         anyway, or a re-arm against an unknown reset leaves the previous
+         countdown running against a time this hold no longer claims. */
+      const existing = this.#holds.get(conv.id);
+      if (existing !== undefined) clearTimeout(existing);
+      this.#holds.delete(conv.id);
+      return;
+    }
+    this.#rearmHold(conv, choice.until);
+  }
+
+  /** Point a card's release timer at an instant, replacing whatever it had.
+   *
+   *  Shared by `#hold` and the restore in `load`, which is the whole reason it is
+   *  a function: a hold read back off disk needs exactly the same arithmetic as
+   *  one made a moment ago, and the version of this that lived inline in `#hold`
+   *  is why a restored hold had no timer at all. */
+  #rearmHold(conv: Conversation, until: number) {
     const existing = this.#holds.get(conv.id);
     if (existing !== undefined) clearTimeout(existing);
-    if (choice.until === null) return;
 
     /* A little past the reset rather than exactly on it. The server's clock and
        this one are not the same clock, and a release that fires a second early
        spends a whole uncached conversation to be told no. */
-    const wait = Math.max(1_000, choice.until - Date.now() + 2_000);
+    const wait = Math.max(1_000, until - Date.now() + 2_000);
     this.#holds.set(
       conv.id,
       setTimeout(() => {
@@ -1693,6 +1742,7 @@ export class Skein {
       }
       conv.held = null;
       this.#holds.delete(conv.id);
+      this.#writeHold(conv);
       conv.note("an account freed up — sending what was held");
       /* The turn `echoHeld` gave back is taken again here rather than at the
          `echo` that never happens on this path — the line was drawn when you
@@ -1708,6 +1758,30 @@ export class Skein {
     if (t !== undefined) clearTimeout(t);
     this.#holds.delete(conv.id);
     conv.held = null;
+    this.#writeHold(conv);
+  }
+
+  /** Put the hold in the store, or take it out — whichever `conv.held` says.
+   *
+   *  One function for both edges so there is no way to write half of it, and it
+   *  reads the card rather than taking arguments for the same reason: a caller
+   *  that has already cleared `conv.held` and then passes the old text is the
+   *  bug this shape makes unsayable.
+   *
+   *  Fire-and-forget with the fault surfaced. A hold that failed to persist is
+   *  worth saying — it is a prompt that will be lost if the wall closes — but it
+   *  must not stop the hold itself, which is working perfectly well in memory
+   *  and is the thing the user's prompt is currently living in. */
+  #writeHold(conv: Conversation) {
+    const held = conv.held;
+    void invoke("set_conversation_hold", {
+      id: conv.id,
+      text: held?.text ?? null,
+      why: held?.why ?? null,
+      until: held?.until ?? null,
+    }).catch((err) => {
+      this.fault = String(err);
+    });
   }
 
   /** Turn your caps off for one card, or back on.

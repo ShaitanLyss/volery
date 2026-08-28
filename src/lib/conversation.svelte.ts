@@ -13,6 +13,7 @@ import {
   compactNote,
   compactStat,
   contextWindowFor,
+  HOLD_LINE,
   describeTool,
   endingFor,
   healKindOf,
@@ -1012,6 +1013,9 @@ export class Conversation {
     /** Optional because a row written before schema v16 has neither. */
     account_label?: string | null;
     bypass_caps?: boolean;
+    held_text?: string | null;
+    held_why?: string | null;
+    heldUntil?: number | null;
     effort?: string | null;
     /** Optional because a row written before schema v23 has no gear. */
     permissionMode?: string | null;
@@ -1060,6 +1064,26 @@ export class Conversation {
        about it: that card was spawned as whoever was signed in. */
     c.accountLabel = row.account_label ?? null;
     c.bypassCaps = row.bypass_caps ?? false;
+    /* And the prompt it was holding when the wall closed. Without this the hold
+       was `$state` and nothing else: a card holding your words came back **idle**
+       rather than held, the prompt was gone, and `Skein`'s sweep is guarded by
+       `convs.some(c => c.held)` — so nothing ever retried it. No fault, no note,
+       no rust; the only trace was a `pending` echo line from hours before. See
+       `store::migrate_v27`.
+
+       All three or none. A `why` with no text would draw a card as holding
+       something it has nothing to send, which is the failure this fixes wearing
+       the other face. `until` is left exactly as it was stored, including a time
+       already past — `Skein.load` releases those at once rather than letting the
+       card wait out a sweep for a door that is already open. */
+    if (row.held_text) {
+      c.held = {
+        text: row.held_text,
+        why: row.held_why ?? HOLD_LINE,
+        until: row.heldUntil ?? null,
+      };
+      c.activity = c.held.why;
+    }
     /* A dormant card emits no `system/init`, so the gear cannot be folded — the
        whole wall would come back drawn as making until each card was woken.
        A row from before the column existed is null, which is the truth about

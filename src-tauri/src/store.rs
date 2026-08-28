@@ -120,6 +120,18 @@ pub struct StoredConversation {
     /// about a conversation, and one that quietly reverted on restart is one you
     /// would have to remember to make again.
     pub bypass_caps: bool,
+    /// A prompt this card is holding because every account was out, and what to
+    /// say about it. `held_until` is when the earliest blocker rolls, or `None`
+    /// where no blocker named a reset and only a fresh poll can say.
+    ///
+    /// Restored so the hold survives the wall closing — see `migrate_v27`. All
+    /// three or none: a hold with no text is not a hold, it is a card that looks
+    /// held and has nothing to send, so the front end rebuilds one only when the
+    /// text is there.
+    pub held_text: Option<String>,
+    pub held_why: Option<String>,
+    #[serde(rename = "heldUntil")]
+    pub held_until: Option<i64>,
     /// Which gear the card is in, or `None` for one nobody has ever set — see
     /// `gear_of`. Carried on the restore because a **dormant** card has no
     /// process to announce itself: the gear otherwise arrives folded off a
@@ -172,7 +184,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 26;
+const SCHEMA_VERSION: i64 = 27;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -204,6 +216,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (24, migrate_v24),
     (25, migrate_v25),
     (26, migrate_v26),
+    (27, migrate_v27),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1229,6 +1242,39 @@ fn migrate_v26(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v26: {e}"))
 }
 
+/// The prompt a card is holding while every account is out.
+///
+/// An ALTER with no backfill, per the note on `SCHEMA_VERSION`: nothing that
+/// existed before now was recorded, so every row starts null and that is the
+/// truthful answer for it.
+///
+/// **Three columns rather than one JSON blob**, which is the opposite of the
+/// bargain `widget.config_json` strikes and for the reason that bargain names.
+/// Opaque JSON is right where the *front end* owns a shape that may change and
+/// Rust reads none of it. This is a fixed triple that will not grow, `until` is
+/// a number the front end does arithmetic on against the wall's clock, and a
+/// normalizer degrading a corrupt blob would degrade it to "no prompt held",
+/// which is precisely the loss being fixed.
+///
+/// Sink fad16c9c, and the symptom is worth stating because it looks like nothing
+/// at all. `conv.held` was `$state` with nothing behind it, so closing the wall
+/// while cards were holding lost the prompt outright; they came back **idle**
+/// rather than held, and `Skein`'s hold sweep is guarded by `convs.some(c =>
+/// c.held)`, so nothing ever retried them. No fault, no note, no rust — the only
+/// trace was a `pending` echo line from hours earlier. Six cards on the user's
+/// wall on 2026-08-27, reported as "they went back to idle and stayed there".
+///
+/// Written at `#hold` rather than at shutdown, which is the lesson `set_mid_turn`
+/// paid for one file over: **bookkeeping that records how far something got must
+/// not be deferred to after the getting there**, because code that runs at exit
+/// is exactly the code a crash skips. A hold that is only written down on a
+/// clean quit is a hold lost by the one exit that loses work.
+fn migrate_v27(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "conversation", "held_text", "TEXT")?;
+    add_column(conn, "conversation", "held_why", "TEXT")?;
+    add_column(conn, "conversation", "held_until", "INTEGER")
+}
+
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
 /// one. Every failure here is `None` on purpose — a missing row, a locked
 /// database, a width some future build wrote as a negative — because the
@@ -1316,6 +1362,60 @@ pub fn account_of(conn: &Connection, id: &str) -> Option<String> {
     .ok()
     .flatten()
     .filter(|l| !l.trim().is_empty())
+}
+
+/// Write down the prompt a card is holding, or clear it.
+///
+/// Called at both edges by `Skein` — `#hold` writes and `#dropHold` /
+/// `releaseHeld` clear — rather than at shutdown, which is the whole point. A
+/// hold recorded only on a clean quit is a hold lost by the one exit that loses
+/// work; see `migrate_v27` and, one file over, `set_mid_turn`, which learned the
+/// same lesson from the same direction.
+///
+/// `text: None` clears all three, so there is one call and no way to leave a
+/// half-written hold behind. A row with a `why` and no `text` would draw a card
+/// as holding something it cannot send.
+#[tauri::command]
+pub fn set_conversation_hold(
+    store: tauri::State<'_, Store>,
+    id: String,
+    text: Option<String>,
+    why: Option<String>,
+    until: Option<i64>,
+) -> Result<(), String> {
+    let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+    write_hold(&conn, &id, text, why, until)
+}
+
+/// The whole of the above that can be tested, which is all of it but the lock.
+///
+/// Split out because a `tauri::State` cannot be built in a unit test, and the
+/// rule this enforces — all three columns or none — is exactly the kind that
+/// looks obviously true while being written and is wrong six months later.
+fn write_hold(
+    conn: &Connection,
+    id: &str,
+    text: Option<String>,
+    why: Option<String>,
+    until: Option<i64>,
+) -> Result<(), String> {
+    /* Whitespace is not a prompt. `filter` rather than a check on the caller,
+       because the front end reads this out of a `$state` that has been through a
+       restore, and "held with nothing to send" is the one shape that draws a card
+       as waiting forever on a prompt that does not exist. */
+    let held = text.filter(|t| !t.trim().is_empty());
+    let (why, until) = match held {
+        Some(_) => (why, until),
+        /* Cleared together. See above. */
+        None => (None, None),
+    };
+    conn.execute(
+        "UPDATE conversation SET held_text = ?1, held_why = ?2, held_until = ?3 \
+         WHERE id = ?4",
+        params![held, why, until, id],
+    )
+    .map_err(|e| format!("set hold: {e}"))?;
+    Ok(())
 }
 
 /// Remember that a card is ignoring your caps.
@@ -2697,7 +2797,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                     c.model, c.interrupted, c.last_ctx_frac, c.last_ending, c.aside,
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
-                    c.permission_mode
+                    c.permission_mode, c.held_text, c.held_why, c.held_until
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
               WHERE c.closed_at IS NULL
@@ -2729,6 +2829,9 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 glass_y: r.get(19)?,
                 effort: r.get(20)?,
                 permission_mode: r.get(21)?,
+                held_text: r.get(22)?,
+                held_why: r.get(23)?,
+                held_until: r.get(24)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -6820,6 +6923,117 @@ mod tests {
         )
         .unwrap();
         assert!(read_window_frame(&conn).is_none());
+    }
+
+    /// A hold is three columns and they move together, which is the whole of the
+    /// invariant and the only thing here that can go wrong quietly.
+    ///
+    /// Sink fad16c9c. `conv.held` was `$state` with nothing behind it, so closing
+    /// the wall while cards were holding lost the prompt; they came back **idle**
+    /// rather than held, and the hold sweep is guarded by `convs.some(c =>
+    /// c.held)`, so nothing ever retried them. No fault and no note — the card
+    /// looked completely ordinary.
+    ///
+    /// The half-written row is the failure to guard against now: a `why` with no
+    /// `text` restores as a card drawn as holding something it has nothing to
+    /// send, which is the same loss wearing a face that looks like a feature.
+    #[test]
+    fn a_hold_is_written_and_cleared_as_one_thing() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+
+        let read = || -> (Option<String>, Option<String>, Option<i64>) {
+            conn.query_row(
+                "SELECT held_text, held_why, held_until FROM conversation WHERE id='c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+
+        /* Nothing held is the state every existing row starts in — v27 backfills
+           nothing, because nothing was recorded. */
+        assert_eq!(read(), (None, None, None));
+
+        write_hold(
+            &conn,
+            "c1",
+            Some("rebase onto main and push".into()),
+            Some("holding — every account is at its limit".into()),
+            Some(1_787_000_000_000),
+        )
+        .unwrap();
+        assert_eq!(
+            read(),
+            (
+                Some("rebase onto main and push".into()),
+                Some("holding — every account is at its limit".into()),
+                Some(1_787_000_000_000)
+            )
+        );
+
+        /* Released. All three go, so nothing is left drawing a hold. */
+        write_hold(&conn, "c1", None, None, None).unwrap();
+        assert_eq!(read(), (None, None, None));
+    }
+
+    /// A blocker that named no reset is a real and common case — `availableAt`
+    /// answers `None` for it on purpose — so a hold with no instant to aim at
+    /// must still be a hold. It is the sweep's case rather than the timer's.
+    #[test]
+    fn a_hold_with_no_reset_to_aim_at_is_still_a_hold() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+
+        write_hold(&conn, "c1", Some("go".into()), Some("no reset given".into()), None).unwrap();
+        let (text, why, until): (Option<String>, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT held_text, held_why, held_until FROM conversation WHERE id='c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(text.as_deref(), Some("go"));
+        assert_eq!(why.as_deref(), Some("no reset given"));
+        assert_eq!(until, None);
+    }
+
+    /// Whitespace is not a prompt, and a `why` without one would draw a card as
+    /// holding something it cannot send. Refused at the write rather than
+    /// normalised at the read, so there is one place the invariant lives.
+    #[test]
+    fn a_hold_with_nothing_to_send_is_not_written_at_all() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+
+        for empty in [Some("   ".to_string()), Some(String::new()), None] {
+            write_hold(&conn, "c1", empty, Some("looks held".into()), Some(1)).unwrap();
+            let (text, why, until): (Option<String>, Option<String>, Option<i64>) = conn
+                .query_row(
+                    "SELECT held_text, held_why, held_until FROM conversation WHERE id='c1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(text, None);
+            assert_eq!(why, None, "a why with no prompt draws a hold that cannot end");
+            assert_eq!(until, None);
+        }
     }
 
     #[test]

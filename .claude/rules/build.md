@@ -143,6 +143,26 @@ and WiX and NSIS produce what they produce under MSVC. Four things bite:
   assertion runs. This borrows *our* build, so it is only as healthy as our graph — which is
   exactly the circumstance variant 3 exists for.
 
+  **It reaches only the crates whose `.rlib` cargo actually built, and that is fewer than
+  the directory suggests.** `cargo check` emits `.rmeta` — metadata, enough to typecheck
+  against and not enough to link — and produces an `.rlib` only where something in the build
+  genuinely needed one. Probed 2026-08-28: `serde_json` and `serde` have rlibs, `rusqlite`
+  has `librusqlite-*.rmeta` and no rlib at all, so `store.rs`'s assertions cannot be lifted
+  this way however pure they are. The symptom is a linker error naming a crate you can see
+  sitting in `deps`.
+
+  Two further wrinkles worth knowing before reaching for this:
+
+  - **A proc macro is built for the *host*, not for `--target`.** `serde_derive` is a `.dll`
+    in `src-tauri/target/debug/deps`, not an `.rlib` beside the others, and needs its own
+    `--extern` plus a second `-L dependency=`. `tools/lift-project.ts` does this and says so.
+  - **`block()`'s brace counting is naive in seven of the nine lift scripts.** They count
+    every `{` on the line, including ones inside string literals and comments — so lifting an
+    item whose body writes out a `package.json` fixture, or whose doc block says "the `{` of
+    the root object", swallows the rest of the file and rustc reports `unclosed delimiter`
+    hundreds of lines from the cause. `lift-project.ts`'s `scan()` is the fixed version;
+    sink 4b20ad50 is whether to copy it or extract `tools/lift.ts`.
+
   **3. A throwaway cargo crate, when our own graph is the broken thing.** `cargo new` outside
   the repo, a `[workspace]` stanza in its `Cargo.toml` so ours does not adopt it, the one
   dependency you need, the lifted items pasted in. About four seconds, and it has *its own*

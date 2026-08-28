@@ -353,6 +353,7 @@ pub fn run() {
             limits::read_allowances,
             store::set_conversation_account,
             store::set_conversation_bypass,
+            store::set_conversation_hold,
             relay::relay_roster,
             relay::relay_send,
             relay::relay_inboxes,
