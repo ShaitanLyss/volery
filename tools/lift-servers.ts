@@ -22,9 +22,16 @@
  *     bun tools/lift-servers.ts
  *
  * What it can reach is exactly what is pure: the ANSI stripper, the group
- * resolver, and the log ring's eviction. Everything else in `servers.rs` spawns
- * a process or wants an `AppHandle`, and is out of reach of any technique short
- * of an MSVC toolchain.
+ * resolver, the log ring's eviction, and one pass of the health poll. Everything
+ * else in `servers.rs` spawns a process or wants an `AppHandle`, and is out of
+ * reach of any technique short of an MSVC toolchain.
+ *
+ * `health_pass` is the newest of those and the clearest case for the technique
+ * (sink 8cda666f). It was cut out of the detached poll thread precisely so it
+ * could be run: the bug was about *when* the poll stops, the thread around it is
+ * twenty seconds of `sleep`, and a typecheck cannot tell "stops when the group
+ * is gone" from "stops when the group is gone, having first read a port that now
+ * belongs to somebody else".
  */
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -47,6 +54,7 @@ const ITEMS = [
   "fn strip_ansi",
   "fn pick_group",
   "fn names_of",
+  "fn health_pass",
 ];
 
 /** The tests to lift, by function name. */
@@ -62,6 +70,14 @@ const TESTS = [
   "a_few_enormous_lines_bite_before_the_line_count_does",
   "the_byte_count_still_describes_what_is_in_the_ring",
   "a_line_bigger_than_the_whole_budget_does_not_wedge_the_ring",
+  /* The health poll's two ways of stopping. Worth executing rather than
+     compiling because the bug was about *when* it stops, and the thread it
+     lives in is twenty seconds of `sleep` that no assertion could reach. */
+  "spec",
+  "a_poll_whose_group_is_gone_says_nothing_and_stops",
+  "a_live_poll_reports_what_is_up_and_stops_when_all_of_it_is",
+  "a_spec_with_no_port_is_skipped_without_holding_the_poll_open",
+  "clearing_the_flag_is_what_the_poll_is_reading",
 ];
 
 const src = readFileSync(SRC, "utf8");
@@ -128,6 +144,8 @@ function findTest(name: string): string {
    right way for a stub to fail. */
 const STUB = `
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /* \`Debug\` and \`Clone\` because the real one in \`store.rs\` derives both, and a
    stub that derived fewer would fail here for a reason that is about the stub —

@@ -52,6 +52,27 @@ And what it won, none of which the PTY could give:
   Before, a crashed server read `starting` until the port poll gave up and then read `starting`
   for the rest of the session. The port poll therefore emits **only `up`, never `starting`** —
   re-asserting `starting` every 500ms for twenty seconds would bury the `exited` it races.
+- **And the poll stops when its group does, which it did not for a year.** It is a detached
+  thread with a twenty-second life and it held nothing but a clone of the spec list, so it
+  outlived the group it was started for. Stop a group inside that window and the loop ran on;
+  if anything else on the machine then bound the same port — a second Volery, a `pnpm dev` in a
+  terminal — it reported `up` for a server this wall had stopped, and the front end, which
+  clears health on stop, had it set straight back. That is this file's own "a group down for a
+  reason must not look like a group that failed" rule running in reverse: **one that failed
+  looking like one that is fine**, which is the more expensive direction. Restart inside the
+  window and there were two polls, the older answering about the newer's ports.
+
+  `RunningGroup.polling` is an `Arc<AtomicBool>` the poll reads and the two removal paths
+  clear — `start`'s restart block and `stop`, which are the only places a group leaves the
+  map, and each already holds the group it is removing. A flag beside the group rather than a
+  generation number in a map beside it, so the poll's licence to speak *is* the group's
+  existence. Checked before any port is read, since the failure was reading one.
+
+  The pass itself is `health_pass`, cut out of the thread so it can be **run** rather than
+  typechecked: the bug was about when the poll stops, the thread around it is twenty seconds
+  of `sleep`, and `cargo test` does not execute here at all. `bun tools/lift-servers.ts` runs
+  its four assertions in about a twentieth of a second, and caught a compile error in the
+  first draft that `cargo check --tests` had not reached. See `build.md`.
 - **`CREATE_NO_WINDOW`** is set. The ConPTY path never passed it; the pseudo-terminal was what
   hid the window, so a spawn that failed to attach to one had nothing suppressing it.
 - The dependency tree loses `portable-pty`, `winapi 0.3`, `shared_library`, `lazy_static`,

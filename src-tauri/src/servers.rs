@@ -203,6 +203,27 @@ struct PipeServer {
 
 struct RunningGroup {
     servers: Vec<PipeServer>,
+    /// Whether the health poll started with this group still speaks for it.
+    ///
+    /// The poll at the end of `start` is a detached thread that lives for
+    /// twenty seconds and held nothing but a clone of the spec list, so it
+    /// outlived the group it was started for. Stop a group inside those twenty
+    /// seconds and the loop ran on; if anything else on this machine then bound
+    /// the same port — a second Volery, a `pnpm dev` in a terminal, an
+    /// unrelated service — it reported `up` for a server this wall had stopped.
+    /// The front end clears health on stop and would have had it set straight
+    /// back, which is the file's own "a group down for a reason must not look
+    /// like a group that failed" rule running in reverse: one that failed
+    /// looking like one that is fine. Restart inside the window and there were
+    /// two polls, the old one answering about the new one's ports.
+    ///
+    /// A flag rather than a generation number, and it lives *here* rather than
+    /// in a map beside the group, so the poll's licence to speak is the same
+    /// object as the group's existence. Both removal paths — `start`'s restart
+    /// block and `stop` — already hold the old `RunningGroup` when they take it
+    /// out of the map, so clearing it is one line each and cannot be reached
+    /// without one of them running. There is no third place that removes.
+    polling: Arc<AtomicBool>,
 }
 
 /// Private fields: the running map is only ever touched from this module, and
@@ -748,6 +769,12 @@ pub(crate) fn start(app: &AppHandle, servers: &Servers, group: &ServerGroup, cwd
        tree before the new one binds ports, and doing it here keeps that inside
        the one function that promises it. */
     if let Some(mut old) = servers.running.lock().unwrap().remove(&group.id) {
+        /* And the old group's health poll stops speaking for it here, before
+           the new tree binds anything. Otherwise a restart inside the poll's
+           twenty-second life leaves two of them running, and the older one is
+           reporting `up` about ports that now belong to processes it has never
+           heard of. */
+        old.polling.store(false, Ordering::SeqCst);
         for s in old.servers.iter_mut() {
             /* Before the kill, so the flag is up by the time the pipes close. */
             s.stopped.store(true, Ordering::SeqCst);
@@ -784,11 +811,14 @@ pub(crate) fn start(app: &AppHandle, servers: &Servers, group: &ServerGroup, cwd
         }
     }
 
-    servers
-        .running
-        .lock()
-        .unwrap()
-        .insert(group.id.clone(), RunningGroup { servers: running });
+    let polling = Arc::new(AtomicBool::new(true));
+    servers.running.lock().unwrap().insert(
+        group.id.clone(),
+        RunningGroup {
+            servers: running,
+            polling: polling.clone(),
+        },
+    );
     say_running(app, &group.id, true);
 
     /* Ports come up asynchronously, so report health shortly after rather than
@@ -806,24 +836,60 @@ pub(crate) fn start(app: &AppHandle, servers: &Servers, group: &ServerGroup, cwd
     let group2 = group.clone();
     let trace2 = servers.trace.clone();
     std::thread::spawn(move || {
-        for _ in 0..40 {
+        for _ in 0..HEALTH_PASSES {
             std::thread::sleep(Duration::from_millis(500));
-            let mut all_known = true;
-            for spec in &group2.servers {
-                let Some(port) = spec.port else {
-                    continue;
-                };
-                if !port_open(port) {
-                    all_known = false;
-                    continue;
-                }
-                say_state(&app2, &trace2, &group2.id, &spec.label, "up");
-            }
-            if all_known {
+            if !health_pass(&group2.servers, &polling, port_open, |label| {
+                say_state(&app2, &trace2, &group2.id, label, "up")
+            }) {
                 break;
             }
         }
     });
+}
+
+/// How many times the health poll looks before giving up. Twenty seconds at
+/// 500ms apart, which is what a cold `next dev` costs on this machine.
+const HEALTH_PASSES: usize = 40;
+
+/// One look at a group's ports. `true` to keep looking.
+///
+/// Cut out of the thread above so the two things that stop it can actually be
+/// asserted — the thread itself is twenty seconds of `sleep` around this, and a
+/// bug in *when it stops* is exactly the kind nothing here could reach. Takes
+/// its port probe and its emit as arguments for the same reason: a test wants
+/// to answer for a port without binding one, and to count what was said without
+/// an `AppHandle`.
+///
+/// Two ways to stop, and they are different questions. `alive` false means this
+/// poll no longer speaks for a live group and **must say nothing at all** —
+/// checked before any port is read, since the bug was reporting `up` for a
+/// stopped group whose port something else had taken. Every port answering
+/// means the poll is simply finished, which is the ordinary exit.
+fn health_pass(
+    specs: &[ServerSpec],
+    alive: &AtomicBool,
+    /* `FnMut` rather than `Fn` because a test wants to count the probes, and
+       counting is a mutation. Costs the real caller nothing — it passes a plain
+       `fn` — and the looser bound is the one that lets the assertion prove the
+       port was never read at all. */
+    mut open: impl FnMut(u16) -> bool,
+    mut up: impl FnMut(&str),
+) -> bool {
+    if !alive.load(Ordering::SeqCst) {
+        return false;
+    }
+    let mut all_known = true;
+    for spec in specs {
+        let Some(port) = spec.port else {
+            continue;
+        };
+        if !open(port) {
+            all_known = false;
+            continue;
+        }
+        up(&spec.label);
+    }
+    !all_known
 }
 
 /// `app` is new and is injected by Tauri rather than passed from the front end,
@@ -851,6 +917,9 @@ pub(crate) fn stop(app: &AppHandle, servers: &Servers, group_id: &str) -> bool {
     let Some(mut g) = servers.running.lock().unwrap().remove(group_id) else {
         return false;
     };
+    /* First, and before anything is killed: a poll that reads a port between
+       the kill and the flag would report `up` for a group being taken down. */
+    g.polling.store(false, Ordering::SeqCst);
     for s in g.servers.iter_mut() {
         /* A group taken down on purpose reads `idle`, not `exited`. The front
            end clears its health on stop, so a late `exited` from the closing
@@ -1605,6 +1674,95 @@ fn do_server(app: &AppHandle, caller: &str, args: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A spec with just enough on it to be looked at.
+    fn spec(label: &str, port: Option<u16>) -> ServerSpec {
+        ServerSpec {
+            label: label.into(),
+            command: "pnpm dev".into(),
+            cwd: None,
+            port,
+        }
+    }
+
+    /// The bug, and the reason `health_pass` is a function at all: a poll whose
+    /// group has been stopped must not read a port, because the port may since
+    /// have been taken by something else on this machine — a second Volery, a
+    /// `pnpm dev` in a terminal — and saying `up` about it puts a stopped group
+    /// back on the wall looking healthy.
+    #[test]
+    fn a_poll_whose_group_is_gone_says_nothing_and_stops() {
+        let specs = [spec("web", Some(3000))];
+        let alive = AtomicBool::new(false);
+        let mut said = Vec::new();
+        let mut probed = 0;
+
+        let again = health_pass(
+            &specs,
+            &alive,
+            |_| {
+                probed += 1;
+                true
+            },
+            |l| said.push(l.to_string()),
+        );
+
+        assert!(!again, "a poll that no longer speaks for a group must stop");
+        assert!(said.is_empty(), "it must not report health: {said:?}");
+        assert_eq!(probed, 0, "and must not even look at the port");
+    }
+
+    /// The ordinary life of the poll: report what is up, keep going while
+    /// anything is still coming, and stop when there is nothing left to learn.
+    #[test]
+    fn a_live_poll_reports_what_is_up_and_stops_when_all_of_it_is() {
+        let specs = [spec("web", Some(3000)), spec("api", Some(4000))];
+        let alive = AtomicBool::new(true);
+
+        let mut said = Vec::new();
+        let again = health_pass(&specs, &alive, |p| p == 3000, |l| said.push(l.to_string()));
+        assert_eq!(said, ["web"], "only the port that answers");
+        assert!(again, "the other one may still be coming");
+
+        let mut said = Vec::new();
+        let again = health_pass(&specs, &alive, |_| true, |l| said.push(l.to_string()));
+        assert_eq!(said, ["web", "api"]);
+        assert!(!again, "nothing left to learn, so the poll is finished");
+    }
+
+    /// A server with no port declared is not a server this poll can answer for,
+    /// and — the half worth pinning — it must not keep the poll alive either.
+    /// Read it as "still coming" and a group of unported servers polls for the
+    /// full twenty seconds every time it starts.
+    #[test]
+    fn a_spec_with_no_port_is_skipped_without_holding_the_poll_open() {
+        let specs = [spec("worker", None)];
+        let alive = AtomicBool::new(true);
+        let mut said = Vec::new();
+        let again = health_pass(&specs, &alive, |_| true, |l| said.push(l.to_string()));
+        assert!(said.is_empty());
+        assert!(!again);
+    }
+
+    /// The flag is cleared by the two paths that take a group out of the map,
+    /// and the poll reads the *same* `AtomicBool` those paths hold rather than
+    /// a copy of a number — so this is the whole of the contract between them.
+    #[test]
+    fn clearing_the_flag_is_what_the_poll_is_reading() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let specs = [spec("web", Some(3000))];
+        let seen = |f: &Arc<AtomicBool>| {
+            let mut said = Vec::new();
+            let again = health_pass(&specs, f, |_| true, |l| said.push(l.to_string()));
+            (said, again)
+        };
+
+        assert_eq!(seen(&flag), (vec!["web".to_string()], false));
+        /* What `stop` and `start`'s restart block each do to the group they
+           have just removed from the map. */
+        flag.store(false, Ordering::SeqCst);
+        assert_eq!(seen(&flag), (Vec::<String>::new(), false));
+    }
 
     #[test]
     fn quiet_reads_the_usual_words() {
