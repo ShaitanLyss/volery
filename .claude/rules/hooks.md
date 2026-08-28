@@ -211,6 +211,35 @@ git commit -- src/lib/a.ts test/a.test.ts
 which commits the working-tree content of exactly those paths and leaves the rest of the index
 alone.
 
+**And that sentence is the whole of the remaining hole, so read it twice: *the working-tree
+content of those paths*.** Naming a path protects you from the shared index. It does not
+protect you from another card being inside the same file — a sibling's uncommitted edits to a
+path you name go into your commit, under your message, because they are what is on disk.
+
+Measured 2026-08-27 during a nine-card split. One card wrote a ~100-line section into
+`.claude/rules/hooks.md`; seconds later another committed that same file with
+`git commit -- .claude/rules/hooks.md src-tauri/src/joblog.rs` — explicit paths, exactly as
+this file instructs — and took the section with it. It is in `25c5fc8`, whose message is about
+the job drawer's Rust half and describes none of it. Sink aa14a0b7.
+
+**Nothing was lost and the guard was not widened, which is a decision rather than an
+omission.** The damage from this is bounded in a way the index case is not: both cards' work is
+committed, the code is intact, and only the message is wrong. Against that, the only thing a
+`PreToolUse` hook can do on this machine is **deny** — probed against 2.1.241 — and the form it
+would be denying is the form every rule here and every notice on the board tells cards to use.
+A guard that refuses the instructed command has to be right every time, and its false positives
+land on the one thing a card was told to do.
+
+A *warning* is what this actually wants, and there is no probed way to emit one: whether
+`permissionDecision: "allow"` carries its `permissionDecisionReason` to the model is
+unmeasured, and `PostToolUse` is not registered in `settings` at all. So the trap is written
+down — here, and at the `--` check in `commit_in` where it is caused — and the two implementable
+designs plus the missing probe are in the sink rather than half-built.
+
+**What to do about it meanwhile is a habit rather than a hook**: before `git commit -- <paths>`
+in a shared tree, `git diff -- <those paths>` and look at whether the diff is yours. `touched`
+answers the same question about other cards without costing anybody a turn.
+
 **What the guard does.** When a card runs a `git commit` naming no pathspec, `sweep` asks git
 what is staged and `store::foreign_staged` asks the wall who wrote it. If some staged file was
 written in the last day by a *different* card and not by this one, the call is denied with a

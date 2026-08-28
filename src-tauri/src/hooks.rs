@@ -478,6 +478,38 @@ pub struct BareCommit {
 /// getting one row of that table wrong is a guard that lets the damage through.
 /// The cost of the conservative reading is a call denied with a message asking
 /// for the form that was already correct.
+///
+/// ### What this guard does not catch, and cannot be widened to catch cheaply
+///
+/// **`git commit -- <path>` is exempt, and that exemption is only correct about
+/// the index.** It commits *the working-tree content of that path*, including
+/// edits a sibling made to it in the seconds before — so naming the path
+/// protects you from the shared index and not at all from another card being
+/// inside the same file. Measured 2026-08-27 during a nine-card split: one card
+/// wrote a ~100-line section into `.claude/rules/hooks.md`, another committed
+/// that file seconds later with explicit paths exactly as every rule here
+/// instructs, and took the section with it. It is in `25c5fc8`, whose message is
+/// about the job drawer's Rust half and describes none of it. Nothing was lost
+/// and only the message is wrong, which is why it is cheap *this* time. Sink
+/// aa14a0b7.
+///
+/// **Left alone deliberately, and this is the judgement rather than an
+/// oversight.** The only thing a `PreToolUse` hook can do about a command on
+/// this machine is `deny` it — probed against 2.1.241 — and every rule in this
+/// repository and every notice on the board tells cards to name their paths. A
+/// guard that denies the form it also instructs is a guard that has to be
+/// right every time, and its false positives land on the one command a card was
+/// told to use. Adding a *warning* is what this wants and there is no probed way
+/// to emit one: whether `permissionDecision: "allow"` carries its
+/// `permissionDecisionReason` to the model is unmeasured, and `PostToolUse` is
+/// not registered in `settings` at all.
+///
+/// So the trap is written down here and in `hooks.md`, and the two implementable
+/// designs plus the missing probe are in the sink rather than half-built. What
+/// makes that defensible is the shape of the damage: a swept explicit-path commit
+/// loses nothing — the code is intact, both cards' work is committed, and only
+/// the message is wrong — where a guard that blocks the instructed form stops
+/// work.
 pub fn bare_commit(command: &str) -> Option<BareCommit> {
     commands(&strip_heredocs(command))
         .iter()
@@ -541,6 +573,11 @@ fn commit_in(words: &[String]) -> Option<BareCommit> {
     if words.get(i)?.as_str() != "commit" {
         return None;
     }
+    /* A pathspec, so this is not the commit `sweep` is about. Correct about the
+       *index* and not about the working tree — see the section at the end of
+       `bare_commit`'s doc, and sink aa14a0b7. Do not widen this to catch that
+       case without reading it: the widening is a deny on the form every rule
+       here asks for. */
     if words[i..].iter().any(|w| w == "--") {
         return None;
     }
