@@ -4376,6 +4376,7 @@ dependencies = [
  "portable-pty",
  "rmpv",
  "rusqlite",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sysinfo 0.38.4",
@@ -4387,6 +4388,7 @@ dependencies = [
  "ureq",
  "url",
  "vergen",
+ "webpki-roots 0.26.11",
  "windows 0.61.3",
 ]
 

@@ -70,6 +70,17 @@ sysinfo = { version = "0.38.4", default-features = false, features = ["system"] 
 # is unaffected — a schannel-backed `native-tls` would work too and costs a C
 # toolchain we go out of our way not to need.
 ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "json", "gzip"] }
+# **Both root sets, merged in `forge::tls`** — and the merge is the load-bearing
+# part, not either half. `native-certs` alone was the original answer and it is
+# not enough: measured 2026-08-28, `load_native_certs()` returns *one* root on
+# this machine out of forty-five in the store, because its Windows loader keeps
+# only roots marked valid for server auth and policy here has EKU-restricted
+# every built-in one. So the app trusted the interception CA and nothing else,
+# which silently works for whatever Netskope decrypts and fails `UnknownIssuer`
+# for whatever it passes through. `webpki-roots` puts the ordinary public set
+# back; `native-certs` keeps the corporate CA. Neither is optional.
+webpki-roots = "0.26"
+rustls-native-certs = "0.7"
 # nvim own UI protocol, which is msgpack-RPC over three pipes — see `nvim.rs`.
 # `rmpv` rather than a hand-rolled reader for one reason that matters: msgpack
 # is self-delimiting, and `read_value` consumes exactly one message from a

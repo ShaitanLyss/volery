@@ -800,3 +800,26 @@ no fragment of one: a snapshot is written to a file. `token` is a boolean — wh
 stored — which is also the most the front end is ever told, so there is no version of that field
 which could leak one by accident.
 
+## The one certificate authority this machine would let us trust
+
+`forge::agent` is shared by both forges precisely so there is one place to be right about this
+network, and for a while that one place was wrong in a way that could not be seen from here.
+
+`ureq` is built with `native-certs` because Netskope interception means a bundled Mozilla root
+set cannot contain the CA that signs what actually arrives. Correct, and not sufficient.
+Measured 2026-08-28: `rustls_native_certs::load_native_certs()` returns **one** root on this
+machine, out of forty-five in the store, and it is Netskope's. Its Windows loader keeps a root
+only if it is marked valid for server auth, and policy here has EKU-restricted every built-in
+one.
+
+So the app trusted the interception CA and nothing else — which works perfectly for every host
+Netskope decrypts, and fails `UnknownIssuer` for every host it passes through. **Both forges
+are in the first category**, so `dev.azure.com` and `api.github.com` went on working and looked
+like proof the arrangement was sound. It was Spotify's catalogue search, on a host Netskope
+leaves alone, that finally showed it, hours after presenting as a Spotify bug.
+
+`forge::tls` merges `webpki-roots` with whatever the native store yields — 121 + 1 = 122 — and
+the long version of the argument, including why widening trust is the safer direction here, is
+in the doc comment above it. Anything new that builds its own `ureq::Agent` owes
+`.tls_config(forge::tls_config())`; an agent without it can reach exactly the hosts somebody
+else is reading.

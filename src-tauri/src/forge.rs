@@ -263,11 +263,93 @@ pub struct Detail {
 pub(crate) const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub(crate) const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The roots every outbound HTTPS call in this app trusts: **the bundled set
+/// and the machine's, together**, because on this network neither alone is
+/// enough.
+///
+/// This began as `ureq`'s `native-certs` feature and nothing else, on the
+/// argument in `Cargo.toml`: rustls' default roots are a bundled copy of
+/// Mozilla's, which cannot contain the corporate CA that actually signs what
+/// arrives through Netskope interception. That argument is correct and it is
+/// half the story. The other half, measured 2026-08-28:
+///
+/// ```text
+/// rustls_native_certs::load_native_certs() -> 1 root
+///   DigiCert Global Root G2   present: no
+///   Netskope                  present: YES
+/// ```
+///
+/// **One.** Out of forty-five in the store. `rustls-native-certs`' Windows
+/// loader keeps a root only if it is marked valid for server auth —
+///
+/// ```ignore
+/// match uses {
+///     ValidUses::All => true,
+///     ValidUses::Oids(strs) => strs.iter().any(|x| x == PKIX_SERVER_AUTH),
+/// }
+/// ```
+///
+/// — and this machine's policy has EKU-restricted the built-in roots so that
+/// only Netskope's survives. Read charitably that is the enterprise saying "TLS
+/// goes through us"; the trouble is that Netskope passes some domains through
+/// *undecrypted*, and those then present a genuine public chain to a client that
+/// has been left trusting one private CA.
+///
+/// So the app could reach exactly the hosts that were being intercepted.
+/// `dev.azure.com` and `api.github.com` worked and looked like proof the
+/// arrangement was sound; every `*.spotify.com` host failed with
+/// `UnknownIssuer` against an ordinary DigiCert chain. It presented as a Spotify
+/// bug for hours and was never about Spotify.
+///
+/// Merging is the fix and it is what the two halves were each reaching for:
+/// 121 bundled + 1 native = 122, after which `api.spotify.com`,
+/// `accounts.spotify.com`, `api.github.com` and `dev.azure.com` all complete a
+/// handshake. Note the direction of the risk — this *widens* trust past what the
+/// machine's policy states, to the same Mozilla set every browser and every
+/// default rustls build already trusts. A client that trusts one interception CA
+/// and nothing else is not more secure, it is merely unable to talk to anything
+/// that CA has not touched.
+///
+/// `ureq::rustls` rather than a `rustls` of our own, so the version can never
+/// drift from the one `ureq` is built against — a mismatch there is a type error
+/// with a very long message about two `ClientConfig`s that look identical.
+fn tls() -> std::sync::Arc<ureq::rustls::ClientConfig> {
+    use std::sync::{Arc, OnceLock};
+    static HELD: OnceLock<Arc<ureq::rustls::ClientConfig>> = OnceLock::new();
+
+    HELD.get_or_init(|| {
+        let mut roots = ureq::rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        /* Best effort, and deliberately not fatal: a machine with no readable
+           store still has the bundled set, which is a working app everywhere
+           that is not behind an interception proxy. Failing here would turn a
+           policy quirk into an app that cannot reach anything. */
+        if let Ok(native) = rustls_native_certs::load_native_certs() {
+            for cert in native {
+                let _ = roots.add(cert);
+            }
+        }
+        Arc::new(
+            ureq::rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    })
+    .clone()
+}
+
 pub(crate) fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout_read(READ_TIMEOUT)
+        .tls_config(tls())
         .build()
+}
+
+/// The same roots, for a caller that wants its own timeouts. `update.rs` is the
+/// one — it talks to GitHub on a different clock and must not inherit a forge's.
+pub(crate) fn tls_config() -> std::sync::Arc<ureq::rustls::ClientConfig> {
+    tls()
 }
 
 /* ── small shared readers ──────────────────────────────────────────────────*/
