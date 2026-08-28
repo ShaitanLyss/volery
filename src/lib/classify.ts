@@ -1196,6 +1196,40 @@ export function isStopNote(text: string): boolean {
   return /^\[request interrupted by user\b[^\]]*\]$/i.test(text.trim());
 }
 
+/** The note Claude Code writes when it downsizes an image before sending it.
+ *
+ * ```text
+ * [Image: original 3200x2000, displayed at 2000x1250. Multiply coordinates by 1.60 to map to original image.]
+ * ```
+ *
+ * Addressed to the model — it is how a click at (x, y) in what the model saw is
+ * turned back into a pixel in the file — and it is the fifth member of the
+ * family `isStopNote`, `parseTaskNotification`, `localCommand` and `skillBody`
+ * belong to: a `user` record the user did not type.
+ *
+ * **The bug it fixes was live-only, and that is the interesting part.** On disk
+ * this carries `isMeta: true`, so `history.ts` was already dropping it with the
+ * rest of the injected context. The live stream has no `isMeta` at all — the
+ * same asymmetry `skillBody`'s note describes from the other side — so live it
+ * fell through to the plain `user` arm and was drawn as a sentence you had
+ * typed. The two folds therefore *disagreed*: the line was in the transcript
+ * until the card was restored, and then it was not. Reported by the user
+ * (sink 28cb1c5d) as "some stuff is showing in the transcript", which is
+ * exactly what it looks like from the outside.
+ *
+ * So it is matched on the text, for the reason every one of its siblings is:
+ * the field that would settle it exists on one side of the restart only, and
+ * the panel has to read the same on both.
+ *
+ * Measured across 492 transcripts on this machine, 2026-08-28: 19 instances,
+ * every one `isMeta: true`, `type: "user"`, `content` a bare string. The
+ * dimensions and the factor vary, so the shape is matched rather than the
+ * sentence. Anchored at both ends — an agent *quoting* this note while
+ * explaining a screenshot is prose, and prose is speech. */
+export function isImageNote(text: string): boolean {
+  return /^\[image:[^\]]*\]$/i.test(text.trim());
+}
+
 /* ── compaction ──────────────────────────────────────────────────────────
  *
  * Folding a full context is the one thing on this wire that takes *minutes*

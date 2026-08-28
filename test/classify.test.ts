@@ -29,6 +29,7 @@ import {
   endsOnQuestion,
   isCompactSummary,
   skillBody,
+  isImageNote,
   isStopNote,
   isTaskNotification,
   jobLabel,
@@ -1889,5 +1890,45 @@ describe("what a finished job says in the transcript", () => {
     );
     expect(note.end).toBe("failed");
     expect(jobNote(note.summary).length).toBe(JOB_NOTE_CAP);
+  });
+});
+
+/* The fifth member of the family `isStopNote` opens — and the only one whose bug
+ * was live-only, because on disk it carries `isMeta` and `history.ts` was
+ * already dropping it. See `isImageNote`. */
+describe("the note the CLI writes when it downsizes an image", () => {
+  const real =
+    "[Image: original 3200x2000, displayed at 2000x1250. Multiply coordinates by 1.60 to map to original image.]";
+
+  test("is known on sight, verbatim from this machine's transcripts", () => {
+    expect(isImageNote(real)).toBe(true);
+    expect(isImageNote(`  ${real}  `)).toBe(true);
+  });
+
+  /* The dimensions and the factor vary with the image, so the shape is matched
+     rather than the sentence — 19 instances across 492 transcripts and no two
+     of the large ones alike. */
+  test("does not depend on the numbers in it", () => {
+    expect(
+      isImageNote(
+        "[Image: original 929x1037, displayed at 929x1037. Multiply coordinates by 1.00 to map to original image.]",
+      ),
+    ).toBe(true);
+    expect(isImageNote("[Image: 4 files]")).toBe(true);
+  });
+
+  /* Anchored at both ends, for the reason every predicate in this family is: an
+     agent explaining a screenshot may quote the note, and a quotation is prose.
+     Prose is speech and speech is drawn. */
+  test("a quotation of it is not it", () => {
+    expect(isImageNote(`the note said ${real}`)).toBe(false);
+    expect(isImageNote(`${real} — so the click was at 1600, 900`)).toBe(false);
+  });
+
+  test("and nothing else in the family is mistaken for it", () => {
+    expect(isImageNote("[Request interrupted by user]")).toBe(false);
+    expect(isImageNote("look at the screenshot")).toBe(false);
+    expect(isImageNote("")).toBe(false);
+    expect(isImageNote("[]")).toBe(false);
   });
 });

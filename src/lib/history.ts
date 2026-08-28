@@ -32,6 +32,7 @@ import {
   compactNote,
   compactStat,
   describeTool,
+  isImageNote,
   isStopNote,
   localCommand,
   parseTaskNotification,
@@ -144,8 +145,17 @@ export function foldTranscript(
 
     /* `isMeta` is context Claude Code injected, not anything anybody said:
        local-command caveats, "Continue from where you left off.", image
-       dimension notes. Sampled 12 of the 59 on this machine and every one was
-       injected. The TUI does not draw them either.
+       dimension notes, `<system-reminder>` blocks, a skill's own body. Measured
+       across all 492 transcripts on this machine 2026-08-28 — 409 records, and
+       every distinct shape among them was injected. The TUI does not draw them
+       either.
+
+       Live there is no such flag, which is why the four predicates in the
+       `user` arm below exist: each is a member of this same family, recognised
+       by its words because the field that would settle it is on one side of a
+       restart only. Anything added to this family owes a predicate there *and*
+       a line here, or the panel reads one way live and another way restored —
+       `isImageNote` was that bug (sink 28cb1c5d).
 
        The exception is a skill's body, which is injected the same way and is
        the only injected thing worth reading: it is the instructions the rest of
@@ -219,6 +229,14 @@ export function foldTranscript(
           push("meta", jobNote(job.summary));
           break;
         }
+        /* An image-resize note. Every one of the 19 on this machine carries
+           `isMeta`, so the block above has already dropped it and this is
+           belt-and-braces — but it is the cheap kind: the live fold recognises
+           this by its text because the stream has no `isMeta` to read, and one
+           predicate answering on both sides is exactly what stops the two folds
+           drifting. A transcript written by some other client, or a future one
+           that stops setting the flag, reads the same here as it does live. */
+        if (isImageNote(said)) break;
         /* And when it was a local command. `/compact` alone writes two of
            these with nothing to mark them, so the transcript carried a block of
            `<command-name>` XML as something you had typed — and since

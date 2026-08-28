@@ -227,6 +227,37 @@ describe("what a transcript carries that the wire never does", () => {
     ]);
   });
 
+  test("an image-resize note is dropped, on both sides of a restart", () => {
+    /* The one in this family whose bug was live-only. On disk it carries
+       `isMeta`, so the block above `switch` had always dropped it; the live
+       stream has no `isMeta` at all, so `conversation.svelte.ts` drew it as a
+       sentence you had typed. The line was therefore in the transcript until
+       the card was restored and then gone — the divergence this file exists to
+       prevent, reported as "some stuff is showing in the transcript".
+
+       Asserted twice over, with the flag and without it, because the predicate
+       is what makes the two folds agree and the flag is what makes only one of
+       them work. Verbatim from this machine's transcripts, 2026-08-28. */
+    const note =
+      "[Image: original 3200x2000, displayed at 2000x1250. Multiply coordinates by 1.60 to map to original image.]";
+    const h = foldTranscript(
+      jsonl(
+        user("check the support captures"),
+        user(note, { isMeta: true }),
+        { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "cards view, still loading" }] } },
+        /* No flag: some other client's transcript, or a build that stops
+           setting it. The text alone has to be enough. */
+        user(note),
+        user("batch the fixes"),
+      ),
+    );
+    expect(h.lines).toEqual([
+      { kind: "you", text: "check the support captures" },
+      { kind: "text", text: "cards view, still loading" },
+      { kind: "you", text: "batch the fixes" },
+    ]);
+  });
+
   test("a background job reporting in is the CLI talking, not you", () => {
     /* Same shape as the stop note above and the same hazard: a bare string on a
        `user` record with no `isMeta` to sort it out by. Read as speech it puts a

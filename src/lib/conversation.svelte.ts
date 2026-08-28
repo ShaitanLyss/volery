@@ -20,6 +20,7 @@ import {
   HEAL_BUDGET,
   type HealKind,
   isCompactSummary,
+  isImageNote,
   isStopNote,
   skillBody,
   jobLabel,
@@ -2237,6 +2238,25 @@ export class Conversation {
               this.#push("meta", "stopped");
               break;
             }
+            /* The note the CLI writes when it downsized an image before sending
+               it — coordinate-mapping arithmetic addressed to the model.
+               Dropped rather than drawn, because that is what the restored fold
+               does: on disk it carries `isMeta: true` and `history.ts` has been
+               discarding it, with the rest of the injected context, since it was
+               written. The live stream carries no `isMeta` at all, so this fell
+               through to `you` and the wall drew `[Image: original 3200x2000,
+               displayed at 2000x1250. …]` as a sentence you had typed — visible
+               until the card was restored and then gone, which is the
+               divergence `history.ts`'s header exists to prevent, reported from
+               the outside as "some stuff is showing in the transcript" (sink
+               28cb1c5d, 1c92deeb).
+
+               Nothing is lost by dropping it. The image itself arrives as a
+               `tool_result` and is already drawn where the call that fetched it
+               is; this record is the note *about* the resizing, and the TUI does
+               not show it either. No turn is opened, for the reason the job note
+               above gives. */
+            if (isImageNote(said)) break;
             /* A background job reporting in, which is the CLI talking about the
                conversation rather than words anybody typed — the same shape and
                the same hazard as the stop note above. Without this the raw
