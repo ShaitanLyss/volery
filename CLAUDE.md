@@ -77,6 +77,7 @@ bun run test:live        # spawns the real `claude` binary, real API turns, minu
 bun run test:wall        # drives a RUNNING app over the control surface
 
 cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
+                              # aside.rs,
                               # later.rs, pin.rs, spawn.rs,
                               # bang.rs, update.rs, guidance.rs,
                               # quit.rs,
@@ -97,6 +98,7 @@ bun tools/lift-tunnel.ts           # same, for the spotify tunnel's ipv4-first s
 bun tools/lift-later.ts            # same, for the wake envelope relay.ts parses
 bun tools/lift-roster.ts           # same, for the whole MCP roster contract (needs check-gnu once)
 bun tools/lift-project.ts          # same, for which files a version bump may touch
+bun tools/lift-aside.ts            # same, for /btw's one-at-a-time claim and its frame
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs
@@ -133,7 +135,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
 | `gates.md` | whether the tree builds: folding the gate runs cards already make rather than running any, why `PostToolUse` cannot see a failure, what a reading may honestly claim about a tree it only half-watched, and the two faces one record wears | `gates.ts`, `gates.svelte.ts`, `Gatehouse.svelte`, `tools/probe-gates.ts` |
-| `commands.md` | slash commands, why Skein reads only its own names, and clearing a card | `commands.ts`, `Dock.svelte`, `field.svelte.ts` |
+| `commands.md` | slash commands, why Skein reads only its own names, clearing a card, and a side question asked beside a conversation | `commands.ts`, `Dock.svelte`, `field.svelte.ts`, `aside.rs` |
 | `guidance.md` | standing instructions: the wall's and a territory's, why they are a system prompt rather than a `CLAUDE.md` or a hook, what a live card does not hear, and why they are instructions rather than a lock | `guidance.rs`, `guidance.ts`, `Guidance.svelte` |
 | `control.md` | the control surface and the two rules that make a green run mean something | `control.rs`, `control.svelte.ts`, `wall.test.ts` |
 | `glass.md` | sticking a thing to a pane in screen space without moving where it is | `glass.ts` |

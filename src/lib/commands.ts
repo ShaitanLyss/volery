@@ -244,6 +244,15 @@ export const COMMANDS: Command[] = [
     by: "skein",
   },
   {
+    name: "btw",
+    summary: "ask a side question without interrupting",
+    detail:
+      "forks the conversation, asks, and answers beside it — the card's own turn is not touched and nothing is added to its transcript. costs a request against its account, and the answer is gone when the wall closes",
+    needsCard: true,
+    by: "skein",
+    takesText: true,
+  },
+  {
     name: "resume",
     summary: "put a recorded session back on the wall",
     detail:

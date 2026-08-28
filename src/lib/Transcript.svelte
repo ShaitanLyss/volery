@@ -1756,6 +1756,40 @@
     color: var(--paper-faint);
   }
 
+  /* ── a side question, and what came back ─────────────────────────────────
+     `/btw`. Neither of these is part of the conversation — the question opened
+     no turn and the answer came from a *fork* of the session — so they are set
+     apart rather than drawn as a prompt and an answer. A rule down the left is
+     what says "beside": the column's own voices all start at the margin, and
+     these two are the only pair that does not.
+
+     Achromatic, because colour on this wall is status and a side question is
+     not one. Quiet, because it is a footnote to a conversation that is carrying
+     on without it — which is the whole feature. */
+  .line.asked,
+  .line.aside {
+    border-left: 1px solid var(--edge);
+    padding-left: 0.5rem;
+    margin-left: 0.1rem;
+    font-family: var(--util);
+    font-size: calc(0.74rem * var(--read, 1));
+    white-space: pre-wrap;
+  }
+  /* The question is yours, so it takes the weight your prompts take — one step
+     down, since it is a footnote. */
+  .line.asked {
+    color: var(--paper-dim);
+  }
+  .line.asked::before {
+    content: "btw ";
+    font-family: var(--mono);
+    font-size: 0.9em;
+    color: var(--paper-faint);
+  }
+  .line.aside {
+    color: var(--paper-mute);
+  }
+
   /* ── a folded run of tool calls ─────────────────────────────────────────── */
   .fold {
     display: flex;

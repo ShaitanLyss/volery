@@ -145,6 +145,16 @@ export type Line = {
     | "error"
     | "meta"
     | "answer"
+    /** A side question you asked with `/btw`, and what came back. Their own two
+     *  kinds rather than `you`/`text`, because neither is part of the
+     *  conversation: the question opened no turn and the answer came from a
+     *  *fork* of the session that the card's own transcript will never contain.
+     *  Drawing them as a prompt and an answer would say the conversation went
+     *  somewhere it did not — and `answer` above is already taken by the reply
+     *  to a parked `ask_user`, which is a different act again: that one is
+     *  something you said *into* this conversation. See `aside.rs`. */
+    | "asked"
+    | "aside"
     | "summary"
     | "skill"
     | "relay"
@@ -659,6 +669,16 @@ export class Conversation {
    *  account is expected back, or null when no window named a reset and only
    *  the next allowance poll can say. */
   held = $state<{ text: string; why: string; until: number | null } | null>(null);
+
+  /** A side question that is out, if one is — see `aside.rs`.
+   *
+   *  Held so the card can draw that it is waiting on one, and so a second `/btw`
+   *  can say it replaced the first. Not persisted, which matches the CLI exactly:
+   *  its own `btwHistory` is an in-memory list of the last twenty pairs hung on
+   *  the session context and written nowhere. An aside is a question asked
+   *  *beside* a conversation, so there is nothing in the card's session file for
+   *  a restart to read it back out of. */
+  asking = $state<string | null>(null);
 
   /* The whole of `accounts.md` is over with `bypassCaps` and `accountLabel`;
      this one lives up here because `unacknowledged` below has to read it. */
@@ -1618,6 +1638,35 @@ export class Conversation {
   echoResumed() {
     if (!this.working) this.#beginTurn();
     this.activity = "sending…";
+  }
+
+  /** A side question has gone out.
+   *
+   *  Pushed as its own line kind rather than as `you`, because it is not a prompt
+   *  and did not open a turn: the card's own work is untouched, which is the
+   *  whole of what `/btw` means. **No turn is begun**, deliberately — the aside
+   *  runs in a forked process this card knows nothing about, and marking the card
+   *  working would say the conversation was busy when it is not, and would lock
+   *  out `#heal` and `#nudge`, both of which refuse a working card. */
+  sideAsked(question: string) {
+    this.asking = question;
+    this.#push("asked", question);
+  }
+
+  /** And what came back, or why nothing did.
+   *
+   *  `sideAnswered` rather than `answered`, which is taken by the reply to a
+   *  parked `ask_user` — and `sideAsked` rather than `aside`, which is the
+   *  set-aside flag. Both names were the obvious ones and both were already
+   *  spoken for by something adjacent, which is worth a line: three different
+   *  acts on this class involve somebody answering something. */
+  sideAnswered(answer: string, failed: string | null, clipped = false) {
+    this.asking = null;
+    if (failed) {
+      this.#push("meta", `the side question failed — ${failed}`);
+      return;
+    }
+    this.#push("aside", clipped ? `${answer}\n\n— cut short —` : answer);
   }
 
   /** Nothing carried it: the line says so and stays where it was written, so

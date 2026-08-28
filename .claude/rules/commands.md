@@ -252,3 +252,48 @@ only way to see from outside that a clear repointed it), the palette's current `
 and its `choices` — reported apart, because the two stages are never both up and an empty
 `commands` is otherwise a palette that is down and one that has moved on to the values.
 
+### `/btw` — a question asked beside the conversation
+
+*"Ask a quick side question without interrupting the main conversation"*, which is the CLI's
+own description of `/btw` and is exactly what this does. Asked for by the user (sink bab5415f).
+
+**It had to be rebuilt rather than passed through, and the measurement is the reason.** Read
+out of the 2.1.241 binary on this machine, 2026-08-28: the string `"/btw"` sits inside a
+`_d.jsxs(...)` call — the **Ink layer** — beside `"Side questions aren't available when viewing
+a session read-only"` and `"This remote connection doesn't support side questions"`. Volery
+drives `claude --print`, which has no Ink, so handing the CLI `/btw` as a prompt gets it read
+as text. Every part needed to assemble it is published, though:
+
+- **It forks.** The session context spreads `btwHistory: e.kind === "fork" ? e.root.btwHistory
+  : new q4s`, and the fallback-model schema glosses `scope: "local"` as *"a subagent /
+  side-question (/btw) / background fork fell back"*. `--fork-session` is that flag on the
+  `--print` path, and it is what keeps the card's own transcript untouched. **That is the whole
+  feature**: the answer costs a request and changes nothing about the conversation it was asked
+  beside — no turn opened, nothing queued behind what the card is doing.
+- **The framing is quoted verbatim**: `<system-reminder>This is a side question from the user.
+  You must answer this question directly in a single response.` Not reworded, because the
+  second sentence is what keeps the fork answering instead of picking up tools and working —
+  and `--tools ""` is the half that makes it structural rather than a request.
+- **It is ephemeral, and that is a match rather than a shortcut.** `class q4s { exchanges = []
+  … .slice(-20) }` is hung on the CLI's in-memory session context and written nowhere. So an
+  aside here is in-memory too — which settles what would otherwise be a real question, since
+  the card's own session file will never contain it and persisting it would mean a table of
+  our own. `/btw`'s `detail` line says so, because "the answer is gone when the wall closes" is
+  something to know before pressing it.
+
+**Two line kinds of their own, `asked` and `aside`**, rather than `you` and `text`. Neither is
+part of the conversation, so drawing them as a prompt and an answer would say it went somewhere
+it did not. `answer` was already taken by the reply to a parked `ask_user`, which is a third
+act again — that one is something you said *into* this conversation. Drawn set in from the
+margin behind a rule, which is what "beside" looks like in a column where every other voice
+starts at the edge.
+
+**One at a time per card**, the way a second `!` replaces the first in `bang.rs`. `Asides`
+hands out a generation per question and a superseded answer is *dropped* rather than delivered
+late under a question it does not answer — and the card says it was replaced, because a
+question that silently vanished is a card that appears to have forgotten it.
+
+`aside.rs` has the rest: the job object (a `claude` child carries a `conhost` and `kill()`
+reaches one process), the finite wait, the hard failure when the card's account is not signed
+in rather than a quiet fall-through to whichever one is, and the refusal when a card has never
+taken a turn — there is nothing to fork. `bun tools/lift-aside.ts` runs its four assertions.

@@ -1623,6 +1623,13 @@
          rename that silently only took on the focused card would be the dock
          quietly disagreeing with its own target line. */
       for (const c of on) await skein.rename(c, arg);
+    } else if (cmd.name === "btw") {
+      /* Reaching the gathering like everything else, and it is one of the few
+         here where reaching several is plainly useful: the same question put to
+         five cards at once, each answered against its own conversation. Costs a
+         request per card, which is why it is behind the same modifier as the
+         rest. */
+      for (const c of on) await skein.askAside(c, arg);
     } else if (cmd.name === "plan") {
       /* The one direction, which is the whole of what a shortcut is for. Coming
          back is `/gear making`, and `/plan`'s detail line says so — a verb that

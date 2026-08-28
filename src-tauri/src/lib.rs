@@ -2,6 +2,7 @@ mod actions;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
 mod applog;
+mod aside;
 mod ask;
 mod accounts;
 mod bang;
@@ -219,6 +220,7 @@ pub fn run() {
         .manage(Bangs::default())
         .manage(Runs::default())
         .manage(Asks::default())
+        .manage(aside::Asides::default())
         /* The chain marks and the rate limit, and nothing that survives a quit
            — a card holding an inbox holds it in the `relay` table, not here. */
         .manage(Relays::default())
@@ -533,6 +535,7 @@ pub fn run() {
             find::find_grep,
             find::read_file_text,
             find::read_file_media,
+            aside::ask_aside,
             portage::write_layout_file,
             portage::read_layout_file,
             portage::missing_roots,

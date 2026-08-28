@@ -492,3 +492,45 @@ describe("/plan, the word people actually type", () => {
     expect(plan.detail).toContain("/gear making");
   });
 });
+
+/* `/btw`, the side question. Its shape in the catalogue is the whole of what the
+ * dock needs, and two of the flags are load-bearing rather than decorative. */
+describe("/btw, the question asked beside a conversation", () => {
+  const btw = COMMANDS.find((c) => c.name === "btw")!;
+
+  test("is Skein's own, because the CLI has no such thing on this path", () => {
+    /* `/btw` lives in the TUI's Ink layer — measured out of the 2.1.241 binary,
+       see `aside.rs`. Volery drives `claude --print`, which has no Ink, so a
+       `cli` command would be sent as a prompt and read as text. */
+    expect(btw.by).toBe("skein");
+  });
+
+  test("takes the rest of the line and offers no values", () => {
+    /* A side question is prose only you can supply, which is exactly what
+       `takesText` is for — and never both, per the invariant above. */
+    expect(btw.takesText).toBe(true);
+    expect(btw.choices).toBeUndefined();
+    expect(btw.opens).toBeUndefined();
+  });
+
+  test("needs a card, since it forks that card's own conversation", () => {
+    expect(btw.needsCard).toBe(true);
+  });
+
+  /* The detail line is the only place the two costs are stated, and both are
+     things somebody would want to know before pressing it: it spends a request,
+     and the answer does not survive the wall closing. */
+  test("says what it costs and what it does not keep", () => {
+    expect(btw.detail).toContain("request");
+    expect(btw.detail).toContain("gone");
+    expect(btw.detail).toContain("transcript");
+  });
+
+  test("and is complete only once something has been typed after it", () => {
+    expect(resolveCommand("/btw")).toBeNull();
+    expect(resolveCommand("/btw ")).toBeNull();
+    const done = resolveCommand("/btw which branch is this on?");
+    expect(done?.cmd.name).toBe("btw");
+    expect(done?.arg).toBe("which branch is this on?");
+  });
+});

@@ -406,6 +406,23 @@ export class Skein {
          showed the question and then nothing at all leaves that unaccounted
          for. An answered ask has already cleared `pendingAsk` in `answerAsk`
          and drawn its own line, so this loop finds nothing to do. */
+      listen<{
+        id: string;
+        question: string;
+        answer: string;
+        failed: string | null;
+        clipped: boolean;
+      }>("aside:answered", (e) => {
+        /* A side question settling. Routed by conversation id like everything
+           else here, and it may arrive at a card that is mid-turn — which is the
+           whole point of `/btw`, so nothing about the turn is touched. See
+           `aside.rs`. */
+        this.#byId
+          .get(e.payload.id)
+          ?.sideAnswered(e.payload.answer, e.payload.failed, e.payload.clipped);
+      }),
+    );
+    keep(
       listen<{ ask_id: string; answered: boolean }>("ask:closed", (e) => {
         for (const c of this.#byId.values()) {
           if (c.pendingAsk?.askId !== e.payload.ask_id) continue;
@@ -1749,6 +1766,38 @@ export class Skein {
          typed it, minutes or hours ago, and only the sending is new. */
       conv.echoResumed();
       await this.#deliver(conv, held.text);
+    }
+  }
+
+  /** Ask a card a question beside its conversation, without interrupting it.
+   *
+   *  `/btw`. The card's own turn is untouched: the question goes to a *fork* of
+   *  its session in a separate one-shot process, so nothing is added to the
+   *  conversation and nothing is queued behind whatever it is doing. `aside.rs`
+   *  has the measurement of how the CLI does this and why it had to be rebuilt.
+   *
+   *  The line is drawn immediately, before the request goes out, for the reason
+   *  `Conversation.echo` draws a prompt immediately: a question that appeared a
+   *  second later would be the panel swallowing what you typed. It is marked as
+   *  a side question rather than as a prompt, so nothing about it reads as part
+   *  of the conversation.
+   *
+   *  A failure comes back through the same listener rather than being thrown
+   *  here — the request is out on another thread by then, and a card that said
+   *  nothing about a side question that never arrived is the silent failure this
+   *  wall keeps finding. */
+  async askAside(conv: Conversation, question: string) {
+    const asked = question.trim();
+    if (!asked) return;
+    /* Said before it goes, and said again if it replaces one — `aside.rs` keeps
+       one per card, and a second question dropping the first silently would be a
+       card that appears to have forgotten it. */
+    if (conv.asking) conv.note("that side question was replaced by this one");
+    conv.sideAsked(asked);
+    try {
+      await invoke("ask_aside", { id: conv.id, question: asked });
+    } catch (err) {
+      conv.sideAnswered("", String(err));
     }
   }
 
