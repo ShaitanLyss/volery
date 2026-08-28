@@ -264,6 +264,41 @@ describe("what a transcript carries that the wire never does", () => {
     ]);
   });
 
+  test("a screenshot comes back off disk as well as on the wire", () => {
+    /* The seam this file exists for. A `Read` of a PNG carries the image inside
+       the `tool_result` and no text beside it, so a fold that read results for
+       prose alone drew the call as having answered with nothing — on both sides,
+       but the fix has to land on both or the panel shows the picture only until
+       you restart. `picturesOf` is shared with the live fold for the same reason
+       `textOf` is. */
+    const h = foldTranscript(
+      jsonl(
+        user("look at the capture"),
+        assistant([
+          { type: "tool_use", id: "t1", name: "Read", input: { file_path: "shot.png" } },
+        ]),
+        user([
+          {
+            type: "tool_result",
+            tool_use_id: "t1",
+            content: [
+              {
+                type: "image",
+                source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    const call = h.lines.find((l) => l.kind === "tool")?.call;
+    expect(call?.result?.pictures).toEqual([
+      { url: "data:image/png;base64,aGVsbG8=", chars: 8 },
+    ]);
+    /* And the head stops calling it empty. */
+    expect(call?.result?.text).toBe("");
+  });
+
   test("an image-resize note is dropped, on both sides of a restart", () => {
     /* The one in this family whose bug was live-only. On disk it carries
        `isMeta`, so the block above `switch` had always dropped it; the live

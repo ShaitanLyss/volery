@@ -204,6 +204,35 @@ it may be part of. `toolcall.ts` is pure and decides *what* is shown and in what
   map, because it folds a whole file in one pass with no slicing until the end and a backward
   walk per result there is quadratic. Both go through `landed`, so the cap and the failure flag
   cannot be applied one way live and another way after a restart.
+- **A result can be a picture, and until 2026-08-28 that was the one answer the panel could not
+  show.** A `Read` of a PNG, a screenshot harness, an image in a prompt: each arrives as an
+  `image` block inside the `tool_result` with **no text beside it at all**, so a fold that read
+  results for prose drew the call as having answered with nothing, and `resultSize` said
+  "empty" about a round whose whole content was the picture the agent was looking at. Asked for
+  by the user (sink 28cb1c5d), who had watched it happen while checking deck captures.
+
+  `classify.ts::picturesOf` is the reader and is shared by both folds, for the reason `textOf`
+  is: the block shape is identical on the wire and on disk, and a panel that showed the image
+  only until you restarted is the divergence `history.ts` exists to prevent.
+
+  **Both fields it produces are untrusted input that ends up inside `src=`**, which is the
+  whole care in that function. The media type is matched against a short `image/<subtype>` and
+  the payload against the base64 alphabet, and anything else is *refused rather than
+  sanitised* — there is no legitimate value that rejects. A `{type:"url"}` source, the other
+  variant in the API, is dropped too: drawing it would have the panel fetch from the network on
+  behalf of a transcript, which this app does nowhere else and certainly not inside a fold
+  nobody clicked.
+
+  Two bounds, and they are the memory argument. `MAX_IMAGE_CHARS` (4 MB of base64, about a 4K
+  screenshot) refuses one too large to carry, because these are held in `$state` for the life
+  of the line and a card that screenshots in a loop on a wall left open for days is the failure
+  mode. `RESULT_PICTURES` draws four and **counts the rest out loud** — silently keeping the
+  first four is the quiet truncation this codebase keeps having to learn not to do. The `img`
+  itself is only in the DOM while the fold is open, so decoding is paid for by a click.
+
+  The `[Image: original 3200x2000, displayed at 2000x1250. …]` note is a *different* record and
+  stays dropped (`isImageNote`): it is coordinate arithmetic addressed to the model, it carries
+  `isMeta` on disk, and it was being drawn as something the user had typed.
 - **A copied diff is a `diff` fence.** Each row is its own element so it can carry a background,
   which makes every row a block, and blocks are joined with a blank line — so an eight-line edit
   came out of the clipboard sixteen lines tall with the shape of the change gone. `copy.ts` has a

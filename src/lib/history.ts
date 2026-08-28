@@ -37,6 +37,7 @@ import {
   isStopNote,
   localCommand,
   parseTaskNotification,
+  picturesOf,
   jobNote,
   skillBody,
   textOf,
@@ -201,7 +202,20 @@ export function foldTranscript(
                the same two halves a live one's do. Before the ask, which is a
                *reading* of one particular result rather than the result. */
             const call = calls.get(block.tool_use_id);
-            if (call) call.result = landed(textOf(block.content), block.is_error === true);
+            if (call) {
+              /* Pictures too, by the same predicate the live fold uses — a
+                 screenshot arrives as an `image` block beside no text, so read
+                 for prose alone this was a call that came back empty. The two
+                 folds share `picturesOf` for the reason they share `textOf`:
+                 the shape is identical on the wire and on disk, and a panel that
+                 showed the image only until you restarted is the divergence this
+                 file exists to prevent. */
+              call.result = landed(
+                textOf(block.content),
+                block.is_error === true,
+                picturesOf(block.content),
+              );
+            }
             if (!asked.has(block.tool_use_id)) continue;
             const note = answerNote(textOf(block.content));
             if (note) push(note.kind, note.text);

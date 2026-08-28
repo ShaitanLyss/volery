@@ -18,6 +18,7 @@ import {
   splitPath,
   startLine,
   toolBadge,
+  RESULT_PICTURES,
 } from "../src/lib/toolcall";
 
 describe("the stamp", () => {
@@ -370,5 +371,53 @@ describe("which line a call was pointed at", () => {
 
   test("a call with no arguments at all names no line", () => {
     expect(startLine([])).toBeNull();
+  });
+});
+
+/* The result of a call that came back with a picture. `resultSize` is the half
+ * that was visibly wrong: an image result carries no text, so the fold's head
+ * said "empty" about a call whose whole answer was a screenshot (sink 28cb1c5d). */
+describe("a result carrying pictures", () => {
+  const pic = (n: number) => ({ url: `data:image/png;base64,${"A".repeat(n)}`, chars: n });
+
+  test("says how many rather than that it is empty", () => {
+    expect(resultSize(landed("", false, [pic(8)]))).toBe("1 image");
+    expect(resultSize(landed("", false, [pic(8), pic(8)]))).toBe("2 images");
+  });
+
+  test("and says both when there is text as well", () => {
+    expect(resultSize(landed("a\nb\nc", false, [pic(8)]))).toBe("1 image, 3 lines");
+  });
+
+  test("with no pictures it reads exactly as it always did", () => {
+    expect(resultSize(landed(""))).toBe("empty");
+    expect(resultSize(landed("a\nb"))).toBe("2 lines");
+    expect(landed("a").pictures).toBeUndefined();
+  });
+
+  /* Capped at four, and the ones past it are *counted*. Silently keeping the
+     first four is the quiet truncation this codebase keeps learning not to do —
+     the head has to be able to say the fold is not the whole answer. */
+  test("caps what it draws and says what it dropped", () => {
+    const six = Array.from({ length: 6 }, () => pic(8));
+    const r = landed("", false, six);
+    expect(r.pictures).toHaveLength(RESULT_PICTURES);
+    expect(r.unshown).toBe(6 - RESULT_PICTURES);
+    /* And the head counts all of them, since the count is a fact about the call
+       rather than about what fitted. */
+    expect(resultSize(r)).toBe("6 images");
+  });
+
+  test("exactly at the cap keeps everything and claims nothing dropped", () => {
+    const r = landed("", false, Array.from({ length: RESULT_PICTURES }, () => pic(8)));
+    expect(r.pictures).toHaveLength(RESULT_PICTURES);
+    expect(r.unshown).toBeUndefined();
+  });
+
+  /* A failure that came back with a picture is still a failure. */
+  test("does not lose the error flag", () => {
+    const r = landed("it went wrong", true, [pic(8)]);
+    expect(r.failed).toBe(true);
+    expect(r.pictures).toHaveLength(1);
   });
 });

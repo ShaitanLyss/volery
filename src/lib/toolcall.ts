@@ -24,6 +24,13 @@
  * about an event; it is typography.
  */
 
+/* `Picture` is type-only and erased at build, which is what keeps this file
+ * free of runtime imports — the same bargain `transcript.ts` strikes with
+ * `Line`. The wire shape of an image block is `classify.ts`'s knowledge;
+ * what a *result* is made of is this file's. */
+import type { Picture } from "./classify";
+
+
 /** The most of one string this will hold on to.
  *
  *  A call and its result are kept for as long as the line is — up to 300 live
@@ -481,7 +488,25 @@ export type ToolResult = {
   failed?: true;
   /** Characters dropped to `VALUE_CAP`. */
   clipped?: number;
+  /** Pictures that came back with it, as validated data URLs.
+   *
+   *  Absent rather than empty when there are none, so nothing in the panel has
+   *  to distinguish "no images" from "images not read yet" — every other
+   *  optional field here strikes the same bargain. */
+  pictures?: Picture[];
+  /** How many more came back than are being drawn — see `RESULT_PICTURES`. */
+  unshown?: number;
 };
+
+/** How many pictures one call may keep.
+ *
+ *  Four. A `Read` of one file answers with one; the case that produces more is a
+ *  screenshot harness handing back a set, and past four the fold stops being a
+ *  round you can read. This is a cap on *drawing*, not on the wire — the ones
+ *  past it are counted and said so, because "3 more not shown" is a fact about
+ *  the call, and silently keeping the first four is the quiet truncation this
+ *  codebase keeps having to learn not to do. */
+export const RESULT_PICTURES = 4;
 
 /** A tool call as the transcript holds it, hung off the `tool` line that draws
  *  it (`Line.call`).
@@ -503,12 +528,21 @@ export type ToolCall = {
 /** A result off the wire, ready to hang on a call. Both ingest paths go through
  *  here, so the cap and the failure flag cannot be applied one way live and
  *  another way off disk. */
-export function landed(text: string, failed = false): ToolResult {
+export function landed(
+  text: string,
+  failed = false,
+  pictures: Picture[] = [],
+): ToolResult {
   const { text: kept, clipped } = capValue(text);
+  const shown = pictures.slice(0, RESULT_PICTURES);
   return {
     text: kept,
     ...(failed ? { failed: true as const } : {}),
     ...(clipped ? { clipped } : {}),
+    ...(shown.length > 0 ? { pictures: shown } : {}),
+    ...(pictures.length > shown.length
+      ? { unshown: pictures.length - shown.length }
+      : {}),
   };
 }
 
@@ -518,6 +552,15 @@ export function landed(text: string, failed = false): ToolResult {
  *  where "1 line" says nothing. */
 export function resultSize(r: ToolResult): string {
   const text = r.text;
+  /* A picture before an emptiness. An image result carries no text at all — the
+     block beside it *is* the image — so this used to answer "empty" about a call
+     that had come back with a screenshot in it, which is the whole of what sink
+     28cb1c5d was reporting from the outside. */
+  const shots = (r.pictures?.length ?? 0) + (r.unshown ?? 0);
+  if (shots > 0) {
+    const said = shots === 1 ? "1 image" : `${shots} images`;
+    return text ? `${said}, ${text.split("\n").length} lines` : said;
+  }
   if (!text) return "empty";
   const lines = text.split("\n").length;
   if (lines === 1) return `${text.length} char${text.length === 1 ? "" : "s"}`;

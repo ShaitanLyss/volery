@@ -14,6 +14,8 @@ import {
   compactStat,
   contextWindowFor,
   HOLD_LINE,
+  picturesOf,
+  type Picture,
   describeTool,
   endingFor,
   healKindOf,
@@ -1410,11 +1412,11 @@ export class Conversation {
    *
    *  A call whose line has already been sliced away simply never lands, and
    *  nothing says so: the line it would have said it on is not on the page. */
-  #land(toolId: string, text: string, failed: boolean) {
+  #land(toolId: string, text: string, failed: boolean, pictures: Picture[] = []) {
     for (let i = this.lines.length - 1; i >= 0; i--) {
       const call = this.lines[i].call;
       if (call?.id === toolId) {
-        call.result = landed(text, failed);
+        call.result = landed(text, failed, pictures);
         return;
       }
     }
@@ -2406,7 +2408,11 @@ export class Conversation {
              here is a *reading* of the result — a job's receipt, a plan item's
              number, a seat's verdict — and the raw text belongs on the line
              whatever any of those make of it. */
-          this.#land(b.tool_use_id, said, b.is_error === true);
+          /* A screenshot comes back as an `image` block beside no text at all,
+             so a result read for prose alone was a call that had plainly done
+             something and appeared to have returned nothing. See `picturesOf`
+             and sink 28cb1c5d. */
+          this.#land(b.tool_use_id, said, b.is_error === true, picturesOf(b.content));
 
           /* **A gate settling, and `is_error` is the whole of the verdict.**
              Reading the exit status the CLI already computed rather than

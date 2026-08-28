@@ -272,9 +272,39 @@
         </div>
         {#if !call.result}
           <p class="none pending"><span class="pip"></span>nothing back yet</p>
-        {:else if !call.result.text}
-          <p class="none">it answered with nothing</p>
         {:else}
+          <!-- Pictures first, because they are the result. A screenshot comes
+               back as an `image` block beside no text at all, so this fold used
+               to say "it answered with nothing" about a call whose whole answer
+               was the image the agent was looking at (sink 28cb1c5d).
+
+               `data:` URLs, already validated by `picturesOf` — the media type
+               is matched against a short `image/<subtype>` and the payload
+               against the base64 alphabet, because both land inside `src=` and
+               come out of a tool result. No `srcset`, no lazy loading and no
+               network: whatever is here arrived on the wire with the round.
+
+               Drawn only when the fold is open, which is the whole memory
+               argument. The panel holds up to 300 lines and a screenshot is
+               ~135KB of base64 apiece; decoding one is the browser's business
+               and it only does it for a fold somebody clicked. -->
+          {#if call.result.pictures}
+            <div class="shots">
+              {#each call.result.pictures as pic, i (i)}
+                <img class="shot" src={pic.url} alt="what the call answered with" />
+              {/each}
+            </div>
+            {#if call.result.unshown}
+              <p class="clip">
+                and {call.result.unshown} more image{call.result.unshown === 1 ? "" : "s"} not
+                shown
+              </p>
+            {/if}
+          {/if}
+        {/if}
+        {#if call.result && !call.result.text && !call.result.pictures}
+          <p class="none">it answered with nothing</p>
+        {:else if call.result?.text}
           <!-- A `Grep` result is a list of places, and every one of them is
                somewhere you might want to look — so `path:line:` becomes a link
                and a wall of matches becomes something you can walk. Plain text
@@ -669,6 +699,34 @@
     font-family: var(--util);
     font-size: calc(0.62rem * var(--read, 1));
     color: var(--paper-faint);
+  }
+  /* What the call came back with, when what it came back with is a picture.
+     Nothing decorative: no border, no shadow, no rounded corner — a screenshot
+     already has its own frame, and dressing it would be the panel competing with
+     the thing it is showing.
+
+     `max-width: 100%` and `height: auto` and nothing else, so a 3200px capture
+     sits inside a panel a third of a window wide without the column ever
+     scrolling sideways. The `edge` rule underneath is the one concession, and it
+     is there because a screenshot of a pale UI on pale paper has no boundary at
+     all otherwise. */
+  .shots {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0.1rem 0 0.3rem;
+  }
+  .shot {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    /* A backing while it decodes, so a large one does not flash the paper colour
+       through at whatever height it happens to reserve. `--edge` rather than a
+       new token: it is the one achromatic value in the palette meant for exactly
+       this, a boundary that is neither ink nor paper. */
+    background: var(--edge);
+    outline: 1px solid var(--edge);
+    outline-offset: -1px;
   }
   /* Asking for the rest. Set as a note rather than as a control, because it is
      one more line of the same reading — not a new gesture. */

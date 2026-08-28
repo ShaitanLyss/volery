@@ -221,6 +221,70 @@ export function textOf(content: unknown): string {
     .trim();
 }
 
+/** The pictures in a message's content, as data URLs ready for an `img` tag.
+ *
+ * `textOf`'s sibling, and it exists because a screenshot handed to the model was
+ * the one thing in a round that the transcript could not show at all. A `Read` of
+ * a PNG, a `browser_take_screenshot`, an image pasted into a prompt: each arrives
+ * as an `image` block inside a `tool_result`, alongside no text whatever — so the
+ * call was drawn with an empty result and the picture the agent was looking at
+ * was nowhere on the page. Asked for by the user (sink 28cb1c5d).
+ *
+ * The shape is the same on both sides of a restart, which is what makes this one
+ * function rather than two. Measured across 492 transcripts on this machine,
+ * 2026-08-28 — 38 of them carry `"type":"image"`:
+ *
+ * ```text
+ *   [tool_result] tool_use_id=toulu_01QpY…
+ *      [image] source={type:"base64", media_type:"image/png", data:<134980 chars>}
+ * ```
+ *
+ * **`base64` only, and a URL source is deliberately dropped.** The other variant
+ * in the API is `{type:"url", url:…}`, and rendering that would have the panel
+ * fetch from the network on behalf of a transcript — a thing this app does
+ * nowhere else, and not something to introduce inside a fold nobody clicked.
+ *
+ * The media type is checked rather than trusted: it lands inside `src=` on an
+ * element, so a value out of a tool result is untrusted input, and anything but
+ * a short `image/<subtype>` is refused rather than sanitised. `data` is filtered
+ * to the base64 alphabet for the same reason — it is the other half of the same
+ * attribute, and a `"` in it would end the attribute early.
+ *
+ * `MAX_IMAGE_CHARS` is the one bound that matters: these are held in `$state`
+ * for the life of the card, and a wall left open for days over a card that
+ * screenshots in a loop is the failure mode. 4 MB of base64 is about 3 MB of
+ * PNG, which is a 4K screenshot — past that the picture is reported rather than
+ * carried, since a transcript that costs a gigabyte to scroll is worse than one
+ * that says "too large to show". */
+export const MAX_IMAGE_CHARS = 4_000_000;
+
+export type Picture = {
+  /** `data:image/png;base64,…` — ready for `src`, already validated. */
+  url: string;
+  /** How many base64 characters it cost, for the fold's head. */
+  chars: number;
+};
+
+export function picturesOf(content: unknown): Picture[] {
+  if (!Array.isArray(content)) return [];
+  const out: Picture[] = [];
+  for (const b of content as any[]) {
+    const src = b?.type === "image" ? b.source : null;
+    if (!src || src.type !== "base64") continue;
+    const media = typeof src.media_type === "string" ? src.media_type : "";
+    /* A short `image/<subtype>` and nothing else. This ends up inside an
+       attribute, so it is untrusted input rather than a field to pass along. */
+    if (!/^image\/[a-z0-9.+-]{1,20}$/.test(media)) continue;
+    const raw = typeof src.data === "string" ? src.data : "";
+    /* The base64 alphabet, exactly. A quote here would close the attribute. */
+    if (!raw || !/^[A-Za-z0-9+/=\s]+$/.test(raw)) continue;
+    const data = raw.replace(/\s+/g, "");
+    if (!data || data.length > MAX_IMAGE_CHARS) continue;
+    out.push({ url: `data:${media};base64,${data}`, chars: data.length });
+  }
+  return out;
+}
+
 export function clip(s: string, n: number): string {
   const flat = s.replace(/\s+/g, " ").trim();
   return flat.length > n ? flat.slice(0, n - 1) + "…" : flat;

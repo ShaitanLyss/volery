@@ -29,8 +29,10 @@ import {
   endsOnQuestion,
   isCompactSummary,
   skillBody,
+  MAX_IMAGE_CHARS,
   isApiErrorMessage,
   isImageNote,
+  picturesOf,
   isStopNote,
   isTaskNotification,
   jobLabel,
@@ -1961,5 +1963,90 @@ describe("a message the CLI wrote rather than a model", () => {
     /* Truthy is not true: the flag is a boolean in the schema, and reading a
        string as one would make `"false"` a refusal. */
     expect(isApiErrorMessage({ isApiErrorMessage: "true" as unknown })).toBe(false);
+  });
+});
+
+/* A screenshot handed to the model was the one thing in a round the transcript
+ * could not show at all — asked for by the user, sink 28cb1c5d. The validation is
+ * the interesting half: both fields land inside `src=` on an element, and both
+ * come out of a tool result. */
+describe("the pictures in a result", () => {
+  const shot = (data: string, media = "image/png") => ({
+    type: "image",
+    source: { type: "base64", media_type: media, data },
+  });
+
+  test("come back as data URLs ready for an img", () => {
+    const out = picturesOf([shot("aGVsbG8=")]);
+    expect(out).toEqual([{ url: "data:image/png;base64,aGVsbG8=", chars: 8 }]);
+  });
+
+  /* Verbatim from this machine's transcripts: the image sits inside a
+     `tool_result`, and `picturesOf` is handed that block's own content. */
+  test("are found beside no text at all, which is the whole bug", () => {
+    const content = [shot("aGVsbG8="), { type: "text", text: "" }];
+    expect(textOf(content)).toBe("");
+    expect(picturesOf(content)).toHaveLength(1);
+  });
+
+  test("keep every image in a set, in order", () => {
+    const out = picturesOf([shot("YQ=="), shot("Yg==", "image/jpeg"), shot("Yw==")]);
+    expect(out.map((p) => p.url)).toEqual([
+      "data:image/png;base64,YQ==",
+      "data:image/jpeg;base64,Yg==",
+      "data:image/png;base64,Yw==",
+    ]);
+  });
+
+  /* The media type ends up inside an attribute, so it is untrusted input rather
+     than a field to pass along. Refused rather than sanitised: there is no
+     legitimate value this rejects. */
+  test("refuse a media type that is not plainly an image", () => {
+    expect(picturesOf([shot("YQ==", "text/html")])).toEqual([]);
+    expect(picturesOf([shot("YQ==", "image/png;x=1")])).toEqual([]);
+    expect(picturesOf([shot("YQ==", 'image/png" onerror="alert(1)')])).toEqual([]);
+    expect(picturesOf([shot("YQ==", "")])).toEqual([]);
+    expect(picturesOf([shot("YQ==", "image/" + "a".repeat(30))])).toEqual([]);
+  });
+
+  /* And the payload is the other half of the same attribute. A quote in it would
+     close the attribute early, whatever the media type said. */
+  test("refuse a payload that is not base64", () => {
+    expect(picturesOf([shot('YQ==" onerror="alert(1)')])).toEqual([]);
+    expect(picturesOf([shot("<script>")])).toEqual([]);
+    expect(picturesOf([shot("")])).toEqual([]);
+  });
+
+  /* Whitespace is legal in base64 on the wire and illegal in a data URL. */
+  test("strip whitespace out of the payload rather than refusing it", () => {
+    const out = picturesOf([shot("aGVs\n bG8=")]);
+    expect(out).toEqual([{ url: "data:image/png;base64,aGVsbG8=", chars: 8 }]);
+  });
+
+  /* A `url` source is the other variant in the API, and drawing it would have
+     the panel fetch from the network on behalf of a transcript — something this
+     app does nowhere else, and not inside a fold nobody clicked. */
+  test("drop a source that would have to be fetched", () => {
+    expect(
+      picturesOf([{ type: "image", source: { type: "url", url: "https://x/y.png" } }]),
+    ).toEqual([]);
+  });
+
+  /* These are held in `$state` for the life of the card. A wall left open for
+     days over a card that screenshots in a loop is the failure this bounds. */
+  test("refuse one too large to carry", () => {
+    const huge = "A".repeat(MAX_IMAGE_CHARS + 4);
+    expect(picturesOf([shot(huge)])).toEqual([]);
+    /* Exactly at the bound is kept — a cap that rejected its own limit would be
+       off by one in the direction nobody tests. */
+    const edge = "A".repeat(MAX_IMAGE_CHARS);
+    expect(picturesOf([shot(edge)])).toHaveLength(1);
+  });
+
+  test("and nothing that is not an image block", () => {
+    expect(picturesOf([{ type: "text", text: "look at the screenshot" }])).toEqual([]);
+    expect(picturesOf("a bare string")).toEqual([]);
+    expect(picturesOf(null)).toEqual([]);
+    expect(picturesOf([])).toEqual([]);
   });
 });
