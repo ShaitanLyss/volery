@@ -94,6 +94,7 @@ bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it 
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
 bun tools/lift-tunnel.ts           # same, for the spotify tunnel's ipv4-first sort
 bun tools/lift-later.ts            # same, for the wake envelope relay.ts parses
+bun tools/lift-roster.ts           # same, for the whole MCP roster contract (needs check-gnu once)
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs

@@ -1594,7 +1594,20 @@ mod tests {
             .map(|t| t["name"].as_str().expect("a name").to_string())
             .collect();
         for chat in [false, true] {
-            for tool in named_tools(&append_prompt(chat)) {
+            let named = named_tools(&append_prompt(chat));
+            /* Both this and the two tests around it are `for` loops over what
+               the prompt names, so all three pass on a prompt that names
+               nothing — and "names nothing" is what a bad edit to the format
+               string, or to `named_tools`' backtick-pairing, would produce. A
+               guard that goes green when its subject disappears is the shape
+               sink 0b97adde is about, one turn of the screw further in. */
+            assert!(
+                !named.is_empty(),
+                "the prompt names no tools at all (chat={chat}) — every assertion \
+                 here is a loop over that list, so this is all three of them \
+                 passing vacuously"
+            );
+            for tool in named {
                 assert!(
                     loaded.contains(&tool),
                     "the prompt names `{MCP_PREFIX}{tool}`, which is deferred rather \

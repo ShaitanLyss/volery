@@ -176,6 +176,45 @@ and WiX and NSIS produce what they produce under MSVC. Four things bite:
     compile against the code that is actually there. Neither alone is a `cargo test`; together
     they are most of one.
 
+### Writing an assertion nobody can run
+
+There are ~570 assertions across 42 modules in this crate and **not one of them runs here by
+default.** So the question is not "is this test correct" but "what happens to it while nobody
+is looking", and the answer depends entirely on how it is written. Sink `0b97adde` is the
+finding; this is the rule that came out of it.
+
+**An exhaustive assertion in a suite that cannot be executed is documentation, not a guard.**
+`the_roster_tools_are_advertised_beside_the_question` in `ask.rs` used to spell the MCP roster
+out as a flat `vec!`. It rotted twice. First the forge's three tools were registered without a
+line there; then the tiering reordered six of them. Both times it went on **compiling** — a
+`vec!` missing three elements is perfectly good Rust — so nothing said a word until somebody
+walked into that function for an unrelated reason, and the second time the first thing that
+could say so was the release workflow, which it failed several commits after the change that
+caused it. It failed *for tidiness*, and it named the wrong commit.
+
+Three rules, in the order to reach for them:
+
+1. **Derive the expectation; never restate a registry.** A restated list is a second copy that
+   no compiler keeps honest. `every_deferred_tool_can_be_found` and
+   `the_loaded_tier_is_what_every_turn_pays_for` sit in the same module, are just as
+   exhaustive, and could not rot either time — because they ask `roster()` what is in it
+   rather than saying. What is left after deriving is the part a handler can genuinely get
+   wrong: filtering, paging, sorting, or appending a loaded tool below a deferred one.
+2. **If it must be exhaustive and cannot be derived, it needs a lift.** Some genuinely cannot:
+   nothing holds a second list of search hints to check the first against. Those are the
+   assertions worth the twenty minutes of a `tools/lift-*.ts`, and `lift-roster.ts` is that
+   one — the whole roster contract, ten assertions across `ask.rs` and `supervisor.rs`,
+   executing in under a second. It is also the worked example of variant 2 above, since the
+   schemas are `serde_json`.
+3. **A loop over a list is green when the list is empty.** Three assertions in
+   `supervisor.rs` iterate the tools the appended prompt names, so all three passed on a
+   prompt that named none — which is exactly what a bad edit to the format string, or to
+   `named_tools`' backtick-pairing, would produce. Any `for x in <derived list>` that asserts
+   inside the loop owes a non-empty check outside it, or the guard goes green precisely when
+   its subject disappears.
+
+The same three apply to the Bun suites, where they matter less only because those *do* run.
+
   **What a no-MSVC machine *can* do is typecheck the crate**, which is worth knowing before
   writing Rust blind here: `cargo check --lib` under the gnu toolchain compiles every module
   and reports real errors. It needs the same environment `build-gnu.ps1` sets — the toolchain,
