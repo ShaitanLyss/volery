@@ -82,15 +82,31 @@ const MCP_PREFIX: &str = "mcp__skein__";
 /// `ask::dispatch` rather than a list kept here — a renamed tool has to break
 /// this rather than quietly strand a sentence.
 ///
-/// And it is short because it is allowed to be: `ask::mcp_config` sets
-/// `alwaysLoad`, so each of these arrives with its own description attached
-/// rather than as a bare name behind a `ToolSearch` step. That is where the
-/// reasoning lives — why reading the board is free where a `send` costs the
+/// And it is short because it is allowed to be: every tool it names is in
+/// `ask::roster`'s **loaded** tier, so each arrives with its own description
+/// attached rather than as a bare name behind a `ToolSearch` step. That is where
+/// the reasoning lives — why reading the board is free where a `send` costs the
 /// other agent a turn, why a notice wants `paths`, why `unpost` is nobody else's
 /// job — and re-stating it here would be the same words paid for twice, in the
-/// copy that can silently drift out of step with the schema. **If `alwaysLoad`
-/// ever comes off, this paragraph is the whole of what a card knows** and has to
-/// grow back to carry it.
+/// copy that can silently drift out of step with the schema.
+///
+/// **It used to say `ask::mcp_config` sets `alwaysLoad`, and that has not been
+/// true since the roster grew two tiers** (`871075a`, `b8f6276`). The
+/// server-level field is deliberately absent now: the client takes the *union*
+/// of it and each tool's `_meta["anthropic/alwaysLoad"]`, so setting it would
+/// override every per-tool decision and put all 22 schemas in front of every
+/// card on every turn. The conclusion survives by the other route — `ask::roster`
+/// states as a rule that everything named here is in the loaded tier — but the
+/// route mattered, because the old wording said the guarantee came from a line
+/// that no longer exists.
+///
+/// So it is guarded from this end too.
+/// `the_prompt_names_only_tools_whose_schemas_are_loaded` asks the roster which
+/// tools carry the flag and refuses a prompt that names one which does not.
+/// Deferring a tool named here would otherwise cost the card nothing visible: it
+/// is still advertised, `the_prompt_names_only_tools_the_server_advertises` still
+/// passes, and the description simply is not there — which is this paragraph
+/// becoming the whole of what a card knows, silently, one tier edit away.
 fn append_prompt(chat: bool) -> String {
     let mut prompt = format!(
         "When you need a decision that only the user can make, call \
@@ -1559,6 +1575,30 @@ mod tests {
                     known.contains(&tool),
                     "the prompt names `{MCP_PREFIX}{tool}`, which tools/list does not \
                      advertise (chat={chat}); it advertises {known:?}"
+                );
+            }
+        }
+    }
+
+    /// Advertised is not enough, and `append_prompt`'s own doc comment leans on
+    /// the difference: it is short *because* every tool it names arrives with its
+    /// description attached. That holds only while those tools are in the loaded
+    /// tier. Defer one and nothing goes red — it is still in `tools/list`, the
+    /// test above still passes, and the card is left with a bare name and one
+    /// sentence of ours standing in for a schema it never sees.
+    #[test]
+    fn the_prompt_names_only_tools_whose_schemas_are_loaded() {
+        let loaded: Vec<String> = crate::ask::roster()
+            .iter()
+            .filter(|t| t["_meta"]["anthropic/alwaysLoad"] == serde_json::json!(true))
+            .map(|t| t["name"].as_str().expect("a name").to_string())
+            .collect();
+        for chat in [false, true] {
+            for tool in named_tools(&append_prompt(chat)) {
+                assert!(
+                    loaded.contains(&tool),
+                    "the prompt names `{MCP_PREFIX}{tool}`, which is deferred rather \
+                     than loaded (chat={chat}); the loaded tier is {loaded:?}"
                 );
             }
         }
