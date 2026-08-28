@@ -1167,6 +1167,90 @@ pub async fn poll_projects(requests: Vec<PollRequest>) -> Vec<ProjectStatus> {
 mod tests {
     use super::*;
 
+    /// A bump may only ever name files that *declare* the version, and it must
+    /// find them by looking in the six places it knows rather than by searching.
+    ///
+    /// Sink `933c31d6` reported a release commit having rewritten a version
+    /// literal inside `test/azdo.test.ts` — a `shortRef("v0.12.0")` fixture,
+    /// where the tag string is arbitrary test data rather than a reference to
+    /// this project's version — and reasoned from it that the bump does a
+    /// tree-wide string replace. **It does not, and never did**: `91d4b87`
+    /// (`chore: Release v0.13.0`) touched four files, none of them a test, and
+    /// `git log -S` shows that literal was written by hand in `9639c70`, the
+    /// commit that added the test, using the then-current version as sample
+    /// data. So the report was a wrong diagnosis of a real smell.
+    ///
+    /// The residue is worth a guard anyway, because the failure it imagined is
+    /// the one this function would actually have. `version_files` enumerates;
+    /// the moment somebody makes it *walk* — "find every package.json", which is
+    /// a reasonable-sounding thing to want for a monorepo — a fixture under
+    /// `test/` or a template under `fixtures/` enters the plan, `set_version`
+    /// rewrites a line in it, and `bump` commits it under a message about a
+    /// release. Nothing would go red: `splice` only replaces what it was told
+    /// was there, so the edit succeeds quietly.
+    ///
+    /// This is the cheap half of that. It builds a tree whose real version files
+    /// sit beside decoys that would match a search, and asserts the decoys are
+    /// not in the plan.
+    #[test]
+    fn a_bump_plan_names_only_files_that_declare_the_version() {
+        let dir = std::env::temp_dir().join("skein-version-files");
+        let _ = std::fs::remove_dir_all(&dir);
+        let w = |rel: &str, text: &str| {
+            let at = dir.join(rel);
+            std::fs::create_dir_all(at.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(at, text).expect("write");
+        };
+
+        w("package.json", "{\n  \"name\": \"skein\",\n  \"version\": \"0.7.0\"\n}\n");
+        w(
+            "src-tauri/tauri.conf.json",
+            "{\n  \"productName\": \"Volery\",\n  \"version\": \"0.7.0\"\n}\n",
+        );
+        /* The decoys. Each is a file a tree-walking implementation would happily
+           pick up, and each holds something version-shaped that is not this
+           project's version. */
+        w("test/azdo.test.ts", "expect(shortRef(\"v0.7.0\")).toBe(\"v0.7.0\");\n");
+        w("test/fixtures/package.json", "{\n  \"version\": \"0.7.0\"\n}\n");
+        w("node_modules/dep/package.json", "{\n  \"version\": \"0.7.0\"\n}\n");
+        w("docs/CHANGELOG.md", "## v0.7.0\n");
+
+        let found = version_files(&dir, None);
+        let paths: Vec<&str> = found.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["package.json", "src-tauri/tauri.conf.json"],
+            "a bump plan must name only the files that declare the version"
+        );
+        for f in &found {
+            assert_eq!(f.version, "0.7.0", "{} read the wrong line", f.path);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The other half of the same promise, one layer down: a file in the plan is
+    /// edited on **one line**, chosen by kind, rather than by replacing the old
+    /// version wherever it appears. A `package.json` whose description or whose
+    /// dependency range happens to contain the outgoing version keeps both.
+    #[test]
+    fn setting_a_version_moves_one_line_and_leaves_look_alikes_alone() {
+        let text = "{\n  \"name\": \"skein\",\n  \"version\": \"0.7.0\",\n  \
+                    \"description\": \"upgrade notes for 0.7.0\",\n  \
+                    \"dependencies\": { \"vite\": \"0.7.0\" }\n}\n";
+        let (was, next) = set_version("json", text, "0.8.0").expect("a json version");
+        assert_eq!(was, "0.7.0");
+        assert!(next.contains("\"version\": \"0.8.0\""), "{next}");
+        assert!(
+            next.contains("upgrade notes for 0.7.0"),
+            "prose that mentions the old version is not a version declaration: {next}"
+        );
+        assert!(
+            next.contains("\"vite\": \"0.7.0\""),
+            "a dependency range is not this project's version: {next}"
+        );
+        assert_eq!(next.matches("0.8.0").count(), 1, "exactly one line moved: {next}");
+    }
+
     #[test]
     fn a_reg_query_value_is_read_off_the_reg_sz_line() {
         let out = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\EpicGames\\Unreal Engine\\5.8\r\n    \
