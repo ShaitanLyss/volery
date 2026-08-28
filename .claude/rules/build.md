@@ -100,23 +100,81 @@ and WiX and NSIS produce what they produce under MSVC. Four things bite:
   ```
 
   **`--tests` typechecks assertions it cannot execute**, which is worth saying out loud because
-  a green `check --tests` reads like a green test run and is not one. The way to actually run a
-  pure Rust function here is to lift it into a throwaway with `rustc --test` — no cargo, no
-  dependencies, no MSVC — which is how `hooks.rs`'s 21 assertions were run on 2026-08-25
-  despite `cargo test` being unavailable. It takes a minute and it is the difference between
-  believing a parser is right and knowing it.
+  a green `check --tests` reads like a green test run and is not one. **Assertions here are run
+  by lifting them out of the crate**, and the three ways of doing that are below. Read the
+  paragraph after them before trusting a green one — a lift is a copy, and what it proves is
+  narrower than a `cargo test` would be.
 
-  **Regenerate the lift from the source file every time; never keep one.** `joblog.rs`'s
-  twelve tests were once run against a lift taken before a constant was threaded through the
-  function under it, so the green they reported was about a version that no longer existed on
-  disk (ac3883e). `tools/lift-servers.ts` is the technique written down as a script rather
-  than a habit — it extracts the items by name out of `servers.rs`, builds, runs, and keeps
-  nothing — and is the shape to copy for another module rather than a tool with a general
-  interface, since which items are pure is a fact about each file.
+  **The one line all three need, and the one most often missed.** Bare `rustc` takes the
+  *default* toolchain, which is msvc on this machine, and dies with the misleading error at
+  the top of this section — `link: extra operand`, a *missing* MSVC linker rather than a
+  broken anything. So every recipe below is pinned:
 
-  Without `RUSTUP_TOOLCHAIN` the failure is the misleading one at the top of this section:
-  every build script dies with `link: extra operand`, which is a *missing* MSVC linker rather
-  than a broken anything.
+  ```bash
+  export RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu
+  ```
+
+  Two cards discovered that omission independently on 2026-08-27, hours apart, because the
+  paragraph that used to be here read as though plain `rustc` was enough. Every
+  `tools/lift-*.ts` sets it in the child's environment for the same reason; if you write a
+  fourth, copy that.
+
+  **1. `rustc --test` on a lifted file.** No cargo, no dependencies, no linker beyond rustc's
+  own — so it is unaffected by whatever state the dependency graph is in, which is the point.
+  This is how `hooks.rs`'s 21 assertions were run on 2026-08-25 and `control.rs`'s seven `vk`
+  assertions on 2026-08-27.
+
+  ```bash
+  rustc --test --edition 2021 -A dead_code -o t.exe lifted.rs && ./t.exe
+  ```
+
+  **2. The same, plus the rlibs cargo already built.** The limit above is dependency-free
+  code, and it is not a real limit: the deps are sitting in the target directory and a lifted
+  file can link them.
+
+  ```bash
+  D=src-tauri/target/x86_64-pc-windows-gnu/debug/deps
+  rustc --test --edition 2021 -A dead_code \
+    --extern serde_json=$D/libserde_json-<hash>.rlib \
+    -L dependency=$D -o t.exe lifted.rs && ./t.exe
+  ```
+
+  Re-probed 2026-08-28 against `libserde_json-09f778d09ea19cd6.rlib`: it links and the
+  assertion runs. This borrows *our* build, so it is only as healthy as our graph — which is
+  exactly the circumstance variant 3 exists for.
+
+  **3. A throwaway cargo crate, when our own graph is the broken thing.** `cargo new` outside
+  the repo, a `[workspace]` stanza in its `Cargo.toml` so ours does not adopt it, the one
+  dependency you need, the lifted items pasted in. About four seconds, and it has *its own*
+  dependency graph. Card 851e14c8 used it to verify Azure DevOps timeline flattening on
+  2026-08-27 and it caught a real bug — thirteen stages in, five rows out, because a skipped
+  stage carries no `Job` record. `.scratch/tlsprobe` is the same pattern for a library
+  question; note it needs the `CC_x86_64_pc_windows_gnu`/`AR_` pins if anything in it has a C
+  dependency.
+
+  **That day is why this is not a curiosity.** For a stretch of 2026-08-27 `cargo check --lib`
+  could not run at all, for any card, and not because of anybody's code: `librespot-core
+  0.8`'s build script pulled two versions of `vergen_lib` into one graph (vergen 9.1.0 moved
+  from `vergen-lib ^0.1.6` to `^9.1.0` — a breaking change inside a minor bump — while
+  `vergen-gitcl 1.0.8` stayed on 0.1.6). During that window the lift was the *only* way to
+  verify any Rust in this repo, and it was documented wrong.
+
+  **A green lift is evidence about the text you lifted, not about the file on disk**, and the
+  gap is real: the lifted text compiles in a different context — no `crate::`, no siblings, no
+  `#[cfg(windows)]` arms. Two things close it, and they are meant to be used together:
+
+  - **Regenerate the lift from the source file every time; never keep one.** `joblog.rs`'s
+    twelve tests were once run against a lift taken before a constant was threaded through the
+    function under it, so the green they reported was about a version that no longer existed on
+    disk (ac3883e). `tools/lift-servers.ts` is the technique written down as a script rather
+    than a habit — it extracts the items by name out of `servers.rs`, builds, runs, and keeps
+    nothing — and is the shape to copy for another module rather than a tool with a general
+    interface, since which items are pure is a fact about each file. There are seven of them
+    now (`board`, `gates`, `selector`, `servers`, `smith`, `spawn`, `tunnel`).
+  - **Pair it with `bash tools/check-gnu.sh --tests`**, which typechecks the real module, in
+    place, in the crate. The lift says the logic is right; `--tests` says the assertions still
+    compile against the code that is actually there. Neither alone is a `cargo test`; together
+    they are most of one.
 
   **What a no-MSVC machine *can* do is typecheck the crate**, which is worth knowing before
   writing Rust blind here: `cargo check --lib` under the gnu toolchain compiles every module
