@@ -38,6 +38,9 @@
      `following` its effect graph reads, so it keeps its own effect and hands
      that module the three numbers. */
   import { hearGrowth, stillFollowing, STICK_PX } from "./follow";
+  /* TEMPORARY — instrumentation for the panel losing the tail on a card switch.
+     Every `trace.*` call below goes with `scrolltrace.ts` when this is settled. */
+  import { trace } from "./scrolltrace";
 
   let {
     conv,
@@ -162,6 +165,7 @@
   function unfolded() {
     following = false;
     pinned = -1;
+    trace.note("release:fold");
   }
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -233,6 +237,7 @@
     stopGlide();
     pinned = -1;
     following = false;
+    trace.note("release:hunt");
     if (shut[at.key]) delete shut[at.key];
     if (!open[at.key]) open[at.key] = true;
     requestAnimationFrame(() => {
@@ -326,6 +331,19 @@
   function pin(el: HTMLElement) {
     el.scrollTop = el.scrollHeight;
     pinned = el.scrollTop;
+    trace.saw("pin", shot(el), { aimed: Math.round(el.scrollHeight) });
+  }
+
+  /* TEMPORARY — the five numbers the follow decides from, as the caller saw
+     them. Goes with `scrolltrace.ts`. */
+  function shot(el: HTMLElement) {
+    return {
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      pinned,
+      following,
+    };
   }
 
   /** The follow's pending frame: one write however many reasons to make it land
@@ -344,10 +362,19 @@
    *  during a live turn lands between the two, and this would otherwise carry
    *  out a decision that had already been reversed. */
   function keepTail() {
-    if (holding || !following) return;
+    if (holding || !following) {
+      trace.note("keep:skip", { why: holding ? "frame already held" : "not following" });
+      return;
+    }
+    trace.note("keep:hold");
     holding = requestAnimationFrame(() => {
       holding = 0;
       const el = scroller;
+      /* The whole race, in one line: this frame was queued when `following` was
+         true, and the scroll steps for any event the column caused run *before*
+         animation-frame callbacks. So if it was let go of in between, the pin
+         that would have saved the view is the thing that declines. */
+      if (el && !following) trace.saw("keep:abandon", shot(el));
       if (el && following) pin(el);
     });
   }
@@ -377,10 +404,12 @@
   function settle() {
     carrying = 0;
     if (scroller) following = atTail(scroller);
+    if (scroller) trace.saw("carry:settle", shot(scroller));
   }
 
   function onScroll() {
     if (!scroller) return;
+    trace.saw("scroll:in", shot(scroller), { carrying: carrying !== 0 });
     measure();
     /* A carried view's own scroll events say nothing about where you want to
        be. This is not a nicety: the first event of a smooth scroll fires with
@@ -407,6 +436,7 @@
     /* Consumed: the next event is either ours again (and re-pinned by the follow)
        or a hand on the wheel. */
     if (was >= 0 && scroller.scrollTop !== was) pinned = -1;
+    trace.saw("scroll:out", shot(scroller), { wasPinned: Math.round(was) });
   }
 
   /* ── the rails ────────────────────────────────────────────────────────────
@@ -706,6 +736,7 @@
     const el = scroller;
     if (!el) return;
     stopGlide();
+    trace.note("release:toTail");
     /* Same carry as the rail's: `following` off so the follow effect doesn't
        teleport us there mid-run, and `settle` to take the reading once the
        movement stops — which here means switching following back *on*, since
@@ -774,6 +805,11 @@
        already in flight, and the frame loop would otherwise write its next
        position straight over the step. */
     stopGlide();
+    /* TEMPORARY — said out loud because this is the one real gesture the
+       scroller's own listeners cannot see: the key is read by `App.svelte`'s
+       global ladder with the caret usually still in the draft, so it never
+       reaches `.lines`. Untraced it would look like a scroll nobody made. */
+    trace.gesture("step", { kind, dir });
     /* Yours, so it must be read as yours even if it lands exactly on the tail the
        follow last pinned — that is a step back *onto* a live turn, and taking it
        up again is the point of measuring rather than flagging. */
@@ -786,8 +822,21 @@
      tail — otherwise the scroll position you left behind on one card decides
      where you land on the next one. */
   $effect(() => {
-    void conv.id;
+    const id = conv.id;
     following = true;
+    trace.note("card", {
+      id: id.slice(0, 8),
+      /* Before any of it is drawn: this is the scroll offset the *previous*
+         card left in the shared scroller, which is what the browser then either
+         keeps (no event) or clamps (an event nobody made). */
+      leftAt: scroller ? Math.round(scroller.scrollTop) : -1,
+      leftMax: scroller ? Math.round(scroller.scrollHeight - scroller.clientHeight) : -1,
+      working: conv.working,
+      streaming: conv.streaming.length,
+      lines: conv.lines.length,
+      history: conv.history.length,
+      historyState: conv.historyState,
+    });
   });
 
   /* The panel opening is what pays for reading a multi-megabyte file: the wall
@@ -835,7 +884,10 @@
     void conv.lines.length;
     void conv.history.length;
     void conv.activity;
-    if (!untrack(() => watching)) following = true;
+    if (!untrack(() => watching)) {
+      following = true;
+      trace.note("rearm:unwatched");
+    }
   });
 
   /* Follow the tail while the column grows — but only if that is where you
@@ -873,10 +925,34 @@
     /* Untracked, or reading `following` here would have every scroll that lets
        go of the tail tear the observers down and build them again. */
     untrack(keepTail);
-    return hearGrowth(el, keepTail, () => {
-      keepTail();
-      measure();
-    });
+    return hearGrowth(
+      el,
+      () => {
+        trace.saw("grew", shot(el));
+        keepTail();
+      },
+      () => {
+        trace.saw("resized", shot(el));
+        keepTail();
+        measure();
+      },
+    );
+  });
+
+  /* TEMPORARY — the measurement the trace exists for: which scroll events had a
+     hand behind them. Capture phase and passive, so nothing here can change what
+     the panel does; these listeners only witness. If the release always lands
+     with no gesture on record, gating it on one is the fix. Goes with
+     `scrolltrace.ts`. */
+  $effect(() => {
+    const el = scroller;
+    if (!el) return;
+    const kinds = ["wheel", "keydown", "pointerdown", "touchstart"] as const;
+    const on = (e: Event) => trace.gesture(e.type, { key: (e as KeyboardEvent).key });
+    for (const k of kinds) el.addEventListener(k, on, { capture: true, passive: true });
+    return () => {
+      for (const k of kinds) el.removeEventListener(k, on, { capture: true });
+    };
   });
 
   /* And coming back to the window is a moment to honour the tail, because the
@@ -892,7 +968,8 @@
      untracked for the reason this whole file is careful about: in an effect a
      condition and a trigger are the same act unless you separate them. */
   $effect(() => {
-    void watching;
+    const w = watching;
+    trace.note("watching", { focused: w });
     untrack(keepTail);
   });
 
