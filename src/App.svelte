@@ -57,6 +57,8 @@
   import { projectOptions } from "./lib/buildlog";
   import { editorOptions } from "./lib/unreallog";
   import { Ambience } from "./lib/ambience.svelte";
+  import { MOTIONS } from "./lib/motion";
+  import { Motion } from "./lib/motion.svelte";
   import { Actions, conflictBadge, conflictPrompt, NO_STATUS } from "./lib/actions.svelte";
   import { Control } from "./lib/control.svelte";
   import { ink } from "./lib/theme.svelte";
@@ -238,6 +240,9 @@
   /* The wall's own weather. Owns no subscriptions, so unlike the four below it
      needs nothing releasing on destroy. */
   const ambience = new Ambience();
+  /* Holds no subscription, so unlike `Skein`/`Attention`/`Control` it wants no
+     place in `Listeners` — same as `Ink`, which it is shaped after. */
+  const motion = new Motion();
   /* The shell behind Alt+I. Holds subscriptions and a batch timer, so it is
      released on destroy with the rest of them — and it holds a *process*, which
      the panel being toggled shut deliberately does not end. */
@@ -1090,6 +1095,14 @@
       target = {
         kind: "ground",
         offers: widgetOffers(),
+        /* How much the wall may move, beside the ambience for the same reason
+           the ambience is here: both are what the *ground* is doing, and this
+           one is the only setting in the app whose units are a GPU. */
+        picks: MOTIONS.map((m) => ({
+          id: `motion:${m.id}`,
+          label: m.label,
+          on: motion.id === m.id,
+        })),
         undoing: undo.goingBack,
         redoing: undo.goingForward,
       };
@@ -1113,6 +1126,7 @@
         /* The ground is the thing the effects are drawn on, so this is where
            asking about them belongs. */
         else if (id === "ambience") showEffects = true;
+        else if (id.startsWith("motion:")) motion.set(id.slice(7));
         /* And what the wall tells every card standing on it, one scope out from
            the territory menu's own. */
         else if (id === "guidance") guiding = { focus: null };

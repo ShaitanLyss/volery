@@ -700,14 +700,62 @@
   }
 
   /* ── status: light and motion, never a badge ─────────────── */
+
+  /* The light is drawn on a pseudo-element and only its *opacity* moves.
+     
+     It used to be the card's own `box-shadow`, animated between two shadows —
+     which is not a compositable property, so Chromium re-rastered the card's
+     layer and re-uploaded its texture sixty times a second, per working card,
+     forever. Measured on the live wall: **+7.98% of the GPU 3D engine for every
+     card drawn `work`** (one 13.3%, two 22.4%, three 28.3%). That is half the
+     integrated GPU spoken for by a wall nobody was touching, and it was invisible
+     because the glow is *supposed* to be subtle — two separate cards filed it as
+     "idle, nothing animating". `motion.ts` carries the whole measurement.
+
+     Here the shadow is rastered once and never repainted; the animation touches
+     only `opacity`, which the compositor owns. What that does NOT buy is the
+     present: any live animation makes the whole window present at display rate,
+     which is its own 5-7% and is why `[data-motion]` below exists at all. */
+  .card[data-st="work"]::after,
+  .card[data-st="ask"]::after {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
   .card[data-st="work"] {
     --st: var(--st-work);
+  }
+  .card[data-st="work"]::after {
+    box-shadow: 0 6px 34px -14px color-mix(in srgb, var(--st) 85%, transparent);
     animation: breathe 4.2s ease-in-out infinite;
   }
   .card[data-st="ask"] {
     --st: var(--st-ask);
     border-color: color-mix(in srgb, var(--st-ask) 55%, var(--edge));
+  }
+  .card[data-st="ask"]::after {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--st) 22%, transparent),
+      0 8px 38px -10px color-mix(in srgb, var(--st) 95%, transparent);
     animation: bloom 2.4s ease-in-out infinite;
+  }
+
+  /* ── how much of that you want (`motion.ts`) ──────────────
+     
+     `full` is the arm above. The other two are the only two levers that measure:
+     present less often, or do not move. Stepping the timing function keeps the
+     duration and the light and gives up the glide — 8 steps a half-cycle is a
+     present about four times a second instead of sixty, and 1.3% instead of
+     12.2%. Stopping altogether is 0.6%, which is a wall that costs nothing. */
+  :global(html[data-motion="spare"]) .card[data-st="work"]::after,
+  :global(html[data-motion="spare"]) .card[data-st="ask"]::after {
+    animation-timing-function: steps(8, end);
+  }
+  :global(html[data-motion="still"]) .card[data-st="work"]::after,
+  :global(html[data-motion="still"]) .card[data-st="ask"]::after {
+    animation: none;
   }
   .card[data-st="soft"] {
     --st: var(--st-soft);
@@ -736,6 +784,12 @@
     border-style: dashed;
     animation: none;
     box-shadow: none;
+  }
+  /* The light now lives on a pseudo-element, so hollowing the card means taking
+     that away too — `animation: none` above would otherwise leave a dormant card
+     wearing a still glow at whatever opacity the keyframe starts on. */
+  .card[data-dormant]::after {
+    content: none;
   }
   .card[data-dormant] .title {
     color: var(--paper-mute);
@@ -784,31 +838,33 @@
     color: var(--paper-mute);
   }
 
+  /* Opacity, not shadow — see the note above. The literals these replaced were
+     `rgba(127,184,164)` and `rgba(233,161,59)`, which are `--st-work` and
+     `--st-ask` in the default ink written out by hand; going through `--st`
+     means an authored theme's status colours now reach the glow too. */
   @keyframes breathe {
     0%,
     100% {
-      box-shadow: 0 6px 26px -18px rgba(127, 184, 164, 0.5);
+      opacity: 0.55;
     }
     50% {
-      box-shadow: 0 6px 34px -14px rgba(127, 184, 164, 0.85);
+      opacity: 1;
     }
   }
   @keyframes bloom {
     0%,
     100% {
-      box-shadow:
-        0 0 0 0 rgba(233, 161, 59, 0.3),
-        0 8px 30px -14px rgba(233, 161, 59, 0.6);
+      opacity: 0.45;
     }
     50% {
-      box-shadow:
-        0 0 0 5px rgba(233, 161, 59, 0),
-        0 8px 38px -10px rgba(233, 161, 59, 0.95);
+      opacity: 1;
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .card {
+    .card,
+    .card[data-st="work"]::after,
+    .card[data-st="ask"]::after {
       animation: none !important;
     }
   }

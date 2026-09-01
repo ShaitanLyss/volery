@@ -441,4 +441,9 @@
       animation: none;
     }
   }
+  /* The caret is left *visible* rather than hidden: it says a turn is still
+     being written, which is true whether or not it is allowed to blink. */
+  :global(html[data-motion="still"]) .caret {
+    animation: none;
+  }
 </style>

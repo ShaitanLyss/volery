@@ -440,6 +440,10 @@
       opacity: 0.7;
     }
   }
+  :global(html[data-motion="still"]) .pip {
+    animation: none;
+    opacity: 0.7;
+  }
 
   /* ── open ──────────────────────────────────────────────────────────────
      Set in against a hairline, the same way a folded run's contents are and the

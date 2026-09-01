@@ -140,6 +140,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `control.md` | the control surface and the two rules that make a green run mean something | `control.rs`, `control.svelte.ts`, `wall.test.ts` |
 | `glass.md` | sticking a thing to a pane in screen space without moving where it is | `glass.ts` |
 | `ambience.md` | what the ground does when nobody is asking it anything | `ambience.ts`, `Backdrop.svelte` |
+| `motion.md` | how much the wall is allowed to move: the status glow that animated `box-shadow` and held ~8% of the GPU per working card, why the present rate rather than the painted area is the term that matters, the three settings, and the four traps that made this measure wrong twice | `motion.ts`, `motion.svelte.ts`, `Card.svelte` |
 | `servers.md` | dev server groups, colour without a terminal, why the PTY came off, and what an EDR made of it | `servers.rs`, `ansi.ts` |
 | `shell.md` | the shell Alt+I floats over the wall, the marker that draws its prompt, and why this one is pipes | `shell.rs`, `shell.ts`, `shell.svelte.ts`, `Console.svelte` |
 | `editing.md` | editing a file in your own nvim: attaching to one as a UI over pipes rather than a PTY, the panel's third reading, what the wire format gets wrong, the one key kept back, and colour against the house rule | `nvim.rs`, `nvim.ts`, `nvim.svelte.ts`, `Quill.svelte` |

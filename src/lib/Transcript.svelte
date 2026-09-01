@@ -1945,6 +1945,9 @@
       animation: none;
     }
   }
+  :global(html[data-motion="still"]) .line.doing .pip {
+    animation: none;
+  }
   .line.meta {
     font-family: var(--util);
     font-size: calc(0.76rem * var(--read, 1));

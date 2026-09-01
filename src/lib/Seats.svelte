@@ -310,4 +310,9 @@
       animation: none !important;
     }
   }
+  /* Same set, asked for rather than inherited from the OS — see `motion.ts`. */
+  :global(html[data-motion="still"]) .bubble,
+  :global(html[data-motion="still"]) .figure {
+    animation: none;
+  }
 </style>

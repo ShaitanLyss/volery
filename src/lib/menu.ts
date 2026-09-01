@@ -319,6 +319,13 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            back. This is where you say so. */
         item("tidy", "tidy the territories"),
         sep,
+        /* How much the wall is allowed to move. Marked rather than labelled,
+           the shape a widget's variants already have — and grouped immediately
+           above the ambience because the two are the same question about the
+           same surface: what the ground does when nobody is asking it
+           anything, and how much of that you are willing to pay for. */
+        ...(t.picks ?? []).map((p) => chosen(p.id, p.label, p.on)),
+        t.picks?.length ? sep : null,
         /* The ground is what the ambience is drawn on, so this is where asking
            about it belongs — the chrome button is for reaching it without
            finding bare wall first. */
