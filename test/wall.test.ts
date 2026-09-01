@@ -16,15 +16,19 @@
  * wherever the card happens to be — fine when you are watching, hostile when
  * you are typing in another window.
  *
- * SAFETY: every conversation this suite creates lives under .scratch, and
- * afterAll closes anything open there. Nothing outside .scratch is touched, so
- * running this cannot disturb real work on the wall.
+ * SAFETY: every conversation this suite creates lives under `.scratch/walltest/`,
+ * and afterAll closes anything open *there*. Nothing outside that subtree is
+ * touched, so running this cannot disturb real work on the wall.
+ *
+ * It used to sweep the whole of `.scratch`, which is shared by every card on
+ * this wall — so one card running these tests closed another card's working
+ * card and forgot its territory. See `.claude/rules/control.md`.
  */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 const DIR = join(process.env.APPDATA ?? "", "dev.skein.studio");
 const CONTROL = join(DIR, "control.json");
@@ -33,11 +37,31 @@ const DB = join(DIR, "skein.db");
 /** The checkout this suite is driving. Named once rather than three times: two
  *  constants below already assumed it, and the file-viewer tests need it a third
  *  time to open a real file — a wrong spelling in one of three places is a
- *  failure that reads as the app rather than as the path. */
-const REPO = "C:\\atelier\\skein";
-/** The only place this suite is allowed to create anything. */
+ *  failure that reads as the app rather than as the path.
+ *
+ *  Derived rather than written down, because the one place it was written down
+ *  went stale the day the checkout moved and the suite then drove the app
+ *  against a tree that did not exist — `mkdirSync(WALL, { recursive: true })`
+ *  cheerfully conjures it, so the failure arrives much later, as a file viewer
+ *  that cannot open a file. This file is *in* the checkout it is testing. */
+const REPO = join(import.meta.dir, "..");
+/** The scratch root every card on this wall shares. Nothing in here is ours,
+ *  and `.claude/rules/control.md` has why that matters. */
 const SCRATCH = join(REPO, ".scratch");
-const WALL = join(SCRATCH, "wall");
+/** The only place this suite is allowed to create anything, and the only place
+ *  afterAll is allowed to sweep. */
+const SUITE = join(SCRATCH, "walltest");
+const WALL = join(SUITE, "wall");
+
+/** Is `p` that directory, or something inside it?
+ *
+ *  A plain `startsWith` is a different question and answers yes to a *sibling*
+ *  whose name merely begins the same way — `.scratch-f3c3f791` starts with
+ *  `.scratch`, and that is the per-card scratch convention, so the sweep below
+ *  would have closed cards working in one. Boundary on the separator. */
+function inside(p: unknown, root: string): boolean {
+  return typeof p === "string" && (p === root || p.startsWith(root + sep));
+}
 /** A real image, already in the repo from the icon work. */
 const IMAGE = join(REPO, "src-tauri", "icons", "128x128.png");
 
@@ -120,7 +144,7 @@ const cardOf = async (id: string) => (await ctl("card", { id })).card;
 /** Conversation rows the studio would restore, straight from SQLite. The point
  *  of going behind the app is that "one card appeared" and "one row was written"
  *  are different claims, and the bug this suite was built for satisfied one. */
-function openRows(under = SCRATCH): { id: string; cwd: string }[] {
+function openRows(under = SUITE): { id: string; cwd: string }[] {
   const db = new Database(DB, { readonly: true });
   try {
     return db
@@ -159,20 +183,25 @@ afterAll(async () => {
   /* Instruments are hung on the real wall, not under `.scratch`, so they are the
      one thing this suite leaves standing if it forgets them. */
   for (const id of hung) await ctl("widget.remove", { id }).catch(() => {});
-  /* Close everything under .scratch, not just what we opened — that also sweeps
-     up any leftovers from an earlier run that died before its afterAll. */
+  /* Close everything under our own subtree, not just what we opened — that also
+     sweeps up leftovers from an earlier run that died before its afterAll.
+     Under `SUITE` and not under `SCRATCH`: the wider sweep collected any card
+     another agent happened to be working in under the shared scratch root, and
+     closing someone else's card is exactly the harm the per-card convention in
+     CLAUDE.md exists to stop. Leftovers of *ours* still get collected, because
+     every run of this suite has used this same subtree. */
   const snap = await snapshot().catch(() => null);
   for (const c of snap?.cards ?? []) {
-    if (typeof c.cwd === "string" && c.cwd.startsWith(SCRATCH)) {
+    if (inside(c.cwd, SUITE)) {
       await ctl("close", { id: c.id }).catch(() => {});
     }
   }
   /* And take the territories with them. A project now outlives its last card
      on purpose, which means a suite that only closed its cards would leave a
-     `.scratch` territory on the real wall after every run. */
+     `.scratch/walltest` territory on the real wall after every run. */
   const after = await snapshot().catch(() => null);
   for (const p of after?.projects ?? []) {
-    if (typeof p.root === "string" && p.root.startsWith(SCRATCH)) {
+    if (inside(p.root, SUITE)) {
       await ctl("forget", { cwd: p.root }).catch(() => {});
     }
   }
@@ -1399,7 +1428,7 @@ ti("a click on the ground lets go of the card; a drag across it does not", async
 
   /* Two cards in hand, so a pan has something to lose. */
   const ids = (await snapshot()).cards
-    .filter((c: Reply) => String(c.cwd).startsWith(SCRATCH))
+    .filter((c: Reply) => inside(c.cwd, SUITE))
     .map((c: Reply) => c.id)
     .slice(0, 2);
   await ctl("focus", { id: ids[0] });
@@ -1534,7 +1563,7 @@ t("a new card takes free wall, not the slot a pinned card is sitting on", async 
   /* The general form, and the one that does not care how many cards the suite
      has already put in this territory: nothing is stacked on anything. */
   const here = (await snapshot()).cards
-    .filter((x: Reply) => String(x.cwd).startsWith(SCRATCH))
+    .filter((x: Reply) => inside(x.cwd, SUITE))
     .map((x: Reply) => x.id);
   const spots = (await snapshot()).dom.cardNodes
     .filter((n: Reply) => here.includes(n.id))
@@ -1615,7 +1644,7 @@ ti("a territory is carried by its name, not by its whole area", async () => {
 t("a project outlives its last card, and can be dismissed on purpose", async () => {
   /* Closing everything and starting again in the same place is ordinary, and
      the territory is where the "+" that starts it lives. */
-  const dir = `${SCRATCH}\\outlives`;
+  const dir = `${SUITE}\\outlives`;
   mkdirSync(dir, { recursive: true });
   const only = (await ctl("open", { dir })).id as string;
   opened.push(only);
@@ -2515,7 +2544,7 @@ t("a command runs, and its output comes back", async () => {
 t("cd moves the prompt, because the shell says where it is", async () => {
   await shellSettled();
   const before = (await snapshot()).shell.cwd;
-  await ctl("shell", { do: "send", text: `Set-Location '${SCRATCH}'` });
+  await ctl("shell", { do: "send", text: `Set-Location '${SUITE}'` });
   await shellSettled();
 
   /* The marker is the only thing that could have told us — nothing here parses
@@ -2523,7 +2552,7 @@ t("cd moves the prompt, because the shell says where it is", async () => {
      script that changes directory forty times without saying so. */
   const after = (await snapshot()).shell.cwd;
   expect(after).not.toBe(before);
-  expect(after.toLowerCase()).toBe(SCRATCH.toLowerCase());
+  expect(after.toLowerCase()).toBe(SUITE.toLowerCase());
 }, 40_000);
 
 t("a command that failed is marked at the command, not in its output", async () => {
@@ -2579,7 +2608,7 @@ t("closing it ends the process, and the next command starts another", async () =
 }, 60_000);
 
 t("each project keeps its own shell, and switching does not disturb it", async () => {
-  await ctl("shell", { do: "show", cwd: SCRATCH });
+  await ctl("shell", { do: "show", cwd: SUITE });
   await shellSettled();
   await ctl("shell", { do: "clear" });
   await ctl("shell", { do: "send", text: "Write-Output 'in-scratch'" });
@@ -2603,16 +2632,16 @@ t("each project keeps its own shell, and switching does not disturb it", async (
      counts them: a build running in a project off screen is otherwise a fact
      with nowhere left to appear. */
   const scratch = there.shell.sessions.find(
-    (x: { key: string }) => x.key.toLowerCase() === SCRATCH.toLowerCase(),
+    (x: { key: string }) => x.key.toLowerCase() === SUITE.toLowerCase(),
   );
   expect(scratch?.live).toBe(true);
 
   /* And going back is going back — the same session, with what it printed. */
-  await ctl("shell", { do: "select", cwd: SCRATCH });
+  await ctl("shell", { do: "select", cwd: SUITE });
   const back = await until(
     "the first project's shell to come back",
     () => snapshot(),
-    (s) => s.shell.active === SCRATCH,
+    (s) => s.shell.active === SUITE,
     15_000,
   );
   expect(back.shell.live).toBe(true);

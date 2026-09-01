@@ -71,7 +71,7 @@ The counterpart is `forget_project`, on an empty territory's menu: without it ev
 ever opened accumulates, and a wall you cannot tidy stops being a wall you read. It refuses
 while anything is open there, and takes closed conversations, placements and server groups
 with it by cascade — rows, not transcripts, which stay on disk and can be adopted back.
-`test/wall.test.ts` forgets its `.scratch` projects in `afterAll` for the same reason it
+`test/wall.test.ts` forgets its `.scratch/walltest` projects in `afterAll` for the same reason it
 closes its cards: without that, every run would leave a territory on the real wall.
 
 "Around them" is load-bearing and was for a long time only a claim. The flow numbered its

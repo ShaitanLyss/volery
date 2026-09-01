@@ -488,6 +488,22 @@ arms return errors rather than silently no-oping.
   `.claude/rules/` file rather than here — this file is what every session pays for, and
   `/context` is where to check what that costs.
 
+## Scratch space
+
+Working files go in **`.scratch-<your card handle>/`** at the repo root, not in `.scratch/`.
+`mcp__skein__list` marks your own row `you: true`, and the handle is that row's; both are
+gitignored, so nothing here reaches a commit either way.
+
+`.scratch/` is shared by every card on this wall and gets swept. It is the same class of
+hazard as the shared git index — one card tidying up after itself deletes another
+card's in-flight files, and it arrives as *no such file or directory* on a path you wrote ten
+minutes ago, with nothing pointing at the cause. It has already cost a rebuilt measurement
+harness (sink `f1e1a8a2`). The convention had been independently invented four times before it
+was written down here, which is the argument for one line of it being in this file.
+
+`test/wall.test.ts` now owns `.scratch/walltest/` alone and sweeps only that; the probes in
+`tools/` each own a named subdirectory and delete only their own.
+
 ## Committing
 
 **Finish a piece of work, commit it. Don't ask first.** A completed unit — a feature, a fix, a

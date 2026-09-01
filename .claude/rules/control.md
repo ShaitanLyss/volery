@@ -122,8 +122,27 @@ reports `listeners.skein` / `listeners.attention` / `listeners.actions` so a lea
 from outside: they must not climb across an edit (7, 3 and 2 today). Module-level timers need the same care — see the
 `clock` interval's `window` handle in `conversation.svelte.ts`.
 
-`test/wall.test.ts` only ever creates conversations under `.scratch/`, and closes them in
-`afterAll`. Keep it that way, so running it cannot disturb real work on the wall.
+`test/wall.test.ts` only ever creates conversations under `.scratch/walltest/`, and closes
+them in `afterAll`. Keep it that way, so running it cannot disturb real work on the wall.
+
+**It used to say `.scratch/`, and that was not a small difference.** `.scratch/` is shared by
+every card on this wall, so the afterAll sweep — deliberately wide, to collect leftovers from
+a run that died before its own cleanup — closed whatever *anybody* had open under there and
+forgot their territory with it. A suite that cleans up after other people is not cleaning up.
+The subtree is the whole fix: every run of this suite has used the same one, so the leftover
+sweep keeps working, and nothing outside it is ours to sweep. See "Scratch space" in
+`CLAUDE.md` for the `.scratch-<handle>/` convention the rest of the wall works to.
+
+The membership test is `inside(p, root)`, not `p.startsWith(root)`. A prefix match answers yes
+to a *sibling* — `.scratch-f3c3f791` starts with `.scratch` — which is exactly the convention
+above, so the string form would have swept precisely the directories invented to escape it.
+Anything else here that decides "is this path ours" owes the same separator boundary.
+
+`REPO` is derived from `import.meta.dir` rather than written down. It was written down, went
+stale the day the checkout moved, and the suite then drove a live app against a tree that did
+not exist — `mkdirSync(WALL, { recursive: true })` conjures the missing path without
+complaint, so the run got as far as a file-viewer test failing to open a real file, which
+reads as the app being broken.
 
 ### The lab wall (`src-tauri/tauri.lab.conf.json`)
 

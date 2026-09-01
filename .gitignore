@@ -6,9 +6,12 @@ node_modules
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# scratch working trees: test/wall.test.ts opens conversations under here, and the
-# probes in it are throwaway by definition
+# scratch working trees: the probes in tools/ are throwaway by definition, and
+# test/wall.test.ts opens conversations under /.scratch/walltest. /.scratch itself
+# is shared by every card on the wall — see "Scratch space" in CLAUDE.md, and use
+# /.scratch-<your handle>/ for anything that has to outlive your next tool call.
 /.scratch
+/.scratch-*
 
 # the windres shim tools/build-gnu.ps1 compiles from tools/windres-shim.c — a
 # binary, and one built against whatever cygwin is on the machine
