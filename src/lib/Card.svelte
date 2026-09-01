@@ -239,6 +239,42 @@
     >
   {/if}
 
+  <!-- Processes this card is holding that it did not boot with.
+       `.jobs` above is what the agent *said* it started; this is what the
+       kernel says is actually running under the card, and the gap between the
+       two is the whole reason it is drawn. The incident: a headed Chromium left
+       rendering at 60fps after the task that opened it was torn down. It
+       announced nothing, was in no receipt, and from the wall it read as
+       ambient machine load — which is a card that is quietly costing you the
+       machine while saying `at rest`.
+
+       Counted against the fleet the card came up with, never raw. A card is a
+       dozen processes at rest — one `claude.exe`, a `conhost`, and a
+       `cmd → node` pair per stdio MCP server — so a raw count would draw ~11 on
+       every card on the wall, always, which is a reading nobody can act on. See
+       `Conv::fleet` in `supervisor.rs`.
+
+       Foot centre, which is the one place left: `.pin` has the top left,
+       `.post` the top right, `.aside` and `.jobs` the two bottom corners. It is
+       also the honest spot for what this says — not a corner mark about the
+       card, but something underneath it that you cannot otherwise see.
+
+       Achromatic, like `.jobs` and `.aside`. Colour on this wall is reserved
+       for status and a leaked process is not one of the three: the card may be
+       working, asking or failed while holding these, and tinting this would put
+       a fourth thing in a channel that means three.
+
+       Drawn at every density for `.jobs`'s reason — at `field` there is no
+       activity line, and a card holding a runaway process must not read as
+       merely quiet. -->
+  {#if conv.holding && conv.holding.excess > 0}
+    <span
+      class="holding"
+      title={`${conv.holding.excess} process${conv.holding.excess === 1 ? "" : "es"} running that this card did not start with (it booted with ${conv.holding.fleet}) — open the performance meter to see and end them`}
+      >{conv.holding.excess}</span
+    >
+  {/if}
+
   <!-- Post: what this card has been told and has not been given yet, because it
        was asleep when it was told. Top right, the one free corner — `.pin` has
        the top left, `.aside` and `.jobs` the foot.
@@ -610,6 +646,30 @@
   .jobs {
     position: absolute;
     right: -4px;
+    bottom: -4px;
+    min-width: 9px;
+    height: 9px;
+    padding: 0 1px;
+    border-radius: 5px;
+    border: 1.5px solid var(--paper-faint);
+    background: var(--ink);
+    box-shadow: 0 0 0 2px var(--ink);
+    color: var(--paper-faint);
+    font-size: 7px;
+    line-height: 6px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+  }
+
+  /* Foot centre. Same pill as `.jobs` — it is the same kind of statement about
+     the same card and a second shape would imply a second vocabulary — but
+     hollow rather than filled, which is the distinction that matters: `.jobs` is
+     work the card is doing and this is work nobody is doing anything about. */
+  .holding {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
     bottom: -4px;
     min-width: 9px;
     height: 9px;

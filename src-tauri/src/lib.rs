@@ -387,6 +387,8 @@ pub fn run() {
             supervisor::read_session_effort,
             supervisor::read_transcript,
             supervisor::wake_quiet,
+            supervisor::conversation_holding,
+            supervisor::settle_conversation_fleet,
             claude::find_claude,
             claude::install_claude,
             accounts::list_accounts,

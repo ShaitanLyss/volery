@@ -142,6 +142,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `ambience.md` | what the ground does when nobody is asking it anything | `ambience.ts`, `Backdrop.svelte` |
 | `motion.md` | how much the wall is allowed to move: the status glow that animated `box-shadow` and held ~8% of the GPU per working card, why the present rate rather than the painted area is the term that matters, the three settings, and the four traps that made this measure wrong twice | `motion.ts`, `motion.svelte.ts`, `Card.svelte` |
 | `servers.md` | dev server groups, colour without a terminal, why the PTY came off, and what an EDR made of it | `servers.rs`, `ansi.ts` |
+| `processes.md` | what a card is holding and what dies with it: the orphan hunt that found no orphans, the job proved by construction, the WMI escape that is the one real hole, what a card costs at rest, and the badge that counts the excess rather than the fleet | `supervisor.rs`, `servers.rs`, `perf.rs`, `Card.svelte` |
 | `shell.md` | the shell Alt+I floats over the wall, the marker that draws its prompt, and why this one is pipes | `shell.rs`, `shell.ts`, `shell.svelte.ts`, `Console.svelte` |
 | `editing.md` | editing a file in your own nvim: attaching to one as a UI over pipes rather than a PTY, the panel's third reading, what the wire format gets wrong, the one key kept back, and colour against the house rule | `nvim.rs`, `nvim.ts`, `nvim.svelte.ts`, `Quill.svelte` |
 | `finding.md` | the finder and the file viewer: why space is free as a leader, a file list fetched once and scored here, what the fuzzy scorer prefers, a markdown file that opens as a document, and a path in a tool call that opens it | `find.rs`, `finding.ts`, `finder.svelte.ts`, `Spyglass.svelte`, `ToolCall.svelte` |
@@ -383,6 +384,12 @@ these apply when you open almost anything.
   `actions::launch_detached`, which spawns from *Skein* rather than from a card, so an editor
   still outlives the wall — and it says so where it is. **Anything new that spawns owes a job
   object, and the promise "children die with the app" is only worth what the job holds.**
+  Re-measured 2026-09-01 and it holds, including four levels down through two `cmd.exe` hops
+  to an MCP server — proved by rebuilding the chain and closing the handle, not by reading.
+  What the promise does **not** cover is `Win32_Process.Create`: WMI reparents to
+  `WmiPrvSE.exe`, so the process is outside the job *and* outside `owned_pids`, which makes it
+  unattributable rather than merely unreaped. Agents reach for it because nothing sanctions a
+  process outliving a turn. See `.claude/rules/processes.md`.
 - **Anything that grows at the bottom follows its own tail, and `follow.ts` is how.** Near the
   bottom means stuck to it; scrolled back means nothing moves. Every scroller that gains
   content at the end wants that, and it had been written three times to three standards — at

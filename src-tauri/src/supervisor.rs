@@ -244,6 +244,36 @@ pub struct Conv {
     /// tool now dies with that card, which is the same promise the doc comment
     /// on `shutdown` has always made.
     job: Option<crate::servers::jobs::Job>,
+    /// The tree as it stood when this card's first turn ended — its *fleet*, and
+    /// the baseline `leftovers` measures against.
+    ///
+    /// A card is a dozen processes at rest and that is normal: one `claude.exe`,
+    /// a `conhost`, and a `cmd → node` pair per stdio MCP server. Measured on
+    /// this machine 2026-09-01, a fully equipped card is 12 processes and ~1.1 GB
+    /// of private commit before it has been asked anything. So a badge counting
+    /// what a card owns would read ~11 on every card on the wall, always, which
+    /// is a number nobody can act on — the wall would be uniformly loud and
+    /// therefore uniformly ignored.
+    ///
+    /// What is worth seeing is the *excess*: a headed Chromium still rendering
+    /// after the task that opened it was torn down, a dev server a turn started
+    /// and never stopped. Those are the ones with nobody carrying them, and the
+    /// incident behind this — a WebGL scene left at 60fps on a card nobody was
+    /// talking to, which read as ambient machine load and nearly went into an
+    /// audit report as a finding — is exactly the shape.
+    ///
+    /// Captured at the end of the *first* turn rather than at spawn, because the
+    /// MCP fleet is still booting when the child is inserted here: `claude`
+    /// starts its stdio servers on the way to answering, so a baseline taken at
+    /// spawn would be almost empty and every server would then read as a leak.
+    /// `None` until then, and a card that has never taken a turn has no reading
+    /// rather than a wrong one.
+    ///
+    /// The known imprecision: a server that boots lazily, after the first turn,
+    /// is counted as excess for the rest of the card's life. That is the
+    /// conservative direction — it over-reports rather than hiding a leak — and
+    /// it is rare enough to be worth the simplicity of one fixed baseline.
+    fleet: Option<HashSet<u32>>,
     /// Whether a turn is open on this child right now.
     ///
     /// The one thing the supervisor needs to know about the *conversation*
@@ -782,7 +812,7 @@ fn spawn_now(
     sup.0
         .lock()
         .unwrap()
-        .insert(id.clone(), Conv { child, stdin, turn, job, generation });
+        .insert(id.clone(), Conv { child, stdin, turn, job, fleet: None, generation });
 
     /* Its post. Asked for here rather than at either call site for the reason
        `kind` is read here: `wake` and `open` both reach this line and only one
@@ -1586,6 +1616,67 @@ pub fn wake_quiet() -> bool {
     crate::servers::quiet(std::env::var("SKEIN_NO_WAKE").ok().as_deref())
 }
 
+/// What a card is holding beyond the fleet it booted with.
+///
+/// `None` where there is no reading — no process, no job, or no turn finished
+/// yet. See `Supervisor::leftovers`; the badge draws nothing rather than a zero
+/// it cannot stand behind.
+#[derive(Serialize)]
+pub struct Holding {
+    pub excess: usize,
+    pub fleet: usize,
+}
+
+/// Asked at a turn boundary rather than on a clock.
+///
+/// This is deliberately **not** a fourth poller, and the argument is the one
+/// CLAUDE.md makes for folding an event that already exists: a card's tree only
+/// grows because the agent did something, and "the agent did something" is
+/// precisely what a `result` event announces. So the front end asks here when a
+/// turn ends — an event it is already routing — and the reading is correct by
+/// construction at the only moment it can have changed.
+///
+/// The residue is bounded the same way the update check is: nothing asks while
+/// a card is idle, because nothing can have happened. A background process that
+/// exits *between* turns leaves the count briefly high, which is the safe
+/// direction — the next turn corrects it, and over-reporting a leak is a cheaper
+/// mistake than hiding one.
+///
+/// `async` because it takes the supervisor's mutex, which `sample_performance`
+/// holds across an enumeration — see the rule in CLAUDE.md about what waiting
+/// for a lock on the main thread does to every card at once. The work itself is
+/// one kernel call.
+#[tauri::command]
+pub async fn conversation_holding(
+    app: AppHandle,
+    id: String,
+) -> Result<Option<Holding>, String> {
+    crate::off_main(move || {
+        Ok(app
+            .state::<Supervisor>()
+            .leftovers(&id)
+            .map(|(excess, fleet)| Holding { excess, fleet }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Record the fleet at the end of a card's first turn.
+///
+/// Separate from `conversation_holding` so the front end can settle the
+/// baseline and read the count in one turn-end fold without the two racing:
+/// settling first means the very first reading is `0`, which is the truth — a
+/// card that has just booted its servers is holding nothing extra.
+#[tauri::command]
+pub async fn settle_conversation_fleet(app: AppHandle, id: String) -> Result<(), String> {
+    crate::off_main(move || {
+        app.state::<Supervisor>().settle_fleet(&id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1780,7 +1871,7 @@ mod tests {
             .spawn()
             .expect("spawn cmd");
         let stdin = child.stdin.take().expect("piped stdin");
-        Conv { child, stdin, turn: Arc::new(AtomicBool::new(false)), job: None, generation }
+        Conv { child, stdin, turn: Arc::new(AtomicBool::new(false)), job: None, fleet: None, generation }
     }
 
     /// A child that will sit there until it is killed, so shutdown has something
@@ -1795,7 +1886,7 @@ mod tests {
             .spawn()
             .expect("spawn cmd");
         let stdin = child.stdin.take().expect("piped stdin");
-        Conv { child, stdin, turn: Arc::new(AtomicBool::new(mid_turn)), job: None, generation: 0 }
+        Conv { child, stdin, turn: Arc::new(AtomicBool::new(mid_turn)), job: None, fleet: None, generation: 0 }
     }
 
     /// The bug this covers: shutdown returned every live child, and rousing
@@ -1880,7 +1971,7 @@ mod tests {
 
         let stdin = child.stdin.take().expect("piped stdin");
         (
-            Conv { child, stdin, turn: Arc::new(AtomicBool::new(false)), job: Some(job), generation: 0 },
+            Conv { child, stdin, turn: Arc::new(AtomicBool::new(false)), job: Some(job), fleet: None, generation: 0 },
             grandchild,
         )
     }
@@ -1945,6 +2036,93 @@ mod tests {
             gone,
             "pid {grandchild} outlived the card that started it — the job object is not holding the tree"
         );
+    }
+
+    /// The badge counts what a card picked up *after* it booted, not what it is
+    /// made of.
+    ///
+    /// The fixture's card is already two processes before anything asks it
+    /// anything — the `cmd` and the `conhost` the console dragged in — which is
+    /// the whole reason the reading is relative. A raw count would read `2` on a
+    /// card that has done nothing, and on the real wall it reads ~11.
+    ///
+    /// So: settle the fleet with the grandchild already running, and the excess
+    /// is nothing. The grandchild is *in* the fleet, which is the point — it was
+    /// there when the card came up.
+    #[cfg(windows)]
+    #[test]
+    fn the_fleet_a_card_boots_with_is_not_counted_against_it() {
+        let sup = Supervisor::default();
+        let (conv, grandchild) = child_with_a_grandchild();
+        sup.0.lock().unwrap().insert("card".into(), conv);
+
+        assert_eq!(
+            sup.leftovers("card"),
+            None,
+            "a card that has not finished a turn has no reading — and must not report a zero it cannot stand behind"
+        );
+
+        sup.settle_fleet("card");
+        let (excess, fleet) = sup.leftovers("card").expect("a settled card reads");
+        assert!(
+            fleet >= 2,
+            "the fixture's own tree should be in the fleet, got {fleet}"
+        );
+        assert_eq!(
+            excess, 0,
+            "everything running at settle time is the fleet, so nothing is excess yet"
+        );
+
+        /* Settling is once and for all: a second turn must not re-baseline, or
+           the count could only ever be zero. */
+        sup.settle_fleet("card");
+        assert_eq!(
+            sup.leftovers("card").map(|(e, _)| e),
+            Some(0),
+            "re-settling would rebase the baseline and make the badge useless"
+        );
+
+        assert!(alive(grandchild), "the fixture should still be running");
+        sup.shutdown();
+    }
+
+    /// And something started later *is* counted.
+    ///
+    /// The half that proves the reading is a reading rather than a constant
+    /// zero: a process that joins the job after the fleet settled is exactly the
+    /// headed Chromium left rendering after its task was torn down, which is the
+    /// incident this whole seam exists for.
+    #[cfg(windows)]
+    #[test]
+    fn a_process_started_after_the_fleet_settled_is_excess() {
+        let sup = Supervisor::default();
+        let (conv, _grandchild) = child_with_a_grandchild();
+        sup.0.lock().unwrap().insert("card".into(), conv);
+        sup.settle_fleet("card");
+        assert_eq!(sup.leftovers("card").map(|(e, _)| e), Some(0));
+
+        /* Assigned to the same job by hand, which is what a descendant of the
+           card would have been given automatically. */
+        let mut extra = Command::new("cmd")
+            .args(["/C", "ping", "-n", "300", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn the latecomer");
+        {
+            let map = sup.0.lock().unwrap();
+            let job = map["card"].job.as_ref().expect("the card has a job");
+            assert!(job.assign(extra.id()), "the latecomer never joined the job");
+        }
+
+        let (excess, _) = sup.leftovers("card").expect("a settled card reads");
+        assert!(
+            excess >= 1,
+            "a process that joined after the fleet settled must be counted, got {excess}"
+        );
+
+        let _ = extra.kill();
+        sup.shutdown();
     }
 
     /// A reader thread clears the row's mid-turn mark when its stream ends — a
@@ -2373,6 +2551,50 @@ impl Supervisor {
             }
         }
         out
+    }
+
+    /// What this card owns beyond the fleet it booted with, and how big that
+    /// fleet is.
+    ///
+    /// Returns `(excess, fleet_size)`, or `None` for a card that has no process
+    /// or has not finished a turn yet — an unknown reading, which the badge
+    /// draws as nothing rather than as zero. The difference matters: zero is a
+    /// claim, and this is the one place that must not make one it cannot back.
+    ///
+    /// Membership comes from the job rather than from a parent walk, for the
+    /// reason `jobs::Job::pids` gives at length: the processes worth finding are
+    /// by definition the ones whose intermediate parent has exited, and that is
+    /// exactly where ancestry goes blind. It is also the only *proof* of
+    /// ownership available, which is what makes the badge safe to act on — the
+    /// count is of processes this wall is entitled to end.
+    ///
+    /// Cheap on purpose. `QueryInformationJobObject` is one kernel call per card
+    /// and touches no process table, so this is nothing like a performance
+    /// sample and is affordable at every turn boundary.
+    pub fn leftovers(&self, id: &str) -> Option<(usize, usize)> {
+        let map = self.0.lock().unwrap();
+        let conv = map.get(id)?;
+        let job = conv.job.as_ref()?;
+        let fleet = conv.fleet.as_ref()?;
+        let now = job.pids();
+        let excess = now.iter().filter(|p| !fleet.contains(p)).count();
+        Some((excess, fleet.len()))
+    }
+
+    /// Record the fleet, if this card has not got one yet.
+    ///
+    /// Called at the end of a turn — see the field. Idempotent and silent on a
+    /// card with no job, since a non-Windows build has none and the reading is
+    /// simply unavailable there.
+    pub fn settle_fleet(&self, id: &str) {
+        let mut map = self.0.lock().unwrap();
+        let Some(conv) = map.get_mut(id) else { return };
+        if conv.fleet.is_some() {
+            return;
+        }
+        if let Some(job) = &conv.job {
+            conv.fleet = Some(job.pids().into_iter().collect());
+        }
     }
 
     /// Children die with the app. Nothing is left editing a repo unwatched.

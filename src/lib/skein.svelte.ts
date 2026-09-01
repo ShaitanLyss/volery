@@ -2693,6 +2693,37 @@ export class Skein {
     }
   }
 
+  /** What this card is holding beyond the fleet it booted with.
+   *
+   *  Asked at the turn boundary and nowhere else, which is the whole design and
+   *  is **not** a fourth poller. CLAUDE.md's argument is that where a thing
+   *  emits no event you should fold one that already exists near it: a card's
+   *  process tree only grows because the agent did something, and a `result` is
+   *  precisely the announcement that the agent did something. So the reading is
+   *  taken at the only moment it can have changed, and an idle wall asks
+   *  nothing at all.
+   *
+   *  The settle goes first and is awaited. It is a no-op after the first turn,
+   *  and on that first turn it is what makes the baseline the fleet the card
+   *  came up with rather than an empty set — read before settling, every MCP
+   *  server the card boots would be counted as something it leaked.
+   *
+   *  Failure is silence. A card whose process went away between the `result`
+   *  and this call answers `None`, which is the correct reading and not an
+   *  error, and there is nothing here worth a line in `fault` — the badge
+   *  simply does not draw. */
+  async #readHolding(c: Conversation) {
+    try {
+      await invoke("settle_conversation_fleet", { id: c.id });
+      c.holding = await invoke<{ excess: number; fleet: number } | null>(
+        "conversation_holding",
+        { id: c.id },
+      );
+    } catch {
+      c.holding = null;
+    }
+  }
+
   async #adoptAiTitle(c: Conversation) {
     if (c.namedByHand) return;
     try {
@@ -2804,6 +2835,7 @@ export class Skein {
     if (ev?.type === "result") {
       void this.#adoptAiTitle(c);
       void this.#adoptEffort(c);
+      void this.#readHolding(c);
       void invoke("update_conversation", {
         id: c.id,
         model: c.model ?? null,

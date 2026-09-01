@@ -589,6 +589,28 @@ export class Conversation {
    *  be a number that only ever grew. */
   jobs = $state<Job[]>([]);
 
+  /** Processes this card owns beyond the fleet it booted with, and how big that
+   *  fleet is — or `null` for no reading at all.
+   *
+   *  A different question from `jobs`, and the difference is the whole reason
+   *  this exists. A job is work the *agent said* it was starting, folded off a
+   *  receipt; this is what the kernel says the card is actually holding. The
+   *  gap between them is exactly the incident behind it — a headed Chromium
+   *  left rendering a WebGL scene at 60fps after the task that opened it was
+   *  torn down, which announced nothing, was in no receipt, and read from the
+   *  wall as ambient machine load.
+   *
+   *  So `jobs` is what a card *told* us and this is what it *has*. Neither
+   *  substitutes for the other: a job can finish leaving nothing behind, and a
+   *  process can be left behind by a turn that registered no job at all.
+   *
+   *  `null` is not zero. A card with no process, or one that has not finished a
+   *  turn, has no baseline to measure against — see `Conv::fleet` in
+   *  `supervisor.rs` — and the badge draws nothing rather than claiming a card
+   *  is holding nothing. Not persisted, for the reason `jobs` is not: the
+   *  reading is about live processes, and a restored card's are all gone. */
+  holding = $state<{ excess: number; fleet: number } | null>(null);
+
   /** Job arrivals and departures Skein has not written down yet.
    *
    *  Drained in `#wire`, not awaited anywhere: a row that fails to land costs
@@ -2699,6 +2721,14 @@ export class Conversation {
     this.unwoken = null;
     this.pendingNudge = null;
     this.nudgeAttempts = 0;
+    /* The count went with the process, and this one really did: the job object
+       holds the card's whole tree with `KILL_ON_JOB_CLOSE`, so a card whose
+       child is gone is a card whose descendants are gone too — proved by
+       construction in `supervisor.rs`. Left standing, the badge would name
+       processes that no longer exist and point at a meter that cannot find
+       them. `null` rather than zero for the usual reason: there is no reading
+       here, not a reading of nothing. */
+    this.holding = null;
     this.#creating.clear();
     /* A fold whose process is gone is not a fold still running, and a count
        nothing can stop would tick on a dead card for the rest of the session —

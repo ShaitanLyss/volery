@@ -368,6 +368,19 @@ want an `AppHandle` and a store, and are typechecked only. So what is unproven i
 Stated here rather than left to be discovered, for sink `4951f398`'s reason — a known unknown
 is cheaper than a rediscovered one.
 
+### And what a spawned card's own processes cost
+
+A spawned card is not a lightweight thing standing beside its parent: it is a `claude.exe`, a
+`conhost`, and a `cmd → node` pair per stdio MCP server — measured 2026-09-01 at **12
+processes and ~1.1 GB of private commit per card, at rest, before it is asked anything.** That
+is the figure to have in mind when weighing a fan-out here against subagents inside one turn,
+and it is the reason a card is the *consequential* unit this file keeps saying it is.
+
+The tree does die with the card — the job object holds, re-proved that day four levels down
+through two `cmd.exe` hops. `.claude/rules/processes.md` has the measurement, the one hole
+(WMI reparents out of the job), and the badge the card now wears when it is holding processes
+it did not boot with.
+
 ## Closing one again
 
 `close` had one rule for its whole first life, out of the `spawned` table: **a card may close
