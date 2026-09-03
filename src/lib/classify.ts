@@ -1204,8 +1204,27 @@ export function windowForObserved(
   model: string | undefined,
   tokens: number,
 ): number {
-  const known = contextWindowFor(model);
-  return tokens > known ? 1_000_000 : known;
+  return widenedWindow(contextWindowFor(model), tokens);
+}
+
+/** The same inference, applied to a window we already believe in.
+ *
+ * A request cannot carry more tokens than the window it was made against — the
+ * API refuses it, and Claude Code compacts long before that — so occupancy above
+ * the believed window is proof the window is bigger, whatever we thought the
+ * model was. Only ever widens, which is the safe direction and the same one
+ * `windowForObserved` argues for: a card drawn at 25% that is really at 100%
+ * loses you a warning, and a card drawn at 100% that is really at 25% is an
+ * instrument nobody can use.
+ *
+ * This is the backstop under `#adoptModel`, and it is deliberately not the fix
+ * for anything — it corrects the *reading* without knowing what lost the tier.
+ * Sink `eb733977` is what it is for: `100% context · 253,461 tok` on a card that
+ * was on the 1M window, where 253k against 200k had been clamped to a full ring
+ * by `Math.min(1, …)`. Two hundred and fifty-three thousand tokens is by itself
+ * proof that 200,000 was the wrong number. */
+export function widenedWindow(window: number, tokens: number): number {
+  return tokens > window ? 1_000_000 : window;
 }
 
 /** A model id with its window tier stripped.

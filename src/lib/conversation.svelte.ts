@@ -13,6 +13,7 @@ import {
   compactNote,
   compactStat,
   contextWindowFor,
+  widenedWindow,
   HOLD_LINE,
   picturesOf,
   type Picture,
@@ -790,6 +791,22 @@ export class Conversation {
    *  visible. Null until init has arrived (or a row was restored). */
   #declaredWindow: number | null = null;
 
+  /** And the id it declared it with — the tier-bearing form, `claude-opus-5[1m]`.
+   *
+   *  This used to be inferred from `this.model`, and that is sink `eb733977`:
+   *  `this.model` is written by *every* id the card adopts, so one message that
+   *  went to a different model — a fallback taking the request under load — moved
+   *  it to a bare id, after which no per-message id could ever match the declared
+   *  one again. The guard in `#adoptModel` then let each following message narrow
+   *  the ring to 200k, permanently, and the card reported 100% context on a
+   *  million-token window with nothing anywhere to say why.
+   *
+   *  Keeping the declared id apart from the current one is the whole fix: the
+   *  question the guard has to ask is "is this the model this session was
+   *  *configured* with, minus its tier", and only a field that never drifts can
+   *  answer it. */
+  #declaredModel: string | undefined;
+
   /* transcript */
   lines = $state<Line[]>([]);
   /** Text arriving token-by-token, before the block closes. */
@@ -1095,8 +1112,17 @@ export class Conversation {
     c.effort = isEffort(row.effort) ? row.effort : undefined;
     c.contextWindow = contextWindowFor(c.model);
     /* A row written before we knew about the tier suffix says 200k when the
-       session was really 1M. `system/init` corrects it the moment it wakes. */
-    if (c.model) c.#declaredWindow = c.contextWindow;
+       session was really 1M. `system/init` corrects it the moment it wakes.
+
+       The id goes with the window, or the pair disagrees: `#adoptModel` asks
+       whether a per-message id is the declared one with its tier dropped, and a
+       declared *window* with no declared *id* to compare against answers no to
+       every id there is — so the first message of a restored card would adopt
+       whole and narrow the ring, which is the bug this field exists for. */
+    if (c.model) {
+      c.#declaredWindow = c.contextWindow;
+      c.#declaredModel = c.model;
+    }
     c.ctxTokens = Math.round(row.last_ctx_frac * c.contextWindow);
     c.interrupted = row.interrupted;
     c.dormant = true;
@@ -1415,12 +1441,46 @@ export class Conversation {
    *  *different* model is a real change (a fallback model took the request) and
    *  is adopted whole. */
   #adoptModel(model: string, declared: boolean) {
-    if (!declared && this.#declaredWindow !== null && sameModel(model, this.model)) {
+    if (declared) {
+      this.model = model;
+      this.contextWindow = contextWindowFor(model);
+      this.#declaredWindow = this.contextWindow;
+      this.#declaredModel = model;
+      return;
+    }
+    /* Asked against the *declared* id rather than the current one, which is the
+       correction. A fallback model taking one request is a real change and is
+       adopted whole — but it must not be what the next per-message id is
+       compared to, or the session's own tier is lost the moment it happens and
+       can never be recovered. Coming back to the configured model restores the
+       tier-bearing id with it, so the footer stops reading as though the card
+       had been moved. */
+    if (this.#declaredWindow !== null && sameModel(model, this.#declaredModel)) {
+      this.model = this.#declaredModel;
+      this.contextWindow = this.#declaredWindow;
       return;
     }
     this.model = model;
     this.contextWindow = contextWindowFor(model);
-    if (declared) this.#declaredWindow = this.contextWindow;
+  }
+
+  /** What the occupancy itself says about the window.
+   *
+   *  The backstop under all of the above, and it holds whatever lost the tier —
+   *  an init that never carried a model, a row from a build that did not know
+   *  about `[1m]`, a fallback path nobody has thought of yet. A request that
+   *  carried 253k tokens was not made against a 200k window, so the window is
+   *  wider than we believed and the ring was drawing a lie. See
+   *  `widenedWindow`; it only ever widens.
+   *
+   *  `#declaredWindow` moves with it, or the next per-message id restores the
+   *  narrow one through the branch above and the ring flickers between two
+   *  readings for the rest of the session. */
+  #observeWindow() {
+    const wider = widenedWindow(this.contextWindow, this.ctxTokens);
+    if (wider === this.contextWindow) return;
+    this.contextWindow = wider;
+    if (this.#declaredWindow !== null) this.#declaredWindow = wider;
   }
 
   /** Returns the line *as the array holds it*, which is the proxy rather than
@@ -2158,6 +2218,9 @@ export class Conversation {
             (u.output_tokens ?? 0);
         }
         if (ev.message?.model) this.#adoptModel(ev.message.model, false);
+        /* After the id, never before it: adopting narrows or widens the window,
+           and the occupancy has the last word over both. */
+        this.#observeWindow();
         break;
       }
 

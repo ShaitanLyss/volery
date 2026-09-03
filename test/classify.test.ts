@@ -61,6 +61,7 @@ import {
   healGaveUpNote,
   saySoon,
   HEAL_BUDGET,
+  widenedWindow,
   windowForObserved,
 } from "../src/lib/classify";
 
@@ -351,6 +352,39 @@ describe("a session read off disk has no declared tier", () => {
 
   test("a declared tier is not narrowed by a smaller reading", () => {
     expect(windowForObserved("claude-opus-5[1m]", 12_000)).toBe(1_000_000);
+  });
+});
+
+describe("occupancy is evidence about a window we already believe in", () => {
+  /* Sink eb733977: `100% context · 253,461 tok` on a card that was on the 1M
+     window, because `ctx` clamps with `Math.min(1, …)` and 253k against 200k is
+     127%. Whatever lost the tier, the number itself rules the narrow window
+     out — no request carrying 253k tokens was made against a 200k window. */
+  test("a reading that cannot fit widens the window", () => {
+    expect(widenedWindow(200_000, 253_461)).toBe(1_000_000);
+  });
+
+  test("a reading that fits changes nothing", () => {
+    expect(widenedWindow(200_000, 199_999)).toBe(200_000);
+    expect(widenedWindow(200_000, 200_000)).toBe(200_000);
+    expect(widenedWindow(1_000_000, 400_000)).toBe(1_000_000);
+  });
+
+  /* It only ever widens, which is the safe direction and the one
+     `windowForObserved` already argues for: a card drawn at 25% that is really
+     at 100% loses you a warning, and a card drawn at 100% that is really at 25%
+     is an instrument nobody can use. */
+  test("it never narrows", () => {
+    expect(widenedWindow(1_000_000, 0)).toBe(1_000_000);
+    expect(widenedWindow(1_000_000, 12)).toBe(1_000_000);
+  });
+
+  /* And it is the same inference `windowForObserved` makes, rather than a
+     second one that could drift from it. */
+  test("the disk reading is this one, applied to a bare id", () => {
+    expect(windowForObserved("claude-opus-5", 443_000)).toBe(
+      widenedWindow(contextWindowFor("claude-opus-5"), 443_000),
+    );
   });
 });
 

@@ -281,6 +281,24 @@ deliberately not in `classify.ts`, which is about an agent rather than about a r
 - **Model ids arrive in two forms.** `system/init` gives the configured id with its window
   tier (`claude-opus-5[1m]`); every `assistant` message gives the bare API name. A
   per-message id must never be allowed to narrow the window — see `sameModel` / `#adoptModel`.
+- **And the guard has to compare against the id that was *declared*, not the current one.**
+  `#adoptModel` asked `sameModel(model, this.model)`, and `this.model` is written by every id
+  the card adopts — so one message that went to a *different* model, which is a fallback
+  taking the request under load and is a real change worth adopting, moved it to a bare id.
+  After that no per-message id could ever match the declared one again, every following
+  message narrowed the ring to 200k, and the card reported `100% context · 253,461 tok` on a
+  million-token window with nothing anywhere to say why (sink eb733977). `#declaredModel`
+  holds the tier-bearing id apart from the current one, because the question the guard asks —
+  *is this the model this session was configured with, minus its tier* — can only be answered
+  by a field that never drifts. The general shape: **a guard that compares against a value its
+  own subject mutates is a guard with a state it cannot come back from.**
+  Under it is a backstop that needs no id at all: **occupancy is evidence about the window.**
+  No request carrying 253k tokens was made against a 200k window — the API refuses it and the
+  CLI compacts long before — so `widenedWindow` widens on the reading itself, whatever lost
+  the tier. It is the same inference `windowForObserved` already made for a session read off
+  disk, now applied live, and it only ever widens: a card drawn at 25% that is really at 100%
+  loses you a warning, and a card drawn at 100% that is really at 25% is an instrument nobody
+  can use.
 - **`thinking_delta` outnumbers `text_delta` ~8:1** on reasoning models, so a turn must be
   marked working on thinking deltas too or cards look frozen.
 - **A freshly spawned conversation is not dormant** even though `system/init` has not
