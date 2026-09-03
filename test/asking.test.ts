@@ -11,9 +11,11 @@ import {
   blankAnswers,
   composeAnswer,
   isComplete,
+  isScriptBuilt,
   normalizeAsk,
   overflowOf,
   panelsOf,
+  previewAside,
   previewDoc,
   stepAt,
   type Answers,
@@ -298,6 +300,25 @@ describe("answerNote", () => {
     expect(answerNote("")).toBe(null);
     expect(answerNote("   \n  ")).toBe(null);
   });
+
+  test("skein's note to the model is not drawn as something you said", () => {
+    /* The whole reason the aside carries a marker at both ends. Without the
+       strip, the transcript's record of a one-word decision is that word
+       followed by a paragraph of Skein lecturing an agent about `js`, in the
+       register of a thing the user typed. */
+    const sent = composeAnswer(
+      [
+        {
+          header: "shape",
+          question: "which?",
+          options: [{ label: "warm", detail: null, preview: skeleton() }],
+        },
+      ],
+      ["warm"],
+    );
+    expect(sent).toContain("skeleton built by `js`");
+    expect(answerNote(sent)).toEqual({ kind: "answer", text: "warm" });
+  });
 });
 
 describe("askHeadline", () => {
@@ -319,6 +340,90 @@ const preview = (over: Partial<AskPreview> = {}): AskPreview => ({
   css: null,
   js: null,
   ...over,
+});
+
+/** The design sink 51863e1e reported: markup with nothing in it, filled in by
+ *  a script that does not run until somebody asks for it. */
+const skeleton = (): AskPreview => ({
+  html: '<div id="rows"></div>',
+  css: "#rows{display:grid}",
+  js: 'document.getElementById("rows").innerHTML = "<b>a row</b>";',
+});
+
+describe("isScriptBuilt", () => {
+  test("markup with nothing in it and a script to fill it is the reported bug", () => {
+    expect(isScriptBuilt(skeleton())).toBe(true);
+  });
+
+  test("a design with no script of its own is never one", () => {
+    expect(isScriptBuilt(preview())).toBe(false);
+    expect(isScriptBuilt({ html: '<div id="rows"></div>', css: null, js: null })).toBe(false);
+  });
+
+  test("markup that draws something is not a skeleton, whatever its script does", () => {
+    /* The check has to be conservative in this direction: a design that renders
+       and *also* animates is the ordinary use of `js`, and telling its author
+       it drew nothing would be false. */
+    for (const html of [
+      "<main>a design</main>",
+      '<div><img src="data:image/gif;base64,R0lGOD"></div>',
+      "<figure><svg viewBox='0 0 4 4'></svg></figure>",
+      "<p>&nbsp;loading the rows&nbsp;</p>",
+    ]) {
+      expect(isScriptBuilt({ html, css: null, js: "go()" })).toBe(false);
+    }
+  });
+
+  test("comments and entities are not content", () => {
+    /* An entity on its own is whitespace or a bullet, and a comment is nothing
+       at all — neither is a design somebody can look at and decide from. */
+    expect(
+      isScriptBuilt({ html: "<!-- rows go here --><ul id='rows'>&nbsp;</ul>", css: null, js: "go()" }),
+    ).toBe(true);
+  });
+});
+
+describe("previewAside", () => {
+  test("nothing is said about a call whose designs all render", () => {
+    /* Additive and only in the failing case — the reply shape every agent is
+       written against must not change for the calls that were fine. */
+    expect(previewAside([q("shape", "one or two?")])).toBe(null);
+    expect(
+      previewAside([
+        {
+          header: "shape",
+          question: "which?",
+          options: [{ label: "warm", detail: null, preview: preview({ js: "go()" }) }],
+        },
+      ]),
+    ).toBe(null);
+  });
+
+  test("it counts them across the whole sheet, not per question", () => {
+    const said = previewAside([
+      {
+        header: "shape",
+        question: "which?",
+        preview: skeleton(),
+        options: [{ label: "warm", detail: null, preview: skeleton() }],
+      },
+      { header: "attention", question: "ring?", options: [] },
+    ]);
+    expect(said).toContain("2 designs in this call were");
+  });
+
+  test("it says what to do differently rather than only what went wrong", () => {
+    const said = previewAside([
+      {
+        header: "shape",
+        question: "which?",
+        options: [{ label: "warm", detail: null, preview: skeleton() }],
+      },
+    ]);
+    expect(said).toContain("one design in this call was");
+    expect(said).toContain("`html` and `css`");
+    expect(said).toContain("chat card");
+  });
 });
 
 describe("previews", () => {

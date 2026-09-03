@@ -184,6 +184,48 @@ a restart can reproduce.
 The flag defaults to false on anything that does not set it, which is what keeps the control
 surface's synthetic `ask:opened` (`control.svelte.ts`) meaning what it always meant.
 
+#### A call whose text swallowed one of its own arguments
+
+The client composes a `tools/call` by writing tagged parameters and parsing them back out,
+and **a tag written without its namespace prefix is not a tag — it is more of the parameter
+above it.** Reported 2026-09-02 (sink `b6a278c1`): an `ask_user` whose `options` was written
+as a bare `<parameter name="options">` arrived with the whole literal
+`</question> <parameter name="options">[{…}]` concatenated onto the end of `question`, and no
+`options` at all. Three clickable buttons were drawn as a wall of raw JSON and XML.
+
+Nothing at either end said so, and that is the part worth fixing rather than the mis-write
+itself. The call succeeded, the question was answered, the turn resumed — so the agent had no
+way to know it had degraded a click into a paragraph, and the user's only clue was that the
+panel looked mad. It also leaks the client's own call syntax onto the wall.
+
+`ask::swallowed` is the check and it is a **refusal**, which the signature earns: a text
+declaring an argument that *is* on this tool's schema and *is not* in this call is not prose
+about the syntax, it is the argument in the wrong place. Both halves carry weight — the first
+keeps somebody else's XML out of it (`<parameter name="stroke-width">` is not ours), and the
+second is the escape hatch, since a card genuinely writing *about* `<parameter name="paths">`
+need only pass `paths` for the call to go through. The refusal names what was lost, where it
+went, and says first that nothing happened, because that is the part that decides what to do
+next.
+
+- **It runs before every arm, because every arm is too late.** The two that park put the
+  mangled text in front of a person; the whole roster chain below has already done its write
+  by the time it returns a string to say so. One check, at the top of `Dispatch::Call`.
+- **This is the one thing Rust reads out of `arguments`, and it is not a breach of the
+  bargain.** `asking.ts::normalizeAsk` still owns what a question *is*. This reads no field by
+  name and knows no vocabulary: it asks only whether the encoding survived the wire, which is
+  the same question `dispatch` already answers about `_meta`'s progress token. The argument
+  names come from the tool's own advertised schema, so there is nothing here to keep in step.
+- **The cheap half runs first.** `swallowed_by` scans the strings for one literal before
+  building `roster()`, which is two dozen schemas — and the literal is absent from every
+  well-formed call ever made. That matters because this is on the path of every call the
+  server answers, including the arms that are already the slow ones.
+- **`tools/lift-ask.ts` actually runs it**, which is the rule `build.md` states: `swallowed`
+  decides whether a call is refused and neither direction of it is visible to a typecheck, and
+  `declarations` walks a string by hand on a thread holding somebody's turn open. The one
+  assertion that reads the live roster stays behind `cargo test`, and it is the one that would
+  go quiet on its own — every other assertion supplies its own list of argument names, so a
+  renamed `options` would leave them all green over a check that had stopped matching.
+
 #### A tool the agent can see, under a name it can call
 
 Two failures, found together on 2026-08-19 from one symptom — agents barely touching the
@@ -474,6 +516,26 @@ and it changes nothing about the parking: the reply is still the option's label,
   there is, and `App.svelte`'s ladder is a bubble-phase listener that would otherwise stop the
   focused card's turn. The menu and the import panel are named in that ladder by hand; a
   capture listener needs nothing to know about it.
+- **A design built by its `js` renders blank, and for a while nothing said so.** Reported
+  2026-09-01 (sink `51863e1e`): a preview whose `html` was `<div id="rows">` and whose `js`
+  filled it in from a JSON block drew an empty frame — no rows, no error, nothing. **The
+  renderer was right**, and the schema says so in as many words; every preview renders static
+  first, for the spin-takes-the-window reason above. What was missing is that the behaviour
+  was invisible from both sides. The user read a blank frame as a broken feature. The agent
+  got no signal at all — the call succeeded and came back with an answer — so the next call
+  composed the same skeleton. The workaround that did work, writing an `.svg` and pinning it,
+  is a person routing around a feature that was working.
+  So it is said twice, from the two sides, off one pure predicate (`isScriptBuilt`).
+  `Gallery.svelte` draws a plate in the frame — *a plate rather than a cover*, because the
+  predicate cannot see a skeleton drawn entirely in CSS, so whatever is really there stays
+  visible around it and running the script takes it away. And `composeAnswer` appends
+  `previewAside`, which is the only channel to the model there is: the reply to a parked call.
+  It is additive and only in the failing case, so the reply *shape* every agent is written
+  against — the bare answer, the numbered list — is unchanged for the calls that were fine.
+  **The aside carries a marker at both ends** (`ASIDE`, written by `composeAnswer` and taken
+  off by `answerNote`), for the reason `UNANSWERED` exists one paragraph up: read back off
+  disk it is a `tool_result` like any other, and drawn as an answer it would put a paragraph
+  of Skein lecturing an agent about `js` into your mouth, under a one-word decision.
 - **The schema's `preview` description is doing real work.** The model has spent its whole
   life describing layouts in prose to a terminal and will keep doing it beside an empty field,
   so `ask.rs` says what the frame can and cannot reach (no network, no imports, no

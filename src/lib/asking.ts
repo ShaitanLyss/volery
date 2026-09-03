@@ -229,6 +229,54 @@ export function panelsOf(q: AskQuestion): PreviewPanel[] {
   return out;
 }
 
+/** Elements that draw something whatever the markup around them says.
+ *
+ *  Kept short and literal on purpose. This is the escape hatch for a design that
+ *  is genuinely one picture or one chart, and widening it toward "anything with
+ *  a class attribute" would turn the check below into one that never fires. */
+const DRAWS = /<\s*(img|svg|canvas|iframe|video|picture|object|embed|hr|input)\b/i;
+
+/** Whether markup puts anything on the page by itself.
+ *
+ *  Text with the tags taken out, plus the list above. `<div id="rows"></div>` is
+ *  nothing; `<div id="rows">loading…</div>` is something, and so is one `<svg>`. */
+function drawsSomething(html: string): boolean {
+  if (DRAWS.test(html)) return true;
+  const text = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(?:[a-z]+|#\d+|#x[0-9a-f]+);/gi, " ")
+    .trim();
+  return text.length > 0;
+}
+
+/** A design that is a skeleton its own script fills in, and therefore draws
+ *  nothing at all until somebody runs the script.
+ *
+ *  Reported 2026-09-01 (sink `51863e1e`): a preview whose `html` was
+ *  `<div id="rows">` and whose `js` populated it from a JSON block rendered as
+ *  an empty frame — no rows, no error, nothing. **The renderer was right.**
+ *  Every preview renders static first even on a card that is allowed scripts,
+ *  because a srcdoc frame shares the renderer with its parent and there is no
+ *  way to kill a `while(true){}` inside one (`Gallery.svelte`); the schema says
+ *  so. What was missing is that nothing *surfaced* it. The user read a blank
+ *  frame as a broken feature, and the agent got no signal at all — the call
+ *  succeeded and came back with an answer.
+ *
+ *  So this is asked twice from two sides: `Gallery.svelte` draws a plate in the
+ *  frame saying the design is waiting on its script, and `composeAnswer` tells
+ *  the agent that one of its previews was never seen. Neither half needs the
+ *  other, which is the argument for the predicate being here rather than in
+ *  either of them.
+ *
+ *  Deliberately conservative. A skeleton drawn entirely by CSS — a `<div>` with
+ *  a background and a size — is a false positive, which is why the plate is a
+ *  centred note over the frame rather than a cover: whatever is behind it is
+ *  still visible around it, and running the script takes it away. */
+export function isScriptBuilt(p: AskPreview): boolean {
+  return !!p.js && !drawsSomething(p.html);
+}
+
 /* A closing tag inside the text ends the element early. Neither of these is a
    security boundary — the CSP below is, and the markup is the model's anyway —
    but a design that silently loses its second half because a stylesheet
@@ -332,16 +380,50 @@ const PREAMBLE = "Answering each in turn:";
  *  model cannot mis-pair an answer with the decision it belongs to. Unanswered
  *  slots are sent as `NO_PREFERENCE` rather than omitted, for the same reason:
  *  a list with a gap in it invites the model to re-align the rest. */
+/** How a note *about* the call is set apart from the answer to it.
+ *
+ *  One marker, matched in both directions: `composeAnswer` writes it and
+ *  `answerNote` takes it off again, so a sentence Skein addressed to the model
+ *  is never drawn in the transcript as a sentence you said. That is the same
+ *  hazard `UNANSWERED` guards, one layer over. */
+const ASIDE = "\n\n— skein: ";
+
+/** What the agent is told about a design it composed that was never seen.
+ *
+ *  `null` for almost every call, which is the point: this is additive and only
+ *  in the failing case, so the shape every agent is written against — the bare
+ *  answer, the numbered list — is unchanged for the calls that are fine.
+ *
+ *  See `isScriptBuilt` for why a blank preview is not a renderer bug. The
+ *  agent-facing half is here because the panel's plate reaches the user and
+ *  nothing reached the model at all: the call succeeded, an answer came back,
+ *  and the next call composed the same skeleton. */
+export function previewAside(questions: AskQuestion[]): string | null {
+  const n = questions.flatMap(panelsOf).filter((p) => isScriptBuilt(p.preview)).length;
+  if (!n) return null;
+  const [subject, it] =
+    n === 1 ? ["one design in this call was", "it"] : [`${n} designs in this call were`, "they"];
+  return (
+    `${subject} a skeleton built by \`js\`, so ${it} drew nothing in the frame ` +
+    "until the user ran the script by hand — and would have drawn nothing at " +
+    "all on a chat card, where scripts are refused. Compose the design in " +
+    "`html` and `css`, and keep `js` for interaction a static rendering " +
+    "genuinely cannot show."
+  );
+}
+
 export function composeAnswer(questions: AskQuestion[], answers: Answers): string {
-  if (questions.length === 1) {
-    const only = answers[0];
-    return (only ?? NO_PREFERENCE).trim();
-  }
-  const lines = questions.map((q, i) => {
-    const a = (answers[i] ?? NO_PREFERENCE).trim() || NO_PREFERENCE;
-    return `${i + 1}. ${q.header}: ${a}`;
-  });
-  return `${PREAMBLE}\n${lines.join("\n")}`;
+  const said =
+    questions.length === 1
+      ? (answers[0] ?? NO_PREFERENCE).trim()
+      : `${PREAMBLE}\n${questions
+          .map((q, i) => {
+            const a = (answers[i] ?? NO_PREFERENCE).trim() || NO_PREFERENCE;
+            return `${i + 1}. ${q.header}: ${a}`;
+          })
+          .join("\n")}`;
+  const aside = previewAside(questions);
+  return aside ? `${said}${ASIDE}${aside}` : said;
 }
 
 /* What `ask.rs` sends the agent when the question is never answered: the
@@ -389,8 +471,12 @@ export function answerNote(sent: string): AnswerNote | null {
   if (UNANSWERED.some((u) => text.startsWith(u))) {
     return { kind: "meta", text: NO_ANSWER_NOTE };
   }
+  /* From the last one: `composeAnswer` appends, so anything earlier is the
+     answer quoting the marker rather than the marker doing its job. */
+  const cut = text.lastIndexOf(ASIDE);
+  const kept = cut > 0 ? text.slice(0, cut).trim() : text;
   const head = `${PREAMBLE}\n`;
-  const body = text.startsWith(head) ? text.slice(head.length).trim() : text;
+  const body = kept.startsWith(head) ? kept.slice(head.length).trim() : kept;
   return body ? { kind: "answer", text: body } : null;
 }
 

@@ -25,6 +25,7 @@
   import { onMount } from "svelte";
   import {
     PREVIEW_VIEWPORT,
+    isScriptBuilt,
     previewDoc,
     type PreviewPanel,
   } from "./asking";
@@ -176,6 +177,27 @@
                 ></iframe>
               {/key}
             {/if}
+
+            <!-- A design whose markup is a skeleton its `js` fills in draws
+                 nothing at all until the script runs, and every preview renders
+                 static first — so what the user got was an empty frame with no
+                 hint that anything was being withheld, which reads as the
+                 feature being broken rather than as a design waiting on a
+                 click. Sink 51863e1e.
+
+                 A plate rather than a cover, because `isScriptBuilt` cannot see
+                 a skeleton drawn entirely in CSS: whatever *is* there stays
+                 visible around this, and running the script takes it away. -->
+            {#if isScriptBuilt(p.preview) && !(scripts && live[i])}
+              <div class="waiting">
+                <span class="line">this design is built by its script</span>
+                <span class="sub">
+                  {scripts
+                    ? "nothing is drawn until you run it — the button below"
+                    : "and a chat card may not run one, so it cannot be drawn here"}
+                </span>
+              </div>
+            {/if}
           </div>
 
           <div class="foot">
@@ -321,6 +343,38 @@
     /* Scaled from the corner, so the composed viewport and the box it is drawn
        in share an origin and the design cannot drift out of its own frame. */
     transform-origin: 0 0;
+  }
+
+  /* Centred and small, over the frame rather than instead of it — see the
+     markup for why this must not cover. Nothing standing on the wall may be
+     transparent, and this is standing on an opaque `.stage` rather than on the
+     backdrop, so a plate that lets the frame through around its edges is the
+     honest drawing rather than an exception to that. */
+  .waiting {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.2rem;
+    max-width: 88%;
+    padding: 0.5rem 0.9rem;
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    background: var(--surface);
+    font-family: var(--util);
+    text-align: center;
+    pointer-events: none;
+  }
+  .waiting .line {
+    font-size: 0.72rem;
+    color: var(--paper-mute);
+  }
+  .waiting .sub {
+    font-size: 0.64rem;
+    color: var(--paper-faint);
   }
 
   .foot {
