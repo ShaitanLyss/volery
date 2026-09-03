@@ -11,6 +11,7 @@ paths:
   - "src-tauri/src/github.rs"
   - "src-tauri/src/smith.rs"
   - "src-tauri/src/vault.rs"
+  - "src-tauri/src/creds.rs"
 ---
 
 # The forge: pipelines and reviews
@@ -108,20 +109,25 @@ own for how it is drawn (`list`, `lanes`, `dots`).
   projects that refused to answer is the face claiming to know something it does not. A
   credential refusal outranks an invisibility when both happened — that is the mixed case, and
   the 401 is the actionable half.
-- **The token is entered in the app, and it is the only secret Skein stores.** `vault.rs` has
-  the argument for *where*: not the wall's SQLite (plaintext, and layouts are exported out of
-  it), not a DPAPI blob of our own (encrypted but invisible and revocable only through us), but
-  the Windows Credential Manager — DPAPI underneath, the vault GCM already keeps this org's
-  other token in, and listed in Control Panel where you can delete it without Skein's help. The
-  target name keeps the `dev.skein.studio` identity for the reason CLAUDE.md gives about the
-  `%APPDATA%` folder: it is a name the disk depends on, and the visible rename was made
-  provisional.
+- **The token is entered in the app, and it was the only secret Skein stored.** That second
+  half stopped being true — there are three now (this one, Spotify's refresh token, an Asana
+  PAT) and the panel that takes them is general; see `.claude/rules/integrations.md`, which
+  owns the reasoning that used to live here. `vault.rs` still has the argument for *where*:
+  not the wall's SQLite (plaintext, and layouts are exported out of it), not a DPAPI blob of
+  our own (encrypted but invisible and revocable only through us), but the Windows Credential
+  Manager — DPAPI underneath, the vault GCM already keeps this org's other token in, and
+  listed in Control Panel where you can delete it without Skein's help. The target name keeps
+  the `dev.skein.studio` identity for the reason CLAUDE.md gives about the `%APPDATA%` folder:
+  it is a name the disk depends on, and the visible rename was made provisional.
+  `vault::AZDO_TARGET` is `dev.skein.studio/azdo-pat` and is not renameable.
 
-  **No command hands a token back.** `azdo_token` answers a boolean, so the front end can say
-  whether one is held and never what it is — which is what makes it safe for `snapshot.azdo` to
-  report `token` at all. `set`/`clear` drop the credential cache in the same command, since
-  `Cache::creds` is resolved once per org and held; without that the ladder you just changed
-  would not be consulted until the last widget came off the wall.
+  **No command hands a token back.** `integration_held` answers a boolean, so the front end
+  can say whether one is held and never what it is — which is what makes it safe for
+  `snapshot.azdo` to report `token` at all. `set_integration_token`/`clear_integration_token`
+  call `azdo::forget_creds` in the same command, since `Cache::creds` is resolved once per org
+  and held; without that the ladder you just changed would not be consulted until the last
+  widget came off the wall. `DevOps.held` is a getter over an injected seam now rather than a
+  field of its own — the vault is read in one place, and that place is the panel's.
 - **The expiry is on the rung, not on the cache.** The ladder is resolved once per organisation
   and held, because each rung costs a process spawn — and it used to be held *forever*, living
   until `release_azdo`, which only fires when the last pipelines or reviews widget comes off the
@@ -549,6 +555,10 @@ read at a glance would be the most consequential thing in the app.
 
 ### The token panel
 
+**It is every integration's panel now, not this one's** — `integrations.ts` is the table and
+`.claude/rules/integrations.md` is the reasoning. What is below is Azure DevOps' share of it,
+and all of it still holds; the row is drawn from a table entry rather than written out.
+
 `Keyring.svelte`, drawn over the wall in the same shell `Carry` and `Themes` use, reachable
 two ways on purpose. From the header menu, because that is where settings live; and **from the
 pipelines widget's own fault line**, because that is where you find out you need one — a panel
@@ -568,6 +578,16 @@ only in a menu is a panel nobody finds at the moment it would help.
   second thing to keep true.
 - It does not report which rung is *in use*, deliberately: the ladder resolves per organisation
   and per endpoint family, so any single answer would be wrong somewhere.
+- **The quoted fault line is the one service-specific thing left in that panel**, and it is
+  specific for a reason no table column could carry: Azure DevOps is the only integration
+  whose stored token is *one rung of a ladder* rather than the whole credential, so the
+  widget's fault says something no probe can — which rung was refused. Anything else that ever
+  grows a ladder gets the same treatment; nothing else has one.
+- **And what `check it` asks is builds, not `profiles/me`.** The tidy org-less endpoint needs
+  `vso.profile`, which a PAT scoped to Build (read) alone does not have — so the obvious probe
+  would refuse exactly the token this row exists to take, and report it as a bad credential.
+  It asks `builds?$top=1` against an organisation on this wall instead, and where the wall has
+  no Azure DevOps organisation on it, it says so rather than guessing. See `creds.rs`.
 
 ### The forge a card can reach — `smith.rs`
 

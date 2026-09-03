@@ -13,6 +13,7 @@ mod board;
 /// the form "what does this service actually do".
 pub mod azdo;
 mod control;
+mod creds;
 /// The rows a forge answers in, and the two providers that fill them. `forge`
 /// is vocabulary-neutral on purpose — see its header for the line between a
 /// projection that is honest and one that is a lie.
@@ -490,9 +491,10 @@ pub fn run() {
             azdo::azdo_runs,
             azdo::azdo_reviews,
             azdo::release_azdo,
-            azdo::azdo_token,
-            azdo::set_azdo_token,
-            azdo::clear_azdo_token,
+            creds::integration_held,
+            creds::set_integration_token,
+            creds::clear_integration_token,
+            creds::verify_integration,
             azdo::forge_run,
             store::list_ambience,
             store::save_ambience,

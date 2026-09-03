@@ -164,7 +164,7 @@ export class DevOps {
        is the runs half that needs a token — a code-scoped credential reads pull
        requests perfectly well. The panel asks again when it opens, since the
        vault is reachable without us. */
-    void this.askHeld();
+    this.token.ask();
   }
 
   attachReviews(id: string) {
@@ -359,40 +359,27 @@ export class DevOps {
   /* ── the token you entered ───────────────────────────────────────────────
    *
    * The fourth rung of the ladder, and the only one this app can do anything
-   * about. `held` is a reading of the vault rather than something remembered
-   * here, because the vault is reachable from outside — Control Panel →
-   * Credential Manager will delete it behind our back, which is a property
-   * `vault.rs` chose on purpose and therefore one this class must not cache
-   * away. */
-
-  /** Whether a token is stored. Never the token — no command hands one back. */
-  held = $state(false);
-
-  async askHeld(): Promise<void> {
-    try {
-      this.held = await invoke<boolean>("azdo_token");
-    } catch {
-      /* A vault that will not answer is a vault with nothing usable in it, and
-         the ladder will reach the same conclusion on the next pass. */
-      this.held = false;
-    }
-  }
-
-  /** Store one and read again immediately.
+   * about. It is not *held* here any more: a panel for every integration's
+   * credential cannot live inside the connection to one of them, so
+   * `keyring.svelte.ts` owns the reading and this is the seam it arrives
+   * through — the same injection `roots` is, and for the same reason. What this
+   * class needs is only the boolean, because "the pipelines half is faulting"
+   * and "the pipelines half is faulting and there is no token to fall back on"
+   * are different states of the app and only one of them is a bug.
    *
-   *  Rust drops the credential cache as part of the same command, so the next
-   *  poll resolves a fresh ladder — and `refresh` is called rather than waited
-   *  for, since somebody who has just pasted a token is looking at the widget
-   *  they pasted it for. */
-  async store(token: string): Promise<void> {
-    await invoke("set_azdo_token", { token });
-    await this.askHeld();
-    await this.refresh();
-  }
+   * `ask` rather than a cached copy, because the vault is reachable from
+   * outside — Control Panel → Credential Manager will delete a token behind our
+   * back, which is a property `vault.rs` chose on purpose and therefore one
+   * nothing may cache away. */
 
-  async forget(): Promise<void> {
-    await invoke("clear_azdo_token");
-    await this.askHeld();
-    await this.refresh();
+  /** Whether a token is stored, and a way to go and look again. Never the token
+   *  — no command hands one back. */
+  token: { held: () => boolean; ask: () => void } = { held: () => false, ask: () => {} };
+
+  /** Kept as a property name because it is what the control surface's snapshot
+   *  calls it, and a wall test asserting on `azdo.token` should not have to know
+   *  the panel moved. */
+  get held(): boolean {
+    return this.token.held();
   }
 }

@@ -72,6 +72,7 @@
   import Themes from "./lib/Themes.svelte";
   import Accounts from "./lib/Accounts.svelte";
   import Keyring from "./lib/Keyring.svelte";
+  import { Creds } from "./lib/creds.svelte";
   import RunPanel from "./lib/Run.svelte";
   import Guidance from "./lib/Guidance.svelte";
   import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
@@ -227,6 +228,31 @@
      opening a folder brings its org into the reading on the next tick with
      nothing to re-wire. */
   devops.roots = () => skein.projects.map((p) => p.root_path);
+  /* Every integration's credential, in one place. Holds no timer and no
+     subscription — a token is asked about when the panel opens and when one is
+     written, and never on a clock — so unlike the four below it needs nothing
+     releasing on destroy. Told where the projects are for the same reason
+     `devops` is: verifying an Azure DevOps token means asking about builds in
+     an organisation, and the ones worth asking about are the ones whose
+     repositories are standing on the wall. */
+  const creds = new Creds();
+  creds.roots = () => skein.projects.map((p) => p.root_path);
+  /* And which reading to send again when a credential changes. `DevOps`
+     resolves its ladder once per organisation and holds it, so a token pasted
+     into the panel would otherwise not be consulted until the last widget came
+     off the wall — Rust drops its cache as part of the same command, and this
+     is the half that makes the widget you pasted it *for* redraw. Injected
+     rather than imported, so `creds.svelte.ts` need not know a forge exists and
+     the third integration is not wired into it. */
+  creds.changed = (id) => {
+    if (id === "azdo") void devops.refresh();
+  };
+  /* The other direction: the fourth rung of the Azure DevOps ladder is the one
+     token this app can do anything about, and `DevOps` needs the boolean to
+     tell a fault apart from a fault with nothing to fall back on. It reads the
+     panel's answer rather than keeping its own — one reading of the vault, in
+     the file that owns it. */
+  devops.token = { held: () => creds.heldFor("azdo"), ask: () => void creds.askHeld("azdo") };
   /* The studio's one pomodoro cycle. Not a widget's state — hang two pomodoro
      widgets up and they are two readings of one afternoon, and the break it
      enforces has to outlive every view of it. See `pomodoro.svelte.ts`. */
@@ -692,9 +718,12 @@
      whether the panel over it is up. */
   let showThemes = $state(false);
   let showAccounts = $state(false);
-  /* The Azure DevOps token. Reachable from here *and* from the pipelines widget's
-     fault line, which is where you actually find out you need one — a panel only
-     in the menu is a panel nobody finds at the moment it would help. */
+  /* The integration tokens. Reachable from here *and* from the pipelines
+     widget's fault line, which is where you actually find out you need one — a
+     panel only in the menu is a panel nobody finds at the moment it would
+     help. It was the Azure DevOps token panel and is a row per service now;
+     `token` stays the key, because it is what `BAR_ORDER`, `FOLD_ORDER` and
+     `chrome.test.ts` call it and renaming it buys nothing. */
   let showKeyring = $state(false);
   /* The run whose insides are on screen, if any. The *row* rather than its id,
      because the panel draws the run's own heading — pipeline, branch, who, how
@@ -2363,8 +2392,8 @@
    *  themselves. `adopt` is kept longest of the verbs partly because it is the
    *  control surface's only handle on this bar (`data-adopt`), and a test
    *  driving a narrow window should not have to widen it first. `token` is the
-   *  first of the verbs to go, being a panel you open once a year and then
-   *  never again.
+   *  first of the verbs to go, being a panel you open when a service starts
+   *  refusing you and then not again for months.
    *
    *  An item's key has to be in *both* lists or it is drawn nowhere at all —
    *  the bar iterates `BAR_ORDER` and the panel iterates what folded out of
@@ -2583,8 +2612,9 @@
       },
       {
         key: "token",
-        label: "azdo token",
-        title: "A personal access token for Azure DevOps, when the credential git holds isn't enough for builds",
+        label: "tokens",
+        title:
+          "A personal access token per service Volery reads — azure devops, asana — and a check that each one works",
         on: showKeyring,
         press: () => (showKeyring = !showKeyring),
       },
@@ -2796,7 +2826,7 @@
     {/key}
   {/if}
   {#if showKeyring}
-    <Keyring {devops} onclose={() => (showKeyring = false)} />
+    <Keyring keyring={creds} {devops} onclose={() => (showKeyring = false)} />
   {/if}
 
   {#if guiding}

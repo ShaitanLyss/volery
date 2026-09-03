@@ -69,7 +69,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # flow, relay, board, serverlog,
                          # usage,
                          # bang,
-                         # repair, limits, accounts, signin, azdo,
+                         # repair, limits, accounts, signin, azdo, integrations,
                          # shell, finding, styles
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
@@ -84,6 +84,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # repair/text.rs, hooks.rs,
                               # control.rs,
                               # supervisor.rs,
+                              # creds.rs,
                               # servers.rs, shell.rs, nvim.rs, find.rs, sessions.rs, project.rs,
                               # usage.rs,
                               # tunnel.rs, applog.rs,
@@ -131,6 +132,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `usage.md` | what is left of the allowance and what it has cost — the account's own windows and their resets, then reading transcripts, the dedup, the five prices, and the day's figure the title bar and the horizon carry | `limits.ts`, `usage.ts`, `ledger.svelte.ts`, `limits.rs`, `usage.rs` |
 | `timers.md` | timers, the pomodoro cycle, and why breaks are taken rather than offered | `timing.ts`, `cycle.svelte.ts`, `Rest.svelte` |
 | `azdo.md` | pipelines and reviews over **two** forges: the four-rung Azure DevOps ladder and the rung that could not spawn, why GitHub needs no ladder at all, the test a cross-forge projection has to pass, a 400 that means "not your project", one run opened in-app, where the one stored secret lives, and the TLS interception this network does | `azdo.ts`, `devops.svelte.ts`, `azdo.rs`, `forge.rs`, `github.rs`, `Run.svelte`, `vault.rs`, `Keyring.svelte` |
+| `integrations.md` | every credential the app keeps, in one panel: why the vault target is a string nobody may rename, why the wire names a service rather than a target, the table that makes the third integration free, and a check that has to be right in the alarming direction | `integrations.ts`, `creds.svelte.ts`, `Keyring.svelte`, `creds.rs`, `vault.rs` |
 | `actions.md` | the verbs a project has all day, Unreal's shape, conflicts and the fetch clock | `actions.ts`, `project.rs`, `actions.rs` |
 | `ask.md` | the `ask_user` MCP server, parking a `tools/call`, and several questions in one call | `ask.rs`, `asking.ts`, `Ask.svelte` |
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |
@@ -248,7 +250,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
 `transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
-`undo.ts`, `finding.ts`,
+`undo.ts`, `finding.ts`, `integrations.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
 `hunt.ts`,
 `applog.ts`,

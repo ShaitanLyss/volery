@@ -1,9 +1,12 @@
-//! One secret, kept where Windows already keeps secrets.
+//! Secrets, kept where Windows already keeps secrets.
 //!
-//! An Azure DevOps personal access token, entered in the app because the two
-//! credentials a machine already has are not always enough — see the ladder in
-//! `azdo.rs`. This is the only secret Skein stores anywhere, and where it goes
-//! was the whole of the design question.
+//! It was one — an Azure DevOps personal access token, entered in the app
+//! because the two credentials a machine already has are not always enough, see
+//! the ladder in `azdo.rs`. There are three now (that one, Spotify's refresh
+//! token, an Asana PAT) and there will be more; `creds.rs` is the panel's way
+//! in and `src/lib/integrations.ts` is the table of what exists. What did not
+//! change is this module, because where a secret goes was the whole of the
+//! design question and the answer was never about how many there were.
 //!
 //! - **Not the wall's own database.** `store.rs` is a SQLite file in
 //!   `%APPDATA%\dev.skein.studio` with no encryption at all, sitting beside
@@ -35,22 +38,20 @@
 //! Non-Windows arms return errors rather than silently no-oping, the same
 //! convention the job objects and the `to_screen` arithmetic follow.
 
-/// Where the token lives in the vault. Shaped like the urls GCM uses for its
-/// own entries so it sorts beside them in Credential Manager.
-#[cfg(windows)]
-const TARGET: &str = "dev.skein.studio/azdo-pat";
+/// Where the Azure DevOps token lives in the vault. Shaped like the urls GCM
+/// uses for its own entries so it sorts beside them in Credential Manager.
+///
+/// **Not renameable.** Public and un-gated so `creds.rs` can name it without a
+/// second copy of the string — this is the one the credential ladder reads with
+/// no front end involved, so it is the authority, and `test/integrations.test.ts`
+/// holds the front end's copy against it.
+pub const AZDO_TARGET: &str = "dev.skein.studio/azdo-pat";
 
 /// What the entry says it is for, to somebody reading the vault rather than the
 /// code. Not a secret and not used to find the entry.
-#[cfg(windows)]
-const WHO: &str = "azure devops (volery)";
+pub const AZDO_WHO: &str = "azure devops (volery)";
 
 /* ── windows ───────────────────────────────────────────────────────────────*/
-
-#[cfg(windows)]
-pub fn store(pat: &str) -> Result<(), String> {
-    store_at(TARGET, WHO, pat)
-}
 
 /// The same vault, for a caller that brings its own target.
 ///
@@ -109,7 +110,7 @@ pub fn store_at(target: &str, who: &str, pat: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 pub fn read() -> Option<String> {
-    read_at(TARGET)
+    read_at(AZDO_TARGET)
 }
 
 #[cfg(windows)]
@@ -145,11 +146,6 @@ pub fn read_at(target: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-pub fn clear() -> Result<(), String> {
-    clear_at(TARGET)
-}
-
-#[cfg(windows)]
 pub fn clear_at(target: &str) -> Result<(), String> {
     use windows::core::HSTRING;
     use windows::Win32::Security::Credentials::{CredDeleteW, CRED_TYPE_GENERIC};
@@ -159,7 +155,7 @@ pub fn clear_at(target: &str) -> Result<(), String> {
     match unsafe { CredDeleteW(&wide, CRED_TYPE_GENERIC, None) } {
         Ok(()) => Ok(()),
         /* Deleting a token that is not there is what the caller wanted to be
-           true, so it is not an error. `held()` is the only honest way to tell
+           true, so it is not an error. `held_at` is the only honest way to tell
            the two apart and the front end asks that separately. */
         Err(_) if !held_at(target) => Ok(()),
         Err(e) => Err(format!("windows would not delete the token: {e}")),
@@ -173,11 +169,6 @@ pub fn clear_at(target: &str) -> Result<(), String> {
 /// secret. Same reason `snapshot.azdo` reports no fragment of a credential — a
 /// snapshot is written to a file.
 #[cfg(windows)]
-pub fn held() -> bool {
-    held_at(TARGET)
-}
-
-#[cfg(windows)]
 pub fn held_at(target: &str) -> bool {
     read_at(target).is_some()
 }
@@ -185,23 +176,8 @@ pub fn held_at(target: &str) -> bool {
 /* ── everywhere else ───────────────────────────────────────────────────────*/
 
 #[cfg(not(windows))]
-pub fn store(_pat: &str) -> Result<(), String> {
-    Err("storing a token needs the Windows credential vault".into())
-}
-
-#[cfg(not(windows))]
 pub fn read() -> Option<String> {
     None
-}
-
-#[cfg(not(windows))]
-pub fn clear() -> Result<(), String> {
-    Err("storing a token needs the Windows credential vault".into())
-}
-
-#[cfg(not(windows))]
-pub fn held() -> bool {
-    false
 }
 
 #[cfg(not(windows))]

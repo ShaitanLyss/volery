@@ -765,7 +765,7 @@ fn azdo_parts(remote: &str) -> Option<(String, Vec<String>)> {
 
 /// The organisation a repository belongs to, or None if it is not on Azure
 /// DevOps at all. What the two widgets need, and all they need.
-fn org_of(remote: &str) -> Option<String> {
+pub(crate) fn org_of(remote: &str) -> Option<String> {
     azdo_parts(remote).map(|(org, _)| org)
 }
 
@@ -1835,61 +1835,46 @@ pub fn reviews_with(cache: &mut Cache, roots: &[String]) -> Reviews {
 /// moving the polls off to remove, reintroduced by the detach.
 #[tauri::command]
 pub async fn release_azdo(app: AppHandle) -> Result<(), String> {
-    crate::off_main(move || {
-        *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
-        /* Both, because the front end has one connection and detaching from it
-           means the wall has stopped asking anything of anybody. A GitHub token
-           left cached here would be a credential held by an app with no face
-           reading it, which is the property this command exists to keep. It is
-           also what makes a fresh `gh auth login` take effect without restarting
-           the app — the same thing it already did for `az login`. */
-        *app.state::<github::Github>().0.lock().unwrap() = github::Cache::default();
-    })
-    .await
+    crate::off_main(move || forget_creds(&app)).await
+}
+
+/// Drop both forges' caches, credentials included.
+///
+/// Its own function because there are two callers and they arrive for different
+/// reasons: `release_azdo` above, when the last widget comes off the wall, and
+/// `creds.rs`, when you replace or remove the stored token. The second is the
+/// one that would otherwise be a bug — the ladder is resolved once per
+/// organisation and held, so a token pasted into the panel would not be
+/// consulted until the wall stopped asking.
+///
+/// **Both forges, not only Azure DevOps.** The front end has one connection to
+/// them, so detaching from it means the wall has stopped asking anything of
+/// anybody; a GitHub token left cached here would be a credential held by an app
+/// with no face reading it, which is the property this exists to keep. It is
+/// also what makes a fresh `gh auth login` take effect without restarting the
+/// app — the same thing it already did for `az login`.
+///
+/// Callers are responsible for being off the main thread: the mutex is held for
+/// the whole of a reading pass, so waiting for it there freezes every card on
+/// the wall until the poll finishes.
+pub(crate) fn forget_creds(app: &AppHandle) {
+    *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
+    *app.state::<github::Github>().0.lock().unwrap() = github::Cache::default();
 }
 
 /* ── the token you entered ─────────────────────────────────────────────────
  *
- * Three commands over `vault.rs`, and the shape of them is the point: the front
- * end can say whether a token is held and can replace or remove it, and there is
- * no command that hands one back. Nothing outside `vault.rs` and the
+ * It used to be three commands here — `azdo_token`, `set_azdo_token`,
+ * `clear_azdo_token` — and they are `creds.rs` now, taking a service id rather
+ * than being named for one. Nothing about the shape changed and it is worth
+ * restating, because it is the property the generalisation had to keep: the
+ * front end can say whether a token is stored and can replace or remove it, and
+ * there is no command that hands one back. Nothing outside `vault.rs` and the
  * `Authorization` header ever holds the secret, so no panel can leak it, no
  * snapshot can carry it, and a screenshot of the wall cannot either.
  *
- * All three leave the main thread. Reading the vault is a syscall and cheap, but
- * `set` and `clear` also reset the cache — and that mutex is held across an
- * entire reading pass, which is the whole reason `release_azdo` is `async`. */
-
-/// Whether a token is stored. Never the token.
-#[tauri::command]
-pub async fn azdo_token() -> Result<bool, String> {
-    crate::off_main(crate::vault::held).await
-}
-
-/// Store one, replacing whatever was there.
-///
-/// The cache goes with it, for the reason `release_azdo` exists: `creds` is
-/// resolved once per organisation and held, so without this the ladder you just
-/// changed would not be consulted until the last widget came off the wall.
-#[tauri::command]
-pub async fn set_azdo_token(app: AppHandle, token: String) -> Result<(), String> {
-    crate::off_main(move || {
-        crate::vault::store(&token)?;
-        *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
-        Ok(())
-    })
-    .await?
-}
-
-#[tauri::command]
-pub async fn clear_azdo_token(app: AppHandle) -> Result<(), String> {
-    crate::off_main(move || {
-        crate::vault::clear()?;
-        *app.state::<Azdo>().0.lock().unwrap() = Cache::default();
-        Ok(())
-    })
-    .await?
-}
+ * What is left here is the read: `from_stored` up in the ladder, which is the
+ * fourth rung and the only one this app can do anything about. */
 
 #[cfg(test)]
 mod tests {
