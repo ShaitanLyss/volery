@@ -44,6 +44,8 @@ export type WidgetKind =
   | "pipelines"
   | "reviews"
   | "asana"
+  | "asanatasks"
+  | "asanahealth"
   | "billboard"
   | "sink"
   | "gates"
@@ -887,6 +889,82 @@ export const WIDGETS: WidgetSpec[] = [
           { value: "all", label: "everything, ticked or not" },
         ],
         "open",
+      ),
+    ],
+  },
+  {
+    /* What is on you, across every project. The cheapest useful reading here —
+       one request, no board to pick — and the one a developer glances at most.
+       Asana calls it "My tasks" and puts it behind a tab; the whole argument
+       for a wall is that a thing you check twenty times a day belongs on it. */
+    kind: "asanatasks",
+    label: "asana tasks",
+    family: "asana",
+    short: "what is on me",
+    note: "what is assigned to you, across every project",
+    box: { w: 300, h: 200 },
+    min: { w: 170, h: 78 },
+    params: [
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "list", label: "the list" },
+          { value: "counts", label: "late, today, this week" },
+        ],
+        "list",
+      ),
+      /* Same knob and same wording as the board's, because it is the same
+         question about the same filter — `completed_since=now` hides what has
+         been ticked rather than what is in a done column. */
+      choice(
+        "showing",
+        "showing",
+        [
+          { value: "open", label: "what is still open" },
+          { value: "all", label: "everything, ticked or not" },
+        ],
+        "open",
+      ),
+    ],
+  },
+  {
+    /* How every project is going. The reading Asana will not give you without a
+       portfolio: its status updates live one project at a time, so "is anything
+       off track anywhere" is a tab each. Same argument the pipelines widget
+       makes, one service over. */
+    kind: "asanahealth",
+    label: "asana health",
+    family: "asana",
+    short: "project health",
+    note: "how every project is going, worst first",
+    box: { w: 300, h: 180 },
+    min: { w: 150, h: 70 },
+    params: [
+      /* `dots` first, and it is the default for the reason the pipelines
+         widget's `live` is: the question is "is anything wrong anywhere", and a
+         grid of dots answers it without your having to read a word. The list is
+         for when the answer is yes and you want to know which. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "dots", label: "dots" },
+          { value: "list", label: "a list, worst first" },
+        ],
+        "dots",
+      ),
+      /* `mine` first, because sixty-four dots is a pattern rather than a
+         reading. The three you are a member of are the three you are
+         accountable for; the rest are somebody else's grid. */
+      choice(
+        "scope",
+        "showing",
+        [
+          { value: "mine", label: "the projects I am on" },
+          { value: "all", label: "every project in the workspace" },
+        ],
+        "mine",
       ),
     ],
   },

@@ -29,6 +29,16 @@
  * sounds like — is a different feature this file knows nothing about. See
  * `asana.rs`. */
 
+/** One custom field with a value on it.
+ *
+ *  `value` is Asana's `display_value` and never the typed one — its own advice,
+ *  and the reason is the one this app cares about: "integrations that don't
+ *  require the underlying type should use this field", so an enum, a number, a
+ *  date and a people field all arrive as a string somebody chose the formatting
+ *  of. A new custom field type therefore costs no code here, which is exactly
+ *  what a chip on a card wants. */
+export type Field = { name: string; value: string };
+
 /** A card on the board. Mirrors `asana.rs`'s `Card` exactly; the wire is the
  *  only place these two files meet, so they are written out rather than
  *  generated, and the Rust tests and these tests each hold their own end. */
@@ -45,7 +55,13 @@ export type Card = {
    *  ticked one stays in whatever column it was in. */
   completed: boolean;
   url: string;
+  /** The custom fields that have a value. Empty for a board that defines none,
+   *  which is most of them. */
+  fields: Field[];
 };
+
+/** A task on you, and the project it came out of. */
+export type Assigned = Card & { project: string };
 
 export type Column = {
   /** Empty for the unsectioned pile — a real place a task can be and not a
@@ -170,6 +186,267 @@ function sameOrder(a: Card[], b: Card[]): boolean {
  *  it. */
 export function columnOf(board: Board, task: string): string | null {
   return board.columns.find((c) => c.cards.some((k) => k.gid === task))?.gid ?? null;
+}
+
+/* ── a project's health ────────────────────────────────────────────────────*/
+
+/** A project, with what its owner last said about it. */
+export type Project = {
+  gid: string;
+  name: string;
+  url: string;
+  /** Whether you are a member of it — the three in your sidebar, not the
+   *  sixty-four your token can see. */
+  mine: boolean;
+  /** Asana's own word, verbatim, from whichever of the two status fields
+   *  answered. `health` is what to read; this is what arrived. */
+  status: string;
+  said: string;
+  owner: string;
+  due: string;
+};
+
+/** How a project is going, in one vocabulary.
+ *
+ *  Asana is mid-migration between two status fields with two vocabularies, and
+ *  this is where they meet — the same arrangement `azdo.ts` has for two forges'
+ *  build states, and deliberately not in Rust. Folding a vocabulary at the wire
+ *  is where a state one side has and the other does not gets quietly turned
+ *  into a lie; here both are visible and the projection is total.
+ *
+ *  `none` is a real answer and the most common one: most projects have never
+ *  had a status update written on them, and that is *not* "on track". A grid
+ *  that drew silence as green would be the most reassuring possible way to be
+ *  wrong. */
+export type Health =
+  | "on-track"
+  | "at-risk"
+  | "off-track"
+  | "on-hold"
+  | "done"
+  | "dropped"
+  | "none";
+
+export function healthOf(raw: string): Health {
+  switch (raw) {
+    /* `current_status_update.status_type` — the field new integrations are told
+       to prefer. */
+    case "on_track":
+      return "on-track";
+    case "at_risk":
+      return "at-risk";
+    case "off_track":
+      return "off-track";
+    case "on_hold":
+      return "on-hold";
+    case "complete":
+      return "done";
+    case "dropped":
+      return "dropped";
+    /* `current_status.color` — the deprecated one, five colours to six states.
+       Nothing maps to `dropped`, which is the gap the newer field exists to
+       fill and is why the migration happened. */
+    case "green":
+      return "on-track";
+    case "yellow":
+      return "at-risk";
+    case "red":
+      return "off-track";
+    case "blue":
+      return "on-hold";
+    default:
+      /* Including the empty string, which is what a project with no status
+         update answers, and an unrecognised word from a field Asana has
+         extended. Both mean "this grid cannot tell you", and inventing a state
+         for the second would be worse than admitting it. */
+      return "none";
+  }
+}
+
+/** What colour the wall draws it in.
+ *
+ *  The wall has four status colours and no others (`classify.ts`), so this is a
+ *  projection onto them rather than a palette of Asana's — no green, no yellow,
+ *  no blue, whatever the API called them. Colour is status here, and *these* are
+ *  the statuses this wall has.
+ *
+ *  - `off-track` is rust, because it is the one that wants you.
+ *  - `at-risk` is the half-strength amber `partiallySucceeded` uses: something
+ *    is wrong and nothing is broken yet, which is precisely what that tier is.
+ *  - `on-hold` is muted rather than amber. A project somebody deliberately
+ *    parked is not a project in trouble, and drawing it as one would make the
+ *    grid cry wolf about a decision that has already been taken.
+ *  - `on-track` is celadon: alive and fine, the same colour a card gets while
+ *    it is working.
+ *  - `done`, `dropped` and `none` are muted. Two of them are finished and the
+ *    third is unknown, and none of the three is a call to action. */
+export function healthTier(h: Health): "work" | "ask" | "soft" | "rest" | "fail" {
+  switch (h) {
+    case "off-track":
+      return "fail";
+    case "at-risk":
+      return "soft";
+    case "on-track":
+      return "work";
+    default:
+      return "rest";
+  }
+}
+
+/** The words, lowercase like every other sentence in this UI. */
+export function healthSaid(h: Health): string {
+  switch (h) {
+    case "on-track":
+      return "on track";
+    case "at-risk":
+      return "at risk";
+    case "off-track":
+      return "off track";
+    case "on-hold":
+      return "on hold";
+    case "done":
+      return "complete";
+    case "dropped":
+      return "dropped";
+    default:
+      return "nothing said";
+  }
+}
+
+/** How much each state wants you, worst first. */
+const WEIGHT: Record<Health, number> = {
+  "off-track": 0,
+  "at-risk": 1,
+  "on-hold": 2,
+  "on-track": 3,
+  none: 4,
+  done: 5,
+  dropped: 6,
+};
+
+/** Projects in the order they want looking at, then alphabetically.
+ *
+ *  Worst first, which is the same judgement `orderRuns` makes: the row you most
+ *  want is the one that just went wrong, and a grid sorted by name buries it
+ *  wherever the alphabet left it.
+ *
+ *  `none` sorts *after* `on-track` and before the finished ones. It is not
+ *  actionable — nobody has said anything — but it is not settled either, and a
+ *  wall of projects nobody reports on should be visible without being alarming.
+ *
+ *  Alphabetical within a state rather than by any other field, because the
+ *  second key's only job is to stop the grid reshuffling between polls. */
+export function orderHealth(projects: Project[]): Project[] {
+  return projects.slice().sort((a, b) => {
+    const d = WEIGHT[healthOf(a.status)] - WEIGHT[healthOf(b.status)];
+    return d !== 0 ? d : a.name.localeCompare(b.name);
+  });
+}
+
+/** How many projects are in each state, for the one line a grid has room for. */
+export function healthTally(projects: Project[]): Record<Health, number> {
+  const out: Record<Health, number> = {
+    "on-track": 0,
+    "at-risk": 0,
+    "off-track": 0,
+    "on-hold": 0,
+    done: 0,
+    dropped: 0,
+    none: 0,
+  };
+  for (const p of projects) out[healthOf(p.status)] += 1;
+  return out;
+}
+
+/* ── what is on you ────────────────────────────────────────────────────────*/
+
+/** Tasks in the order they want doing.
+ *
+ *  Late first and most-overdue first inside that, then today, then by due date,
+ *  then everything with no date at all — and anything ticked last whatever its
+ *  date, since a completed task is history rather than work.
+ *
+ *  A task with no due date sorting last is a judgement rather than a
+ *  convenience: an undated task is one nobody has committed to, and putting it
+ *  above something due on Friday would be the list arguing with the plan. */
+export function orderAssigned(tasks: Assigned[], today: string): Assigned[] {
+  const key = (t: Assigned): [number, string, string] => {
+    if (t.completed) return [3, "", t.name];
+    if (!t.due) return [2, "", t.name];
+    /* Late and due both sort by the date ascending, which puts the most overdue
+       at the top of the first group and the soonest at the top of the second —
+       one comparison for two intentions. */
+    return [t.due < today ? 0 : 1, t.due, t.name];
+  };
+  return tasks.slice().sort((a, b) => {
+    const [ag, ad, an] = key(a);
+    const [bg, bd, bn] = key(b);
+    if (ag !== bg) return ag - bg;
+    if (ad !== bd) return ad < bd ? -1 : 1;
+    return an.localeCompare(bn);
+  });
+}
+
+/** The counts the header carries. `soon` is the next seven days *including*
+ *  today, because "this week" is how anybody would read it — and `today` is
+ *  reported separately as well, since it is the one you act on now. */
+export function assignedTally(
+  tasks: Assigned[],
+  today: string,
+): { late: number; today: number; soon: number; open: number } {
+  let late = 0;
+  let onToday = 0;
+  let soon = 0;
+  let open = 0;
+  for (const t of tasks) {
+    if (t.completed) continue;
+    open += 1;
+    if (!t.due) continue;
+    if (t.due < today) late += 1;
+    else if (t.due === today) onToday += 1;
+    if (t.due >= today && withinDays(today, t.due, 6)) soon += 1;
+  }
+  return { late, today: onToday, soon, open };
+}
+
+function withinDays(from: string, to: string, days: number): boolean {
+  const gap = dayGap(from, to);
+  return gap !== null && gap >= 0 && gap <= days;
+}
+
+/** What the tasks list says when it has nothing to show, or null. */
+export function mineSaid(held: boolean, ready: boolean, count: number): string | null {
+  if (!held) return "no asana token — the tokens panel in the header takes one";
+  if (!ready) return "asking…";
+  /* Not "nothing to show". An empty list here is the good outcome and should
+     read like one — the same care `emptySaid` takes over its five silences. */
+  if (count === 0) return "nothing on you";
+  return null;
+}
+
+/** And what the health grid says. */
+export function healthSaidEmpty(
+  held: boolean,
+  ready: boolean,
+  count: number,
+): string | null {
+  if (!held) return "no asana token — the tokens panel in the header takes one";
+  if (!ready) return "asking…";
+  if (count === 0) return "no projects to report on";
+  return null;
+}
+
+/** The chips a card carries, capped.
+ *
+ *  Capped because a board can define eight custom fields and a card is four
+ *  lines tall: past two the card stops being readable, and a card you cannot
+ *  read is worse than one field you cannot see. The count of what was left off
+ *  is returned rather than dropped, for the reason `Board.more` is — a reading
+ *  that looks complete and is not is an instrument claiming to know something
+ *  it does not. */
+export function chipsOf(card: Card, limit: number): { shown: Field[]; rest: number } {
+  const shown = card.fields.slice(0, Math.max(0, limit));
+  return { shown, rest: card.fields.length - shown.length };
 }
 
 /* ── readings ──────────────────────────────────────────────────────────────*/

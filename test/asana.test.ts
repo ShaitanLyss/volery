@@ -1,14 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assignedTally,
   boardReading,
+  chipsOf,
   cardCount,
   columnOf,
   dueReading,
   emptySaid,
+  healthOf,
+  healthSaid,
+  healthSaidEmpty,
+  healthTally,
+  healthTier,
+  mineSaid,
+  orderAssigned,
+  orderHealth,
   plan,
   todayIso,
+  type Assigned,
   type Board,
   type Card,
+  type Health,
+  type Project,
 } from "../src/lib/asana";
 
 /* The board, and where a card goes when you drop it.
@@ -27,6 +40,7 @@ const card = (gid: string, over: Partial<Card> = {}): Card => ({
   due: "",
   completed: false,
   url: `https://app.asana.com/0/1/${gid}`,
+  fields: [],
   ...over,
 });
 
@@ -322,5 +336,263 @@ describe("the five silences", () => {
 
   test("a board with something on it says nothing", () => {
     expect(emptySaid(true, "999", board(), true)).toBeNull();
+  });
+});
+
+/* ── a project's health ───────────────────────────────────────────────────*/
+
+/* Asana is mid-migration between two status fields with two vocabularies, and
+ * `asana.ts` is where they meet. The projection has to be *total* — every word
+ * either field can answer has to land somewhere — because the alternative is a
+ * grid that draws a state it does not recognise as one it does. */
+
+const project = (over: Partial<Project> = {}): Project => ({
+  gid: "1",
+  name: "Nova",
+  url: "https://app.asana.com/0/1",
+  mine: true,
+  status: "",
+  said: "",
+  owner: "",
+  due: "",
+  ...over,
+});
+
+describe("how a project is going", () => {
+  test("every status_type the newer field answers is recognised", () => {
+    expect(healthOf("on_track")).toBe("on-track");
+    expect(healthOf("at_risk")).toBe("at-risk");
+    expect(healthOf("off_track")).toBe("off-track");
+    expect(healthOf("on_hold")).toBe("on-hold");
+    expect(healthOf("complete")).toBe("done");
+    expect(healthOf("dropped")).toBe("dropped");
+  });
+
+  test("every colour the deprecated field answers is recognised too", () => {
+    /* Both are documented and both arrive, so both are read — `asana.rs` asks
+       for each and carries whichever came. */
+    expect(healthOf("green")).toBe("on-track");
+    expect(healthOf("yellow")).toBe("at-risk");
+    expect(healthOf("red")).toBe("off-track");
+    expect(healthOf("blue")).toBe("on-hold");
+    expect(healthOf("complete")).toBe("done");
+  });
+
+  test("nothing said is its own state, and emphatically not on track", () => {
+    /* The most common answer, and the most dangerous one to get wrong: most
+       projects have never had a status update written on them, and a grid that
+       drew silence as green would be the most reassuring possible way to be
+       wrong about a portfolio. */
+    expect(healthOf("")).toBe("none");
+    expect(healthSaid(healthOf(""))).toBe("nothing said");
+  });
+
+  test("a word neither field has is unknown rather than invented", () => {
+    /* Asana extending either vocabulary must not make this file guess. */
+    expect(healthOf("chartreuse")).toBe("none");
+    expect(healthOf("ON_TRACK")).toBe("none");
+  });
+
+  test("it is drawn in the wall's four colours and no others", () => {
+    /* A projection onto `classify.ts`'s tiers rather than a palette of Asana's:
+       colour is status on this wall, and these are the statuses it has. */
+    const tiers = new Set(
+      (
+        [
+          "on-track",
+          "at-risk",
+          "off-track",
+          "on-hold",
+          "done",
+          "dropped",
+          "none",
+        ] as Health[]
+      ).map(healthTier),
+    );
+    for (const t of tiers) expect(["work", "ask", "soft", "rest", "fail"]).toContain(t);
+  });
+
+  test("off track is the only one drawn as broken", () => {
+    expect(healthTier("off-track")).toBe("fail");
+    expect(healthTier("at-risk")).toBe("soft");
+    expect(healthTier("on-track")).toBe("work");
+  });
+
+  test("a project somebody parked is not a project in trouble", () => {
+    /* `on-hold` is muted, not amber. Drawing a decision that has already been
+       taken as a warning is how a grid learns to cry wolf. */
+    expect(healthTier("on-hold")).toBe("rest");
+  });
+
+  test("the worst wants you first, and silence is not filed with the finished", () => {
+    const got = orderHealth([
+      project({ gid: "a", name: "A", status: "complete" }),
+      project({ gid: "b", name: "B", status: "" }),
+      project({ gid: "c", name: "C", status: "on_track" }),
+      project({ gid: "d", name: "D", status: "off_track" }),
+      project({ gid: "e", name: "E", status: "at_risk" }),
+      project({ gid: "f", name: "F", status: "on_hold" }),
+    ]).map((p) => p.gid);
+    expect(got).toEqual(["d", "e", "f", "c", "b", "a"]);
+  });
+
+  test("projects in one state keep a stable order between polls", () => {
+    /* Alphabetical is not a preference — it is what stops the grid reshuffling
+       under you every minute. */
+    const got = orderHealth([
+      project({ gid: "1", name: "Zebra", status: "on_track" }),
+      project({ gid: "2", name: "Apple", status: "on_track" }),
+    ]).map((p) => p.name);
+    expect(got).toEqual(["Apple", "Zebra"]);
+  });
+
+  test("the tally counts every project exactly once", () => {
+    const rows = [
+      project({ gid: "a", status: "off_track" }),
+      project({ gid: "b", status: "red" }),
+      project({ gid: "c", status: "" }),
+    ];
+    const t = healthTally(rows);
+    expect(t["off-track"]).toBe(2);
+    expect(t.none).toBe(1);
+    expect(Object.values(t).reduce((n, v) => n + v, 0)).toBe(rows.length);
+  });
+
+  test("the grid says why it is empty rather than looking empty", () => {
+    expect(healthSaidEmpty(false, true, 3)).toContain("no asana token");
+    expect(healthSaidEmpty(true, false, 0)).toBe("asking…");
+    expect(healthSaidEmpty(true, true, 0)).toBe("no projects to report on");
+    expect(healthSaidEmpty(true, true, 3)).toBeNull();
+  });
+});
+
+/* ── what is on you ──────────────────────────────────────────────────────*/
+
+const task = (over: Partial<Assigned> = {}): Assigned => ({
+  gid: "1",
+  name: "a task",
+  assignee: "Lyss Delprat",
+  due: "",
+  completed: false,
+  url: "https://app.asana.com/0/1/1",
+  fields: [],
+  project: "Nova",
+  ...over,
+});
+
+describe("what is on you, in the order it wants doing", () => {
+  const today = "2026-09-03";
+
+  test("late first, most overdue at the top", () => {
+    const got = orderAssigned(
+      [
+        task({ gid: "a", due: "2026-09-01" }),
+        task({ gid: "b", due: "2026-08-20" }),
+        task({ gid: "c", due: today }),
+      ],
+      today,
+    ).map((t) => t.gid);
+    expect(got).toEqual(["b", "a", "c"]);
+  });
+
+  test("then today, then soonest, then everything undated", () => {
+    const got = orderAssigned(
+      [
+        task({ gid: "later", due: "2026-10-01" }),
+        task({ gid: "none" }),
+        task({ gid: "today", due: today }),
+        task({ gid: "soon", due: "2026-09-04" }),
+      ],
+      today,
+    ).map((t) => t.gid);
+    expect(got).toEqual(["today", "soon", "later", "none"]);
+  });
+
+  test("an undated task sorts below a dated one, which is a judgement", () => {
+    /* An undated task is one nobody has committed to. Putting it above
+       something due on Friday would be the list arguing with the plan. */
+    const got = orderAssigned(
+      [task({ gid: "none" }), task({ gid: "friday", due: "2026-09-04" })],
+      today,
+    ).map((t) => t.gid);
+    expect(got).toEqual(["friday", "none"]);
+  });
+
+  test("anything ticked goes last, however overdue it was", () => {
+    /* A completed task is history rather than work, and a list that put a
+       finished thing at the top because its date had passed would be unusable
+       on any board where people tick things. */
+    const got = orderAssigned(
+      [
+        task({ gid: "done", due: "2026-01-01", completed: true }),
+        task({ gid: "open", due: "2026-12-01" }),
+      ],
+      today,
+    ).map((t) => t.gid);
+    expect(got).toEqual(["open", "done"]);
+  });
+
+  test("ordering does not mutate what it was given", () => {
+    const rows = [task({ gid: "b", due: "2026-09-09" }), task({ gid: "a", due: today })];
+    const before = rows.map((t) => t.gid);
+    orderAssigned(rows, today);
+    expect(rows.map((t) => t.gid)).toEqual(before);
+  });
+
+  test("the header counts late, today and the week, and ignores the ticked", () => {
+    const t = assignedTally(
+      [
+        task({ gid: "1", due: "2026-08-30" }),
+        task({ gid: "2", due: today }),
+        task({ gid: "3", due: "2026-09-08" }),
+        task({ gid: "4", due: "2026-09-30" }),
+        task({ gid: "5" }),
+        task({ gid: "6", due: "2026-08-01", completed: true }),
+      ],
+      today,
+    );
+    expect(t.late).toBe(1);
+    expect(t.today).toBe(1);
+    /* Today and the 8th, which is five days out. The 30th is not this week and
+       the ticked one is not counted at all. */
+    expect(t.soon).toBe(2);
+    expect(t.open).toBe(5);
+  });
+
+  test("the list says why it is empty, and an empty one is good news", () => {
+    /* "nothing on you" rather than "nothing to show": an empty list here is the
+       outcome you wanted and should read like one. */
+    expect(mineSaid(false, true, 0)).toContain("no asana token");
+    expect(mineSaid(true, false, 0)).toBe("asking…");
+    expect(mineSaid(true, true, 0)).toBe("nothing on you");
+    expect(mineSaid(true, true, 2)).toBeNull();
+  });
+});
+
+describe("the custom fields on a card", () => {
+  test("what fits is shown and what does not is counted", () => {
+    /* A board can define eight and a card is four lines tall. The count is
+       reported rather than dropped, for the reason `Board.more` is. */
+    const c = card("k", {
+      fields: [
+        { name: "Priority", value: "High" },
+        { name: "Effort", value: "3" },
+        { name: "Squad", value: "TX" },
+      ],
+    });
+    const { shown, rest } = chipsOf(c, 2);
+    expect(shown.map((f) => f.value)).toEqual(["High", "3"]);
+    expect(rest).toBe(1);
+  });
+
+  test("a card with no custom fields carries no chips and no remainder", () => {
+    const { shown, rest } = chipsOf(card("k"), 2);
+    expect(shown).toEqual([]);
+    expect(rest).toBe(0);
+  });
+
+  test("a limit of nothing is not a negative remainder", () => {
+    const c = card("k", { fields: [{ name: "Priority", value: "High" }] });
+    expect(chipsOf(c, 0)).toEqual({ shown: [], rest: 1 });
   });
 });
