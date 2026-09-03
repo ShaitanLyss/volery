@@ -1,0 +1,26 @@
+# Line endings, and only where they are load-bearing.
+#
+# `core.autocrlf` is `true` in this machine's *system* gitconfig, so without an
+# attribute every text file is checked out with CRLF. For source that is
+# harmless — rustc, tsc, bun and svelte-check all read either. For a shell
+# script it is fatal, and it fails in a way that names the wrong thing:
+#
+#     tools/check-gnu.sh: line 3: set: -: invalid option
+#     tools/check-gnu.sh: line 4: cd: $'tools/..\r': No such file or directory
+#     error: override toolchain 'stable-x86_64-pc-windows-gnu' is not installed
+#
+# The third message is a lie and is the expensive one — the toolchain *is*
+# installed, and `export RUSTUP_TOOLCHAIN=...` had picked up the carriage
+# return, so rustup went looking for a toolchain whose name ends in CR. Anyone
+# hitting it reasonably concludes their toolchain is missing and goes off to
+# install one, which is a long detour on a machine where the whole point of that
+# script is that MSVC cannot be installed. Sink `822ad886`.
+#
+# Converting the file was not enough on its own: with no attribute here, the
+# next checkout put the CRLF straight back. This is the half that makes it stick.
+#
+# **Kept narrow on purpose.** A blanket `* text=auto` would renormalize the whole
+# repository — an unreviewable diff, and a conflict in every file at once in a
+# tree several cards share. If a future file's endings matter, give it a line
+# here rather than reaching for the global switch.
+*.sh text eol=lf

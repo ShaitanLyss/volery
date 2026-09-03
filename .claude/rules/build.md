@@ -92,7 +92,69 @@ and WiX and NSIS produce what they produce under MSVC. Four things bite:
   cd src-tauri && cargo check --lib
   ```
 
-  That block is `tools/check-gnu.sh`, so the loop is one command:
+  That block is `tools/check-gnu.sh`, so the loop is one command — and **bare cargo is not
+  a supported invocation here.** Without those exports the build dies inside `tauri-winres`
+  with `windres: preprocessing failed` on a path that has lost its separators, and *nothing
+  in that message names the cause.* It has now been misread twice as a broken tree, most
+  recently by an agent verifying an unrelated commit, which cost a stretch of time and a
+  false alarm sent to three other cards sharing the checkout (sink `822ad886`).
+
+  Two things were changed so it cannot cost that a third time:
+
+  - **`src-tauri/build.rs` says so at the moment it happens.** Building for `windows-gnu`
+    with `SKEIN_REAL_WINDRES` unset emits `cargo:warning=` lines naming the shim, the
+    script, and this file. Cargo prints build-script warnings immediately before the error
+    that follows, so it lands where it is needed.
+
+    It is a **warning and not a panic**, and the reason is worth keeping: an unset
+    `SKEIN_REAL_WINDRES` proves the shim is unconfigured, not that the build must fail — a
+    machine whose PATH finds a genuine mingw `windres` first may be fine, and refusing to
+    build there would trade a confusing failure for a confident wrong one. Measured
+    2026-09-04: a bare `cargo check --lib` on this machine, build script forced to re-run,
+    emitted the warning and then **succeeded**. So the guard is honestly conditional
+    (*"if this build fails in windres…"*) because that is the strongest true claim.
+
+  - **The warning is only seen when the build script actually re-runs**, which is the
+    same condition under which the failure can occur, so it is not noise. Tauri's build
+    script declares only `rerun-if-env-changed=TAURI_CONFIG`, so changing `PATH` or
+    `SKEIN_REAL_WINDRES` does *not* invalidate a cached run — which is why bare cargo
+    appears to work right up until something else invalidates the fingerprint, and then
+    fails with no apparent connection to what you changed. A `touch src-tauri/build.rs`
+    forces it if you want to see either behaviour.
+
+### The script itself was unrunnable both ways, and that is fixed
+
+Worth its own heading because the workaround this file used to imply did not work either.
+
+`tools/check-gnu.sh` was committed with **CRLF**, and `core.autocrlf` is `true` in this
+machine's *system* gitconfig, so it came back CRLF on every checkout. Under Git Bash it
+failed three ways and the third was a lie:
+
+```text
+tools/check-gnu.sh: line 3: set: -: invalid option
+tools/check-gnu.sh: line 4: cd: $'tools/..\r': No such file or directory
+error: override toolchain 'stable-x86_64-pc-windows-gnu' is not installed
+```
+
+The toolchain *is* installed. `export RUSTUP_TOOLCHAIN=…` had taken the carriage return into
+the value, so rustup looked for a toolchain whose name ends in CR — and anyone reading that
+goes off to install a toolchain, on the one machine where that is impossible.
+
+**And the obvious workaround made it fail differently.** `tr -d '\r' < tools/check-gnu.sh |
+bash` sets `$0` to `bash`, so the old `cd "$(dirname "$0")/.."` resolved to `.` and the
+script died on `cd src-tauri` instead. Three fixes, and each covers a different half:
+
+- `.gitattributes` carries `*.sh text eol=lf`. **This is the half that makes it stick** —
+  converting the file alone was not enough, since the next checkout undid it. Kept
+  deliberately narrow: a blanket `* text=auto` would renormalize the whole repository, which
+  in a tree several cards are working in is an unreviewable diff and a conflict in
+  everything at once.
+- The script resolves its root with `git rev-parse --show-toplevel` rather than `$0`, so it
+  works run as a file *and* piped.
+- It checks for `.build-tools/windres.exe` first and prints the one-line `gcc` command if it
+  is missing. `.build-tools` is gitignored, so a fresh clone has no shim, and without that
+  check the failure is the same misleading windres error.
+
 
   ```bash
   bash tools/check-gnu.sh            # cargo check --lib
