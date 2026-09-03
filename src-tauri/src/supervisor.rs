@@ -255,6 +255,75 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
              your task to chase it. It outlives this conversation."
         ));
 
+        /* The two browsers, because nothing else can tell a card they differ.
+           `@playwright/mcp` writes its own tool descriptions and they are
+           upstream of this repo — they cannot mention a shared Chrome, a widget
+           somebody is watching, or a session vault, because none of those exist
+           in the world that server knows about. That is exactly the bar this
+           paragraph is held to: what the descriptions cannot say.
+
+           And the cost of *not* saying it is asymmetric, which is what makes it
+           worth the words. Two similarly-named browser tool families with
+           interchangeable-looking descriptions is a coin flip, and one side of
+           that flip is expensive: an agent that takes the shared browser and
+           clears cookies in its teardown — routine, and the correct instinct
+           everywhere else — signs every other card on the wall out of
+           everything at once. So the prohibition is stated before the choice
+           is.
+
+           It does **not** promise the browsers are signed in, and that was a
+           correction: they usually are, and the case that matters is the one
+           where they are not. An agent told "already signed in" that finds a
+           login page has been handed a contradiction, and the reflex under a
+           contradiction is to improvise — which here means trying credentials
+           it does not have, or worse, finding some. So the sentence says what
+           to do instead, and routes the ordinary answer to the person, because
+           signing in to a company's staging environment is theirs to do and not
+           a decision an agent should reach for.
+
+           `ask_user` is named rather than described because it is on this
+           server's loaded tier and is already the first paragraph's subject —
+           pointing at it costs four words, where explaining the gesture again
+           would cost thirty.
+
+           **It is deliberately half the length it wants to be**, and the cut is
+           Anthropic's own rule applied honestly: domain knowledge that is only
+           *sometimes* relevant belongs in a skill, loaded on demand, rather than
+           in the prompt every conversation pays for — and browser testing is
+           sometimes. What survives the cut is only what an agent cannot be told
+           later, because by then it has already done the damage: that the shared
+           browser is shared, that its cookies are not its own, and that a login
+           page is a question for the user rather than a puzzle. The vault, the
+           widget, `VOLERY_CDP_ENDPOINT` and the whole of why any of it is shaped
+           this way are in `.claude/rules/browser.md`, which loads when somebody
+           opens a file it governs and costs nothing otherwise. Anything that
+           wants to be added here should be added there instead unless it passes
+           the same test: would an agent that learned it too late already have
+           broken something for somebody else?
+
+           Left off a chat card with the rest of this block: a chat card spawns
+           with `--tools WebSearch,WebFetch` and no MCP server but this one, so
+           it has neither browser and telling it about them would be an
+           instruction to try something it will be refused. See `chat.md`.
+
+           NOTE the coupling, which is real and is recorded in
+           `.claude/rules/browser.md`: the two server *names* here come from the
+           user's own MCP configuration, which this app does not write. If they
+           are renamed this paragraph strands, and `named_tools` cannot catch it
+           because that guard is scoped to `MCP_PREFIX` by construction. The fix
+           is for Volery to supply both servers in the per-card `--mcp-config`
+           it already builds, and until it does, the test below is the only
+           thing holding the two ends together. */
+        prompt.push_str(&format!(
+            "\n\nTwo browsers are on this wall. `mcp__browser__*` is the one \
+             Chrome this studio owns — a single session every card shares and the \
+             user can watch, so never sign it out or clear its cookies. \
+             `mcp__playwright__*` is your own, seeded with the same sign-ins; use \
+             it if you need a different login or to clear state as you go. \
+             Neither is guaranteed to be signed in — ask with \
+             `{MCP_PREFIX}ask_user` rather than improvising credentials."
+        ));
+
         /* Project cards only, with the rest of this block. A chat card cannot
            write a file, so it has no scratch directory to name — and `do_list`
            refuses it the roster outright, so telling it which row is its own
@@ -1837,6 +1906,71 @@ mod tests {
     use super::{fold_dir_name, plain};
 
     /// Every backticked `mcp__skein__…` in the appended prompt, in order.
+    /// The two browsers are named, and named *correctly*.
+    ///
+    /// `named_tools` cannot hold this end down: it is scoped to `MCP_PREFIX` by
+    /// construction, so a backticked `mcp__browser__*` is invisible to every
+    /// assertion built on it. These servers come from the user's own MCP
+    /// configuration rather than from anything this app writes, which means the
+    /// prompt makes a claim the code cannot verify — the precise shape of the
+    /// bug that guard exists for, one server across.
+    ///
+    /// So this is deliberately literal. It will not notice the user renaming a
+    /// server, and nothing here can; what it *will* notice is somebody editing
+    /// this paragraph and dropping a name, or the prohibition, or the sentence
+    /// that routes an unsigned-in app to the person. Those are the edits that
+    /// have actually happened to this prompt before.
+    #[test]
+    fn the_prompt_tells_a_card_which_browser_is_shared() {
+        for me in fullest_and_none() {
+            let p = append_prompt(false, me.as_ref());
+            assert!(
+                p.contains("mcp__browser__"),
+                "the shared browser was not named: {p}"
+            );
+            assert!(
+                p.contains("mcp__playwright__"),
+                "the card's own browser was not named: {p}"
+            );
+            /* The prohibition has to survive an edit that shortens the
+               paragraph, because it is the half that protects the other cards
+               rather than this one — and it is therefore the half whose loss
+               this card would never notice. */
+            assert!(
+                p.contains("clear its cookies"),
+                "the paragraph no longer says not to clear the shared cookies: {p}"
+            );
+            /* And the correction that produced this sentence: the browsers are
+               USUALLY signed in, and an agent told they always are improvises
+               when it meets a login page. */
+            assert!(
+                !p.contains("already signed into"),
+                "the paragraph promises a sign-in it cannot guarantee: {p}"
+            );
+            assert!(
+                p.contains(&format!("{MCP_PREFIX}ask_user")),
+                "an unsigned-in app is not routed to the user: {p}"
+            );
+        }
+
+        /* A chat card has neither browser — `--tools WebSearch,WebFetch` and no
+           MCP server but this one — so telling it about them would be an
+           instruction to try what it will be refused. Same gate the roster and
+           the git paragraphs sit behind. */
+        let chat = append_prompt(true, None);
+        assert!(
+            !chat.contains("mcp__browser__") && !chat.contains("mcp__playwright__"),
+            "a chat card was told about browsers it cannot reach: {chat}"
+        );
+    }
+
+    /// `fullest()` and `None`, which is the pair every prompt assertion wants:
+    /// the clauses a named card adds, and the prompt a card gets before it has
+    /// been named at all.
+    fn fullest_and_none() -> Vec<Option<Selfhood>> {
+        vec![None, Some(fullest())]
+    }
+
     fn named_tools(prompt: &str) -> Vec<String> {
         prompt
             .split('`')

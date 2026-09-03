@@ -225,6 +225,51 @@ An agent that needs to *be somebody else*, or that clears state in its teardown,
 and that is also the one the widget shows, so it is what you use when you want to take the
 mouse yourself.
 
+## How a card learns any of this
+
+Configuration alone does not teach it. An agent sees `mcp__browser__*` and
+`mcp__playwright__*` with **`@playwright/mcp`'s own upstream descriptions**, which cannot
+mention a shared Chrome, a widget somebody is watching, or a vault — none of those exist in
+the world that server knows about. So it is a coin flip, and one side is expensive: an agent
+that takes the shared browser and clears cookies in its teardown, which is the correct
+instinct everywhere else, signs every other card out of everything at once.
+
+Four mechanisms were available and only one fits:
+
+- **An `mcp__skein__*` tool** is the wrong shape. An agent does not ask about a capability it
+  does not know exists, and making it visible means the roster's always-loaded tier, which
+  `ask.rs` is explicit about paying for.
+- **Guidance** (`guidance.rs`) is right for a *policy* — "in this project always use the
+  shared one" — and wrong for the capability. You would have to type it, and a card roused
+  from last month would not have it. Guidance is instructions, not documentation.
+- **A per-project `CLAUDE.md`** is per project, and this is wall-wide.
+- **`--append-system-prompt`** (`supervisor::append_prompt`), by that function's own stated
+  criterion: kept to what the tool descriptions cannot say, and left off a chat card — which
+  spawns with no browser at all, so telling it would be an instruction to try what it will be
+  refused.
+
+**And then it was cut to half its first draft**, which is the part worth carrying. Anthropic's
+own guidance is that knowledge only *sometimes* relevant belongs in a skill loaded on demand
+rather than in the prompt every conversation pays for, and that a bloated instruction file
+makes an agent ignore the instructions that matter. Browser testing is sometimes. So what
+stayed is only what an agent cannot usefully be told *later*, because by then the damage is
+done: that the shared browser is shared, that its cookies are not its own, and that a login
+page is a question for the person rather than a puzzle to solve with credentials it should not
+have. Everything else — the vault, the widget, `VOLERY_CDP_ENDPOINT`, the reasoning — is in
+this file, which loads when somebody opens a file it governs and costs nothing otherwise.
+
+The test for anything proposed for that paragraph in future: *would an agent that learned this
+too late already have broken something for somebody else?* If not, it belongs here.
+
+**One coupling is real and unguarded.** The two server *names* in that paragraph come from the
+user's own MCP configuration, which this app does not write, so the prompt makes a claim the
+code cannot verify. `named_tools` cannot catch a drift because that guard is scoped to
+`MCP_PREFIX` by construction — it only sees `mcp__skein__*`. The proper fix is for Volery to
+supply both servers in the per-card `--mcp-config` it already builds (`supervisor.rs`:803),
+which would also remove the dependency on global config entirely; until then
+`the_prompt_tells_a_card_which_browser_is_shared` is the only thing holding the two ends
+together, and it is deliberately literal about it.
+
 ## The vault
 
 `%APPDATA%\dev.skein.studio\sessions\wall.json`, in Playwright's own `storageState` shape,
