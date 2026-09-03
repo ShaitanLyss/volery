@@ -112,6 +112,16 @@ export class Asana {
   token: { held: () => boolean; ask: () => void } = { held: () => false, ask: () => {} };
 
   #watchers = new Map<string, Set<string>>();
+  /** Which readings have been created. A plain Set rather than asking
+   *  `boards` — and that is not a micro-optimisation.
+   *
+   *  `attach` is called from a *tracking* `$effect` in the widget, so a `if
+   *  (!this.boards[key])` there would be a tracked read of the very `$state`
+   *  the next line writes, which makes the effect re-run to settle a thing it
+   *  caused. `Pipelines`/`DevOps` is the proven shape for this — a plain
+   *  collection for the bookkeeping, runes only for what is drawn — and this is
+   *  the one place the Asana connection would have departed from it. */
+  #made = new Set<string>();
   #timer: ReturnType<typeof setInterval> | null = null;
   #busy = new Set<string>();
   #askingProjects = false;
@@ -155,7 +165,10 @@ export class Asana {
     if (!set.has(id)) {
       set.add(id);
       this.#watchers.set(key, set);
-      if (!this.boards[key]) this.boards[key] = new Watch();
+      if (!this.#made.has(key)) {
+        this.#made.add(key);
+        this.boards[key] = new Watch();
+      }
       void this.#poll(key);
       /* Asked once when a widget arrives rather than on a clock of its own. It
          is what tells "this board is empty" apart from "there is nothing to ask
