@@ -198,6 +198,94 @@ The catalogue's own invariant tests caught two mistakes in the first draft of th
 default missing from the literal options, and the knob being unreachable because the test
 fixture had never heard of `pages`. Both were the tests being right.
 
+## Two ways to have a browser, and the agent chooses
+
+The concurrency question was asked as "several agents testing several projects at once — is
+that supported?", and the answer needed splitting. `--isolated` gives every card its own
+browser and full parallelism, and does it by **throwing the session away** — which is the
+opposite of what was wanted, because signing into rise, nova, mikano and sdp once per card is
+the cost being complained about.
+
+A browser *per project* was proposed and rejected by the person who asked, correctly: the
+conflict is per **agent**, not per project. Two agents in one project may want to be two
+different users, and a project-shaped boundary cannot express that.
+
+So there are two servers and the agent picks:
+
+| | `browser` | `playwright` |
+|---|---|---|
+| what it is | the shared Chrome Volery owns | its own isolated browser |
+| sign-in | **live and shared** — one refresh serves everybody | **seeded** from the vault at start |
+| cost | ~450 MB for the whole wall | ~580 MB per card |
+| isolation | none; one cookie jar | complete |
+| blast radius | an agent clearing cookies logs everybody out | itself |
+
+An agent that needs to *be somebody else*, or that clears state in its teardown, takes
+`playwright`. One that wants the live session and the cheapest footprint takes `browser` —
+and that is also the one the widget shows, so it is what you use when you want to take the
+mouse yourself.
+
+## The vault
+
+`%APPDATA%\dev.skein.studio\sessions\wall.json`, in Playwright's own `storageState` shape,
+and `playwright` is pointed at it with `--storage-state`.
+
+**One file for the whole wall, not one per app.** `storageState` already carries cookies for
+every domain and local storage for every origin in a single document, so splitting it would
+be inventing a structure the format does not have — and a card would then have to know which
+file its app was in, which is knowledge it has no way to get.
+
+**Proved end to end** with `probe-browser.ts vault` before any of it was relied on: set a
+cookie and a localStorage token in the shared browser, capture, write, then seed a *fresh
+isolated* browser and read both back. Both carried. That is the whole feature in one run, and
+it is the branch to re-run if seeding ever stops working.
+
+Four decisions in the capture, each of which is a bug avoided rather than a preference:
+
+- **Local storage is read with `Runtime.evaluate`, not the `DOMStorage` domain.**
+  `DOMStorage.getDOMStorageItems` is keyed by `securityOrigin` in older Chromes and by
+  `storageKey` in newer ones, so using it means knowing which Chrome is on the other end.
+  `Object.entries(localStorage)` has meant one thing for fifteen years. This matters more
+  than it looks: an MSAL app keeps its token in local storage, so the cookie half alone would
+  carry next-auth sign-ins and silently miss Microsoft ones.
+- **Every open page is read, not only the attached ones.** You sign in on a tab; whether a
+  widget happened to be pointed at that tab is irrelevant to whether the session should be
+  saved. So the capture borrows a socket per target for the length of one question and closes
+  it, leaving `#live` undisturbed.
+- **A missing `sameSite` becomes `Lax` rather than `undefined`.** Playwright *requires* the
+  field and rejects the whole document without it, so one under-specified cookie would cost
+  every other sign-in in the vault. `Lax` is what Chrome itself treats absence as, so this is
+  a translation and not a guess.
+- **An expired cookie is dropped.** Seeding a dead one is worse than seeding nothing: the
+  browser takes it, the app reads it, and the failure looks like the app rather than like the
+  vault.
+
+Two more, on either side of the write:
+
+- **The vault is created empty at `setup`, before any card can spawn.**
+  `--storage-state <path>` with a path that does not exist is a browser that will not start,
+  and the card that discovers that is one whose turn is already spent. It cannot fail the
+  launch — unlike `Store::open` nothing here is load-bearing for drawing the wall, so it logs
+  and carries on, which is the one place in `setup` where that is the right answer.
+- **The write is atomic, and parsed before it happens.** Several agents may be starting at the
+  moment you press save, and a card reading a half-written vault gets a parse error and no
+  session. Write to a sibling and rename. Parsing first is the same argument one step earlier:
+  this file is handed to every seeded browser on the wall, so one that will not parse costs
+  every card at once, and it is cheaper to refuse it than to write it.
+
+**Saving is a widget action rather than a panel entry**, because it is the gesture you make
+immediately after signing in and the browser you signed into is the thing on screen. It is
+also the one button on a log-family face that cannot destroy anything — the rule that keeps
+stop buttons out of these widgets is about a mis-drag killing a server, and writing a file
+twice is writing it once. It says what it wrote, with numbers: a bare "saved" is
+indistinguishable from having written an empty file, which is exactly the case worth noticing
+— you pressed it before signing in, or on a page whose auth lives somewhere this cannot
+reach.
+
+**What the vault cannot carry**: IndexedDB, sessionStorage, and service-worker caches.
+`storageState` covers cookies and local storage and nothing else. An app keeping its token in
+`sessionStorage` is one where only the shared `browser` will do.
+
 ## What is not built
 
 - **Volery does not start the browser by itself.** No auto-start at launch, because that is
@@ -221,6 +309,7 @@ fixture had never heard of `pages`. Both were the tests being right.
 node --experimental-strip-types tools/probe-browser.ts cost      # per-browser vs per-page
 node --experimental-strip-types tools/probe-browser.ts collide   # two clients, one profile
 node --experimental-strip-types tools/probe-browser.ts share     # agent + widget on one page
+node --experimental-strip-types tools/probe-browser.ts vault     # sign in once, seed an isolated browser
 ```
 
 Playwright's `launch()` **never returns under Bun** on this machine — the import resolves and

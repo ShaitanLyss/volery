@@ -234,6 +234,8 @@
   const note = $derived(
     pane.fault
       ? pane.fault
+      : pane.saved && cfg.variant === "page" && !frame
+        ? pane.saved
       : !pane.status.running
         ? null
         : !subject
@@ -263,6 +265,19 @@
         onclick={() => pane.reload(subject!.id)}
       >
         reload
+      </button>
+      <!-- The vault. Deliberately on the widget rather than in a panel: it is
+           the gesture you make immediately after signing in, and the browser
+           you signed into is the thing on screen. Unlike the three logs' rule
+           about stop buttons this one cannot destroy anything — it writes a
+           file, and writing it twice is writing it once. -->
+      <button
+        class="act"
+        title="save these sign-ins so cards that want their own browser do not have to sign in again"
+        disabled={pane.saving}
+        onclick={() => void pane.saveSession()}
+      >
+        {pane.saving ? "saving…" : "save sign-ins"}
       </button>
       {#if cfg.variant === "page" && !cfg.interactive}
         <!-- Said out loud, because a page that silently ignores clicks is

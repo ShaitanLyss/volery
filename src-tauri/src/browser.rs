@@ -488,6 +488,87 @@ fn urlencoding_minimal(url: &str) -> String {
     out
 }
 
+/* ── the session vault ─────────────────────────────────────────────────── */
+
+/// Where the shared sign-ins live.
+///
+/// One file for the whole wall, not one per app: Playwright's `storageState`
+/// carries cookies for every domain and local storage for every origin in a
+/// single document, so splitting it would be this app inventing a structure the
+/// format does not have — and a card would then need to know which file its app
+/// was in, which is knowledge it has no way to get.
+///
+/// Under the app data folder for the reason the database and the browser
+/// profile are: `dev.skein.studio` is the durable identity and is deliberately
+/// not renamed when the product is.
+pub fn session_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?
+        .join("sessions");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
+    Ok(dir.join("wall.json"))
+}
+
+/// Make sure the vault exists, and is a vault, before anything reads it.
+///
+/// Called from `setup`, and the reason is a failure mode with no good symptom:
+/// `@playwright/mcp --storage-state <path>` with a path that does not exist is
+/// a browser that will not start, and the card that finds out is one whose turn
+/// is already spent. An empty state seeds nothing and breaks nothing, so the
+/// honest default is a valid empty file rather than an absent one.
+///
+/// Deliberately returns nothing and cannot fail the launch. A wall that will
+/// not open because it could not pre-create a convenience file would be worse
+/// than the convenience is worth — and unlike `Store::open`, nothing here is
+/// load-bearing for drawing the wall. It logs and carries on, which is the one
+/// case where that is the right answer.
+pub fn ensure_session_file(app: &AppHandle) {
+    let Ok(path) = session_path(app) else {
+        log::warn!("browser: no app data directory, so no session vault");
+        return;
+    };
+    if path.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::write(&path, r#"{"cookies":[],"origins":[]}"#) {
+        log::warn!("browser: could not create {}: {e}", path.display());
+    }
+}
+
+/// Where the vault is, for the widget to say and for a person to paste.
+#[tauri::command]
+pub async fn browser_session_file(app: AppHandle) -> Result<String, String> {
+    Ok(session_path(&app)?.display().to_string())
+}
+
+/// Write the vault.
+///
+/// Takes the assembled JSON rather than going and getting it, because getting
+/// it means CDP commands on a live socket and that socket is the front end's —
+/// the same division every other part of this file makes. Rust's half is that
+/// the write is atomic: a card reading a half-written vault gets a parse error
+/// and no session, and it would get it exactly when several agents were
+/// starting at once. Write to a sibling and rename, which on Windows is
+/// `MoveFileEx` with replace semantics and is what `std::fs::rename` does.
+#[tauri::command]
+pub async fn browser_save_session(app: AppHandle, state: String) -> Result<String, String> {
+    /* Parsed here rather than trusted: this file is handed to every seeded
+       browser on the wall, and one that will not parse costs every card its
+       sign-in at once. Cheaper to refuse it than to write it. */
+    serde_json::from_str::<serde_json::Value>(&state)
+        .map_err(|e| format!("that is not a session document: {e}"))?;
+    let path = session_path(&app)?;
+    let tmp = path.with_extension("json.writing");
+    crate::off_main(move || {
+        std::fs::write(&tmp, state).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("replace {}: {e}", path.display()))?;
+        Ok::<String, String>(path.display().to_string())
+    })
+    .await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

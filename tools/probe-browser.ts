@@ -15,6 +15,7 @@
  *   node --experimental-strip-types tools/probe-browser.ts cost     # memory
  *   node --experimental-strip-types tools/probe-browser.ts collide  # one profile, two clients
  *   node --experimental-strip-types tools/probe-browser.ts share    # agent + widget, one page
+ *   node --experimental-strip-types tools/probe-browser.ts vault    # sign in once, seed an isolated browser
  *   node --experimental-strip-types tools/probe-browser.ts          # all three
  *
  * Needs a Playwright on this machine. It deliberately does **not** add one to
@@ -27,7 +28,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -297,6 +298,111 @@ async function share(chromium: any) {
   await sleep(1500);
 }
 
+/* ── vault: does a seeded browser actually arrive signed in? ───────────── */
+
+/** The whole session-sharing design, end to end.
+ *
+ * Sign in somewhere (here: set a cookie and a localStorage item, which is what
+ * a next-auth cookie and an MSAL token look like from the outside), capture it
+ * the way `pane.svelte.ts` does — `Network.getAllCookies` plus
+ * `Runtime.evaluate` over `Object.entries(localStorage)` — write the vault, and
+ * then check a *fresh isolated* browser seeded from it can see both.
+ *
+ * If this fails, the "agents keep their own browser but skip the sign-in" half
+ * of the design does not work and there is no point in the rest.
+ */
+async function vault(chromium: any) {
+  console.log("\n=== vault ===");
+  console.log("  sign in once in a shared browser, seed an isolated one from it.\n");
+
+  const PORT = 9336;
+  const dir = path.join(HERE, "vaultsrc");
+  const statePath = path.join(HERE, "wall.json");
+  /* A real http origin, because cookies are not stored for `data:` or `file:`
+     URLs at all — a probe on one of those would report the vault empty and the
+     cause would look like the capture rather than the page. */
+  const ORIGIN = "http://localhost:3000";
+
+  const chrome = spawn(
+    CHROME,
+    [
+      `--remote-debugging-port=${PORT}`,
+      `--user-data-dir=${dir}`,
+      "--remote-allow-origins=*",
+      "--no-first-run",
+      "--no-default-browser-check",
+    ],
+    { stdio: "ignore" },
+  );
+  for (let i = 0; i < 40; i++) {
+    try {
+      await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+      break;
+    } catch {
+      await sleep(250);
+    }
+  }
+
+  const shared = await chromium.connectOverCDP(`http://127.0.0.1:${PORT}`);
+  const page = shared.contexts()[0].pages()[0] ?? (await shared.contexts()[0].newPage());
+  await page.goto(`${ORIGIN}/auth/signin`, { waitUntil: "load", timeout: 20000 }).catch(() => {});
+  await page.evaluate(`
+    document.cookie = 'session-token=abc123; path=/';
+    localStorage.setItem('msal.token', 'xyz789');
+  `);
+  console.log("  1. 'signed in': a cookie and a localStorage token set");
+
+  /* Captured exactly as pane.svelte.ts does it. */
+  const jar = await page.context().cookies();
+  const entries = JSON.parse(
+    await page.evaluate(`JSON.stringify(Object.entries(localStorage))`),
+  );
+  const state = {
+    cookies: jar
+      .filter((c: any) => c.name && c.domain)
+      .map((c: any) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path || "/",
+        expires: c.expires < 0 ? -1 : Math.floor(c.expires),
+        httpOnly: !!c.httpOnly,
+        secure: !!c.secure,
+        sameSite: ["Strict", "None"].includes(c.sameSite) ? c.sameSite : "Lax",
+      })),
+    origins: [
+      { origin: ORIGIN, localStorage: entries.map(([name, value]: any) => ({ name, value })) },
+    ],
+  };
+  writeFileSync(statePath, JSON.stringify(state));
+  console.log(
+    `  2. vault written: ${state.cookies.length} cookies, ${state.origins[0].localStorage.length} stored items`,
+  );
+
+  await shared.close();
+  try {
+    execFileSync("taskkill", ["/T", "/F", "/PID", String(chrome.pid)], { stdio: "ignore" });
+  } catch {
+    chrome.kill();
+  }
+  await sleep(1200);
+
+  /* And now the half that matters: a browser with NOTHING of its own. */
+  const fresh = await chromium.launch({ channel: "chrome", headless: true });
+  const ctx = await fresh.newContext({ storageState: statePath });
+  const p2 = await ctx.newPage();
+  await p2.goto(`${ORIGIN}/auth/signin`, { waitUntil: "load", timeout: 20000 }).catch(() => {});
+  const seenCookie = (await ctx.cookies()).find((c: any) => c.name === "session-token");
+  const seenLocal = await p2.evaluate(`localStorage.getItem('msal.token')`);
+  console.log(`  3. fresh isolated browser, seeded from the vault:`);
+  console.log(`     cookie       : ${seenCookie ? seenCookie.value : "MISSING"}`);
+  console.log(`     localStorage : ${seenLocal ?? "MISSING"}`);
+  console.log(
+    `  => ${seenCookie?.value === "abc123" && seenLocal === "xyz789" ? "BOTH CARRIED — an agent with its own browser arrives signed in" : "INCOMPLETE"}`,
+  );
+  await fresh.close();
+}
+
 /* ── main ──────────────────────────────────────────────────────────────── */
 
 const which = process.argv[2] ?? "all";
@@ -319,6 +425,7 @@ try {
   if (which === "cost" || which === "all") await cost(chromium);
   if (which === "collide" || which === "all") await collide(chromium);
   if (which === "share" || which === "all") await share(chromium);
+  if (which === "vault" || which === "all") await vault(chromium);
 } finally {
   /* Only our own subdirectory. `.scratch/` is shared by every card on this
      wall and sweeping it has already cost somebody a measurement harness.

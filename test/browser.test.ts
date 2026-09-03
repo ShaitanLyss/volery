@@ -10,6 +10,10 @@ import {
   modifiersOf,
   networkRow,
   normalizeConfig,
+  cookieFor,
+  storageStateFrom,
+  savedWhat,
+  EMPTY_STATE,
   shortUrl,
   toPage,
   toneOfConsole,
@@ -299,5 +303,98 @@ describe("reading the knobs back", () => {
     expect(normalizeConfig({ target: 7 }).target).toBe(FOLLOW);
     expect(normalizeConfig({ target: "" }).target).toBe(FOLLOW);
     expect(normalizeConfig({}).target).toBe(FOLLOW);
+  });
+});
+
+describe("the session vault", () => {
+  const NOW = 1_800_000_000;
+
+  test("a cookie CDP never gave a sameSite is Lax, not dropped", () => {
+    /* Playwright REQUIRES sameSite and rejects the whole file without it, so a
+       missing value must not become undefined — it would cost every other
+       cookie in the vault, not just this one. Lax is what Chrome itself treats
+       absence as. */
+    const c = cookieFor({ name: "s", value: "v", domain: "x.com" });
+    expect(c).not.toBeNull();
+    expect(c!.sameSite).toBe("Lax");
+    expect(c!.path).toBe("/");
+  });
+
+  test("Strict and None survive; anything unrecognised becomes Lax", () => {
+    expect(cookieFor({ name: "a", domain: "x", sameSite: "Strict" })!.sameSite).toBe("Strict");
+    expect(cookieFor({ name: "a", domain: "x", sameSite: "None" })!.sameSite).toBe("None");
+    expect(cookieFor({ name: "a", domain: "x", sameSite: "Unspecified" })!.sameSite).toBe("Lax");
+  });
+
+  test("a session cookie stays -1, both ways CDP spells it", () => {
+    expect(cookieFor({ name: "a", domain: "x", expires: -1 })!.expires).toBe(-1);
+    expect(cookieFor({ name: "a", domain: "x", session: true, expires: 999 })!.expires).toBe(-1);
+  });
+
+  test("a fractional expiry is floored rather than carried into every browser", () => {
+    expect(cookieFor({ name: "a", domain: "x", expires: 1800000000.7331 })!.expires).toBe(
+      1_800_000_000,
+    );
+  });
+
+  /* Seeding a dead cookie is worse than seeding nothing: the browser takes it,
+     the app reads it, and the failure looks like the app. */
+  test("an expired cookie is dropped", () => {
+    expect(cookieFor({ name: "a", domain: "x", expires: NOW - 10 }, NOW)).toBeNull();
+    expect(cookieFor({ name: "a", domain: "x", expires: NOW + 10 }, NOW)).not.toBeNull();
+    /* And a session cookie is never "expired", whatever the clock says. */
+    expect(cookieFor({ name: "a", domain: "x", expires: -1 }, NOW)).not.toBeNull();
+  });
+
+  test("a cookie with no name or no domain cannot be restored, so it is dropped", () => {
+    expect(cookieFor({ value: "v", domain: "x" })).toBeNull();
+    expect(cookieFor({ name: "a", value: "v" })).toBeNull();
+  });
+
+  test("two tabs on one origin merge, and the later entry wins", () => {
+    /* The direction matters: a stale tab's older token must not overwrite the
+       fresh one from the tab you just signed in on. */
+    const s = storageStateFrom(
+      [],
+      [
+        { origin: "https://nova", entries: [["tok", "old"], ["keep", "1"]] },
+        { origin: "https://nova", entries: [["tok", "new"]] },
+      ],
+    );
+    expect(s.origins).toHaveLength(1);
+    const items = Object.fromEntries(s.origins[0].localStorage.map((i) => [i.name, i.value]));
+    expect(items).toEqual({ tok: "new", keep: "1" });
+  });
+
+  test("an origin with nothing in it is left out", () => {
+    const s = storageStateFrom([], [{ origin: "https://a", entries: [] }]);
+    expect(s.origins).toEqual([]);
+  });
+
+  test("a page with no real origin is left out", () => {
+    const s = storageStateFrom([], [
+      { origin: "null", entries: [["a", "1"]] },
+      { origin: "", entries: [["a", "1"]] },
+    ]);
+    expect(s.origins).toEqual([]);
+  });
+
+  test("the empty vault is valid, because a missing file will not start a browser", () => {
+    expect(EMPTY_STATE).toEqual({ cookies: [], origins: [] });
+  });
+
+  test("what was saved is said with numbers, or the empty case is named", () => {
+    expect(savedWhat(EMPTY_STATE)).toContain("nothing to save");
+    expect(savedWhat({ cookies: [cookieFor({ name: "a", domain: "x" })!], origins: [] })).toBe(
+      "saved 1 cookie",
+    );
+    const two = storageStateFrom(
+      [
+        { name: "a", domain: "x" },
+        { name: "b", domain: "y" },
+      ],
+      [{ origin: "https://a", entries: [["k", "v"]] }],
+    );
+    expect(savedWhat(two)).toBe("saved 2 cookies and 1 origin's stored items");
   });
 });

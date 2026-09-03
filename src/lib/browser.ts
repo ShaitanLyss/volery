@@ -399,3 +399,135 @@ export function normalizeConfig(c: WidgetConfig): Config {
     interactive: c["interactive"] !== false,
   };
 }
+
+/* ── the session vault ─────────────────────────────────────────────────── */
+
+/** One cookie, in the shape Playwright's `storageState` wants. */
+export type StateCookie = {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  /** Seconds since the epoch, or -1 for a session cookie. */
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "Strict" | "Lax" | "None";
+};
+
+export type StorageState = {
+  cookies: StateCookie[];
+  origins: { origin: string; localStorage: { name: string; value: string }[] }[];
+};
+
+/** A vault with nothing in it, which is still a valid one.
+ *
+ * Written before any card spawns, because `--storage-state` pointing at a file
+ * that does not exist is a browser that will not start — and the card that
+ * discovers that is one whose whole session is already lost. An empty vault
+ * seeds nothing and breaks nothing. */
+export const EMPTY_STATE: StorageState = { cookies: [], origins: [] };
+
+/** Translate one CDP cookie, or drop it.
+ *
+ * Three translations, each of which is a real difference rather than a rename:
+ *
+ * - **`sameSite` is optional in CDP and required by Playwright.** Chrome omits
+ *   it for a cookie that never declared one, and treats that as `Lax`, so `Lax`
+ *   is what absence means rather than a guess. A missing value would make
+ *   Playwright reject the whole file, losing every other cookie with it.
+ * - **`expires` is a float in CDP.** Playwright wants a number it can compare;
+ *   a fractional second here is noise that survives into every seeded browser.
+ * - **An expired cookie is dropped.** Seeding one is worse than seeding
+ *   nothing: the browser accepts it, the app reads it, and the sign-in fails in
+ *   a way that looks like the app rather than like the vault.
+ *
+ * `null` for anything without a name or a domain — a cookie that cannot be
+ * addressed cannot be restored, and Playwright errors on the file rather than
+ * skipping the row.
+ */
+export function cookieFor(
+  c: {
+    name?: string;
+    value?: string;
+    domain?: string;
+    path?: string;
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: string;
+    session?: boolean;
+  },
+  now = 0,
+): StateCookie | null {
+  if (!c.name || !c.domain) return null;
+  const raw = typeof c.expires === "number" ? c.expires : -1;
+  /* A session cookie is -1 either because CDP said so or because it said
+     `session: true`; both spellings turn up. */
+  const expires = c.session || raw < 0 ? -1 : Math.floor(raw);
+  if (expires >= 0 && now > 0 && expires <= now) return null;
+  const same = c.sameSite;
+  return {
+    name: c.name,
+    value: c.value ?? "",
+    domain: c.domain,
+    path: c.path || "/",
+    expires,
+    httpOnly: c.httpOnly === true,
+    secure: c.secure === true,
+    sameSite: same === "Strict" || same === "None" ? same : "Lax",
+  };
+}
+
+/** Assemble a vault from what the browser was asked for.
+ *
+ * `origins` arrives one entry per open page, so the same origin can turn up
+ * twice — two tabs on one app is the ordinary case. They are merged rather than
+ * both kept, because Playwright applies the entries in order and a stale tab's
+ * older token would overwrite the fresh one from the tab you just signed in on.
+ * Later entries win, which is the direction that cannot lose a new sign-in.
+ *
+ * Origins with nothing in them are dropped. An empty `localStorage` array is
+ * not the same as not having visited the origin, but it restores identically
+ * and it is length in a file somebody may read.
+ */
+export function storageStateFrom(
+  cookies: Parameters<typeof cookieFor>[0][],
+  origins: { origin: string; entries: [string, string][] }[],
+  now = 0,
+): StorageState {
+  const merged = new Map<string, Map<string, string>>();
+  for (const o of origins) {
+    if (!o.origin || o.origin === "null") continue;
+    const into = merged.get(o.origin) ?? new Map<string, string>();
+    for (const [name, value] of o.entries) into.set(name, value);
+    merged.set(o.origin, into);
+  }
+  return {
+    cookies: cookies.map((c) => cookieFor(c, now)).filter((c): c is StateCookie => c !== null),
+    origins: [...merged.entries()]
+      .filter(([, items]) => items.size > 0)
+      .map(([origin, items]) => ({
+        origin,
+        localStorage: [...items.entries()].map(([name, value]) => ({ name, value })),
+      })),
+  };
+}
+
+/** What was saved, in one line, for the widget to say back.
+ *
+ * A "saved" with no numbers behind it is indistinguishable from a save that
+ * wrote an empty file, which is exactly the failure worth noticing — you
+ * pressed it before signing in, or on a page whose auth lives somewhere this
+ * cannot reach. */
+export function savedWhat(s: StorageState): string {
+  const c = s.cookies.length;
+  const o = s.origins.length;
+  if (c === 0 && o === 0) return "nothing to save — no cookies and no stored items";
+  const bits = [`${c} cookie${c === 1 ? "" : "s"}`];
+  /* The apostrophe moves with the plural — "1 origin's" and "2 origins'" —
+     which a `${o === 1 ? "" : "s"}'` before a fixed apostrophe gets wrong in
+     the singular. */
+  if (o > 0) bits.push(`${o} origin${o === 1 ? "'s" : "s'"} stored items`);
+  return `saved ${bits.join(" and ")}`;
+}

@@ -282,6 +282,12 @@ pub fn run() {
                `applog::install`. */
             applog::install(app.handle().clone());
 
+            /* Before any card can spawn, because a card's seeded browser is
+               pointed at this file by a static argument and a path that does
+               not exist is a browser that will not start. Cannot fail the
+               launch — see `browser::ensure_session_file`. */
+            browser::ensure_session_file(app.handle());
+
             let dir = app
                 .path()
                 .app_data_dir()
@@ -395,6 +401,8 @@ pub fn run() {
             supervisor::conversation_holding,
             supervisor::settle_conversation_fleet,
             browser::browser_status,
+            browser::browser_session_file,
+            browser::browser_save_session,
             browser::browser_start,
             browser::browser_stop,
             browser::browser_targets,

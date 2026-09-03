@@ -40,6 +40,8 @@ import {
   failedRow,
   frameUrl,
   networkRow,
+  savedWhat,
+  storageStateFrom,
   type FrameMeta,
   type KeyMsg,
 } from "./browser";
@@ -81,6 +83,11 @@ type Live = {
    *  log-only widget attaches to the same page and must not pay for frames. */
   seeing: Set<string>;
   next: number;
+  /** Replies still owed, by request id. Most of this file is fire-and-forget —
+   *  a frame needs no answer and an input event has none — but reading the
+   *  session out of a browser is a question, so those few calls need their
+   *  answers matched back. */
+  owed: Map<number, (v: unknown) => void>;
 };
 
 export class Pane {
@@ -237,7 +244,13 @@ export class Pane {
       this.fault = String(e);
       return null;
     }
-    const live: Live = { socket, watchers: new Set(), seeing: new Set(), next: 0 };
+    const live: Live = {
+      socket,
+      watchers: new Set(),
+      seeing: new Set(),
+      next: 0,
+      owed: new Map(),
+    };
     this.#live.set(target.id, live);
 
     socket.onopen = () => {
@@ -290,14 +303,25 @@ export class Pane {
   #ingest(targetId: string, live: Live, data: unknown) {
     if (typeof data !== "string") return;
     let msg: {
+      id?: number;
       method?: string;
       params?: Record<string, unknown>;
+      result?: unknown;
     };
     try {
       msg = JSON.parse(data);
     } catch {
       return;
     }
+    /* A reply rather than an event: it carries an id and no method. Resolved
+       and returned, since nothing below has a case for it. */
+    const id = (msg as { id?: number }).id;
+    if (typeof id === "number" && live.owed.has(id)) {
+      live.owed.get(id)!((msg as { result?: unknown }).result ?? {});
+      live.owed.delete(id);
+      return;
+    }
+
     const p = (msg.params ?? {}) as Record<string, never>;
 
     switch (msg.method) {
@@ -389,6 +413,160 @@ export class Pane {
   reload(targetId: string) {
     const live = this.#live.get(targetId);
     if (live) this.#send(live, "Page.reload", {});
+  }
+
+  /* ── the session vault ───────────────────────────────────────────────── */
+
+  /** What the last save wrote, so the widget can say it back. */
+  saved = $state<string | null>(null);
+  saving = $state(false);
+
+  /** Ask one question of a socket and wait for the answer. */
+  #call(live: Live, method: string, params: Record<string, unknown> = {}): Promise<any> {
+    return new Promise((resolve) => {
+      if (live.socket.readyState !== WebSocket.OPEN) return resolve({});
+      const n = ++live.next;
+      live.owed.set(n, resolve as (v: unknown) => void);
+      /* A reply that never comes must not hang the save. Five seconds is far
+         past a loopback round trip, and resolving empty degrades to "that page
+         contributed nothing" rather than to a promise nobody settles. */
+      setTimeout(() => {
+        if (live.owed.delete(n)) resolve({});
+      }, 5000);
+      live.socket.send(JSON.stringify({ id: n, method, params }));
+    });
+  }
+
+  /** Open a socket, ask, close.
+   *
+   * Every open page is read, not only the ones a widget happens to be attached
+   * to — you sign in on one tab and the vault should carry it whether or not
+   * you were watching that tab through a widget. So this borrows a socket for
+   * the length of one question rather than reusing `#live`, and takes care not
+   * to disturb it: a page already attached keeps its own connection, and this
+   * one is closed the moment it has answered.
+   */
+  async #ask(target: Target, method: string, params: Record<string, unknown> = {}): Promise<any> {
+    if (!target.ws) return {};
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(target.ws);
+    } catch {
+      return {};
+    }
+    const live: Live = {
+      socket,
+      watchers: new Set(),
+      seeing: new Set(),
+      next: 0,
+      owed: new Map(),
+    };
+    try {
+      await new Promise<void>((res, rej) => {
+        socket.onopen = () => res();
+        socket.onerror = () => rej(new Error("no"));
+        setTimeout(() => rej(new Error("timeout")), 4000);
+      });
+      socket.onmessage = (e) => {
+        try {
+          const m = JSON.parse(String(e.data));
+          if (typeof m.id === "number" && live.owed.has(m.id)) {
+            live.owed.get(m.id)!(m.result ?? {});
+            live.owed.delete(m.id);
+          }
+        } catch {
+          /* Not JSON. Nothing on this socket answers to that. */
+        }
+      };
+      return await this.#call(live, method, params);
+    } catch {
+      return {};
+    } finally {
+      socket.onclose = null;
+      socket.onerror = null;
+      try {
+        socket.close();
+      } catch {
+        /* Already closing. */
+      }
+    }
+  }
+
+  /** Save every sign-in the shared browser is holding, for seeded browsers.
+   *
+   * The point of the whole vault: you sign into rise, nova, mikano and sdp once,
+   * here, and every card that wants its *own* browser gets those sessions
+   * without signing in again.
+   *
+   * Local storage is read with `Runtime.evaluate` rather than through the
+   * `DOMStorage` domain, and that is a version-proofing choice rather than a
+   * shortcut: `DOMStorage.getDOMStorageItems` is keyed by `securityOrigin` in
+   * older Chromes and by `storageKey` in newer ones, so the domain needs to
+   * know which Chrome it is talking to. `Object.entries(localStorage)` has
+   * meant one thing for fifteen years.
+   *
+   * Cookies come from one page's socket because they are browser-wide — asking
+   * every tab would return the same jar each time.
+   */
+  async saveSession(): Promise<void> {
+    if (this.saving) return;
+    this.saving = true;
+    this.saved = null;
+    this.fault = null;
+    try {
+      await this.refresh();
+      if (this.targets.length === 0) {
+        this.saved = "nothing to save — no page is open";
+        return;
+      }
+
+      const jar = await this.#ask(this.targets[0], "Network.getAllCookies");
+
+      const origins: { origin: string; entries: [string, string][] }[] = [];
+      for (const t of this.targets) {
+        let origin = "";
+        try {
+          origin = new URL(t.url).origin;
+        } catch {
+          continue; /* about:blank and friends have no origin to key on. */
+        }
+        const got = await this.#ask(t, "Runtime.evaluate", {
+          expression: "JSON.stringify(Object.entries(localStorage))",
+          returnByValue: true,
+        });
+        const raw = got?.result?.value;
+        if (typeof raw !== "string") continue;
+        try {
+          const entries = JSON.parse(raw);
+          if (Array.isArray(entries)) origins.push({ origin, entries });
+        } catch {
+          /* A page that would not serialise its own storage. Skipped rather
+             than failing the save — one hostile page must not cost the other
+             three their sign-ins. */
+        }
+      }
+
+      const state = storageStateFrom(
+        Array.isArray(jar?.cookies) ? jar.cookies : [],
+        origins,
+        Math.floor(Date.now() / 1000),
+      );
+      await invoke<string>("browser_save_session", { state: JSON.stringify(state) });
+      this.saved = savedWhat(state);
+    } catch (e) {
+      this.fault = String(e);
+    } finally {
+      this.saving = false;
+    }
+  }
+
+  /** Where the vault is, for the widget to show. */
+  async sessionFile(): Promise<string> {
+    try {
+      return await invoke<string>("browser_session_file");
+    } catch {
+      return "";
+    }
   }
 
   /** Drop every socket. Called from `App.svelte`'s `onDestroy` for the reason
