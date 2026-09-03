@@ -32,8 +32,8 @@
   import { DevOps } from "./lib/devops.svelte";
   import { Cycle } from "./lib/cycle.svelte";
   import {
-    WIDGETS,
     limitIn,
+    offersOf,
     optionFor,
     optionsOf,
     optionGroupsOf,
@@ -1124,7 +1124,7 @@
         moved: territoryMoved(cwd),
         glass: !!spotOf(skein.projects.find((p) => p.root_path === cwd)),
         chat: skein.isChatHome(cwd),
-        offers: widgetOffers(),
+        offers: offersOf(),
       };
       act = (id) => {
         if (id === "glass") canvas?.toggleGlass("region", cwd);
@@ -1154,7 +1154,7 @@
     } else if (el.closest(".surface")) {
       target = {
         kind: "ground",
-        offers: widgetOffers(),
+        offers: offersOf(),
         /* How much the wall may move, beside the ambience for the same reason
            the ambience is here: both are what the *ground* is doing, and this
            one is the only setting in the app whose units are a GPU. */
@@ -1261,9 +1261,6 @@
 
   /** What the wall can be given, straight off the catalogue — so a new kind of
    *  widget appears in the menu by existing. */
-  function widgetOffers(): { id: string; label: string }[] {
-    return WIDGETS.map((w) => ({ id: w.kind, label: `hang up a ${w.label}` }));
-  }
 
   /** Hang one at a point on the wall. Unlike a conversation it needs nothing
    *  else — no folder, no dialog, no process. */

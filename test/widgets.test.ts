@@ -19,6 +19,8 @@ import {
   specFor,
   variantOf,
   variantsOf,
+  offersOf,
+  FAMILIES,
 } from "../src/lib/widgets";
 import {
   arcPath,
@@ -899,5 +901,119 @@ describe("a knob whose options this file cannot know", () => {
     (w.config as Record<string, unknown>).account = 7;
     const back = normalizeWidget(JSON.parse(JSON.stringify(w)))!;
     expect(back.config.account).toBe("all");
+  });
+});
+
+/* What the right-click offers to hang up, and the grouping behind it.
+ *
+ * The menu was nineteen rows before a browser widget and an Asana board landed
+ * on the same afternoon. `offersOf` folds the catalogue's own editorial
+ * sequence — "the room, then the meters, then the services, then the agents'
+ * own notes, then the logs" — into families, and the invariant that matters is
+ * unchanged by all of it: **every widget is still reachable.** A kind that
+ * grouping loses is a widget you cannot hang up, and nothing in the app would
+ * say so. */
+describe("what a right-click offers to hang up", () => {
+  const leaves = (offers: ReturnType<typeof offersOf>): string[] =>
+    offers.flatMap((o) => ("items" in o ? o.items.map((i) => i.id) : [o.id]));
+
+  test("every widget in the catalogue is reachable, exactly once", () => {
+    const got = leaves(offersOf()).sort();
+    expect(got).toEqual(WIDGETS.map((w) => w.kind).sort());
+  });
+
+  test("the menu is shorter than the catalogue, which is the whole point", () => {
+    /* Not an arbitrary number: it asserts that grouping happened at all. A
+       regression that dropped `family` from every spec would still pass every
+       other test in this block. */
+    expect(offersOf().length).toBeLessThan(WIDGETS.length);
+  });
+
+  test("a family appears where its first member sits", () => {
+    /* So the editorial sequence still decides the order, and a family does not
+       sink to the bottom for being a family. `clock` is first in `WIDGETS` and
+       is in the room family, so the room's row is first. */
+    const first = offersOf()[0];
+    expect("items" in first).toBe(true);
+    expect(first.id).toBe("family:room");
+  });
+
+  test("a family's row is not a widget kind, and a widget's row is", () => {
+    /* The ids are what `menu.ts` turns into `widget:<kind>`, so a family row
+       leaking into that position would be a menu item that tried to hang up a
+       widget called "family:logs". */
+    const kinds = new Set<string>(WIDGETS.map((w) => w.kind));
+    for (const o of offersOf()) {
+      if ("items" in o) {
+        expect(o.id.startsWith("family:")).toBe(true);
+        expect(kinds.has(o.id)).toBe(false);
+      } else {
+        expect(kinds.has(o.id)).toBe(true);
+      }
+    }
+  });
+
+  test("every family named on a spec is one the table can label", () => {
+    /* A spec naming a family `FAMILIES` does not carry would fall to its own
+       row — recoverable rather than absent, which is the choice `normalizeParam`
+       makes about an unknown value — but it is still a bug, and this is what
+       says so. */
+    const known = new Set(FAMILIES.map((f) => f.id));
+    for (const w of WIDGETS) {
+      if (w.family) expect(known.has(w.family)).toBe(true);
+    }
+  });
+
+  test("no family has exactly one member", () => {
+    /* Which is why the flattening below never fires in practice. A family of one
+       is a submenu you open to find a single row, and this is the assertion that
+       keeps somebody from creating one by deleting a widget kind. */
+    for (const o of offersOf()) {
+      if ("items" in o) expect(o.items.length).toBeGreaterThan(1);
+    }
+  });
+
+  test("a family of one is flattened to a plain row", () => {
+    /* The path the assertion above keeps unreachable, proved anyway: deleting a
+       widget kind must not leave a pointless hover behind. */
+    const one = WIDGETS.filter((w) => w.kind === "serverlog");
+    const out = offersOf(one);
+    expect(out).toHaveLength(1);
+    expect("items" in out[0]).toBe(false);
+    expect(out[0].id).toBe("serverlog");
+    /* And it goes back to its full label, not its in-family short one: "servers"
+       means something under "hang up a log" and nothing on its own. */
+    expect(out[0].label).toContain("server log");
+  });
+
+  test("every row reads as something to do, in the app's own voice", () => {
+    /* It stands among "open a folder…" and "pin up an image…", so a bare noun
+       would read as a thing to look at. Lowercase like every other sentence in
+       this UI. */
+    for (const o of offersOf()) {
+      expect(o.label.startsWith("hang up ")).toBe(true);
+      expect(o.label).toBe(o.label.toLowerCase());
+    }
+  });
+
+  test("the article agrees with the label", () => {
+    /* "hang up a asana board" is the kind of sentence that makes a careful app
+       look careless, and it is what shipped before this. */
+    for (const o of offersOf()) {
+      const m = /^hang up an? (\S)/.exec(o.label);
+      if (!m) continue;
+      const vowel = /[aeiou]/i.test(m[1]);
+      expect(o.label.startsWith(vowel ? "hang up an " : "hang up a ")).toBe(true);
+    }
+  });
+
+  test("a submenu's rows are bare, since the verb has already been said", () => {
+    for (const o of offersOf()) {
+      if (!("items" in o)) continue;
+      for (const i of o.items) {
+        expect(i.label.startsWith("hang up")).toBe(false);
+        expect(i.label.length).toBeGreaterThan(0);
+      }
+    }
   });
 });
