@@ -4,6 +4,7 @@ paths:
   - "src/lib/asking.ts"
   - "src/lib/Ask.svelte"
   - "src/lib/Gallery.svelte"
+  - "src/lib/zoom.ts"
 ---
 
 # The ask_user MCP server, and several questions in one call
@@ -542,6 +543,54 @@ and it changes nothing about the parking: the reply is still the option's label,
   frameworks), that the tokens are already defined, and what size to compose at. `preview` is
   required nowhere, for the same reason neither question form is: almost every ask is a
   sentence and some buttons, and a mandatory field would refuse all of them at the client.
+
+#### Looking closer at one of them
+
+Fit is the right reading for the gallery and the wrong one for a detail, and the *same*
+fact causes both: the composing viewport is fixed at 1280×800 so that three designs are
+comparable, which means three panels across a laptop draw a 12px caption at four. A design
+was being judged on whether it could be read.
+
+**So looking closer is a second surface rather than a knob on the first one.** Zooming a
+panel in place would break the one thing the gallery is for — same size composed, same size
+judged, `CARD_BOX`'s bargain one surface over. One design is magnified over the rest,
+floating and *inset* rather than filling the screen, because the gallery behind it is the
+context you came from and a real fullscreen would throw that away to no purpose.
+
+- **A pointer over an iframe belongs to the iframe.** There is no listener this document can
+  add that sees a wheel or a drag inside a cross-origin frame, and there is no asking the
+  frame to forward them — that would be a `postMessage` channel out of a sandbox whose whole
+  value is that it has none, which is the same hole the fixed viewport exists to avoid
+  opening. So the only way to pan a preview is a transparent sheet in front of it, and **the
+  cost of that sheet is the frame's own hover**.
+- **That cost is why the glass is not on the gallery's panels.** Hover, focus and transitions
+  are pure CSS and are most of what a static preview has to show — the same sentence that
+  justifies rendering static first. Covering them to buy a gesture that does nothing at fit
+  would be a bad trade. Magnified it is the opposite trade: you came to look closely, and
+  there is somewhere to pan to.
+- **The glass lifts entirely when the design is running its script.** Operating a mockup and
+  inspecting one are different acts, and a stepper you cannot click is not worth a drag the
+  arrow keys already do. The buttons and keys work either way, so nothing is lost.
+- **Fit is the floor.** There is no reading below it — the design is already wholly visible —
+  and having a floor is what lets `0` always mean "back to the picture you started from".
+- **Content smaller than the box is *centred*, not clamped**, and that is the half that was
+  easy to miss: it is what makes fit look composed rather than pinned to a corner, and it
+  means one rule serves both the zoomed-in and zoomed-out cases with no branch anywhere else.
+- **Zoom is anchored at the pointer**, which is the entire difference between a magnifier and
+  a slider with a picture attached. The clamp still wins near an edge, and that is correct —
+  honouring the anchor there would mean honouring it into a view showing the backdrop.
+- **The readout is against the composed viewport, never against fit.** 100% is one composed
+  pixel to one screen pixel, which is the size the agent was told to design for. A percentage
+  of fit would change meaning with the window.
+- **Escape gained a rung rather than a branch.** The magnifier takes it first, for the reason
+  the ladder exists at all: it is the innermost thing there is, and closing the whole gallery
+  because you had opened one design would throw away the comparison you were in the middle of.
+- **Choosing from the magnifier answers the question**, exactly as choosing from the gallery
+  does. Closing it to find the panel again and press the other button would be deciding twice.
+
+The arithmetic is in `zoom.ts` and is pure and tested — `fitScale`, `clampView`, `zoomTo` and
+the wheel's `deltaMode` handling, which is there because a mouse reports lines and a trackpad
+reports pixels, and treating 3 lines as 3 pixels makes a real wheel do nothing at all.
 
 `snapshot.cards[].pendingAsk.previews` is a count per question, for the reason the stepper's
 fields are reported: a question whose three options carry three mockups and one whose options
