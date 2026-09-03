@@ -99,6 +99,7 @@ bun tools/lift-later.ts            # same, for the wake envelope relay.ts parses
 bun tools/lift-roster.ts           # same, for the whole MCP roster contract (needs check-gnu once)
 bun tools/lift-project.ts          # same, for which files a version bump may touch
 bun tools/lift-aside.ts            # same, for /btw's one-at-a-time claim and its frame
+bun tools/lift-ask.ts              # same, for the call that swallowed one of its own arguments
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs

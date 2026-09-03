@@ -917,6 +917,142 @@ pub(crate) fn conversation_of(url: &str) -> &str {
         .unwrap_or_default()
 }
 
+/// A call whose own text swallowed one of its arguments.
+///
+/// `lost` never arrived; `inside` is the argument whose text is carrying its
+/// declaration instead.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Swallowed {
+    pub(crate) lost: String,
+    pub(crate) inside: String,
+}
+
+/// The literal a mis-written tool call leaves behind in the argument above it.
+const DECLARATION: &str = "<parameter name=";
+
+/// Every string anywhere in a value, in order.
+fn strings_in<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+    match v {
+        Value::String(s) => out.push(s),
+        Value::Array(a) => a.iter().for_each(|x| strings_in(x, out)),
+        Value::Object(o) => o.values().for_each(|x| strings_in(x, out)),
+        _ => {}
+    }
+}
+
+/// The argument names declared by literal `<parameter name="…">` tags in a text.
+fn declarations(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(DECLARATION) {
+        rest = &rest[i + DECLARATION.len()..];
+        let quote = match rest.as_bytes().first() {
+            Some(b'"') => '"',
+            Some(b'\'') => '\'',
+            _ => continue,
+        };
+        rest = &rest[1..];
+        let Some(j) = rest.find(quote) else { break };
+        names.push(&rest[..j]);
+        rest = &rest[j + 1..];
+    }
+    names
+}
+
+/// Whether one of this call's arguments is sitting inside another one as text.
+///
+/// The client composes a `tools/call` by writing tagged parameters and parsing
+/// them back out, and a tag written without its namespace prefix is not a tag —
+/// it is more of the parameter above it. Reported 2026-09-02: an `ask_user`
+/// whose `options` was written as a bare `<parameter name="options">` arrived
+/// with the whole literal `</question> <parameter name="options">[{…}]`
+/// concatenated onto the end of `question`, and no `options` at all. The user
+/// read a wall of raw JSON and XML where three buttons should have been, and
+/// nothing at either end said so: the call succeeded, the question was answered,
+/// and the agent had no way to know it had degraded a click into a paragraph.
+///
+/// The signature is precise enough to act on, which is why this is a refusal
+/// rather than a note. A text declaring an argument that **is** on this tool's
+/// schema and **is not** in this call is not prose about the syntax — it is the
+/// argument, in the wrong place. Both halves are needed: the first keeps a card
+/// quoting some other program's XML out of it, and the second is the escape
+/// hatch, since a card genuinely writing about `<parameter name="paths">` need
+/// only pass `paths` for the call to go through.
+///
+/// **This is the one thing Rust reads out of `arguments`, and it is not a breach
+/// of the bargain the rest of this file keeps** (`asking.ts::normalizeAsk` owns
+/// what a question *is*). It reads no field by name and knows no vocabulary: it
+/// asks only whether the encoding survived the wire, which is the same question
+/// `dispatch` answers about `_meta`'s progress token. It has to be here because
+/// both costs land before the front end sees anything — the mangled prose goes
+/// in front of a person, and every other tool on this server has already done
+/// its write by the time it returns a string.
+pub(crate) fn swallowed(args: &Value, declared: &[&str]) -> Option<Swallowed> {
+    let obj = args.as_object()?;
+    for (key, value) in obj {
+        let mut texts = Vec::new();
+        strings_in(value, &mut texts);
+        for text in texts {
+            for name in declarations(text) {
+                if declared.contains(&name) && !obj.contains_key(name) {
+                    return Some(Swallowed {
+                        lost: name.to_string(),
+                        inside: key.clone(),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The same question against the live roster, gated on the cheap half first —
+/// `roster()` builds two dozen schemas, and the literal is absent from every
+/// well-formed call ever made.
+fn swallowed_by(tool: &str, args: &Value) -> Option<Swallowed> {
+    let mut texts = Vec::new();
+    strings_in(args, &mut texts);
+    if !texts.iter().any(|t| t.contains(DECLARATION)) {
+        return None;
+    }
+    let schema = roster()
+        .into_iter()
+        .find(|t| t.get("name").and_then(Value::as_str) == Some(tool))?;
+    let props = schema
+        .get("inputSchema")
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object)?;
+    let declared: Vec<&str> = props.keys().map(String::as_str).collect();
+    swallowed(args, &declared)
+}
+
+/// What the agent is told about a call that lost an argument to its own text.
+///
+/// It says nothing happened first, because that is the part that decides what to
+/// do next, and it names the escape hatch last so a card that really did mean to
+/// quote the syntax is not stuck.
+pub(crate) fn swallowed_note(tool: &str, m: &Swallowed) -> String {
+    format!(
+        "skein refused this {tool} call, and nothing was done — no question was \
+         shown, nothing was written, nobody was notified.\n\n\
+         The text of `{inside}` contains a literal `<parameter name=\"{lost}\">` \
+         declaration, and no `{lost}` argument arrived with the call. That means \
+         `{lost}` was never parsed as an argument at all: it was read as more of \
+         `{inside}`, and would have been shown to the user as prose.\n\n\
+         The cause is a `<parameter>` tag written without the namespace prefix \
+         the rest of the call uses, or a parameter closed with the argument's \
+         own name rather than with the matching closing tag. Write the call \
+         again with every tag in the same namespaced form, each parameter \
+         closed by its own closing tag.\n\n\
+         If you did mean that text literally, pass `{lost}` as well — this is \
+         only refused when the argument is named in the text and missing from \
+         the call.",
+        tool = tool,
+        inside = m.inside,
+        lost = m.lost,
+    )
+}
+
 fn respond(req: tiny_http::Request, body: Value) {
     let data = body.to_string();
     let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
@@ -977,6 +1113,28 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                         args,
                         progress,
                     } => {
+                        /* Before any arm, because every arm is too late. The
+                           two that park put the mangled text in front of a
+                           person, and the whole chain below has already done
+                           its write by the time it returns a string to say so.
+                           See `swallowed`. */
+                        if let Some(m) = swallowed_by(&tool, &args) {
+                            respond(
+                                req,
+                                json!({
+                                    "jsonrpc": "2.0", "id": id,
+                                    "result": {
+                                        "content": [
+                                            { "type": "text",
+                                              "text": swallowed_note(&tool, &m) }
+                                        ],
+                                        "isError": true
+                                    }
+                                }),
+                            );
+                            return;
+                        }
+
                         /* Two tools park, and everything else is answered on
                            this thread and returns in milliseconds, well inside
                            every clock either side of this connection has. Which
@@ -1542,6 +1700,129 @@ mod tests {
         let Dispatch::Call { args, .. } = r else { panic!("expected a call") };
         assert_eq!(args["questions"].as_array().unwrap().len(), 2);
         assert_eq!(args["questions"][1]["header"], "attention");
+    }
+
+    /// What `ask_user` declares, for the assertions below. Written out rather
+    /// than read off `tool_schema()` so the whole of this group lifts — see
+    /// `tools/lift-ask.ts`; the wiring to the real roster is asserted once, on
+    /// its own, in `the_check_reads_the_tools_own_schema`.
+    const ASK_ARGS: &[&str] = &["questions", "question", "options", "preview"];
+
+    /// The reported call, reconstructed: `options` written as a bare tag, so the
+    /// whole of it arrived concatenated onto `question` and no `options` came at
+    /// all. The failure is silent at both ends — the call succeeds and returns
+    /// an answer — which is why it has to be caught rather than warned about.
+    #[test]
+    fn an_argument_that_arrived_inside_another_one_is_found() {
+        let args = json!({
+            "question": "one widget or two?</question> \
+                         <parameter name=\"options\">[{\"label\": \"one\"}]"
+        });
+        assert_eq!(
+            swallowed(&args, ASK_ARGS),
+            Some(Swallowed { lost: "options".into(), inside: "question".into() })
+        );
+    }
+
+    /// Both halves of the signature are load-bearing, and this is the second:
+    /// pass the argument the text names and the call goes through. That is the
+    /// escape hatch for a card writing *about* the syntax — including the one
+    /// that filed the bug — and it is why this can be a refusal at all.
+    #[test]
+    fn quoting_the_syntax_is_allowed_when_the_argument_is_also_passed() {
+        let args = json!({
+            "question": "should a bare <parameter name=\"options\"> be refused?",
+            "options": [{ "label": "yes" }]
+        });
+        assert_eq!(swallowed(&args, ASK_ARGS), None);
+    }
+
+    /// The first half: a tag naming something this tool has no argument for is
+    /// somebody else's XML, and none of our business.
+    #[test]
+    fn a_tag_naming_no_argument_of_this_tool_is_left_alone() {
+        let args = json!({
+            "question": "why does <parameter name=\"stroke-width\"> not render?"
+        });
+        assert_eq!(swallowed(&args, ASK_ARGS), None);
+    }
+
+    /// It reaches into nested strings, because `questions[]` is where a
+    /// multi-decision ask puts its text and the same mis-write lands there.
+    #[test]
+    fn an_argument_lost_inside_a_nested_question_is_found_too() {
+        let args = json!({
+            "questions": [
+                { "header": "shape", "question": "one or two?" },
+                { "question": "ring when done?</question> \
+                               <parameter name=\"preview\">{}" }
+            ]
+        });
+        assert_eq!(
+            swallowed(&args, ASK_ARGS),
+            Some(Swallowed { lost: "preview".into(), inside: "questions".into() })
+        );
+    }
+
+    /// A half-written tag is not a declaration, and must not take the whole
+    /// scan with it — `declarations` walks a string by hand, so an unterminated
+    /// quote at the end is the one input that could spin or panic.
+    #[test]
+    fn a_tag_that_never_closes_names_nothing() {
+        assert!(declarations("<parameter name=\"options").is_empty());
+        assert!(declarations("<parameter name=").is_empty());
+        assert!(declarations("<parameter naming=\"options\">").is_empty());
+        assert_eq!(declarations("<parameter name='options'>"), vec!["options"]);
+    }
+
+    /// Every well-formed call ever made takes the cheap arm and never builds the
+    /// roster. Asserted because the check is on the path of every tool call on
+    /// this server, including the ones in the chain that are already slow.
+    #[test]
+    fn an_ordinary_call_is_not_examined_at_all() {
+        for args in [
+            json!({ "question": "one widget or two?", "options": [{ "label": "one" }] }),
+            json!({ "title": "a finding", "body": "the tag <a href> is fine" }),
+            json!({}),
+            json!(null),
+        ] {
+            let mut texts = Vec::new();
+            strings_in(&args, &mut texts);
+            assert!(!texts.iter().any(|t| t.contains(DECLARATION)), "{args}");
+        }
+    }
+
+    /// What the agent reads has to be enough to write the call again without
+    /// guessing, and has to say first that nothing happened — a refusal that
+    /// leaves that in doubt gets a second call to find out.
+    #[test]
+    fn the_refusal_names_what_was_lost_and_where_it_went() {
+        let note = swallowed_note(
+            "ask_user",
+            &Swallowed { lost: "options".into(), inside: "question".into() },
+        );
+        assert!(note.contains("nothing was done"), "{note}");
+        assert!(note.contains("`options`"), "{note}");
+        assert!(note.contains("`question`"), "{note}");
+        assert!(note.contains("pass `options` as well"), "{note}");
+    }
+
+    /// The one assertion above that cannot be lifted, and the one that would go
+    /// quiet on its own: everything else supplies its own list of argument
+    /// names, so a tool renaming `options` would leave them all green over a
+    /// check that had stopped matching anything. This reads the live roster.
+    #[test]
+    fn the_check_reads_the_tools_own_schema() {
+        let args = json!({
+            "question": "one widget or two?</question> \
+                         <parameter name=\"options\">[{\"label\": \"one\"}]"
+        });
+        assert_eq!(
+            swallowed_by("ask_user", &args),
+            Some(Swallowed { lost: "options".into(), inside: "question".into() })
+        );
+        /* And a tool this server does not have is nobody's argument. */
+        assert_eq!(swallowed_by("ask_user_maybe", &args), None);
     }
 
     #[test]
