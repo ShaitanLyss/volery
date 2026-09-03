@@ -25,6 +25,8 @@
   import { crowds } from "./lib/crowds.svelte";
   import { releases } from "./lib/release.svelte";
   import { Beacon } from "./lib/beacon.svelte";
+  import { Pane } from "./lib/pane.svelte";
+  import { caption } from "./lib/browser";
   import { READY_LINE, sayOffer } from "./lib/update";
   import { Ledger } from "./lib/ledger.svelte";
   import { DevOps } from "./lib/devops.svelte";
@@ -223,6 +225,10 @@
      rather than stopping, because unlike a release an outage resolves. The whole
      of it is in `status.ts` and `.claude/rules/widgets.md`. */
   const beacon = new Beacon();
+  /* The one browser connection behind however many browser widgets are up.
+     Holds no socket and starts no Chrome until a widget attaches — the bargain
+     `Meter`, `Ledger`, `DevOps` and `Board` all strike. */
+  const pane = new Pane();
   /* Which organisations to ask about, read off the wall rather than configured:
      the AzDO orgs worth watching are the ones whose repos are standing on it.
      Injected as a function, the way `Cycle.watched` and `Widgets.others` are, so
@@ -400,6 +406,10 @@
     crowds.stop();
     releases.release();
     beacon.release();
+    /* Same hazard as the sampler: a superseded generation holding sockets would
+       go on acknowledging screencast frames for a wall nobody can see, and
+       Chrome throttles nothing while its acks keep arriving. */
+    pane.release();
   });
 
   /* Learn what each territory can do, and forget the ones that leave.
@@ -1303,6 +1313,16 @@
          three in your own sidebar are the ones you switch between, and
          browsing the rest is what the widget's picker is for. */
       boards: asana.mine.map((b) => ({ value: b.gid, label: b.name })),
+      /* And once more, for the pages the shared browser has open. Same rule and
+         same reason: with one page open, following it and naming it are the
+         same answer. Unlike the four above, this list is written by the *agent*
+         — it opens pages as it works — so the knob appears and disappears
+         while you watch, which is correct and is why the face falls back to
+         whichever page there is rather than to nothing. */
+      pages:
+        pane.targets.length > 1
+          ? pane.targets.map((t) => ({ value: t.id, label: caption(t) }))
+          : [],
     };
   }
 
@@ -2957,6 +2977,7 @@
         billboard={skein.board}
         sink={skein.sink}
         gates={skein.gates}
+        {pane}
         {beacon}
         {focusedId}
         draft={field.preview}

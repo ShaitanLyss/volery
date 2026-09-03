@@ -20,6 +20,7 @@
   import type { Sink } from "./sink.svelte";
   import type { Beacon } from "./beacon.svelte";
   import type { Gates } from "./gates.svelte";
+  import type { Pane } from "./pane.svelte";
   /* Aliased, because `Run` in this file is already a timer's two numbers off
      `./timing` one line below. Two different `Run`s in one component is the
      kind of collision that reads fine until somebody widens one of them. */
@@ -42,6 +43,7 @@
   import Gatehouse from "./Gatehouse.svelte";
   import ServerLog from "./ServerLog.svelte";
   import AppLog from "./AppLog.svelte";
+  import Browser from "./Browser.svelte";
   import BuildLog from "./BuildLog.svelte";
   import UnrealLog from "./UnrealLog.svelte";
 
@@ -57,6 +59,7 @@
     billboard,
     sink,
     gates,
+    pane,
     beacon,
     servers,
     onserverstart,
@@ -107,6 +110,10 @@
      *  cards on different worktrees of one project share a project and share no
      *  files. See `gates.svelte.ts`. */
     gates: Gates;
+    /** The one browser connection behind however many browser widgets are up —
+     *  handed down for the reason the meter and the ledger are, and holding no
+     *  socket until one attaches. */
+    pane: Pane;
     /** The one status reader behind however many claude-status widgets are up.
      *  Idle, and touching the network not at all, until one attaches — and it
      *  asks only while the window is in front. See `beacon.svelte.ts`. */
@@ -335,6 +342,8 @@
     {:else if widget.kind === "applog"}
       <!-- No props: the subject is the process, and there is only one. -->
       <AppLog {widget} />
+    {:else if widget.kind === "browser"}
+      <Browser {widget} {pane} />
     {/if}
   </div>
 

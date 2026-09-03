@@ -48,6 +48,7 @@
   import type { Board as Billboards } from "./board.svelte";
   import type { Sink } from "./sink.svelte";
   import type { Gates } from "./gates.svelte";
+  import type { Pane } from "./pane.svelte";
   import type { Beacon } from "./beacon.svelte";
   import type { Reading } from "./serverlog";
   import type { Build } from "./buildlog";
@@ -87,6 +88,7 @@
     billboard,
     sink,
     gates,
+    pane,
     beacon,
     focusedId,
     draft = "",
@@ -158,6 +160,9 @@
     sink: Sink;
     /** The one gate reader behind however many are hung up. */
     gates: Gates;
+    /** The one browser connection, handed straight through to `WidgetNode` —
+     *  nothing here reads it. */
+    pane: Pane;
     /** The one status reader behind however many are hung up, idle until one
      *  attaches. */
     beacon: Beacon;
@@ -684,6 +689,14 @@
    *  - **An editable**, where a drag means selecting text. `.surface input`
    *    deliberately keeps `user-select: text` for the territory's worktree
    *    field; without this, dragging across it would draw a band instead.
+   *  - **A live surface something else is driving**, marked `data-live`. The
+   *    browser widget's page is the only one: a press there is a press in the
+   *    page, dispatched over CDP, and capturing the pointer here would swallow
+   *    every click before it ever left the wall. Unlike the two above this one
+   *    is not about selecting, so it deliberately does not pair with
+   *    `user-select: text` — `styles.test.ts` keys only on the text marker.
+   *    The pan buttons still reach past it, which is what keeps a full-width
+   *    page from being a hole in the wall.
    *  - **Text put there to be read**, marked `data-text`. A log's lines are the
    *    case: they are not editable, but a drag across them means the same thing
    *    it means over an input, and a widget that carried the wall away instead
@@ -702,7 +715,7 @@
     if (!el?.closest) return null;
     if (
       el.closest(
-        "[data-grip], [data-text], input, textarea, [contenteditable='true']",
+        "[data-grip], [data-text], [data-live], input, textarea, [contenteditable='true']",
       )
     ) {
       return null;
@@ -1745,6 +1758,7 @@
     {billboard}
     {sink}
     {gates}
+    {pane}
     {beacon}
     servers={servers ?? []}
     onserverstart={(id) => onserverstart?.(id)}

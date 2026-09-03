@@ -50,7 +50,8 @@ export type WidgetKind =
   | "serverlog"
   | "buildlog"
   | "applog"
-  | "unreallog";
+  | "unreallog"
+  | "browser";
 
 export type Choice = { value: string; label: string };
 
@@ -76,7 +77,13 @@ export type Guard = { key: string; is: string[] };
  * in (`normalizeParam`), because the valid set is not knowable at this layer —
  * an account registered after the widget was placed would otherwise be read
  * back as the default, silently, on the next launch. */
-export type Source = "accounts" | "groups" | "projects" | "editors" | "boards";
+export type Source =
+  | "accounts"
+  | "groups"
+  | "projects"
+  | "editors"
+  | "boards"
+  | "pages";
 
 /** What one knob is. Deliberately three shapes rather than a number and a
  *  convention: a variant is a name, not a slider position, and reading `2` back
@@ -1161,6 +1168,95 @@ export const WIDGETS: WidgetSpec[] = [
          it is only ever worth it when you are lining this up against a build
          that failed at about the same moment. */
       toggle("stamps", "the time each line was written", false),
+    ],
+  },
+  {
+    /* The one widget you work *in* rather than read, and the only one that
+       takes the pointer away from the wall. That is why it is a widget at all
+       rather than a panel: a page you are testing wants to sit next to the card
+       whose agent is driving it, at whatever size that page deserves, and the
+       wall is the only surface here where two things can be side by side.
+
+       It draws a page in the browser `browser.rs` owns, which the agent is
+       driving at the same time over the same CDP port — so a click here lands
+       in the session the agent has, with its cookies and its login. It is not a
+       second browser and deliberately not a webview: see the measurement in
+       `browser.rs`, where hosting the page in-app saves ~0 against sharing one
+       real Chrome and gives up the pinned build, cross-browser and real
+       contexts.
+
+       Bigger than anything else in the catalogue, and it has to be: this is the
+       only widget whose content has its own correct size. A 1280-wide app in a
+       400-wide widget is legible as a shape and illegible as an interface, and
+       `fitFrame` will not scale up past 1 to pretend otherwise. */
+    kind: "browser",
+    label: "browser",
+    note: "a page you and the agent are both driving",
+    box: { w: 640, h: 460 },
+    min: { w: 260, h: 200 },
+    params: [
+      /* Two readings, and unlike most `variant`s here these differ in what they
+         are *for* rather than in how much they say. `page` is the picture and
+         the pointer — the thing that was asked for. `log` is the same page's
+         console and network over `logface.ts`'s substrate, which is the reading
+         you want when the picture looks right and the app is still wrong.
+
+         One widget with a variant rather than two kinds, because unlike
+         pipelines and reviews these are two readings of *one fact* — this page,
+         right now — and they are not wanted at the same time in the same
+         square. Hang two browser widgets if you want both; they share the one
+         connection, the way the two DevOps instruments share theirs. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "page", label: "the page, and you can click it" },
+          { value: "log", label: "its console and network" },
+        ],
+        "page",
+      ),
+      /* Which of the browser's pages this widget is showing. The options come
+         from the browser itself rather than from this list, the way a server
+         log's group does — a page is not something the catalogue can know
+         about, since the agent opens them.
+ 
+         `FOLLOW` leads, the same literal the three logs use and for the same
+         reason: it is the setting that stays right. Pages here are opened and
+         closed by the *agent* as it works, so a widget pinned to one page id
+         would be pointing at nothing within the hour — and unlike a server
+         group there is no gesture by which you would re-pin it. It is also the
+         default that makes the spec honest: a sourced knob still has to hold
+         its own default in its literal options, or a widget read back with
+         nothing resolved comes off disk undrawable. */
+      choice(
+        "target",
+        "page",
+        [{ value: FOLLOW, label: "whichever page there is" }],
+        FOLLOW,
+        undefined,
+        "pages",
+      ),
+      /* Narrowing, the same shape the three logs and the sink use. Only on the
+         log reading, since "only what is wrong" has no meaning applied to a
+         picture — a knob that does nothing reads as broken rather than absent,
+         which is what `Guard` is for. */
+      choice(
+        "showing",
+        "showing",
+        [
+          { value: "all", label: "console and network" },
+          { value: "console", label: "only the console" },
+          { value: "problems", label: "only failures and warnings" },
+        ],
+        "all",
+        { key: VARIANT, is: ["log"] },
+      ),
+      /* On by default, and it is the setting that decides whether this is an
+         instrument or a tool. Off, the widget is a live picture you cannot
+         touch — which is the right thing for one hanging in a corner watching
+         what an agent does, and stops a stray click on the wall going into
+         somebody's staging environment. */
+      toggle("interactive", "clicks and keys reach the page", true),
     ],
   },
 ];
