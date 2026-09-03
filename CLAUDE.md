@@ -99,6 +99,7 @@ bun tools/lift-later.ts            # same, for the wake envelope relay.ts parses
 bun tools/lift-roster.ts           # same, for the whole MCP roster contract (needs check-gnu once)
 bun tools/lift-project.ts          # same, for which files a version bump may touch
 bun tools/lift-aside.ts            # same, for /btw's one-at-a-time claim and its frame
+bun tools/lift-selfhood.ts         # same, for what a card is told about itself and its parent
 bun tools/lift-ask.ts              # same, for the call that swallowed one of its own arguments
 ```
 
@@ -498,9 +499,15 @@ arms return errors rather than silently no-oping.
 
 ## Scratch space
 
-Working files go in **`.scratch-<your card handle>/`** at the repo root, not in `.scratch/`.
-`mcp__skein__list` marks your own row `you: true`, and the handle is that row's; both are
-gitignored, so nothing here reaches a commit either way.
+Working files go in **`.scratch-$SKEIN_CARD/`** at the repo root, not in `.scratch/`. Every
+card is spawned with `SKEIN_CARD` set to its own handle, so that is a shell expansion and
+cannot be got wrong; `mcp__skein__list` still marks your own row `you: true` if you want to
+read it. Both spellings are gitignored, so nothing here reaches a commit either way.
+
+The variable is there because this convention had a round trip in front of it, and **a
+convention you must make a tool call to obey is one that gets skipped under load** (sink
+`be79bb41`). It is set in `spawn_now`, which is also every wake, so a card roused from last
+month has it too.
 
 `.scratch/` is shared by every card on this wall and gets swept. It is the same class of
 hazard as the shared git index — one card tidying up after itself deletes another

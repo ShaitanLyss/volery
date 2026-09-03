@@ -44,6 +44,20 @@ would put a message in the wrong repository, silently, and generated titles coll
 `relay::handle_of` and `relay.ts::handleOf` must agree; the second exists only so the wall can
 label a strand whose endpoint has since been closed.
 
+**A roster row carries `spawned_by` when the card was opened by a card**, and no such field
+when the user opened it — present or absent, with no third reading. It is read per row here
+rather than joined into `store::roster`, because the `spawned` table is deliberately never
+swept and a join would drop a parentage whose parent has since been closed.
+
+The reason it is on this row at all is that its absence was read as an answer. A spawned card
+asked to report to its orchestrator called `list`, found no parent field, concluded it was
+top-level, and told the user there was nobody to report to — with the parent standing on the
+wall in another territory the whole time (sink `0cf05791`). The clause in the card's own
+system prompt is what actually closes that, and `spawn.md` owns the argument; this is the
+half that answers when an agent goes and *looks*. Note the trap the description also names:
+`list` defaults to project scope, so a `spawned_by` handle can be perfectly valid and absent
+from the rows the caller can see. `scope: "skein"` is where it will be.
+
 ### The guards, which are most of the design
 
 The failure mode this had to survive is not a lost message. It is a spiral of them, at a turn

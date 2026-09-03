@@ -61,7 +61,7 @@ fn chat_argv(cmd: &mut Command) {
 /// What the CLI prefixes an MCP tool with: the server name Skein passes in
 /// `ask::mcp_config`. Nothing about a card can call `board`; the name is
 /// `mcp__skein__board`.
-const MCP_PREFIX: &str = "mcp__skein__";
+pub(crate) const MCP_PREFIX: &str = "mcp__skein__";
 
 /// The `--append-system-prompt` every card is spawned with.
 ///
@@ -126,10 +126,15 @@ const MCP_PREFIX: &str = "mcp__skein__";
 /// paragraph would name tools that are not there, which is the failure
 /// `the_prompt_names_only_tools_the_server_advertises` guards from the other
 /// direction — so it is left out, and the standing instructions still go.
-fn system_prompt(chat: bool, ask: bool, standing: Option<String>) -> Option<String> {
+fn system_prompt(
+    chat: bool,
+    ask: bool,
+    standing: Option<String>,
+    me: Option<&Selfhood>,
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if ask {
-        parts.push(append_prompt(chat));
+        parts.push(append_prompt(chat, me));
     }
     if let Some(text) = standing {
         let text = text.trim();
@@ -143,7 +148,44 @@ fn system_prompt(chat: bool, ask: bool, standing: Option<String>) -> Option<Stri
     Some(parts.join("\n\n"))
 }
 
-fn append_prompt(chat: bool) -> String {
+/// What a card knows about *itself*, as the only channel that can tell it.
+///
+/// Three sink items turned out to be one gap — `be79bb41` (a card is never told
+/// its own handle), `0cf05791` (a spawned card is not told it was spawned, or by
+/// whom) and the half of `f468f017` about a brief arriving with no way to tell
+/// it was incomplete. All three are the same question asked from different
+/// sides: **what does a card know about itself and where it came from**, and the
+/// answer in every case was *nothing it did not go and ask for*.
+///
+/// Why the system prompt rather than the brief, which is the obvious place:
+///
+/// - **The brief is the parent's own words**, echoed into the transcript exactly
+///   as a typed prompt is (`spawn.md`). The complaint in `0cf05791` is precisely
+///   that a brief is indistinguishable from something the user typed — Volery
+///   prepending a paragraph of its own to it makes that worse rather than
+///   better, and puts words in the parent's mouth to say so.
+/// - **A brief scrolls away.** Provenance is true of a card for its whole life
+///   and is wanted at the moment it is *needed*, which is usually hours later
+///   and on the far side of a compaction. A system prompt is the one channel
+///   that survives both.
+/// - **It costs no round trip.** The measured failure was a card checking
+///   `list`, finding no parent field, concluding from the absence that it was
+///   top-level, and telling the user there was no orchestrator to report to.
+///   Every part of that is a card doing work to learn something it could have
+///   been handed.
+///
+/// A card already running does not hear an edit, per `guidance.md` — which does
+/// not bite here, because this is derived at every spawn and every wake is a
+/// spawn. A card roused a month from now is told again.
+pub struct Selfhood {
+    /// This card's own handle: the eight characters everything on this wall
+    /// addresses it by, and the thing `.scratch-<handle>/` is spelled from.
+    pub handle: String,
+    /// Who opened it, where they stand, and whether that is somewhere else.
+    pub spawned_by: Option<crate::store::Provenance>,
+}
+
+fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
     let mut prompt = format!(
         "When you need a decision that only the user can make, call \
          `{MCP_PREFIX}ask_user` rather than ending your turn with a question. It \
@@ -212,6 +254,68 @@ fn append_prompt(chat: bool) -> String {
              exist — put it in `{MCP_PREFIX}drop` rather than losing it or breaking \
              your task to chase it. It outlives this conversation."
         ));
+
+        /* Project cards only, with the rest of this block. A chat card cannot
+           write a file, so it has no scratch directory to name — and `do_list`
+           refuses it the roster outright, so telling it which row is its own
+           would name a thing it will be told it may not look at. Same argument
+           as the `git stash` paragraph above, one tool over. */
+        if let Some(me) = me {
+            /* Sink `be79bb41`. The handle was always *gettable* — `list` marks
+               your own row `you: true` — and that is the whole complaint: a
+               convention you have to make a round trip to obey is one that gets
+               skipped under load. `SKEIN_CARD` in the environment is the other
+               half of this and reaches the shell (see `spawn_now`); this half
+               reaches a card that has never read a `CLAUDE.md`. */
+            prompt.push_str(&format!(
+                "\n\nYou are card `{}` on this wall. That is your handle: it is what \
+                 `{MCP_PREFIX}list` reports for the row marked `you`, what another card \
+                 addresses you by, and what a repository asking for a per-card scratch \
+                 directory means by your handle. It is also in your environment as \
+                 `$SKEIN_CARD`, so a shell command never has to spell it from memory.",
+                me.handle,
+            ));
+
+            /* Sink `0cf05791`, and the sentence the whole item is about. */
+            if let Some(p) = &me.spawned_by {
+                let where_they_are = match (&p.project, p.elsewhere) {
+                    /* The measured case: parent in `rise`, child in
+                       `workbench`. `list` defaults to project scope, so the
+                       parent is not in the rows this card can see at all
+                       without asking for the wider one — and a card that looks
+                       and finds nothing concludes it has no parent, which is
+                       exactly what happened. */
+                    (Some(name), true) => format!(
+                        " It stands in a different territory from you — the {name} project — \
+                         so it is **not** in your default `{MCP_PREFIX}list`; ask for \
+                         `scope: \"skein\"` to see it. It knows nothing about the \
+                         repository you are in beyond what it wrote in your brief."
+                    ),
+                    (Some(name), false) => format!(
+                        " It stands where you do, in the {name} project, so it is in your \
+                         ordinary `{MCP_PREFIX}list`."
+                    ),
+                    /* Closed since. Still the card that wrote the brief, and
+                       still worth naming — but nothing can be sent to it, and a
+                       card told to report to a handle that answers nothing has
+                       been sent on an errand instead of told the truth. */
+                    (None, _) => " It has since been closed, so there is nobody to report \
+                                  back to — tell the user instead."
+                        .to_string(),
+                };
+                prompt.push_str(&format!(
+                    "\n\n**You are a spawned card.** Your first turn is a brief written by \
+                     another conversation on this wall — card `{}` — rather than by the \
+                     person at the keyboard.{where_they_are} Report back to it with \
+                     `{MCP_PREFIX}send` when you have finished or are stuck, rather than \
+                     only telling the user; it is waiting on you and cannot see your \
+                     transcript. If the brief looks incomplete or contradicts itself, ask \
+                     it — that costs one message and is always cheaper than inferring what \
+                     it meant.",
+                    p.parent,
+                ));
+            }
+        }
     }
     prompt
 }
@@ -571,6 +675,36 @@ fn spawn_now(
     let standing =
         crate::guidance::for_conversation(&app.state::<crate::store::Store>(), &id);
 
+    /* What this card knows about itself, asked of the store for the fifth time
+       and the fifth iteration of the same argument (`kind_of`, `setup_of`,
+       `worktree_of`, `gear_of`, and now this). It could not travel as an
+       argument even if anyone wanted it to: the caller that would have to
+       remember is `wake`, and a card roused at launch is exactly the one that
+       has forgotten who opened it.
+
+       Derived at every spawn rather than once at birth, which is what makes it
+       reach the cards already on the wall: a spawn is also every wake, so a card
+       opened last month is told its parentage again the next time it is roused.
+       That answers the cost `be79bb41` records against this shape — "only
+       reaches cards spawned after the change" is true of a *birth*-time fact and
+       not of one derived here. */
+    let me = Selfhood {
+        handle: crate::relay::handle_of(&id),
+        spawned_by: crate::store::provenance_of(&app.state::<crate::store::Store>(), &id),
+    };
+
+    /* And the same fact where a shell command can reach it without asking
+       anybody. `CLAUDE.md` sends working files to `.scratch-<your card handle>/`
+       and a card that has to call a tool to learn the name is a card that writes
+       to `.scratch/` instead — which is swept, shared, and has already cost a
+       rebuilt measurement harness (sink f1e1a8a2). `.scratch-$SKEIN_CARD` cannot
+       be got wrong.
+
+       Set for a chat card too, where it is inert: it has no Bash tool to expand
+       it with. Setting it unconditionally is one line where a condition is one
+       line and a case to be wrong about. */
+    cmd.env("SKEIN_CARD", &me.handle);
+
     /* Which subscription this card spends. `CLAUDE_SECURESTORAGE_CONFIG_DIR`
        selects the credential store and *only* the store — `CLAUDE_CONFIG_DIR`
        is untouched, so the transcript still lands in the shared config
@@ -674,7 +808,7 @@ fn spawn_now(
        ask server was up, which is always, so the feature was inert rather than
        flaky. A conditional second flag is worse than an unconditional one — it
        looks like it works in the one configuration nobody runs. */
-    if let Some(text) = system_prompt(chat, ask_port != 0, standing) {
+    if let Some(text) = system_prompt(chat, ask_port != 0, standing, Some(&me)) {
         cmd.args(["--append-system-prompt", &text]);
     }
 
@@ -1709,6 +1843,55 @@ mod tests {
             .collect()
     }
 
+    /// The four selfhoods a prompt can be composed against, so every assertion
+    /// about tool names covers the clauses `Selfhood` adds rather than only the
+    /// unconditional ones.
+    ///
+    /// `None` first, and it is not a hypothetical: it is what `system_prompt`
+    /// gets from any future caller that has no card to speak of, and the arm
+    /// that must still produce a usable prompt.
+    fn selves() -> Vec<Option<Selfhood>> {
+        let parent = |project: Option<&str>, elsewhere: bool| crate::store::Provenance {
+            parent: "092198b5".into(),
+            project: project.map(str::to_string),
+            elsewhere,
+        };
+        vec![
+            None,
+            Some(Selfhood { handle: "4bd5340b".into(), spawned_by: None }),
+            Some(fullest()),
+            Some(Selfhood {
+                handle: "f618d9b7".into(),
+                spawned_by: Some(parent(Some("skein"), false)),
+            }),
+            /* A parent that has since been closed, which is the arm that names
+               no project and must not send the card off to `send` to somebody
+               who is not there. */
+            Some(Selfhood {
+                handle: "f618d9b7".into(),
+                spawned_by: Some(parent(None, true)),
+            }),
+        ]
+    }
+
+    /// The selfhood that produces the most prose, for the tests that want one
+    /// arm rather than all of them: a spawned card whose parent stands in
+    /// another territory, which names every tool the clauses can name.
+    ///
+    /// It is the measured case in sink `0cf05791` — parent `092198b5` in `rise`,
+    /// child in `workbench`, and therefore not in the rows a project-scoped
+    /// `list` can see.
+    fn fullest() -> Selfhood {
+        Selfhood {
+            handle: "f618d9b7".into(),
+            spawned_by: Some(crate::store::Provenance {
+                parent: "092198b5".into(),
+                project: Some("rise".into()),
+                elsewhere: true,
+            }),
+        }
+    }
+
     /// The bug this guards is silent from both ends: the tools are there and
     /// described, and the prompt points the card at names for them that do not
     /// exist. Nothing errors — the agent simply never calls them, which is
@@ -1717,12 +1900,14 @@ mod tests {
     fn the_prompt_names_only_tools_the_server_advertises() {
         let known = advertised();
         for chat in [false, true] {
-            for tool in named_tools(&append_prompt(chat)) {
-                assert!(
-                    known.contains(&tool),
-                    "the prompt names `{MCP_PREFIX}{tool}`, which tools/list does not \
-                     advertise (chat={chat}); it advertises {known:?}"
-                );
+            for me in selves() {
+                for tool in named_tools(&append_prompt(chat, me.as_ref())) {
+                    assert!(
+                        known.contains(&tool),
+                        "the prompt names `{MCP_PREFIX}{tool}`, which tools/list does not \
+                         advertise (chat={chat}); it advertises {known:?}"
+                    );
+                }
             }
         }
     }
@@ -1740,7 +1925,7 @@ mod tests {
     fn everything_appended_to_the_prompt_survives_being_composed() {
         let standing = "# Standing instructions\n\nMy name is Lyss.";
         for chat in [false, true] {
-            let out = system_prompt(chat, true, Some(standing.to_string()))
+            let out = system_prompt(chat, true, Some(standing.to_string()), None)
                 .expect("something to say");
             assert!(
                 out.contains(standing),
@@ -1766,20 +1951,21 @@ mod tests {
     fn either_half_of_the_prompt_can_be_missing() {
         let standing = "do the thing".to_string();
 
-        let no_guidance = system_prompt(false, true, None).expect("the roster alone");
+        let no_guidance = system_prompt(false, true, None, None).expect("the roster alone");
         assert!(no_guidance.contains(&format!("{MCP_PREFIX}board")));
 
         /* No ask server: naming tools that are not there is the failure
            `the_prompt_names_only_tools_the_server_advertises` guards from the
            other side, so the roster goes and the instructions still land. */
-        let no_ask = system_prompt(false, false, Some(standing.clone())).expect("the guidance alone");
+        let no_ask =
+            system_prompt(false, false, Some(standing.clone()), None).expect("the guidance alone");
         assert_eq!(no_ask, standing);
         assert!(!no_ask.contains(MCP_PREFIX));
 
         /* Nothing to say is `None` rather than an empty argument. A bare
            `--append-system-prompt ""` is a flag the CLI still reads. */
-        assert!(system_prompt(false, false, None).is_none());
-        assert!(system_prompt(false, false, Some("   ".to_string())).is_none());
+        assert!(system_prompt(false, false, None, None).is_none());
+        assert!(system_prompt(false, false, Some("   ".to_string()), None).is_none());
     }
 
     /// Advertised is not enough, and `append_prompt`'s own doc comment leans on
@@ -1796,7 +1982,11 @@ mod tests {
             .map(|t| t["name"].as_str().expect("a name").to_string())
             .collect();
         for chat in [false, true] {
-            let named = named_tools(&append_prompt(chat));
+            /* Composed against the fullest selfhood there is, so the clauses
+               a spawned card gets are inside every loop below rather than
+               only the unconditional paragraphs. */
+            let me = Some(fullest());
+            let named = named_tools(&append_prompt(chat, me.as_ref()));
             /* Both this and the two tests around it are `for` loops over what
                the prompt names, so all three pass on a prompt that names
                nothing — and "names nothing" is what a bad edit to the format
@@ -1826,7 +2016,8 @@ mod tests {
     fn no_tool_is_named_without_its_server_prefix() {
         let known = advertised();
         for chat in [false, true] {
-            let prompt = append_prompt(chat);
+            let me = Some(fullest());
+            let prompt = append_prompt(chat, me.as_ref());
             for tick in prompt.split('`').skip(1).step_by(2) {
                 assert!(
                     !known.iter().any(|k| k == tick),
@@ -1842,15 +2033,107 @@ mod tests {
     /// told it may not do. `ask_user` is the one tool it does keep.
     #[test]
     fn a_chat_card_is_told_only_about_the_question() {
-        let chat = append_prompt(true);
+        let chat = append_prompt(true, Some(&fullest()));
         assert_eq!(named_tools(&chat), vec!["ask_user"]);
-        let project = append_prompt(false);
+        let project = append_prompt(false, Some(&fullest()));
         for tool in ["ask_user", "board", "post", "unpost", "list", "send"] {
             assert!(
                 named_tools(&project).iter().any(|t| t == tool),
                 "a project card is not told about `{MCP_PREFIX}{tool}`"
             );
         }
+    }
+
+    /// A chat card is told none of this, and the reason is the same one that
+    /// keeps the board and the roster off it: it cannot write a file, so there
+    /// is no scratch directory for a handle to name, and `relay::do_list`
+    /// refuses it the roster outright — so telling it which row is its own would
+    /// name a thing it will be told it may not look at.
+    #[test]
+    fn a_chat_card_is_not_told_who_it_is() {
+        let chat = append_prompt(true, Some(&fullest()));
+        assert!(!chat.contains("f618d9b7"), "a chat card was told its own handle: {chat}");
+        assert!(!chat.contains("SKEIN_CARD"), "a chat card was told about the variable");
+        assert!(!chat.contains("092198b5"), "a chat card was told its parentage");
+    }
+
+    /// Sink `be79bb41`: the handle was always *gettable* and that was the
+    /// complaint. A convention you must make a round trip to obey gets skipped
+    /// under load, so the prompt states it and the environment carries it.
+    ///
+    /// Both spellings are asserted because they reach different consumers: the
+    /// handle itself is what the model repeats in prose, and `$SKEIN_CARD` is
+    /// what a shell command expands — a prompt naming one and not the other
+    /// leaves half the point unmade.
+    #[test]
+    fn a_card_is_told_its_own_handle() {
+        for me in selves().into_iter().flatten() {
+            let p = append_prompt(false, Some(&me));
+            assert!(p.contains(&me.handle), "the card was not told it is {}: {p}", me.handle);
+            assert!(p.contains("$SKEIN_CARD"), "the variable was not named: {p}");
+        }
+        /* And nothing is claimed where nothing is known. A caller with no card
+           gets a prompt with no sentence about one, rather than a sentence with
+           a hole in it. */
+        let anon = append_prompt(false, None);
+        assert!(!anon.contains("SKEIN_CARD"), "a nameless card was told about the variable");
+    }
+
+    /// Sink `0cf05791`, and the three things the incident actually needed:
+    /// *that* it was spawned, *who* by, and *where they are* — the last being
+    /// the one that was missing, since `list` defaults to project scope and the
+    /// parent stood in another territory.
+    #[test]
+    fn a_spawned_card_is_told_who_opened_it() {
+        let p = append_prompt(false, Some(&fullest()));
+        assert!(p.contains("092198b5"), "the parent was not named: {p}");
+        assert!(p.contains("spawned card"), "the card was not told it was spawned: {p}");
+        assert!(p.contains("rise"), "the parent's territory was not named: {p}");
+        assert!(
+            p.contains("scope: \"skein\""),
+            "a parent in another territory is not in the default `list` scope, and the \
+             card was not told to widen it: {p}"
+        );
+
+        /* A parent standing here needs no widening, and saying so anyway would
+           teach every card to reach for the wider scope by reflex. */
+        let beside = Selfhood {
+            handle: "f618d9b7".into(),
+            spawned_by: Some(crate::store::Provenance {
+                parent: "092198b5".into(),
+                project: Some("skein".into()),
+                elsewhere: false,
+            }),
+        };
+        let p = append_prompt(false, Some(&beside));
+        assert!(p.contains("092198b5"));
+        assert!(!p.contains("scope: \"skein\""), "told to widen a scope it does not need: {p}");
+
+        /* A closed parent is still the card that wrote the brief and is still
+           worth naming — but it cannot be sent to, and a card dispatched to a
+           handle that answers nothing has been given an errand instead of the
+           truth. */
+        let orphan = Selfhood {
+            handle: "f618d9b7".into(),
+            spawned_by: Some(crate::store::Provenance {
+                parent: "092198b5".into(),
+                project: None,
+                elsewhere: true,
+            }),
+        };
+        let p = append_prompt(false, Some(&orphan));
+        assert!(p.contains("since been closed"), "a closed parent was not said to be: {p}");
+    }
+
+    /// A card the *user* opened must not be told it was spawned, which is the
+    /// same claim in the other direction and the one that would be quietly
+    /// wrong: a card that believes it has an orchestrator goes looking for one.
+    #[test]
+    fn a_card_the_user_opened_is_told_no_such_thing() {
+        let me = Selfhood { handle: "4bd5340b".into(), spawned_by: None };
+        let p = append_prompt(false, Some(&me));
+        assert!(!p.contains("spawned card"), "an ordinary card was told it was spawned: {p}");
+        assert!(p.contains("4bd5340b"), "it should still know its own handle: {p}");
     }
 
     /// A child that exits with a known code, so reaping can be tested without a

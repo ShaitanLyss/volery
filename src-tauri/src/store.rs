@@ -4990,6 +4990,69 @@ pub fn was_spawned(conn: &Connection, id: &str) -> bool {
     .is_some()
 }
 
+/// Who opened a card, said the way that card's own system prompt has to say it.
+///
+/// Read once per spawn by `supervisor::spawn_now`, which is also every wake — so
+/// a card roused a month later is told its parentage again, and a card whose
+/// parent is long gone is told that too rather than being left to infer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Provenance {
+    /// The parent's handle, which is what an agent addresses a card by.
+    pub parent: String,
+    /// What the parent's territory is called, or `None` where the parent is no
+    /// longer on the wall.
+    pub project: Option<String>,
+    /// Does the parent stand somewhere other than this card does?
+    ///
+    /// The load-bearing field, and the one the incident turned on: `list`
+    /// defaults to project scope, so a parent in another territory is not in the
+    /// rows a child can see without asking for `scope: "skein"`. Sink `0cf05791`
+    /// is a card in `workbench` whose parent was in `rise`, and the cost of not
+    /// knowing that was a human carrying a message across by hand.
+    ///
+    /// **Unknown counts as elsewhere.** A parent that has been closed is in
+    /// neither scope, so the wider instruction is the one that is not wrong.
+    pub elsewhere: bool,
+}
+
+/// Two queries and a join that is allowed to miss.
+///
+/// Deliberately not `roster`, which drops closed cards: a parent that has since
+/// been closed is still the card that wrote the brief, and a child told nothing
+/// goes back to concluding it is top-level — which is the whole of the reported
+/// failure. So the *handle* comes from `spawned`, which is never swept, and only
+/// the decoration around it comes from rows that may be gone.
+pub fn provenance_of(store: &Store, id: &str) -> Option<Provenance> {
+    provenance_row(&store.0.lock().unwrap(), id)
+}
+
+/// The query itself, so it can be tested without a Tauri app.
+pub fn provenance_row(conn: &Connection, id: &str) -> Option<Provenance> {
+    let parent_id = spawner_of(conn, id)?;
+    let project_of = |who: &str| -> Option<(String, String)> {
+        conn.query_row(
+            "SELECT c.project_id, p.name
+               FROM conversation c JOIN project p ON p.id = c.project_id
+              WHERE c.id = ?1",
+            params![who],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    };
+    let theirs = project_of(&parent_id);
+    let mine = project_of(id).map(|(pid, _)| pid);
+    Some(Provenance {
+        parent: crate::relay::handle_of(&parent_id),
+        project: theirs.as_ref().map(|(_, name)| name.clone()),
+        elsewhere: match (&theirs, &mine) {
+            (Some((t, _)), Some(m)) => t != m,
+            _ => true,
+        },
+    })
+}
+
 /// Who opened this card, if anybody did.
 pub fn spawner_of(conn: &Connection, id: &str) -> Option<String> {
     conn.query_row(

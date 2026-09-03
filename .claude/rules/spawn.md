@@ -151,6 +151,39 @@ answer is the same: bound it, make it visible, and say what it cost.
   instruction and then assumes its live children have it. `guidance.md` has why the answer was
   a clause here rather than a tool for writing one.
 
+- **And nothing clips it any more, which is the fourth bound to come off.** It was four
+  thousand characters, cut with `chars().take(n)`. What that did on 2026-09-02 is sink
+  `f468f017`: a numbered brief of load-bearing ideas arrived at a card cut off inside the word
+  `ask_user`, items seven onward never arrived, and **nothing told either end**. The child
+  inferred the rest of the sentence and carried on — which is the failure mode rather than the
+  escape, because a brief clipped at a *paragraph* boundary would have read as complete and
+  nobody would ever have known.
+
+  The argument for having a cap was that a brief is a model's output and therefore unbounded.
+  It is not. This arrives as MCP `tools/call` arguments, so the brief was written by the
+  caller inside its own output budget and is **already paid for** by the time `do_spawn` sees
+  it; clipping saves the user nothing and only throws away the half the parent thought it was
+  sending. Set against the field's own claim that the brief is the entire channel — no
+  context, no history, nothing the user said — the one thing a cap here reliably removes is
+  the paragraph that would have made the card worth opening.
+
+  So the bound is the agent's judgement and the description says so, in the same breath and
+  for the same reason the quantity bullet above does: an agent that believes a limit is there
+  summarises the brief down to a length it is guessing at, which is this bug arrived at
+  voluntarily. `the_brief_says_it_is_not_clipped` holds it to saying it, and to saying *why* —
+  "reads as complete" is the half an agent told only "it is unlimited" does not act on.
+
+  **`clip_brief` is kept with no caller**, exactly as `store::spawns_since` is kept for
+  `MAX_PER_HOUR`, and it is tested. Restoring the cap is one word, and on that day the
+  clipping is already boundary-aware (paragraph, then list item, then word, each taken only if
+  it lands in the last quarter of the budget — a rule with no floor would clip a
+  five-thousand-character brief to two characters to find a blank line) and already announces
+  itself at **both** ends. Both, because the marker in the brief tells the card to ask and the
+  line in the receipt tells the parent to send: the parent still has the whole thing in front
+  of it and can act in the same breath, where the child has to notice, work out who to ask,
+  and spend a turn asking. Neither end was told anything, which is why this was found by a
+  sentence stopping mid-word.
+
 ### Rust decides; the wall opens
 
 `Skein.#openIn` is the one correct way a card comes into being: ensure the project, write the
@@ -190,6 +223,66 @@ the intent instead makes the question answerable at the only moment it is asked,
 nothing to race. `store::migrate_v20` has the rest of it, including why nothing sweeps the
 table: the value of a lineage is answering "was this opened by an agent" months later, and one
 that evaporated when the parent closed would answer that wrongly and confidently.
+
+## What a card knows about itself
+
+The table above answers "who opened this card" for the *wall*. For most of its life nothing
+answered it for the **card**, and that gap cost a measured incident.
+
+A card opened by `spawn` received its brief as an ordinary user turn, indistinguishable from
+something the person at the keyboard had typed. `list` returned its own row marked
+`you: true` and carried no parent field. So the card that hit the truncation above was asked
+to report it to its orchestrator, checked `list`, found no parent, **concluded from the
+absence that it was top-level**, and told the user there was no orchestrator to report to.
+Both conclusions were wrong. The user carried the request across by hand and pasted the reply
+back (sink `0cf05791`).
+
+Three sink items turned out to be one gap — that one, `be79bb41` (a card is never told its own
+handle) and the half of `f468f017` about a brief with no way to tell it was incomplete. All
+three are *what does a card know about itself and where it came from*, and the answer in every
+case was **nothing it did not go and ask for**. `supervisor::Selfhood` is the answer to all
+three at once, and settling them together is what let the marker in `clip_brief` say "ask the
+card that opened you" rather than "ask somebody".
+
+- **It goes in the system prompt, not in the brief**, and the reasons agree. The brief is the
+  parent's own words, echoed into the transcript exactly as a typed prompt is — and the
+  complaint here is *precisely* that a brief is indistinguishable from something the user
+  typed, so prepending a paragraph of Volery's own makes that worse and puts words in the
+  parent's mouth to do it. A brief also scrolls away, where provenance is wanted at the moment
+  it is needed, which is usually hours later and on the far side of a compaction.
+- **Derived at every spawn, which is every wake.** `guidance.md`'s rule that a card already
+  running does not hear an edit does not bite: `spawn_now` asks `store::provenance_of` on the
+  way past, so a card roused a month from now is told again. That answers the cost the sink
+  item records against this shape — "only reaches cards spawned after the change" is true of a
+  *birth*-time fact and not of one derived here. It is the fifth thing asked of the store
+  rather than passed as an argument, after `kind_of`, `setup_of`, `worktree_of` and `gear_of`,
+  and it could not have travelled anyway: the caller that would have to remember is `wake`,
+  and a card roused at launch is exactly the one that has forgotten who opened it.
+- **Where the parent stands is the load-bearing half.** `list` defaults to project scope, and
+  the measured parent (`092198b5`) was in `rise` while the child stood in `workbench` — so it
+  was not even among the rows the child could see without asking for `scope: "skein"`. The
+  clause names the territory and says to widen the scope only when it is another one; saying
+  it always would teach every card to reach for the wider list by reflex.
+- **A closed parent is named and not sent to.** `provenance_row` reads the handle out of
+  `spawned`, which is never swept, and only the decoration — the project's name — from a join
+  that may miss. So a card whose parent is gone is told so and told to tell the user instead,
+  rather than dispatched to a handle that answers nothing. Unknown counts as *elsewhere*, since
+  a closed card is in neither scope and the wider instruction is the one that is not wrong.
+- **And the roster carries it too, for every row rather than only your own.** `spawned_by` is
+  present when a card was opened by a card and absent when it was not, with no third reading.
+  The system prompt is what actually closes the incident, but the roster is where an agent goes
+  to *look*, and a row that carries every other fact about a card while staying silent about
+  the one relationship the wall records reads as an answer. It was read as one.
+- **A card the user opened is told no such thing**, which is the same claim in the direction
+  that would be quietly wrong: a card that believes it has an orchestrator goes looking for
+  one. `a_card_the_user_opened_is_told_no_such_thing` is that assertion.
+- **The handle goes in the environment as well as in the prose**, and the two are complements
+  rather than alternatives — `SKEIN_CARD` is what a shell command expands, the sentence is what
+  the model repeats. `CLAUDE.md` sends working files to `.scratch-$SKEIN_CARD/`, and the whole
+  point is that a convention you must make a tool call to obey is one that gets skipped under
+  load. A chat card is told none of this, with the board and the roster and for their reason:
+  it cannot write a file, so there is no scratch directory to name, and `do_list` refuses it
+  the roster outright.
 
 ## The root a spawned card stands on
 

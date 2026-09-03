@@ -35,6 +35,22 @@ where that column is read.
   can see them — rather than cost a working card its tools, which reads as the agent being
   broken. Both directions are wrong; only one of them is loud.
 
+### And a fourth thing the kind decides: what a card is told about itself
+
+`append_prompt` takes a `Selfhood` — the card's own handle, and who opened it if anybody did —
+and everything it adds is inside the `if !chat` block with the board, the roster and the
+shared-index paragraph. The same argument covers it twice over: a chat card cannot write a
+file, so there is no `.scratch-<handle>/` for a handle to name, and `relay::do_list` refuses it
+the roster outright, so telling it which row is its own would name a thing it will be told it
+may not look at. `SKEIN_CARD` is set in its environment anyway, unconditionally, where it is
+inert — it has no Bash tool to expand it with, and one line without a condition is better than
+one line plus a case to be wrong about.
+
+Nothing here changes what a chat card *is*. `spawn.rs` already refuses one the ability to open
+a card, so a chat card can never be a parent, and `spawn` only ever mints project cards, so it
+can never be a child either. `.claude/rules/spawn.md` owns the whole of why a card is told its
+provenance and why the system prompt is the channel; this is only where the boundary is drawn.
+
 ### What `--tools` actually does
 
 Probed against claude 2.1.233 on 2026-08-16, spawning with Skein's exact argv. Three of these

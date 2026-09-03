@@ -306,7 +306,12 @@ pub fn list_schema() -> Value {
              them over the same files. Each entry carries a `handle` — that is what \
              `send` takes. Worth calling before starting anything substantial in a \
              repository somebody else may be in, and again if you are about to change \
-             something others build on.",
+             something others build on.\n\n\
+             A card opened by another card carries `spawned_by`, the handle of the one \
+             that opened it; a card the user opened has no such field. Your own row is \
+             marked `you`. Note that a parent in another territory is **not** in the \
+             default scope — ask for `scope: \"skein\"` if a `spawned_by` handle is not \
+             among the rows you can see.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -406,15 +411,35 @@ fn do_list(app: &AppHandle, caller: &str, args: &Value) -> String {
         Ok(r) => r,
         Err(e) => return format!("could not read the roster: {e}"),
     };
+    /* Who opened each of these, for every row rather than only the caller's own.
+       Sink `0cf05791` is about a card that could not find its parent, and the
+       system prompt is what actually closes that (`supervisor::Selfhood`) — but
+       the roster is where an agent goes to *look*, and a row that carries every
+       other fact about a card while staying silent about the one relationship
+       the wall records reads as an answer. It was: the card checked `list`,
+       found no parent field, and concluded from the absence that it was
+       top-level.
+
+       Read here rather than joined into `roster`, because the `spawned` table is
+       deliberately never swept and the join would drop a parentage whose parent
+       has been closed — see `store::provenance_row`, which makes the same
+       distinction one layer down. Absent from the row when there is nothing to
+       say, so `spawned_by` present means opened by a card and absent means
+       opened by the user, with no third reading. */
+    let parents: Vec<Option<String>> = rows
+        .iter()
+        .map(|r| crate::store::spawner_of(&conn, &r.id).map(|p| handle_of(&p)))
+        .collect();
     drop(conn);
 
     let sup = app.state::<crate::supervisor::Supervisor>();
     let now = crate::store::now();
     let cards: Vec<Value> = rows
         .iter()
-        .map(|r| {
+        .zip(parents)
+        .map(|(r, spawned_by)| {
             let (open, in_turn) = sup.liveness(&r.id);
-            json!({
+            let mut row = json!({
                 "handle": handle_of(&r.id),
                 "name": r.title,
                 "you": r.id == caller,
@@ -425,7 +450,11 @@ fn do_list(app: &AppHandle, caller: &str, args: &Value) -> String {
                 "state": if !open { "dormant" } else if in_turn { "working" } else { "idle" },
                 "idle_seconds": r.last_turn_at.map(|t| (now - t).max(0) / 1000),
                 "unread": r.inbox,
-            })
+            });
+            if let (Some(who), Some(obj)) = (spawned_by, row.as_object_mut()) {
+                obj.insert("spawned_by".into(), Value::String(who));
+            }
+            row
         })
         .collect();
 

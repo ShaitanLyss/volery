@@ -225,7 +225,52 @@ const HOUR_MS: i64 = 60 * 60 * 1_000;
 /// what was already written.
 const ONE_GENERATION: bool = false;
 
-const MAX_PROMPT: usize = 4_000;
+/// How long a brief may be.
+///
+/// **Off, and this is the fourth bound to come off** — see `MAX_LIVE`,
+/// `MAX_PER_HOUR` and `ONE_GENERATION`, which are parked the same way and for
+/// the same reason: the number was a guess, and what it actually refused was
+/// the good case.
+///
+/// It was four thousand characters, cut with `chars().take(n)` and no marker of
+/// any kind. What that did on 2026-09-02 is sink `f468f017`: a numbered brief of
+/// load-bearing ideas arrived at a card cut off inside the word `ask_user`,
+/// items seven onward never arrived, and **nothing told either end**. The child
+/// inferred the rest of the sentence and carried on, which is the failure mode
+/// rather than the escape — a brief clipped at a *paragraph* boundary would have
+/// read as complete, and then nobody would ever have known.
+///
+/// The argument for having a cap at all was that a brief is a model's output and
+/// therefore unbounded. It is not: this arrives as MCP `tools/call` arguments,
+/// so the brief was written by the caller inside its own output budget, and it
+/// is *already* paid for by the time this function sees it. Clipping it here
+/// does not save the user a token — the money is spent — it only throws away the
+/// half the parent thought it was sending. And the whole argument of the
+/// `prompt` field is that the brief is the entire channel: the child gets no
+/// context, no history and nothing the user said, so the one thing a cap here
+/// can reliably remove is the paragraph that would have made the card worth
+/// opening.
+///
+/// So the bound is the agent's judgement and the tool's description, which says
+/// so in as many words — `the_brief_says_it_is_not_clipped` holds it to that,
+/// the same way `the_description_says_there_is_no_limit` holds the quantity
+/// bound to saying it is gone.
+///
+/// **`clip_brief` is kept with no live caller**, exactly as `spawns_since` is
+/// kept for `MAX_PER_HOUR`. Turning this back on is one word, and on the day it
+/// happens the clipping is already boundary-aware and already announces itself
+/// at both ends — which is the half that was missing, and the half a `Some(n)`
+/// written in a hurry would not think to add.
+const MAX_PROMPT: Option<usize> = None;
+
+/// How long a *title* may be, which is a different question and still has an
+/// answer.
+///
+/// A title is furniture: it is drawn in a fixed box on a card at four densities
+/// and read at a glance, so there is a real width past which more characters are
+/// not more information. Unlike a brief, nothing is lost by cutting one — the
+/// card renames itself from its own first turn anyway (`naming.md`), so this is
+/// a label with hours to live.
 const MAX_TITLE: usize = 80;
 
 #[derive(Clone, Serialize)]
@@ -306,7 +351,14 @@ pub fn spawn_schema() -> Value {
                          rather than repeating a paragraph into each brief — copies drift, \
                          and the earliest go stale first. A card already running does not \
                          hear an edit, so they reach the cards you open next and not those \
-                         already on the wall."
+                         already on the wall.\n\n\
+                         **Nothing clips this and there is no length to write to.** Write \
+                         the brief the work actually needs — the numbered list, the file \
+                         paths, the thing you already tried that did not work. It arrives \
+                         whole, in one piece, as the card's first turn. Do not summarise a \
+                         brief down to fit a size you are guessing at: the card cannot ask \
+                         you what you left out until it knows something is missing, and a \
+                         brief that stops at a paragraph boundary reads as complete."
                 },
                 "project": {
                     "type": "string",
@@ -953,7 +1005,15 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
                 an API turn spent on nothing, so none was opened"
             .into();
     }
-    let prompt = clip(prompt, MAX_PROMPT);
+    /* Only asked when there is a cap to ask it against, which there is not —
+       see `MAX_PROMPT`, and note the shape is the one `MAX_LIVE` and
+       `MAX_PER_HOUR` already use: a bound that may not exist rather than a
+       sentinel a comparison happens to let through. `clipped` is how many
+       characters the wall ate, and it is nonzero on no path today. */
+    let (prompt, clipped) = match MAX_PROMPT {
+        Some(cap) => clip_brief(prompt, cap),
+        None => (prompt.to_string(), 0),
+    };
     let title = args
         .get("title")
         .and_then(Value::as_str)
@@ -1103,12 +1163,27 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         ),
         None => String::new(),
     };
+    /* The other end of the marker in `clip_brief`, and the end that can do
+       something about it. Telling only the child costs a turn each way — it has
+       to notice, work out who to ask, and ask — where the parent still has the
+       whole brief in front of it and can `send` the remainder in the next
+       breath. Sink `f468f017` had neither end told, which is why it was found by
+       a sentence stopping mid-word.
+
+       Empty on every path today, per `MAX_PROMPT`. */
+    let ate = match clipped {
+        0 => String::new(),
+        n => format!(
+            " **The wall could not carry your whole brief**: {n} characters did not go, and \
+             the card has been told so. Send it the rest with `send` before it starts."
+        ),
+    };
     match elsewhere {
         None => format!(
             "opening a card in {cwd} — its handle is {handle}. It has the brief you wrote and \
              nothing else of yours. Tell the user you have opened it and what for. You can \
              `send` to it or `recall` it by that handle; it will not appear in `list` until \
-             its process is up, which takes a moment.{called}{sharing}"
+             its process is up, which takes a moment.{called}{sharing}{ate}"
         ),
         /* Said differently on purpose. A card in another repository is the one
            case where "it has the brief and nothing else" costs something real:
@@ -1124,7 +1199,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              be in the brief. Tell the user you have opened it, where, and what for. You can \
              `send` to it or `recall` it by that handle; it will not appear in `list` until \
              its process is up, and then only under `scope: \"skein\"`, since it is not in \
-             your project.{called}"
+             your project.{called}{ate}"
         ),
     }
 }
@@ -1134,6 +1209,73 @@ fn clip(s: &str, max: usize) -> String {
         return s.to_string();
     }
     s.chars().take(max).collect()
+}
+
+/// How far back from a hard cut it is worth looking for somewhere to stop.
+///
+/// A boundary rule with no floor is a rule that can throw away most of a brief
+/// to find a blank line: a five-thousand-character paragraph with one `\n\n` at
+/// character 40 would clip to forty characters, which is worse than the mid-word
+/// cut it was supposed to improve on. So each rule below is tried in turn and
+/// taken only if it lands in the last quarter of the budget; otherwise the next,
+/// weaker one gets a go, and a brief with no boundaries in it at all is cut
+/// where it was always going to be cut.
+const BOUNDARY_FLOOR: f64 = 0.75;
+
+/// What a card is told when the wall could not carry the whole brief.
+///
+/// Two things, and the second is the one that was missing. Cutting at a
+/// paragraph or a list item stops a card reading half a word — but a brief cut
+/// at a *paragraph* boundary reads as complete, which is the trap: the card that
+/// hit this (sink `f468f017`) only noticed because the sentence stopped
+/// mid-word, and a tidier cut would have made the same brief look finished. So
+/// the marker is not decoration on the boundary rule, it is the half that
+/// actually tells the truth, and the boundary rule exists so that the marker is
+/// the only thing that has to.
+///
+/// It names a next move rather than only a fact. A card that knows it is missing
+/// four hundred characters and does not know who has them is a card that
+/// infers — and it now does know: `append_prompt` names the parent to every
+/// spawned card, so "ask the card that opened you" is one `send` away rather
+/// than a round of `list` and a guess. The two items were filed separately and
+/// this sentence is where they meet.
+///
+/// **No live caller**, per `MAX_PROMPT`.
+fn clip_brief(s: &str, max: usize) -> (String, usize) {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return (s.to_string(), 0);
+    }
+
+    let head: String = chars[..max].iter().collect();
+    let floor = (max as f64 * BOUNDARY_FLOOR) as usize;
+
+    /* Strongest first. A paragraph break is a whole thought; a line break is a
+       list item, which is the shape the brief that found this bug was in; a
+       space is merely not mid-word. `rfind` answers in bytes, and every
+       needle here is ASCII, so the byte index is a char boundary — but the
+       *count* that goes in the marker has to be in characters, since that is
+       what `max` is measured in and what the caller will compare against. */
+    let cut = ["\n\n", "\n", " "]
+        .iter()
+        .find_map(|sep| {
+            let at = head.rfind(sep)?;
+            let kept = head[..at].chars().count();
+            (kept >= floor).then_some(kept)
+        })
+        .unwrap_or(max);
+
+    let kept: String = chars[..cut].iter().collect();
+    let omitted = chars.len() - cut;
+    let text = format!(
+        "{}\n\n[brief truncated by the wall — {omitted} of {} characters did not arrive. \
+         What you have above may read as complete and is not. Ask the card that opened you \
+         for the rest with `{}send` before acting on it.]",
+        kept.trim_end(),
+        chars.len(),
+        crate::supervisor::MCP_PREFIX,
+    );
+    (text, omitted)
 }
 
 /// The roster chain's half of this server's two tools, which is one of them.
@@ -2064,6 +2206,104 @@ mod tests {
         assert_eq!(MAX_LIVE, None);
         assert_eq!(MAX_PER_HOUR, None);
         assert!(!ONE_GENERATION);
+        /* The fourth, and the one that refused a *good* brief rather than a
+           fan-out: sink f468f017 is a numbered list cut off inside the word
+           `ask_user` at four thousand characters, with nothing said to either
+           end about it. */
+        assert_eq!(MAX_PROMPT, None);
+    }
+
+    /// The brief's own half of the same claim, and it is a separate sentence in
+    /// the description because it answers a different question. "How many cards"
+    /// and "how much may I write to one" are not the same bound, and an agent
+    /// that believes the second is there summarises the brief down to a length it
+    /// is guessing at — which is the failure this whole item is about, arrived at
+    /// voluntarily instead of by being clipped.
+    #[test]
+    fn the_brief_says_it_is_not_clipped() {
+        let s = spawn_schema();
+        let d = s["inputSchema"]["properties"]["prompt"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(d.contains("Nothing clips this"), "{d}");
+        assert!(d.contains("no length to write to"), "{d}");
+        /* The reason, not just the fact — an agent told only "it is unlimited"
+           still economises out of habit. */
+        assert!(d.contains("reads as complete"), "{d}");
+    }
+
+    /// `clip_brief` has no caller today (see `MAX_PROMPT`) and is tested anyway,
+    /// exactly as `store::spawns_since` is kept for the rate limit: the day a cap
+    /// comes back is the day this has to already be right, and a `Some(n)`
+    /// written in a hurry is not going to think of the marker.
+    ///
+    /// The two halves are separate claims. Cutting at a boundary stops a card
+    /// reading half a word; the **marker** is the one that tells the truth,
+    /// because a brief clipped at a paragraph reads as finished — which is the
+    /// trap the incident only escaped by the cut landing mid-token.
+    #[test]
+    fn a_clipped_brief_stops_somewhere_and_says_so() {
+        assert_eq!(clip_brief("short", 4_000), ("short".into(), 0));
+
+        /* Exactly at the budget is not over it. */
+        let exact = "x".repeat(40);
+        assert_eq!(clip_brief(&exact, 40), (exact.clone(), 0));
+
+        /* A paragraph boundary is preferred, and the marker names what went. */
+        let para = "p".repeat(32);
+        let brief = format!("{para}\n\n{}", "b".repeat(60));
+        let (text, gone) = clip_brief(&brief, 40);
+        assert!(text.starts_with(&para), "{text}");
+        /* Split at the marker before looking: the marker is prose and has its
+           own letters in it, so a bare `contains` over the whole thing asks the
+           wrong question — which this assertion did, and the lift said so. */
+        let kept = text.split_once("\n\n[brief truncated").expect("a marker").0;
+        assert_eq!(kept, para, "the second paragraph was not dropped whole: {text}");
+        assert_eq!(gone, brief.chars().count() - para.chars().count());
+        assert!(text.contains("brief truncated by the wall"), "{text}");
+        assert!(text.contains(&gone.to_string()), "the count is not in the marker: {text}");
+        /* Named so the card can act rather than infer, which is the whole join
+           between this item and `0cf05791` — it now knows who opened it. */
+        assert!(text.contains("Ask the card that opened you"), "{text}");
+
+        /* A list, which is the shape the reported brief was in: the cut takes
+           whole items. */
+        let list = "1. one\n2. two\n3. three\n4. four\n5. five";
+        let (text, gone) = clip_brief(list, 24);
+        assert!(text.starts_with("1. one\n2. two\n3. three"), "{text}");
+        assert!(!text.contains("4. four"), "half an item survived: {text}");
+        assert!(gone > 0);
+
+        /* With no break of any kind, a space still beats a mid-word cut — which
+           is the literal complaint in the item, a brief ending inside the word
+           `ask_user`. */
+        let (text, _) = clip_brief(&format!("{} {}", "w".repeat(35), "x".repeat(30)), 40);
+        assert_eq!(text.lines().next().unwrap(), "w".repeat(35));
+
+        /* And a boundary too far back is not taken. One blank line near the
+           start of a wall of prose would otherwise clip a 5,000-character brief
+           to two characters — much worse than the mid-word cut this is meant to
+           improve on — so each rule is tried in turn, each is refused for
+           landing below the floor, and what is left is the cut that was always
+           going to happen. */
+        let mut prose = String::from("ab\n\ncd ");
+        prose.push_str(&"e".repeat(60));
+        let (text, _) = clip_brief(&prose, 40);
+        assert!(text.starts_with("ab\n\ncd"), "the early blank line was taken: {text}");
+        assert!(text.contains("eeee"), "nothing after the blank line survived: {text}");
+
+        /* Nothing to cut on at all still cuts, at the budget. */
+        let solid = "z".repeat(100);
+        let (text, gone) = clip_brief(&solid, 40);
+        assert_eq!(gone, 60);
+        assert!(text.starts_with(&"z".repeat(40)), "{text}");
+
+        /* Counted in characters rather than bytes, since that is what the budget
+           is measured in — a marker claiming three times the real number is an
+           instrument lying about itself. */
+        let wide = "é".repeat(100);
+        let (_, gone) = clip_brief(&wide, 40);
+        assert_eq!(gone, 60);
     }
 
     /// With nothing left to refuse a spawn on grounds of quantity, the tool has
