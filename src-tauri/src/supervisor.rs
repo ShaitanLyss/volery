@@ -705,6 +705,26 @@ fn spawn_now(
        line and a case to be wrong about. */
     cmd.env("SKEIN_CARD", &me.handle);
 
+    /* Where the wall's shared browser is, for a card that wants to drive one.
+       `browser.rs` owns a real Chrome with a CDP port; this is the address a
+       test can hand to `chromium.connectOverCDP` so the page it drives is the
+       page the browser widget is showing — same browser, same session, same
+       login, and the person can take the mouse mid-run.
+
+       An environment variable rather than a tool, because the thing that needs
+       it is *test code the agent writes*, not the agent itself: `connectOverCDP`
+       takes a string, and a string in the environment is one a shell expansion
+       reaches without a round trip. Same argument as `SKEIN_CARD` one line up.
+
+       Set only while a browser is actually running, and that is the whole
+       reason it is `Option`: an empty variable would read as an endpoint to a
+       card checking whether the variable exists, and it would connect to
+       nothing. A card spawned before the browser started does not have it —
+       which is honest, since at that moment there was nowhere to connect. */
+    if let Some(endpoint) = crate::browser::endpoint(app) {
+        cmd.env("VOLERY_CDP_ENDPOINT", endpoint);
+    }
+
     /* Which subscription this card spends. `CLAUDE_SECURESTORAGE_CONFIG_DIR`
        selects the credential store and *only* the store — `CLAUDE_CONFIG_DIR`
        is untouched, so the transcript still lands in the shared config

@@ -69,6 +69,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # flow, relay, board, serverlog,
                          # usage,
                          # bang,
+                         # browser,
                          # repair, limits, accounts, signin, azdo,
                          # shell, finding, styles
 bun test test/classify.test.ts                                        # one file
@@ -79,7 +80,7 @@ bun run test:wall        # drives a RUNNING app over the control surface
 cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
                               # aside.rs,
                               # later.rs, pin.rs, spawn.rs,
-                              # bang.rs, update.rs, guidance.rs,
+                              # bang.rs, update.rs, guidance.rs, browser.rs,
                               # quit.rs,
                               # repair/text.rs, hooks.rs,
                               # control.rs,
@@ -91,6 +92,9 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
 bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, with your config
+node --experimental-strip-types tools/probe-browser.ts   # what a browser costs, and whether
+                                   # two clients can share one. NODE, not bun: playwright's
+                                   # launch() never returns under bun on this machine.
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
@@ -161,6 +165,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `portage.md` | carrying a wall off and setting one up again: what a layout is and what it deliberately leaves behind, why no id travels and an import only adds, furniture identified by what-and-where, and a territory that arrives pointing nowhere | `portage.ts`, `portage.svelte.ts`, `portage.rs`, `Carry.svelte` |
 | `roster.md` | **design, unbuilt** — drawing something else's work: a wall-level MCP registry, the row contract a server publishes to appear here, and why `tier` is the only vocabulary Volery exports | `roster.ts`, `Roster.svelte`, `mcp.rs` |
 | `spotify.md` | music on the wall: why Volery *is* the player rather than a remote for one, what that costs in Spotify's terms, the two tools that let a card choose what plays without being able to silence you, and the loopback tunnel that gets librespot onto an address that answers | `spotify.rs`, `selector.rs`, `tunnel.rs`, `spotify.ts`, `Spotify.svelte` |
+| `browser.md` | a browser the wall owns and a page two things drive at once: why hosting it in a webview saves ~0, the profile collision two cards would have hit, the fixed port an MCP argument forces, the two Chrome flags that fail after everything looks fine, and why the input half needs no window focus | `browser.rs`, `browser.ts`, `pane.svelte.ts`, `Browser.svelte`, `tools/probe-browser.ts` |
 | `build.md` | building without MSVC — the four traps, and what a no-MSVC machine can check | `Cargo.toml`, `tools/*.ps1` |
 
 ## Architecture
@@ -257,7 +262,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `update.ts`,
 `unreallog.ts`,
 `gears.ts`,
-`repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`) are pure
+`repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

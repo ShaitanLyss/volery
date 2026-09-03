@@ -252,6 +252,21 @@ fn status_of(guard: &Option<Running>) -> Status {
     }
 }
 
+/// The endpoint, for code that cannot await a command.
+///
+/// Deliberately synchronous and deliberately not a `#[tauri::command]`: it
+/// takes the mutex, reads two fields and returns. There is no I/O behind it, so
+/// the rule that a blocking command must leave the main thread does not apply —
+/// and `spawn_now` is not async, so a command is not reachable from there
+/// anyway. Returns nothing when no browser is running, which is the honest
+/// answer and is why the caller sets no variable rather than an empty one.
+pub fn endpoint(app: &AppHandle) -> Option<String> {
+    let state = app.try_state::<Browser>()?;
+    let guard = state.inner.lock().ok()?;
+    let r = guard.as_ref()?;
+    Some(format!("http://{HOST}:{}", r.port))
+}
+
 #[tauri::command]
 pub async fn browser_status(state: State<'_, Browser>) -> Result<Status, String> {
     let mut guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
