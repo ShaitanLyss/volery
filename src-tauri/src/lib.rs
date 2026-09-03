@@ -6,6 +6,7 @@ mod aside;
 mod ask;
 mod accounts;
 mod bang;
+mod browser;
 mod claude;
 mod board;
 /// Public so `examples/azdo-probe.rs` can drive the real reading rather than a
@@ -218,6 +219,7 @@ pub fn run() {
            once, not once per file. */
         .manage(Nvims::default())
         .manage(Bangs::default())
+        .manage(browser::Browser::default())
         .manage(Runs::default())
         .manage(Asks::default())
         .manage(aside::Asides::default())
@@ -389,6 +391,11 @@ pub fn run() {
             supervisor::wake_quiet,
             supervisor::conversation_holding,
             supervisor::settle_conversation_fleet,
+            browser::browser_status,
+            browser::browser_start,
+            browser::browser_stop,
+            browser::browser_targets,
+            browser::browser_open,
             claude::find_claude,
             claude::install_claude,
             accounts::list_accounts,
