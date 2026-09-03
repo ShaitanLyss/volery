@@ -69,7 +69,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # flow, relay, board, serverlog,
                          # usage,
                          # bang,
-                         # repair, limits, accounts, signin, azdo, integrations,
+                         # repair, limits, accounts, signin, azdo, integrations, asana,
                          # shell, finding, office, styles, zoom
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
@@ -84,7 +84,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # repair/text.rs, hooks.rs,
                               # control.rs,
                               # supervisor.rs,
-                              # creds.rs,
+                              # creds.rs, asana.rs,
                               # servers.rs, shell.rs, nvim.rs, find.rs, sessions.rs, project.rs,
                               # usage.rs,
                               # tunnel.rs, applog.rs,
@@ -133,6 +133,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `timers.md` | timers, the pomodoro cycle, and why breaks are taken rather than offered | `timing.ts`, `cycle.svelte.ts`, `Rest.svelte` |
 | `azdo.md` | pipelines and reviews over **two** forges: the four-rung Azure DevOps ladder and the rung that could not spawn, why GitHub needs no ladder at all, the test a cross-forge projection has to pass, a 400 that means "not your project", one run opened in-app, where the one stored secret lives, and the TLS interception this network does | `azdo.ts`, `devops.svelte.ts`, `azdo.rs`, `forge.rs`, `github.rs`, `Run.svelte`, `vault.rs`, `Keyring.svelte` |
 | `integrations.md` | every credential the app keeps, in one panel: why the vault target is a string nobody may rename, why the wire names a service rather than a target, the table that makes the third integration free, and a check that has to be right in the alarming direction | `integrations.ts`, `creds.svelte.ts`, `Keyring.svelte`, `creds.rs`, `vault.rs` |
+| `asana.md` | the board widget and the first thing on this wall that *writes*: why a column is a section, the one function that decides the optimistic redraw and the request together, the two races a poll and a rollback have, and why the drag is pointer events | `asana.ts`, `asana.svelte.ts`, `Kanban.svelte`, `asana.rs` |
 | `actions.md` | the verbs a project has all day, Unreal's shape, conflicts and the fetch clock | `actions.ts`, `project.rs`, `actions.rs` |
 | `ask.md` | the `ask_user` MCP server, parking a `tools/call`, and several questions in one call | `ask.rs`, `asking.ts`, `Ask.svelte` |
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |

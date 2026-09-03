@@ -126,11 +126,9 @@ fn lookup(id: &str) -> Result<&'static Service, String> {
 /// token and a panel does not, so `integration_held` is a boolean and there is
 /// no command that returns one.
 ///
-/// `allow(dead_code)` because this landed a commit ahead of the reading that
-/// wants it (the Asana board). Take it off when a second caller appears; a
-/// permanent one here would mean nothing ever reads a stored token, which would
-/// make the whole file pointless.
-#[allow(dead_code)]
+/// `asana.rs` is the caller, per request rather than cached — a syscall, and it
+/// buys the property `vault.rs` chose Credential Manager for: a token deleted
+/// in Control Panel stops working immediately rather than at the next detach.
 pub fn token(id: &str) -> Option<String> {
     crate::vault::read_at(lookup(id).ok()?.target)
 }

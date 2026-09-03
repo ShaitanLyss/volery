@@ -136,6 +136,10 @@ describe("a widget describes itself well enough to be offered blind", () => {
         { value: "C:\\dev\\Caravan", label: "Caravan" },
         { value: "C:\\dev\\Other", label: "Other" },
       ],
+      boards: [
+        { value: "1201", label: "Nova" },
+        { value: "1202", label: "RISE" },
+      ],
     };
     for (const spec of WIDGETS) {
       const w = newWidget(spec.kind, 0, 0);

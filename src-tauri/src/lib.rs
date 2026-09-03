@@ -2,6 +2,7 @@ mod actions;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
 mod applog;
+mod asana;
 mod aside;
 mod ask;
 mod accounts;
@@ -496,6 +497,10 @@ pub fn run() {
             creds::set_integration_token,
             creds::clear_integration_token,
             creds::verify_integration,
+            asana::asana_workspaces,
+            asana::asana_projects,
+            asana::asana_board,
+            asana::asana_move,
             azdo::forge_run,
             store::list_ambience,
             store::save_ambience,

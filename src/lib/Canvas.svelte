@@ -38,6 +38,7 @@
   import type { Meter } from "./meter.svelte";
   import type { Ledger } from "./ledger.svelte";
   import type { DevOps } from "./devops.svelte";
+  import type { Asana } from "./asana.svelte";
   import type { Cycle } from "./cycle.svelte";
   import type { Profile } from "./ambience";
   import { glassAt, spotOf, stickTo, type Spot } from "./glass";
@@ -74,6 +75,7 @@
     ledger,
     pomodoro,
     devops,
+    asana,
     naming,
     onreveal,
     onopen,
@@ -162,6 +164,9 @@
     /** The one Azure DevOps connection behind the pipelines and reviews
      *  widgets, idle until one of them attaches. */
     devops: DevOps;
+    /** The one Asana connection behind the board widgets, idle until one
+     *  attaches. */
+    asana: Asana;
     /** What a performance row's role and reference are called up here. */
     naming: (role: string, reference: string | null) => string | null;
     /** Go and look at whatever a widget row points at. */
@@ -1736,6 +1741,7 @@
     {ledger}
     {pomodoro}
     {devops}
+    {asana}
     {billboard}
     {sink}
     {gates}

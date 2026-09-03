@@ -43,6 +43,7 @@ export type WidgetKind =
   | "status"
   | "pipelines"
   | "reviews"
+  | "asana"
   | "billboard"
   | "sink"
   | "gates"
@@ -75,7 +76,7 @@ export type Guard = { key: string; is: string[] };
  * in (`normalizeParam`), because the valid set is not knowable at this layer —
  * an account registered after the widget was placed would otherwise be read
  * back as the default, silently, on the next launch. */
-export type Source = "accounts" | "groups" | "projects" | "editors";
+export type Source = "accounts" | "groups" | "projects" | "editors" | "boards";
 
 /** What one knob is. Deliberately three shapes rather than a number and a
  *  convention: a variant is a name, not a slider position, and reading `2` back
@@ -732,6 +733,69 @@ export const WIDGETS: WidgetSpec[] = [
           { value: "all", label: "every open pull request" },
         ],
         "mine",
+      ),
+    ],
+  },
+  {
+    kind: "asana",
+    label: "asana board",
+    note: "one project's board, and its cards where you put them",
+    /* Wider than anything else in this catalogue, and the widest thing on the
+       wall. A board is columns side by side — that is what makes it a board
+       rather than a list — and four of them at a legible card width is what
+       this comes to. The `counts` reading is what it becomes when you want it
+       small. */
+    box: { w: 560, h: 320 },
+    min: { w: 200, h: 110 },
+    params: [
+      /* Two readings of one fact, the test every variant on this wall has to
+         pass. `counts` is not a lesser board: it is the shape that still says
+         something at the size of a card, where columns say nothing at all —
+         and it is deliberately not draggable, being a gauge rather than the
+         board. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "board", label: "the board" },
+          { value: "counts", label: "how much is in each column" },
+        ],
+        "board",
+      ),
+      /* Every real option is resolved at menu time, so this knob does not
+         appear until the connection has fetched a project list — see `Source`
+         and `optionGroupsOf`. The widget draws its own picker in the meantime,
+         because a board with no project is not a board and a first-run state
+         reachable only through a right-click menu reads as broken.
+
+         `""` as the default rather than a project: there is no project this
+         file could name, and guessing the first one the token can see would
+         put somebody else's board on your wall. It is a *literal* option as
+         well as the default, which is both what the catalogue's own invariant
+         requires — a default has to be a value the knob accepts, since it is
+         what a widget comes back as when nothing resolves — and a way to put
+         the picker back without taking the widget down. */
+      choice(
+        "project",
+        "project",
+        [{ value: "", label: "none — show the picker" }],
+        "",
+        undefined,
+        "boards",
+      ),
+      /* Asana's own idiom is `completed_since=now`, which filters the
+         *checkmark* and not the column — so a Done column still draws either
+         way, and what this hides is the cards somebody has actually finished
+         with. `open` first because a board that accumulates every task ever
+         ticked is one nobody reads twice. */
+      choice(
+        "showing",
+        "showing",
+        [
+          { value: "open", label: "what is still open" },
+          { value: "all", label: "everything, ticked or not" },
+        ],
+        "open",
       ),
     ],
   },

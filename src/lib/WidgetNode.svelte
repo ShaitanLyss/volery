@@ -12,6 +12,7 @@
   import type { Ledger } from "./ledger.svelte";
   import type { Cycle } from "./cycle.svelte";
   import type { DevOps } from "./devops.svelte";
+  import type { Asana } from "./asana.svelte";
   import type { Board } from "./board.svelte";
   import type { Reading } from "./serverlog";
   import type { Build } from "./buildlog";
@@ -35,6 +36,7 @@
   import Spotify from "./Spotify.svelte";
   import Pipelines from "./Pipelines.svelte";
   import Reviews from "./Reviews.svelte";
+  import Kanban from "./Kanban.svelte";
   import Billboard from "./Billboard.svelte";
   import Basin from "./Basin.svelte";
   import Gatehouse from "./Gatehouse.svelte";
@@ -51,6 +53,7 @@
     ledger,
     pomodoro,
     devops,
+    asana,
     billboard,
     sink,
     gates,
@@ -86,6 +89,12 @@
      *  reviews widgets are up — idle, and holding no credential, until one of
      *  them attaches. */
     devops: DevOps;
+    /** The one Asana connection behind however many board widgets are up —
+     *  idle, and reading nothing, until one attaches. Its own holder rather
+     *  than a second reading off `devops`: a different service, a different
+     *  credential and a different clock, and the only thing they have in common
+     *  is that both leave the machine. */
+    asana: Asana;
     /** The one billboard reader behind however many are up — idle, and reading
      *  nothing, until one attaches. Named `billboard` rather than `board`
      *  because the wall already has a `Board`: the reference images. */
@@ -288,6 +297,19 @@
       />
     {:else if widget.kind === "reviews"}
       <Reviews {widget} {devops} onopen={(url) => onopen?.(url)} />
+    {:else if widget.kind === "asana"}
+      <!-- `onconfig` is this file's own `setRun`/`setDuo` one service over: a
+           widget's chosen project rides in its config, so setting it is an
+           ordinary widget update and costs no command — the whole reason
+           `config_json` is one opaque column. -->
+      <Kanban
+        {widget}
+        {asana}
+        onopen={(url) => onopen?.(url)}
+        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
+        onconfig={(key, value) =>
+          onupdate({ config: { ...widget.config, [key]: value } })}
+      />
     {:else if widget.kind === "billboard"}
       <Billboard
         {widget}

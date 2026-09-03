@@ -73,6 +73,7 @@
   import Accounts from "./lib/Accounts.svelte";
   import Keyring from "./lib/Keyring.svelte";
   import { Creds } from "./lib/creds.svelte";
+  import { Asana } from "./lib/asana.svelte";
   import RunPanel from "./lib/Run.svelte";
   import Guidance from "./lib/Guidance.svelte";
   import Overflow, { MORE_WIDTH } from "./lib/Overflow.svelte";
@@ -237,6 +238,13 @@
      repositories are standing on the wall. */
   const creds = new Creds();
   creds.roots = () => skein.projects.map((p) => p.root_path);
+  /* And the same three wirings for Asana. Its own connection rather than a
+     second reading off `devops`: a different service, a different credential,
+     a different clock, and the only thing the two have in common is that both
+     leave the machine. Holds a timer, so it is released on destroy with the
+     rest of them. */
+  const asana = new Asana();
+  asana.token = { held: () => creds.heldFor("asana"), ask: () => void creds.askHeld("asana") };
   /* And which reading to send again when a credential changes. `DevOps`
      resolves its ladder once per organisation and holds it, so a token pasted
      into the panel would otherwise not be consulted until the last widget came
@@ -246,6 +254,16 @@
      the third integration is not wired into it. */
   creds.changed = (id) => {
     if (id === "azdo") void devops.refresh();
+    /* Asana's project list is the thing a board widget cannot draw its picker
+       without, and it is asked once rather than on a clock — so storing a token
+       has to be what brings it in, or a widget placed before the token was
+       stored would sit on "this token can see no projects" until the app was
+       restarted. `again`, because the previous answer was "nothing to ask
+       with" and that is a reading worth replacing. */
+    if (id === "asana") {
+      void asana.askProjects(true);
+      void asana.refresh();
+    }
   };
   /* The other direction: the fourth rung of the Azure DevOps ladder is the one
      token this app can do anything about, and `DevOps` needs the boolean to
@@ -376,6 +394,9 @@
     meter.stop();
     ledger.stop();
     devops.stop();
+    /* Same hazard one service over: a superseded generation left ticking by a
+       hot reload would go on polling Asana for a wall nobody can see. */
+    asana.stop();
     crowds.stop();
     releases.release();
     beacon.release();
@@ -1269,6 +1290,19 @@
          log none until there is a second Unreal one. */
       projects: actions.builds().length > 1 ? projectOptions(actions.builds()) : [],
       editors: actions.editors().length > 1 ? editorOptions(actions.editors()) : [],
+      /* And the one that is not read off the wall at all: an Asana project is
+         somebody else's list, fetched by the connection when a board widget
+         asks. Empty until it has landed, which drops the knob from the menu —
+         and the widget draws its own picker in the meantime, so the choice is
+         never only in here. Not filtered to "more than one" like the three
+         above: with a single project the knob is still the only way to put the
+         picker back, and `none` is the second entry that makes it a choice.
+
+         **Only the ones you are a member of.** The token can see 64 on this
+         workspace and a right-click menu with 64 entries is not a menu; the
+         three in your own sidebar are the ones you switch between, and
+         browsing the rest is what the widget's picker is for. */
+      boards: asana.mine.map((b) => ({ value: b.gid, label: b.name })),
     };
   }
 
@@ -2894,6 +2928,7 @@
         convs={skein.convs}
         leaving={skein.leaving}
         projects={skein.projects}
+        {asana}
         {studio}
         {board}
         {widgets}
