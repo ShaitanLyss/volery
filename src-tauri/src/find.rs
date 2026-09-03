@@ -182,6 +182,23 @@ pub struct FileText {
     /// cheerfully hand it.
     binary: bool,
     bytes: u64,
+    /// The first bytes, base64, and **only when `binary`** — so the front end
+    /// can say *what* it is rather than only that it is not text.
+    ///
+    /// This is what keeps the byte-sniffing rule whole now that some binaries
+    /// are readable. A `.pdf` opens as a document because its name says to try,
+    /// which is a guess about avoiding a round trip; a file with **no**
+    /// extension gets no such guess, and before this the only thing it could be
+    /// told was "not a text file — nothing to read here". Sixteen bytes is every
+    /// magic number that matters (`%PDF-`, `PK\x03\x04`, the eight-byte OLE
+    /// header), and it costs 24 characters on a payload that is otherwise empty.
+    ///
+    /// **Rust learns no formats from this.** It hands over the head and the
+    /// vocabulary stays in `office.ts`, next to the code that parses what the
+    /// head turns out to name — which is also why there is no third extension
+    /// table here to keep in agreement with the front end's. See `media_type`
+    /// for the pair that does have that problem.
+    head: String,
 }
 
 /* ── paths ────────────────────────────────────────────────────────────────── */
@@ -449,6 +466,7 @@ pub fn read_text(root: &str, path: &str) -> Result<FileText, String> {
                 truncated: false,
                 binary: true,
                 bytes,
+                head: crate::base64(&data[..data.len().min(16)]),
             });
         }
 
@@ -472,6 +490,10 @@ pub fn read_text(root: &str, path: &str) -> Result<FileText, String> {
             truncated,
             binary: false,
             bytes,
+            /* Empty when it is text: the head is there to name a file the viewer
+               could not read, and a copy of the first sixteen characters of
+               something already being sent in full is nothing to anybody. */
+            head: String::new(),
         })
     }
 }
@@ -591,6 +613,196 @@ pub async fn read_file_media(root: String, path: String) -> Result<FileMedia, St
     crate::off_main(move || read_media(&root, &path)).await?
 }
 
+/* -- a document, which is bytes and nothing else -------------------------- */
+
+/// The most of an Office document this will carry.
+///
+/// 24 MB, which is a large deck with photographs on every slide and about the
+/// biggest `.xlsx` anybody hands a colleague. Bigger than `MEDIA_CAP` because
+/// the cost is different in kind: a 20 MB video wants *streaming* and the viewer
+/// is right to decline it, whereas a 20 MB PDF is a document somebody is
+/// actually going to read, and the reader needs all of it before it can draw
+/// page one.
+///
+/// **The bytes come through here on base64 rather than through the asset
+/// protocol, and that is the same containment decision `MEDIA_CAP` records.**
+/// `tauri.conf.json` scopes `assetProtocol` to `$APPDATA/references/**` --
+/// pinned images, which Volery itself put there. A document sits at an arbitrary
+/// path in a project chosen at runtime, and the scope is static configuration,
+/// so reaching one would mean widening it to `**` -- which is not a wider scope
+/// so much as *no* scope, and it would route around `safe_join`, the only thing
+/// standing between the viewer and every file on this disk. So the read goes
+/// past the same join every other read does, and this cap is what makes the
+/// encoding affordable.
+///
+/// It is the cap rather than the encoding that bounds it, which is worth saying
+/// because it is where to go next: the day a 60 MB PDF matters, the answer is a
+/// custom URI scheme registered in `lib.rs` -- Tauri's own
+/// `register_asynchronous_uri_scheme_protocol`, which can serve range requests
+/// past the same `safe_join` and hand the webview's PDF viewer exactly the pages
+/// it asks for. That is a real improvement and it is not this one, because it is
+/// a new protocol handler to get wrong for a case nobody has hit.
+const DOC_CAP: u64 = 24 * 1024 * 1024;
+
+/// A document's bytes, for the front end to make sense of.
+#[derive(Serialize)]
+pub struct FileDoc {
+    /// base64, or empty when `too_large`.
+    data: String,
+    bytes: u64,
+    /// Over `DOC_CAP`. Said rather than truncated, for the reason `FileMedia`
+    /// says it: half a `.docx` is not a shorter document, it is a corrupt
+    /// archive, and a reader failing to open one reads as a bug in the reader.
+    #[serde(rename = "tooLarge")]
+    too_large: bool,
+}
+
+/// One document out of the project, unread.
+///
+/// **Nothing here knows what a document is**, and that is the arrangement rather
+/// than an omission. There is no extension table, no magic number and no MIME
+/// string: this is `read_media` with the interpretation taken out, because the
+/// front end is going to parse the container anyway (`office.ts`) and a second
+/// opinion held over here would be a second place to be wrong about a format --
+/// which is precisely the hazard the `media_type`/`IMAGES` pair carries and
+/// says so.
+///
+/// So the whole of Rust's share is the three things only Rust can do: refuse a
+/// path that leaves the project, bound what is read, and get it off the main
+/// thread.
+pub fn read_doc(root: &str, path: &str) -> Result<FileDoc, String> {
+    let full = safe_join(root, path)?;
+    let bytes = std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0);
+    if bytes > DOC_CAP {
+        return Ok(FileDoc {
+            data: String::new(),
+            bytes,
+            too_large: true,
+        });
+    }
+    let data = std::fs::read(&full).map_err(|e| format!("could not read {path}: {e}"))?;
+    Ok(FileDoc {
+        data: crate::base64(&data),
+        bytes,
+        too_large: false,
+    })
+}
+
+/// The command, which is `read_doc` off the main thread and nothing else.
+///
+/// `off_main` for the reason every read here has it, and more so: this
+/// base64-encodes up to 24 MB, which is real CPU rather than a file read, and
+/// doing it on the thread that paints the wall would freeze every card on it for
+/// as long as it took.
+#[tauri::command]
+pub async fn read_file_doc(root: String, path: String) -> Result<FileDoc, String> {
+    crate::off_main(move || read_doc(&root, &path)).await?
+}
+
+/* -- handing one to the application that owns it --------------------------- */
+
+/// The extensions the viewer may hand to the desktop.
+///
+/// **This is the one extension table that belongs in Rust, and the reason is
+/// what the answer is used for.** Everywhere else the question is "which element
+/// draws this", which is a drawing decision and lives with the drawing; here it
+/// is "may a process be started for this", which is a decision only the side
+/// that starts the process can be trusted with. A front end that could name the
+/// extension could name `.exe`, and the command is reachable from anything
+/// holding the IPC rather than only from the panel that meant to call it -- the
+/// same argument `safe_join` and `open::openable` both make.
+///
+/// An allow-list rather than a list of things to refuse, for the reason
+/// allow-lists win whenever the safe set is the small one: a deny-list has to
+/// know about `.exe`, `.bat`, `.cmd`, `.com`, `.scr`, `.ps1`, `.msi`, `.lnk`,
+/// `.vbs`, `.hta`, `.reg`, `.jar` and whatever Windows registers next, and
+/// missing one is a viewer that runs it. This has to know about the documents the
+/// panel actually offers the gesture for, which is a list that changes when
+/// somebody adds a reading.
+///
+/// Media is in it through `media_type`, so the two cannot drift: a picture the
+/// viewer draws is a picture it will also open in whatever owns pictures, which
+/// is what the `MEDIA_CAP` plate has been promising since 2026-08-28.
+fn openable_file(path: &str) -> bool {
+    if media_type(path).is_some() {
+        return true;
+    }
+    let Some(ext) = path.rsplit('.').next().map(|e| e.to_ascii_lowercase()) else {
+        return false;
+    };
+    matches!(
+        ext.as_str(),
+        "pdf"
+            | "docx"
+            | "docm"
+            | "dotx"
+            | "doc"
+            | "xlsx"
+            | "xlsm"
+            | "xltx"
+            | "xls"
+            | "pptx"
+            | "pptm"
+            | "potx"
+            | "ppt"
+            | "csv"
+            | "tsv"
+    )
+}
+
+/// Open one file of the project in whatever the desktop uses for it.
+///
+/// The escape hatch behind every plate the viewer draws: a document too large to
+/// carry, a legacy format this does not open, a webview that will not draw a PDF.
+/// The point of it is that **the answer is never "no"** -- the same argument
+/// `MEDIA_CAP` makes about saying a size rather than truncating.
+///
+/// `rundll32 url.dll,FileProtocolHandler` rather than `cmd /c start`, which is
+/// `open.rs`'s reasoning exactly and matters more here than there: `start` goes
+/// through the shell, which reads `&`, `^` and `%` in a path as its own syntax,
+/// and a path in a repository is a string somebody else chose. rundll32 takes it
+/// as one argument.
+///
+/// Not `launch_detached`, which is `actions.rs`'s deliberate exception to the
+/// job-object rule -- this wants exactly the same thing, though, and gets it for
+/// free: rundll32 hands the path to the registered handler and exits, so the Word
+/// that opens is not a child of anything Volery holds and does not close with the
+/// wall. Which is right. Nobody wants the document they were reading to vanish
+/// because they shut the studio.
+pub fn open_file(root: &str, path: &str) -> Result<(), String> {
+    let full = safe_join(root, path)?;
+    if !openable_file(path) {
+        return Err(format!("{path} is not a document this will hand to the desktop"));
+    }
+    if !full.is_file() {
+        return Err(format!("{path} is not there any more"));
+    }
+
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("rundll32.exe");
+        cmd.args(["url.dll,FileProtocolHandler"])
+            .arg(&full)
+            .stdin(Stdio::null());
+        quiet(&mut cmd);
+        cmd.spawn()
+            .map_err(|e| format!("could not open {path}: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("opening a file outside is implemented for windows only".into())
+    }
+}
+
+#[tauri::command]
+pub fn open_file_outside(root: String, path: String) -> Result<(), String> {
+    /* Not `async`: a spawn is not a blocking read, and `rundll32` returns as
+       soon as it has handed the path over. See the note over `off_main`. */
+    open_file(&root, &path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,6 +836,49 @@ mod tests {
         /* And a path inside the project that is simply not media is refused
            by name, before anything is opened. */
         assert!(read_media(root, "src/lib/finding.ts").is_err());
+    }
+
+    /// The same guard, over the command that carries a whole document. It has
+    /// no name table to refuse by, so `safe_join` is the *only* thing between it
+    /// and every file on this disk — which makes this the one assertion in the
+    /// pair that is load-bearing rather than belt-and-braces.
+    #[test]
+    fn a_document_read_cannot_climb_out_of_the_project() {
+        let root = "C:\\atelier\\skein";
+        assert!(read_doc(root, "..\\..\\Windows\\win.ini").is_err());
+        assert!(read_doc(root, "C:\\Windows\\explorer.exe").is_err());
+        assert!(read_doc(root, "docs/../../secrets.xlsx").is_err());
+    }
+
+    /// The allow-list, and the omission that is the whole of why it is one.
+    #[test]
+    fn only_a_document_is_handed_to_the_desktop() {
+        assert!(openable_file("q3.xlsx"));
+        assert!(openable_file("docs/Report.PDF"));
+        assert!(openable_file("data/rows.csv"));
+        /* Media too, through `media_type` — the plate over an oversized image has
+           promised this since 2026-08-28. */
+        assert!(openable_file("shot.png"));
+
+        /* Everything a deny-list would have had to think of. */
+        assert!(!openable_file("setup.exe"));
+        assert!(!openable_file("run.bat"));
+        assert!(!openable_file("go.ps1"));
+        assert!(!openable_file("thing.lnk"));
+        assert!(!openable_file("installer.msi"));
+        /* And an ordinary source file, which has `e` for nvim instead. */
+        assert!(!openable_file("src/lib/finding.ts"));
+        assert!(!openable_file("Makefile"));
+    }
+
+    /// The join comes first, so a path that leaves the project is refused before
+    /// the extension is even looked at — a `..\\..\\x.pdf` is on the list and
+    /// must still not open.
+    #[test]
+    fn nothing_outside_the_project_is_opened_either() {
+        let root = "C:\\atelier\\skein";
+        assert!(open_file(root, "..\\..\\Users\\me\\Desktop\\x.pdf").is_err());
+        assert!(open_file(root, "C:\\Windows\\System32\\calc.exe").is_err());
     }
 
     #[test]

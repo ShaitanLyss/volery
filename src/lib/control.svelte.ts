@@ -1060,6 +1060,20 @@ export class Control {
         sheetLine: h.finder.sheetLine,
         rendered: h.finder.rendered,
         raw: h.finder.raw,
+        /* Which document reading is on screen, and why there is not one.
+           Reported because the whole feature is otherwise invisible from
+           outside: `rendered: true` says the viewer is not drawing numbered
+           lines, and a spreadsheet, a Word file, a PDF frame and a plate saying
+           the archive was corrupt all answer that the same way. The *kind*
+           rather than the content, for the reason a tab reports whether it holds
+           a reading rather than what it is — a cell's text is a fact about
+           somebody's file, and a test asserting one would be a test about that
+           file. `doc` is null for source, for markdown, and for media. */
+        doc: h.finder.sheet?.doc?.kind ?? null,
+        docFault: h.finder.sheet?.docFault ?? null,
+        /* Whether the two-readings toggle is offered at all, which is one rule
+           over three cases — see `Finder.toggleable`. */
+        toggleable: h.finder.toggleable,
         /* Whether there is a result list behind the viewer, which is the whole
            of what Escape does next and is otherwise invisible: the two states
            draw an identical panel and differ only in where backing out goes. */

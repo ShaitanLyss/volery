@@ -23,9 +23,13 @@ import {
   windowAround,
   type Hit,
   mediaKindOf,
+  drawnAs,
   IMAGES,
   VIDEOS,
+  MARKDOWN,
+  READINGS,
 } from "../src/lib/finding";
+import { DOCUMENTS, TABLES } from "../src/lib/office";
 
 /* ── the leader ───────────────────────────────────────────────────────────── */
 
@@ -666,5 +670,103 @@ describe("a file the viewer draws", () => {
     expect(videos.size).toBeGreaterThan(2);
     expect([...images].sort()).toEqual([...IMAGES].sort());
     expect([...videos].sort()).toEqual([...VIDEOS].sort());
+  });
+});
+
+/* The five readings, and the one property that could not be stated while they
+ * were four separate `if (SOMESET.has(ext))` calls in a row. */
+describe("one table over five readings", () => {
+  test("each reading is reachable by name", () => {
+    expect(drawnAs("docs/shot.png")).toBe("image");
+    expect(drawnAs("clip.webm")).toBe("video");
+    expect(drawnAs(".claude/rules/finding.md")).toBe("markdown");
+    expect(drawnAs("Q3 review.pptx")).toBe("document");
+    expect(drawnAs("data/rows.CSV")).toBe("table");
+    /* And plain source is the absence of a reading rather than one of them —
+       which is what keeps the viewer's default the thing it was built for. */
+    expect(drawnAs("src/lib/finding.ts")).toBeNull();
+    expect(drawnAs("Makefile")).toBeNull();
+  });
+
+  /* **The invariant.** An extension in two of the sets is a file whose reading
+     depends on the order the branches happen to be in — which is the same class
+     of bug as the `IMAGES`/`VIDEOS` note above, one layer up. It cannot be
+     caught by reading the code, because each set is defined in a different file
+     from the others and they are perfectly sensible apart. */
+  test("no extension has two readings", () => {
+    const sets: [string, Iterable<string>][] = [
+      ["images", IMAGES],
+      ["videos", VIDEOS],
+      ["markdown", MARKDOWN],
+      ["documents", Object.keys(DOCUMENTS)],
+      ["tables", TABLES],
+    ];
+    const seen = new Map<string, string>();
+    for (const [name, set] of sets) {
+      for (const ext of set) {
+        const already = seen.get(ext);
+        expect(already, `.${ext} is in both ${already} and ${name}`).toBeUndefined();
+        seen.set(ext, name);
+      }
+    }
+    /* Non-empty, or this passes by having iterated nothing. */
+    expect(seen.size).toBeGreaterThan(20);
+    expect(Object.keys(READINGS).length).toBe(seen.size);
+  });
+
+  /* And the reason this one needs no counterpart in Rust to agree with, unlike
+     `media_type` above: the document readings ask Rust for *bytes*, and Rust has
+     no opinion about what they are. `read_file_doc` carries no extension table,
+     no magic number and no MIME string — the whole vocabulary is in `office.ts`,
+     next to the parsers. Asserted out of the source, because the day somebody
+     adds a `match ext` to that function is the day this table acquires the
+     hazard the one above it has. */
+  test("the Rust half of a document read knows nothing about documents", () => {
+    const rust = readFileSync("src-tauri/src/find.rs", "utf8");
+    const fn = rust.slice(rust.indexOf("pub fn read_doc"));
+    const body = fn.slice(0, fn.indexOf("\n}"));
+    expect(body.length).toBeGreaterThan(100);
+    for (const ext of Object.keys(DOCUMENTS)) {
+      expect(body.includes(`"${ext}"`), `read_doc names .${ext}`).toBe(false);
+    }
+    expect(body.includes("PDF")).toBe(false);
+    expect(body.includes("media_type")).toBe(false);
+  });
+
+  /* The one table Rust *does* keep, and the only one whose disagreement with
+     this side is dangerous rather than merely wrong: `find::openable_file`
+     decides whether a process may be started for a file, so it is an allow-list
+     and it lives on the side that does the starting.
+   *
+   * Both directions matter and they fail differently. A document missing from it
+   * is a plate offering `e` and a refusal when you press it — annoying. An
+   * executable *in* it is the viewer running a `.exe` out of a repository —
+   * which is why the second half of this test names the things a deny-list would
+   * have had to think of. Read out of the source rather than transcribed, for
+   * the reason the `media_type` test is: a reading added on this side and not
+   * that one has to fail here rather than under somebody's finger.
+   *
+   * These suites cannot *run* the Rust assertions on a machine without MSVC
+   * (`.claude/rules/build.md`), which is exactly why this one is on this side of
+   * the seam — it is the same claim, checked by `bun test`. */
+  test("everything the viewer offers to open, Rust will open", () => {
+    const rust = readFileSync("src-tauri/src/find.rs", "utf8");
+    const fn = rust.slice(rust.indexOf("fn openable_file"));
+    const arms = fn.slice(0, fn.indexOf("\n}"));
+    const allowed = new Set([...arms.matchAll(/"([a-z0-9]+)"/g)].map((m) => m[1]));
+
+    expect(allowed.size).toBeGreaterThan(10);
+    /* Media comes in through `media_type` rather than being listed again, so it
+       is asserted by that call being there rather than by the extensions. */
+    expect(arms.includes("media_type")).toBe(true);
+
+    for (const ext of [...Object.keys(DOCUMENTS), ...TABLES]) {
+      expect(allowed.has(ext), `Rust will not open .${ext}, which the panel offers`).toBe(
+        true,
+      );
+    }
+    for (const ext of ["exe", "bat", "cmd", "com", "scr", "ps1", "msi", "lnk", "vbs", "hta", "reg", "jar", "dll"]) {
+      expect(allowed.has(ext), `Rust would launch a .${ext}`).toBe(false);
+    }
   });
 });

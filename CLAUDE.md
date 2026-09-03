@@ -70,7 +70,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # usage,
                          # bang,
                          # repair, limits, accounts, signin, azdo, integrations,
-                         # shell, finding, styles
+                         # shell, finding, office, styles
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -250,7 +250,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
 `transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
-`undo.ts`, `finding.ts`, `integrations.ts`,
+`undo.ts`, `finding.ts`, `office.ts`, `integrations.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
 `hunt.ts`,
 `applog.ts`,

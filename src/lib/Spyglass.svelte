@@ -14,6 +14,7 @@
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
 
+  import Folio from "./Folio.svelte";
   import Markdown from "./Markdown.svelte";
   import Quill from "./Quill.svelte";
   import { parseMarkdown } from "./markdown";
@@ -65,11 +66,28 @@
     return no ? Number(no) : finder.sheetLine;
   }
 
-  /** Hand the file being read to the editor. */
+  /** What `e` does with the file being read.
+   *
+   *  Two things, and which one is a fact about the file rather than a mode: a
+   *  file with a source goes to nvim, and one without goes to the application
+   *  that owns it. See `Finder.outward` — before it, `e` on a spreadsheet opened
+   *  a screenful of `PK` in an editor. */
   function edit() {
     if (!finder.sheet) return;
+    if (finder.outward) {
+      void finder.openOutside();
+      return;
+    }
     void editor.edit(finder.root, finder.sheet.path, viewerLine());
   }
+
+  /** What the two-readings button says, which is whichever one you are in.
+   *
+   *  A `.csv` is a grid rather than a rendering, and calling it one would be the
+   *  button describing the mechanism instead of the thing on screen. */
+  const readingName = $derived(
+    finder.raw ? "source" : finder.sheet?.doc?.kind === "sheet" ? "table" : "rendered",
+  );
 
   /* Keep the selected row in view without moving the list otherwise. `nearest`
      rather than `center`: holding Down should walk the list a row at a time,
@@ -245,7 +263,7 @@
         edit();
         return;
       }
-      if ((e.key === "r" || e.key === "R") && e.ctrlKey && finder.markdown) {
+      if ((e.key === "r" || e.key === "R") && e.ctrlKey && finder.toggleable) {
         e.preventDefault();
         finder.toggleRaw();
       }
@@ -396,17 +414,22 @@
         onclick={() => editor.rest()}
         title="Back to reading it. nvim keeps your buffers (alt+E)">read</button
       >
-    {:else if finder.sheet && !finder.sheet.binary}
-      <button class="ghost" onclick={edit} title="Edit it in your own nvim (e)">edit</button>
+    {:else if finder.sheet && (!finder.sheet.binary || finder.outward)}
+      <button
+        class="ghost"
+        onclick={edit}
+        title={finder.outward
+          ? "Open it in the application that owns it (e)"
+          : "Edit it in your own nvim (e)"}>{finder.outward ? "open" : "edit"}</button
+      >
     {/if}
     {#if finder.sheet && !editor.on}
-      {#if finder.markdown}
+      {#if finder.toggleable}
         <button
           class="ghost"
           class:on={!finder.raw}
           onclick={() => finder.toggleRaw()}
-          title="Read it as a document or as its source (ctrl+R)"
-          >{finder.raw ? "source" : "rendered"}</button
+          title="Read it as a document or as its source (ctrl+R)">{readingName}</button
         >
       {/if}
       <!-- What "back" is depends on where the viewer was opened from, so the
@@ -442,16 +465,21 @@
       <span class="dir">{p.dir}</span><span class="name">{p.name}</span>
       {#if finder.sheetLine !== null}<span class="at">:{finder.sheetLine}</span>{/if}
       <span class="grow"></span>
-      {#if !finder.sheet.binary}<span class="note"
-          >e to {finder.sheet.media ? "open" : "edit"}</span
+      {#if !finder.sheet.binary || finder.outward}<span class="note"
+          >e to {finder.outward ? "open" : "edit"}</span
         >{/if}
       <span class="note">{(finder.sheet.bytes / 1024).toFixed(1)} kB</span>
     </div>
     <!-- Focusable so it can hold the keyboard with no field on screen, and so
          the arrows scroll the file rather than doing nothing. -->
+    <!-- `.doc` only takes the padding off: a `Folio` brings its own, because a
+         grid wants none and a Word document wants a measure. The `bind:this`
+         stays on this one element whatever is inside it, since it is what the
+         dog-ear reads a reading out of. -->
     <div
       class="sheet"
-      class:prose={finder.rendered}
+      class:prose={finder.rendered && !finder.sheet.doc}
+      class:doc={finder.rendered && !!finder.sheet.doc}
       bind:this={sheet}
       tabindex="-1"
       role="document"
@@ -482,6 +510,24 @@
         {:else}
           <img class="media" src={finder.sheet.media.dataUrl} alt={finder.sheet.path} />
         {/if}
+      {:else if finder.sheet.docFault}
+        <!-- A document that could not be made sense of, and it says which — a
+             `.docx` that is really a renamed zip, a workbook past the cap, a
+             `.pdf` whose first bytes are not `%PDF-`. Before the `binary` arm,
+             which is the sentence for a file nothing can be said about at all;
+             this is a file rather a lot can be said about. -->
+        <p class="empty">
+          {finder.sheet.docFault} — press <kbd>e</kbd> to open it outside.
+        </p>
+      {:else if finder.rendered && finder.sheet.doc}
+        <!-- The fifth reading. Parsed in `office.ts` on the way in and drawn by
+             `Folio.svelte`; nothing about a format reaches this file. -->
+        <Folio
+          doc={finder.sheet.doc}
+          path={finder.sheet.path}
+          bytes={finder.sheet.bytes}
+          {onlink}
+        />
       {:else if finder.sheet.binary}
         <p class="empty">not a text file — nothing to read here</p>
       {:else if finder.rendered}
@@ -557,6 +603,21 @@
           {:else}
             <img class="peek" src={finder.preview.media.dataUrl} alt={finder.preview.path} />
           {/if}
+        {:else if finder.preview.docFault}
+          <p class="empty">{finder.preview.docFault}</p>
+        {:else if finder.preview.doc && !finder.preview.text}
+          <!-- A document at a glance. The `!text` half is the existing rule about
+               this pane rather than a new one: the preview is deliberately *not*
+               rendered, because its job is to show you where a hit is and that is
+               a line and a column. A `.csv` has both readings, so here it keeps
+               the numbered lines the grep hit was found in; a `.xlsx` has no
+               lines to show, so it gets the grid. -->
+          <Folio
+            doc={finder.preview.doc}
+            path={finder.preview.path}
+            bytes={finder.preview.bytes}
+            peek
+          />
         {:else if finder.preview.binary}
           <p class="empty">not a text file</p>
         {:else}
@@ -893,6 +954,14 @@
     background: var(--edge);
     outline: 1px solid var(--edge);
     outline-offset: -1px;
+  }
+  /* A document drawn by `Folio`. Only the padding comes off — a grid wants none
+     and a Word document wants a measure, and both of those are Folio's own
+     business. The height is what lets a workbook's tabs sit on the bottom edge:
+     `.sheet` is a flex item with a definite height, so Folio's `100%` resolves
+     against it and the grid scrolls inside rather than pushing the tabs off. */
+  .sheet.doc {
+    padding: 0;
   }
   .sheet.prose {
     padding: 1.2rem 1.8rem 3rem;

@@ -18,6 +18,8 @@
  * that ripgrep exists.
  */
 
+import { DOCUMENTS, TABLES, extOf } from "./office";
+
 /* ── the leader ───────────────────────────────────────────────────────────── */
 
 /** The leader key, and it is the space bar because that is where these hands
@@ -508,9 +510,7 @@ export const MARKDOWN = new Set(["md", "markdown", "mdx", "mdc"]);
 
 /** Whether the viewer opens this one rendered. */
 export function isMarkdown(path: string): boolean {
-  const at = path.lastIndexOf(".");
-  if (at === -1) return false;
-  return MARKDOWN.has(path.slice(at + 1).toLowerCase());
+  return MARKDOWN.has(extOf(path));
 }
 
 /** The extensions the viewer draws rather than reads.
@@ -532,21 +532,63 @@ export const VIDEOS = new Set(["mp4", "m4v", "webm", "ogv", "mov"]);
 
 export type MediaKind = "image" | "video";
 
-/** Which element would draw this file, or `null` for one to read as text.
+/** Which of the viewer's readings a file's *name* suggests.
+ *
+ *  Five now, and they arrived one at a time — source, then a rendered markdown
+ *  document, then an image or a film, and now an Office document or a table. So
+ *  this is one lookup rather than the fourth `if (SOMESET.has(ext))` in a row,
+ *  which is what the last two were on the way to becoming.
+ *
+ *  **The one table is about the dispatch, not about the knowledge.** Each set
+ *  still lives with the code that knows what to do with it — `DOCUMENTS` and
+ *  `TABLES` in `office.ts`, beside the parsers — and this composes them, because
+ *  moving them here would put Office's vocabulary in the finder's own module for
+ *  no reason but tidiness. What the composition buys is the property that could
+ *  not be stated while they were four separate calls: the sets are **disjoint**,
+ *  asserted in `test/finding.test.ts`. An extension in two of them is a file
+ *  whose reading depends on the order the `if`s happen to be in, which is
+ *  exactly the class of bug the `IMAGES`/`VIDEOS` note above is about. */
+export type Drawing = "image" | "video" | "markdown" | "document" | "table";
+
+export const READINGS: Record<string, Drawing> = (() => {
+  const out: Record<string, Drawing> = {};
+  for (const ext of IMAGES) out[ext] = "image";
+  for (const ext of VIDEOS) out[ext] = "video";
+  for (const ext of MARKDOWN) out[ext] = "markdown";
+  for (const ext of Object.keys(DOCUMENTS)) out[ext] = "document";
+  for (const ext of TABLES) out[ext] = "table";
+  return out;
+})();
+
+/** Which reading this file's name suggests, or null for plain source.
  *
  *  By name rather than by content, and that is not the same call `read_text`
  *  makes when it sniffs for a NUL. Sniffing answers "is this text", which an
  *  extension cannot be trusted about, because a file with no extension at all is
- *  perfectly normal. This answers "which element should draw it", which only the
- *  name can say — there is no byte pattern that distinguishes a file the webview
- *  will render from one it will show a broken-image glyph for. */
+ *  perfectly normal. This answers "which of the readings to *try*" — and for the
+ *  media arms that is all there is to say, since there is no byte pattern
+ *  distinguishing a file the webview will render from one it will show a broken
+ *  glyph for.
+ *
+ *  For a document it is a **hint and nothing more**, which is the half worth
+ *  knowing: the reading is settled by `office.sniff` over the file's first bytes
+ *  once they arrive, and a `.docx` whose bytes say otherwise is reported rather
+ *  than drawn. All this decides there is which command to call, which is a
+ *  question about saving a round trip. */
+export function drawnAs(path: string): Drawing | null {
+  return READINGS[extOf(path)] ?? null;
+}
+
+/** Which element would draw this file, or `null` for one to read as text. */
 export function mediaKindOf(path: string): MediaKind | null {
-  const at = path.lastIndexOf(".");
-  if (at === -1) return null;
-  const ext = path.slice(at + 1).toLowerCase();
-  if (IMAGES.has(ext)) return "image";
-  if (VIDEOS.has(ext)) return "video";
-  return null;
+  const kind = drawnAs(path);
+  return kind === "image" || kind === "video" ? kind : null;
+}
+
+/** Whether the viewer asks Rust for this one's bytes as a document. */
+export function docKindOf(path: string): "document" | "table" | null {
+  const kind = drawnAs(path);
+  return kind === "document" || kind === "table" ? kind : null;
 }
 
 /* ── reaching the viewer from somewhere else ──────────────────────────────── */

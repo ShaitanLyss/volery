@@ -50,12 +50,13 @@ import {
   type Row,
   LAPSE_MS,
   chord,
+  drawnAs,
   fileRows,
   grepRows,
   isMarkdown,
-  mediaKindOf,
   moveIn,
 } from "./finding";
+import { type Doc, bytesOf, extOf, readDocument, readTable, sniff } from "./office";
 
 /** How long after the last keystroke the grep goes out.
  *
@@ -124,6 +125,24 @@ export type Sheet = {
    *  not text, and it is also not the unreadable thing `binary` means, which is
    *  the case the viewer already had a sentence for. */
   media?: { kind: MediaKind; dataUrl: string; tooLarge: boolean };
+  /** An Office document, parsed — see `office.ts`.
+   *
+   *  On the same record as `text` and `media` for the same reason they are on
+   *  one: the viewer's whole subject is "the file you are looking at" and there
+   *  is exactly one of those, so a third cache would be a third eviction policy
+   *  and a third way to be stale.
+   *
+   *  A `.csv` carries **both** this and `text`, and that is not redundant — it
+   *  is the whole of what makes its `raw` toggle mean something. Which is also
+   *  the rule the toggle is decided by: see `toggleable`. */
+  doc?: Doc;
+  /** Why there is no document here, when there should have been one.
+   *
+   *  Per-sheet rather than in `Finder.fault`, because it is a fact about *this
+   *  file* and it is cached with it: the panel-wide fault is cleared by the next
+   *  gesture, and a `.docx` that is really a renamed zip of photographs should go
+   *  on saying so every time you open it. */
+  docFault?: string;
 };
 
 export class Finder {
@@ -202,16 +221,68 @@ export class Finder {
    *  then as you said, for as long as the wall is up. */
   raw = $state(false);
 
-  /** Whether the viewer is drawing a document. Both halves have to hold: it is
-   *  a markdown file, and you have not asked for the source. */
+  /** Whether the viewer is drawing a document rather than numbered lines.
+   *
+   *  Three kinds of document reach this now — a rendered markdown file, an
+   *  Office document, and a `.csv` as a grid — and the branch below is the one
+   *  place that difference matters. The `raw` half only applies where there *is*
+   *  a source to fall back to; see `toggleable`. */
   get rendered(): boolean {
-    return !!this.sheet && !this.raw && isMarkdown(this.sheet.path);
+    const s = this.sheet;
+    if (!s || s.docFault) return false;
+    if (s.doc) return !(this.toggleable && this.raw);
+    return !this.raw && isMarkdown(s.path);
   }
 
-  /** Whether the toggle is worth offering at all — there is nothing to render
-   *  about a `.ts`, and a button that does nothing is worse than no button. */
-  get markdown(): boolean {
-    return !!this.sheet && isMarkdown(this.sheet.path);
+  /** Whether the two-readings toggle is worth offering at all.
+   *
+   *  **One rule, and it is a fact about the file rather than a fourth list:
+   *  there are two readings when there is a document reading *and* a source.**
+   *  A `.md` has both — the rendering and the markdown. A `.csv` has both, which
+   *  is the whole reason it is drawn as a grid rather than left as text. A
+   *  `.docx` has only the document, because its "source" is a zip of XML in
+   *  fourteen parts and nobody wants to look at that in a code viewer; a `.pdf`
+   *  has only the document for the same reason twice over.
+   *
+   *  Which falls out of `Sheet` without asking anything: `text` is empty for a
+   *  file that came down the bytes path and full for one that came down the text
+   *  path. A button that does nothing is worse than no button. */
+  get toggleable(): boolean {
+    const s = this.sheet;
+    if (!s || s.binary || s.docFault) return false;
+    return s.doc ? s.text.length > 0 : isMarkdown(s.path);
+  }
+
+  /** Whether `e` hands this file to the desktop rather than to nvim.
+   *
+   *  The same fact `toggleable` turns on, asked the other way round: a file with
+   *  no source came down the bytes path, and nvim over the bytes of a `.xlsx` is
+   *  a screenful of `PK` — whereas the application that owns it is one keypress
+   *  away and is what you meant. A `.csv` is text, so `e` still edits it.
+   *
+   *  This is also the promise the media plate has been making since 2026-08-28
+   *  and could not keep: "press `e` to open it outside" called `editor.edit`,
+   *  which opened a PNG in nvim. */
+  get outward(): boolean {
+    const s = this.sheet;
+    if (!s) return false;
+    if (s.media) return true;
+    return (!!s.doc || !!s.docFault) && s.text.length === 0;
+  }
+
+  /** Hand the open file to whatever the desktop uses for it.
+   *
+   *  Rust decides whether it may be — see `find::openable_file`, which is an
+   *  allow-list because the front end naming the extension would be the front
+   *  end being able to name `.exe`. */
+  async openOutside() {
+    const path = this.sheet?.path;
+    if (!path) return;
+    try {
+      await invoke("open_file_outside", { root: this.root, path });
+    } catch (err) {
+      this.fault = String(err);
+    }
   }
 
   /** Source, or the document. Only ever reached from the viewer.
@@ -584,18 +655,24 @@ export class Finder {
     }
   }
 
-  /** One file off Rust, as whichever of the two things it is.
+  /** One file off Rust, as whichever of the readings it is.
    *
-   *  Split out of `#read` so the cache above stays one shape: an image and a
-   *  source file are the same kind of thing to the viewer — the file you are
-   *  looking at — and giving media its own cache would mean two eviction
-   *  policies and two ways to be stale.
+   *  Split out of `#read` so the cache above stays one shape: an image, a
+   *  spreadsheet and a source file are the same kind of thing to the viewer —
+   *  the file you are looking at — and giving each its own cache would mean
+   *  three eviction policies and three ways to be stale.
    *
-   *  Decided by name (`mediaKindOf`), which must agree with `find::media_type`.
-   *  A file this side thinks is media and Rust does not gets an error string
-   *  rather than a wrong drawing, which is the failure worth having. */
+   *  **The name chooses the command; the bytes choose the reading.** `drawnAs`
+   *  is a hint about which of three Rust calls to make, which is a question
+   *  about saving a round trip. What is actually drawn is settled after the
+   *  bytes arrive — by `office.sniff` for a document, and by Rust's own NUL
+   *  test for everything else. The two can disagree, and when they do the file
+   *  wins and says so: a `.docx` that is a renamed zip of photographs gets the
+   *  sentence rather than an empty document. */
   async #fetch(path: string): Promise<Sheet> {
-    if (mediaKindOf(path)) {
+    const drawn = drawnAs(path);
+
+    if (drawn === "image" || drawn === "video") {
       const out = await invoke<{
         dataUrl: string;
         kind: MediaKind;
@@ -613,13 +690,88 @@ export class Finder {
         media: { kind: out.kind, dataUrl: out.dataUrl, tooLarge: out.tooLarge },
       };
     }
+
+    if (drawn === "document") return this.#fetchDoc(path);
+
     const out = await invoke<{
       text: string;
       truncated: boolean;
       binary: boolean;
       bytes: number;
+      head: string;
     }>("read_file_text", { root: this.root, path });
-    return { path, ...out };
+    const sheet: Sheet = {
+      path,
+      text: out.text,
+      truncated: out.truncated,
+      binary: out.binary,
+      bytes: out.bytes,
+    };
+
+    /* A table is *text*, so it never needed bytes at all — which is why it is
+       the one document reading with two honest views of the same file. */
+    if (drawn === "table" && !out.binary) {
+      try {
+        const name = path.slice(path.lastIndexOf("/") + 1);
+        sheet.doc = { kind: "sheet", sheets: [readTable(name, out.text)] };
+      } catch (err) {
+        sheet.docFault = String(err);
+      }
+      return sheet;
+    }
+
+    /* **The extensionless case, and the reason Rust hands back a head.** A file
+       whose name promised nothing got no hint, so it came down the text path and
+       Rust found a NUL in it — which before this was the end of the story and the
+       sentence was "not a text file". Sixteen bytes is enough to know it is a PDF,
+       and a second round trip for a file the panel could otherwise not open at all
+       is a trade with only one side to it. Nothing is asked twice in the common
+       case: a `.pdf` never reaches here. */
+    if (out.binary && out.head) {
+      try {
+        if (sniff(bytesOf(out.head))) return this.#fetchDoc(path);
+      } catch {
+        /* An unreadable head is a file we simply know nothing about, which is
+           the state the binary plate already describes. */
+      }
+    }
+    return sheet;
+  }
+
+  /** A document's bytes, sniffed and parsed.
+   *
+   *  Parsed here rather than in the component, and that is the same call
+   *  `Spyglass` makes about `parseMarkdown`: the result belongs on the `Sheet`
+   *  so it is done once per file and not once per redraw — and a workbook is a
+   *  great deal more work than a markdown parse. */
+  async #fetchDoc(path: string): Promise<Sheet> {
+    const out = await invoke<{ data: string; bytes: number; tooLarge: boolean }>(
+      "read_file_doc",
+      { root: this.root, path },
+    );
+    const sheet: Sheet = {
+      path,
+      text: "",
+      truncated: false,
+      /* Not `binary`, for the reason media is not: that word is the viewer's
+         sentence for a file it cannot show at all, and `docFault` is the more
+         specific one for a document it could not make sense of. */
+      binary: false,
+      bytes: out.bytes,
+    };
+    if (out.tooLarge) {
+      sheet.docFault = `${(out.bytes / (1024 * 1024)).toFixed(1)} MB — too large to open here`;
+      return sheet;
+    }
+    try {
+      sheet.doc = await readDocument(bytesOf(out.data), extOf(path));
+    } catch (err) {
+      /* Every failure in `office.ts` throws with a sentence meant to be read.
+         Kept on the sheet rather than in `fault` so it survives the next
+         gesture, since it will be just as true next time. */
+      sheet.docFault = String(err).replace(/^Error:\s*/, "");
+    }
+    return sheet;
   }
 
   /** Open the selected row — or a named one — in the viewer. */

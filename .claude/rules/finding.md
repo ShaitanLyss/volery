@@ -227,6 +227,183 @@ file it can show perfectly well. Sink 28409145.
   two eviction policies and two ways to be stale. `binary` stays *false* for media, because
   that word means "cannot be shown at all" and the viewer already has a sentence for it.
 
+### A file it opens as a document
+
+`.pdf`, `.docx`, `.xlsx`, `.pptx`, `.csv` — the working set of a company that runs on Office
+365 — and before 2026-09-03 every one of them was the same sentence a screenshot used to get:
+**"not a text file — nothing to read here"**. Which is right about an `.exe` and wrong about
+the spreadsheet somebody has just asked you about. Sink `7b661546`, whose title says *pdf* and
+whose scope is the whole set.
+
+It is the **fifth reading**, and it arrives as one: `office.ts` parses, `Folio.svelte` draws,
+and the file lands on `Sheet` beside `text` and `media` for the same reason those two share a
+record — the viewer's subject is "the file you are looking at" and there is one of those.
+
+- **Five readings, one table.** `drawnAs` in `finding.ts` replaces what was on its way to
+  being the fourth `if (SOMESET.has(ext))` in a row. The sets still live with the code that
+  knows what to do with them — `DOCUMENTS` and `TABLES` are in `office.ts`, beside the parsers
+  — and the table composes them, so what it buys is not tidiness but a property that could not
+  be *stated* while they were four calls: **the sets are disjoint**, asserted in
+  `test/finding.test.ts`. An extension in two of them is a file whose reading depends on the
+  order the branches happen to be in.
+- **The name chooses the command; the bytes choose the reading.** That is how the
+  byte-sniffing rule survives having readable binaries: `drawnAs` is a *hint*, and all it
+  decides is which of three Rust calls to make, which is a question about saving a round trip.
+  What is drawn is settled by `office.sniff` over the first bytes, and inside an archive by the
+  package's own `[Content_Types].xml` — never by the extension. When the two disagree the file
+  wins **and says so**: a `.docx` that is a renamed zip of holiday photographs gets a sentence,
+  not an empty document.
+- **And the extensionless case is why `read_text` now hands back a `head`.** A file whose name
+  promised nothing gets no hint, so it comes down the text path, and Rust finding a NUL in it
+  used to be the end of the story. Sixteen bytes — every magic number that matters — is enough
+  to know it is a PDF, and a second round trip for a file the panel could otherwise not open at
+  all is a trade with one side to it. Nothing is asked twice in the common case.
+- **Rust learns no formats, which is why there is no third list to keep in agreement.**
+  `read_file_doc` is `read_media` with the interpretation taken out: no extension table, no
+  magic number, no MIME string. It refuses a path that leaves the project, bounds what is read,
+  and gets off the main thread — the three things only Rust can do. The `IMAGES`/`VIDEOS` hazard
+  two sections up is a hazard because *both* sides are guessing; here only one is. Asserted, so
+  the day somebody adds a `match ext` to that function the test says so.
+- **A data URL past `safe_join`, again**, and the argument is `MEDIA_CAP`'s word for word:
+  `assetProtocol` is scoped to `$APPDATA/references/**`, a project root is chosen at runtime and
+  that scope is static configuration, so reaching one means widening it to `**` — which is not a
+  wider scope so much as none, and it routes around the only thing standing between the viewer
+  and this disk. `DOC_CAP` is 24 MB, larger than `MEDIA_CAP` because the costs differ in kind: a
+  20 MB video wants streaming and the viewer is right to decline it, a 20 MB PDF is a document
+  somebody is going to read. The cap is what bounds this, not the encoding — the day 60 MB
+  matters the answer is a custom URI scheme in `lib.rs` serving range requests past the same
+  join, which is a real improvement and a new protocol handler to get wrong.
+
+#### The PDF is drawn by the webview, and that is the argued decision
+
+Three routes: a JS renderer in this page (`pdf.js`), a native one behind the IPC
+(`pdfium-render`), or a `blob:` URL in an `<iframe>` and let the webview do it. The frame wins
+on the three things a *reader* is judged on. **Rendering** — it is the same engine as everywhere
+else on the machine, so type, forms and annotations come out right rather than as a canvas
+approximation. **Performance** — pages rasterise incrementally in a separate process, so a
+three-hundred-page report scrolls and the memory is not this window's. **What it arrives
+with** — page number, zoom, rotate, find-in-document, print, none of which anybody wants to
+write, where the other two routes start from a bitmap and a scrollbar.
+
+It is also the stronger containment story, which matters because **PDF is an active format**. A
+PDF's own script runs inside the viewer's sandboxed renderer, in another process, with no handle
+on this page — so it cannot reach `window.__TAURI_INTERNALS__`, which is the thing that matters
+in an app whose `csp` is null. The alternative is parsing an untrusted document *in this origin*
+and being safe for exactly as long as the parser is bug-free. **Confining the execution beats
+trusting a parser with it.**
+
+Two costs, and they are stated rather than discovered. The frame is foreign, so it carries none
+of the wall's chrome and **a PDF tab remembers the file and not the page** — a dog-ear cannot
+reach inside it. And a link in the document navigates the frame if pressed, which reaches the
+network; the frame is rebuilt from the bytes on every open, so nothing it does outlives the
+reading. `navigator.pdfViewerEnabled` is a feature test rather than an assumption, so a webview
+that will not draw one gets a plate offering `e` instead of a blank rectangle nobody can explain.
+
+#### The OOXML formats are parsed to data, and the reading is why
+
+A `.docx` becomes `Block[]` — the same value `parseMarkdown` produces — so it is drawn by
+`Markdown.svelte` at the theme's reading size inside the same measure a rule is read at. A
+`.pptx` becomes the same thing: a heading per slide and its text under it, because a deck read
+in a code viewer is its words in slide order and anything else is a second PowerPoint. **Built
+as `Inline` nodes rather than as markdown text**, which is the cheap route and would mean
+escaping every asterisk in the document and losing the ones that were really there.
+
+That is also the answer to "why not a library". The converters all answer in their own
+vocabulary — `mammoth` gives HTML that would then need sanitising and theming from nothing,
+SheetJS gives a cell matrix that still needs the grid written on top — so each would be a
+dependency bought to do the half of the work already done here. What one would buy is
+*coverage*, and that is the honest cost of `office.ts`: the bet is that the quirks worth having
+are few and nameable, and each is cheaper as twenty tested lines than as a megabyte nobody in
+this repo can read. If the bet is wrong it is wrong per format, and one arm of `Doc` can be
+replaced without touching the others.
+
+No dependencies, because the platform has the three primitives:
+`DecompressionStream("deflate-raw")` is the inflate, `TextDecoder` the decode, and OOXML's XML
+wants a scanner rather than a parser since it is machine-written and uses about six of XML's
+features. `DOMParser` was the obvious reach for that last one and is deliberately not taken: it
+does not exist outside a browser, so taking it would move the file out of the tested half of the
+codebase to save eighty lines.
+
+The quirks that are in, each of which is the difference between a reader and a broken one:
+
+- **A shared string is looked up, not drawn as its index.** A cell whose `<v>` is `1` and whose
+  `t` is `s` reads *Paris*. And `textOf` over the whole `<si>`, since a string with any
+  formatting in it is split into `<r>` runs — reading the first `<t>` is how `Q3 actual` comes
+  back as `Q3 `.
+- **A date is a date.** A date in a `.xlsx` *is* a number and the only thing that says otherwise
+  is its number format, so `cellXfs` is read for each style's `numFmtId` and the built-in date
+  ids are known here because they are not written into the file at all. The epoch is
+  **1899-12-30**, because Excel has been bug-compatible with Lotus's belief that 1900 was a leap
+  year since 1985; a serial below 61 is in the range where the two calendars disagree and is
+  left as the number it is.
+- **Sheet order is the workbook's**, not the file names' — `sheet1.xml` is creation order, which
+  stops being display order the moment anybody drags a tab. Same for slides, with a numeric sort
+  in the fallback since `slide10` sorts before `slide2`.
+- **A row number skips.** A sheet with data on rows 1 and 900 has two `<row>` elements, and a
+  grid that closed the gap would read as a sheet nobody has.
+- **A formula's result, never its text.** A viewer showing `=SUM(B2:B9)` where Excel shows
+  `4,182` is showing the sheet's source, and there is no gesture here for asking for that.
+- **A semicolon CSV is not one enormous cell.** Excel writes `;` for every locale whose decimal
+  separator is a comma, so the delimiter is sniffed — scored on *consistency across rows* rather
+  than the count in the first one, or a comma file with a semicolon inside one quoted header
+  field reads as semicolon-separated. The grid says which it read, because a CSV read with the
+  wrong delimiter is the failure that looks like the file being wrong.
+- **A tracked deletion is not in the document.** The text is in the file and is not in the
+  document; drawing it puts prose nobody wrote into the middle of a paragraph.
+- **A Word list is a run of paragraphs**, not an element — there is no list in the format, only
+  paragraphs each carrying a `numPr` and a level, and the tree is rebuilt from that with a stack.
+  Ordered-ness is two hops through `numbering.xml`.
+- **Whitespace is pruned after the parse, not during it.** Whether a whitespace-only run is
+  indentation depends on whether its parent turns out to have element children, which is not
+  known when the run is read — deciding it while scanning kept the newline before a paragraph's
+  first `<w:r>` and gave every paragraph in a pretty-printed document a leading newline. Office
+  writes no indentation, so on a real file the pass finds nothing.
+- **Prefixes are not names.** `w:p` is matched on its local name throughout. Word has always
+  written `w:` and PowerPoint `a:`, but that is a convention and not the spec.
+
+The legacy `.doc`/`.xls`/`.ppt` spellings get **a plate that names them and offers the
+desktop**. They are OLE compound files — records in a little filesystem rather than a zip of XML
+— and that is a real gap rather than a shrug: the named way to close it is `calamine` in Rust,
+which opens `.xls` properly and would be faster than this on a large workbook besides. Separate
+work with its own IPC shape, not a thing to bolt onto a zip reader.
+
+#### The two readings, and one rule that decides whether there are two
+
+`raw` is still a preference rather than a per-file switch, and `toggleable` is now **one fact
+about the file rather than a fourth list: there are two readings when there is a document
+reading *and* a source.** A `.md` has both. A `.csv` has both, which is the whole reason it is
+drawn as a grid rather than left as text. A `.docx` has only the document, because its source is
+a zip of XML in fourteen parts; a `.pdf` the same, twice over. It falls out of `Sheet` without
+asking anything — `text` is empty for a file that came down the bytes path.
+
+The preview pane keeps its existing rule and it lands exactly right here: it is deliberately
+**not** rendered, because its job is to show you where a hit is and that is a line and a column.
+So a `.csv` previews as the numbered lines the grep hit is in, and a `.xlsx`, which has no lines,
+previews as the grid. **And a PDF never previews as a frame** — a viewer process per arrow press,
+taking the keyboard off the list you are still moving down.
+
+#### `e` now means two things, and it used to lie
+
+A file with a source goes to nvim; a file without goes to the application that owns it
+(`find::open_file_outside`). The second half is not new scope, it is a promise the panel has been
+making since 2026-08-28 and could not keep: the plate over an oversized image said *"press `e`
+to open it outside"* and called `editor.edit`, which opened a PNG in nvim. Every plate in this
+section needs the same escape — a document past the cap, a legacy format, a webview that will
+not draw a PDF — and the point of it is that **the answer is never "no"**.
+
+`openable_file` is **the one extension table that belongs in Rust**, and the reason is what the
+answer is used for. Everywhere else the question is "which element draws this", which is a
+drawing decision. Here it is "may a process be started for this", which only the side that
+starts the process can be trusted with — a front end that could name the extension could name
+`.exe`, and a command is reachable from anything holding the IPC. An allow-list, because the safe
+set is the small one: a deny-list has to know about `.exe`, `.bat`, `.cmd`, `.com`, `.scr`,
+`.ps1`, `.msi`, `.lnk`, `.vbs`, `.hta`, `.reg`, `.jar` and whatever Windows registers next, and
+missing one is a viewer that runs it. The join comes first, so a `..\..\x.pdf` is refused before
+the extension is looked at. Media is in it through `media_type` rather than listed again, so the
+two cannot drift. Held in agreement with the front end's own table by
+`everything the viewer offers to open, Rust will open` — both directions, since a document
+missing from it is an annoyance and an executable in it is not.
+
 ### Getting there from a transcript
 
 The finder finds files; the place you most often want to *look* at one is while reading what an
@@ -502,6 +679,17 @@ quietly cannot see a file is worse than one that admits its bound.
   the wall. Holds timers and no subscriptions, and `App.svelte`'s `onDestroy` releases it — a
   superseded generation's debounce firing a grep into a panel nobody can see is the same
   hazard a leaked listener is, one layer down.
+- `office.ts` — pure and tested (`test/office.test.ts`, 65 tests): the extension hint, the byte
+  sniff, a zip reader over `DecompressionStream`, an XML tag scanner, and the four documents —
+  `readWorkbook`, `readWord`, `readDeck`, `readTable` — behind the one entry point
+  `readDocument`. The suite **builds its archives** rather than checking fixtures in, because
+  what it is about is the structure of an OPC package and a `.xlsx` in `test/` is an opaque blob
+  whose interesting property cannot be read off the file. Both zip storage methods are covered:
+  `deflate` is what Office writes, `stored` is what a fast writer emits, and a reader that only
+  ever saw the first fails on the second at somebody's file rather than here.
+- `Folio.svelte` — the document's own drawing: a grid with sticky headings and a tab per sheet,
+  prose through `Markdown.svelte`, the PDF frame, and the plates. Two sizes — `peek` is the
+  preview and draws fewer rows, fewer blocks and no frame.
 - `Spyglass.svelte` — elements, and nothing else. Every piece of arithmetic it needs is
   imported from `finding.ts`. Plus the two functions that read and write a `Reading`, which are
   here because a scroller and a `Selection` are the only facts in the whole arrangement that

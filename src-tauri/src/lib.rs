@@ -7,6 +7,7 @@ mod ask;
 mod accounts;
 mod bang;
 mod claude;
+mod clip;
 mod board;
 /// Public so `examples/azdo-probe.rs` can drive the real reading rather than a
 /// copy of it — the convention `tools/probe-context.ts` sets for questions of
@@ -539,6 +540,8 @@ pub fn run() {
             find::find_grep,
             find::read_file_text,
             find::read_file_media,
+            find::read_file_doc,
+            find::open_file_outside,
             aside::ask_aside,
             portage::write_layout_file,
             portage::read_layout_file,
