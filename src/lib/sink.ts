@@ -201,9 +201,15 @@ export function nothing(kind: Kind | "all", settled: boolean): string {
  *  Here so the field you are typing in stops where the write will clip, rather
  *  than letting you write two hundred characters of title and find out
  *  afterwards that eighty of them were dropped. Rust clips regardless — this is
- *  the reading, not the rule. */
+ *  the reading, not the rule.
+ *
+ *  `MAX_BODY` mirrors `store::MAX_SINK_BODY`, which is where the one cap on a
+ *  body now lives. It read 1,200 until 2026-09-04, matching a second cap
+ *  `sink.rs` applied before the store ever saw the text; that cap is gone (sink
+ *  `7b26058e`), so this number had to move with it or the field would stop a
+ *  third of the way into what the write would accept. */
 export const MAX_TITLE = 120;
-export const MAX_BODY = 1_200;
+export const MAX_BODY = 4_000;
 export const MAX_PATHS = 8;
 
 /** What is in the fields while you are typing. `paths` is one line, because that

@@ -80,12 +80,21 @@ pub const LIMIT: usize = 4000;
 /// because that is what the panel counts, and slicing a byte range through the
 /// middle of a multi-byte character would panic. Somebody's instructions are
 /// exactly where an em dash or an accented name shows up.
+///
+/// **And it must say when it has cut**, which it did not until 2026-09-04. Of
+/// all the budgets on this wall this is the one where silence costs most: these
+/// are the user's *standing instructions*, they go into a system prompt, and a
+/// model given three quarters of them follows three quarters of them with total
+/// confidence and no way to know a fourth is missing. The person who wrote them
+/// is not in the conversation to notice. So the marker is addressed to the model
+/// — it is the only party present who can act on it, and what it should do is
+/// say so rather than guess at the rest.
 pub fn clip(text: &str) -> String {
-    let text = text.trim();
-    match text.char_indices().nth(LIMIT) {
-        None => text.to_string(),
-        Some((at, _)) => text[..at].trim_end().to_string(),
-    }
+    crate::clip::keep(text.trim(), LIMIT).marked(
+        "These are the user's standing instructions and the wall could not carry all of \
+         them. Follow what is here, and tell the user their guidance is longer than the \
+         limit and has been cut — do not try to infer what the rest said.",
+    )
 }
 
 /// The two scopes, composed into the block appended to the system prompt, or
@@ -195,9 +204,18 @@ mod tests {
         assert_eq!(clip("  hello  "), "hello");
         assert_eq!(clip("").len(), 0);
 
+        /* Over the limit: the text is cut to `LIMIT` and a marker follows, so
+           the result is longer than `LIMIT` by exactly the marker. Asserting on
+           the *kept* characters rather than the total is the point — the marker
+           is not part of the user's instructions. */
         let long = "x".repeat(LIMIT + 500);
-        assert_eq!(clip(&long).chars().count(), LIMIT);
+        let out = clip(&long);
+        assert_eq!(out.matches('x').count(), LIMIT);
+        assert!(out.contains("standing instructions"), "{out}");
 
+        /* Exactly on the limit is not over it, so nothing is added. A false
+           marker here would have a model announce that guidance was cut when it
+           was whole. */
         let short = "x".repeat(LIMIT);
         assert_eq!(clip(&short).chars().count(), LIMIT);
     }
@@ -209,8 +227,8 @@ mod tests {
            mid-character if the arithmetic is done in bytes. */
         let wide = "é".repeat(LIMIT + 10);
         let out = clip(&wide);
-        assert_eq!(out.chars().count(), LIMIT);
-        assert!(out.chars().all(|c| c == 'é'));
+        assert_eq!(out.matches('é').count(), LIMIT);
+        assert!(out.contains("cut"), "the loss was not announced: {out}");
     }
 
     #[test]

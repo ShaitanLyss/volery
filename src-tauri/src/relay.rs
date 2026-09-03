@@ -211,7 +211,12 @@ pub(crate) fn resolve<'a>(rows: &'a [RosterRow], want: &str) -> Result<&'a Roste
 /// less thing for two parsers in two languages to agree about.
 pub fn envelope(from: &RosterRow, body: &str) -> String {
     let name = from.title.replace('"', "'");
-    let body = clip(body, MAX_BODY);
+    let body = clip(
+        body,
+        MAX_BODY,
+        "Ask the card that sent this for the rest with `send` — it still holds what it \
+         wrote. Do not infer what was cut.",
+    );
     format!(
         "{RELAY_MARK} from \"{name}\" ({}) in {} —\n\n{body}\n\n\
          (This came from another agent on the Skein wall, not from the user. \
@@ -251,7 +256,11 @@ pub fn board_envelope(from: Option<&RosterRow>, notice: &crate::store::Notice, p
          `board` for the rest of what is up, and `send` if you need to agree something \
          with whoever posted it.)",
         notice.subject.replace('"', "'"),
-        clip(&notice.body, MAX_BODY),
+        clip(
+            &notice.body,
+            MAX_BODY,
+            "Read the whole notice with `board`.",
+        ),
     )
 }
 
@@ -282,17 +291,21 @@ pub fn announce_board(app: &AppHandle, notice: &crate::store::Notice, to_id: &st
             delivered: true,
             broadcast: false,
             from_inbox: false,
-            preview: clip(&notice.subject, 240),
+            preview: crate::clip::preview(&notice.subject, 240),
         },
     );
 }
 
-fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let head: String = s.chars().take(max).collect();
-    format!("{head}\n\n[…truncated by skein at {max} characters]")
+/// The relay's three budgets, all cut the same way.
+///
+/// This was the first marker on the wall — `[…truncated by skein at N
+/// characters]` — and it was better than the four sites that said nothing. What
+/// it left out is what a reader can *do*: a card told only that its message was
+/// cut at 4,000 characters knows it is missing something and not how much, nor
+/// who has the rest. Both are available here. The remedy differs per budget, so
+/// it is passed in.
+fn clip(s: &str, max: usize, remedy: &str) -> String {
+    crate::clip::keep(s, max).marked(remedy)
 }
 
 /* ── the tools ────────────────────────────────────────────────────────────── */
@@ -635,7 +648,7 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
                 delivered: awake,
                 broadcast,
                 from_inbox: false,
-                preview: clip(body, 240),
+                preview: crate::clip::preview(body, 240),
             },
         );
     }
@@ -744,7 +757,7 @@ pub fn drain_inbox(app: &AppHandle, id: &str) {
                     delivered: true,
                     broadcast: false,
                     from_inbox: true,
-                    preview: clip(&q.body, 240),
+                    preview: crate::clip::preview(&q.body, 240),
                 },
             );
         }
@@ -1203,7 +1216,16 @@ fn speeches_from(
         if text.is_empty() {
             continue;
         }
-        ring.push_back(clip(text, MAX_RECALL_CHARS));
+        /* What a card said, for `recall`. The remedy names `send` because the
+           card is still on the wall and still has its own words — this cost the
+           tail of a card's only report on 2026-09-03 and there was no way to
+           ask for the rest. */
+        ring.push_back(clip(
+            text,
+            MAX_RECALL_CHARS,
+            "This is the card's own account, cut to fit. If the tail matters, `send` and \
+             ask it — do not report a conclusion drawn from a clipped report.",
+        ));
         while ring.len() > n {
             ring.pop_front();
         }
@@ -1582,11 +1604,21 @@ mod tests {
         assert_eq!(e.matches('"').count(), 2);
     }
 
+    /// A message too long to carry is cut, not refused — and the cut says how
+    /// much went and who still has it.
+    ///
+    /// The marker used to read `[…truncated by skein at N characters]`, which
+    /// named the budget and neither the loss nor a next move. `crate::clip`
+    /// supplies all three; this asserts the two that a reader can act on. A run
+    /// of `x` has no boundary in it, so the cut lands exactly on the cap — which
+    /// is the branch of the boundary rule this case is pinning.
     #[test]
     fn an_overlong_message_is_clipped_rather_than_refused() {
         let long = "x".repeat(MAX_BODY + 500);
         let e = envelope(&wall()[0], &long);
-        assert!(e.contains("truncated by skein"));
+        assert!(e.contains("clipped by the wall"), "{e}");
+        assert!(e.contains("500 of"), "the loss was not named: {e}");
+        assert!(e.contains("`send`"), "no way to ask for the rest: {e}");
         assert!(e.matches('x').count() == MAX_BODY);
     }
 

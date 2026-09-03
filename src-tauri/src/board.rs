@@ -836,12 +836,22 @@ fn globs_from(v: Option<&Value>) -> (String, usize) {
 /// truncates and says nothing produces a result the agent cannot tell went
 /// wrong, which is strictly worse, and the fix is the same one `MAX_SENDS`
 /// states for refusals: say what happened and what to do about it.
+/// Kept for its two callers' shape — `(text, overflow)` — over the shared
+/// clipper, which does the cutting.
+///
+/// The board got the *writer's* half of this right before anywhere else did:
+/// `do_post`'s receipt names how many characters were over, which is why the two
+/// call sites want a count rather than a `Cut`. What it did not do was cut at a
+/// boundary or leave any mark in the text a card would later be *served* — so a
+/// notice went up with its tail gone and only the poster ever knew. `crate::clip`
+/// supplies both halves now; this wrapper just keeps the tuple.
 fn clip(s: &str, max: usize) -> (String, usize) {
-    let n = s.chars().count();
-    if n <= max {
-        return (s.to_string(), 0);
-    }
-    (s.chars().take(max).collect(), n - max)
+    let cut = crate::clip::keep(s, max);
+    let text = cut.marked(
+        "The notice was longer than a notice may be. If you need the whole of it, ask the \
+         card that posted it with `send` — it still has what it wrote.",
+    );
+    (text, cut.omitted)
 }
 
 /* ── the notice that comes to you ─────────────────────────────────────────── */
@@ -1201,13 +1211,27 @@ mod tests {
     #[test]
     fn a_truncation_says_how_much_it_took() {
         assert_eq!(clip("short", 40), ("short".into(), 0));
+
+        /* A run of `x` has no boundary in it, so the text is cut on the cap and
+           the marker follows it. The overflow count is what `do_post`'s receipt
+           reports and is the half the board always got right. */
         let long = "x".repeat(50);
-        assert_eq!(clip(&long, 40), ("x".repeat(40), 10));
+        let (kept, cut) = clip(&long, 40);
+        assert_eq!(cut, 10);
+        assert_eq!(kept.matches('x').count(), 40);
+        assert!(kept.contains("clipped by the wall"), "{kept}");
+        assert!(kept.contains("10 of 50 characters"), "{kept}");
+
         /* Characters, not bytes — the cut must not land inside a code point. */
         let wide = "é".repeat(50);
         let (kept, cut) = clip(&wide, 40);
-        assert_eq!(kept.chars().count(), 40);
+        assert_eq!(kept.matches('é').count(), 40);
         assert_eq!(cut, 10);
+
+        /* And the reader is now told, which is the half that was missing: a
+           notice served to a card used to end mid-sentence with only its poster
+           knowing. */
+        assert!(kept.contains("`send`"), "no way to ask for the rest: {kept}");
     }
 
     #[test]

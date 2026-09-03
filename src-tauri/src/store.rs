@@ -4624,11 +4624,44 @@ pub struct SinkPut {
     /// True when this went onto an item that was already there.
     pub merged: bool,
     pub voices: i64,
+    /// Characters of body that did not fit `MAX_SINK_BODY`, so the receipt can
+    /// say so. Zero in the ordinary case.
+    ///
+    /// This is the writer's half of `clip`'s two-ended marker: the stored text
+    /// carries one for whoever reads the item later, and this number reaches the
+    /// agent that still has the whole thing in hand and could file the rest.
+    /// Before 2026-09-03 neither existed and the tail simply went (sink
+    /// `7b26058e`).
+    pub body_omitted: usize,
 }
 
-/// How long a body may grow by merging. Nothing here is a document; an item that
-/// has grown past this has become a conversation and wants to be several items.
-const MAX_SINK_BODY: usize = 4_000;
+/// How long a body may be, fresh or grown by merging. Nothing here is a
+/// document; an item that has grown past this has become a conversation and
+/// wants to be several items.
+///
+/// **This is the only cap on a sink body, and it used not to be.** `sink.rs`
+/// enforced its own `MAX_BODY` of 1,200 before the text ever reached the store,
+/// so one field had two numbers 3.3× apart and the tighter one was the one that
+/// bit — sixteen open items sat exactly on it, every one ending mid-sentence
+/// (sink `7b26058e`). The tool-layer cap is gone; this one is enforced here, on
+/// both the insert and the merge path, through `crate::clip` so it cuts at a
+/// boundary and says what it dropped.
+///
+/// It applied to *merges only* until 2026-09-03, which was the other half of the
+/// muddle: a fresh drop of fifty thousand characters was stored whole, and only
+/// a second voice on it was guillotined.
+pub const MAX_SINK_BODY: usize = 4_000;
+
+/// What a reader of a clipped sink body is told to do about it.
+///
+/// The tail is not recoverable — unlike a spawn brief, whose parent still holds
+/// the whole thing, a sink body's author is a card that may be closed by the
+/// time anybody reads this. So the remedy is addressed to the reader as the only
+/// person present: the item has outgrown being one item, and the useful next
+/// move is to file the rest as its own and link the two.
+pub const BODY_REMEDY: &str = "The rest was never stored. An item this long has become a \
+     conversation and wants to be several — if you are adding to it, file the remainder as \
+     its own item and name this one in it.";
 
 /// Put something in the sink, or add a voice to what is already there.
 ///
@@ -4679,12 +4712,16 @@ pub fn put_sink_item(
            rather than of how widely the thing is felt. */
         let another = from_id.is_some() && from_id != old_from.as_deref();
         let mut body_now = old_body.clone();
+        let mut body_omitted = 0usize;
         if !body.is_empty() && !old_body.contains(body) {
             body_now.push_str("\n\n");
             body_now.push_str(body);
-            if body_now.chars().count() > MAX_SINK_BODY {
-                body_now = body_now.chars().take(MAX_SINK_BODY).collect();
-            }
+            /* The newest voice is the one at the end, so it is the one a cut
+               takes — which is the worst possible half to lose silently, since
+               it is the only part of the item nobody has read yet. */
+            let cut = crate::clip::keep(&body_now, MAX_SINK_BODY);
+            body_omitted = cut.omitted;
+            body_now = cut.marked(BODY_REMEDY);
         }
         let voices_now = voices + i64::from(another);
         conn.execute(
@@ -4694,9 +4731,11 @@ pub fn put_sink_item(
             params![old, body_now, voices_now, at, paths],
         )
         .map_err(|e| format!("update sink item: {e}"))?;
-        return Ok(SinkPut { id: old, merged: true, voices: voices_now });
+        return Ok(SinkPut { id: old, merged: true, voices: voices_now, body_omitted });
     }
 
+    let cut = crate::clip::keep(body, MAX_SINK_BODY);
+    let body = cut.marked(BODY_REMEDY);
     conn.execute(
         "INSERT INTO sink_item (id, project_id, kind, title, body, paths, from_id,
                                 dropped_at, touched_at, voices)
@@ -4704,7 +4743,7 @@ pub fn put_sink_item(
         params![id, project_id, kind, title, body, paths, from_id, at],
     )
     .map_err(|e| format!("drop into sink: {e}"))?;
-    Ok(SinkPut { id: id.to_string(), merged: false, voices: 1 })
+    Ok(SinkPut { id: id.to_string(), merged: false, voices: 1, body_omitted: cut.omitted })
 }
 
 /// Reword one, which is yours alone — no agent reaches this.

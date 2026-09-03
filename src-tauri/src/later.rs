@@ -186,7 +186,10 @@ fn do_wake(app: &AppHandle, caller: &str, args: &Value) -> String {
                 rediscovering why you armed it, so nothing was armed"
             .into();
     }
-    let note = clip(note, MAX_NOTE);
+    let note = crate::clip::keep(note, MAX_NOTE).marked(
+        "You wrote this to yourself and the wall could not carry all of it. Whatever the \
+         rest said, do not infer it — say plainly that the note arrived incomplete.",
+    );
 
     let Some(store) = app.try_state::<Store>() else {
         return "the store is unavailable".into();
@@ -240,12 +243,12 @@ fn do_wake(app: &AppHandle, caller: &str, args: &Value) -> String {
     }
 }
 
-fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    s.chars().take(max).collect()
-}
+/* `later.rs` has no clipper of its own any more. It had the silent kind, and a
+   wake note is the worst of the silent cases in one specific way: the note is
+   written *to yourself*, by a card that will have moved on and whose only
+   record of what it was waiting for is this text. A tail lost here is a card
+   waking up with instructions that stop mid-sentence and no author to ask.
+   `crate::clip` cuts at a boundary and says what went. */
 
 /* ── the tick ─────────────────────────────────────────────────────────────── */
 

@@ -179,6 +179,41 @@ has thought to look for a tool**, and the reflex this fights is not thinking the
 to do. An observation made in passing has a default, and the default is silence — no schema
 reaches that, however well it is written.
 
+### A body is capped once, in the store, and the cap says so
+
+`.claude/rules/clipping.md` has the whole of this and it governs seven files; what matters
+here is the number and where it is enforced.
+
+**`store::MAX_SINK_BODY` (4,000) is the only cap on a body.** `sink.rs` used to clip to 1,200
+before the text ever reached the store, which had its own 4,000 for the same field — two
+numbers on one field, 3.3x apart, and the tighter one silently won. Sixteen open items were
+measured sitting exactly on it, every one ending mid-sentence, one cut mid-word inside the
+sentence explaining its own cause (sink `7b26058e`). It went on costing tails while it stood:
+a card filing the office-documents item lost two follow-ups to it and had to re-drop them as
+`43da0038` and `be344594`.
+
+The argument that retired it is `spawn::MAX_PROMPT`'s, and it is worth restating because it
+applies to anything an agent hands this server: **the body arrives as MCP `tools/call`
+arguments, so it was written inside the calling agent's own output budget and is already paid
+for by the time `do_drop` sees it.** Clipping saved nothing at write time and discarded only
+the half the author believed they had filed. An item is the *archive* — the thing that
+outlives the card that wrote it — which makes it the worst place on the wall to lose a tail.
+
+Three things follow, and each was wrong before:
+
+- **The store enforces it on both write paths.** `put_sink_item` capped merges only, so a
+  fresh drop of fifty thousand characters was stored whole while a *second voice* on a short
+  item was guillotined — cutting the newest words, the only part nobody had read yet.
+- **A title is capped (120) and announced.** A title is the item's name: `resolve` matches it
+  and `put_sink_item` merges on it, so shortening one silently alters an identity key behind
+  the caller's back. `clipped_note` puts the overflow in the receipt and asks them to check it
+  still reads as they meant. Note this was **not** the cause of the twin items seen on
+  2026-09-03 — that is `23f5f762`, a scope mismatch between what `drop` merges on and what
+  `sink` reads, and it is still open.
+- **`sink.ts` mirrors the store's number** so the field in the Basin stops where the write
+  does. A mirror of a cap that no longer exists stopped you a third of the way into what the
+  write would have accepted.
+
 ### What is not built yet
 
 - The control surface has no `sink` op. `sink_tool` is the seam for one — deliberately a

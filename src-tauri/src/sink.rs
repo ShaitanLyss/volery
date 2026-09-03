@@ -83,9 +83,38 @@ const MAX_HELD: i64 = 3;
 /// than the billboard's staleness, because this one gives way.
 const HOLD_STALE_MS: i64 = 120 * 60 * 1_000;
 
+/// How long a title may be.
+///
+/// A title is not prose, it is the item's **name**: it is drawn in a row in the
+/// Basin, it is what `resolve` matches when an agent types a title back instead
+/// of an id, and it is what `store::put_sink_item` merges on. So it has a real
+/// width past which more characters are not more information — but a cut one is
+/// not free the way a card's title is (`spawn::MAX_TITLE` argues that case), and
+/// that is why this one has to be *announced*: a silently shortened title is an
+/// identity key altered behind the caller's back.
 const MAX_TITLE: usize = 120;
-const MAX_BODY: usize = 1_200;
+
+/// How long a settling note may be. A sentence or two on what happened to an
+/// item, not a second body.
 const MAX_NOTE: usize = 400;
+
+/* A body has no cap here on purpose. It used to have one — 1,200 characters,
+   applied before the text ever reached the store, which had its own cap of
+   4,000 for the same field. Two numbers on one field, 3.3x apart, and the
+   tighter one silently won: sixteen open items were measured sitting exactly on
+   it, every one of them ending mid-sentence, one mid-word inside the sentence
+   explaining its own cause (sink `7b26058e`).
+
+   The argument for clipping here did not survive being looked at, and it is the
+   same one that retired `spawn::MAX_PROMPT`: the body arrives as MCP
+   `tools/call` arguments, so it was written inside the calling agent's own
+   output budget and is already paid for by the time `do_drop` sees it. Clipping
+   saved nothing and threw away only the half the author believed they had
+   filed — and a sink item is the *archive*, the thing meant to outlive the card
+   that wrote it, which makes it the worst place on the wall to lose a tail.
+
+   `store::MAX_SINK_BODY` is the one cap, enforced where the write happens,
+   through `crate::clip`. */
 const MAX_GLOBS: usize = 8;
 
 /// The four an agent may set. `note` is the default and the least committal —
@@ -551,14 +580,19 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Some(title) = args.get("title").and_then(Value::as_str) else {
         return "no `title` was given, so nothing was dropped".into();
     };
-    let title = clip(title.trim(), MAX_TITLE);
+    let title_cut = crate::clip::keep(title.trim(), MAX_TITLE);
+    let title = title_cut.kept.clone();
     if title.is_empty() {
         return "the title was empty, so nothing was dropped".into();
     }
-    let body = clip(
-        args.get("body").and_then(Value::as_str).unwrap_or("").trim(),
-        MAX_BODY,
-    );
+    /* Not clipped here — see the note beside `MAX_TITLE`. `store::MAX_SINK_BODY`
+       is the only cap on a body, and it reports what it took. */
+    let body = args
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if body.is_empty() {
         return "no `body` was given — a title on its own is a thing nobody will be able \
                 to act on in a month, so nothing was dropped"
@@ -615,6 +649,12 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
         Err(e) => format!("could not drop that: {e}"),
         Ok(p) => {
             changed(app, project_id);
+            /* The writer's half of the marker. The stored text tells whoever
+               reads the item; this tells the agent that still has the whole
+               thing in hand, which is the only moment anything can be done
+               about it. `board.rs` has said it this way since it was written —
+               this is that pattern, finally applied here too. */
+            let cuts = clipped_note(&title_cut, p.body_omitted);
             if p.merged {
                 let voices = if p.voices > 1 {
                     format!(" {} conversations have now met it.", p.voices)
@@ -625,14 +665,14 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
                     "{title:?} was already in the sink, so this went onto that item \
                      rather than making a second one — anything your words added is on \
                      it now.{voices} It is [{}]. Tell the user you seconded an existing \
-                     item rather than raising a new one.",
+                     item rather than raising a new one.{cuts}",
                     p.id.chars().take(8).collect::<String>()
                 )
             } else {
                 format!(
                     "dropped into the {} sink as [{}]: {title:?}. It will outlive this \
                      conversation. Nobody is assigned to it — if you are about to deal \
-                     with it yourself, `take` it first.",
+                     with it yourself, `take` it first.{cuts}",
                     if wall { "wall-wide" } else { "project" },
                     p.id.chars().take(8).collect::<String>()
                 )
@@ -777,7 +817,12 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
     let note = args
         .get("note")
         .and_then(Value::as_str)
-        .map(|n| clip(n.trim(), MAX_NOTE))
+        .map(|n| {
+            crate::clip::keep(n.trim(), MAX_NOTE).marked(
+                "A note is a sentence or two on what happened, not a second body — if \
+                 there is more to say, it belongs in the item's own words.",
+            )
+        })
         .filter(|n| !n.is_empty());
 
     let items = match visible(app, &me, true, false) {
@@ -878,11 +923,32 @@ fn globs_from(v: Option<&Value>) -> String {
     list.into_iter().take(MAX_GLOBS).collect::<Vec<_>>().join("\n")
 }
 
-fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
+/// What to add to a receipt when the write could not carry everything.
+///
+/// Empty in the ordinary case, so it can be interpolated unconditionally. It
+/// names the title and the body separately because they are lost for different
+/// reasons and only one of them can be made good: a title is furniture and can
+/// be re-worded, a body's tail is simply gone.
+fn clipped_note(title: &crate::clip::Cut, body_omitted: usize) -> String {
+    let mut out = String::new();
+    if title.happened() {
+        out.push_str(&format!(
+            " **The title was {} characters over the {MAX_TITLE} a title may be, and has \
+             been shortened** — it is the name this item is found and merged by, so check \
+             it reads as you meant and reword it if not.",
+            title.omitted,
+        ));
     }
-    s.chars().take(max).collect()
+    if body_omitted > 0 {
+        out.push_str(&format!(
+            " **{body_omitted} characters of the body did not fit** the {} a sink item \
+             may hold and are not stored. What went up says so where it was cut. An item \
+             this long has become a conversation — file the remainder as its own item and \
+             name this one in it.",
+            crate::store::MAX_SINK_BODY,
+        ));
+    }
+    out
 }
 
 /* ── the wall's way in ────────────────────────────────────────────────────── */
@@ -937,7 +1003,7 @@ pub fn sink_add(
     paths: Option<Vec<String>>,
     project_id: Option<String>,
 ) -> Result<String, String> {
-    let title = clip(title.trim(), MAX_TITLE);
+    let title = crate::clip::keep(title.trim(), MAX_TITLE).kept;
     if title.is_empty() {
         return Err("an item needs a title".into());
     }
@@ -956,7 +1022,7 @@ pub fn sink_add(
             project_id.as_deref(),
             &kind,
             &title,
-            &clip(body.trim(), MAX_BODY),
+            body.trim(),
             &globs,
             None,
         )?
@@ -986,11 +1052,17 @@ pub async fn sink_edit(
     kind: Option<String>,
     paths: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let title = clip(title.trim(), MAX_TITLE);
+    let title = crate::clip::keep(title.trim(), MAX_TITLE).kept;
     if title.is_empty() {
         return Err("an item needs a title".into());
     }
-    let body = clip(body.trim(), MAX_BODY);
+    /* `edit_sink_item` writes what it is handed, so unlike `put_sink_item` this
+       path has to do its own clipping — and it is the one path where the author
+       is a person at a keyboard rather than an agent, so the field in the Basin
+       stops where this does (`sink.ts`'s `MAX_BODY`) and the marker is a
+       backstop rather than the first they hear of it. */
+    let body = crate::clip::keep(body.trim(), crate::store::MAX_SINK_BODY)
+        .marked(crate::store::BODY_REMEDY);
     /* The same bar `do_drop` sets, and for the same span of time: a title on its
        own is a thing nobody will be able to act on in a month. An edit that
        emptied the body would take an item below the bar it had to clear to get
