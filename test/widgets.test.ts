@@ -136,6 +136,13 @@ describe("a widget describes itself well enough to be offered blind", () => {
         { value: "C:\\dev\\Caravan", label: "Caravan" },
         { value: "C:\\dev\\Other", label: "Other" },
       ],
+      /* The shared browser's open pages. Two, because the invariant below is
+         that every knob is reachable and a sourced knob resolving to nothing is
+         deliberately dropped from the menu — one page is not a choice. */
+      pages: [
+        { value: "AB12", label: "[Local] NOVA" },
+        { value: "CD34", label: "localhost:8081" },
+      ],
     };
     for (const spec of WIDGETS) {
       const w = newWidget(spec.kind, 0, 0);
