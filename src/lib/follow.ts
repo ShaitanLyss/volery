@@ -10,7 +10,9 @@
  *
  * So the rule everywhere is *near the bottom means stuck to it*, and the whole
  * of the difficulty is deciding what "near" means when the bottom itself is
- * moving. This module is that decision, once, plus the standard wiring for it —
+ * moving — and then, because that turned out not to be enough, deciding which
+ * scroll events are entitled to answer the question at all. This module is both
+ * of those decisions, once, plus the standard wiring for them —
  * because it had been made three times: correctly and at length in
  * `Transcript.svelte`, naively in `Console.svelte` (the late-event bug below,
  * unfixed), and not at all in `Servers.svelte`, whose `pre.log` was a plain
@@ -54,24 +56,74 @@ export function slack(view: View): number {
   return view.scrollHeight - view.scrollTop - view.clientHeight;
 }
 
+/** How long after a real gesture a scroll event is still attributable to it.
+ *
+ *  A wheel notch, a key and a pointer all dispatch their scroll in the same frame,
+ *  so this only has to outlast a frame. It is wider than that because the
+ *  continuous gestures — a scrollbar dragged, a trackpad's momentum, a held
+ *  PageDown — refresh it with every event they send, and the cost of erring long
+ *  is only that the panel behaves for another quarter second the way it behaved
+ *  before any of this. Erring short is a panel that will not let go. */
+export const GESTURE_MS = 300;
+
+/** Whether a gesture last seen at `at` is still in play at `now`. `-1` is "none
+ *  since this scroller was attached", which is not merely stale but *never*. */
+export function gestureLive(at: number, now: number): boolean {
+  return at >= 0 && now - at <= GESTURE_MS;
+}
+
 /** Whether a scroll event that just arrived means the tail has been let go of.
  *
  *  In here rather than in the panel because it is the panel's most consequential
- *  three lines and it was wrong for as long as the follow has existed. A write to
- *  `scrollTop` does not dispatch its scroll event synchronously — the event lands
- *  a beat later, and the handler then asks "are we still at the bottom?". A turn
- *  writing in bursts moves the bottom inside that beat, so the answer was about a
- *  column that had grown rather than about anything you did: the panel decided you
- *  had scrolled away, stopped following, and stayed stopped. Nothing re-arms it
- *  while the window keeps focus, so a card roused at launch stranded the reading
- *  two thirds of the way down its own transcript.
+ *  few lines, and it has now been wrong twice in the same direction: **it kept
+ *  trying to identify our own writes, when the question it needed to ask was
+ *  whether the event came from a hand at all.**
  *
- *  `pinned` is where the follow last put the view, or `-1` for "not ours". It is
- *  compared rather than trusted as a flag: content landing *below* the view does
- *  not change `scrollTop`, so the event reporting our own write reports exactly
- *  the number we wrote, and anything else is a hand on the wheel. That is what
- *  keeps a step landing precisely on the tail readable as yours — `pinned` is
- *  cleared by every gesture that moves the view on purpose.
+ *  The first version asked only "are we still at the bottom?". A write to
+ *  `scrollTop` does not dispatch its scroll event synchronously — the event lands
+ *  a beat later, and a turn writing in bursts moves the bottom inside that beat,
+ *  so the answer was about a column that had grown rather than about anything you
+ *  did. The panel decided you had scrolled away and stayed stopped; a card roused
+ *  at launch stranded the reading two thirds of the way down its own transcript.
+ *  `pinned` was the fix: where the follow last put the view, or `-1` for "not
+ *  ours", compared rather than trusted as a flag, because content landing *below*
+ *  the view does not change `scrollTop` — so the event reporting our own write
+ *  reports exactly the number we wrote.
+ *
+ *  **That identifies the follow's writes and nothing else's, and the follow is not
+ *  the only thing in a browser that moves a scroller.** Two others do it with no
+ *  hand anywhere near the wheel, both arriving as ordinary scroll events:
+ *
+ *  - **the clamp.** `scrollTop` is bounded by `scrollHeight - clientHeight`, so a
+ *    column that gets shorter — a card switched to, a fold closed, an `{#each}`
+ *    sliding its window — has the browser move the view for you.
+ *  - **scroll anchoring.** `overflow-anchor` is `auto` by default in Chromium: when
+ *    content *above* the viewport changes height the browser adjusts `scrollTop` to
+ *    hold the anchor node still. A scroll event nobody made, reporting a number the
+ *    follow never wrote.
+ *
+ *  Both land in the rendering update's scroll steps, which run *before* animation
+ *  frame callbacks — so they arrive in front of the very frame the follow queued to
+ *  re-pin, and that frame then finds `following` false and declines. Which is the
+ *  bug as it was reported: "I put a card at the end, look at another card, come
+ *  back, and sometimes it jumps way up". Nothing was scrolled. The column settled
+ *  in two passes and the panel read the second pass as a decision.
+ *
+ *  So the rule is no longer "was this ours" but **only a gesture may let go of the
+ *  tail**, which is the honest shape of it: *releasing* the tail is a claim about
+ *  your intent, and the only events that can carry intent are the ones a hand
+ *  made. Every content-driven event — the clamp, the anchoring, the late-delivered
+ *  write, a rewrap — is then unable to strand the reading *by construction*, rather
+ *  than by out-guessing them one producer at a time. `pinned` is kept as the
+ *  positive proof it always was, since it needs no bookkeeping to be right.
+ *
+ *  **It is deliberately asymmetric, and the asymmetry is load-bearing.** A scroll
+ *  event with no gesture behind it may still *re-arm* the tail by landing on it,
+ *  because arriving at the bottom is a claim about where the view *is* rather than
+ *  about what you want — measurable, and true however it got there. That is what
+ *  keeps `unfolded`'s promise in the panel: closing a fold while parked at the
+ *  bottom shortens the column, the clamp puts the view back on the tail, and the
+ *  follow takes it up again with nothing having been touched.
  *
  *  Returns what `following` should become. The caller keeps the flag; this only
  *  answers the question, which is what makes it testable with no DOM. */
@@ -81,12 +133,20 @@ export function stillFollowing(
     pinned: number;
     /** Whether the panel was following before this event. */
     following: boolean;
+    /** Whether a hand is on the wheel — a gesture within `GESTURE_MS`. Required
+     *  rather than defaulted: a caller that forgot to wire the listeners would
+     *  otherwise get a panel that never lets go, and no error saying so. */
+    gestured: boolean;
   },
 ): boolean {
   /* Ours, reported late. Keep the tail rather than re-deciding it: the bottom may
      have moved since, and the next follow run aims at the new one. */
   if (view.pinned >= 0 && view.scrollTop === view.pinned) return true;
-  return slack(view) <= STICK_PX;
+  /* On the tail is on the tail, however the view got there. */
+  if (slack(view) <= STICK_PX) return true;
+  /* Off the tail, and nothing asked to be: the column moved, not you. */
+  if (!view.gestured) return view.following;
+  return false;
 }
 
 /** One scroller's follow state: whether it is on the tail, and where the follow
@@ -100,6 +160,24 @@ export class Tail {
 
   #pinned = -1;
 
+  /** When the last gesture arrived, or `-1` for none. */
+  #gesturedAt = -1;
+
+  /** The clock, injectable for the tests — which have to be able to sit a
+   *  gesture more than `GESTURE_MS` in the past without waiting for it. */
+  readonly #now: () => number;
+
+  constructor(now: () => number = () => performance.now()) {
+    this.#now = now;
+  }
+
+  /** A hand touched this scroller. Every gesture goes through here, and what it
+   *  buys is the right to let go of the tail for the next `GESTURE_MS` — see
+   *  `stillFollowing`, which is where the argument for that is written. */
+  gestured(): void {
+    this.#gesturedAt = this.#now();
+  }
+
   /** A scroll event arrived. */
   scrolled(view: View): void {
     const was = this.#pinned;
@@ -107,6 +185,7 @@ export class Tail {
       ...view,
       pinned: this.#pinned,
       following: this.following,
+      gestured: gestureLive(this.#gesturedAt, this.#now()),
     });
     /* Consumed: the next event is either ours again (and re-pinned by the follow)
        or a hand on the wheel. */
@@ -131,6 +210,12 @@ export class Tail {
   resume(): void {
     this.following = true;
     this.#pinned = -1;
+    /* And the gesture that came before it is spent. Sending a command in the
+       shell is nearly always preceded by scrolling back to read the last one, so
+       without this the snap's own scroll event arrives inside the window that
+       scroll opened — and if the column grew in between, it is off the tail with
+       a gesture vouching for it, which is a resume that releases on the spot. */
+    this.#gesturedAt = -1;
   }
 }
 
@@ -203,6 +288,32 @@ export function stickToTail(el: HTMLElement): () => void {
   const onScroll = () => tail.scrolled(el);
   el.addEventListener("scroll", onScroll, { passive: true });
 
+  /* What a hand on this scroller looks like, which is the whole of what
+     `stillFollowing` now needs from the DOM. Capture phase, so a gesture
+     answered by something inside the log — a button in a line, a fold — is still
+     seen; passive, because none of these is being prevented, only witnessed.
+
+     `pointerdown` covers the scrollbar, whose track and thumb are part of the
+     element, and the start of a selection dragged past the edge. `pointermove`
+     continues both, and is the one that needs a guard: it fires on every hover,
+     which would hold the window permanently open for a cursor resting over the
+     panel. A held button is what makes a move a drag. */
+  const onGesture = (e: Event) => {
+    if (e.type === "pointermove" && (e as PointerEvent).buttons === 0) return;
+    tail.gestured();
+  };
+  const GESTURES = [
+    "wheel",
+    "keydown",
+    "pointerdown",
+    "pointermove",
+    "touchstart",
+    "touchmove",
+  ] as const;
+  for (const k of GESTURES) {
+    el.addEventListener(k, onGesture, { capture: true, passive: true });
+  }
+
   /* Growth and rewrapping both, and neither declared by the component: the
      viewport growing shortens the column below it, and a log dragged taller
      while parked at the bottom should still be at the bottom. */
@@ -214,6 +325,9 @@ export function stickToTail(el: HTMLElement): () => void {
   return () => {
     if (frame) cancelAnimationFrame(frame);
     el.removeEventListener("scroll", onScroll);
+    for (const k of GESTURES) {
+      el.removeEventListener(k, onGesture, { capture: true });
+    }
     stop();
     tails.delete(el);
   };

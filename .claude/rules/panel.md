@@ -725,6 +725,67 @@ offset is measured against `.lines`, which is `position: relative` for exactly t
   middle" rather than "at the top". The two bugs are opposite in signature and worth telling
   apart: **a dead re-arm strands you at 0, a mis-read scroll event strands you mid-column.**
 
+- **And `pinned` identifies the follow's own writes and nothing else's, which turned out to be
+  the smaller half.** The panel went on stranding the reading mid-column after all of the
+  above, reported as: *park a card at the end, look at another card, come back once it has
+  spoken, and sometimes it jumps way up instead of being at the end.* Nothing was scrolled.
+  **The browser moves a scroller too**, and two of the ways it does are invisible to a rule
+  built on recognising our own writes:
+
+  - **the clamp.** `scrollTop` is bounded by `scrollHeight - clientHeight`, so a column that
+    gets shorter — a card switched to, a fold closed, an `{#each}` sliding its window — has
+    the view moved for you.
+  - **scroll anchoring.** `overflow-anchor` is `auto` by default in Chromium: when content
+    *above* the viewport changes height, the browser adjusts `scrollTop` to hold the anchor
+    node still.
+
+  Both arrive as ordinary scroll events reporting a number `pinned` never wrote, and — this is
+  the half that decides it — **both land in the rendering update's scroll steps, which run
+  *before* animation-frame callbacks.** So they arrive in front of the very frame `keepTail`
+  queued to re-pin, that frame finds `following` false, and declines. The column settles in two
+  passes and the panel reads the second pass as a decision. Intermittent, because it needs a
+  second height change after the first: a card still working, or history landing late.
+
+  So the rule is no longer *was this ours* but **only a gesture may let go of the tail**, which
+  is the honest shape of it: releasing the tail is a claim about your **intent**, and the only
+  events that carry intent are the ones a hand made. `gestureLive` and the `gestured` field of
+  `stillFollowing` are that gate; `wheel`, `keydown`, `pointerdown`, `pointermove` with a
+  button held, `touchstart` and `touchmove` on the scroller are what feeds it, for
+  `GESTURE_MS` (300) each. Every content-driven event is then unable to strand the reading **by
+  construction**, rather than by being recognised one producer at a time — which is the same
+  lesson `hearGrowth` taught one bullet up, from the other side: *a follow that enumerates its
+  causes is a follow with a list of conditions nobody can finish.* `pinned` is kept as the
+  positive proof it always was, since it needs no bookkeeping to be right.
+
+  **The gate is deliberately asymmetric and the asymmetry is load-bearing.** An event with no
+  gesture behind it may still *re-arm* the tail by landing on it, because arriving at the
+  bottom is a claim about where the view **is** rather than about what you want — measurable,
+  and true however it got there. That is precisely what keeps `unfolded`'s promise below:
+  closing a fold while parked at the bottom shortens the column, the clamp puts the view back
+  on the tail, and the follow takes it up again with nothing having been touched.
+
+  Three places had to say a gesture out loud, and each is a hole the gate would otherwise
+  have:
+
+  - **`step` announces itself.** Ctrl+↑/↓ is read by `App.svelte`'s global ladder with the
+    caret usually still in the draft, so the keydown never reaches `.lines`. Untraced, the keys
+    could no longer scroll up off a live turn.
+  - **a card switch clears `gesturedAt`**, beside where it clears `pinned`. Wheel the panel and
+    click another card inside the same 300ms, and the new column's own clamp arrives with your
+    scroll of the *previous* card vouching for it — the same bug through the front door.
+  - **`Tail.resume` spends it too.** Sending a command in the shell is nearly always preceded
+    by scrolling back to read the last one, so the snap's own event lands inside the window
+    that scroll opened.
+
+  And the listeners are on the **scroller**, never the window: a click on a card is what
+  switches cards, and counting that as a gesture in here reintroduces the whole thing.
+
+  It was instrumented before it was changed, rather than patched on a third guess: commit
+  `380f725` added a trace printing, for every scroll event, how long ago the last real gesture
+  was, and the commit that made this change took it back out again. `git show 380f725` is how
+  to get it back, and it is the measurement to take if this ever returns — **a release with
+  `sinceGesture` of -1 is the column having let go of itself.**
+
   **It cannot be guarded from `wall.test.ts`**, and that is a property of the suite rather than
   an omission. The suite runs with the studio in the background, which is precisely where the
   `watching` re-arm sets `following` true on every arriving event — so it rescues the panel
