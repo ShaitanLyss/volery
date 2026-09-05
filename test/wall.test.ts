@@ -29,6 +29,16 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, sep } from "node:path";
+/* The one place this suite reads the app's own source rather than driving it
+   from outside, and it is deliberately narrow: the ground menu is a *projection*
+   of three pure things — the catalogue, the motion settings and `menuFor` — so a
+   list of its rows written out here proves only that two lists were typed to
+   match on one afternoon. Which is exactly how the old one rotted (sink
+   37c1ea15). Everything else in this file stays black-box, because everything
+   else is behaviour rather than a projection. */
+import { menuFor, type MenuItem } from "../src/lib/menu";
+import { MOTIONS } from "../src/lib/motion";
+import { offersOf } from "../src/lib/widgets";
 
 const DIR = join(process.env.APPDATA ?? "", "dev.skein.studio");
 const CONTROL = join(DIR, "control.json");
@@ -1674,26 +1684,60 @@ t("a project outlives its last card, and can be dismissed on purpose", async () 
 /* ── the right-click ─────────────────────────────────────────────────── */
 
 t("the wall answers a right-click itself, and Chromium never does", async () => {
+  /* What the ground menu *should* be, built the way `App.svelte` builds it.
+   *
+   * This was a list of eleven ids written out, five of them widget kinds, under
+   * a comment saying the list "has to grow with `WIDGETS` and in its order". It
+   * did not grow. Eight more kinds landed, families then folded most of them
+   * behind submenu rows, `chat`, `guidance` and the three motion settings
+   * arrived, and the assertion was wrong the whole time and said nothing —
+   * because this suite needs a running app and so is excluded from
+   * `bun run test` (sink 37c1ea15).
+   *
+   * Two ways to fix it and it was a real choice: write the list out again,
+   * keeping the invariant that a new row must be *noticed* here; or derive it,
+   * which never goes stale but was said to stop asserting the order the comment
+   * cared about. Derived — the invariant had already failed silently through
+   * eight kinds and five other rows, and betting on it a ninth time is betting
+   * against the evidence — and the order is not given up, because `toEqual` on
+   * an array is order-sensitive and `menuFor` emits the sequence the menu is
+   * drawn in. What a literal list would have caught, this catches too.
+   *
+   * What it therefore asserts is the thing this suite is *for*: that the DOM
+   * agrees with the model. The pure half — that every widget in the catalogue is
+   * reachable exactly once, and that a family sits where its first member does —
+   * is `test/widgets.test.ts`, which runs on every commit. */
+  const rendered = (items: MenuItem[]): string[] =>
+    items.flatMap((i) => ("id" in i && (i.kind === "item" || i.kind === "more") ? [i.id] : []));
+  const expected = rendered(
+    menuFor({
+      kind: "ground",
+      offers: offersOf(),
+      picks: MOTIONS.map((m) => ({ id: `motion:${m.id}`, label: m.label, on: false })),
+    }),
+  );
+
   const ground = await ctl("menu", { selector: ".surface" });
   expect(ground.defaultPrevented).toBe(true);
-  expect(ground.items).toEqual([
-    "open",
-    "adopt",
-    "image",
-    /* Off the widget catalogue, so a new kind of instrument appears here by
-       existing rather than by being listed again — which is also why this list
-       has to grow with `WIDGETS` and in its order. */
-    "widget:clock",
-    "widget:performance",
-    "widget:timer",
-    "widget:pomodoro",
-    "widget:usage",
-    "fit",
-    "tidy",
-    /* The ground is what the ambience is drawn on, so this is where asking
-       about it belongs. */
-    "ambience",
-  ]);
+  /* The undo pair is the one thing left out, and only because it is the one row
+     whose presence is a fact about what this suite has already done rather than
+     about the wall — it appears once anything is on the stack. Every other row
+     is asserted, in order. */
+  const shown = (ground.items as string[]).filter((i) => i !== "undo" && i !== "redo");
+  expect(shown).toEqual(expected);
+
+  /* And the leaves, which no top-level list can reach: a family's rows are only
+     in the DOM while its submenu is open, so a kind added to an existing family
+     changes nothing above and everything here. Clicking the row reveals it — the
+     same handler hover and focus are bound to. */
+  const family = offersOf().find((o) => "items" in o);
+  if (family && "items" in family) {
+    await ctl("click", { selector: `[data-menu="${family.id}"]` });
+    const leaves = (await ctl("dom", { selector: ".menu.sub [data-menu]" })).nodes.map(
+      (n: Reply) => n.data.menu,
+    );
+    expect(leaves).toEqual(family.items.map((i) => `widget:${i.id}`));
+  }
 
   const onCard = await ctl("menu", { selector: `[data-conv="${card}"]` });
   /* The session id is what `--resume` takes and this is the only place the UI
