@@ -9,7 +9,7 @@ paths:
   - "src/lib/signin.ts"
 ---
 
-# More than one subscription, in an order
+# More than one subscription, in priority order
 
 One account runs out at four in the afternoon and twenty cards stop. That is the
 whole problem. Skein already knows what is left of an allowance
@@ -17,10 +17,11 @@ whole problem. Skein already knows what is left of an allowance
 (`supervisor.rs`), so it is the only thing on this machine positioned to spend a
 second subscription without anybody noticing the first one ended.
 
-This is the subsystem that does it: a registry of accounts in a fixed order, a
-ceiling you set per account, a swap that costs a card nothing it had already
-read, and a wall that stops rather than fails when there is genuinely nothing
-left.
+This is the subsystem that does it: a registry of accounts in tiers, a ceiling
+you set per account, a swap that costs a card nothing it had already read, and a
+wall that stops rather than fails when there is genuinely nothing left. A tier
+is spent before the next is touched; accounts sharing a tier are declared
+equivalent and share the work between them.
 
 ### The credential is not ours to hold, and an account is a store rather than a token
 
@@ -126,24 +127,146 @@ undocumented environment variable. If it ever stops being read, the failure is
 loud rather than silent — an empty store means `authMethod: "none"`, which is a
 card that will not spawn rather than a card quietly spending the wrong account.
 
-### The order is an order, not a preference
+### The order is an order across tiers, and a preference inside one
 
-Accounts have a **rank**, and the rule is strictly waterfall: the lowest-ranked
-account that is allowed to work gets the work. Not the one with the most
-headroom. Those two policies differ in exactly the way that matters — spreading
-by headroom keeps three accounts at 40% and leaves you with three
-part-exhausted subscriptions and no clean one, where a waterfall keeps the
-second and third untouched until the first is genuinely spent. A reserve is only
-a reserve if something guards it.
+Accounts have a **priority** and, within it, a **rank**. Work falls to the
+lowest priority that has an account allowed to take it, and the next priority is
+not touched until every account in that one is blocked.
 
-**A card swaps when it must, not when it could.** The waterfall picks the
-account for a card that is *starting* something — a new card, a dormant one
-waking, a held one released. A card already mid-conversation on account two
-stays there while account two is still allowed, even once account one has come
-back. This is not a softening of the ordering: new work still always falls to
-the lowest available account, so the consumption order is unchanged. It exists
-because a swap has a cost, below, and paying it to move a conversation back to
-an account it will only have to leave again is paying it twice for nothing.
+**Across tiers this is strictly waterfall, and the argument for that has not
+changed.** Not the account with the most headroom. Those two policies differ in
+exactly the way that matters — spreading by headroom keeps three accounts at 40%
+and leaves you with three part-exhausted subscriptions and no clean one, where a
+waterfall keeps the second and third untouched until the first is genuinely
+spent. A reserve is only a reserve if something guards it. That is why a tier is
+a hard boundary rather than a weighting, and why nothing in `choose` looks below
+the lowest ready tier for any reason at all.
+
+**Inside a tier the same guard is deliberately given up, and the user gave it
+up on purpose.** Asked for on 2026-09-05, in these words: *"All the accounts on
+a given priority are to be fully used before moving on to the next priority, and
+when on a priority level, spawn/clear picks the account with the less usage of
+the current available priority… I want to assign priority 1 to both my company
+accounts, then priority 2 for my personal one."* Putting two accounts on one
+priority is a statement that they are the same pocket — there is no reserve
+being guarded between two company subscriptions, and running one flat before
+touching the other buys nothing while costing every swap in between. So within a
+tier the least-spent account takes the next turn, and the tier runs down
+together.
+
+Both halves are in one sentence: **the reserve is guarded by the tier boundary,
+and given up inside it, because that is what putting two accounts on one number
+means.** A wall that wants the old behaviour exactly has one account per tier,
+which is what `migrate_v30` leaves and therefore what every wall upgrading into
+this feature is running until somebody changes a number.
+
+**"Least spent" is `spentOf`, and it is not the raw percentage.** For each
+window, `used / capFor(account, kind, bypass)`; the max across windows. What has
+to be equalised, if a tier is to run out together, is *how close each account is
+to being refused* — and a cap is part of that distance. An account capped at 50%
+sitting at 40% has spent 0.8 of what it is allowed; an uncapped one at 60% has
+spent 0.6. The capped one is nearer the door and should take less work, which
+the raw percentages get exactly backwards. It reads `capFor` and the same window
+set `blockersFor` walks rather than a second copy of either, for the reason
+`speaksWith` gives below: two definitions of "full" in one module drift, and
+here the drift would be a tier that keeps choosing the account nearest its
+ceiling and then blocking it.
+
+Two edges are worth knowing. A cap of zero has no headroom to be a fraction of,
+so it reports fully spent rather than `NaN` or `Infinity` — such an account is
+already `blocked` and never reaches the balancer, but a comparison against
+either of those picks the wrong account silently instead of failing. And an
+**unmeasured account counts as empty**, so it is preferred inside its tier: that
+is `standingOf`'s existing bargain, and it degrades correctly on a wall with no
+readings at all, where every account ties at 0 and rank decides — which is the
+strict waterfall, again.
+
+`rank` keeps two jobs: the order inside a tier, and the tie-break when two
+accounts in one are equally spent. It is also the panel's order within a band.
+`ordered` is priority, then rank, then label, and `list_accounts` sorts the same
+way so nothing re-sorts what Rust sent.
+
+**A card swaps when it must, not when it could.** The tiers pick the account for
+a card that is *starting* something — a new card, a dormant one waking, a held
+one released. A card already mid-conversation on account two stays there while
+account two is still allowed, even once account one has come back. This is not a
+softening of the ordering: new work still always falls to the lowest available
+tier, so the consumption order is unchanged. It exists because a swap has a
+cost, below, and paying it to move a conversation back to an account it will
+only have to leave again is paying it twice for nothing.
+
+The consequence with tiers is worth naming rather than leaving to be discovered:
+a card sitting on a priority-2 account **stays there while priority 1 has
+room**. That is the existing rule rather than a new exception, and it is
+bounded — the card is there because priority 1 was spent when it started, and
+every new card meanwhile is going to priority 1. The alternative is paying the
+full uncached re-read of a fifty-turn conversation to move it somewhere it is
+not needed.
+
+#### The migration is where this feature could have cost money
+
+`migrate_v30` gives every existing account `priority = rank + 1`, so each lands
+in a tier of its own and an upgraded wall spends exactly what it spent the day
+before. **This is the one thing in the feature that cannot be got wrong.** An
+`INTEGER NOT NULL DEFAULT 0` and nothing else would have put every account in
+one shared tier — turning a reserve somebody was guarding into a pool and
+spending it on the next turn, with nothing on screen having changed and nobody
+having been asked. A schema change may not move money.
+
+`rank + 1` rather than `rank` because the column is 1-based. It is the one
+number in this subsystem a person says out loud and types into a field, and a
+band headed "priority 0" is a band nobody asked for; `add_account` starts a
+fresh registry at 1 for the same reason, so a migrated wall and a new one agree
+what the first tier is called. The ordering is identical either way — `+ 1` is
+monotone and injective.
+
+The backfill is tied to **creating the column**, not to the column's value.
+`add_column` is already a no-op the second time, but the `UPDATE` after it is
+not, and a `WHERE priority = 1` guard only appears to help: it matches exactly
+the rows somebody has since moved *into* the first tier, so re-running would
+scatter the arrangement it was meant to protect. Asking whether the column was
+there a moment ago answers the question actually being asked.
+
+`test/accounts.test.ts` asserts a migrated three-account registry still chooses
+in rank order, and asserts beside it what the pooled arrangement would have done
+instead — so the reason the migration is written this way stays visible to
+whoever reads it next.
+
+#### And the panel had to be able to show a tier
+
+A flat list with an ordinal down the left is the right drawing of a total order
+and says nothing at all about a tier, so the panel is bands: one quiet header
+per priority, the accounts under it. The header carries the two facts the rows
+cannot show on their own — whether this tier shares its work, and what has to be
+spent before it is touched at all. That sentence is `sayTier` and the grouping
+is `tiers`, both in the pure module, so what a band *is* has one definition and
+it is the one `choose` partitions by.
+
+Drawn as furniture and nothing else, because colour is reserved for status: a
+hairline in `--edge` out from the header to the right margin, and one rule down
+the left of the rows to carry the band's extent. No fill and no border round the
+group — the accounts already have boxes, and a box inside a box reads as two
+things rather than as a heading over a list. **The cue doing most of the work is
+proximity**: rows inside a band sit closer to each other than bands do to each
+other. It costs no ink, which matters here because every other way of saying
+"these belong together" is colour or weight and neither is available to
+structure on this wall.
+
+**The tier control is the number itself, typed.** A pair of move-me-a-band-over
+arrows was the obvious alternative and is ambiguous exactly where it matters:
+pressed on a band of two it means either "join the band below" or "make a new
+band just under this one", and nothing about the gesture says which. The number
+is what the user said out loud, reaches any arrangement in one press, and cannot
+be misread. Blank leaves the account where it is — unlike a cap, where blank is
+the real and different instruction "no ceiling", every account is in exactly one
+tier and there is no such thing as none.
+
+Up and down move an account *inside* its band and are disabled at its edges.
+Across a boundary they would write two ranks and change nothing visible, since
+the priorities still decide the order; a button that demonstrably does nothing
+is worse than one not offered, so `waterfall.move` refuses it as well. The
+ordinal down the left went with the flat list: in a shared band "1, 2" would
+imply a sequence that is precisely what a tier does not have.
 
 ### What a swap costs
 
@@ -195,7 +318,11 @@ reading an account is not one. `.claude/rules/usage.md` has the face's half.
 ### The bypass is per card, and it only moves your own ceiling
 
 A card can be told to ignore the caps. It then measures every account against
-the server's ceiling alone, in the same waterfall order. This is the escape
+the server's ceiling alone, through the same tiers in the same order — and a
+bypass moves `spentOf`'s denominator too, so inside a tier a bypassed card
+balances on the accounts' own percentages rather than on how much of *your*
+ceiling each has used. That is the same substitution `capFor` makes everywhere
+else, and it falls out of reading one function rather than two. This is the escape
 hatch for the afternoon when the thing you are doing matters more than the
 reserve you were keeping, and it is per conversation rather than global because
 that is the granularity the decision actually has.
@@ -345,6 +472,24 @@ The sweep is what covers a blocker that named no reset, where there is no
 instant to aim a timer at. Escape drops a hold and the prompt with it, the same
 gesture and meaning it already has on a card waiting to heal: a hold you
 cancelled that fired anyway two hours later would be the worst of both.
+
+#### And an agent went through it, and could not tell
+
+Recorded because it is first-hand and there is not much of that here. On
+2026-09-05 the card writing this feature hit its own session limit mid-task.
+The wall marked the account spent, chose the next one and carried the
+conversation on; the card found out because another card told it, and had
+noticed nothing whatever from the inside — no gap it could see, no lost work, no
+turn it had to repeat.
+
+That is the design working, and it is also the argument for `swapNote` being
+written into the transcript rather than only flashed on the face. **The thing
+being swapped cannot observe the swap.** Nothing in an agent's own view
+distinguishes "answered by the account you expected" from "answered by the
+reserve you were keeping", so the only place that difference can live is a line
+somebody can read afterwards. An app spawning with
+`--dangerously-skip-permissions` owes that; this is the case where the party
+with the most at stake is provably not in a position to check.
 
 #### And then it was probed, and it had never once fired
 
