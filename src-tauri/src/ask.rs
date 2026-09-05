@@ -767,23 +767,47 @@ fn found_by(mut schema: Value, hint: &str) -> Value {
 
 /// Every tool this server advertises, in two tiers.
 ///
-/// **The critical tier is not a taste, it is a rule**: every tool
+/// **The first tier is not a taste, it is a rule with two clauses**, and
+/// `.claude/rules/ask.md` states it in full: *a loaded description is either the
+/// prompt's referent or the prompt's replacement, and only a tool that is
+/// neither can be deferred.* The first clause is checkable — a tool
 /// `supervisor::append_prompt` names must be here, or the one paragraph every
-/// card pays for points at identifiers whose schemas were withheld —
-/// `the_prompt_names_only_tools_the_server_advertises` guards the names and
-/// this guards their descriptions. That is `ask_user`, `board`, `post`,
-/// `unpost`, `list`, `send`, `drop` exactly. `sink` joins them because reading
-/// the pile is the other half of `drop`, and a card told to file findings and
-/// not told it can read them will file duplicates.
+/// card pays for points at identifiers whose schemas were withheld, and
+/// `the_prompt_names_only_tools_the_server_advertises` guards the names while
+/// this guards their descriptions. The second is not checkable by anything and
+/// is the one that grew: `1856ded` cut the board paragraph and the `drop`
+/// sentence out of the prompt *because* they restated these descriptions, so
+/// those descriptions are now the only copy of the instruction rather than a
+/// second one. Defer `board` and nothing in front of an agent says to read the
+/// billboard before working in a shared repository. `sink` is loaded on the same
+/// footing as `drop` — a card told to file findings and not told it can read
+/// them files duplicates.
 ///
-/// The three after that are there on a different argument, and it is the one
-/// `append_prompt` already makes for `drop`: **a description is only read by an
-/// agent that has thought to look for a tool**, and these three exist to
-/// replace something an agent does wrongly by *default*. `pin` fights writing a
-/// path into the transcript, `wake_me` fights sleeping inside a turn,
-/// `allowance` fights guessing at the budget. Nothing in a schema reaches a
-/// reflex, and nothing in `ToolSearch` reaches one either, because the failure
-/// is not searching in the first place.
+/// The four after that are there on a different argument, and it is the one
+/// `append_prompt` used to make for `drop`: **a description is only read by an
+/// agent that has thought to look for a tool**, and these exist to replace
+/// something an agent does wrongly by *default*. `pin` fights writing a path
+/// into the transcript, `wake_me` fights sleeping inside a turn, `allowance`
+/// fights guessing at the budget, and `servers` fights shelling out `pnpm dev`
+/// in a territory whose dev servers the wall is already running. Nothing in a
+/// schema reaches a reflex, and nothing in `ToolSearch` reaches one either,
+/// because the failure is not searching in the first place — which is exactly
+/// what happened: a card launched a backend and Metro by hand with both already
+/// defined, autostarted and *up*, then had no log and probed the wedged one over
+/// HTTP three times onto a queue the user was already waiting on (sink
+/// `11365b64`). It never called `servers`, and its hint would have matched
+/// perfectly if it had searched.
+///
+/// **Only `servers` was promoted, and the other two stay deferred on purpose.**
+/// It is the free, read-only one, it is the call that has to come first anyway,
+/// and its own *answer* names `server_log` and `server` in full — which is a
+/// tool result and costs nothing per turn. Measured against
+/// `the_loaded_tier_is_what_every_turn_pays_for`'s own arithmetic: the tier was
+/// 20,751 bytes over 11 tools and is 21,924 over 12, so `servers` costs 1,173 —
+/// 939 of the schema as it stood, and the rest the sentence that makes loading it
+/// worth anything, which is not a cost to be economised on. All three would leave
+/// the tier with about 800 bytes of slack, which is the state that made the
+/// tiering a conversation in the first place; this leaves 2,076.
 ///
 /// Everything below is a capability a card knows it wants from the prompt it
 /// was given — it is working on a pull request, or it is not — and those are
@@ -792,7 +816,7 @@ fn found_by(mut schema: Value, hint: &str) -> Value {
 /// `the_loaded_tier_is_what_every_turn_pays_for` asserts.
 pub(crate) fn roster() -> Vec<Value> {
     vec![
-        // ── loaded: named by `append_prompt`, so their schemas must be here ──
+        // ── loaded: the prompt's referent, or the last copy of its instruction ──
         always(tool_schema()),
         always(crate::board::board_schema()),
         always(crate::board::post_schema()),
@@ -805,6 +829,7 @@ pub(crate) fn roster() -> Vec<Value> {
         always(crate::pin::pin_schema()),
         always(crate::later::wake_schema()),
         always(crate::limits::allowance_schema()),
+        always(crate::servers::servers_schema()),
         // ── discoverable: a card knows from its prompt whether it wants these ──
         found_by(
             crate::sink::take_schema(),
@@ -851,11 +876,6 @@ pub(crate) fn roster() -> Vec<Value> {
             crate::spawn::close_schema(),
             "take a card off the wall, close a conversation I opened, tidy up a \
              child card that has finished and reported",
-        ),
-        found_by(
-            crate::servers::servers_schema(),
-            "dev servers, is the server running, what is on localhost, ports, \
-             vite next pnpm dev bun run dev, did it start",
         ),
         found_by(
             crate::servers::server_log_schema(),
@@ -1778,12 +1798,55 @@ mod tests {
         assert!(at(crate::servers::SERVER_LOG_TOOL) < at(crate::servers::SERVER_TOOL));
     }
 
+    /// Which tier each of the three dev-server tools is in, and why — because
+    /// the reason is the whole finding and it is invisible from the code.
+    ///
+    /// A card launched a backend and Metro by hand through Bash with both
+    /// already defined on the wall, autostarted, and running; then, having no
+    /// server log, probed the wedged one over HTTP three times onto a queue the
+    /// user was already waiting on (sink `11365b64`). It never called `servers`.
+    /// The search hint it had would have ranked first if it had searched, which
+    /// is the point: **the failure was not searching**, and that is the one
+    /// failure a deferred tool cannot fix about itself.
+    ///
+    /// So `servers` is loaded — the free read, the call that has to come first
+    /// anyway — and the other two stay deferred, named in full by `servers`' own
+    /// *answer*, which is a tool result and costs nothing per turn.
+    #[test]
+    fn the_free_dev_server_read_is_loaded_and_the_two_that_act_are_not() {
+        let loaded: Vec<String> = roster()
+            .into_iter()
+            .filter(|t| t["_meta"]["anthropic/alwaysLoad"] == json!(true))
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            loaded.iter().any(|n| n == crate::servers::SERVERS_TOOL),
+            "the reflex is reached by the loaded tier or not at all: {loaded:?}"
+        );
+        for acting in [crate::servers::SERVER_TOOL, crate::servers::SERVER_LOG_TOOL] {
+            assert!(
+                !loaded.iter().any(|n| n == acting),
+                "{acting} would take the tier to roughly 800 bytes of slack"
+            );
+        }
+        /* And the promotion is worth nothing unless the description carries the
+           instruction — a loaded schema that only names its arguments is 939
+           bytes on every turn of every card for a tool nobody reads. */
+        let said = crate::servers::servers_schema()["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(said.contains("before starting a dev server"), "{said}");
+    }
+
     /// The one tool on this server that starts a process says so where the
     /// model will read it, rather than leaving it to be inferred from a verb.
     ///
     /// Asserted rather than trusted to review, because the whole of "reading is
-    /// free, acting is not" lives in these descriptions — `alwaysLoad` is what
-    /// buys them, and `append_prompt` is short on the strength of it. A
+    /// free, acting is not" lives in these descriptions, and this one is
+    /// *deferred* — so it is read by an agent that has already gone looking for
+    /// something that starts a server, which is exactly when the warning has to
+    /// be there. A
     /// description edited down to name its arguments would take the warning off
     /// the one tool here that can bind a port, and nothing else would notice.
     #[test]

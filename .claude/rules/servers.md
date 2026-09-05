@@ -93,13 +93,58 @@ pattern; and a new module would have wanted a `mod` line in `lib.rs`, which is a
 other half is an untracked file — the exact pair that stopped `main` compiling once already.
 Nothing here is a `#[tauri::command]` and `lib.rs` is untouched.
 
-**Reading is free, acting is not, and the descriptions are where that is said.** `alwaysLoad`
-puts every schema in front of every card at session start, which is what `supervisor::append_prompt`
-is short on the strength of — so the reasoning lives in the description or nowhere. `servers`
-and `server_log` say they cost nothing; `server` says, in those words, that it runs processes
-on the user's machine. `ask.rs` asserts both of those sentences, because a description edited
-down to name its arguments would take the warning off the one tool here that can bind a port
-and nothing else would notice.
+**Reading is free, acting is not, and the descriptions are where that is said.** The
+reasoning lives in the description or nowhere — `supervisor::append_prompt` is short on the
+strength of it. `servers` and `server_log` say they cost nothing; `server` says, in those
+words, that it runs processes on the user's machine. `ask.rs` asserts both of those sentences,
+because a description edited down to name its arguments would take the warning off the one
+tool here that can bind a port and nothing else would notice.
+
+#### The three are no longer in one tier, and the reason is what an agent did instead
+
+`ask::mcp_config` used to set a **server-level** `alwaysLoad`, so every schema on the whole
+server reached every card at session start. It does not any more (`ask.md`), and for a while
+all three of these sat in the deferred tier behind a search hint. That is the arrangement a
+card walked straight past.
+
+Asked to start a project off the corporate network, it launched the backend and Metro **by
+hand through Bash** — `pnpm dev` with `&`, then `run_in_background` — with both groups already
+defined on the wall, autostart on, and *both already running*. Then, having no server log to
+read, it probed the wedged Metro over HTTP three times with long timeouts; per that project's
+own notes an abandoned page request keeps building server-side and new ones queue behind it, so
+each probe multiplied the work. 170s → 300s → `EMFILE: too many open files` at 500s, onto a
+queue the user had already built. It made the user's problem measurably worse while believing
+it was diagnosing it, and it found the tools only when the user said *"you should restart it
+using the mcp skein tool normally"* (sink `11365b64`).
+
+Nothing about that is a hint problem. `servers`' hint names `pnpm dev` in as many words and
+would have ranked first. **The failure was not searching**, and that is the one failure a
+deferred tool cannot fix about itself — which is precisely the argument `roster()` already
+makes for `pin`, `wake_me` and `allowance`. So:
+
+- **`servers` is loaded.** It is the free read, it is the call that has to come first anyway,
+  and its description now opens with the imperative rather than with what the fields mean.
+  Measured: it takes the loaded tier from 20,751 bytes to 21,924, leaving 2,076 under the
+  ceiling `the_loaded_tier_is_what_every_turn_pays_for` asserts.
+- **`server_log` and `server` stay deferred**, and all three would have left about 800 bytes of
+  slack — the state that made the tiering a conversation in the first place. They are named
+  instead by `servers`' **own answer**, which is a tool result and therefore costs nothing per
+  turn. The bytes that buy discoverability are spent once, on the tool that is free to call.
+- **Which is why those names are written out in full there** and left bare in the descriptions.
+  A description sits beside the listing that carries the real name; a result arrives alone, so
+  `` `server_log` `` in one is not a name any card can call (sink `4a0e4d2e`, and
+  `supervisor.rs`'s `no_tool_result_names_a_tool_a_card_cannot_call` now scans this file too).
+- **Deferring `server` also moved where its warning is read**, and that is an improvement
+  rather than a loss: it is now read by an agent that has already gone looking for something
+  that starts a server, which is exactly the moment "this runs processes on the user's machine"
+  is worth saying.
+
+What is still not covered is the *reflex itself*. A loaded description is in front of the agent
+whether it looked or not, which is as far as a schema can reach; it is not a gate, and an agent
+that never forms the thought "is there a tool for this" will still type `pnpm dev`. The
+event-shaped fix — a `PreToolUse` deny on a dev-server command in a territory that has a group
+defined — is filed rather than half-built, and `hooks.md` has the reason it is not obvious: the
+only thing such a hook can do is *deny*, and a guard that denies has to be right every time.
 
 - **One acting tool with an `action`, not three.** A **restart is one act and cannot be
   composed**: `start` releases the old tree with `stopped` already set — so the dying pipes do

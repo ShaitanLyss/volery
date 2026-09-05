@@ -1238,24 +1238,34 @@ fn standing(app: &AppHandle, caller: &str, acting: bool) -> Result<Standing, Str
 /* ── the schemas ──────────────────────────────────────────────────────────
  *
  * Longer than the code they describe, and that is the arrangement rather than
- * an accident: `ask::mcp_config` sets `alwaysLoad`, so every one of these
- * reaches every card at session start with its description attached. That is
- * where the reasoning lives — `supervisor::append_prompt` is short *because* of
- * it — so a description that only names its arguments is a tool the model will
- * reach for at the wrong moment, and this server's whole cost is paid in the
- * hope that it will not.
+ * an accident: a description is where the reasoning lives —
+ * `supervisor::append_prompt` is short *because* of it — so a description that
+ * only names its arguments is a tool the model will reach for at the wrong
+ * moment.
+ *
+ * **These three are no longer in one tier, and the note that said they were is
+ * why this paragraph is rewritten.** `ask::mcp_config` used to set a
+ * server-level `alwaysLoad`, so every schema on this server reached every card
+ * at session start; it does not any more (`ask::roster`, and `.claude/rules/ask.md`
+ * for the whole of it). `servers` is loaded and `server_log` and `server` are
+ * deferred behind a search hint, which means their descriptions are read only by
+ * an agent that has gone looking — so `servers`' answer names them, in full,
+ * because a tool result arrives with no listing beside it.
  */
 
 pub fn servers_schema() -> Value {
     json!({
         "name": SERVERS_TOOL,
         "description":
-            "List the dev server groups defined for this card's project — what each one \
-             runs, which ports it claims, whether it is up, and what each server last \
-             said. Costs nobody anything: the wall is already holding all of it.\n\n\
-             Read it before assuming a server is or is not running. A card that guessed \
-             wrong here starts a second vite on a bound port, or spends a turn debugging a \
-             404 from a server that was never up.\n\n\
+            "The dev servers this card's territory already has: what each group runs, \
+             which ports it claims, whether it is up, and what each one last said. Costs \
+             nobody anything — the wall is holding all of it already.\n\n\
+             **Read this before starting a dev server yourself.** The wall may already \
+             own the one you are about to launch — defined, autostarted and up — and a \
+             card that shells out `pnpm dev` anyway gets a second one fighting the first \
+             for the port, with no log it can read afterwards. If a server is involved at \
+             all, this is the first call, it is free, and its answer names the two tools \
+             that read a group's output and start or restart one.\n\n\
              `running` and `health` are two questions and the pair is the reading: \
              `running` is whether the wall has asked for this group, `health` is what each \
              of its servers did about it. A group that crashed is `running: true` with an \
@@ -1437,8 +1447,16 @@ fn do_servers(app: &AppHandle, caller: &str) -> String {
         "project": stand.project,
         "root": stand.root,
         "groups": rows,
-        "note": "`server_log` reads any of these and costs nothing. `server` starts and \
-                 stops them, and that runs processes on this machine.",
+        /* Named in full, and this is the one result where that is load-bearing
+           twice over. A tool result arrives with no listing beside it, so a bare
+           `server_log` is not a name any card can call (sink `4a0e4d2e`) — and
+           these two are *deferred*, so this sentence is where an agent finds out
+           they exist at all. See the note above the schemas. */
+        "note": "`mcp__skein__server_log` reads any of these and costs nothing — it is what \
+                 to do instead of restarting something to find out what it says. \
+                 `mcp__skein__server` starts, stops and restarts them, and that runs \
+                 processes on this machine. Do not launch one of these by hand: the wall \
+                 owns the process tree, the ports and the log.",
     })
     .to_string()
 }
@@ -1492,8 +1510,8 @@ fn do_server_log(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Some(trace) = map.get(&group.id) else {
         return format!(
             "`{}` has not been started this session, so there is nothing it has said. \
-             `server` with `action: \"start\"` brings it up — and that runs processes on \
-             this machine.",
+             `mcp__skein__server` with `action: \"start\"` brings it up — and that runs \
+             processes on this machine.",
             group.label
         );
     };
@@ -1622,8 +1640,8 @@ fn do_server(app: &AppHandle, caller: &str, args: &Value) -> String {
     if action == "stop" {
         return if stop(app, &servers, &group.id) {
             format!(
-                "stopped `{}` — the whole tree, job object and all. `server` with \
-                 `action: \"start\"` brings it back.",
+                "stopped `{}` — the whole tree, job object and all. `mcp__skein__server` \
+                 with `action: \"start\"` brings it back.",
                 group.label
             )
         } else {
@@ -1652,8 +1670,8 @@ fn do_server(app: &AppHandle, caller: &str, args: &Value) -> String {
         .collect();
     format!(
         "{} `{}` — {} server{}{}{}. They are starting: a port takes a moment to bind, so \
-         `servers` will read `starting` for a few seconds either way. Read `server_log` for \
-         what it says rather than starting it again.",
+         `mcp__skein__servers` will read `starting` for a few seconds either way. Read \
+         `mcp__skein__server_log` for what it says rather than starting it again.",
         if was { "restarted" } else { "started" },
         group.label,
         group.servers.len(),

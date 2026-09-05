@@ -361,13 +361,24 @@ prompt's referent or the prompt's replacement, and a tool that is neither can be
 Nothing that is either may be, and no test can tell you which — the prompt naming a tool is
 checkable and a description being the last copy of an instruction is not.
 
-Then three on a different argument, and it is the one `append_prompt` used to make for
+Then four on a different argument, and it is the one `append_prompt` used to make for
 `drop`: **a description is only read by an agent that has thought to look for a tool.** `pin`,
-`wake_me` and `allowance` exist to replace something an agent does wrongly by *default* —
-writing a path into the transcript, sleeping inside a turn, guessing at the budget. Nothing
-in a schema reaches a reflex and nothing in `ToolSearch` reaches one either, because the
-failure is not searching at all. Everything else is a capability a card knows it wants from
-the prompt it was given, and is deferred.
+`wake_me`, `allowance` and `servers` exist to replace something an agent does wrongly by
+*default* — writing a path into the transcript, sleeping inside a turn, guessing at the
+budget, and shelling out `pnpm dev` in a territory whose dev servers the wall is already
+running. Nothing in a schema reaches a reflex and nothing in `ToolSearch` reaches one either,
+because the failure is not searching at all. Everything else is a capability a card knows it
+wants from the prompt it was given, and is deferred.
+
+`servers` is the newest and the one with a measured failure behind it rather than a worry: a
+card launched two dev servers by hand with both already defined, autostarted and *up*, then
+probed the wedged one over HTTP three times onto a queue the user was already waiting on, and
+found the tools only when told (sink `11365b64`). Its hint names `pnpm dev` in as many words
+and would have ranked first — which is the evidence, not the counter-argument. **Only the free
+read was promoted**: `server_log` and `server` stay deferred and are named by `servers`' own
+*answer*, which is a tool result and costs nothing per turn. `servers.md` has the arithmetic
+and the rule that follows from it — when a whole subsystem's tools are undiscoverable, promote
+the one that is free to call and let its answer carry the rest.
 
 Note where that argument does *not* reach, because it was misapplied for a while: it is an
 argument about a **deferred** tool, and it was being used to justify a paragraph about
