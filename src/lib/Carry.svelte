@@ -12,17 +12,19 @@
    * broadcast gets, where the gesture has to be meant.
    *
    * The third section is the one that is not obviously a panel's business:
-   * territories that point nowhere. It is here rather than on the wall because
-   * this is where the need arises — you have just imported a layout and none of
-   * its projects are rooted — and because from here it is a list you can work
-   * down, where on the wall it would be one territory at a time.
+   * territories that point nowhere. It is here because this is where the need
+   * arises — you have just imported a layout and none of its projects are
+   * rooted — and because from here it is a list you can work down, where on the
+   * wall it is one territory at a time. The wall draws it too now, on each
+   * territory's own row; both faces press the same `adrift.pick`, which is the
+   * point of that being a singleton rather than a method on `Portage`.
    */
 
   /* The component is `Carry` and the class it draws is `Portage`, which is the
      same split `Console`/`Shell` and `Pomodoro`/`Cycle` already have: a
      `.svelte.ts` module and a `.svelte` component of the same name are one file
      to a case-insensitive filesystem, and TypeScript says so. */
-  import type { Portage } from "./portage.svelte";
+  import { adrift, type Portage } from "./portage.svelte";
   import type { Project } from "./skein.svelte";
   import { sayTally } from "./portage";
 
@@ -35,12 +37,21 @@
     carry: Portage;
     projects: Project[];
     /** Root paths that are not directories on this machine, as
-     *  `portage.rs::missing_roots` last answered. */
+     *  `portage.rs::missing_roots` last answered.
+     *
+     *  Asked by `App.svelte` while this panel is open. `adrift.missing` is the
+     *  same question asked continuously, for the wall — the two agree, since
+     *  both are that one command over the same roots, and the panel's is the
+     *  narrower one. Collapsing them onto the singleton is a deletion in
+     *  `App.svelte` and this prop with it. */
     unrooted: string[];
     onclose: () => void;
   } = $props();
 
-  const adrift = $derived(projects.filter((p) => unrooted.includes(p.root_path)));
+  /* Named for the section rather than for the class: `adrift` is the singleton
+     imported above, which owns the gesture. The list itself is still fed by the
+     `unrooted` this panel is handed — see the note on that prop. */
+  const nowhere = $derived(projects.filter((p) => unrooted.includes(p.root_path)));
   const waiting = $derived(carry.pending ? sayTally(carry.pending) : null);
 </script>
 
@@ -103,21 +114,23 @@
     {/if}
   </section>
 
-  {#if adrift.length > 0}
+  {#if nowhere.length > 0}
     <section>
       <h3>pointing nowhere</h3>
       <p class="aside">
-        {adrift.length === 1 ? "one territory" : `${adrift.length} territories`} whose folder is
+        {nowhere.length === 1 ? "one territory" : `${nowhere.length} territories`} whose folder is
         not on this machine — imported, moved or on a drive that is not mounted. Nothing in one
         can be worked in until it has somewhere to be.
       </p>
       <ul class="adrift">
-        {#each adrift as p (p.id)}
+        {#each nowhere as p (p.id)}
           <li>
             <span class="pname">{p.name}</span>
             <span class="was" title={p.root_path}>{p.root_path}</span>
-            <button class="act" disabled={carry.busy} onclick={() => void carry.pickRoot(p)}
-              >point it at a folder…</button
+            <button
+              class="act"
+              disabled={carry.busy || adrift.busy}
+              onclick={() => void adrift.pick(p.root_path)}>point it at a folder…</button
             >
           </li>
         {/each}
@@ -136,6 +149,15 @@
     </section>
   {/if}
 
+  <!-- Rooting says its own piece, because it is `adrift`'s gesture rather than
+       this panel's — and it keeps a fault of its own rather than deferring to
+       the wall's bar, which the scrim above covers. -->
+  {#if adrift.note}
+    <p class="note">{adrift.note}</p>
+  {/if}
+  {#if adrift.fault}
+    <button class="fault" onclick={() => (adrift.fault = null)}>{adrift.fault}</button>
+  {/if}
   {#if carry.note}
     <p class="note">{carry.note}</p>
   {/if}

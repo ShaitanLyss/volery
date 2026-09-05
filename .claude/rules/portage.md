@@ -183,8 +183,52 @@ Going out is one press; coming in is two, the tally first and the commit second,
 import adds to the wall and cannot be taken back in one gesture. Same shape a broadcast has,
 for the same reason.
 
-The list of territories pointing nowhere is **in the panel rather than on the territory**,
-which is a deliberate narrowing of what was asked for. It is where the need arises — you
-have just imported a layout and none of its projects are rooted — and from here it is a list
-you can work down, where on the wall it would be one at a time. An affordance on the
-territory's own row is the natural follow-up.
+The list of territories pointing nowhere is in the panel because that is where the need
+arises — you have just imported a layout and none of its projects are rooted, and from here
+it is a list you can work down. It went in *only* there at first, which was a narrowing of
+what had been asked for; the wall now says it too.
+
+## And the wall says it, on the territory's own row
+
+A territory drawn as though it were fine, in a folder that is not on this machine, is the
+wall being wrong about the one thing it is for. So a territory that points nowhere draws its
+boundary in **amber** and offers one chip at its foot: `points nowhere — pick a folder`.
+
+- **Amber, not rust, and the choice is the whole of the art direction.** Colour on this wall
+  is status and there are three of it. Rust is *failed*, and nothing has failed — a folder
+  that is not here is the ordinary state of every territory in a layout you have just
+  imported, and of any territory on a drive you have not plugged in. Amber is *asking*: the
+  territory is waiting on you to tell it something, will go on waiting, and cannot be worked
+  in until you do. Drawn at every density, like the tear and for the tear's reason — a wall
+  zoomed out to `field` should still show you which territory has nothing under it without
+  showing you a word.
+- **It shares the tear's corner and takes precedence over it**, because the two cannot
+  honestly co-occur: a tear is read out of `git status` in the root and there is no root to
+  read. A tear drawn beside one is stale, and where the folder *is* is the more fundamental
+  of the two things to be told. It is deliberately **not** in the verbs row, even though it
+  is the one thing such a territory can be asked to do: `actionsFor` answers from facts
+  probed in a directory that is not there, which is `bare` in `test/actions.test.ts` — *a
+  folder with nothing in it offers nothing* — so that row would be a row of one. The foot
+  corner is where a territory says what is wrong with it.
+- **The chip goes through `Adrift.pick`, which is `reroot`, which is `rebase`.** Not around
+  it. A second way to point a territory at a folder that did not rewrite its server groups
+  would be a territory that looks right and does nothing, which is the trap the section above
+  is about.
+- **`Adrift` is a module-level singleton** (`portage.svelte.ts`), and that is the shape
+  change this needed. "Is this folder here" was a field on `Portage`, asked while the panel
+  was open; two faces that know nothing of each other now want the answer, and the wall is
+  always up. A singleton is where both can reach it — the alternative was threading a panel
+  subsystem through the wiring root as a prop for one chip. `ink`, `waterfall` and `releases`
+  are the same shape.
+- **Still on no clock.** What asks is the *set of roots* changing, keyed off `projects` and
+  not `territories`, since a drag rewrites every territory's position sixty times a second
+  and none of that can move a folder. Every way a territory arrives, is forgotten, or is
+  pointed somewhere new goes through that list.
+- **A fault reaches the wall's fault bar as well as the panel's own.** The gesture is
+  reachable from two places now and only one of them has somewhere of its own to draw one.
+  The panel keeps a copy rather than deferring: its scrim covers the header.
+
+One residue, deliberately left: `App.svelte` still asks `missing_roots` itself to feed the
+panel's list. It is the same command over the same roots, so the two cannot disagree about
+anything; collapsing it onto `adrift.missing` is a deletion there and the `unrooted` prop
+here with it.

@@ -111,6 +111,10 @@ export class Portage {
 
   constructor(hands: Hands) {
     this.#hands = hands;
+    /* The same hands, lent to the wall's half of rooting a territory. See
+       `Adrift` below: it is a singleton because the wall draws it and the panel
+       lists it, and this is the one place in the app where both are in scope. */
+    adrift.serve(hands);
   }
 
   /* ── Out ───────────────────────────────────────────────────────────────── */
@@ -524,7 +528,83 @@ export class Portage {
     return made;
   }
 
-  /* ── Rooting a territory that arrived pointing nowhere ─────────────────── */
+}
+
+/* ── Territories with nowhere to be ────────────────────────────────── */
+
+/** Which territories point nowhere, and the one gesture that mends it.
+ *
+ *  A module-level singleton — the shape `ink`, `waterfall` and `releases`
+ *  already have — rather than the fields on `Portage` this used to be, and the
+ *  move is the whole of what changed. "Is this territory's folder on the
+ *  machine" started as a question the layout panel asked while it was open,
+ *  because that is where the need arises: you have just imported a layout and
+ *  none of its projects are rooted. It is now drawn on the wall as well, on the
+ *  territory's own row, and the wall is always up — so one answer wanted by two
+ *  faces that know nothing of each other belongs somewhere both can reach,
+ *  rather than threaded through the wiring root as a prop for one chip.
+ *
+ *  The panel is half-way here: it presses this `pick` and reads these notes,
+ *  and still takes its *list* from an ask of its own in `App.svelte`, which is
+ *  the same command over the same roots. The two cannot disagree about
+ *  anything, and collapsing them is a deletion in that file rather than work
+ *  here.
+ *
+ *  Still on no clock. A drive appearing is not something this app has to notice
+ *  within a second, and a poll over `n` filesystem stats — one of which may be
+ *  a share that has to time out — is exactly the fourth exception CLAUDE.md
+ *  says has to earn its place. What asks is the *set of roots changing*, which
+ *  is an event the wall already has, and which covers every way a territory
+ *  arrives, leaves, or is pointed somewhere new — including by this class.
+ */
+class Adrift {
+  /** Root paths that are not directories on this machine, as
+   *  `portage.rs::missing_roots` last answered. */
+  missing = $state<string[]>([]);
+  /** A rooting in flight. One at a time: it rewrites a `root_path` and every
+   *  server group under it, and two of those interleaved is a territory half
+   *  moved. */
+  busy = $state(false);
+  /** What the last rooting had to say, in the panel's own voice. It stays a
+   *  note rather than going to the fault bar because it is a confirmation, and
+   *  on the wall the confirmation is the row no longer saying it points
+   *  nowhere. */
+  note = $state<string | null>(null);
+  fault = $state<string | null>(null);
+
+  /** The wall's own subsystems, lent by `Portage`'s constructor.
+   *
+   *  A field rather than a constructor argument for the same reason the class
+   *  is a singleton at all: the two callers are a panel and a chip on the wall,
+   *  and neither is anywhere the hands could be handed in from. Null until the
+   *  app has built a `Portage`, which happens as the window is wired up.
+   */
+  #hands: Hands | null = null;
+
+  serve(hands: Hands) {
+    this.#hands = hands;
+  }
+
+  /** Does this territory point nowhere? Asked by root path, because that is the
+   *  only thing the wall's own row knows a territory by — `layout` keys a
+   *  region on its `cwd`. */
+  has(root: string): boolean {
+    return this.missing.includes(root);
+  }
+
+  /** Re-ask the disk about a set of roots.
+   *
+   *  A failure leaves every territory drawn as rooted, which is the harmless
+   *  direction: the actions on one then fail the way they already do for a
+   *  folder that has gone. The loud direction would be a wall telling you your
+   *  work is missing because a stat timed out. */
+  async ask(roots: string[]): Promise<void> {
+    try {
+      this.missing = await invoke<string[]>("missing_roots", { paths: roots });
+    } catch {
+      this.missing = [];
+    }
+  }
 
   /** Point a territory at a folder on this machine.
    *
@@ -540,19 +620,30 @@ export class Portage {
    *  Refuses rather than merges when the new root is already a territory here.
    *  Two rows cannot share a `root_path` — it is UNIQUE — and quietly folding
    *  one into the other would take a decision about somebody's cards that
-   *  nothing here is entitled to make. */
+   *  nothing here is entitled to make.
+   *
+   *  A fault goes to the wall's fault bar as well as onto this object, because
+   *  the gesture is reachable from two places now and only one of them has
+   *  somewhere of its own to draw one. The panel keeps its own copy rather than
+   *  deferring to the bar: the scrim covers the header, so a fault raised from
+   *  the list you are working down would land behind it. */
   async reroot(project: Project, to: string): Promise<boolean> {
-    const { skein } = this.#hands;
+    const hands = this.#hands;
+    if (!hands) return false;
+    const { skein } = hands;
     this.fault = null;
+    this.note = null;
     if (normPath(to) === normPath(project.root_path)) {
       this.note = "that is where it already points";
       return false;
     }
     if (skein.projects.some((p) => p.id !== project.id && normPath(p.root_path) === normPath(to))) {
       this.fault = `${baseName(to)} is already a territory on this wall`;
+      skein.fault = this.fault;
       return false;
     }
     const was = project.root_path;
+    this.busy = true;
     try {
       await invoke("reroot_project", { id: project.id, rootPath: to });
       for (const g of skein.groups.filter((x) => x.group.project_id === project.id)) {
@@ -573,12 +664,23 @@ export class Portage {
       return true;
     } catch (err) {
       this.fault = String(err);
+      skein.fault = this.fault;
       return false;
+    } finally {
+      this.busy = false;
     }
   }
 
-  /** Ask for a folder and root a territory at it. */
-  async pickRoot(project: Project): Promise<void> {
+  /** Ask for a folder and root a territory at it.
+   *
+   *  Takes a root path rather than a `Project`, because that is what the caller
+   *  on the wall has: a region is laid out from a territory's `cwd` and never
+   *  carries its id. Looking the row up here also means a territory forgotten
+   *  between the draw and the press picks nothing, rather than rerooting
+   *  something that has gone. */
+  async pick(root: string): Promise<void> {
+    const project = this.#hands?.skein.projects.find((p) => p.root_path === root);
+    if (!project) return;
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({
       directory: true,
@@ -588,6 +690,8 @@ export class Portage {
     if (typeof picked === "string") await this.reroot(project, picked);
   }
 }
+
+export const adrift = new Adrift();
 
 /* ── Prose ─────────────────────────────────────────────────────────────────── */
 

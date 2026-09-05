@@ -42,6 +42,7 @@
   import type { Cycle } from "./cycle.svelte";
   import type { Profile } from "./ambience";
   import { glassAt, spotOf, stickTo, type Spot } from "./glass";
+  import { adrift } from "./portage.svelte";
   import { stub } from "./outline";
   import { displayName } from "./naming";
   import type { Flights } from "./relay.svelte";
@@ -371,6 +372,24 @@
   });
 
   const model = $derived(layout(convs, studio.placements, territories));
+
+  /* Which of these territories point nowhere.
+   *
+   * Asked from here rather than from the panel that used to own the question,
+   * because the wall draws the answer on every territory's row and the wall is
+   * always up — see `Adrift` in `portage.svelte.ts`. Keyed on the *set of
+   * roots*, which is the only thing that can change the answer from in here:
+   * a territory arriving, one being forgotten, and one being pointed somewhere
+   * new all move it, and nothing else does. Not a clock, for the reason stated
+   * over the class.
+   *
+   * `projects` rather than `territories`, so a drag — which rewrites every
+   * territory's position each frame — cannot ask the disk sixty times a
+   * second. */
+  const rootSig = $derived(projects.map((p) => p.root_path).join("|"));
+  $effect(() => {
+    void adrift.ask(rootSig.length ? rootSig.split("|") : []);
+  });
 
   /* ── the two frames ─────────────────────────────────────── *
    *
@@ -1513,6 +1532,7 @@
 
 {#snippet territory(r: Region, glass: boolean)}
     {@const torn = conflictFor?.(r.cwd) ?? null}
+    {@const nowhere = adrift.has(r.cwd)}
     <!-- A territory's boundary is a dashed line, which is to say a stitch.
          When the repo underneath is half-merged, that stitch comes apart —
          see `.region.torn`. It is the one project-level state drawn at *every*
@@ -1522,6 +1542,7 @@
     <div
       class="region"
       class:torn={!!torn}
+      class:nowhere
       class:picked={studio.isPicked("region", r.cwd)}
       data-name={r.project}
       data-cwd={r.cwd}
@@ -1676,17 +1697,48 @@
         </div>
       {/if}
 
-      <!-- The tear's own label, at the foot of the territory opposite the
-           verbs. Not *among* them: they are things the project offers to do
-           all day, and this is one thing that has gone wrong and wants
-           undoing. The two rows read as the top row does — the project's
-           name at the left, its state at the right.
+      <!-- What is wrong with the territory, at its foot opposite the verbs.
+           Not *among* them: they are things the project offers to do all day,
+           and these are things that have gone wrong and want mending. The two
+           rows read as the top row does — the project's name at the left, its
+           state at the right.
 
            Right-aligned off the region's own edge, so it cannot be pushed
            about by however many verbs an Unreal project happens to offer, and
            so it needs nothing from the acts row's existence: a bare git repo
            with no build and nothing to push still tears. -->
-      {#if torn}
+      {#if nowhere}
+        <!-- A territory whose folder is not on this machine. It shares the
+             tear's corner rather than standing beside it, and takes precedence
+             over it, because the two cannot honestly co-occur: a tear is read
+             out of `git status` in the root, and there is no root to read. If
+             one is somehow drawn anyway it is stale, and where the folder *is*
+             is the more fundamental of the two things to be told.
+
+             It is the verbs row's business, not the tear's, in one respect —
+             this is the one thing the territory can be asked to do — but not in
+             the other: `actionsFor` answers from facts probed in a directory
+             that is not there, which is `bare` in `test/actions.test.ts` (*a
+             folder with nothing in it offers nothing*), so that row would be a
+             row of one. The foot corner is where a territory says what is wrong
+             with it. -->
+        <div
+          class="tear"
+          data-cwd={r.cwd}
+          style:left="{r.x + r.w - 11}px"
+          style:top="{r.y + r.h - 21}px"
+          style:z-index={Z_CHIP}
+        >
+          <button
+            class="chip lost"
+            disabled={adrift.busy}
+            title="{r.project} is not a folder on this machine — click to point it at one"
+            onclick={() => void adrift.pick(r.cwd)}
+          >
+            <i></i>points nowhere — pick a folder
+          </button>
+        </div>
+      {:else if torn}
         <div
           class="tear"
           data-cwd={r.cwd}
@@ -2079,6 +2131,28 @@
   .region.torn {
     border-color: color-mix(in srgb, var(--st-fail) 55%, var(--edge));
   }
+
+  /* ── a territory that points nowhere ─────────────────────────────────────
+   *
+   * Amber, and after `.torn` so it wins where both are somehow set — the same
+   * order the markup takes, and for the same reason. Colour on this wall is
+   * status and there are three of it; the choice between the two candidates is
+   * the whole art direction here. Rust is *failed*, and nothing has failed: the
+   * folder is not on this machine, which is the ordinary state of every
+   * territory in a layout you have just imported. Amber is *asking*, and this
+   * is exactly that — the territory is waiting on you to tell it something, and
+   * will go on waiting, and cannot be worked in until you do.
+   *
+   * Drawn at every density, like the tear and for the tear's reason: a wall
+   * zoomed out to `field` should still show you which territory has nothing
+   * under it without showing you a word.
+   *
+   * No second stitch outside it. The tear's `::after` says *this boundary has
+   * come apart*, which is a picture of a repository half-merged; nothing has
+   * come apart here, and reusing the mark would say the wrong thing loudly. */
+  .region.nowhere {
+    border-color: color-mix(in srgb, var(--st-ask) 55%, var(--edge));
+  }
   .region.torn::after {
     content: "";
     position: absolute;
@@ -2106,6 +2180,22 @@
   }
   .rip:hover {
     border-color: var(--st-fail);
+  }
+
+  /* The same chip as the tear's, in the asking colour. */
+  .lost {
+    border-color: color-mix(in srgb, var(--st-ask) 50%, var(--edge));
+    color: var(--paper);
+  }
+  .lost i {
+    background: var(--st-ask);
+  }
+  .lost:hover {
+    border-color: var(--st-ask);
+  }
+  .lost:disabled {
+    cursor: default;
+    opacity: 0.7;
   }
 
   .name {
