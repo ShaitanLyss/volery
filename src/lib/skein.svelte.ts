@@ -327,8 +327,10 @@ export class Skein {
    *  `App.svelte`'s `onDestroy` → `detach()` → this flag has landed before the
    *  new component's script body reaches `new Skein(studio)`, let alone before
    *  the `$effect` that calls `load`. Two instances cannot both walk the queue.
-   *  That candidate is ruled out by reading; the other one — `--resume`
-   *  restoring a copy the app then sends again — is guarded in `rouse`. */
+   *  That candidate is ruled out by reading, and the other one — `--resume`
+   *  restoring a copy the app then sends again — turned out not to be it
+   *  either, though it is guarded in `rouse` because it is wrong on its own
+   *  terms. What actually doubled those prompts is the heal; see `#heal`. */
   #gone = false;
 
   /** Stop listening. Called when the component that built this goes away, which
@@ -1379,7 +1381,34 @@ export class Skein {
    *  you can say something yourself, which is the important one: a heal is
    *  Skein finishing what you asked for, so the moment you take the card back
    *  it has nothing left to finish. `working` covers the last of those, since
-   *  `echo` opens the turn from the gesture. */
+   *  `echo` opens the turn from the gesture.
+   *
+   *  **This is what put two identical resume prompts in front of one agent**,
+   *  and it is worth knowing before reading `01e00f30` in the sink, which
+   *  proposes two other causes and is wrong about both. `#lastSent` is written
+   *  by `echo`, which runs for *every* send this window makes — including
+   *  Skein's own. So when a resume prompt's turn dies before reaching a model,
+   *  the thing the heal re-sends is the resume prompt. The first attempt is
+   *  already in the session file, because the CLI records a prompt when it takes
+   *  it rather than when it answers it, so the retry lands beside its own failed
+   *  copy and `--resume` hands the model both.
+   *
+   *  Confirmed against this machine's own transcripts, 2026-09-05: every doubled
+   *  app-composed prompt on it — six of them across four cards — follows a
+   *  failed turn at a delay sitting on `healDelayMs`'s ladder. The two the sink
+   *  item reports are 15.5s and 17.4s after a `529 Overloaded`, where
+   *  `healDelayMs("overloaded", 1)` is 15s plus up to 25% of jitter. The card
+   *  that reported it was reading its own input during the 2026-09-03 outage
+   *  (sink `ebc987f1`), where every one of its turns 529'd for twenty-two
+   *  minutes; the "doubled" nudges in the same report are `NUDGE_BUDGET`'s two
+   *  attempts, twelve seconds after each of two failures.
+   *
+   *  Nothing here is wrong and nothing here changed: a turn that never reached a
+   *  model has to be tried again or an interrupted card is never picked up at
+   *  all. What is missing is a *marker* — the person watching gets `healNote`,
+   *  and the agent gets the same twenty lines twice with nothing saying they are
+   *  one prompt tried twice. That is the same defect as `7585a431` one path
+   *  over, and it is in the sink rather than fixed here. */
   #heal(conv: Conversation) {
     const heal = conv.pendingHeal;
     if (!heal) return;
