@@ -681,12 +681,86 @@ which would put a press in front of the one case the feature is for. The refresh
 stamp is what decides whether a sign-in survives at all, so it is what decides
 whether one file is newer than another.
 
-### The thing to watch, which is not settled
+### Does a refresh token rotate on use? Read the client, not the wire
 
-Whether the OAuth deployment **rotates refresh tokens on use** is not known here
-and was not verifiable from this machine without spending a turn to find out. If
-it does, then the first refresh on one machine staling the copy on the other is
-expected behaviour, not a bug — and this feature is "carry a sign-in across once"
-rather than "keep two machines signed in for ever". Everything above is built so
-that the answer costs one file either way: a newer credential installs itself,
-and `sayLife` says how long what you just imported has left.
+**This is "carry a sign-in across once", and it should be documented as that.**
+The question was open here for a long time and was framed as needing an
+experiment — hash a refresh token, spend a turn on that account, hash again —
+which meant it stayed open, because the experiment costs somebody's money and
+invalidates the very credential it is asking about. It did not need one. Claude
+Code's own OAuth code answers it, and reading the bundle is the technique this
+repo already uses for questions about a service (`usage.md`'s `strings` on
+`claude.exe`, `ask.md`'s tiering probe).
+
+Read out of the 2.1.233 bundle, in the function that spends a refresh token:
+
+```js
+let a = { grant_type: "refresh_token", refresh_token: e, client_id: …, scope: … };
+let l = await ri.post(TOKEN_URL, a, …);
+let c = l.data, { access_token: u, refresh_token: d = e, expires_in: p } = c;
+```
+
+and in the function that saves the result:
+
+```js
+function lrd(e, t) { return {
+  accessToken: t.accessToken,
+  refreshToken: t.refreshToken,                                   // ← no fallback
+  expiresAt: t.expiresAt,
+  refreshTokenExpiresAt: t.refreshTokenExpiresAt ?? e?.refreshTokenExpiresAt,
+  subscriptionType: t.subscriptionType ?? e?.subscriptionType ?? null, … } }
+```
+
+Three things settle it, and the third is the one that is hard to argue with.
+
+- **The response is destructured for a new `refresh_token`, and it replaces the
+  stored one.** `refreshToken:` is the one field in `lrd` with no `?? e?.…`
+  fallback, where the stamps and the plan all have one. The `= e` default in the
+  destructure is the client tolerating a response that omits it, not the client
+  expecting it to be absent.
+- **A refresh token can be *dead*, and the client has a name for it.** On
+  `invalid_grant` the CLI clears `refreshToken`, `accessToken` and `expiresAt` on
+  disk and files `tengu_oauth_refresh_token_marked_dead_invalid_grant`; the
+  "signed out" reading is literally `refreshToken === ""`. `invalid_grant` on a
+  live token is what a *spent* one gets.
+- **The save is a compare-and-swap against the token that was posted.** It writes
+  only if the refresh token currently on disk is empty or still equal to the one
+  this process spent; otherwise it takes the branch instrumented as
+  `tengu_oauth_refresh_save_adopted_newer_write` /
+  `tengu_oauth_refresh_compromised_cas_adopted_sibling` and keeps what is there.
+  **Under a non-rotating deployment that branch is unreachable** — nothing could
+  ever make the value on disk differ from the one you hold — and so is the lock
+  around the refresh, which exists because spending the same token twice is
+  harmful. Anthropic built, named and instrumented an entire mechanism for "a
+  sibling refreshed and the token on disk is no longer the one I spent".
+
+What that proves exactly: **the client is built on the premise that a refresh
+token stops working because it was used.** It is not a direct observation of the
+server returning a rotated token on a given call, and it does not need to be —
+the export cannot rely on a deployment *not* rotating, and the client would treat
+the loser as signed out if it ever did. So the honest documentation is the
+conservative one, and it is now the one written above.
+
+**The stamps are not the evidence, and they nearly were.** `refreshTokenExpiresAt`
+falls back to the old value when the response carries no
+`refresh_token_expires_in`, so it can sit still across a refresh — measured
+2026-09-05 on this machine, where all three account stores refreshed within three
+seconds of each other (each `expiresAt` is exactly its file's mtime plus eight
+hours) and their `refreshTokenExpiresAt` were 12.0, 11.8 and 11.0 days out. Four
+different expiries from one instant reads as "not re-issued, therefore not
+rotated", and it is not that at all — it is one `??` in `lrd`. **A field that
+falls back is not a field that stayed put.**
+
+The empirical confirmation is still worth having and is now free rather than
+costly, because the shape of the experiment inverts: **hash every store and wait,
+rather than causing a refresh.** `bun tools/probe-rotation.ts` takes a reading and
+compares it against the last one — the accounts on a working machine refresh
+themselves roughly every eight hours, so the observation arrives on its own. A
+digest that changed while the store was rewritten is rotation, seen; one that held
+still across a rewrite is a refresh that did not rotate. It writes SHA-256 and
+never a value, which is the same rule `limits.rs::source` and `accounts.rs::Summary`
+keep.
+
+Everything above is built so that the answer costs one file either way: a newer
+credential installs itself, and `sayLife` says how long what you just imported has
+left.
