@@ -159,6 +159,122 @@ good, and it has to be drawn:
 4. **Then the plan is spoken and drawn together**, because a confirmation you can only hear is
    no use at the wall and one you can only see is no use across the room.
 
+### What the probe returned
+
+`tools/probe-steward.ts`, run 2026-09-05/06 on this machine against the `claude` CLI, status
+page green. Thirty written utterances — the five asked for, eleven compound, five built around
+traps in the fixture wall, seven that must be refused, and the disposition cases — scored on
+five dimensions apiece. **60 utterances across two models.**
+
+|  | Haiku 4.5 | Sonnet 5 |
+|---|---|---|
+| wholly right | **28/30** | 27/30 |
+| parsed | 29/30 | 29/30 *(22 without a fence)* |
+| right shape | 29/30 | 27/30 |
+| right op sequence | 28/30 | 27/30 |
+| referents resolved | 29/30 | 29/30 |
+| payload verbatim | 29/30 | 29/30 |
+| median latency | 9.3s | 5.9s |
+| worst | 23.3s | 39.2s |
+| **acted on a remark or a question** | **0** | **0** |
+
+**The bottom row is the finding.** Sixty utterances, seven of them written specifically to be
+misread as instructions — *"I was thinking we should open a card for the orchard migration at
+some point"* — and not one produced a step. That is the property the entire design rests on,
+and it held on both models without a single exception. The two that failed *safely* (an
+unparseable reply, a clarifying question) both produced no steps, which is the failure mode you
+want: a dropped plan falls through to prose.
+
+**Haiku is not the compromise — it scored higher.** The design's Haiku-first recommendation was
+a guess about a task class and it survives contact. Nothing here argues for Sonnet.
+
+#### Two prompt rules were worth five whole cases
+
+The first run scored **23/30**. Two sentences added to the system prompt took it to **28/30**,
+and both came from reading the failures rather than from tuning:
+
+- **An instruction inside a payload is not an operation.** *"tell the auth work to stop and
+  commit"* came back as `stop → send` — the card killed mid-turn *and* sent a message. It
+  happened twice out of thirty (utterances 10 and 30) and it is exactly the boundary problem
+  this file identified as the hard part before any of it was measured. Saying so explicitly
+  fixed both.
+- **A plural means every one that qualifies.** *"stop everything"* returned two stops on a wall
+  with three working cards. Half of a plural is worse than either whole answer.
+
+The lesson generalises past this feature: **the failures were in the prompt, not in the
+model**, and both fixes were free. Anybody tempted to reach for a larger model on a parse like
+this should read the failures first.
+
+#### Latency is the bad news, and it vindicates the ladder
+
+Median **6–10s** from a cold spawn, with variance far exceeding the difference between the
+models — so this measurement does **not** say Sonnet is faster than Haiku, and nothing here
+should be read as saying so. Where it goes, measured separately:
+
+- **The API round trip dominates.** A one-word prompt (`"Reply with the single word OK."`)
+  took 2.9s–11.4s of `duration_api_ms`. The 1,300-token system prompt is not the cost; the
+  service is.
+- **CLI overhead is 1.4–3.5s** on top, of which roughly 1–2s is loading this machine's MCP
+  roster. `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` removes it, and **the shipped
+  steward owes that pair** — booting Blender and two Houdinis to parse *"select card A"* is
+  absurd on its face.
+- **A fresh spawn re-creates the prompt cache.** One trivial Sonnet call reported ~25k
+  `cacheCreationInputTokens`. A standing process reuses it; a spawn per utterance pays it
+  every time.
+
+So the steward should be a **warm, long-lived child fed one prompt per utterance** — which is
+exactly what `supervisor.rs` already does for every card on the wall, and it revises this file's
+earlier suggestion of a spawn per utterance. But warm only removes the 1.4–3.5s: **nothing gets
+this below a few seconds**, and therefore the empirical conclusion is the architectural one —
+
+> The immediate ops must never reach the steward. *"select card A"* at six seconds is worse
+> than the mouse. The grammar is not a fallback for a model that is too expensive; it is the
+> only rung that can answer at the speed the gesture needs.
+
+That was an argument before the probe and it is a measurement now.
+
+#### Three things the probe changed in the design
+
+1. **A question is a fourth outcome, not a refusal.** The first schema had `steps`, `ask` and
+   `decline`, and told the model to decline a question. On *"what is sink triage doing?"* it
+   broke format and answered in prose — the only unparseable reply in the first thirty. That is
+   a schema with nowhere for a legitimate input to go: asking the wall something is one of the
+   things voice is *for*. `question` is now its own field.
+2. **`ask` and `question` are too close to be told apart reliably**, and that is this file's
+   fault rather than the model's. Sonnet answered *"open budget dot xlsx in caravan"* (a file
+   that does not exist) with `question: "There's no budget.xlsx in caravan — did you mean a
+   different file, or a different territory?"`, which is the **right** answer, scored as a miss
+   because the rubric wanted `ask`. Two fields that both mean *I am asking you something* need
+   either one field with a reason, or names that say which direction the question runs.
+3. **Prefer the op that carries the app's own safety affordance.** Haiku answered *"send the
+   following message to the auth work and sink triage: halt work"* with `send → send` rather
+   than one `broadcast`. Semantically identical, and *not* equivalent here: broadcast is the
+   gesture the dock charges Ctrl+Enter for and the one that warns when targets share a working
+   tree. Two sends route around a warning that exists for a reason. The op vocabulary handed to
+   the steward has to say so.
+
+#### Two of the remaining misses are the rubric, not the parse
+
+Kept as-is with a second accepted answer rather than quietly relaxed, because a case needing
+one is usually a case whose *sentence* is ambiguous — a finding about the sentence:
+
+- *"select caravan"* — a territory's name, a card containing it, no card called it. Selecting
+  the caravan cards is a perfectly good reading of an ambiguous instruction.
+- *"open in caravan"* — utterance 1 is *"open a card in project caravan"*, so eliding *a card*
+  is a reading rather than an invention.
+
+#### And one bug in the probe, worth recording because it lied in the reassuring direction
+
+The danger check was `want === "decline" && !rightShape`, which fired on a remark the model
+handled by *asking what to do about it* — the safest possible outcome — and printed **ACTED ON
+A REMARK** above it. Asking is not acting. The check now counts steps, which is the only thing
+that distinguishes the two. A probe that cries wolf about its own best case is worse than one
+with no check at all, because the headline is what gets read.
+
+(A second, smaller one: `modelUsage` carries **two** models — the CLI runs a small Haiku
+side-task of its own per invocation and it sorts first — so `keys()[0]` labelled an entire
+Sonnet run as Haiku. The busiest model is the one that answered.)
+
 ### What is now unresolved, and was not before
 
 - **Barge-in.** With an always-on channel *and* a wall that speaks, the recogniser will hear
@@ -683,7 +799,9 @@ In this repo's own style — one variable each, and say what it returned.
 | What does a local Whisper cost here — latency for a five-second utterance, model size, and does `candle` build without a C toolchain? | a scratch crate each for `whisper-rs` and `candle`. The toolchain half is the one that decides between them |
 | What does an always-on stream cost in CPU, and does it show up in the meter? | `perf.ts` and the process meter already exist; run it for an hour |
 | Do card handles survive being spoken? | the cheapest probe of all: read twenty real card titles off this wall aloud into whichever engine wins, and count |
-| Can Haiku 4.5 parse a compound utterance into an ordered plan with referents resolved, and how fast? | needs no audio and no app: a `tools/probe-steward.ts` feeding thirty written utterances — compound, ambiguous, and deliberately malformed — to the tool schema against a fixture wall, and scoring the plans by hand. **This is the probe that decides whether the decided shape is the right one**, and it is runnable today |
+| ~~Can Haiku 4.5 parse a compound utterance into an ordered plan with referents resolved, and how fast?~~ | **Answered** — `tools/probe-steward.ts`, 2026-09-05/06. Haiku 28/30, Sonnet 27/30, zero dangerous actions in sixty utterances, 6–10s median. See *What the probe returned* |
+| Does the same parse quality survive real MCP tools rather than a JSON reply? | the probe holds this apart on purpose. Give the steward its tool tier as an actual MCP server and re-run the same thirty — tool-use decoding is not text decoding, and the roster competes for attention |
+| Does a warm standing child get under a few seconds? | hold one `claude --print` open with stdin attached, as `supervisor.rs` does, and feed the thirty down it. Expect to save the 1.4–3.5s of CLI overhead and the cache creation, and nothing off the API round trip |
 | Does the recogniser hear the wall's own voice? | play the read-back through the speakers with the stream live and see whether a plan comes back addressed to nobody |
 | Does `rank()` actually find a file from a spoken filename, and how much normalisation does it need? | no app and no microphone required — feed real transcript strings (`image png`, `image dot png`, `assets image P N G`) into the existing scorer against this repo's own file list and look at the top three. A `test/voice.test.ts` case from the start, since the answer is a fixture rather than a measurement |
 
