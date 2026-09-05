@@ -544,11 +544,12 @@ export class Portage {
  *  faces that know nothing of each other belongs somewhere both can reach,
  *  rather than threaded through the wiring root as a prop for one chip.
  *
- *  The panel is half-way here: it presses this `pick` and reads these notes,
- *  and still takes its *list* from an ask of its own in `App.svelte`, which is
- *  the same command over the same roots. The two cannot disagree about
- *  anything, and collapsing them is a deletion in that file rather than work
- *  here.
+ *  And a singleton rather than something `App.svelte` holds and hands down,
+ *  which is the sharper half of the same argument: that file is the wiring root
+ *  and what belongs in it is what genuinely spans the window. This is a
+ *  question about a *disk*, and neither of the two things that want the answer
+ *  is the window. It was held there and read by the panel alone; the copy that
+ *  is not the singleton is the one that rots, so there is one.
  *
  *  Still on no clock. A drive appearing is not something this app has to notice
  *  within a second, and a poll over `n` filesystem stats — one of which may be

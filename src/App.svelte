@@ -781,43 +781,15 @@
      what a layout is and what it deliberately leaves behind. */
   const portage = new Portage({ skein, board, widgets, ambience, ink });
   let showCarry = $state(false);
-  /** Territory roots that are not directories on this machine. Asked rather than
-   *  derived, because it is a question about a disk.
-   *
-   *  Asked at three moments and on no clock: when the panel opens, after an
-   *  import, and after a territory is rooted. A drive appearing is not something
-   *  this app has to notice within a second, and a poll over `n` filesystem
-   *  stats — one of which may be a share that has to time out — is exactly the
-   *  fourth exception CLAUDE.md says has to earn its place. This does not. */
-  let unrooted = $state<string[]>([]);
-
-  async function askRoots() {
-    try {
-      unrooted = await invoke<string[]>("missing_roots", {
-        paths: skein.projects.map((p) => p.root_path),
-      });
-    } catch {
-      /* A territory wrongly drawn as rooted is the harmless direction: the
-         actions on it fail the way they already do for a folder that has gone. */
-      unrooted = [];
-    }
-  }
-
-  async function openCarry() {
-    showCarry = !showCarry;
-    if (showCarry) await askRoots();
-  }
-
-  /* Re-asked while the panel is up and never otherwise — the same attach/detach
-     bargain the usage widgets strike with `Ledger`. An import adds territories
-     and rooting one changes a path, so the list of roots is the trigger for
-     both; with the panel shut, nothing is asking and nothing is read. */
-  const rootSig = $derived(skein.projects.map((p) => p.root_path).join("|"));
-  $effect(() => {
-    void rootSig;
-    if (!showCarry) return;
-    void askRoots();
-  });
+  /* Which territories point nowhere is **not** held here, and that is worth a
+     line because it was, until the wall started drawing it. This file is the
+     wiring root: what belongs here is what genuinely spans the window. "Is that
+     folder on this machine" is a question about a *disk*, and the two things
+     that want the answer — the layout panel's list and every territory's own
+     row — are neither of them the window. `adrift` in `portage.svelte.ts` owns
+     it, asks it off the set of roots changing, and both faces read the one
+     answer. A copy here was a second caller of one question, and the copy that
+     is not the singleton is the one that rots. */
 
   async function openImport(force = false) {
     if (showImport && !force) {
@@ -2702,7 +2674,7 @@
         label: "layout",
         title: "Carry this wall off as a file, or bring one in — and root a territory whose folder is not here",
         on: showCarry,
-        press: () => void openCarry(),
+        press: () => (showCarry = !showCarry),
       },
     ] as { key: string; label: string; title?: string; on?: boolean; adopt?: boolean; press: () => void }[],
   );
@@ -2913,7 +2885,6 @@
     <Carry
       carry={portage}
       projects={skein.projects}
-      {unrooted}
       onclose={() => (showCarry = false)}
     />
   {/if}

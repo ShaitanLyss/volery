@@ -220,6 +220,15 @@ boundary in **amber** and offers one chip at its foot: `points nowhere — pick 
   always up. A singleton is where both can reach it — the alternative was threading a panel
   subsystem through the wiring root as a prop for one chip. `ink`, `waterfall` and `releases`
   are the same shape.
+
+  **And it is not `App.svelte`'s to hold**, which is the argument that should stop a third
+  asker appearing. It briefly was one: the panel's list came from an `unrooted` state and an
+  `askRoots` up there, which was right while the panel was the only reader and became a
+  second caller of one question the moment the wall started drawing it. `App.svelte` is the
+  wiring root and what belongs in it is what genuinely spans the window — this is a question
+  about a *disk*, and neither of the two things that want the answer is the window. Two
+  callers of one question cannot disagree today and the one that is not the singleton is the
+  one that rots.
 - **Still on no clock.** What asks is the *set of roots* changing, keyed off `projects` and
   not `territories`, since a drag rewrites every territory's position sixty times a second
   and none of that can move a folder. Every way a territory arrives, is forgotten, or is
@@ -227,8 +236,3 @@ boundary in **amber** and offers one chip at its foot: `points nowhere — pick 
 - **A fault reaches the wall's fault bar as well as the panel's own.** The gesture is
   reachable from two places now and only one of them has somewhere of its own to draw one.
   The panel keeps a copy rather than deferring: its scrim covers the header.
-
-One residue, deliberately left: `App.svelte` still asks `missing_roots` itself to feed the
-panel's list. It is the same command over the same roots, so the two cannot disagree about
-anything; collapsing it onto `adrift.missing` is a deletion there and the `unrooted` prop
-here with it.

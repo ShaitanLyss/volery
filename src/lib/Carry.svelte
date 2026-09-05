@@ -31,27 +31,19 @@
   let {
     carry,
     projects,
-    unrooted,
     onclose,
   }: {
     carry: Portage;
     projects: Project[];
-    /** Root paths that are not directories on this machine, as
-     *  `portage.rs::missing_roots` last answered.
-     *
-     *  Asked by `App.svelte` while this panel is open. `adrift.missing` is the
-     *  same question asked continuously, for the wall — the two agree, since
-     *  both are that one command over the same roots, and the panel's is the
-     *  narrower one. Collapsing them onto the singleton is a deletion in
-     *  `App.svelte` and this prop with it. */
-    unrooted: string[];
     onclose: () => void;
   } = $props();
 
-  /* Named for the section rather than for the class: `adrift` is the singleton
-     imported above, which owns the gesture. The list itself is still fed by the
-     `unrooted` this panel is handed — see the note on that prop. */
-  const nowhere = $derived(projects.filter((p) => unrooted.includes(p.root_path)));
+  /* Which roots are not directories on this machine is `adrift`'s to know — the
+     panel takes no prop for it and asks nothing itself. It used to be handed
+     one, asked by `App.svelte` while this panel was open, and that stopped
+     being the only reader the moment the wall began drawing it on each
+     territory's row. Named `nowhere` because `adrift` is the class. */
+  const nowhere = $derived(projects.filter((p) => adrift.has(p.root_path)));
   const waiting = $derived(carry.pending ? sayTally(carry.pending) : null);
 </script>
 
