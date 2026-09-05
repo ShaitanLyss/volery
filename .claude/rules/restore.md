@@ -174,6 +174,45 @@ until somebody noticed.
   prompt from this queue is a *second* agent told to pick up the same cut-off turn, in the same
   working tree, with `--dangerously-skip-permissions`. `#spawn` says which of the two happened
   (`spawned` / `already` / `failed`) and `rouse` prompts on the first alone.
+- **And it does not send what the resumed session is already holding.** A rouse prompt goes
+  down the child's stdin like anything you type, so the CLI records it as an ordinary `user`
+  message — and `--resume` puts the whole transcript back in front of the model. A card sent
+  one that died before it could answer therefore comes back *already holding it*, and the next
+  rouse composed a second, byte-identical copy and sent it beside the first. Two real sends
+  against a real allowance, for an agent that then reads the same twenty lines twice with
+  nothing anywhere to say why. `unansweredRousePrompt` (pure, in `rousing.ts`) is the guard,
+  and **agent speech is what settles it**: a prompt the card answered is history, and a later
+  crash is a new turn worth a new prompt, so the scan runs from the end and stops at the first
+  `text` or `tool` line. Anything else in between — your own words, a note, a message from
+  another card — is a prompt queued *behind* an unanswered one, which does not make it
+  answered. Skipping is said out loud (`ALREADY_ROUSED_NOTE`, shaped like `RESUME_CAP` because
+  it is the same event with the send taken out), for the reason every other thing Skein does
+  on its own behalf is said: a card the queue left alone on purpose must not read as one it
+  forgot. `loadHistory` shares its in-flight read so this can be asked at all — `#fillHistory`
+  is running beside the queue, and what is being asked of that file is not the scrollback but
+  whether to spend money.
+- **But that guard is not why anyone went looking, and the thing that was is `#heal`.** Sink
+  `01e00f30` reported `resumePrompt` arriving twice in one turn and proposed two causes: the
+  rouse queue firing twice, or `--resume` restoring a pre-crash copy. Both are wrong, and the
+  second is only the *shape* of the truth. `Conversation.echo` writes `#lastSent` for every
+  send this window makes, **skein's own included** — so when a resume prompt's turn dies before
+  reaching a model, the thing `#heal` re-sends is the resume prompt. The failed attempt is
+  already in the session file, because the CLI records a prompt when it *takes* it rather than
+  when it answers it, so the retry lands beside its own copy.
+
+  Settled 2026-09-05 from this machine's transcripts rather than from the experiment the item
+  asks for, which would have meant killing a running wall: every doubled app-composed prompt on
+  it — six, across four cards — follows a failed turn at a delay sitting on `healDelayMs`'s
+  ladder, the two in the report 15.5s and 17.4s after a `529 Overloaded` against a base of 15s
+  plus up to 25% of jitter. The reporting card was auditing its own input during the 2026-09-03
+  outage, where every one of its turns 529'd for twenty-two minutes; the "doubled" nudges beside
+  them are `NUDGE_BUDGET`'s two attempts, twelve seconds after each of two failures.
+
+  **Nothing about the heal changed and nothing should**: a turn that never reached a model has
+  to be tried again, or an interrupted card is never picked up at all. Worth carrying past this
+  file, though, because it is a general trap in anything that replays: **a retry of a prompt
+  that was recorded on receipt is a second copy in the context, not a second attempt at the
+  first.** The arithmetic and the timings are on `#heal` in `skein.svelte.ts`.
 - **And two callers share one spawn rather than racing over it.** `wake`'s guard was
   `conv.dormant`, read before an `await` and cleared after it, with a Rust-side spawn that
   takes seconds — long enough for the queue, a click and a send to all be inside the window.
@@ -187,7 +226,12 @@ until somebody noticed.
   round. This is the `Listeners` hazard in a shape `Listeners` cannot fix: editing a
   front-end file constructs a second Skein while the first one's queue is still walking the
   wall, and left running it would spawn against ids the live Skein is also spawning against
-  and send a second copy of every resume prompt.
+  and send a second copy of every resume prompt. **The flag lands before the replacement
+  exists**, which is the half it is worth nothing without and was checked rather than assumed
+  while narrowing `01e00f30`: Svelte's HMR wrapper calls `destroy_effect` on the outgoing
+  branch *before* it constructs the incoming one, and `onDestroy` is a teardown that runs
+  synchronously inside that — so `detach()` has set the flag before the new component's script
+  body reaches `new Skein`, let alone before the effect that calls `load`.
 - **A card you set aside is left where you put it**, interrupted or not — see below. That is
   the strongest of the things the flag means: rousing spawns a process per dormant card and
   prompts the ones that lost a turn, and a card put by for later is precisely one you have
