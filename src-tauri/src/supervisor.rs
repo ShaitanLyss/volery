@@ -1153,77 +1153,98 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
     }
 }
 
-/// Put a message into a card's stdin without it being something you typed.
+/// One user turn, as the CLI's stdin wants it. The wire format is the same
+/// envelope the Agent SDK uses.
 ///
-/// `send_prompt` minus the echo, and the difference is the whole point: the
-/// pending/claimed machinery in `Conversation.echo` exists to say whether the
-/// process has got *your* draft yet, and there is no draft here. What arrives
-/// back is a plain `user` replay with nothing waiting to claim it, which the
-/// front end already handles — it is the "a prompt this window did not send"
-/// path, and `relay::RELAY_MARK` is what tells it whose.
+/// Pure and separate from the write for one reason: **nothing asserted what a
+/// prompt actually becomes.** The write needs a live child, so the two functions
+/// that did this had no test between them — which is what made them dangerous to
+/// tidy and is why they stayed byte-identical (sink `6e62c9ea`). A `String` is
+/// something a test can read.
+fn user_envelope(text: &str) -> String {
+    serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
+    })
+    .to_string()
+}
+
+/// Write one prompt to a child's stdin and flush it.
+///
+/// `impl Write` rather than `&mut ChildStdin` so a `Vec<u8>` is a sufficient
+/// child: the envelope, the newline and the flush are then all assertable
+/// without spawning anything. `writeln!` is what puts the newline on, and NDJSON
+/// is a line format — a prompt written without it is a prompt the CLI never
+/// finishes reading.
+fn write_prompt(w: &mut impl Write, text: &str) -> Result<(), String> {
+    writeln!(w, "{}", user_envelope(text)).map_err(|e| format!("write to claude stdin: {e}"))?;
+    w.flush().map_err(|e| format!("flush claude stdin: {e}"))
+}
+
+/// Put one user turn into a card's stdin.
+///
+/// **The one write.** `send_prompt` is this function on another thread, and the
+/// two were byte-identical bodies for months — same envelope, same flush, same
+/// turn mark, same lock ordering, even the same comment about it by reference.
+/// One of them was going to grow a fix the other did not (sink `6e62c9ea`).
+///
+/// It is `send_prompt` *minus the echo*, and that difference is a property of
+/// the caller rather than of this code: the pending/claimed machinery in
+/// `Conversation.echo` exists to say whether the process has got *your* draft
+/// yet, and a relayed message has no draft. What arrives back is a plain `user`
+/// replay with nothing waiting to claim it, which the front end already handles
+/// — the "a prompt this window did not send" path, with `relay::RELAY_MARK`
+/// telling it whose.
 ///
 /// Errs when the card has no process. That is not a failure: it is the answer
 /// `do_send` turns into a queued row, so a dormant card is written to rather
 /// than woken.
+///
+/// **The two not-found messages were one message all along.** This said "that
+/// card is dormant" and `send_prompt` said "no open conversation {id}", and the
+/// argument for keeping both was that they answer two audiences. They do not:
+/// every caller of this one — `relay.rs` twice, `board.rs`, `later.rs`,
+/// `spawn.rs` — takes `.is_ok()` and throws the string away, writing its own
+/// receipt from the boolean. So the second message was never read by anybody,
+/// and the surviving one goes where it always went, the fault bar.
 pub fn deliver(app: &AppHandle, id: &str, text: &str) -> Result<(), String> {
     {
         let sup = app.state::<Supervisor>();
         let mut map = sup.0.lock().unwrap();
-        let conv = map.get_mut(id).ok_or("that card is dormant")?;
-        let msg = serde_json::json!({
-            "type": "user",
-            "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
-        });
-        writeln!(conv.stdin, "{msg}").map_err(|e| format!("write to claude stdin: {e}"))?;
-        conv.stdin.flush().map_err(|e| format!("flush claude stdin: {e}"))?;
+        let conv = map
+            .get_mut(id)
+            .ok_or_else(|| format!("no open conversation {id}"))?;
+        write_prompt(&mut conv.stdin, text)?;
+        /* Marked here rather than waiting for the echo to come back: a prompt
+           that is on the wire and unanswered when the app closes is exactly a
+           lost turn, and the window between the write and the first event is
+           where a quit that feels instantaneous lands. */
         conv.turn.store(true, Ordering::Relaxed);
     }
-    /* Outside the map's lock, per the note in `send_prompt`. */
+    /* Outside the map's lock, which is the only ordering rule the two mutexes
+       have: nothing takes the store's lock and then the supervisor's, so nothing
+       here can be half of a cycle. */
     persist_turn(app, id, true);
     Ok(())
 }
 
-/// Send one user turn. The wire format is the same envelope the Agent SDK uses.
+/// Send one user turn from the front end — `deliver`, off the main thread.
 ///
-/// `async`, through `off_main`, because a pipe write is not the instant thing it
-/// looks like. The child's stdin buffer is finite — 64KB by default on Windows
-/// — and a `claude` that has stopped draining it makes this park *holding the
-/// supervisor's mutex*, on the main thread. That is not a slow send: it is every
-/// card on the wall unpainted, and `interrupt_conversation` unable to take the
-/// lock, so the one gesture that could have unwedged it is the one that cannot
-/// get through. See `crate::off_main`.
+/// **The `off_main` is the whole of what this adds, and it is not optional.** A
+/// pipe write is not the instant thing it looks like: the child's stdin buffer
+/// is finite — 64KB by default on Windows — and a `claude` that has stopped
+/// draining it makes the write park *holding the supervisor's mutex*, on the
+/// main thread. That is not a slow send: it is every card on the wall unpainted,
+/// and `interrupt_conversation` unable to take the lock, so the one gesture that
+/// could have unwedged it is the one that cannot get through. See
+/// `crate::off_main`.
+///
+/// `deliver` needs none of it because `ask::start` gives every MCP request its
+/// own thread, so nothing it parks is anything anyone is waiting to be painted
+/// by.
 #[tauri::command]
 pub async fn send_prompt(app: AppHandle, id: String, text: String) -> Result<(), String> {
-    crate::off_main(move || {
-        {
-            let sup = app.state::<Supervisor>();
-            let mut map = sup.0.lock().unwrap();
-            let conv = map
-                .get_mut(&id)
-                .ok_or_else(|| format!("no open conversation {id}"))?;
-
-            let msg = serde_json::json!({
-                "type": "user",
-                "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
-            });
-
-            writeln!(conv.stdin, "{msg}").map_err(|e| format!("write to claude stdin: {e}"))?;
-            conv.stdin
-                .flush()
-                .map_err(|e| format!("flush claude stdin: {e}"))?;
-            /* Marked here rather than waiting for the echo to come back: a prompt
-               that is on the wire and unanswered when the app closes is exactly a
-               lost turn, and the window between the write and the first event is
-               where a quit that feels instantaneous lands. */
-            conv.turn.store(true, Ordering::Relaxed);
-        }
-        /* Outside the map's lock, which is the only ordering rule the two mutexes
-           have: nothing takes the store's lock and then the supervisor's, so nothing
-           here can be half of a cycle. */
-        persist_turn(&app, &id, true);
-        Ok(())
-    })
-    .await?
+    crate::off_main(move || deliver(&app, &id, &text)).await?
 }
 
 /// Stop the turn a conversation is in the middle of, without ending it.
@@ -2239,6 +2260,116 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **What a prompt becomes on the wire, asserted for the first time.**
+    ///
+    /// Nothing in the Rust suite had ever read this, because the only two
+    /// functions that built it wrote straight into a `ChildStdin` and a test
+    /// would have had to spawn a `claude` to see anything. That is the whole
+    /// reason `send_prompt` and `deliver` sat as byte-identical bodies rather
+    /// than one function: tidying an untested hot path trades a real risk for a
+    /// cosmetic gain (sink `6e62c9ea`). So the envelope came out first.
+    ///
+    /// Asserted as parsed JSON rather than as a string, because the key order
+    /// `serde_json` emits is not a promise anybody made and pinning it would be
+    /// a test that fails on an upgrade for no reason. What is pinned is the
+    /// shape: the four fields, and `content` as an array of one text block,
+    /// which is the envelope the Agent SDK sends and the one this has always
+    /// written. Whether the CLI would also take a bare string there is
+    /// unmeasured, and this deliberately does not find out — a second accepted
+    /// shape is a second shape to keep working.
+    #[test]
+    fn a_prompt_becomes_one_user_message_with_one_text_block() {
+        let env = user_envelope("do the thing");
+        let v: serde_json::Value = serde_json::from_str(&env).expect("valid JSON");
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        assert_eq!(v["message"]["content"].as_array().expect("an array").len(), 1);
+        assert_eq!(v["message"]["content"][0]["type"], "text");
+        assert_eq!(v["message"]["content"][0]["text"], "do the thing");
+    }
+
+    /// NDJSON is a line format, and the line is the half a reader can be left
+    /// waiting on.
+    ///
+    /// A prompt written without its newline is one the CLI never finishes
+    /// reading — no error anywhere, just a card that does not answer — and the
+    /// flush is the same failure one buffer out. Both are one character of edit
+    /// away from gone, and neither shows up in anything else here.
+    #[test]
+    fn a_prompt_is_written_as_one_flushed_line() {
+        struct Counting {
+            buf: Vec<u8>,
+            flushes: usize,
+        }
+        impl std::io::Write for Counting {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.buf.extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
+        }
+
+        let mut w = Counting { buf: Vec::new(), flushes: 0 };
+        write_prompt(&mut w, "first").expect("wrote");
+        write_prompt(&mut w, "second").expect("wrote");
+
+        let text = String::from_utf8(w.buf).expect("utf-8");
+        assert!(text.ends_with('\n'), "no trailing newline: {text:?}");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "two prompts are two lines: {text:?}");
+        for line in &lines {
+            serde_json::from_str::<serde_json::Value>(line).expect("each line is one object");
+        }
+        assert_eq!(w.flushes, 2, "every prompt is flushed as it is written");
+    }
+
+    /// A newline in the prompt must not become a newline on the wire.
+    ///
+    /// The one way an envelope built by hand goes wrong, and the reason this is
+    /// `serde_json` rather than `format!`: a pasted multi-line prompt would
+    /// otherwise split into several lines of NDJSON, of which the first is
+    /// invalid JSON and the rest are not messages at all.
+    #[test]
+    fn a_multi_line_prompt_is_still_one_line() {
+        let text = "first\nsecond\n\n\"quoted\" and a \\ backslash";
+        let mut w: Vec<u8> = Vec::new();
+        write_prompt(&mut w, text).expect("wrote");
+        let out = String::from_utf8(w).expect("utf-8");
+        assert_eq!(out.lines().count(), 1, "{out:?}");
+        let v: serde_json::Value = serde_json::from_str(out.trim_end()).expect("valid JSON");
+        assert_eq!(v["message"]["content"][0]["text"], text);
+    }
+
+    /// A write that fails is reported rather than swallowed, and says which half
+    /// of it went wrong.
+    ///
+    /// The pipe is gone the instant a card's process does, and `deliver`'s
+    /// callers turn this `Err` into "queued, it is dormant" — so an error
+    /// arriving as `Ok` here is a message the wall believes it delivered into a
+    /// closed pipe.
+    #[test]
+    fn a_broken_pipe_is_an_error_and_not_a_silent_loss() {
+        struct Broken(bool);
+        impl std::io::Write for Broken {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "gone"));
+                }
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("no"))
+            }
+        }
+        let e = write_prompt(&mut Broken(true), "x").expect_err("the write failed");
+        assert!(e.contains("write to claude stdin"), "{e}");
+        let e = write_prompt(&mut Broken(false), "x").expect_err("the flush failed");
+        assert!(e.contains("flush claude stdin"), "{e}");
     }
 
     /// Every source on this server that composes prose an agent reads, paired
@@ -3345,5 +3476,3 @@ impl Supervisor {
         lost
     }
 }
-
-
