@@ -233,6 +233,14 @@ describe("jobsPrompt", () => {
     expect(isResumePrompt(text)).toBe(false);
   });
 
+  test("it says who is speaking, like the other three app-composed prompts", () => {
+    /* The invariant `7585a431` was decided against: every prompt the app sends
+       on its own behalf names skein, so a card can tell it from something you
+       typed. Asserted here because this was the only one of the four that never
+       said so anywhere. */
+    expect(jobsPrompt([lost("a")], 0)).toContain("skein");
+  });
+
   test("it asks for a tail rather than the whole log", () => {
     /* A subagent's output file is its entire transcript, and a build log is
        megabytes. The agent is trusted to choose, but the default is named. */

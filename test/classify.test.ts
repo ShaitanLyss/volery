@@ -1608,6 +1608,16 @@ describe("a job that reported in and woke nobody", () => {
     expect(NUDGE_TEXT).toBe(NUDGE_TEXT.toLowerCase());
   });
 
+  test("it says on its face that skein is speaking, not you", () => {
+    /* The whole of `7585a431`. This arrives down the same pipe your words do
+       and there is no field marking it as the app's, so the sentence has to do
+       it — a card that reads a nudge as yours answers *you*, apologises to you,
+       and takes it for a standing instruction about how you want to be worked
+       with. `resumePrompt` and `jobsPrompt` always named skein in their first
+       clause; these two did not. */
+    expect(NUDGE_TEXT.startsWith("skein")).toBe(true);
+  });
+
   test("the card's own account counts them, and says it in words", () => {
     expect(unwokenNote(1)).toContain("a job");
     expect(unwokenNote(3)).toContain("3 jobs");
@@ -1650,6 +1660,21 @@ describe("a prompt the card never picked up", () => {
        agent told flatly that a message exists would go looking for one that
        does not. */
     expect(NUDGE_PROMPT_TEXT).toContain("if ");
+  });
+
+  test("it says on its face that skein is speaking, and owns no message", () => {
+    /* The worse half of `7585a431`: this read "if a message of **mine** is
+       queued behind this one", where the "mine" was skein's — so the app asked
+       in your voice about a message it had not sent, and was answered as though
+       you had. Both halves are asserted: skein is named, and skein claims
+       nothing in the queue as its own. */
+    expect(NUDGE_PROMPT_TEXT.startsWith("skein")).toBe(true);
+    expect(NUDGE_PROMPT_TEXT).not.toContain("of mine");
+  });
+
+  test("both nudges are one voice, so a card that has read one knows the other", () => {
+    const lead = (s: string) => s.split(" ").slice(0, 2).join(" ");
+    expect(lead(NUDGE_PROMPT_TEXT)).toBe(lead(NUDGE_TEXT));
   });
 
   test("the two silences are worded apart", () => {

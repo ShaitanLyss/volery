@@ -1124,8 +1124,15 @@ export const NUDGE_BUDGET = 2;
  *  it, and in the case this exists for it names tasks a dead process was
  *  holding, which Skein knows nothing else about. So anything more specific
  *  would be Skein paraphrasing work it never saw, over a report the agent can
- *  already read. */
-export const NUDGE_TEXT = "a background job you started has reported in.";
+ *  already read.
+ *
+ *  It opens by naming skein, which is not decoration: this is the app's own
+ *  bookkeeping arriving down the same pipe your words do, and a card that reads
+ *  it as yours answers *you* — apologises to you, and takes the sentence for a
+ *  standing instruction about how you want to be worked with. `resumePrompt`
+ *  and `jobsPrompt` have always named skein in their first clause; these two
+ *  are the same voice, shortened to fit a line. */
+export const NUDGE_TEXT = "skein here — a background job you started has reported in.";
 
 /** What is waiting in the CLI's queue, unread. Two things reach the same
  *  state — *told, and not stirring* — from opposite ends, and they are worded
@@ -1142,9 +1149,16 @@ export type NudgeKind = "job" | "prompt";
  *  own words. So this says only where to look — anything else would be Skein
  *  paraphrasing a prompt the agent is about to read for itself. Hedged, because
  *  the queue may have drained between the check and the send, and an agent told
- *  flatly that a message exists would go looking for one that does not. */
+ *  flatly that a message exists would go looking for one that does not.
+ *
+ *  Named the same way `NUDGE_TEXT` is, and this one had the worse version of
+ *  that fault: it read "if a message of **mine** is queued behind this one",
+ *  where the "mine" was skein's and every card read it as yours. So the app
+ *  asked in your voice about a message it had not sent, and was answered as
+ *  though you had. Whose the queued message is has come out with the "mine" —
+ *  it was never skein's, and the card is about to read it either way. */
 export const NUDGE_PROMPT_TEXT =
-  "if a message of mine is queued behind this one, answer that instead.";
+  "skein here — if a message is queued behind this one, answer that instead.";
 
 /** The card's own account of having been told and not stirred. */
 export function unwokenNote(count: number): string {
