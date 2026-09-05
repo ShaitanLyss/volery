@@ -85,6 +85,21 @@ export type Project = {
    *  wall tells all of them. `""` is the ordinary case. See `guidance.ts`, and
    *  `src-tauri/src/guidance.rs` for why it reaches the agent the way it does. */
   instructions: string;
+  /** Whether cards in this territory are refused `Edit`, `Write` and
+   *  `NotebookEdit`. The enforcing half of `instructions`, set in the same
+   *  panel — the box above it is prose in a system prompt, read and followed
+   *  and never binding, which is the whole reason this exists.
+   *
+   *  Carried in the snapshot for `instructions`' reason: the panel marks every
+   *  territory that has one, and a lock nobody can see from the wall is one
+   *  people trip over rather than rely on.
+   *
+   *  Not defaulted on the way in, and that is deliberate rather than an
+   *  oversight about older snapshots. The Rust field is `#[serde(default)]`, so
+   *  any build carrying the struct sends it — and a build that does not carry
+   *  it has no deny layer either, which makes the `undefined` this would read
+   *  an accurate account of that binary rather than a value to paper over. */
+  readOnly: boolean;
 };
 
 /** A conversation Claude Code recorded, as read off disk by `sessions.rs`.
@@ -2689,6 +2704,34 @@ export class Skein {
       });
       this.projects = this.projects.map((p) =>
         p.id === id ? { ...p, instructions: stored } : p,
+      );
+    } catch (err) {
+      this.fault = String(err);
+      throw err;
+    }
+  }
+
+  /** Lock or unlock a territory: whether its cards may edit the tree at all.
+   *
+   *  Answers what was stored, like `setProjectGuidance` above and for the same
+   *  reason — a switch that goes on showing its own optimism after a failed
+   *  write is one you stop believing. Same fault pairing too: the wall is left
+   *  alone and the error is rethrown, so the panel can put the switch back
+   *  where it was rather than drawing a lock nothing is enforcing.
+   *
+   *  **A card already running does not hear this.** The deny is in the
+   *  `--settings` layer its process was handed at spawn, so the flag decides
+   *  what the *next* one gets — a wake, a clear, a restart. `Guidance.svelte`
+   *  says so on the switch, which is where somebody would otherwise learn it by
+   *  watching a locked card carry on editing. */
+  async setProjectReadOnly(id: string, locked: boolean) {
+    try {
+      const stored = await invoke<boolean>("set_project_read_only", {
+        projectId: id,
+        locked,
+      });
+      this.projects = this.projects.map((p) =>
+        p.id === id ? { ...p, readOnly: stored } : p,
       );
     } catch (err) {
       this.fault = String(err);
