@@ -182,7 +182,7 @@ pub(crate) fn resolve<'a>(rows: &'a [RosterRow], want: &str) -> Result<&'a Roste
     match by_title.len() {
         1 => Ok(by_title[0]),
         0 => Err(format!(
-            "no card called {want:?} — call `list` for the handles"
+            "no card called {want:?} — call `mcp__skein__list` for the handles"
         )),
         _ => Err(format!(
             "{} cards are called {want:?}; name one by handle instead ({})",
@@ -214,14 +214,14 @@ pub fn envelope(from: &RosterRow, body: &str) -> String {
     let body = clip(
         body,
         MAX_BODY,
-        "Ask the card that sent this for the rest with `send` — it still holds what it \
-         wrote. Do not infer what was cut.",
+        "Ask the card that sent this for the rest with `mcp__skein__send` — it still \
+         holds what it wrote. Do not infer what was cut.",
     );
     format!(
         "{RELAY_MARK} from \"{name}\" ({}) in {} —\n\n{body}\n\n\
          (This came from another agent on the Skein wall, not from the user. \
-         Act on it if it bears on your work, reply with the `send` tool if it \
-         needs an answer, and say nothing back if it does not.)",
+         Act on it if it bears on your work, reply with the `mcp__skein__send` tool if \
+         it needs an answer, and say nothing back if it does not.)",
         handle_of(&from.id),
         from.project,
     )
@@ -253,13 +253,13 @@ pub fn board_envelope(from: Option<&RosterRow>, notice: &crate::store::Notice, p
          **{}**\n\n{}\n\n\
          (This is a standing notice on the Skein wall, not a message from the user, \
          and you are shown it once. Read it before going further with this file. Call \
-         `board` for the rest of what is up, and `send` if you need to agree something \
-         with whoever posted it.)",
+         `mcp__skein__board` for the rest of what is up, and `mcp__skein__send` if you \
+         need to agree something with whoever posted it.)",
         notice.subject.replace('"', "'"),
         clip(
             &notice.body,
             MAX_BODY,
-            "Read the whole notice with `board`.",
+            "Read the whole notice with `mcp__skein__board`.",
         ),
     )
 }
@@ -1044,9 +1044,9 @@ fn do_touched(app: &AppHandle, caller: &str, args: &Value) -> String {
     }
     format!(
         "{out}\nA WROTE by a card that is still on the wall is the one to stop for: tell \
-         the user, and `send` that card rather than editing over it. A closed card's write \
-         is history, and a read is not a clash. `board` says what anybody *intends*; this \
-         is only what has happened."
+         the user, and `mcp__skein__send` that card rather than editing over it. A closed \
+         card's write is history, and a read is not a clash. `mcp__skein__board` says what \
+         anybody *intends*; this is only what has happened."
     )
 }
 
@@ -1054,7 +1054,9 @@ fn do_touched(app: &AppHandle, caller: &str, args: &Value) -> String {
 
 fn do_recall(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Some(want) = args.get("card").and_then(Value::as_str) else {
-        return "name the card by its handle or its exact title — call `list` for them".into();
+        return "name the card by its handle or its exact title — call `mcp__skein__list` \
+                for them"
+            .into();
     };
     let Some(store) = app.try_state::<Store>() else {
         return "the store is unavailable".into();
@@ -1111,7 +1113,7 @@ fn do_recall(app: &AppHandle, caller: &str, args: &Value) -> String {
     format!(
         "The last {} thing{} {who} ({}) said, oldest first:\n\n{}\n\nThat is its own \
          account of what it has been doing, not a check on whether it did it. If you need \
-         something *from* it, `send`.",
+         something *from* it, `mcp__skein__send`.",
         said.len(),
         if said.len() == 1 { "" } else { "s" },
         handle_of(&row.id),
@@ -1223,8 +1225,9 @@ fn speeches_from(
         ring.push_back(clip(
             text,
             MAX_RECALL_CHARS,
-            "This is the card's own account, cut to fit. If the tail matters, `send` and \
-             ask it — do not report a conclusion drawn from a clipped report.",
+            "This is the card's own account, cut to fit. If the tail matters, \
+             `mcp__skein__send` and ask it — do not report a conclusion drawn from a \
+             clipped report.",
         ));
         while ring.len() > n {
             ring.pop_front();
@@ -1618,7 +1621,7 @@ mod tests {
         let e = envelope(&wall()[0], &long);
         assert!(e.contains("clipped by the wall"), "{e}");
         assert!(e.contains("500 of"), "the loss was not named: {e}");
-        assert!(e.contains("`send`"), "no way to ask for the rest: {e}");
+        assert!(e.contains("`mcp__skein__send`"), "no way to ask for the rest: {e}");
         assert!(e.matches('x').count() == MAX_BODY);
     }
 

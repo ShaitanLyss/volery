@@ -133,7 +133,8 @@ fn encode(s: &str) -> String {
 pub(crate) fn normalize_uri(input: &str) -> Result<(String, String), String> {
     let raw = input.trim();
     if raw.is_empty() {
-        return Err("no uri was given — `records` answers with the ones to use".into());
+        return Err("no uri was given — `mcp__skein__records` answers with the ones to use"
+            .into());
     }
 
     let (kind, id) = if let Some(rest) = raw.strip_prefix("spotify:") {
@@ -428,8 +429,8 @@ pub(crate) fn render_hits(query: &str, hits: &[Hit]) -> String {
         out.push('\n');
     }
     out.push_str(
-        "\nput one on with `put_on`, naming its uri. an album, playlist or artist \
-         plays as a whole; a track plays on its own.",
+        "\nput one on with `mcp__skein__put_on`, naming its uri. an album, playlist or \
+         artist plays as a whole; a track plays on its own.",
     );
     out
 }
@@ -474,7 +475,7 @@ pub(crate) fn refuse_while_playing(playing: bool, now: Option<&str>) -> Option<S
          not yours. this tool chooses music; it deliberately has no stop, pause, \
          skip or volume. if they asked you to change what is on, say what you \
          would put on and let them stop the current track — or ask them with \
-         `ask_user`. if the wall is quiet and you are seeing this, the track \
+         `mcp__skein__ask_user`. if the wall is quiet and you are seeing this, the track \
          finished a moment ago and it is worth trying once more."
     ))
 }
@@ -593,7 +594,8 @@ fn do_records(args: &Value) -> String {
 
 fn do_put_on(app: &AppHandle, args: &Value) -> String {
     let Some(raw) = args.get("uri").and_then(|u| u.as_str()) else {
-        return "say what to put on, in `uri` — `records` answers with the ones to use."
+        return "say what to put on, in `uri` — `mcp__skein__records` answers with the \
+                ones to use."
             .to_string();
     };
 

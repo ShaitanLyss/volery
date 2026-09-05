@@ -147,8 +147,8 @@ fn envelope(note: &str, waited: i64) -> String {
         "{WAKE_MARK} you asked to be woken about this {}, and it is now:\n\n{note}\n\n\
          (This is your own note to yourself, handed back by the wall — nobody else \
          wrote it and nobody is waiting on a reply. If the thing you were waiting for \
-         still has not happened, `wake_me` again rather than sleeping; if it has, carry \
-         on and say so.)",
+         still has not happened, `mcp__skein__wake_me` again rather than sleeping; if it \
+         has, carry on and say so.)",
         said(waited)
     )
 }

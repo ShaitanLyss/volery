@@ -343,8 +343,8 @@ fn do_pin(app: &AppHandle, caller: &str, args: &Value) -> String {
          anything already there. Say what it shows — an image on the wall with nothing said \
          about it is a thing the user has to work out. They can move, resize or take it \
          down like any other reference image.\n\n\
-         Its id is `{image_id}`. If you make a newer version of this picture, `repin` that \
-         id rather than pinning a second copy."
+         Its id is `{image_id}`. If you make a newer version of this picture, \
+         `mcp__skein__repin` that id rather than pinning a second copy."
     )
 }
 
@@ -369,12 +369,12 @@ fn theirs(app: &AppHandle, caller: &str, want: &str) -> Result<crate::store::Ref
     }
     match crate::store::image_row(&conn, want) {
         None => Err(format!(
-            "there is no image `{want}` on the wall. `pinned` lists the ones this card put \
-             up, with their ids."
+            "there is no image `{want}` on the wall. `mcp__skein__pinned` lists the ones \
+             this card put up, with their ids."
         )),
         Some(img) if img.pinned_by.as_deref() != Some(caller) => Err(format!(
             "`{want}` is on the wall but this card did not pin it, so it is not this card's \
-             to change. The wall is the user's; `pinned` lists what is yours."
+             to change. The wall is the user's; `mcp__skein__pinned` lists what is yours."
         )),
         Some(img) => Ok(img),
     }
@@ -382,7 +382,8 @@ fn theirs(app: &AppHandle, caller: &str, want: &str) -> Result<crate::store::Ref
 
 fn do_repin(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Some(want) = args.get("image").and_then(Value::as_str).map(str::trim) else {
-        return "no `image` was given, so nothing was changed. `pinned` lists the ids."
+        return "no `image` was given, so nothing was changed. `mcp__skein__pinned` lists \
+                the ids."
             .into();
     };
     let img = match theirs(app, caller, want) {
@@ -524,8 +525,8 @@ fn do_pinned(app: &AppHandle, caller: &str) -> String {
         ));
     }
     out.push_str(
-        "\n\nTo show a newer version of any of these, `repin` its id rather than pinning a \
-         second copy.",
+        "\n\nTo show a newer version of any of these, `mcp__skein__repin` its id rather \
+         than pinning a second copy.",
     );
     out
 }

@@ -472,8 +472,8 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
 
     if !mine.is_empty() {
         out.push_str(
-            "You are holding these — finish them with `done`, or put them back with \
-             `take … release: true` if you have stopped:\n\n",
+            "You are holding these — finish them with `mcp__skein__done`, or put them \
+             back with `mcp__skein__take … release: true` if you have stopped:\n\n",
         );
         for i in &mine {
             out.push_str(&render(i, now, caller));
@@ -672,7 +672,7 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
                 format!(
                     "dropped into the {} sink as [{}]: {title:?}. It will outlive this \
                      conversation. Nobody is assigned to it — if you are about to deal \
-                     with it yourself, `take` it first.{cuts}",
+                     with it yourself, `mcp__skein__take` it first.{cuts}",
                     if wall { "wall-wide" } else { "project" },
                     p.id.chars().take(8).collect::<String>()
                 )
@@ -736,7 +736,8 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
             changed(app, item.project_id.clone());
             return format!(
                 "put {:?} back. It is waiting for whoever picks it up next — if you got \
-                 part of the way, `drop` what you learned so that is not lost too.",
+                 part of the way, `mcp__skein__drop` what you learned so that is not lost \
+                 too.",
                 item.title
             );
         }
@@ -777,8 +778,8 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
     if held >= MAX_HELD {
         return format!(
             "this card is already holding {held} items, which is the limit — every one \
-             of them is an item no other conversation will touch. Finish one with `done` \
-             or put it back before taking this."
+             of them is an item no other conversation will touch. Finish one with \
+             `mcp__skein__done` or put it back before taking this."
         );
     }
     /* Conditional on the hold we read, so two cards claiming this in the same
@@ -803,8 +804,8 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
     };
     format!(
         "you are holding {:?}.{was} No other conversation will start it while you have \
-         it. `done` when it is fully addressed, or `take … release: true` the moment you \
-         stop.",
+         it. `mcp__skein__done` when it is fully addressed, or `mcp__skein__take … \
+         release: true` the moment you stop.",
         item.title
     )
 }
@@ -880,7 +881,8 @@ fn not_found(items: &[SinkItem], want: &str) -> String {
         return "there is nothing in the sink.".into();
     }
     format!(
-        "no item called {want:?}. Read `sink` for the ids — the ones there now are: {}",
+        "no item called {want:?}. Read `mcp__skein__sink` for the ids — the ones there \
+         now are: {}",
         items
             .iter()
             .take(8)

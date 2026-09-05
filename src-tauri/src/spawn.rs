@@ -1062,8 +1062,8 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         if live >= cap {
             return format!(
                 "this card already has {live} conversations of its own open on the wall, \
-                 which is the limit. Close one of them with `close`, wait for one to \
-                 finish, or tell the user which of them should go."
+                 which is the limit. Close one of them with `mcp__skein__close`, wait for \
+                 one to finish, or tell the user which of them should go."
             );
         }
     }
@@ -1175,15 +1175,17 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         0 => String::new(),
         n => format!(
             " **The wall could not carry your whole brief**: {n} characters did not go, and \
-             the card has been told so. Send it the rest with `send` before it starts."
+             the card has been told so. Send it the rest with `mcp__skein__send` before it \
+             starts."
         ),
     };
     match elsewhere {
         None => format!(
             "opening a card in {cwd} — its handle is {handle}. It has the brief you wrote and \
              nothing else of yours. Tell the user you have opened it and what for. You can \
-             `send` to it or `recall` it by that handle; it will not appear in `list` until \
-             its process is up, which takes a moment.{called}{sharing}{ate}"
+             `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
+             not appear in `mcp__skein__list` until its process is up, which takes a \
+             moment.{called}{sharing}{ate}"
         ),
         /* Said differently on purpose. A card in another repository is the one
            case where "it has the brief and nothing else" costs something real:
@@ -1197,9 +1199,9 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              the brief you wrote and nothing else of yours, and it stands in a different \
              repository from this one, so whatever it needs to know about *this* one had to \
              be in the brief. Tell the user you have opened it, where, and what for. You can \
-             `send` to it or `recall` it by that handle; it will not appear in `list` until \
-             its process is up, and then only under `scope: \"skein\"`, since it is not in \
-             your project.{called}{ate}"
+             `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
+             not appear in `mcp__skein__list` until its process is up, and then only under \
+             `scope: \"skein\"`, since it is not in your project.{called}{ate}"
         ),
     }
 }
@@ -1589,10 +1591,10 @@ fn envelope(settled: &[String], busy: usize, kin: usize) -> String {
         "{mark} from the wall —\n\n{what}{rest}\n\n\
          (This came from the wall rather than from anybody, so nobody is waiting on a \
          reply and there is nothing to acknowledge. It is sent so you do not have to keep \
-         calling `list`. **Quiet is evidence, not a report**: a card is silent here for \
-         {} minutes, which is not the same as having finished — `recall` what it actually \
-         said before you conclude anything from it or pass it on, and `close` it once it \
-         has plainly reported. If there is nothing to do about this, do nothing.)",
+         calling `mcp__skein__list`. **Quiet is evidence, not a report**: a card is silent \
+         here for {} minutes, which is not the same as having finished — \
+         `mcp__skein__recall` what it actually said before you conclude anything from it or \
+         pass it on, and `mcp__skein__close` it once it has plainly reported. If there is nothing to do about this, do nothing.)",
         SETTLE_GRACE_MS / 60_000
     )
 }
@@ -2042,7 +2044,7 @@ mod tests {
            incident behind this item was a parent relaying a wrong conclusion
            to eight cards. */
         assert!(text.contains("Quiet is evidence, not a report"), "{text}");
-        assert!(text.contains("`recall`"), "{text}");
+        assert!(text.contains("`mcp__skein__recall`"), "{text}");
     }
 
     /// One card, several cards, and the case where the parent's whole brood has

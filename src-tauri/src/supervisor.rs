@@ -2215,6 +2215,212 @@ mod tests {
         }
     }
 
+    /// Every source on this server that composes prose an agent reads, paired
+    /// with its own text so the scan needs no path and no working directory.
+    ///
+    /// **`servers.rs` is deliberately absent**, and only because another card is
+    /// rewriting those very strings as this lands (sink `11365b64`). It carries
+    /// four bare names today — `server`, `servers`, `server_log` — and belongs
+    /// on this list the moment that work is in.
+    ///
+    /// `hooks.rs` is absent for a different and permanent reason: what it writes
+    /// is a hook's own output rather than a tool result, and nothing in it names
+    /// a tool.
+    const SPEAKING_SOURCES: &[(&str, &str)] = &[
+        ("ask.rs", include_str!("ask.rs")),
+        ("board.rs", include_str!("board.rs")),
+        ("later.rs", include_str!("later.rs")),
+        ("limits.rs", include_str!("limits.rs")),
+        ("pin.rs", include_str!("pin.rs")),
+        ("relay.rs", include_str!("relay.rs")),
+        ("selector.rs", include_str!("selector.rs")),
+        ("sink.rs", include_str!("sink.rs")),
+        ("smith.rs", include_str!("smith.rs")),
+        ("spawn.rs", include_str!("spawn.rs")),
+        ("status.rs", include_str!("status.rs")),
+        ("supervisor.rs", include_str!("supervisor.rs")),
+    ];
+
+    /// The byte ranges of the `*_schema()` functions, which are the tool
+    /// *descriptions* and the one place a bare name is allowed.
+    ///
+    /// Delimited by a `fn` at column 0 and the `}` at column 0 that closes it,
+    /// which is what rustfmt guarantees for a top-level item.
+    fn schema_spans(src: &str) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
+        let mut open: Option<usize> = None;
+        let mut at = 0usize;
+        for line in src.split_inclusive('\n') {
+            let bare = line.trim_end();
+            match open {
+                None => {
+                    let is_item = bare.starts_with("fn ")
+                        || bare.starts_with("pub fn ")
+                        || bare.starts_with("pub(crate) fn ");
+                    if is_item && bare.contains("_schema(") {
+                        open = Some(at);
+                    }
+                }
+                Some(from) if bare == "}" => {
+                    spans.push((from, at + line.len()));
+                    open = None;
+                }
+                Some(_) => {}
+            }
+            at += line.len();
+        }
+        spans
+    }
+
+    /// Every string literal in a Rust source, with where it started.
+    ///
+    /// Comments go, because a backtick in one is a note to whoever is reading
+    /// the file rather than anything an agent will ever see — and the doc
+    /// comments on this server are full of bare names on purpose. Everything
+    /// from `#[cfg(test)]` on goes for the same reason: a test's own assertion
+    /// text is not prose anybody is served.
+    fn literals(src: &str) -> Vec<(usize, String)> {
+        let src = src.split("\n#[cfg(test)]").next().unwrap_or(src);
+        let s = src.as_bytes();
+        let mut out: Vec<(usize, String)> = Vec::new();
+        let mut i = 0usize;
+        while i < s.len() {
+            match s[i] {
+                b'/' if s.get(i + 1) == Some(&b'/') => {
+                    while i < s.len() && s[i] != b'\n' {
+                        i += 1;
+                    }
+                }
+                b'/' if s.get(i + 1) == Some(&b'*') => {
+                    let mut depth = 1;
+                    i += 2;
+                    while i < s.len() && depth > 0 {
+                        if s[i] == b'/' && s.get(i + 1) == Some(&b'*') {
+                            depth += 1;
+                            i += 2;
+                        } else if s[i] == b'*' && s.get(i + 1) == Some(&b'/') {
+                            depth -= 1;
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                /* A char literal or a lifetime, and the difference is
+                   load-bearing: a byte literal holding a quote opens nothing,
+                   and reading it as one puts the whole rest of the file inside
+                   a string. */
+                b'\'' => {
+                    if s.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        while i < s.len() && s[i] != b'\'' {
+                            i += 1;
+                        }
+                        i += 1;
+                    } else if s.get(i + 2) == Some(&b'\'') {
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                b'"' => {
+                    let from = i;
+                    i += 1;
+                    let mut text: Vec<u8> = Vec::new();
+                    while i < s.len() && s[i] != b'"' {
+                        if s[i] == b'\\' {
+                            /* The line-continuation escape, which is most of
+                               this server's prose: it eats the newline *and*
+                               the indentation after it, so the text scanned is
+                               the text the agent is handed. */
+                            if s.get(i + 1) == Some(&b'\n') {
+                                i += 2;
+                                while i < s.len() && s[i].is_ascii_whitespace() {
+                                    i += 1;
+                                }
+                            } else {
+                                i += 2;
+                            }
+                            continue;
+                        }
+                        text.push(s[i]);
+                        i += 1;
+                    }
+                    i += 1;
+                    out.push((from, String::from_utf8_lossy(&text).into_owned()));
+                }
+                _ => i += 1,
+            }
+        }
+        out
+    }
+
+    /// The same bug as `no_tool_is_named_without_its_server_prefix`, one layer
+    /// out — and the layer where neither that guard nor `named_tools` can see
+    /// it, since both only ever read the system prompt.
+    ///
+    /// **A bare name in a tool *description* is fine**: the real name is in the
+    /// listing the agent is reading at that moment, so there is nothing to
+    /// resolve. A bare name in a tool *result* is not, because a result arrives
+    /// on its own — `spawn.rs`'s receipt told every card it had opened that it
+    /// could send to it or recall it by that handle, and neither of those was a
+    /// name any card could call (sink `4a0e4d2e`). `clip_brief`, a hundred lines
+    /// away in the same file, had it right, which is what made it an oversight
+    /// rather than a considered difference.
+    ///
+    /// So the scan is scoped by where the text lives rather than by what it
+    /// says: inside a `*_schema()` is a description, everywhere else is a
+    /// result.
+    #[test]
+    fn no_tool_result_names_a_tool_a_card_cannot_call() {
+        let known = advertised();
+        for (file, src) in SPEAKING_SOURCES {
+            let spans = schema_spans(src);
+            for (at, text) in literals(src) {
+                if spans.iter().any(|(a, b)| at >= *a && at < *b) {
+                    continue;
+                }
+                for tool in &known {
+                    assert!(
+                        !text.contains(&format!("`{tool}`")),
+                        "{file} answers a tool call with a bare `{tool}`, which is not a \
+                         name any card can call — it is `{MCP_PREFIX}{tool}`. The text is \
+                         {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The other direction, and the one that makes writing the prefix out in
+    /// full safe: a `mcp__skein__…` in a result must still be a tool.
+    ///
+    /// Renaming a tool moves the schema and the dispatch together and leaves
+    /// every sentence pointing at the old name untouched — which is the same
+    /// silent failure the prompt guard exists for, and the reason the expected
+    /// set is asked of `ask::dispatch` rather than listed here.
+    #[test]
+    fn every_prefixed_name_in_a_result_is_a_tool_the_server_advertises() {
+        let known = advertised();
+        for (file, src) in SPEAKING_SOURCES {
+            for (_, text) in literals(src) {
+                for tick in text.split('`').skip(1).step_by(2) {
+                    let Some(tool) = tick.split_whitespace().next().and_then(|t| {
+                        t.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                            .strip_prefix(MCP_PREFIX)
+                    }) else {
+                        continue;
+                    };
+                    assert!(
+                        known.iter().any(|k| k == tool),
+                        "{file} names `{MCP_PREFIX}{tool}`, which tools/list does not \
+                         advertise; it advertises {known:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// A chat card is refused the roster and the board by `relay.rs` and
     /// `board.rs`, so naming them would be an instruction to try what it will be
     /// told it may not do. `ask_user` is the one tool it does keep.

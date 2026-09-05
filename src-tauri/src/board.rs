@@ -404,8 +404,8 @@ fn do_board(app: &AppHandle, caller: &str, args: &Value) -> String {
     let mut out = String::new();
     if !mine.is_empty() {
         out.push_str(
-            "Yours, still up — take any of these down with `unpost` once they are no \
-             longer true:\n\n",
+            "Yours, still up — take any of these down with `mcp__skein__unpost` once they \
+             are no longer true:\n\n",
         );
         for n in &mine {
             out.push_str(&render(n, now));
@@ -545,7 +545,7 @@ fn at_stake(paths: &str) -> String {
 fn refuse_full(mine: &[&Notice], paths: &str, now: i64) -> String {
     format!(
         "this card already has {MAX_PER_CARD} notices up, which is the limit. {}\n\n\
-         Take one down with `unpost` and post this again — or post it under a \
+         Take one down with `mcp__skein__unpost` and post this again — or post it under a \
          subject you already have up, which replaces that notice rather than \
          adding one and costs nothing. Yours, likeliest-finished first:\n{}",
         at_stake(paths),
@@ -574,7 +574,7 @@ fn refuse_bare(bare: &[&Notice], now: i64) -> String {
          claim this wall has. So if this is about particular files, and a notice \
          announcing work almost always is, name them in `paths` and post it \
          again.\n\n\
-         Otherwise take one of these down with `unpost` — yours with no files \
+         Otherwise take one of these down with `mcp__skein__unpost` — yours with no files \
          named, likeliest-finished first:\n{}",
         at_stake(""),
         yours(bare, now),
@@ -677,8 +677,8 @@ fn do_post(app: &AppHandle, caller: &str, args: &Value) -> String {
             };
             format!(
                 "posted to the {} board: {subject:?}.{watching}{} Take it down with \
-                 `unpost` as soon as it is no longer true — a notice left up after the \
-                 work is done stops somebody else for no reason.",
+                 `mcp__skein__unpost` as soon as it is no longer true — a notice left up \
+                 after the work is done stops somebody else for no reason.",
                 if skein { "wall-wide" } else { "project" },
                 lost(&subject, subject_cut, &body, body_cut, globs_cut),
             )
@@ -699,7 +699,7 @@ fn lost(subject: &str, subject_cut: usize, body: &str, body_cut: usize, globs_cu
         out.push_str(&format!(
             " The subject was {subject_cut} characters over the {MAX_SUBJECT} a subject \
              may be and now reads {subject:?} — check that is still the subject you \
-             would `unpost` by."
+             would `mcp__skein__unpost` by."
         ));
     }
     if body_cut > 0 {
@@ -849,7 +849,7 @@ fn clip(s: &str, max: usize) -> (String, usize) {
     let cut = crate::clip::keep(s, max);
     let text = cut.marked(
         "The notice was longer than a notice may be. If you need the whole of it, ask the \
-         card that posted it with `send` — it still has what it wrote.",
+         card that posted it with `mcp__skein__send` — it still has what it wrote.",
     );
     (text, cut.omitted)
 }
@@ -1231,7 +1231,7 @@ mod tests {
         /* And the reader is now told, which is the half that was missing: a
            notice served to a card used to end mid-sentence with only its poster
            knowing. */
-        assert!(kept.contains("`send`"), "no way to ask for the rest: {kept}");
+        assert!(kept.contains("`mcp__skein__send`"), "no way to ask for the rest: {kept}");
     }
 
     #[test]

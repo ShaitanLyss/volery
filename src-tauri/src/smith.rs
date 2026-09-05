@@ -677,8 +677,8 @@ fn not_azdo(project: &str, instead: &str) -> String {
         "{project} is not on Azure DevOps, and this tool is Azure DevOps only — deliberately. \
          `gh` is signed in on this machine and has no certificate problem to work around, so \
          `{instead}` does what you want and there is nothing here that would do it better. \
-         The `pipelines` and `reviews` *readings* do answer for GitHub; only the writing half \
-         is one forge."
+         The `mcp__skein__pipelines` and `mcp__skein__reviews` *readings* do answer for \
+         GitHub; only the writing half is one forge."
     )
 }
 
@@ -916,8 +916,8 @@ pub(crate) fn pull_request(app: &AppHandle, caller: &str, args: &Value) -> Writi
         "update" => {
             let Some(number) = number.filter(|n| *n > 0) else {
                 return Writing::Now(
-                    "`update` needs the `pull` number of the pull request to change. `reviews` \
-                     lists them."
+                    "`update` needs the `pull` number of the pull request to change. \
+                     `mcp__skein__reviews` lists them."
                         .into(),
                 );
             };
@@ -1133,8 +1133,8 @@ pub(crate) fn pull_request(app: &AppHandle, caller: &str, args: &Value) -> Writi
             }
         }
         "" => Writing::Now(
-            "`pull_request` needs an `action`: \"create\" to open one, \"update\" to change an \
-             existing one's title or description."
+            "`mcp__skein__pull_request` needs an `action`: \"create\" to open one, \"update\" \
+             to change an existing one's title or description."
                 .into(),
         ),
         other => Writing::Now(format!(
