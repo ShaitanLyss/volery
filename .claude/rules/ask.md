@@ -342,17 +342,38 @@ ratio is the whole argument; nothing else about tiering would be worth the compl
 be loaded, or the one paragraph every card pays for points at identifiers whose schemas were
 withheld — which is the *first* failure in the section above wearing a new face, and
 `the_prompt_names_only_tools_the_server_advertises` guards the names but not their contents.
-That fixes `ask_user`, `board`, `post`, `unpost`, `list`, `send`, `drop`. `sink` joins them
-because reading the pile is the other half of `drop`, and a card told to file findings and
-not told it can read them files duplicates.
+That fixes `ask_user`, `list` and `send`.
 
-Then three on a different argument, and it is the one `append_prompt` already makes for
+**And then the rule ran out, which is the thing to read before deferring anything.** It used
+to fix `board`, `post`, `unpost` and `drop` as well, because the prompt named all four. Sink
+`4dabbb75` found that those paragraphs were *restating* the descriptions they were justifying
+— word for word, in the copy no schema keeps honest — and cut them (2,188 B → 1,350 B on a
+project card). So the tools stayed and their reason went, and **the argument for loading them
+is now the opposite one and is stronger**: the description is no longer a second statement of
+the instruction, it is the only one. Defer `board` and nothing in front of an agent says to
+read the billboard before working in a shared repository; defer `drop` and nothing says a
+finding can outlive the turn. `sink` is loaded on the same footing — reading the pile is the
+other half of `drop`, and a card told to file findings and not told it can read them files
+duplicates.
+
+Read the two together as one rule with two clauses: **a loaded description is either the
+prompt's referent or the prompt's replacement, and a tool that is neither can be deferred.**
+Nothing that is either may be, and no test can tell you which — the prompt naming a tool is
+checkable and a description being the last copy of an instruction is not.
+
+Then three on a different argument, and it is the one `append_prompt` used to make for
 `drop`: **a description is only read by an agent that has thought to look for a tool.** `pin`,
 `wake_me` and `allowance` exist to replace something an agent does wrongly by *default* —
 writing a path into the transcript, sleeping inside a turn, guessing at the budget. Nothing
 in a schema reaches a reflex and nothing in `ToolSearch` reaches one either, because the
 failure is not searching at all. Everything else is a capability a card knows it wants from
 the prompt it was given, and is deferred.
+
+Note where that argument does *not* reach, because it was misapplied for a while: it is an
+argument about a **deferred** tool, and it was being used to justify a paragraph about
+`drop`, which is loaded. A loaded description is in front of the agent whether it looked or
+not, so "an agent has to go looking" is simply false for it. The argument belongs to the
+tiering decision and nowhere else.
 
 **A deferred tool without a search hint is one nobody finds**, and this is the failure the
 tiering introduces. It is silent in the worst way: the tool registers, dispatches, passes
@@ -390,7 +411,15 @@ Two consequences worth stating because both were nearly got wrong:
 The trade to weigh when moving a tool out of the loaded tier is the one both comments state
 from either end: **bytes taken off the roster may have to be paid back in `append_prompt`,
 which is charged on the same turns** — and paid there in a copy that can drift out of step
-with the schema. It is only worth making for a tool that paragraph does not name.
+with the schema. It is only worth making for a tool that paragraph does not name, and after
+`4dabbb75` that is nearly all of them, so the question is now the one above instead: is this
+description the only place the instruction is stated?
+
+**And the roster is where the weight is, which is worth knowing before optimising the
+visible half.** Measured 2026-09-05: the loaded tier is 20,751 bytes against this test's
+24,000, and `append_prompt` is 1,350 on a project card and 2,414 on a spawned one — 6% of
+what a card pays before it has read a word of its own prompt. `drop_schema` and `post_schema`
+are each larger than the whole system prompt.
 
 #### Several questions in one call
 

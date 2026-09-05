@@ -1360,12 +1360,23 @@ pub fn standing_gates(
          you do not need to prove that you did not.\n\n",
     );
     s.push_str(&lines.join("\n"));
+    /* **It used to end by forbidding `git stash` here as well, and that was the
+       rule's third statement.** The system prompt says it once at spawn;
+       `perilous_reason` says it at the moment of the reflex and *refuses the
+       call*, which is the half that works on a card chasing a build error. This
+       said it a third time, in bold, on every `UserPromptSubmit` while any gate
+       in the tree was red — which is the reading an agent meets most often and
+       the one that can do least about it. Three shouted copies of one rule is
+       one rule nobody hears, and emphasis only works if it is rare (sink
+       `4dabbb75`).
+
+       The deny stays, and the counter-argument for keeping it is good and is on
+       record in `append_prompt`: an instruction does not bind a reflex. That
+       argues for the enforcement, not for a third reminder beside it. */
     s.push_str(
         "\n\nThis is what was *observed*, attributed and timestamped — not a claim about the \
          tree right now. Volery only ever sees gates run by cards on this wall, so a gate not \
-         listed here has not been proved green. **Do not run `git stash`, `git checkout -- .` \
-         or any tree-wide git to find out whether a failure is yours**: siblings' uncommitted \
-         work is in this checkout and those commands cannot tell it from yours.\n\
+         listed here has not been proved green.\n\
          </volery-gate-health>",
     );
     Some(s)
@@ -1867,10 +1878,15 @@ mod tests {
     }
 
     /// **The reading must not read as a claim about the tree right now**, which
-    /// is the failure the retracted broadcast was, and it must steer away from
-    /// the tool that caused the other incident that day.
+    /// is the failure the retracted broadcast was.
+    ///
+    /// It used to end by forbidding `git stash` too, and no longer does: the
+    /// deny in `perilous_reason` refuses that call outright, so a third statement
+    /// of one rule on every prompt while a gate was red bought nothing and spent
+    /// the emphasis (sink `4dabbb75`). Asserted in the negative, because the
+    /// sentence reads as obviously worth having and would otherwise come back.
     #[test]
-    fn the_reading_states_its_own_limits_and_names_the_banned_escape() {
+    fn the_reading_states_its_own_limits_and_leaves_the_deny_to_the_deny() {
         let now = 1_000_000;
         let out = standing_gates(
             &[gate_run(OTHER, "cargo-check", "failed", Some(now - 1000), now - 2000)],
@@ -1880,7 +1896,7 @@ mod tests {
         .unwrap();
         assert!(out.contains("not a claim about the tree right now"), "{out}");
         assert!(out.contains("has not been proved green"), "{out}");
-        assert!(out.contains("git stash"), "{out}");
+        assert!(!out.contains("git stash"), "the stash rule is stated twice already: {out}");
         assert!(out.starts_with("<volery-gate-health>"), "{out}");
         assert!(out.ends_with("</volery-gate-health>"), "{out}");
     }

@@ -456,14 +456,21 @@ invocation is, and `deny` is written once for the two of them. This module has a
 for a fact written down in two places — the matcher, above — and "what counts as git" is the
 same bet.
 
-**It is deliberately a sentence *and* a lock.** `supervisor::append_prompt` tells every
-project card not to reach for these commands (`6636197`). That alone would not have stopped
-this: the card that ran `git stash` already knew. And the lock alone would make the first a
-card hears of it a denied tool call, which costs a turn and reads as obstruction. An
-instruction does not bind a reflex; a card that never read the board is one no instruction
+**It is deliberately a sentence *and* a lock — two, not three.** `supervisor::append_prompt`
+tells every project card not to reach for these commands (`6636197`). That alone would not
+have stopped this: the card that ran `git stash` already knew. And the lock alone would make
+the first a card hears of it a denied tool call, which costs a turn and reads as obstruction.
+An instruction does not bind a reflex; a card that never read the board is one no instruction
 reaches. The refusal names the sibling cards, offers the worktree, and ends in commands that
 run as they stand — including "ask the user", because the caveat an agent grants itself is the
 one it grants while chasing a build error.
+
+`standing_gates` used to be a **third** copy, fired on every `UserPromptSubmit` while a gate
+in the tree was red, and it has gone (sink 4dabbb75). The argument above is what decided it:
+it argues for the lock beside the sentence, and a second sentence beside the lock is not the
+thing it argues for. Emphasis only works if it is rare — three shouted copies of one rule is
+one rule nobody hears — and the reading that fired most often was the one that could do least,
+since `perilous` refuses the call anyway. See `gates.md`.
 
 #### Testing Rust on this machine
 

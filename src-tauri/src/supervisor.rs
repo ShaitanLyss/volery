@@ -65,11 +65,27 @@ pub(crate) const MCP_PREFIX: &str = "mcp__skein__";
 
 /// The `--append-system-prompt` every card is spawned with.
 ///
-/// Two paragraphs, and the second only where it is usable. Every word here is
-/// paid for on every spawn of every card, so the roster half is kept to what the
-/// tool descriptions cannot say and is left off a chat card, which `relay.rs`
-/// refuses both tools to anyway — telling it about them would be an instruction
-/// to try something it will be told it may not do.
+/// Every word here is paid for on every spawn of every card, so what is here is
+/// kept to what the tool descriptions cannot say, and most of it is left off a
+/// chat card — which `relay.rs` and `board.rs` refuse those tools to anyway, so
+/// telling it about them would be an instruction to try something it will be
+/// told it may not do.
+///
+/// **The figures, since nobody had them until sink `4dabbb75` went looking.**
+/// Measured 2026-09-05, this prompt as delivered against the loaded tier as
+/// `the_loaded_tier_is_what_every_turn_pays_for` weighs it:
+///
+/// | | bytes |
+/// |---|---|
+/// | this prompt, project card | 1,350 |
+/// | …with `Selfhood`, spawned card | 2,414 |
+/// | `ask::roster`'s loaded tier | 20,751 |
+///
+/// **The roster is 94% of it, and the prompt is the visible half.** Anyone
+/// optimising the wrong one will optimise this. It was 2,188 before the two
+/// paragraphs below came out and the saving was never the point — see the
+/// comments where they used to be: two statements of one rule drift apart, and
+/// the copy that drifts is the one no schema keeps honest.
 ///
 /// **The tools are named as the agent must call them.** This read `ask_user`,
 /// `board`, `post` for most of its life, and not one of those is a name any card
@@ -193,18 +209,24 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
          `options` whenever the answer is a choice between alternatives."
     );
     if !chat {
-        prompt.push_str(&format!(
-            "\n\nOther Claude Code conversations may be working on this wall \
-             beside you, sometimes in the same repository. Before starting \
-             anything substantial, read `{MCP_PREFIX}board` — the standing \
-             notices about what the others are holding. It costs nobody a turn. \
-             `{MCP_PREFIX}post` puts your own notice up when you take on \
-             something others build on, and `{MCP_PREFIX}unpost` takes it down \
-             the moment it stops being true. `{MCP_PREFIX}list` says who else is \
-             here and `{MCP_PREFIX}send` puts a message in one card's hands — \
-             which costs that agent a turn, so read the board first."
-        ));
-        /* The tree, not the index — and this is the half nothing guarded.
+        /* **There is no roster paragraph here, and its absence is the finding.**
+           It named `board`, `post`, `unpost`, `list` and `send` and then said
+           about each one what that tool's own description says: `board_schema`
+           carries "read it before starting anything substantial in a shared
+           repository", `post_schema` carries the taking-it-down half,
+           `send_schema` carries "read the `board` first" and the turn it costs.
+           Every one of the five is in `ask::roster`'s **loaded** tier, so all
+           five descriptions are already in front of every agent on every turn —
+           this was the same words paid for twice, in the copy that can silently
+           drift out of step with the schema (sink `4dabbb75`).
+
+           The one thing no description could carry is the *premise*: that other
+           cards exist at all. The paragraph below establishes that more sharply
+           and with a consequence attached — a shared working tree is a fact
+           about this machine, not an instruction — so the premise survives the
+           cut and arrives attached to the reason it matters.
+
+           The tree, not the index — and this is the half nothing guarded.
            `hooks::sweep` catches a commit that would sweep a sibling's *staged*
            work, so `git add -A` and `git commit -a` are already denied. Nothing
            caught `git stash`, which is not a commit and never reaches that
@@ -240,20 +262,24 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
              clean tree, and if you think you genuinely need one of those \
              commands, ask the user rather than running it.",
         );
-        /* One sentence for `drop`, where the other tools on this server get
-           none, and the asymmetry is the whole reason it is here. `alwaysLoad`
-           puts every description in front of the agent — that is the argument
-           above for keeping this paragraph short — but a description is only
+        /* **There is no `drop` sentence here either, and the argument that put
+           it here failed for its own case.** It read: "a description is only
            read by an agent that has thought to look for a tool, and the reflex
-           this fights is *not thinking there is anything to do*. An observation
-           made in passing has a default, and the default is silence. Nothing in
-           a schema reaches that. */
-        prompt.push_str(&format!(
-            "\n\nWhen you notice something worth keeping that is not what you were \
-             asked to do — a bug you walked past, a rough edge, a thing that should \
-             exist — put it in `{MCP_PREFIX}drop` rather than losing it or breaking \
-             your task to chase it. It outlives this conversation."
-        ));
+           this fights is *not thinking there is anything to do*". That is an
+           argument about a **deferred** tool — one behind a `ToolSearch` step,
+           which an agent has to go looking for. `drop` is in the loaded tier,
+           so its description is in front of every agent on every turn whether it
+           looked or not, and it opens on the same trigger ("For the thing you
+           noticed and must not stop for") and carries the imperative this
+           paragraph claimed a schema could not ("**This is not a to-do list for
+           the turn you are in.**"). The premise the argument stands on is false
+           here, so the sentence went (sink `4dabbb75`).
+
+           The argument itself is sound and is *why* `pin`, `wake_me` and
+           `allowance` are in the loaded tier at all — see `ask::roster`, which
+           makes it about the tier rather than about the prompt. That is where it
+           belongs: it is a reason to load a description, not a reason to restate
+           one. */
 
         /* The two browsers, because nothing else can tell a card they differ.
            `@playwright/mcp` writes its own tool descriptions and they are
@@ -2138,8 +2164,8 @@ mod tests {
     fn either_half_of_the_prompt_can_be_missing() {
         let standing = "do the thing".to_string();
 
-        let no_guidance = system_prompt(false, true, None, None).expect("the roster alone");
-        assert!(no_guidance.contains(&format!("{MCP_PREFIX}board")));
+        let no_guidance = system_prompt(false, true, None, None).expect("the prompt alone");
+        assert!(no_guidance.contains(&format!("{MCP_PREFIX}ask_user")));
 
         /* No ask server: naming tools that are not there is the failure
            `the_prompt_names_only_tools_the_server_advertises` guards from the
@@ -2424,17 +2450,26 @@ mod tests {
     /// A chat card is refused the roster and the board by `relay.rs` and
     /// `board.rs`, so naming them would be an instruction to try what it will be
     /// told it may not do. `ask_user` is the one tool it does keep.
+    ///
+    /// **The project card's list is asserted exactly, and that is the guard the
+    /// cut in sink `4dabbb75` leaves behind.** Every name still here earns it by
+    /// pointing somewhere a description cannot reach: `ask_user` twice, once as
+    /// itself and once as what to do about a login page; `list` twice, as where
+    /// this card's own handle is drawn and as the scope its parent is not in;
+    /// `send` as the way back to the card that opened it. A name added to this
+    /// list later is a paragraph restating a description that is already loaded
+    /// — which is what para 2 and para 4 were. If it is worth naming anyway, the
+    /// reason belongs here beside it.
     #[test]
     fn a_chat_card_is_told_only_about_the_question() {
         let chat = append_prompt(true, Some(&fullest()));
         assert_eq!(named_tools(&chat), vec!["ask_user"]);
         let project = append_prompt(false, Some(&fullest()));
-        for tool in ["ask_user", "board", "post", "unpost", "list", "send"] {
-            assert!(
-                named_tools(&project).iter().any(|t| t == tool),
-                "a project card is not told about `{MCP_PREFIX}{tool}`"
-            );
-        }
+        assert_eq!(
+            named_tools(&project),
+            vec!["ask_user", "ask_user", "list", "list", "send"],
+            "a paragraph names a tool whose own description is already loaded"
+        );
     }
 
     /// A chat card is told none of this, and the reason is the same one that
@@ -3310,3 +3345,5 @@ impl Supervisor {
         lost
     }
 }
+
+

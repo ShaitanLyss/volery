@@ -126,8 +126,12 @@ The two audiences want different *mechanisms* and the same *fact*, so they share
 
 That asymmetry is the point rather than an inconsistency. A card that has to *decide* to ask
 whether a red gate is its own is a card that will not — the reflex under a failing build is to
-start debugging, or to reach for `git stash`. `supervisor::append_prompt` already makes this
-argument about `drop`: *"the reflex this fights is not thinking there is anything to do."*
+start debugging, or to reach for `git stash`. The argument is the one `ask::roster` makes for
+putting `pin`, `wake_me` and `allowance` in the loaded tier: nothing in a schema reaches a
+reflex, because the failure is not looking in the first place. (`append_prompt` used to make
+it about `drop`, and that sentence is gone — `drop` is *loaded*, so its description is in
+front of every agent whether it looked or not, and the argument never applied to it. See
+`ask.md`.)
 
 It is deliberately **not an MCP tool**, and that is worth stating because it was the expected
 shape. Three reasons: the roster was at 38.6KB of a 40KB `alwaysLoad` budget when this was
@@ -245,11 +249,19 @@ Two clocks bound the rest, and both are about not lying:
   `bun run test` at ~6s, so anything older is treated as nothing rather than announced as work
   in flight. `Gatehouse.svelte` has the same number and the two should move together.
 
-And it names the escape it must not leave open: **do not reach for `git stash` or tree-wide
-git to find out whether a failure is yours.** That sentence goes where the question is being
-asked rather than on a board the card may never read — the card that did it already knew the
-tree was shared. `hooks.rs`'s fourth guard is the lock; this is the sentence beside it, and
-`hooks.md` argues at length why both are needed.
+**It used to name the escape it must not leave open** — *do not reach for `git stash` or
+tree-wide git to find out whether a failure is yours* — and that sentence has gone, which is
+worth recording because it reads as obviously worth having. It was the **third** statement of
+one rule: `supervisor::append_prompt` says it once at spawn, `hooks::perilous_reason` says it
+at the moment of the reflex and *refuses the call*, and this said it again, in bold, on every
+`UserPromptSubmit` while any gate in the tree was red. Emphasis only works if it is rare, and
+three shouted copies of one rule is one rule nobody hears (sink 4dabbb75).
+
+The argument for keeping the other two is unchanged and is in `hooks.md`: an instruction does
+not bind a reflex, so the sentence and the lock are both wanted. That is an argument for the
+lock beside the sentence, not for a second sentence beside the lock — and this was the second
+sentence. `the_reading_states_its_own_limits_and_leaves_the_deny_to_the_deny` asserts its
+absence, since nothing else would stop it coming back.
 
 ### Where each piece lives, and why there
 
