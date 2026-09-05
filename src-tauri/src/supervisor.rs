@@ -281,6 +281,25 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
            signing in to a company's staging environment is theirs to do and not
            a decision an agent should reach for.
 
+           **The limit is stated as the claim, not after it**, and that is the
+           second correction — from the audit in card 580c7a55, which found this
+           paragraph asserting the seeding as fact and then disclaiming it in the
+           very next sentence. A fact and its retraction side by side is the same
+           contradiction one step back, and an agent resolves it by believing the
+           first half. So "neither promises you a signed-in session" leads and
+           the usually-true part follows it. The pattern is
+           `status::status_schema`'s "a green page is not a promise about your
+           request", which that audit called the best instance of this shape in
+           the codebase; anything written here later should copy it.
+
+           **And "may be on this wall" is not hedging.** The same audit observed
+           both server families listed to it as *deferred* at session start and
+           then *disconnecting mid-session*, while this paragraph asserted they
+           were present throughout. The names come from the user's own MCP
+           configuration, which this app does not write and `named_tools` cannot
+           check — so the three words are the paragraph telling the truth about
+           what it actually knows.
+
            `ask_user` is named rather than described because it is on this
            server's loaded tier and is already the first paragraph's subject —
            pointing at it costs four words, where explaining the gesture again
@@ -315,12 +334,14 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
            it already builds, and until it does, the test below is the only
            thing holding the two ends together. */
         prompt.push_str(&format!(
-            "\n\nTwo browsers are on this wall. `mcp__browser__*` is the one \
-             Chrome this studio owns — a single session every card shares and the \
-             user can watch, so never sign it out or clear its cookies. \
-             `mcp__playwright__*` is your own, seeded with the same sign-ins; use \
-             it if you need a different login or to clear state as you go. \
-             Neither is guaranteed to be signed in — ask with \
+            "\n\nTwo browser tool families may be on this wall. `mcp__browser__*` \
+             is the one Chrome this studio owns — a single session every card \
+             shares and the user can watch, so never sign it out or clear its \
+             cookies. `mcp__playwright__*` is your own; use it when you need a \
+             different login or to clear state as you go. **Neither promises you \
+             a signed-in session.** Both are seeded from the user's browser and \
+             usually carry its sign-ins, so a login page means the seeding did \
+             not cover that site rather than that something is broken — ask with \
              `{MCP_PREFIX}ask_user` rather than improvising credentials."
         ));
 
@@ -1946,6 +1967,18 @@ mod tests {
             assert!(
                 !p.contains("already signed into"),
                 "the paragraph promises a sign-in it cannot guarantee: {p}"
+            );
+            /* The second correction, and the ordering is the whole of it: the
+               limit has to come BEFORE the usually-true fact. A fact followed by
+               its own retraction is a contradiction an agent resolves by
+               believing the first half, which is the bug this sentence replaced.
+               Asserted by position rather than presence, since a rewrite that
+               moved the disclaimer back behind the claim would otherwise pass. */
+            let limit = p.find("Neither promises you a signed-in session");
+            let usually = p.find("usually carry its sign-ins");
+            assert!(
+                limit.is_some() && usually.is_some() && limit < usually,
+                "the limit no longer leads the fact it qualifies: {p}"
             );
             assert!(
                 p.contains(&format!("{MCP_PREFIX}ask_user")),
