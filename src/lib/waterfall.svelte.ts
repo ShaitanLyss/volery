@@ -27,6 +27,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   choose,
+  keptThrough,
   several,
   usable,
   type Account,
@@ -41,6 +42,29 @@ import type { Report } from "./limits";
  *  same numeral. Multiplied by the account count, which is the other half of
  *  why it is not a minute. */
 const EVERY = 180_000;
+
+/** And how long after a pass that could not reach the endpoint.
+ *
+ *  The cadence above is what a *reading* is worth: nothing on this face moves
+ *  faster than a percent in three minutes, so asking sooner spends a request to
+ *  redraw the same numeral. A failed pass has no reading to redraw, and what
+ *  waits on it is not a numeral — it is whether your caps are being applied at
+ *  all, and, once a held reading has thinned to nothing, which account the next
+ *  turn goes to. Three minutes is a long time to be flying blind over what may
+ *  have been one dropped packet.
+ *
+ *  Just past `limits.rs`'s `FLOOR_MS`, which is the thing that actually bounds
+ *  this — a minute per account, whoever asks and however often. Sixty-five
+ *  seconds rather than sixty so the pass lands *after* the floor rather than on
+ *  it: inside it Rust answers locally, and with nothing held that answer is a
+ *  fault it wrote itself, which would spend the retry on nothing.
+ *
+ *  Nothing here has to be careful about a `429`, and that is deliberate rather
+ *  than lucky. The hush lives in Rust and outranks this: inside one, a pass
+ *  makes no request at all and is answered out of the cache. Backing off here as
+ *  well would be two clocks disagreeing about one, which is the trap
+ *  `Ledger.#askAllowance` names. */
+const SOON = 65_000;
 
 /** How long a `429` outranks the last reading. See `markSpent`. */
 const SPENT_FOR = 5 * 60_000;
@@ -77,7 +101,10 @@ export class Waterfall {
   ready = $state(false);
 
   #watchers = new Set<string>();
-  #timer: ReturnType<typeof setInterval> | null = null;
+  /** A `setTimeout` rescheduled by each pass rather than a `setInterval`,
+   *  because the cadence is a consequence of what the last pass found — see
+   *  `SOON` and `#retime`. */
+  #timer: ReturnType<typeof setTimeout> | null = null;
   #busy = false;
 
   get watchers(): number {
@@ -102,11 +129,9 @@ export class Waterfall {
   attach(id: string) {
     if (this.#watchers.has(id)) return;
     this.#watchers.add(id);
-    if (!this.#timer) {
-      this.#timer = setInterval(() => void this.poll(), EVERY);
-    }
     /* Immediately, not on the first beat: a panel that opened to three minutes
-       of blank rows would look broken. */
+       of blank rows would look broken. The beat after it is set by the pass
+       this starts, which is what `#retime` is for. */
     void this.refresh();
   }
 
@@ -114,7 +139,7 @@ export class Waterfall {
     if (!this.#watchers.delete(id)) return;
     if (this.#watchers.size > 0) return;
     if (this.#timer) {
-      clearInterval(this.#timer);
+      clearTimeout(this.#timer);
       this.#timer = null;
     }
     /* Deliberately *not* clearing `allowances`. Rust drops its own cached
@@ -142,9 +167,32 @@ export class Waterfall {
     } catch (err) {
       this.fault = String(err);
       this.ready = true;
+      /* The beat is armed by whichever pass ran last, so an early return here
+         has to arm it itself or the reader stops for good — which is the one
+         thing the `setInterval` this replaced could not do wrong. Soon, because
+         a registry that cannot be listed is a worse silence than a reading that
+         cannot be taken. */
+      this.#retime(true);
       return;
     }
     await this.poll();
+  }
+
+  /** When the next pass is, decided by what this one found.
+   *
+   *  Two cadences and one timer. Anything that could not be reached puts the
+   *  next pass a minute out instead of three, because what is waiting on it is
+   *  not a percentage — see `SOON`. Kept in one place so the two can never both
+   *  be running, which is what a `setInterval` plus a retry timer would be.
+   *
+   *  Nothing is scheduled with nobody watching: `detach` is the other half of
+   *  the promise this class makes, and a pass that re-armed itself would keep a
+   *  closed panel asking the endpoint forever. */
+  #retime(soon: boolean) {
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = null;
+    if (this.#watchers.size === 0) return;
+    this.#timer = setTimeout(() => void this.poll(), soon ? SOON : EVERY);
   }
 
   /** Ask every account that could actually answer.
@@ -152,28 +200,50 @@ export class Waterfall {
    *  Accounts with no token are skipped rather than asked and failed: there is
    *  nothing to ask *with*, the answer is already known, and asking would spend
    *  a request to be told so. `standingOf` reports them `unusable` from the
-   *  registry alone. */
+   *  registry alone.
+   *
+   *  **An account that could not be asked keeps the reading it had**, thinned of
+   *  any window that has since rolled — `keptThrough` holds the whole of that
+   *  argument, and the bug it is written against was this method building a
+   *  fresh map every pass. One connect timeout on flaky wifi took every account
+   *  to `ready · unmeasured`, which is your caps switched off and the balancer
+   *  reading three part-spent subscriptions as untouched, over a network blip
+   *  that changed nothing about any of them. */
   async poll() {
     if (this.#busy) return;
     const labels = this.list.filter((a) => a.signedIn && a.enabled).map((a) => a.label);
     if (labels.length === 0) {
       this.allowances = {};
+      this.#retime(false);
       return;
     }
     this.#busy = true;
+    let missed = false;
     try {
       const answers = await invoke<RawAllowance[]>("read_allowances", { labels });
+      const now = Date.now();
       const next: Record<string, Allowance> = {};
       for (const a of answers) {
         next[a.label] = a.report
           ? { ok: true, windows: a.report.windows, at: a.report.at }
-          : { ok: false, fault: a.fault ?? "the allowance could not be read" };
+          : keptThrough(
+              this.allowances[a.label],
+              a.fault ?? "the allowance could not be read",
+              now,
+            );
       }
       this.allowances = next;
+      missed = answers.some((a) => !a.report);
     } catch (err) {
+      /* The call itself failed, so there is nothing per account to keep or drop
+         — every reading already held stays exactly as it was, which is the same
+         bargain `keptThrough` strikes without being able to say so on the rows.
+         `detach` makes the same call for the same reason. */
       this.fault = String(err);
+      missed = true;
     } finally {
       this.#busy = false;
+      this.#retime(missed);
     }
   }
 

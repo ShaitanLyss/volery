@@ -28,6 +28,7 @@
     sayImported,
     sayInstalled,
     sayLife,
+    sayStale,
     sayTier,
     sayUnmeasured,
     sayUnsigned,
@@ -232,6 +233,20 @@
     const acct = waterfall.list.find((x) => x.label === label);
     const v = acct?.caps?.[kind];
     return typeof v === "number" ? v : null;
+  }
+
+  /** That a row's figures are the last ones that arrived rather than current
+   *  ones, or null while they are current.
+   *
+   *  Drawn whatever the standing is, and the *blocked* case is the one that
+   *  earns it: work held back on a figure from twenty minutes ago is a decision
+   *  somebody should be able to account for. `keptThrough` is why holding it is
+   *  honest — a window that has not rolled can only have been used more since,
+   *  so the figure is a floor rather than a guess, and one that has rolled is
+   *  gone from the row already. */
+  function staleOf(label: string): string | null {
+    const a = waterfall.allowances[label];
+    return a?.ok && a.stale ? sayStale(a.at, a.stale, now) : null;
   }
 
   function usedOf(label: string, kind: string): number | null {
@@ -667,6 +682,15 @@
                     {/if}
                   {:else}
                     <span class="tag bad">{standing.why}</span>
+                  {/if}
+
+                  {#if staleOf(account.label)}
+                    <!-- The reading behind whatever the tag says is the last one
+                         that arrived. Quiet rather than a tag of its own: your
+                         caps *are* being applied here, which is the whole
+                         difference from `unmeasured` above, and a second alarm
+                         beside a working one is an alarm nobody reads. -->
+                    <span class="dim">{staleOf(account.label)}</span>
                   {/if}
 
                   <span class="grow"></span>

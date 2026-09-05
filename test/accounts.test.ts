@@ -24,7 +24,9 @@ import {
   sayFileWarning,
   sayImported,
   sayInstalled,
+  keptThrough,
   sayLife,
+  sayStale,
   sayTier,
   sayUnmeasured,
   sayUnsigned,
@@ -250,6 +252,87 @@ describe("standing", () => {
   test("an unmeasured account is ready even with a cap that would block it", () => {
     const s = standingOf(acct("a", { caps: { session: 0 } }), undefined, false);
     expect(s.state).toBe("ready");
+  });
+});
+
+describe("a reading the network went away in the middle of", () => {
+  /* The bug: `Waterfall.poll` built a fresh map every pass, so one connect
+     timeout replaced every good reading with a fault and the whole wall went
+     `ready · unmeasured` — caps off, `spentOf` reading three part-spent
+     subscriptions as untouched — over a blip that changed nothing about any of
+     them. */
+  test("a fault with a reading in hand keeps the reading", () => {
+    const kept = keptThrough(spent(85), "offline", T0 + MIN);
+    expect(kept.ok).toBe(true);
+    if (kept.ok) expect(kept.windows).toHaveLength(2);
+  });
+
+  test("and the caps go on being applied to it", () => {
+    const a = acct("a", { caps: { session: 80 } });
+    const kept = keptThrough(spent(85), "offline", T0 + MIN);
+    expect(standingOf(a, kept, false).state).toBe("blocked");
+  });
+
+  test("and it says why it is not current, without becoming a fault", () => {
+    const kept = keptThrough(fresh(), "offline", T0 + MIN);
+    expect(kept.ok && kept.stale).toBe("offline");
+  });
+
+  /* The reading's own age, not this pass's. A poll that keeps failing every
+     three minutes must not keep resetting the clock on figures from an hour
+     ago. */
+  test("a held reading keeps its own timestamp through repeated failures", () => {
+    const once = keptThrough(fresh(), "offline", T0 + MIN);
+    const twice = keptThrough(once, "offline", T0 + 30 * MIN);
+    expect(twice.ok && twice.at).toBe(T0);
+  });
+
+  /* Where the monotonicity argument runs out. Inside its reset a window can
+     only have been used *more*, so the held figure is a floor; past it the
+     figure is a floor on nothing, and a wall offline for an afternoon would go
+     on holding work back against an allowance long since given back. */
+  test("a window that has rolled is dropped from the held reading", () => {
+    const kept = keptThrough(spent(95), "offline", T0 + 3 * HOUR);
+    expect(kept.ok).toBe(true);
+    if (kept.ok) expect(kept.windows.map((w) => w.kind)).toEqual(["weekly_all"]);
+  });
+
+  test("and an account only blocked by a rolled window is ready again", () => {
+    const a = acct("a", { caps: { session: 80 } });
+    const kept = keptThrough(spent(95), "offline", T0 + 3 * HOUR);
+    expect(standingOf(a, kept, false).state).toBe("ready");
+  });
+
+  test("once every window has rolled it is a fault again", () => {
+    const kept = keptThrough(spent(95), "offline", T0 + 100 * HOUR);
+    expect(kept).toEqual({ ok: false, fault: "offline" });
+  });
+
+  /* A scoped week nobody has touched genuinely names no reset, so nothing can
+     say whether it has rolled. Dropped with the rest rather than kept forever
+     — and it is the harmless case, since those are the windows at zero. */
+  test("a window naming no reset cannot be held either", () => {
+    const held: Allowance = { ok: true, at: T0, windows: [win({ used: 90 })] };
+    expect(keptThrough(held, "offline", T0 + MIN).ok).toBe(false);
+  });
+
+  test("nothing in hand is the fault it always was", () => {
+    expect(keptThrough(undefined, "offline", T0)).toEqual({ ok: false, fault: "offline" });
+    expect(keptThrough({ ok: false, fault: "older" }, "offline", T0)).toEqual({
+      ok: false,
+      fault: "offline",
+    });
+  });
+
+  /* The face's half. `sayUnmeasured` says the caps are *not* being applied,
+     which is the opposite claim and must not be the one drawn here. */
+  test("a stale note leads with the age and carries the reason", () => {
+    expect(sayStale(T0, "offline", T0 + 14 * MIN)).toBe("measured 14m ago — offline");
+  });
+
+  test("and says something sensible about a reading taken a moment ago", () => {
+    expect(sayStale(T0, "offline", T0 + 1000)).toBe("measured just now — offline");
+    expect(sayStale(T0, "offline", T0 - 5000)).toBe("measured just now — offline");
   });
 });
 

@@ -27,6 +27,7 @@
  */
 
 import { binding, until, type Window } from "./limits";
+import { MINUTE } from "./usage";
 
 /** One account as the registry holds it. No credential: an account *is* a
  *  Claude Code credential store (`~/.claude/accounts/<label>/`), the CLI owns
@@ -65,9 +66,16 @@ export type Account = {
 
 /** The last allowance reading for one account, or why there isn't one. Mirrors
  *  what `read_allowances` hands over per account: a fault is not the same as an
- *  account being full, and the two must never collapse into each other. */
+ *  account being full, and the two must never collapse into each other.
+ *
+ *  `stale` is the third case, and it is deliberately on the `ok` arm rather than
+ *  beside it: the windows are real, they are the last ones that arrived, and
+ *  everything downstream should go on reading them exactly as it reads a fresh
+ *  reading. What it carries is why the *next* ask failed, so a face can say the
+ *  figures are not current without any of them being taken away. See
+ *  `keptThrough`. */
 export type Allowance =
-  | { ok: true; windows: Window[]; at: number }
+  | { ok: true; windows: Window[]; at: number; stale?: string }
   | { ok: false; fault: string };
 
 /** One window standing in the way, and whose ceiling it is.
@@ -273,6 +281,54 @@ export function speaksWith(account: Account, windows: Window[]): Spoken {
      no session window drawing something rather than an em dash. */
   const sessions = windows.filter((w) => w.group === "session");
   return { window: binding(sessions.length > 0 ? sessions : windows), ceiling: null };
+}
+
+/* ── a reading the network went away in the middle of ────────────────*/
+
+/** What survives of a reading when the next ask fails.
+ *
+ *  **A failed ask is not evidence about an account**, and one was allowed to act
+ *  like evidence: `Waterfall.poll` built a fresh map of readings every pass, so a single connect timeout on flaky wifi replaced a perfectly good
+ *  reading with a fault. Every account went `ready · unmeasured` at once — your
+ *  caps off, `spentOf` reading every account as untouched, and the waterfall
+ *  degraded to rank order until the network came back, for a wall whose
+ *  percentages were minutes old and still true. That is the same conflation
+ *  `standingOf` documents, one layer along: there a fault must not make an
+ *  account *unusable*, here it must not make one *unmeasured* while something
+ *  true is still in hand.
+ *
+ *  What makes keeping it honest is that **a window is monotonic inside its own
+ *  reset**. Usage only accumulates until the window rolls, so a percentage taken
+ *  ten minutes ago is a *floor* on what the percentage is now rather than a
+ *  guess at it: an account the reading puts past your cap is certainly still
+ *  past it, and one it puts at 40% is at *at least* 40%. The error can only be
+ *  under-blocking, which is the direction this module already accepts and states
+ *  on `spentOf` — an unmeasured account counts as empty. So the held figure can
+ *  only move the answer towards the truth, never away from it.
+ *
+ *  That argument runs out exactly at the reset, which is why a rolled window is
+ *  **dropped** rather than kept: past it the figure is a floor on nothing, and a
+ *  wall left offline for an afternoon would go on holding work back against an
+ *  allowance the account has long since been given back. So a held reading thins
+ *  as its windows roll and becomes a fault again once the last one has — which
+ *  is the honest end of it, since by then nothing is known and `ready ·
+ *  unmeasured` is the truth rather than a degradation.
+ *
+ *  A window naming no reset — which a scoped week nobody has touched genuinely
+ *  does — cannot be given that argument at all, so it goes with the rolled ones.
+ *  It is also the harmless case: those are the windows sitting at zero. */
+export function keptThrough(
+  held: Allowance | undefined,
+  fault: string,
+  now: number,
+): Allowance {
+  if (!held?.ok) return { ok: false, fault };
+  const windows = held.windows.filter((w) => w.resetsAt !== null && w.resetsAt > now);
+  if (windows.length === 0) return { ok: false, fault };
+  /* `at` is the *reading's* age and not this pass's, so a poll that keeps
+     failing goes on saying how old the figures really are rather than resetting
+     the clock on them every three minutes. */
+  return { ok: true, windows, at: held.at, stale: fault };
 }
 
 /** Where one account stands right now.
@@ -580,6 +636,23 @@ export function sayCeiling(b: Blocker): string {
  *  not carry. */
 export function sayUnmeasured(why: string): string {
   return `your caps are not being applied — ${why}`;
+}
+
+/** That a row's figures are the last ones that arrived, and how old they are.
+ *
+ *  The counterpart to `sayUnmeasured` and deliberately the opposite claim. There
+ *  the consequence is the part worth saying out loud, because your caps are not
+ *  being applied at all; here they are, against a reading that has stopped being
+ *  refreshed. So this leads with the age — the one thing that decides what the
+ *  figure is still worth — and gives the reason after it.
+ *
+ *  Said for as long as it is true, by `healNote`'s rule and for `sayUnmeasured`'s
+ *  reason: a percentage that looks live and is an hour old is the one way this
+ *  face can mislead about an account the wall is spending. */
+export function sayStale(at: number, why: string, now: number): string {
+  const age = Math.max(0, now - at);
+  const when = age < MINUTE ? "just now" : `${until(age)} ago`;
+  return `measured ${when} — ${why}`;
 }
 
 /** What the wall says while it is holding work back. `until` is wording's

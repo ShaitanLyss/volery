@@ -497,20 +497,89 @@ struct Refusal {
     /// that has gone stale is not one of these: that recovers by itself and the
     /// next pass is the thing that notices.
     hush: bool,
+    /// Set when the request never reached anybody — see `TRIES`. The exact
+    /// opposite of `hush` and never both: one is the server having answered and
+    /// asked for quiet, the other is nothing having answered at all.
+    flaky: bool,
     /// What `Retry-After` said, where it said anything.
     after: Option<i64>,
 }
 
 impl Refusal {
     fn fault(say: impl Into<String>) -> Self {
-        Refusal { say: say.into(), hush: false, after: None }
+        Refusal { say: say.into(), hush: false, flaky: false, after: None }
     }
     fn wait(say: impl Into<String>, after: Option<i64>) -> Self {
-        Refusal { say: say.into(), hush: true, after }
+        Refusal { say: say.into(), hush: true, flaky: false, after }
+    }
+    /// A request that never arrived. Worth trying again where the two above are
+    /// precisely not.
+    fn flaky(say: impl Into<String>) -> Self {
+        Refusal { say: say.into(), hush: false, flaky: true, after: None }
     }
 }
 
+/// How many times a request that **never reached the server** is tried, in all.
+///
+/// It has to be argued for, sitting beside a floor and a hush that both exist to
+/// ask *less*. The line is the one `Refusal` already draws: a `429` or a `500`
+/// is the server having answered, and asking again is the thing that makes those
+/// worse — while a connect that timed out arrived nowhere, was counted by
+/// nobody, and is very often a single dropped packet on wifi that is already
+/// coming back. Retrying the first is impolite; retrying the second costs the
+/// endpoint nothing at all.
+///
+/// Two rather than more, because the cost lands somewhere easy to miss:
+/// `read_allowances` asks the accounts one after another, so this multiplies by
+/// the account count. Three accounts on a genuinely dead network is
+/// `3 × (2 × 5s + 1s)` — a little over half a minute parked on a blocking pool
+/// thread, which is bounded, and off the main thread by `off_main`, which is
+/// what makes it merely slow rather than a frozen wall.
+const TRIES: u32 = 2;
+
+/// Long enough for a wifi association to come back, short enough not to be a
+/// wait in its own right. Deliberately not a backoff — two attempts have one gap
+/// between them, and the real backoff for anything worse than a blip is
+/// `FLOOR_MS` and the poll above it.
+const RETRY_PAUSE: Duration = Duration::from_millis(1000);
+
+/// Ask, and ask again if the question never arrived.
+///
+/// The retry is here rather than in `report_with` so that everything above it —
+/// the floor, the hush, the cache — goes on seeing one ask per pass, which is
+/// what all of them are written against. A blip that heals on the second attempt
+/// leaves no trace anywhere; one that does not says how many times it was tried,
+/// because "the network is down" and "a packet was dropped" want different
+/// things from whoever reads it.
 fn ask(token: &Token) -> Result<serde_json::Value, Refusal> {
+    asking(RETRY_PAUSE, || ask_once(token))
+}
+
+/// The retrying itself, with the network and the waiting both passed in — so
+/// what is actually being decided here (which refusals are worth a second go,
+/// and what the last one is allowed to claim) is testable without a socket or a
+/// second of sleeping.
+fn asking(
+    pause: Duration,
+    mut attempt: impl FnMut() -> Result<serde_json::Value, Refusal>,
+) -> Result<serde_json::Value, Refusal> {
+    let mut tried = 0;
+    loop {
+        tried += 1;
+        match attempt() {
+            Err(r) if r.flaky && tried < TRIES => std::thread::sleep(pause),
+            Err(mut r) => {
+                if tried > 1 {
+                    r.say = format!("{} — tried {tried} times", r.say);
+                }
+                return Err(r);
+            }
+            got => return got,
+        }
+    }
+}
+
+fn ask_once(token: &Token) -> Result<serde_json::Value, Refusal> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(CONNECT_TIMEOUT)
         .timeout_read(READ_TIMEOUT)
@@ -564,7 +633,12 @@ fn ask(token: &Token) -> Result<serde_json::Value, Refusal> {
         Err(ureq::Error::Status(code, _)) => Err(Refusal::fault(format!(
             "the allowance endpoint answered {code}"
         ))),
-        Err(e) => Err(Refusal::fault(format!(
+        /* Nothing answered — a name that would not resolve, a connect that timed
+           out, a socket that went away mid-read. `flaky` rather than `fault`
+           because there is no server on the other end of this to be polite to,
+           and on the wifi this app is actually used on it is the failure most
+           likely to be over by the time it has been reported. */
+        Err(e) => Err(Refusal::flaky(format!(
             "could not reach the allowance endpoint: {e}"
         ))),
     }
@@ -1119,6 +1193,64 @@ mod tests {
     fn nothing_recognisable_is_no_windows_rather_than_a_guess() {
         let doc: serde_json::Value = serde_json::from_str(r#"{"limits":[{"nope":1}]}"#).unwrap();
         assert!(windows(&doc).is_empty());
+    }
+
+    /// Two attempts, no sleeping, and a counter to say what really happened.
+    fn tried(answers: Vec<Result<serde_json::Value, Refusal>>) -> (Result<serde_json::Value, Refusal>, usize) {
+        let mut left = answers.into_iter();
+        let mut n = 0;
+        let got = asking(Duration::ZERO, || {
+            n += 1;
+            left.next().expect("asked more times than the test allowed for")
+        });
+        (got, n)
+    }
+
+    #[test]
+    fn a_question_that_never_arrived_is_asked_again() {
+        /* The failure this is written for: one dropped packet on flaky wifi took
+           an account to `ready · unmeasured` for three minutes, with your caps
+           off for all of it. Nothing was refused — nothing was reached. */
+        let (got, n) = tried(vec![
+            Err(Refusal::flaky("could not reach the allowance endpoint: timed out")),
+            Ok(serde_json::json!({"limits": []})),
+        ]);
+        assert!(got.is_ok(), "the second attempt is the answer");
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn a_refusal_from_the_server_is_never_asked_again() {
+        /* The whole line this feature stands on. A `429` is the one answer that
+           asking again makes worse, and a `5xx` is the server saying the same
+           thing; both hush instead. A stale sign-in recovers by itself and the
+           next pass is what notices, so it is not worth a second connect
+           either. */
+        let (got, n) = tried(vec![Err(Refusal::wait("rate limited", None))]);
+        assert_eq!(n, 1);
+        assert!(got.is_err());
+
+        let (_, n) = tried(vec![Err(Refusal::fault("the sign-in has expired"))]);
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn giving_up_says_how_many_times_it_tried() {
+        /* "the network is down" and "a packet was dropped" want different things
+           from whoever reads the row, and the count is the only thing that tells
+           them apart. */
+        let (got, n) = tried(vec![
+            Err(Refusal::flaky("could not reach the allowance endpoint: timed out")),
+            Err(Refusal::flaky("could not reach the allowance endpoint: timed out")),
+        ]);
+        assert_eq!(n, TRIES as usize, "and no more than that");
+        let say = got.err().unwrap().say;
+        assert!(say.contains("tried 2 times"), "{say}");
+
+        /* And a refusal that was never retried claims nothing about retrying —
+           the sentence on the row is the server's own words and no more. */
+        let (got, _) = tried(vec![Err(Refusal::wait("rate limited", None))]);
+        assert_eq!(got.err().unwrap().say, "rate limited");
     }
 
     #[test]

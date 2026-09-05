@@ -428,6 +428,66 @@ over a prompt that existed nowhere but in a line drawn as though it had been
 sent. `echoFailed` is what says a send never left, and it is what that arm always
 meant.
 
+### A reading the network went away in the middle of
+
+The softening above — an unreadable allowance is `ready · unmeasured` rather than
+unusable — was right, and it was being reached one step too early.
+`Waterfall.poll` built a fresh map of readings every pass, so **a single connect
+timeout discarded a perfectly good reading** and the account fell all the way
+back to unmeasured. Reported 2026-09-05 from a wall on flaky wifi, two accounts
+at once:
+
+```text
+lyss   ready · unmeasured   your caps are not being applied — could not reach the
+                            allowance endpoint: … connection timed out
+```
+
+What that costs is everything the readings buy. Your caps are not applied, so
+work starts on an account you had capped at 60%. `spentOf` reads every account as
+untouched, so the balancer inside a tier ties them all at zero and falls through
+to rank — three part-spent subscriptions treated as three clean ones. And none of
+it is because anything was learnt about any account: **a failed ask is not
+evidence.** It is the same conflation `standingOf` was fixed for, one layer along
+and in the other direction — there a fault must not make an account *unusable*,
+here it must not make one *unmeasured* while something true is still in hand.
+
+`keptThrough` keeps it, and what makes that honest rather than merely convenient
+is that **a window is monotonic inside its own reset.** Usage only accumulates
+until the window rolls, so a percentage read ten minutes ago is a *floor* on what
+the percentage is now rather than a guess at it: an account the reading puts past
+your cap is certainly still past it, and one it puts at 40% is at *at least* 40%.
+The only error it can make is under-blocking, which is the direction this module
+already accepts and states on `spentOf`. So keeping the figure can only move the
+answer towards the truth.
+
+That argument runs out exactly at the reset, and so does the reading. **A window
+that has rolled is dropped**, because past its reset the figure is a floor on
+nothing — a wall left offline for an afternoon would otherwise go on holding work
+back against an allowance the account has long since been given back. So a held
+reading thins as its windows roll and becomes a fault again when the last one
+has, which is the honest end of it: by then nothing is known, and `ready ·
+unmeasured` is the truth rather than a degradation. A window naming no reset —
+which a scoped week nobody has touched genuinely does — cannot be given the
+argument at all and goes with the rolled ones; it is also the harmless case,
+since those are the windows sitting at zero.
+
+The face says it, at both ends of the same difference. `sayStale` leads with the
+age of the reading and gives the reason after it, where `sayUnmeasured` leads
+with the consequence — because there the consequence *is* the news (your caps are
+off) and here it is the opposite (they are on, against figures from twenty
+minutes ago). The usage widget needed nothing new: an account face now carries
+windows *and* a fault at once, which is the shape `globalFace` has always had,
+and the footer's existing `stale` mark reads it.
+
+Two things bound how long any of this lasts. `SOON` puts the next pass a minute
+out rather than three after a pass that could not reach the endpoint, since what
+is waiting on it is not a numeral that moves slowly but whether your caps are
+being applied at all — and `limits.rs`'s `FLOOR_MS` is the thing that actually
+bounds the asking, at one request per account per minute whoever asks. And a
+`429` needs no care here, deliberately: the hush lives in Rust and outranks the
+cadence, so a pass inside one is answered out of the cache with no request made.
+Backing off in both places would be two clocks disagreeing about one.
+
 ### The reactive half, and what is not probed about it
 
 The proactive path above reads the allowance and decides before it sends. It

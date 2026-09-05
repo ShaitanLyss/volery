@@ -125,7 +125,23 @@ limits: [ { kind: "session",       group: "session", percent: 27, severity: "nor
   become wrong because the network went away for a minute, and blanking the one number this
   widget exists to show — over a blip, or over a sign-in the CLI is about to refresh by itself
   — is the worse answer. What must not happen is a stale figure passed off as current, so the
-  fault is drawn beside it.
+  fault is drawn beside it. That was true of `Ledger` — the signed-in account's reading, which
+  is only ever *drawn* — and was not true of the per-account readings the waterfall spends
+  money on, which was much the worse half to get wrong. `accounts.md` has that one.
+- **A question that never arrived is asked again, and it is the only kind that is.** Two
+  attempts a second apart, in `ask`, for transport failures alone: a name that would not
+  resolve, a connect that timed out, a socket that went away mid-read. The line is the one
+  `Refusal` already draws for the hush and it is drawn in the other direction — a `429` or a
+  `5xx` is the server having answered, so asking again is exactly what makes those worse,
+  while a request that reached nobody was counted by nobody and is very often one dropped
+  packet on wifi that is already coming back. Retrying the first is impolite; retrying the
+  second costs the endpoint nothing. Bounded at two because `read_allowances` asks the
+  accounts one after another, so it multiplies: three accounts on a genuinely dead network is
+  a little over half a minute parked on a blocking pool thread, which `off_main` is what makes
+  survivable. When it does give up it says how many times it tried, because "the network is
+  down" and "a packet was dropped" want different things from whoever reads the row. `asking`
+  takes the network and the waiting as arguments so which refusals are worth a second go is
+  tested without a socket.
 - **Three minutes, and a floor of one in Rust besides.** The cadence is what one *printed*
   percent costs: a five-hour window fills in three hundred minutes, so it moves a percent in
   three of them, and the face floors to whole numbers — anything quicker spends a request to

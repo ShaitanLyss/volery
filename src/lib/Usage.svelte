@@ -98,7 +98,14 @@
    *  here for the reason `read_allowances` keeps them apart in Rust: an account
    *  that is full and an account that could not be asked are answered
    *  differently, and a face that drew 0% for the second would be lying about
-   *  the first. */
+   *  the first.
+   *
+   *  They are not exclusive, and the case where both are set is the interesting
+   *  one: windows that arrived earlier, and a reason the ask since then failed.
+   *  That is what the footer's `stale` mark is for, and it is exactly the shape
+   *  `globalFace` has always had — `ledger.limits` beside `ledger.limitsFault` —
+   *  now that an account face can hold a reading through a fault too
+   *  (`accounts.ts::keptThrough`). */
   type Face = {
     label: string;
     windows: Window[];
@@ -148,7 +155,10 @@
       return {
         label: a.label,
         windows: got?.ok ? ordered(got.windows) : [],
-        fault: !got ? "not read yet" : got.ok ? null : got.fault,
+        /* A held reading reports the reason the *last ask* failed, which puts
+           the `stale` mark on the footer without taking a single window off the
+           face — the number on it is still the best one there is. */
+        fault: !got ? "not read yet" : got.ok ? (got.stale ?? null) : got.fault,
         source: `the '${a.label}' account`,
         account: a,
       };
@@ -189,8 +199,15 @@
         worst,
         tier: worst ? (spoke.ceiling ? "urgent" : tierOf(worst)) : undefined,
         /* Only where a ceiling was reached, and then always: the number alone
-           cannot explain a rust 60%, which is what a cap of yours looks like. */
-        note: spoke.ceiling ? sayCeiling(spoke.ceiling) : null,
+           cannot explain a rust 60%, which is what a cap of yours looks like.
+           And that the reading is a held one, which on this face has nowhere
+           else to be said — one line per account has no room for a mark, and a
+           column of percentages must not quietly include an old one. A fault
+           with a window to speak with is a held reading by construction: with
+           nothing read there is no `worst` and this note is never reached. */
+        note: [spoke.ceiling ? sayCeiling(spoke.ceiling) : null, f.fault ? "stale" : null]
+          .filter(Boolean)
+          .join(", "),
       };
     }),
   );
