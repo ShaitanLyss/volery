@@ -270,10 +270,16 @@ as text. Every part needed to assemble it is published, though:
   `--print` path, and it is what keeps the card's own transcript untouched. **That is the whole
   feature**: the answer costs a request and changes nothing about the conversation it was asked
   beside — no turn opened, nothing queued behind what the card is doing.
-- **The framing is quoted verbatim**: `<system-reminder>This is a side question from the user.
-  You must answer this question directly in a single response.` Not reworded, because the
-  second sentence is what keeps the fork answering instead of picking up tools and working —
-  and `--tools ""` is the half that makes it structural rather than a request.
+- **The framing is quoted verbatim, and the tag is closed.** `<system-reminder>This is a side
+  question from the user. You must answer this question directly in a single response.` and
+  then eight more clauses, ending `…information you have.</system-reminder>`. Not reworded,
+  because those sentences are what keep the fork answering instead of picking up tools and
+  working — and `--tools ""` is the half that makes it structural rather than a request.
+  **The CLI closes nothing for us**: it emits the whole block as one literal and writes the
+  question *after* the closing tag, which is what `ask` does here. This carried the first two
+  sentences and no close for its first week — a `<system-reminder>` opened over the user's
+  own question, with nothing anywhere saying where the reminder stopped (sink cc3a4f27). Read
+  out of the 2.1.233 bundle on 2026-09-05, at `@168367992` and `@303183256`.
 - **It is ephemeral, and that is a match rather than a shortcut.** `class q4s { exchanges = []
   … .slice(-20) }` is hung on the CLI's in-memory session context and written nowhere. So an
   aside here is in-memory too — which settles what would otherwise be a real question, since
@@ -296,4 +302,4 @@ question that silently vanished is a card that appears to have forgotten it.
 `aside.rs` has the rest: the job object (a `claude` child carries a `conhost` and `kill()`
 reaches one process), the finite wait, the hard failure when the card's account is not signed
 in rather than a quiet fall-through to whichever one is, and the refusal when a card has never
-taken a turn — there is nothing to fork. `bun tools/lift-aside.ts` runs its four assertions.
+taken a turn — there is nothing to fork. `bun tools/lift-aside.ts` runs its five assertions.

@@ -15,9 +15,10 @@
  * same number twice makes a sleeping thread think it is still current. Neither is
  * visible to a typecheck and both are one line.
  *
- * **`FRAME` is quoted from the CLI and the second sentence is load-bearing** —
- * it is what keeps the fork answering instead of picking up tools and working. A
- * reworded frame still compiles.
+ * **`FRAME` is quoted from the CLI and its constraints are load-bearing** — they
+ * are what keeps the fork answering instead of picking up tools and working. A
+ * reworded frame still compiles, and so does one whose `<system-reminder>` never
+ * closes, which is what it shipped as (sink cc3a4f27).
  *
  * Dependency-free: `Asides` is a `Mutex<HashMap>` and an `AtomicU64`, so this is
  * variant 1 of build.md's ladder with no `--extern` at all.
@@ -37,6 +38,7 @@ const ITEMS: string[] = ["const FRAME", "struct Asides", "impl Asides"];
 
 const TESTS: string[] = [
   "the_frame_asks_for_an_answer_rather_than_work",
+  "the_reminder_closes_before_the_question_goes_in",
   "a_second_aside_supersedes_the_first",
   "one_card_does_not_cancel_anothers",
   "a_generation_is_never_handed_out_twice",

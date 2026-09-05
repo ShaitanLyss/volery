@@ -25,12 +25,11 @@
 //!   resuming, create a new session ID" — and it is what keeps the card's own
 //!   transcript untouched. **That is the whole feature**: the answer costs a
 //!   request and changes nothing about the conversation it was asked beside.
-//! - **It frames the question.** Verbatim from the binary:
-//!   `<system-reminder>This is a side question from the user. You must answer
-//!   this question directly in a single response.` Used as-is rather than
-//!   reworded, because the second sentence is what stops the fork picking up
-//!   tools and working — and a fork that started editing files would be the
-//!   opposite of "without interrupting".
+//! - **It frames the question**, in a `<system-reminder>` block that it closes
+//!   before the question goes in after it. Used as-is rather than reworded,
+//!   because the sentences are what stop the fork picking up tools and working
+//!   — and a fork that started editing files would be the opposite of "without
+//!   interrupting". `FRAME` has the whole of it and how it was read.
 //! - **It keeps the pairs in memory and nowhere else.** `class q4s { exchanges
 //!   = [] ... .slice(-20) }`, hung on the session context. Nothing is written to
 //!   disk. So an aside on this wall is ephemeral too, and that is a *match*
@@ -59,14 +58,47 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::servers::jobs;
 
-/// The framing the CLI puts on a side question, verbatim.
+/// The framing the CLI puts on a side question, verbatim — **and closed**.
 ///
-/// **Not reworded.** The second sentence is load-bearing: it is what keeps the
+/// **Not reworded.** These sentences are load-bearing: they are what keeps the
 /// fork from picking up tools and starting work, and a fork that began editing
-/// files would be precisely the interruption `/btw` exists to avoid. Read out of
-/// the 2.1.241 bundle.
+/// files would be precisely the interruption `/btw` exists to avoid.
+///
+/// This carried the first two sentences and no closing tag, which is a
+/// `<system-reminder>` opened over the user's own question — so the question
+/// inherited a framing meant for the wrapper, and nothing anywhere said where
+/// the reminder stopped (sink `cc3a4f27`). **The CLI does not close it for us**:
+/// read out of the 2.1.233 bundle on this machine on 2026-09-05, at two sites
+/// (`@168367992`, `@303183256`), where the whole block is one literal that ends
+/// `…information you have.</system-reminder>\n\n${e}` — the question after the
+/// close, exactly as `ask` writes it. So the tag is ours to shut, and there is
+/// no second copy to collide with.
+///
+/// The rest of the block came with it because every clause of it is true here
+/// too, and each was a thing this fork had no reason not to do: it is spawned
+/// for one question, it shares the conversation and is a separate instance, it
+/// has no tools (`--tools ""`), and there is no turn after this one. An aside is
+/// already an uncached read of the whole card, so the ~1 KB is not the cost —
+/// the fork promising to go and look something up is.
 pub(crate) const FRAME: &str = "<system-reminder>This is a side question from the user. \
-     You must answer this question directly in a single response.";
+     You must answer this question directly in a single response.\n\n\
+     IMPORTANT CONTEXT:\n\
+     - You are a separate, lightweight agent spawned to answer this one question\n\
+     - The main agent is NOT interrupted - it continues working independently in the \
+     background\n\
+     - You share the conversation context but are a completely separate instance\n\
+     - Do NOT reference being interrupted or what you were \"previously doing\" - that \
+     framing is incorrect\n\n\
+     CRITICAL CONSTRAINTS:\n\
+     - You have NO tools available - you cannot read files, run commands, search, or take \
+     any actions\n\
+     - This is a one-off response - there will be no follow-up turns\n\
+     - You can ONLY provide information based on what you already know from the \
+     conversation context\n\
+     - NEVER say things like \"Let me try...\", \"I'll now...\", \"Let me check...\", or \
+     promise to take any action\n\
+     - If you don't know the answer, say so - do not offer to look it up or investigate\n\n\
+     Simply answer the question with the information you have.</system-reminder>";
 
 /// The most of an answer this will carry back.
 ///
@@ -354,7 +386,7 @@ fn ask(app: &AppHandle, id: &str, question: &str) -> Result<(String, bool), Stri
 mod tests {
     use super::*;
 
-    /// The framing is quoted from the CLI, and the second sentence is why.
+    /// The framing is quoted from the CLI, and the constraints are why.
     ///
     /// Asserted rather than trusted to review, because the whole difference
     /// between an aside and a turn is that the fork answers instead of working —
@@ -366,6 +398,21 @@ mod tests {
         /* The half that stops it working. */
         assert!(FRAME.contains("single response"), "{FRAME}");
         assert!(FRAME.contains("answer this question directly"), "{FRAME}");
+        assert!(FRAME.contains("NO tools available"), "{FRAME}");
+        assert!(FRAME.contains("no follow-up turns"), "{FRAME}");
+    }
+
+    /// The tag is closed, and closed at the end — so the question written after
+    /// it is outside the reminder rather than inside one that never ends.
+    ///
+    /// One open and one close, because the CLI appends nothing: it emits the
+    /// whole block itself and puts the question after the closing tag. A second
+    /// copy of either would be the subtler version of the same bug.
+    #[test]
+    fn the_reminder_closes_before_the_question_goes_in() {
+        assert_eq!(FRAME.matches("<system-reminder>").count(), 1, "{FRAME}");
+        assert_eq!(FRAME.matches("</system-reminder>").count(), 1, "{FRAME}");
+        assert!(FRAME.ends_with("</system-reminder>"), "{FRAME}");
     }
 
     /// One at a time per card, and a superseded one is dropped rather than
