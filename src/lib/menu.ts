@@ -84,6 +84,15 @@ export type MenuTarget = {
      `offers` and `picks` already strike: what a preset *is* belongs to
      `presets.ts`, and this file's business is only what the click offers. */
   presets?: { id: string; label: string; note: string }[];
+  /** Which of these rows the plain `+` opens on, so the menu can mark it: a
+   *  preset id, or `""` for the "as claude code is set up" row, which is one of
+   *  the same choices and is marked the same way.
+   *
+   *  The *marking* is this file's business even though the presets are handed
+   *  in — "which of these is in force" is what the click offers, where "what a
+   *  preset is" belongs to `presets.ts`. Undefined marks nothing, which is what
+   *  a caller with no opinion gets. */
+  presetDefault?: string;
   /** ground: what the undo stack would do in each direction, named, or null
    *  where there is nothing that way.
    *
@@ -112,7 +121,15 @@ export type MenuItem =
        *  columns in front of you for "close" is a menu you read slower. */
       note?: string;
     }
-  | { kind: "sep" };
+  | { kind: "sep" }
+  /** A line you cannot click, naming a gesture the rows themselves cannot show.
+   *
+   *  There is exactly one, and it exists because `ContextMenu` has no room for a
+   *  second action on a row: a preset's row already means "open a card like
+   *  this", so "make this the default" had to be a modifier, and a modifier
+   *  nobody is told about is a feature only its author has. Not a disabled item
+   *  — a greyed row invites the click it will not answer. */
+  | { kind: "hint"; text: string };
 
 const item = (id: string, label: string, danger = false): MenuItem => ({
   kind: "item",
@@ -143,10 +160,15 @@ const glassItem = (on = false): MenuItem =>
   item("glass", on ? "put it back on the wall" : "stick it to the glass");
 
 /** Trailing and leading separators, and runs of them, are artefacts of building
- *  a list conditionally — never something anybody meant. */
-function tidy(items: MenuItem[]): MenuItem[] {
+ *  a list conditionally — never something anybody meant.
+ *
+ *  Nullable in, because every case below builds its list with `cond ? row :
+ *  null` and dropping those is the same tidying as dropping the separators they
+ *  leave behind. */
+function tidy(items: (MenuItem | null | undefined | false)[]): MenuItem[] {
   const out: MenuItem[] = [];
   for (const it of items) {
+    if (!it) continue;
     if (it.kind === "sep" && (!out.length || out[out.length - 1].kind === "sep")) {
       continue;
     }
@@ -231,27 +253,50 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         item("remove", "take it down", true),
       ]);
 
-    /* The `+` on a territory, right-clicked. Left-clicked it still opens a
-       card on whatever Claude Code is configured for — this is the same
+    /* The `+` on a territory, right-clicked. Left-clicked it opens a card on
+       whatever this menu was last told to make the default — this is the same
        gesture with the setting-up done first, which is the only moment it can
        be done cheaply: a card that has already spoken has spent a context on
        the model you did not mean to use.
+
+       So this menu does two jobs with one list: a click opens a card set up
+       that way *once*, and a ctrl-click makes that row what the plain `+` does
+       from now on. One list rather than two because they are the same five
+       choices, and a second menu of the same five under a different verb is a
+       menu you have to read twice to find out they are.
 
        The plain opening is last rather than first. It is the one that was
        already there and needs no reading, and putting it at the top would put
        the five things worth looking at below the one you can reach by not
        right-clicking at all. */
-    case "spawn":
+    case "spawn": {
+      /* Marked only when somebody has told us what the default is. Undefined
+         leaves every row a plain item; a value makes the whole list a radio
+         group with the dot on the one a plain `+` would open, which is the only
+         way to see that setting without opening a card to find out. */
+      const mark = (id: string) =>
+        t.presetDefault === undefined ? {} : { on: t.presetDefault === id };
       return tidy([
         ...(t.presets ?? []).map((p) => ({
           kind: "item" as const,
           id: `preset:${p.id}`,
           label: p.label,
           note: p.note,
+          ...mark(p.id),
         })),
         sep,
-        item("new", "as claude code is set up"),
+        /* `""` is this row's id as the default is stored — see
+           `presets.defaultPresetFor`, where it is the *chosen* absence of a
+           preset rather than nobody having chosen. */
+        { kind: "item" as const, id: "new", label: "as claude code is set up", ...mark("") },
+        /* Last, and only where there is a default to change. A hint about a
+           gesture is worth its line while the gesture is new and worth nothing
+           to somebody who has no way to act on it. */
+        t.presetDefault === undefined
+          ? null
+          : { kind: "hint" as const, text: "ctrl-click a row to make it what + opens" },
       ]);
+    }
 
     case "region":
       return tidy([

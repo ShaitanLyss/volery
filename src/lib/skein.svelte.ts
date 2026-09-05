@@ -54,7 +54,7 @@ import { Sink } from "./sink.svelte";
 import { Gates } from "./gates.svelte";
 import { cliCommand, isEffort } from "./commands";
 import { wireOf, type Gear } from "./gears";
-import type { Preset } from "./presets";
+import { defaultPresetFor, type Preset } from "./presets";
 import { UNNAMED, isNamed, titleFromPrompt } from "./naming";
 import {
   ROUSE_GAP_MS,
@@ -153,6 +153,13 @@ export class Skein {
   /** What the wall tells every card standing on it, project and chat alike.
    *  Its territories' own are on `Project.instructions`. See `guidance.ts`. */
   guidance = $state("");
+
+  /** Which preset a plain `+` opens a card as, as the store holds it: a preset
+   *  id, `""` for "as claude code is set up", or `null` where nobody has ever
+   *  chosen. Resolved by `defaultPresetFor`, which is where the three cases are
+   *  told apart — this field deliberately keeps them apart rather than
+   *  collapsing them here. */
+  defaultPreset = $state<string | null>(null);
   convs = $state<Conversation[]>([]);
   /** Cards an agent has just taken off the wall, for as long as their fade
    *  lasts. **Not a membership list of any kind** — everything that asks what is
@@ -627,6 +634,7 @@ export class Skein {
         conversations: any[];
         server_groups: ServerGroup[];
         guidance: string;
+        default_preset: string | null;
       }>("load_studio");
 
       this.projects = s.projects;
@@ -634,6 +642,11 @@ export class Skein {
          and a snapshot from a build before v23 has no such key. Nothing set is
          what that build meant. */
       this.guidance = s.guidance ?? "";
+      /* `?? null` rather than `?? ""`, and the difference is the feature: a
+         snapshot from a build before v28 has no such key, and "nobody has
+         chosen" is what that build meant — where `""` would mean the user had
+         chosen to open cards on no preset at all. */
+      this.defaultPreset = s.default_preset ?? null;
 
       /* Learned off the wall where it can be: a chat card's cwd *is* the chat
          home, so a wall holding one knows where it is on the first frame with
@@ -784,16 +797,44 @@ export class Skein {
   /** `worktree` branches the conversation into its own git worktree via the
    *  CLI's own `--worktree`, so we never shell out to git ourselves.
    *
-   *  `preset` is the model and effort the card is opened with, from the `+`'s
-   *  right-click. Absent is not a default standing in for one — it is the card
-   *  taking whatever Claude Code is configured for, which is what every card
-   *  did before presets and what a plain click still does. */
+   *  `preset` is the model and effort the card is opened with, and it has three
+   *  states rather than two — which is what changed when the wall gained a
+   *  default it remembers.
+   *
+   *  - A `Preset` — this card, set up that way, whatever the default is. The
+   *    `+`'s right-click.
+   *  - `undefined` — nobody said, so the wall's own default applies. A plain
+   *    left-click, and every other caller that opens a card without an opinion.
+   *  - `null` — *as claude code is set up*, explicitly: no `--model`, no
+   *    `--effort`. This is what every card did before presets existed, and it
+   *    has to stay expressible or the wall's default could not be turned off.
+   *
+   *  Collapsing the last two is the bug this shape exists to prevent: they
+   *  differ by whether somebody has answered, and only one of them should be
+   *  overridden by a setting. */
   async open(
     cwd: string,
     worktree?: string,
-    preset?: Preset,
+    preset?: Preset | null,
   ): Promise<Conversation | null> {
-    return this.#openIn(cwd, worktree?.trim() || null, "project", null, preset);
+    const setup =
+      preset === undefined ? defaultPresetFor(this.defaultPreset) : (preset ?? undefined);
+    return this.#openIn(cwd, worktree?.trim() || null, "project", null, setup);
+  }
+
+  /** Remember what a plain `+` should open. `""` for "as claude code is set up".
+   *
+   *  Optimistic, and it is the right kind of optimism: what this changes is a
+   *  menu marking and the next card opened, so a write that fails costs a wrong
+   *  dot until the next launch rather than a card set up wrongly — the store is
+   *  read again at every load. */
+  async setDefaultPreset(presetId: string): Promise<void> {
+    this.defaultPreset = presetId;
+    try {
+      await invoke("set_default_preset", { presetId });
+    } catch (e) {
+      console.error("set_default_preset", e);
+    }
   }
 
   /** A card with no project.

@@ -94,7 +94,12 @@
   } from "./lib/commands";
   import { isGear, planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
-  import { presetById, presetPicks, type Preset } from "./lib/presets";
+  import {
+    FALLBACK_DEFAULT_PRESET,
+    presetById,
+    presetPicks,
+    type Preset,
+  } from "./lib/presets";
   import { spotOf } from "./lib/glass";
   import { selectionMarkdown } from "./lib/copy";
   import { displayName } from "./lib/naming";
@@ -694,7 +699,7 @@
   /** Open a conversation somewhere. Nobody should ever type a path to do this:
    *  you either drop a folder on the wall, add one to a territory you already
    *  have, or pick a folder the way you pick a folder. */
-  async function openIn(dir: string, worktree?: string, preset?: Preset) {
+  async function openIn(dir: string, worktree?: string, preset?: Preset | null) {
     if (spawning) return null;
     spawning = true;
     const conv = await skein.open(dir, worktree, preset);
@@ -906,7 +911,7 @@
     x: number;
     y: number;
     items: MenuItem[];
-    act: (id: string) => void;
+    act: (id: string, mod?: boolean) => void;
   } | null>(null);
 
   async function copyText(text: string) {
@@ -943,7 +948,7 @@
     const where = canvas?.toCanvas(e.clientX, e.clientY) ?? { x: 0, y: 0 };
 
     let target: MenuTarget | null = null;
-    let act: (id: string) => void = () => {};
+    let act: (id: string, mod?: boolean) => void = () => {};
 
     if (field) {
       target = {
@@ -1109,12 +1114,28 @@
          tools and no model of its own worth choosing, and `onadd` already
          routes that `+` somewhere else entirely; see `chat.md`. */
       const cwd = addEl.dataset.add;
-      target = { kind: "spawn", presets: presetPicks() };
-      act = (id) => {
-        if (id === "new") void openIn(cwd);
-        else if (id.startsWith("preset:")) {
-          void openIn(cwd, undefined, presetById(id.slice(7)));
+      /* `?? ""` is not a fallback here: a wall that has never been asked still
+         opens on the built-in default, so the row to mark is the one
+         `defaultPresetFor` would pick rather than nothing. */
+      target = {
+        kind: "spawn",
+        presets: presetPicks(),
+        presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
+      };
+      act = (id, mod) => {
+        /* Both jobs of this menu come off the same row, told apart by the
+           modifier: a click opens one card that way, a ctrl-click changes what
+           the plain `+` does from here on. `""` is the id the "as claude code
+           is set up" row is stored under — see `presets.defaultPresetFor`. */
+        const chosen = id === "new" ? "" : id.startsWith("preset:") ? id.slice(7) : null;
+        if (chosen === null) return;
+        if (mod) {
+          void skein.setDefaultPreset(chosen);
+          return;
         }
+        /* `null` rather than `undefined` for the plain row, so it opens with no
+           model and no effort instead of picking the wall's default back up. */
+        void openIn(cwd, undefined, chosen === "" ? null : presetById(chosen));
       };
     } else if (regionEl?.dataset.cwd) {
       const cwd = regionEl.dataset.cwd;
@@ -2849,8 +2870,8 @@
       x={menu.x}
       y={menu.y}
       items={menu.items}
-      onpick={(id) => {
-        menu?.act(id);
+      onpick={(id, mod) => {
+        menu?.act(id, mod);
         menu = null;
       }}
       onclose={() => (menu = null)}

@@ -12,7 +12,10 @@
     x: number;
     y: number;
     items: MenuItem[];
-    onpick: (id: string) => void;
+    /** `mod` is ctrl (or cmd) held at the moment of the click — a second thing
+     *  a row can mean, for the one menu that needs one. Optional, and every
+     *  other call site simply takes the id and ignores it. */
+    onpick: (id: string, mod?: boolean) => void;
     onclose: () => void;
   } = $props();
 
@@ -57,6 +60,10 @@
     {#each items as it, i (i)}
       {#if it.kind === "sep"}
         <div class="sep"></div>
+      {:else if it.kind === "hint"}
+        <!-- Not a button. A greyed-out row invites the click it will not
+             answer; this reads as a caption, which is what it is. -->
+        <div class="hint">{it.text}</div>
       {:else}
         <button
           class="row"
@@ -66,7 +73,7 @@
           data-menu={it.id}
           role={it.on === undefined ? "menuitem" : "menuitemradio"}
           aria-checked={it.on}
-          onclick={() => onpick(it.id)}
+          onclick={(e) => onpick(it.id, e.ctrlKey || e.metaKey)}
         >
           {it.label}
           <!-- What the row costs, where the label is what it is for. Right of
@@ -84,6 +91,17 @@
     position: fixed;
     inset: 0;
     z-index: 60;
+  }
+
+  .hint {
+    padding: 0.2rem 0.5rem 0.1rem;
+    font-size: 0.68rem;
+    color: var(--paper-faint);
+    white-space: nowrap;
+    /* Not selectable and not a click target: it is a caption on the menu, and a
+       press that lands here should close it like any press outside a row. */
+    pointer-events: none;
+    user-select: none;
   }
 
   .menu {

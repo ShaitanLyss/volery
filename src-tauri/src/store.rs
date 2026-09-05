@@ -163,6 +163,11 @@ pub struct Studio {
     /// wants to draw whether there is one, and a second round trip to find out
     /// is a round trip the first paint would have to wait for.
     pub guidance: String,
+    /// Which preset the plain `+` opens a card as, or `None` where nobody has
+    /// chosen. In the snapshot for the same reason `guidance` is: the first
+    /// paint wants it, and a round trip of its own is one the first paint would
+    /// have to wait for.
+    pub default_preset: Option<String>,
 }
 
 impl Store {
@@ -184,7 +189,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 27;
+const SCHEMA_VERSION: i64 = 28;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -217,6 +222,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (25, migrate_v25),
     (26, migrate_v26),
     (27, migrate_v27),
+    (28, migrate_v28),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1273,6 +1279,41 @@ fn migrate_v27(conn: &Connection) -> Result<(), String> {
     add_column(conn, "conversation", "held_text", "TEXT")?;
     add_column(conn, "conversation", "held_why", "TEXT")?;
     add_column(conn, "conversation", "held_until", "INTEGER")
+}
+
+/// What the plain `+` opens a card as, when nobody has said otherwise.
+///
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: a new table
+/// with nothing to backfill, and the same one-row shape `wall_guidance` and
+/// `window_frame` already use.
+///
+/// **A missing row and an empty string are different answers**, which is the
+/// whole reason this is a table rather than a column with a default. No row is
+/// "this wall has never been asked", and it resolves to the built-in default —
+/// which is `presets.ts`'s business, not this file's, so nothing here names a
+/// model. An empty string is the user having chosen *as claude code is set up*,
+/// which is a real choice and not the absence of one: it means spawn with no
+/// `--model` and no `--effort` at all. Collapsing the two would make the wall's
+/// default impossible to turn off, since the only way to say "none" would be
+/// indistinguishable from never having answered.
+///
+/// The value is a preset **id** rather than a model and an effort, for the
+/// reason `presets.ts` gives about its own ids: a preset can be renamed, or have
+/// its pairing revised, without orphaning the setting. An id this build does not
+/// recognise falls back to the built-in default rather than to nothing, since a
+/// preset that has been retired is much likelier than a wall that meant no
+/// preset at all.
+fn migrate_v28(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS default_preset (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            preset_id   TEXT NOT NULL,
+            updated_at  INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v28: {e}"))
 }
 
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
@@ -2865,6 +2906,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
         conversations,
         server_groups,
         guidance: wall_guidance(&conn),
+        default_preset: default_preset(&conn),
     })
 }
 
@@ -2925,6 +2967,47 @@ pub fn set_project_guidance(
         return Err(format!("no project {project_id} on this wall"));
     }
     Ok(text)
+}
+
+/* ── what the plain `+` opens ─────────────────────────────────────────────
+   One row, the shape `wall_guidance` uses over the table `migrate_v28` makes.
+   No model or effort is named here on purpose: this file stores which preset
+   was chosen, and what a preset *is* belongs to `presets.ts`. */
+
+/// The preset id the wall opens a plain card as, or `None` where nobody has
+/// ever said. Never fails, for `wall_guidance`'s reason — a missing row is the
+/// ordinary first-launch case and a locked database is not worth failing a paint
+/// over.
+///
+/// `Some("")` is a real answer and is not the same as `None`: it is the user
+/// having chosen *as claude code is set up*. See `migrate_v28`.
+pub fn default_preset(conn: &Connection) -> Option<String> {
+    conn.query_row("SELECT preset_id FROM default_preset WHERE id = 1", [], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// Set it. An upsert on the one permitted id, the same shape
+/// `set_wall_guidance` uses over the same kind of single-row table.
+///
+/// The id is not checked against a catalogue here, and that is deliberate: this
+/// build's list of presets lives in the front end, so a check would be Rust
+/// keeping a second copy of a vocabulary it does not own — the thing
+/// `classify.ts` exists to stop. An unknown id is already handled where it is
+/// read, by falling back to the built-in default.
+#[tauri::command]
+pub fn set_default_preset(store: tauri::State<'_, Store>, preset_id: String) -> Result<(), String> {
+    let conn = store.0.lock().map_err(|_| "the store is unavailable")?;
+    conn.execute(
+        "INSERT INTO default_preset (id, preset_id, updated_at) VALUES (1, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET preset_id = ?1, updated_at = ?2",
+        params![preset_id, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /* ── reference images ─────────────────────────────────────────────────── */
@@ -5261,6 +5344,71 @@ mod tests {
            they read the brand before checking the length. */
         assert_eq!(sniff_image(b"RIFF"), None);
         assert_eq!(sniff_image(b"\x00\x00\x00\x20ftyp"), None);
+    }
+
+    /* ── what the plain `+` opens (v28) ───────────────────────────────── */
+
+    /// The distinction the whole column exists for: a wall nobody has asked
+    /// answers `None`, which is *not* the same as a wall that has chosen to
+    /// open cards on no preset at all. The front end resolves the first to its
+    /// built-in default and the second to no `--model` and no `--effort`, so
+    /// collapsing them here would make the default impossible to turn off.
+    #[test]
+    fn never_asked_and_asked_for_none_are_different_answers() {
+        let conn = db();
+        assert_eq!(default_preset(&conn), None);
+
+        let put = |v: &str| {
+            conn.execute(
+                "INSERT INTO default_preset (id, preset_id, updated_at) VALUES (1, ?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET preset_id = ?1, updated_at = ?2",
+                params![v, 0],
+            )
+            .unwrap();
+        };
+
+        put("");
+        assert_eq!(default_preset(&conn), Some(String::new()));
+        put("deep");
+        assert_eq!(default_preset(&conn), Some("deep".into()));
+    }
+
+    /// One wall, one answer — the `CHECK (id = 1)` and the upsert together, the
+    /// invariant `the_wall_keeps_one_set_of_instructions` pins one table over.
+    #[test]
+    fn the_wall_keeps_one_default_preset() {
+        let conn = db();
+        for v in ["ask", "work", "deep"] {
+            conn.execute(
+                "INSERT INTO default_preset (id, preset_id, updated_at) VALUES (1, ?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET preset_id = ?1, updated_at = ?2",
+                params![v, 0],
+            )
+            .unwrap();
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM default_preset", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(default_preset(&conn), Some("deep".into()));
+    }
+
+    /// An id is stored as written, and is *not* checked against a catalogue:
+    /// this build's list of presets lives in the front end, and Rust keeping a
+    /// second copy of a vocabulary it does not own is the thing `classify.ts`
+    /// exists to prevent. An id nobody recognises is handled where it is read.
+    #[test]
+    fn an_unknown_preset_id_is_stored_rather_than_refused() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO default_preset (id, preset_id, updated_at) VALUES (1, ?1, 0)",
+            params!["a-preset-from-some-later-build"],
+        )
+        .unwrap();
+        assert_eq!(
+            default_preset(&conn),
+            Some("a-preset-from-some-later-build".into())
+        );
     }
 
     /* ── standing instructions (v23) ──────────────────────────────────── */

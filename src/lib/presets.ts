@@ -132,6 +132,51 @@ export function presetById(id: string | undefined): Preset | undefined {
   return PRESETS.find((p) => p.id === id);
 }
 
+/** What the plain `+` opens a card as when nobody has ever said.
+ *
+ *  `deep` — opus[1m] · xhigh. The menu above orders these by cost and this is
+ *  the dear end of it, which wants the argument said out loud rather than left
+ *  to look like a slip.
+ *
+ *  The `+` used to open every card on whatever Claude Code was configured for,
+ *  and the failure that has is not symmetric. A card that turns out to be a
+ *  one-line question and was opened on opus costs a few cents more than it had
+ *  to; a card that turns out to be a day's work and was opened on the cheap
+ *  setting is answered worse for hours, and **nothing on the card says so** —
+ *  you find out from the quality of what comes back, by which time the context
+ *  is spent and `/model` is a new card in all but name. The cheap end of this
+ *  menu is one right-click away and is where a quick question should start; the
+ *  expensive end is the one you cannot retrofit.
+ *
+ *  `xhigh` rather than `high` is Anthropic's own recommendation for coding and
+ *  agentic work specifically (effort docs, read 2026-09-05: start at `xhigh`
+ *  there, `high` for most other intelligence-sensitive work), and it is not the
+ *  overshoot `max` would be — see `deep`'s note above, which is why the scale
+ *  stops one rung below.
+ *
+ *  This is a fallback, not a policy. It holds until the wall is told otherwise,
+ *  and the wall remembers (`store::default_preset`). */
+export const FALLBACK_DEFAULT_PRESET = "deep";
+
+/** Resolve what the store holds into the preset a plain opening actually uses.
+ *
+ *  Three inputs and they are genuinely three, which is the whole reason the
+ *  stored value is nullable:
+ *
+ *  - `null`/`undefined` — nobody has answered. The built-in default.
+ *  - `""` — the user chose *as claude code is set up*, which is a choice and not
+ *    an absence: no `--model`, no `--effort`, exactly what every card did before
+ *    presets existed. `undefined` back, and the caller sends nothing.
+ *  - an id — that preset, and the built-in default if this build has never heard
+ *    of it. A retired preset is far likelier than a wall that meant "none", and
+ *    falling through to "none" would silently downgrade every card opened after
+ *    a rename. */
+export function defaultPresetFor(stored: string | null | undefined): Preset | undefined {
+  if (stored === null || stored === undefined) return presetById(FALLBACK_DEFAULT_PRESET);
+  if (stored === "") return undefined;
+  return presetById(stored) ?? presetById(FALLBACK_DEFAULT_PRESET);
+}
+
 /** What the `+`'s right-click offers, in the shape `menu.ts` takes.
  *
  *  Built here rather than in `menu.ts` for the reason the widget catalogue is:

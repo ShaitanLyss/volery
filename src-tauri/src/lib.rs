@@ -459,6 +459,7 @@ pub fn run() {
             store::load_studio,
             store::ensure_project,
             store::set_wall_guidance,
+            store::set_default_preset,
             store::set_project_guidance,
             store::reroot_project,
             store::record_conversation,

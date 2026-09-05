@@ -1,5 +1,11 @@
 import { expect, test, describe } from "bun:test";
-import { PRESETS, presetById, presetPicks } from "../src/lib/presets";
+import {
+  FALLBACK_DEFAULT_PRESET,
+  PRESETS,
+  defaultPresetFor,
+  presetById,
+  presetPicks,
+} from "../src/lib/presets";
 import { EFFORT_LEVELS, isEffort } from "../src/lib/commands";
 import { contextWindowFor } from "../src/lib/classify";
 import { menuFor, type MenuItem } from "../src/lib/menu";
@@ -94,5 +100,78 @@ describe("the menu the + puts up", () => {
     expect(menuFor({ kind: "spawn" })).toEqual([
       { kind: "item", id: "new", label: "as claude code is set up" },
     ]);
+  });
+});
+
+describe("what a plain + opens, and changing it", () => {
+  test("the built-in default is opus on the wide window at xhigh", () => {
+    /* Pinned rather than left to whatever `deep` happens to say, because this
+       is the one preset the wall applies to cards nobody chose a preset for —
+       so an edit to the catalogue that moved it would change what every plain
+       `+` costs, silently, on a wall where nothing on the card says which
+       setting opened it. Anthropic's effort guidance puts coding and agentic
+       work at `xhigh` specifically; `high` is for most other intelligence-
+       sensitive work, and `max` is the overshoot this menu already refuses. */
+    const d = defaultPresetFor(null);
+    expect(d?.id).toBe(FALLBACK_DEFAULT_PRESET);
+    expect(d?.model).toBe("opus[1m]");
+    expect(d?.effort).toBe("xhigh");
+  });
+
+  test("never answered and answered 'none' are different answers", () => {
+    /* The distinction the nullable column exists for. Collapsing them would
+       make the wall's default impossible to turn off: the only way to say "no
+       preset" would be indistinguishable from never having been asked, and the
+       default would come straight back. */
+    expect(defaultPresetFor(null)?.id).toBe(FALLBACK_DEFAULT_PRESET);
+    expect(defaultPresetFor(undefined)?.id).toBe(FALLBACK_DEFAULT_PRESET);
+    expect(defaultPresetFor("")).toBeUndefined();
+  });
+
+  test("a stored id this build has retired falls back, rather than to nothing", () => {
+    /* A preset that was renamed away is much likelier than a wall that meant
+       no preset at all — and falling through to "none" would quietly downgrade
+       every card opened after the rename. */
+    expect(defaultPresetFor("ask")?.id).toBe("ask");
+    expect(defaultPresetFor("a-preset-from-some-later-build")?.id).toBe(
+      FALLBACK_DEFAULT_PRESET,
+    );
+  });
+
+  test("the menu marks the row a plain + would open, and only that one", () => {
+    const m = items(menuFor({ kind: "spawn", presets: presetPicks(), presetDefault: "work" }));
+    const on = m.filter((i) => i.on);
+    expect(on.map((i) => i.id)).toEqual(["preset:work"]);
+    /* Marked *and* unmarked, so the rest are radio rows showing they are not
+       chosen rather than plain items saying nothing either way. */
+    expect(m.every((i) => i.on !== undefined)).toBe(true);
+  });
+
+  test("'as claude code is set up' is one of the choices, and marked like one", () => {
+    /* It is stored as `""`, so it has to be markable the same way — otherwise
+       a wall deliberately opening cards on no preset shows a menu with no dot
+       anywhere and reads as one nobody has answered. */
+    const m = items(menuFor({ kind: "spawn", presets: presetPicks(), presetDefault: "" }));
+    expect(m.filter((i) => i.on).map((i) => i.id)).toEqual(["new"]);
+  });
+
+  test("with nobody to tell it what the default is, it marks nothing", () => {
+    const m = items(menuFor({ kind: "spawn", presets: presetPicks() }));
+    expect(m.every((i) => i.on === undefined)).toBe(true);
+  });
+
+  test("the ctrl-click is said out loud, and only where it would do something", () => {
+    /* `ContextMenu` has no room for a second action on a row, so the second
+       job of this menu is a modifier — and a modifier nobody is told about is
+       a feature only its author has. */
+    const hints = (t: Parameters<typeof menuFor>[0]) =>
+      menuFor(t).filter((i) => i.kind === "hint");
+    const told = hints({ kind: "spawn", presets: presetPicks(), presetDefault: "work" });
+    expect(told.length).toBe(1);
+    expect(told[0]).toMatchObject({ text: expect.stringContaining("ctrl-click") });
+    /* Nothing to act on, nothing said. */
+    expect(hints({ kind: "spawn", presets: presetPicks() }).length).toBe(0);
+    /* And it stays the one menu in the app with a caption on it. */
+    expect(hints({ kind: "card" }).length).toBe(0);
   });
 });
