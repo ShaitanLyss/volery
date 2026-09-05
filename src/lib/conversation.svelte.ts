@@ -33,8 +33,9 @@ import {
   jobLabel,
   jobNote,
   localAnswer,
-  systemTaskNote,
+  answeredLocally,
   localCommandAwaiting,
+  systemTaskNote,
   localCommand,
   NUDGE_BUDGET,
   nudgeGaveUpNote,
@@ -2240,6 +2241,27 @@ export class Conversation {
            echo looked like — an errored turn reaches here without an
            `assistant` message to have settled it. */
         this.#settleEchoes();
+        /* And the one prompt no echo will ever settle, closed by hand.
+           `--replay-user-messages` is how a line stops being awaited, and a
+           command the CLI answers itself is never replayed — see
+           `localCommandAwaiting`, which is where the probe and the reason for
+           the leading slash are. Left undone, the card read `sent, not picked
+           up` from here on and spent its whole nudge budget saying so to an
+           agent that answered, every time, that nothing was queued.
+
+           Here rather than at the `localAnswer` branch below, which is where it
+           used to be, for two reasons and they are both about *when*:
+
+           - The nudge is scheduled twenty lines down and reads `awaiting`. From
+             below, that read was of a count the claim had not come off yet, so
+             every locally-answered turn raised a nudge — one that never sent,
+             since `#nudge` re-checks at the grace boundary, but which held the
+             card's one nudge slot for the whole twelve seconds. A real stall
+             beginning inside that window found the slot taken and got nothing.
+           - It no longer waits on the CLI having had something to *say*.
+             `localAnswer` returning null is the panel's question; a turn that
+             reached no model owes an echo either way. See `answeredLocally`. */
+        if (answeredLocally(ev)) this.#claimLocalCommand();
         /* The arc dissolves back into the card, leaving one line behind. */
         if (this.seats.length) {
           this.#push("meta", `${this.seats.length} seats · synthesised`);
@@ -2355,15 +2377,8 @@ export class Conversation {
              are written in. */
           const said = localAnswer(ev);
           if (said) {
-            /* And the books have to be closed by hand, because nothing else
-               ever will: this turn's prompt is not replayed, so its line would
-               stay `awaited` for the life of the process. See
-               `localCommandAwaiting`, which is where the probe and the reason
-               for the leading slash are. Left undone the card read `sent, not
-               picked up` from here on and spent its whole nudge budget saying
-               so to an agent that answered, every time, that nothing was
-               queued. */
-            this.#claimLocalCommand();
+            /* The books were closed above, ahead of the nudge that reads the
+               count — this branch only draws. */
             this.#push("meta", said);
             this.activity = clip(said, 44);
             /* `/effort` is one of the turns that lands here, and its answer is

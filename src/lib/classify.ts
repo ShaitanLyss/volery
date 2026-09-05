@@ -1704,6 +1704,28 @@ export function localCommandAwaiting(awaited: string[]): string | null {
   return awaited.find((t) => t.trim().startsWith("/")) ?? null;
 }
 
+/** Did this turn reach a model at all?
+ *
+ *  `false` is the ordinary turn. `true` is one the CLI answered by itself, and
+ *  the only thing that follows from it here is that **no echo is coming** — so
+ *  whatever prompt it answered has to have its books closed by hand
+ *  (`#claimLocalCommand`), or the card counts a prompt as outstanding for the
+ *  life of the process and nudges an agent about words nobody is holding. That
+ *  was sink `b959a9c2`, and 0da051a fixed it.
+ *
+ *  Split out from `localAnswer`, which asks the neighbouring question — *did it
+ *  say anything worth drawing* — because the two were one test and should not
+ *  have been. Closing the books is about the round trip that did not happen;
+ *  whether the CLI had a sentence to show for it is about the panel. A local
+ *  command that answered with an empty string would have gone on leaking
+ *  exactly as before, which is the same bug one condition further in.
+ *
+ *  `num_turns` is exact rather than a heuristic — see `localAnswer` for the
+ *  probe. */
+export function answeredLocally(result: any): boolean {
+  return result?.num_turns === 0;
+}
+
 /** Decide how a turn ended, from the `result` event and the turn's text. */
 export function endingFor(
   result: any,

@@ -39,6 +39,7 @@ import {
   isTaskNotification,
   jobLabel,
   localAnswer,
+  answeredLocally,
   localCommandAwaiting,
   parseTaskNotification,
   systemTaskNote,
@@ -650,6 +651,23 @@ describe("a turn the CLI answered by itself", () => {
       /* `echo` draws the line as typed; the trim is the same one `#echoOf`
          matches on, so the two agree about which line this is. */
       expect(localCommandAwaiting(["  /compact  "])).toBe("  /compact  ");
+    });
+
+    test("what closes the books is the round trip that did not happen", () => {
+      /* And not whether the CLI had a sentence to show for it, which is the
+         panel's question and used to be the same test. A local command that
+         answered with nothing to draw kept its line `awaited` for the life of
+         the process — the same leak one condition further in. */
+      expect(answeredLocally({ num_turns: 0, result: "Compacted" })).toBe(true);
+      expect(answeredLocally({ num_turns: 0, result: "" })).toBe(true);
+      expect(answeredLocally({ num_turns: 0 })).toBe(true);
+      expect(localAnswer({ num_turns: 0, result: "" })).toBeNull();
+    });
+
+    test("an ordinary turn owes an echo and is left alone", () => {
+      expect(answeredLocally({ num_turns: 1, result: "done" })).toBe(false);
+      expect(answeredLocally({})).toBe(false);
+      expect(answeredLocally(null)).toBe(false);
     });
   });
 });
