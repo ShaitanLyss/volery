@@ -516,6 +516,7 @@ pub fn run() {
             asana::asana_workspaces,
             asana::asana_projects,
             asana::asana_board,
+            asana::asana_mine,
             asana::asana_move,
             azdo::forge_run,
             store::list_ambience,

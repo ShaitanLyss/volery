@@ -77,8 +77,16 @@ export type MenuTarget = {
      `options` is now one entry per knob and this file puts the rules in. */
   picks?: Pick[];
   options?: Pick[][];
-  /* ground / region: the kinds of instrument that can be hung up. */
-  offers?: { id: string; label: string }[];
+  /* ground / region: the kinds of instrument that can be hung up — a row each,
+     or a family of them behind one row.
+
+     Handed in already grouped, the bargain `picks`, `options` and `presets`
+     already strike: which widgets belong together is knowledge about the
+     catalogue, and this file's only business is what a right-click offers. The
+     shape is structural rather than imported so the two files still do not know
+     about each other — see `widgets.ts`'s `Offer`, which is this written from
+     the other side. */
+  offers?: Offer[];
   /* spawn: how a new card can be set up before it is opened — a model and an
      effort under one name. Handed in rather than looked up, the bargain
      `offers` and `picks` already strike: what a preset *is* belongs to
@@ -108,6 +116,12 @@ export type MenuTarget = {
   canPaste?: boolean;
 };
 
+/** An instrument to hang up, or a family of them. `widgets.ts` produces these;
+ *  this file turns them into rows. */
+export type Offer =
+  | { id: string; label: string }
+  | { id: string; label: string; items: { id: string; label: string }[] };
+
 export type MenuItem =
   | {
       kind: "item";
@@ -129,7 +143,27 @@ export type MenuItem =
    *  this", so "make this the default" had to be a modifier, and a modifier
    *  nobody is told about is a feature only its author has. Not a disabled item
    *  — a greyed row invites the click it will not answer. */
-  | { kind: "hint"; text: string };
+  | { kind: "hint"; text: string }
+  | {
+      /** A row that opens a list beside it rather than doing anything.
+       *
+       * Added when the widget menu passed nineteen rows — the browser and the
+       * Asana board landed on the same afternoon — and it is deliberately the
+       * *only* nesting in this file. One level: a submenu inside a submenu is a
+       * gesture you have to hold still for twice, and nothing here has a
+       * hierarchy that deep. The type permits it because `MenuItem[]` is the
+       * honest element type and a `NestedMenuItem` that forbade it would be a
+       * second vocabulary for the same rows; the catalogue is what keeps it to
+       * one, and `menu.test.ts` asserts that.
+       *
+       * It carries no `on` and cannot be picked. A row that both opened a list
+       * and did something would be a row where the fast gesture and the careful
+       * one disagree. */
+      kind: "more";
+      id: string;
+      label: string;
+      items: MenuItem[];
+    };
 
 const item = (id: string, label: string, danger = false): MenuItem => ({
   kind: "item",
@@ -147,6 +181,33 @@ const chosen = (id: string, label: string, on: boolean): MenuItem => ({
   on,
 });
 const sep: MenuItem = { kind: "sep" };
+
+/** A family's row. */
+const more = (id: string, label: string, items: MenuItem[]): MenuItem => ({
+  kind: "more",
+  id,
+  label,
+  items,
+});
+
+/** The offers, as rows.
+ *
+ *  The ids are unchanged by the grouping — every leaf is still `widget:<kind>`
+ *  — which is the property that made this cheap: the component dispatches on
+ *  the id it is handed and never learns that some of them arrived one level
+ *  down, and `App`'s `act` needed no edit at all. A family's own row carries a
+ *  `family:` id that nothing acts on, because nothing should: it opens a list.
+ *
+ *  An empty family is dropped rather than drawn, this file's standing answer to
+ *  having nothing to offer. `widgets.ts` already flattens a family of one, so
+ *  between them a submenu always holds at least two rows. */
+function offerItems(offers: Offer[]): MenuItem[] {
+  return offers.flatMap((o) => {
+    if (!("items" in o)) return [item(`widget:${o.id}`, o.label)];
+    if (!o.items.length) return [];
+    return [more(o.id, o.label, o.items.map((i) => item(`widget:${i.id}`, i.label)))];
+  });
+}
 
 /** The one gesture that puts a thing on the glass, or takes it off again.
  *
@@ -309,7 +370,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            which is fine until the thing you want is not already in a window you
            can drag from. */
         item("image", "pin up an image…"),
-        ...(t.offers ?? []).map((o) => item(`widget:${o.id}`, o.label)),
+        ...offerItems(t.offers ?? []),
         sep,
         /* A territory on the glass takes its cards with it — it is a place on
            the wall and a place is where its work is standing, so a region box
@@ -356,7 +417,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         item("chat", "new chat conversation"),
         item("adopt", "adopt a recorded session…"),
         item("image", "pin up an image…"),
-        ...(t.offers ?? []).map((o) => item(`widget:${o.id}`, o.label)),
+        ...offerItems(t.offers ?? []),
         sep,
         item("fit", "fit everything"),
         /* Territories are packed once and then remembered, so a wall that has

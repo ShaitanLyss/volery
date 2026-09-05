@@ -3,6 +3,8 @@ paths:
   - "src/lib/asana.ts"
   - "src/lib/asana.svelte.ts"
   - "src/lib/Kanban.svelte"
+  - "src/lib/Tasks.svelte"
+  - "src/lib/Health.svelte"
   - "src-tauri/src/asana.rs"
   - "test/asana.test.ts"
 ---
@@ -151,6 +153,75 @@ hit test knowing an index.
   make by accident. A move is reversible by dragging it back, which is what makes it the one
   write worth having.
 
+### Three widgets, one connection
+
+The board is one reading of Asana and not the only one worth a wall. Three now, and the split
+follows the rule `azdo.md` states: **a variant is a different reading of the same fact, and a
+different fact is a different widget.** You want a board and "what is on me" up at the same
+time, which a variant makes impossible.
+
+- **`asana` — the board.** One project, its sections as columns, a card you can move.
+  Readings: the board, or how much is in each column.
+- **`asanatasks` — what is on you.** `assignee=me` across the workspace, one request, and the
+  cheapest useful thing here. Late first and most overdue at the top, then today, then by date,
+  then everything undated — and anything ticked last however overdue it was, because a
+  completed task is history rather than work. Readings: the list, or the three numbers (late,
+  today, this week) that still say something at the size of a card.
+  - `assignee=me` **requires** `workspace`; Asana refuses the pair otherwise. That is why the
+    connection holds `spaces` at all.
+  - An undated task sorts *below* a dated one, and that is a judgement rather than a
+    convenience: an undated task is one nobody has committed to, and putting it above something
+    due on Friday would be the list arguing with the plan.
+- **`asanahealth` — how every project is going.** The reading Asana will not give you without
+  a portfolio, since its status updates live one project at a time and "is anything off track
+  anywhere" is a tab each. Readings: a grid of dots (the default — the question is answered
+  without your reading a word), or a list worst-first with each update's own heading quoted.
+
+All three share one `Asana`, and each is bounded by its own watchers on its own clock: a board
+every minute, what-is-on-you every minute, the project list every **two** — a status update is
+a thing somebody writes weekly, and that request is the most expensive one in the file.
+
+### The health taxonomy, and the two ways to be wrong about it
+
+Asana is mid-migration between two status fields and **both are documented**, so `asana.rs`
+asks for both and carries whichever answered: `current_status_update.status_type`
+(`on_track`/`at_risk`/`off_track`/`on_hold`/`complete`/`dropped`, the one new integrations are
+told to prefer) and `current_status.color` (`green`/`yellow`/`red`/`blue`/`complete`, the
+deprecated one). The projection into one vocabulary is in `asana.ts` and **not in Rust**, for
+the reason `azdo.md` gives at length about two forges: folding a vocabulary at the wire is
+where a state one side has and the other does not gets quietly turned into a lie. Note the
+colour field has no word for `dropped`, which is the gap the newer field exists to fill.
+
+Two decisions carry the widget, and both are ways it could have been quietly wrong:
+
+- **Silence is not "on track".** Most projects have never had a status update written on them.
+  `none` is its own state, muted, and it says *nothing said* — a grid that drew silence as
+  green would be the most reassuring possible way to be wrong about a portfolio. It sorts after
+  `on-track` and before the finished ones: not actionable, not settled either.
+- **A parked project is not a project in trouble.** `on-hold` is muted rather than amber.
+  Drawing a decision somebody has already taken as a warning is how a grid learns to cry wolf,
+  and then nobody reads it.
+
+And the colours are **the wall's four**, never Asana's. `healthTier` projects onto
+`classify.ts`'s tiers — rust for off track, the half-amber `partiallySucceeded` uses for at
+risk, celadon for on track, muted for everything settled or unknown. Colour is status here, and
+these are the statuses this wall has.
+
+### Custom fields, read the way Asana says to
+
+A board's columns are sections; its *vocabulary* is custom fields — priority, effort, squad,
+whatever that project's owner set up — and the board ignored them until now. They arrive on the
+same task query as one more `opt_fields`, so they are nearly free.
+
+**`display_value` and never the typed value.** Asana's own advice, and the reason is the one
+this app cares about: "integrations that don't require the underlying type should use this
+field", so an enum, a number, a date and a people field all arrive as a string somebody chose
+the formatting of. A new custom field type therefore costs no code here.
+
+Only fields *with* a value are carried — an empty chip reads as a value that failed to load,
+which is worse than no chip — and `chipsOf` caps what a card draws and **reports the
+remainder**, for the reason `Board.more` does.
+
 ### The picker is the widget until a project is chosen
 
 A board with no project is not a board, so the choice is drawn *in* the widget rather than only
@@ -196,6 +267,13 @@ in `asana.rs`'s header; the load-bearing results:
   as `null` outright rather than absent.
 - `addTask` with `insert_before` → 200, above the named task. With `insert_after` → 200, below
   it. **With neither → 200, and the card jumped to the top of the column.**
+- Custom fields: `display_value` is documented as the universal readable value and is what the
+  chips read. The **project status field is the one shape here that was not probed** — the PAT
+  was revoked before the health grid was written — so `asana.rs` asks for both the preferred
+  and the deprecated field and reads whichever answers. Both are documented fields of Project,
+  so the request is valid either way; what is unverified is only *which* one this workspace
+  fills in. A project with neither draws as `nothing said`, which is also the honest reading if
+  the field name is wrong.
 
 The board it was measured on was restored byte-for-byte afterwards.
 

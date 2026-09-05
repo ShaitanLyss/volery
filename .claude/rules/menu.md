@@ -27,6 +27,74 @@ press there is still bare ground (once a pan, now a selection band; see `layout.
 UI (`copy resume command`); before it, nothing on the wall would tell you what `--resume`
 takes.
 
+### Families, and the one level there is
+
+The widget menu was nineteen rows before a browser widget and an Asana board landed on the
+same afternoon; three more Asana readings would have taken it past twenty. A `more` item —
+one that opens a list beside it instead of doing something — brings the ground and territory
+menus back to **eight rows for twenty-one widgets**.
+
+**The groups were already there.** The catalogue has described itself in exactly these terms
+since the note above `spotify` was written: *"the things you hang up because of how the
+afternoon feels, then the meters, then the services, then the agents' own notes, then the
+logs… a record player belongs with the first group and nowhere near the second."* That was an
+**order**, which is a grouping you can only see by reading the whole list. `WidgetSpec.family`
+makes it a field. Nothing was invented to shorten the menu — a family invented for that is a
+menu you have to learn instead of read — and the two widgets left standing alone are alone on
+purpose: the performance meter is the only reading of *this machine*, and the browser is the
+only thing on the wall you work *in*.
+
+Where the decisions live is the usual split, and it needed no new seam: **`widgets.ts` groups**
+(which widgets belong together is knowledge about the catalogue) and **`menu.ts` renders**. The
+`Offer` shape is written out in both files rather than imported across, so the two still do not
+know about each other — the same arrangement that keeps a new widget kind from being a
+recompile of the menu.
+
+- **A family appears where its first member sits**, so the editorial sequence still decides the
+  order and a family does not sink to the bottom for being a family.
+- **A leaf id is unchanged by the grouping.** Every leaf is still `widget:<kind>`, so
+  `App.svelte`'s `act` needed no edit at all and the component dispatches on the id it is
+  handed without learning that some arrived one level down. A family's own row carries a
+  `family:` id that nothing acts on, because it opens a list rather than doing something — a
+  row that did both would be a row where the fast gesture and the careful one disagree.
+- **A family of one is flattened, and an empty one is dropped.** Both are this file's standing
+  rule about offering nothing, one level down: a submenu you open to find a single row costs a
+  gesture and tells you nothing. Neither is reachable from today's catalogue, which is itself
+  asserted — the flattening exists so that *deleting* a widget kind cannot leave a pointless
+  hover behind.
+- **Exactly one level, and `menu.test.ts` is what says so.** `ContextMenu.svelte` renders leaves
+  in its nested `{#each}` with no recursion and no arm for a nested `more`, and that is only
+  safe because the test holds it over the real catalogue and over both menus that offer
+  widgets. A submenu inside a submenu is a gesture you have to hold still for twice, and
+  nothing here has a hierarchy that deep.
+- **The label is a whole action, and the submenu's rows are bare.** "hang up a log" stands
+  among `open a folder…` and `pin up an image…`, where a bare noun would read as a thing to
+  look at; inside it, "servers" is the part that distinguishes it and "hang up a server log"
+  would say the verb a fifth time. `WidgetSpec.short` is that second label, and `offer`
+  overrides the whole row for the handful of labels the "hang up a …" template cannot carry —
+  "hang up a gates" is the kind of sentence that makes a careful app look careless, and it is
+  what shipped before this.
+
+#### Two things the component had to get right
+
+- **It is measured before it is shown, not corrected afterwards.** The same argument
+  `window::settle` makes about the main window: a list that appears off the screen edge and
+  then jumps back inside is a jump you watch. So the submenu renders `visibility: hidden` for
+  one frame, its size is read off the element as rendered — the labels are arbitrary and
+  `min-width` is a floor rather than the width — and then it is placed: flipped to the left of
+  its row where the window's right edge is nearer than the list is wide, lifted where its
+  bottom would run off. The measurement is cleared when another row opens, so the next list is
+  placed from its own reading rather than inheriting the last one's.
+- **There is no gap between a row and its list, which is why there are no timers.** The classic
+  submenu bug is a dead zone you cross diagonally before the thing closes; with the list flush
+  against the row (`left: 100%`, inside a `position: relative` wrapper on the row itself),
+  moving into it never leaves the pair, and moving onto any *other* row closes it because that
+  row says so. Escape closes the submenu first and the menu second — the wall's standing
+  contract that whatever is on top owns the key — since without the first half, backing out of
+  a family would take the whole menu with it.
+- The mark is a triangle built from borders, for the reason the check mark is drawn in CSS:
+  `▸` falls through to Segoe UI Emoji on this machine and comes out blue.
+
 ### The `+`, right-clicked
 
 A conversation costs whatever the model and the effort behind it cost, and both are settled

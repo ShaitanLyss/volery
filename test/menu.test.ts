@@ -1,5 +1,6 @@
 import { expect, test, describe } from "bun:test";
 import { menuFor, type MenuItem } from "../src/lib/menu";
+import { WIDGETS, offersOf } from "../src/lib/widgets";
 
 const ids = (items: MenuItem[]) =>
   items.filter((i) => i.kind === "item").map((i) => (i as { id: string }).id);
@@ -401,5 +402,105 @@ describe("standing instructions", () => {
       menuFor(t).find((i) => i.kind === "item" && i.id === "guidance") as { label: string };
     expect(label({ kind: "ground" }).label).toContain("wall");
     expect(label({ kind: "region" }).label).toContain("project");
+  });
+});
+
+/* A family, and the one level there is.
+ *
+ * `menu.ts` turns grouped offers into rows and owns two properties the
+ * component depends on outright: **a leaf id is unchanged by the grouping**, so
+ * nothing downstream learns that some rows arrived one level down; and **there
+ * is exactly one level**, which is why `ContextMenu.svelte` renders leaves in
+ * its nested `{#each}` with no recursion and no arm for a nested `more`. If
+ * that second one ever stops holding, this is where it breaks first. */
+describe("families in the menu that hangs things up", () => {
+  const OFFERS = [
+    { id: "clock", label: "hang up a clock" },
+    {
+      id: "family:logs",
+      label: "hang up a log",
+      items: [
+        { id: "serverlog", label: "servers" },
+        { id: "applog", label: "the app" },
+      ],
+    },
+  ];
+
+  /** Every item in a menu, one level down included. */
+  function flat(items: MenuItem[]): MenuItem[] {
+    return items.flatMap((it) => (it.kind === "more" ? [it, ...flat(it.items)] : [it]));
+  }
+
+  test("a single offer is a row and a family is a row that opens", () => {
+    const items = menuFor({ kind: "ground", offers: OFFERS });
+    const clock = items.find((it) => it.kind === "item" && it.id === "widget:clock");
+    const logs = items.find((it) => it.kind === "more");
+    expect(clock).toBeTruthy();
+    expect(logs).toBeTruthy();
+    expect(logs?.kind === "more" && logs.label).toBe("hang up a log");
+  });
+
+  test("a leaf id is the same whether it is grouped or not", () => {
+    /* The property that made this cheap: `App`'s `act` dispatches on
+       `widget:<kind>` and needed no edit at all. */
+    const items = menuFor({ kind: "ground", offers: OFFERS });
+    const more = flat(items).find((it) => it.kind === "more");
+    expect(more?.kind === "more" && more.items.map((i) => i.kind === "item" && i.id)).toEqual([
+      "widget:serverlog",
+      "widget:applog",
+    ]);
+  });
+
+  test("a family's own row carries an id nothing acts on", () => {
+    /* It opens a list; it does not hang anything up. A `widget:` prefix here
+       would be a row that tried to hang up a widget called "family:logs". */
+    const items = menuFor({ kind: "ground", offers: OFFERS });
+    const more = items.find((it) => it.kind === "more");
+    expect(more?.kind === "more" && more.id).toBe("family:logs");
+    expect(more?.kind === "more" && more.id.startsWith("widget:")).toBe(false);
+  });
+
+  test("there is exactly one level, on every menu that offers anything", () => {
+    /* The guarantee `ContextMenu.svelte` leans on. Asserted over the real
+       catalogue rather than the fixture, and over both menus that offer
+       widgets, because the component is shared. */
+    for (const kind of ["ground", "region"] as const) {
+      const items = menuFor({ kind, offers: offersOf() });
+      for (const it of items) {
+        if (it.kind !== "more") continue;
+        expect(it.items.length).toBeGreaterThan(0);
+        for (const sub of it.items) expect(sub.kind).toBe("item");
+      }
+    }
+  });
+
+  test("a family with nothing in it is dropped rather than drawn", () => {
+    /* This file's standing answer to having nothing to offer, one level down. */
+    const items = menuFor({
+      kind: "ground",
+      offers: [{ id: "family:empty", label: "hang up nothing", items: [] }],
+    });
+    expect(items.some((it) => it.kind === "more")).toBe(false);
+  });
+
+  test("a family row is content, so it is not tidied away with the separators", () => {
+    /* `tidy` collapses runs of separators. A `more` row between two of them has
+       to keep them apart. */
+    const items = menuFor({ kind: "region", offers: offersOf() });
+    const more = items.filter((it) => it.kind === "more");
+    expect(more.length).toBeGreaterThan(0);
+    expect(items[items.length - 1].kind).not.toBe("sep");
+  });
+
+  test("the real catalogue reaches every widget through this menu", () => {
+    /* The end-to-end of it: `offersOf` groups, `menuFor` renders, and no kind
+       is lost between them. `widgets.test.ts` proves the first half; this
+       proves the seam. */
+    const items = flat(menuFor({ kind: "ground", offers: offersOf() }));
+    const hung = items
+      .filter((it) => it.kind === "item" && it.id.startsWith("widget:"))
+      .map((it) => (it.kind === "item" ? it.id.slice(7) : ""));
+    expect(new Set(hung).size).toBe(hung.length);
+    expect(hung.length).toBe(WIDGETS.length);
   });
 });

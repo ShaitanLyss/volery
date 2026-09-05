@@ -44,6 +44,8 @@ export type WidgetKind =
   | "pipelines"
   | "reviews"
   | "asana"
+  | "asanatasks"
+  | "asanahealth"
   | "billboard"
   | "sink"
   | "gates"
@@ -84,6 +86,52 @@ export type Source =
   | "editors"
   | "boards"
   | "pages";
+
+/** A group of widgets the right-click menu offers behind one row.
+ *
+ * **These are not new groups.** The catalogue has described itself in exactly
+ * these terms since the note above `spotify` was written: "the things you hang
+ * up because of how the afternoon feels, then the meters, then the services,
+ * then the agents' own notes, then the logs… a record player belongs with the
+ * first group and nowhere near the second." That was an *order*, and an order is
+ * a grouping you can only see by reading the whole list.
+ *
+ * Nineteen widgets made the list long; a browser widget and an Asana board
+ * landing on the same afternoon made it a scroll, and three more Asana readings
+ * would have taken it past twenty. So the families are a field now instead of a
+ * sequence, and the menu is eight rows.
+ *
+ * A family still has to be a **subject** rather than a bin: four logs are four
+ * views of one substrate, the billboard and the sink are both what the agents
+ * wrote down, and what Claude costs and whether Claude is up are two questions
+ * about the same service. The two things left standing alone are standing alone
+ * on purpose — the performance meter is the only reading of *this machine*, and
+ * the browser is the only thing on the wall you work *in*. */
+export type WidgetFamily = "room" | "claude" | "forge" | "asana" | "notes" | "logs";
+
+/** What each family's row says.
+ *
+ *  The order here is irrelevant: a family appears where its first member sits in
+ *  `WIDGETS`, so the editorial sequence still decides what comes first.
+ *
+ *  The label is a whole action rather than a noun ("hang up a log", not "logs")
+ *  because it stands among `open a folder…` and `pin up an image…`, where a
+ *  bare noun reads as a thing to look at rather than a thing to do. The
+ *  submenu's rows are then as bare as they can be — the verb has been said
+ *  once, so saying it four more times is four rows of noise. */
+export const FAMILIES: { id: WidgetFamily; label: string }[] = [
+  /* The catalogue's own first group, in the catalogue's own words. */
+  { id: "room", label: "hang up something for the room" },
+  /* What the service costs and whether it is answering. Two questions, one
+     subject — and the subject is the thing this whole app is a face for. */
+  { id: "claude", label: "hang up a claude reading" },
+  { id: "forge", label: "hang up a forge widget" },
+  { id: "asana", label: "hang up an asana widget" },
+  /* "the agents' own notes" is the phrase the catalogue already used for these,
+     so it is the phrase the row uses. */
+  { id: "notes", label: "hang up the agents' own notes" },
+  { id: "logs", label: "hang up a log" },
+];
 
 /** What one knob is. Deliberately three shapes rather than a number and a
  *  convention: a variant is a name, not a slider position, and reading `2` back
@@ -136,6 +184,21 @@ export type WidgetSpec = {
   min: { w: number; h: number };
   params: WidgetParam[];
   state?: WidgetState[];
+  /** Which family's row this hides behind in the menu, if any. */
+  family?: WidgetFamily;
+  /** What it is called *inside* that family, where the family's row has already
+   *  named the subject. "server log" under "hang up a log" says the word twice;
+   *  "servers" says the part that distinguishes it. Absent means `label`. */
+  short?: string;
+  /** The whole menu row, for a label the "hang up a …" template cannot carry.
+   *
+   *  Most labels are countable nouns and the template reads correctly over
+   *  them. A few are not — "performance" is a quantity, "gates" is a plural,
+   *  "spotify" is a company — and "hang up a gates" is the kind of sentence
+   *  that makes a careful app look careless. Overriding the row is cheaper than
+   *  renaming the widget, since `label` is what the thing is called everywhere
+   *  else. */
+  offer?: string;
 };
 
 export type WidgetConfig = Record<string, string | number | boolean>;
@@ -237,6 +300,8 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "clock",
     label: "clock",
+    family: "room",
+    short: "a clock",
     note: "the time, in whichever hand suits the wall",
     box: { w: 190, h: 190 },
     min: { w: 76, h: 56 },
@@ -285,6 +350,7 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "performance",
     label: "performance",
+    offer: "hang up the performance meter",
     note: "what this studio's own processes are costing",
     box: { w: 300, h: 210 },
     min: { w: 176, h: 96 },
@@ -321,6 +387,8 @@ export const WIDGETS: WidgetSpec[] = [
        exactly that reason. How it is *drawn* is the knob below. */
     kind: "timer",
     label: "timer",
+    family: "room",
+    short: "a timer",
     note: "how long this has taken, or how long is left",
     box: { w: 220, h: 132 },
     min: { w: 118, h: 66 },
@@ -366,6 +434,8 @@ export const WIDGETS: WidgetSpec[] = [
        through to the shared cycle. */
     kind: "pomodoro",
     label: "pomodoro",
+    family: "room",
+    short: "a pomodoro",
     note: "focus and breaks, with the breaks actually taken",
     box: { w: 216, h: 206 },
     min: { w: 128, h: 92 },
@@ -402,6 +472,9 @@ export const WIDGETS: WidgetSpec[] = [
      * `spotify.ts`. */
     kind: "spotify",
     label: "spotify",
+    family: "room",
+    short: "the record player",
+    offer: "hang up the record player",
     note: "what is playing, and the transport for it",
     box: { w: 248, h: 150 },
     min: { w: 150, h: 46 },
@@ -435,6 +508,8 @@ export const WIDGETS: WidgetSpec[] = [
        same numerals. See `usage.ts`. */
     kind: "usage",
     label: "usage",
+    family: "claude",
+    short: "what is left",
     note: "how much of the allowance is gone, and when it comes back",
     box: { w: 264, h: 152 },
     min: { w: 142, h: 76 },
@@ -527,6 +602,8 @@ export const WIDGETS: WidgetSpec[] = [
        for the standard one would have had to meet. */
     kind: "burn",
     label: "burn rate",
+    family: "claude",
+    short: "the burn rate",
     note: "how fast this wall is burning tokens",
     box: { w: 216, h: 196 },
     min: { w: 92, h: 68 },
@@ -607,6 +684,9 @@ export const WIDGETS: WidgetSpec[] = [
      * any status colour would be the widget inventing news. */
     kind: "status",
     label: "claude status",
+    family: "claude",
+    short: "is it up",
+    offer: "hang up claude's status",
     note: "whether claude itself is up, and which part of it is not",
     box: { w: 262, h: 168 },
     min: { w: 132, h: 62 },
@@ -679,6 +759,8 @@ export const WIDGETS: WidgetSpec[] = [
        be dropped without the row ceasing to say where it is from. */
     kind: "pipelines",
     label: "pipelines",
+    family: "forge",
+    short: "pipelines",
     note: "what is building, across every project at once",
     box: { w: 340, h: 210 },
     min: { w: 190, h: 84 },
@@ -713,6 +795,8 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "reviews",
     label: "reviews",
+    family: "forge",
+    short: "reviews",
     note: "open pull requests, and which of them want you",
     box: { w: 340, h: 210 },
     min: { w: 190, h: 84 },
@@ -746,6 +830,8 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "asana",
     label: "asana board",
+    family: "asana",
+    short: "the board",
     note: "one project's board, and its cards where you put them",
     /* Wider than anything else in this catalogue, and the widest thing on the
        wall. A board is columns side by side — that is what makes it a board
@@ -807,8 +893,87 @@ export const WIDGETS: WidgetSpec[] = [
     ],
   },
   {
+    /* What is on you, across every project. The cheapest useful reading here —
+       one request, no board to pick — and the one a developer glances at most.
+       Asana calls it "My tasks" and puts it behind a tab; the whole argument
+       for a wall is that a thing you check twenty times a day belongs on it. */
+    kind: "asanatasks",
+    label: "asana tasks",
+    family: "asana",
+    short: "what is on me",
+    note: "what is assigned to you, across every project",
+    box: { w: 300, h: 200 },
+    min: { w: 170, h: 78 },
+    params: [
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "list", label: "the list" },
+          { value: "counts", label: "late, today, this week" },
+        ],
+        "list",
+      ),
+      /* Same knob and same wording as the board's, because it is the same
+         question about the same filter — `completed_since=now` hides what has
+         been ticked rather than what is in a done column. */
+      choice(
+        "showing",
+        "showing",
+        [
+          { value: "open", label: "what is still open" },
+          { value: "all", label: "everything, ticked or not" },
+        ],
+        "open",
+      ),
+    ],
+  },
+  {
+    /* How every project is going. The reading Asana will not give you without a
+       portfolio: its status updates live one project at a time, so "is anything
+       off track anywhere" is a tab each. Same argument the pipelines widget
+       makes, one service over. */
+    kind: "asanahealth",
+    label: "asana health",
+    family: "asana",
+    short: "project health",
+    note: "how every project is going, worst first",
+    box: { w: 300, h: 180 },
+    min: { w: 150, h: 70 },
+    params: [
+      /* `dots` first, and it is the default for the reason the pipelines
+         widget's `live` is: the question is "is anything wrong anywhere", and a
+         grid of dots answers it without your having to read a word. The list is
+         for when the answer is yes and you want to know which. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "dots", label: "dots" },
+          { value: "list", label: "a list, worst first" },
+        ],
+        "dots",
+      ),
+      /* `mine` first, because sixty-four dots is a pattern rather than a
+         reading. The three you are a member of are the three you are
+         accountable for; the rest are somebody else's grid. */
+      choice(
+        "scope",
+        "showing",
+        [
+          { value: "mine", label: "the projects I am on" },
+          { value: "all", label: "every project in the workspace" },
+        ],
+        "mine",
+      ),
+    ],
+  },
+  {
     kind: "billboard",
     label: "billboard",
+    family: "notes",
+    short: "the billboard",
+    offer: "hang up the billboard",
     note: "what the agents have said they are working on",
     box: { w: 320, h: 220 },
     min: { w: 200, h: 96 },
@@ -846,6 +1011,9 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "sink",
     label: "sink",
+    family: "notes",
+    short: "the sink",
+    offer: "hang up the sink",
     note: "things the agents noticed and could not stop for",
     box: { w: 340, h: 260 },
     min: { w: 220, h: 110 },
@@ -911,6 +1079,9 @@ export const WIDGETS: WidgetSpec[] = [
        compiler's eighty columns. */
     kind: "gates",
     label: "gates",
+    family: "notes",
+    short: "the gatehouse",
+    offer: "hang up the gatehouse",
     note: "whether the tree builds, and who last saw it do so",
     box: { w: 320, h: 200 },
     min: { w: 200, h: 90 },
@@ -965,6 +1136,8 @@ export const WIDGETS: WidgetSpec[] = [
        forty columns is a log you read by guessing. */
     kind: "serverlog",
     label: "server log",
+    family: "logs",
+    short: "servers",
     note: "what a dev server is saying, and a way to start it when it is not",
     box: { w: 380, h: 200 },
     min: { w: 200, h: 90 },
@@ -1037,6 +1210,8 @@ export const WIDGETS: WidgetSpec[] = [
        app's own diagnosis was the one thing the wall could not show you. */
     kind: "applog",
     label: "app log",
+    family: "logs",
+    short: "the app",
     note: "what volery and its dependencies are saying about themselves",
     box: { w: 380, h: 200 },
     min: { w: 200, h: 90 },
@@ -1076,6 +1251,8 @@ export const WIDGETS: WidgetSpec[] = [
        a run, and nothing in the face asks whose it is. */
     kind: "buildlog",
     label: "build log",
+    family: "logs",
+    short: "builds",
     note: "what a build is saying, and how far along it got",
     box: { w: 380, h: 200 },
     min: { w: 200, h: 90 },
@@ -1132,6 +1309,8 @@ export const WIDGETS: WidgetSpec[] = [
        up — see `unreallog.ts` for why those are both conditions. */
     kind: "unreallog",
     label: "editor log",
+    family: "logs",
+    short: "the editor",
     note: "what a running unreal editor is saying about itself",
     box: { w: 400, h: 210 },
     min: { w: 210, h: 90 },
@@ -1293,6 +1472,96 @@ export function specFor(kind: string): WidgetSpec | null {
  * menu both lean on. */
 export function paramsOf(spec: WidgetSpec): WidgetParam[] {
   return [...spec.params, ...COMMON];
+}
+
+/** One row in the menu that hangs things up: an instrument, or a family of
+ *  them behind one row.
+ *
+ *  Shaped so `menu.ts` can turn it into items without importing this file —
+ *  the two have never known about each other, and a menu that had to be
+ *  recompiled to learn about a new widget would be the coupling the opaque
+ *  `config_json` column exists to avoid. */
+export type Offer =
+  | { id: string; label: string }
+  | { id: string; label: string; items: { id: string; label: string }[] };
+
+/** What a right-click offers to hang up, in the catalogue's own order.
+ *
+ *  Moved out of `App.svelte`, where it was one line, because it stopped being
+ *  one line: which widgets group together is knowledge about the catalogue, and
+ *  the catalogue is what this file is. Pure, so the grouping is tested rather
+ *  than looked at.
+ *
+ *  **A family appears where its first member sits**, so the editorial sequence
+ *  in `WIDGETS` still decides the order and a family does not jump to the
+ *  bottom for being a family. Later members are folded into that row rather
+ *  than drawn again.
+ *
+ *  **A family of one is flattened**, which is this file's version of `menu.ts`'s
+ *  standing rule that offering nothing is a real answer: a submenu you open to
+ *  find a single row is strictly worse than the row, since it costs a gesture
+ *  and tells you nothing. Not reachable from today's catalogue — every family
+ *  has at least two — and it is the behaviour that makes deleting a widget kind
+ *  safe rather than something that leaves a menu with a pointless hover in it.
+ *
+ *  The parameter is for the test that proves the flattening, since no real
+ *  family has one member — the catalogue is the default and every caller uses
+ *  it. */
+/** "a" or "an", by the sound the label starts with.
+ *
+ *  Spelling rather than phonetics — the exceptions English has ("an hour", "a
+ *  university") do not occur among these labels, and a table of them would be
+ *  a table to keep true for a menu nobody reads twice. `an app log` and `an
+ *  asana board` are the two this exists for. */
+function article(label: string): string {
+  return /^[aeiou]/i.test(label) ? "an" : "a";
+}
+
+/** One instrument's row, template or override. */
+function offerLabel(spec: WidgetSpec): string {
+  return spec.offer ?? `hang up ${article(spec.label)} ${spec.label}`;
+}
+
+export function offersOf(specs: WidgetSpec[] = WIDGETS): Offer[] {
+  const out: Offer[] = [];
+  /* Where each family's row ended up, so a later member can be folded into a
+     row that has already been emitted. */
+  const at = new Map<WidgetFamily, number>();
+  for (const w of specs) {
+    const member = { id: w.kind, label: w.short ?? w.label };
+    if (!w.family) {
+      out.push({ id: w.kind, label: offerLabel(w) });
+      continue;
+    }
+    const seen = at.get(w.family);
+    if (seen === undefined) {
+      const family = FAMILIES.find((f) => f.id === w.family);
+      /* A family named on a spec and missing from `FAMILIES` would otherwise be
+         a widget you cannot hang up at all. Drawn as its own row instead —
+         wrong-looking rather than absent, which is the recoverable of the two
+         and the same choice `normalizeParam` makes about an unknown value. */
+      if (!family) {
+        out.push({ id: w.kind, label: offerLabel(w) });
+        continue;
+      }
+      at.set(w.family, out.length);
+      out.push({ id: `family:${family.id}`, label: family.label, items: [member] });
+      continue;
+    }
+    const row = out[seen];
+    if ("items" in row) row.items.push(member);
+  }
+  /* The flatten pass. Done afterwards rather than while building, because
+     whether a family has one member is not known until the whole catalogue has
+     been walked. */
+  return out.map((o) => {
+    if (!("items" in o) || o.items.length !== 1) return o;
+    const only = specs.find((w) => w.kind === o.items[0].id);
+    return {
+      id: o.items[0].id,
+      label: only ? offerLabel(only) : `hang up ${article(o.items[0].label)} ${o.items[0].label}`,
+    };
+  });
 }
 
 /** The variants a kind offers, for the menu that switches between them. */

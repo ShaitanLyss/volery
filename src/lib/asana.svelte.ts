@@ -42,7 +42,7 @@
  * card does not sit in the wrong column for a network round trip. */
 
 import { invoke } from "@tauri-apps/api/core";
-import { plan, type Board, type Move } from "./asana";
+import { plan, type Assigned, type Board, type Move, type Project } from "./asana";
 
 /** How often a board is re-read while a widget is watching it.
  *
@@ -53,15 +53,40 @@ import { plan, type Board, type Move } from "./asana";
  * between them is roughly one request every twenty seconds to one host. */
 const BOARD_EVERY = 60_000;
 
-/** A workspace or a project: a gid, what it is called, and — for a project —
- *  whether you are a member of it.
+/** How often what-is-on-you is re-read.
  *
- *  That last field is what makes a picker over sixty projects usable: the
- *  handful you actually work in are the ones Asana's own sidebar shows under
- *  Work, and measured against the real workspace those are exactly the ones you
- *  are a *member* of. Starring was the other candidate and picked out only one
- *  of the three, so membership is the right notion. */
-export type Named = { gid: string; name: string; mine: boolean };
+ * The same minute a board gets, and for the same reason — it is the same kind
+ * of fact moving at the same speed. One request, so this is the cheapest poller
+ * in the app after the clock. */
+const MINE_EVERY = 60_000;
+
+/** And how often the project list is, while a health grid is watching it.
+ *
+ * Slower on purpose, and by a lot. A status update is a thing a person writes
+ * once a week; two minutes is already far finer than the fact changes, and this
+ * request carries every project in the workspace with its status, its owner and
+ * its members on it — the most expensive single read in this file. Without a
+ * grid up it is not polled at all: the picker asks once and keeps it. */
+const PROJECTS_EVERY = 120_000;
+
+/** A workspace: a gid and what it is called. Projects are richer — see
+ *  `Project` in `asana.ts`, which carries membership and health as well,
+ *  because they all arrive in the same request. */
+export type Named = { gid: string; name: string };
+
+/** One list, when it landed, and what went wrong.
+ *
+ *  Held per reading rather than as fields on the class, the shape
+ *  `DevOps.Half` has and for the same reason: two readings that shared a
+ *  `fault` would have one of them reporting the other's problem. */
+class Feed<T> {
+  rows = $state<T[]>([]);
+  /** Whether a reading has ever landed. An empty list and a first request
+   *  still in flight look identical otherwise. */
+  ready = $state(false);
+  fault = $state<string | null>(null);
+  at = $state(0);
+}
 
 /** One project's reading, at one filter. */
 class Watch {
@@ -91,9 +116,18 @@ export class Asana {
   /** Every project the token can see, flat, across every workspace. Asked once
    *  when something wants it rather than on a clock — a project list changes
    *  when somebody makes a project, which is not an event worth a timer. */
-  projects = $state<Named[]>([]);
+  projects = $state<Project[]>([]);
   projectsReady = $state(false);
   projectsFault = $state<string | null>(null);
+  /** Every workspace the token can see. Needed as an argument rather than as a
+   *  reading: `assignee=me` is refused without one, and the project list is
+   *  per workspace too. */
+  spaces = $state<Named[]>([]);
+
+  /** What is assigned to you, per filter. Two feeds rather than one, because
+   *  "only what is open" and "everything" are two questions and a widget
+   *  showing one must not redraw the other's answer. */
+  assigned = $state<Record<string, Feed<Assigned>>>({});
 
   /** The ones you are a member of — your own sidebar, in Asana's terms.
    *
@@ -101,8 +135,13 @@ export class Asana {
    *  fetch: `members` rides along on the project list. This is what the
    *  right-click knob offers, since a menu with sixty-four entries is a menu
    *  nobody can use; browsing the rest is the widget's own picker. */
-  get mine(): Named[] {
+  get mine(): Project[] {
     return this.projects.filter((p) => p.mine);
+  }
+
+  /** The feed for one filter, created on demand. */
+  feed(open: boolean): Feed<Assigned> | null {
+    return this.assigned[open ? "open" : "all"] ?? null;
   }
 
   /** Whether a token is stored, and a way to go and look again. The same seam
@@ -112,6 +151,11 @@ export class Asana {
   token: { held: () => boolean; ask: () => void } = { held: () => false, ask: () => {} };
 
   #watchers = new Map<string, Set<string>>();
+  #mineWatchers = new Map<string, Set<string>>();
+  #projectWatchers = new Set<string>();
+  #mineTimer: ReturnType<typeof setInterval> | null = null;
+  #projectTimer: ReturnType<typeof setInterval> | null = null;
+  #mineBusy = new Set<string>();
   /** Which readings have been created. A plain Set rather than asking
    *  `boards` — and that is not a micro-optimisation.
    *
@@ -131,11 +175,12 @@ export class Asana {
   get watchers(): number {
     let n = 0;
     for (const set of this.#watchers.values()) n += set.size;
-    return n;
+    for (const set of this.#mineWatchers.values()) n += set.size;
+    return n + this.#projectWatchers.size;
   }
 
   get polling(): boolean {
-    return !!this.#timer;
+    return !!this.#timer || !!this.#mineTimer || !!this.#projectTimer;
   }
 
   static key(project: string, open: boolean): string {
@@ -182,9 +227,61 @@ export class Asana {
     }
   }
 
+  /** A tasks widget asking. Keyed by filter, the same as a board's. */
+  attachMine(id: string, open: boolean) {
+    const key = open ? "open" : "all";
+    for (const [k, set] of [...this.#mineWatchers]) {
+      if (k === key) continue;
+      if (set.delete(id) && !set.size) this.#mineWatchers.delete(k);
+    }
+    const set = this.#mineWatchers.get(key) ?? new Set<string>();
+    if (!set.has(id)) {
+      set.add(id);
+      this.#mineWatchers.set(key, set);
+      if (!this.#made.has(`mine:${key}`)) {
+        this.#made.add(`mine:${key}`);
+        this.assigned[key] = new Feed<Assigned>();
+      }
+      void this.#pollMine(key);
+      this.token.ask();
+    }
+    if (!this.#mineTimer) {
+      this.#mineTimer = setInterval(() => void this.#pollMineAll(), MINE_EVERY);
+    }
+  }
+
+  /** A health grid asking. It reads the project list, which the picker also
+   *  reads — so this is the same reading put on a clock rather than a second
+   *  one. */
+  attachProjects(id: string) {
+    if (!this.#projectWatchers.has(id)) {
+      this.#projectWatchers.add(id);
+      void this.askProjects();
+      this.token.ask();
+    }
+    if (!this.#projectTimer) {
+      this.#projectTimer = setInterval(
+        () => void this.askProjects(true),
+        PROJECTS_EVERY,
+      );
+    }
+  }
+
   detach(id: string) {
     this.#drop(id, null);
     if (!this.#watchers.size) this.#stopTimer();
+    for (const [k, set] of [...this.#mineWatchers]) {
+      if (set.delete(id) && !set.size) this.#mineWatchers.delete(k);
+    }
+    if (!this.#mineWatchers.size && this.#mineTimer) {
+      clearInterval(this.#mineTimer);
+      this.#mineTimer = null;
+    }
+    this.#projectWatchers.delete(id);
+    if (!this.#projectWatchers.size && this.#projectTimer) {
+      clearInterval(this.#projectTimer);
+      this.#projectTimer = null;
+    }
   }
 
   /** Take this widget off every key but one. `keep` is null to take it off all
@@ -209,7 +306,13 @@ export class Asana {
    *  back up draws what it had instead of blanking for a minute. */
   stop() {
     this.#stopTimer();
+    if (this.#mineTimer) clearInterval(this.#mineTimer);
+    if (this.#projectTimer) clearInterval(this.#projectTimer);
+    this.#mineTimer = null;
+    this.#projectTimer = null;
     this.#watchers.clear();
+    this.#mineWatchers.clear();
+    this.#projectWatchers.clear();
   }
 
   /** Read every watched board now rather than at the next beat. The seam the
@@ -217,7 +320,11 @@ export class Asana {
    *  drive it without waiting out a minute — and it obeys the same rule the
    *  timer does and asks nothing while nobody is watching. */
   async refresh(): Promise<void> {
-    await this.#pollAll();
+    await Promise.all([
+      this.#pollAll(),
+      this.#pollMineAll(),
+      this.#projectWatchers.size ? this.askProjects(true) : Promise.resolve(),
+    ]);
   }
 
   /* ── reading ─────────────────────────────────────────────────────────────*/
@@ -256,6 +363,47 @@ export class Asana {
     }
   }
 
+  async #pollMineAll(): Promise<void> {
+    await Promise.all([...this.#mineWatchers.keys()].map((k) => this.#pollMine(k)));
+  }
+
+  async #pollMine(key: string): Promise<void> {
+    const feed = this.assigned[key];
+    if (!feed || this.#mineBusy.has(key)) return;
+    if (!this.token.held()) {
+      /* Nothing to ask with, and saying so is the face's job rather than a
+         fault's — `mineSaid` names it. Marked ready so the list stops saying
+         "asking…" for a request that was never going to be made. */
+      feed.ready = true;
+      return;
+    }
+    this.#mineBusy.add(key);
+    try {
+      /* The workspaces first, since `assignee=me` is refused without one. Held
+         once they have landed — a workspace is not something that appears while
+         you are looking at the wall. */
+      if (!this.spaces.length) {
+        this.spaces = await invoke<Named[]>("asana_workspaces");
+      }
+      const lists = await Promise.all(
+        this.spaces.map((w) =>
+          invoke<Assigned[]>("asana_mine", { workspace: w.gid, open: key === "open" }),
+        ),
+      );
+      feed.rows = lists.flat();
+      feed.fault = null;
+      feed.at = Date.now();
+    } catch (err) {
+      feed.fault = String(err);
+      /* The rows already drawn stay — a blip must not empty a list somebody is
+         reading, the same rule every other reading here follows. */
+      feed.at = Date.now();
+    } finally {
+      feed.ready = true;
+      this.#mineBusy.delete(key);
+    }
+  }
+
   /** Every project the token can see. One request for the workspaces and one
    *  per workspace, so two or three in practice.
    *
@@ -276,8 +424,9 @@ export class Asana {
     this.#askingProjects = true;
     try {
       const spaces = await invoke<Named[]>("asana_workspaces");
+      this.spaces = spaces;
       const lists = await Promise.all(
-        spaces.map((s) => invoke<Named[]>("asana_projects", { workspace: s.gid })),
+        spaces.map((s) => invoke<Project[]>("asana_projects", { workspace: s.gid })),
       );
       /* Prefixed with the workspace only when there is more than one, which is
          the same rule the widget-knob sources follow: on one workspace the

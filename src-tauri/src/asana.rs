@@ -111,6 +111,39 @@ pub struct Named {
     pub mine: bool,
 }
 
+/// A project, with what its owner last said about it.
+///
+/// One request answers the whole list — `GET /projects` takes the same
+/// `opt_fields` the single-project endpoint does — which is what makes a health
+/// grid over sixty-four projects affordable at all. Per project it would be
+/// sixty-four requests a poll, which is not a widget, it is an outage.
+#[derive(Serialize, Clone)]
+pub struct Project {
+    pub gid: String,
+    pub name: String,
+    pub url: String,
+    /// Whether you are a member of it — see the note on `has_member`.
+    pub mine: bool,
+    /// The status update's own word for how it is going, verbatim.
+    ///
+    /// **Two fields, because Asana is mid-migration and both are documented.**
+    /// `current_status_update.status_type` is the one new integrations are told
+    /// to prefer and answers `on_track` / `at_risk` / `off_track` / `on_hold` /
+    /// `complete` / `dropped`; `current_status.color` is the deprecated one and
+    /// answers `green` / `yellow` / `red` / `blue` / `complete`. Whichever
+    /// arrives is carried here as it came, and `asana.ts` owns the whole
+    /// taxonomy — the same arrangement `azdo.ts` has for two forges' build
+    /// states, and for the same reason: folding a vocabulary in Rust is where a
+    /// state one side has and the other does not gets quietly turned into a lie.
+    pub status: String,
+    /// What the update was headed, if there is one. Quoted rather than
+    /// reworded: it is a sentence a person wrote about their own project.
+    pub said: String,
+    pub owner: String,
+    /// `due_on`, an ISO date, or empty.
+    pub due: String,
+}
+
 #[derive(Serialize, Clone)]
 pub struct Card {
     pub gid: String,
@@ -131,6 +164,29 @@ pub struct Card {
     /// Where to open it. Asana's own permalink, so the gesture leaves the app
     /// through `open.rs` the way every other link on this wall does.
     pub url: String,
+    /// The custom fields with a value on them, as `name` and a readable string.
+    ///
+    /// **`display_value` and never the typed value.** Asana's own advice, and
+    /// the reason is the one this app cares about: "integrations that don't
+    /// require the underlying type should use this field", which means a new
+    /// custom field type costs no code here. An enum, a number, a date and a
+    /// people field all arrive as a string somebody chose the formatting of,
+    /// which is exactly what a chip on a card wants.
+    pub fields: Vec<Field>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct Field {
+    pub name: String,
+    pub value: String,
+}
+
+/// A task on you, and the project it is in.
+#[derive(Serialize, Clone)]
+pub struct Assigned {
+    #[serde(flatten)]
+    pub card: Card,
+    pub project: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -186,37 +242,115 @@ pub async fn asana_workspaces() -> Result<Vec<Named>, String> {
 /// so this costs one extra field and one cheap `/users/me` rather than a second
 /// pass over the projects.
 #[tauri::command]
-pub async fn asana_projects(workspace: String) -> Result<Vec<Named>, String> {
+pub async fn asana_projects(workspace: String) -> Result<Vec<Project>, String> {
     crate::off_main(move || {
         /* Who "mine" means. Asked here rather than passed in, so the command is
            self-contained and no caller can hand it the wrong identity — and it
            is the same request the tokens panel's check makes, which is to say
            the cheapest authenticated call there is. */
         let me = get("/users/me?opt_fields=gid")?;
-        let me = crate::forge::text(
-            me.get("data").unwrap_or(&serde_json::Value::Null),
-            "gid",
-        );
+        let me = crate::forge::text(me.get("data").unwrap_or(&serde_json::Value::Null), "gid");
+        /* One request for names, membership *and* health, so the health grid
+           and the board's picker are the same reading at two cadences rather
+           than two readings. That is the only reason a status per project is
+           affordable: asked one project at a time it would be sixty-four
+           requests a poll on this workspace. Both status fields are asked for;
+           see `Project::status`. */
         let v = get(&format!(
-            "/projects?workspace={workspace}&archived=false&limit=100&opt_fields=name,members"
+            "/projects?workspace={workspace}&archived=false&limit=100\
+             &opt_fields=name,permalink_url,members,owner.name,due_on,\
+             current_status_update.status_type,current_status_update.title,\
+             current_status.color,current_status.title"
         ))?;
+        Ok(v.get("data")
+            .and_then(|d| d.as_array())
+            .map(|rows| rows.iter().filter_map(|r| project_of(r, &me)).collect())
+            .unwrap_or_default())
+    })
+    .await?
+}
+
+/// What is assigned to you, across the whole workspace.
+///
+/// `assignee=me` **requires** `workspace` — Asana refuses the pair otherwise —
+/// which is why this takes one rather than answering for the account at large.
+/// One request, and the cheapest useful thing in this file: the reading a
+/// developer glances at twenty times a day.
+///
+/// The project name rides along on `memberships`, so a task knows where it came
+/// from without a second lookup. A task in several projects reports the first,
+/// because a row has space for one and "which of these is it really" is a
+/// question the person looking already knows the answer to.
+#[tauri::command]
+pub async fn asana_mine(workspace: String, open: bool) -> Result<Vec<Assigned>, String> {
+    crate::off_main(move || {
+        let mut url = format!(
+            "/tasks?assignee=me&workspace={workspace}&limit=100\
+             &opt_fields=name,completed,due_on,permalink_url,assignee.name,\
+             custom_fields.name,custom_fields.display_value,\
+             memberships.project.name"
+        );
+        if open {
+            url.push_str("&completed_since=now");
+        }
+        let v = get(&url)?;
         Ok(v.get("data")
             .and_then(|d| d.as_array())
             .map(|rows| {
                 rows.iter()
-                    .filter_map(|r| {
-                        let gid = crate::forge::text(r, "gid");
-                        (!gid.is_empty()).then(|| Named {
-                            gid,
-                            name: crate::forge::text(r, "name"),
-                            mine: !me.is_empty() && has_member(r, &me),
-                        })
-                    })
+                    .map(|r| Assigned { card: card_of(r), project: first_project(r) })
                     .collect()
             })
             .unwrap_or_default())
     })
     .await?
+}
+
+/// One project row, or None where there is no gid to act on.
+fn project_of(row: &serde_json::Value, me: &str) -> Option<Project> {
+    let gid = crate::forge::text(row, "gid");
+    if gid.is_empty() {
+        return None;
+    }
+    /* The preferred field first and the deprecated one behind it, read in that
+       order rather than merged — so a project answering both is described by
+       the one Asana says to use. */
+    let newer = row.get("current_status_update");
+    let older = row.get("current_status");
+    let pick = |key_new: &str, key_old: &str| -> String {
+        newer
+            .map(|u| crate::forge::text(u, key_new))
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                older
+                    .map(|u| crate::forge::text(u, key_old))
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_default()
+    };
+    Some(Project {
+        gid,
+        name: crate::forge::text(row, "name"),
+        url: crate::forge::text(row, "permalink_url"),
+        mine: !me.is_empty() && has_member(row, me),
+        status: pick("status_type", "color"),
+        said: pick("title", "title"),
+        owner: row
+            .get("owner")
+            .map(|o| crate::forge::text(o, "name"))
+            .unwrap_or_default(),
+        due: crate::forge::text(row, "due_on"),
+    })
+}
+
+/// The first project a task is in, by name. Empty for a task in none.
+fn first_project(row: &serde_json::Value) -> String {
+    row.get("memberships")
+        .and_then(|m| m.as_array())
+        .and_then(|ms| ms.first())
+        .and_then(|m| m.get("project"))
+        .map(|p| crate::forge::text(p, "name"))
+        .unwrap_or_default()
 }
 
 /// Whether a project row lists this user among its members.
@@ -277,6 +411,7 @@ pub async fn asana_board(project: String, open: bool) -> Result<Board, String> {
             let mut url = format!(
                 "/tasks?project={project}&limit={page}\
                  &opt_fields=name,completed,due_on,permalink_url,assignee.name,\
+                 custom_fields.name,custom_fields.display_value,\
                  memberships.section.gid,memberships.project.gid"
             );
             if open {
@@ -512,7 +647,28 @@ fn card_of(row: &serde_json::Value) -> Card {
         due: crate::forge::text(row, "due_on"),
         completed: row.get("completed").and_then(|c| c.as_bool()).unwrap_or(false),
         url: crate::forge::text(row, "permalink_url"),
+        fields: fields_of(row),
     }
+}
+
+/// The custom fields worth drawing: the ones with a value.
+///
+/// A board typically defines several and sets two, so keeping the empty ones
+/// would put blank chips on every card — and an empty chip is worse than no
+/// chip, since it reads as a value that failed to load.
+fn fields_of(row: &serde_json::Value) -> Vec<Field> {
+    row.get("custom_fields")
+        .and_then(|f| f.as_array())
+        .map(|fs| {
+            fs.iter()
+                .filter_map(|f| {
+                    let name = crate::forge::text(f, "name");
+                    let value = crate::forge::text(f, "display_value");
+                    (!name.is_empty() && !value.is_empty()).then_some(Field { name, value })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Which section of *this* project a task is in.

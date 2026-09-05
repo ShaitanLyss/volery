@@ -38,6 +38,8 @@
   import Pipelines from "./Pipelines.svelte";
   import Reviews from "./Reviews.svelte";
   import Kanban from "./Kanban.svelte";
+  import Tasks from "./Tasks.svelte";
+  import Health from "./Health.svelte";
   import Billboard from "./Billboard.svelte";
   import Basin from "./Basin.svelte";
   import Gatehouse from "./Gatehouse.svelte";
@@ -316,6 +318,20 @@
         onkeyring={onkeyring ? () => onkeyring?.() : undefined}
         onconfig={(key, value) =>
           onupdate({ config: { ...widget.config, [key]: value } })}
+      />
+    {:else if widget.kind === "asanatasks"}
+      <Tasks
+        {widget}
+        {asana}
+        onopen={(url) => onopen?.(url)}
+        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
+      />
+    {:else if widget.kind === "asanahealth"}
+      <Health
+        {widget}
+        {asana}
+        onopen={(url) => onopen?.(url)}
+        onkeyring={onkeyring ? () => onkeyring?.() : undefined}
       />
     {:else if widget.kind === "billboard"}
       <Billboard
