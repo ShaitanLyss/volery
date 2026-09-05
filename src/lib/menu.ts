@@ -59,6 +59,15 @@ export type MenuTarget = {
    *  no project to open a conversation in and no git tree to branch. It offers
    *  another chat card instead. */
   chat?: boolean;
+  /** Its root is not a directory on this machine — the state a carried layout
+   *  arrives in, where the old path travels as-is and rooting it is pointing it
+   *  at a folder (see `portage.ts`). The wall already draws such a territory as
+   *  pointing nowhere and names it `nowhere` where it does; this is the same
+   *  reading one file over.
+   *
+   *  Default false, so an ordinary territory needs to say nothing to be offered
+   *  everything — the caller with the answer is the one that has to speak. */
+  nowhere?: boolean;
   /* widget: what it can be switched between, and what it is on. Handed in
      rather than looked up, because the catalogue is the widgets' business and
      this file's only business is what a right-click offers.
@@ -386,6 +395,26 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            you can start again in it; forgetting is how you say you won't, and
            it is not something to offer next to live work. */
         sep,
+        /* A territory *is* a folder, and until now nothing on the wall would
+           take you to it — a card offers "copy working directory", which is the
+           path as a string and one paste short of the thing itself.
+           Deliberately grouped with the standing instructions rather than with
+           the glass: those two are where the territory lives on the *wall*,
+           these two are the project itself — where its work is on disk, and
+           what it tells the cards standing in it.
+
+           "show" rather than "open", because what the shell does is open the
+           parent with this folder selected — see `open::show_in_explorer`, where
+           that turns out to be the only form the shell will reuse a window for.
+           A label promising its contents would be one the gesture does not pay.
+
+           Withheld two ways, both this file's standing rule that offering
+           nothing is a real answer. A territory pointing nowhere has no folder
+           to show, and the item would be a reliable error. The chat territory
+           has one and it is Skein's own — created so that "no project" has an
+           address, documented as holding nothing and never written to — so
+           showing it is a gesture whose answer is an empty folder every time. */
+        t.nowhere || t.chat ? null : item("explorer", "show it in explorer"),
         /* Always offered, and with one label whether or not anything is set.
            The obvious alternative — two labels, the shape `glassItem` and
            `aside` use — is wrong here and the difference is worth stating: those

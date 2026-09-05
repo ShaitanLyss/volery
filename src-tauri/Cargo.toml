@@ -143,8 +143,17 @@ windows = { version = "0.61", features = [
     # into this app's own database — `vault.rs` has the argument. advapi32's
     # Cred* family lives behind this one.
     "Win32_Security_Credentials",
+    # Showing a territory's folder in Explorer goes through the shell's own
+    # SHOpenFolderAndSelectItems rather than `explorer.exe`, because that is the
+    # only one of the three that reuses a window instead of stacking a new one
+    # up per right-click — measured, see `open::show_in_explorer`. It wants an
+    # ITEMIDLIST (Shell, Shell_Common), CoTaskMemFree to give it back, and a COM
+    # apartment on the calling thread (System_Com).
+    "Win32_System_Com",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     # The control surface drives the *real* cursor. A synthetic pointer event
     # can't see Chromium retargeting a click after setPointerCapture, which is
     # the bug class that has shipped here twice.

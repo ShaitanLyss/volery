@@ -2762,6 +2762,24 @@ export class Skein {
     }
   }
 
+  /** Show a territory's folder in Explorer, selected in its parent.
+   *
+   *  The wall knows a territory by its root path and nothing else, so that is
+   *  what goes over — see `open::show_in_explorer` for why it is the shell's own
+   *  API rather than `explorer.exe`, which stacks a window per press.
+   *
+   *  The failure worth having a bar for is a root that is not on this disk: a
+   *  carried layout brings the path it wanted and the menu already withholds the
+   *  item for one `adrift` knows about, but the folder may equally have been
+   *  moved since that was last asked. */
+  async showInExplorer(rootPath: string) {
+    try {
+      await invoke("show_in_explorer", { path: rootPath });
+    } catch (err) {
+      this.fault = String(err);
+    }
+  }
+
   groupsFor(projectId: string): GroupRuntime[] {
     return this.groups.filter((g) => g.group.project_id === projectId);
   }

@@ -560,6 +560,7 @@ pub fn run() {
             actions::process_alive,
             ask::answer_ask,
             open::open_external,
+            open::show_in_explorer,
             find::find_files,
             find::find_grep,
             find::read_file_text,

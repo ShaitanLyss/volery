@@ -27,6 +27,58 @@ press there is still bare ground (once a pan, now a selection band; see `layout.
 UI (`copy resume command`); before it, nothing on the wall would tell you what `--resume`
 takes.
 
+### The folder a territory stands for
+
+The territory menu is the same thing one scope up, and it took longer to notice: a territory
+*is* a folder, and until `show it in explorer` nothing on the wall would take you to it. A
+card offered `copy working directory`, which is the path as a string and one paste short of
+the thing itself.
+
+**Which mechanism was a measurement, not a preference**, because the question that decides it
+is what the *third* press does. Probed 2026-09-05 on Windows 11 26200, counting shell windows
+through `Shell.Application.Windows` before and after each call:
+
+| call | what it shows | second press |
+|---|---|---|
+| `explorer.exe <folder>` | the folder itself | **a second window** |
+| `explorer.exe /select,<folder>` | parent, folder selected | **a second window** |
+| `SHOpenFolderAndSelectItems` | parent, folder selected | **the same `hwnd`** |
+
+So the reuse the shell is capable of is reachable only through the API — and that is also the
+industry pattern, since Chromium's `platform_util_win.cc` reveals a download this way and is
+what Electron's `shell.showItemInFolder`, and therefore VS Code's *reveal in file explorer*,
+are underneath. Chromium keeps `explorer.exe /select,` as a fallback; `open::show_in_explorer`
+deliberately does not, because a fallback that stacks windows fails in exactly the way the API
+was chosen to avoid, and there is an error message to fall back to instead.
+
+**One thing in that table is not measured, and it is the one that would hurt.** A window the
+call *creates* comes to the front on its own; whether a **reused** one is raised was never
+established, because every probe able to hold foreground turned out to be a console whose
+window belongs to `conhost` or `ApplicationFrameHost` rather than to the process making the
+call — so it never had the foreground privilege to spend, and the negative result says nothing.
+Driving the real thing on the lab wall proved the reuse (one window, not two, over repeated
+presses) and could not prove the raise either, since the lab window was never foreground on a
+desktop somebody else was using. So `show_in_explorer` grants `AllowSetForegroundWindow` and
+says in its own comment that this is belt and braces. **If the row ever reads as doing nothing
+with a window already open on the parent, that is the failure, and the table above is what the
+alternatives cost** — `explorer.exe /select,` always appears in front and always stacks.
+
+**The label follows the mechanism rather than the wish.** What the shell will reuse a window
+for is the parent with the folder selected, so the row says *show it* — "open the folder"
+would promise contents the gesture does not deliver. This is the same bargain `lockGist` makes
+in `guidance.ts`: the words on the switch may not claim more than the switch does.
+
+**Withheld two ways, and both are this file's standing rule one row down.** A territory whose
+root is not on this disk — what a carried layout arrives as, since `portage.ts` sends the old
+path rather than inventing a placeholder — has no folder to show, so the row would be a
+reliable error. And the chat territory's folder is Skein's own, made so that "no project" has
+an address and documented in `store::chat_home` as holding nothing and never being written to;
+a row whose answer is an empty folder every time is one you stop reading. `nowhere` is the
+first of those, and it is **not** answered in `App.svelte`: `adrift` in `portage.svelte.ts`
+already owns "is that folder on this machine" for the layout panel and for every territory's
+own row, and the right-click is the third face reading the one answer rather than a third copy
+of the question.
+
 ### Families, and the one level there is
 
 The widget menu was nineteen rows before a browser widget and an Asana board landed on the

@@ -129,6 +129,10 @@ describe("the list is shaped like something a person meant", () => {
       { kind: "card" as const, held: true, spoken: false },
       { kind: "region" as const },
       { kind: "region" as const, moved: true, empty: true },
+      /* Both ways the folder item is withheld, since dropping the only row in
+         its group is exactly how a rule ends up hanging. */
+      { kind: "region" as const, nowhere: true },
+      { kind: "region" as const, chat: true, nowhere: true },
       { kind: "image" as const },
       { kind: "editable" as const, hasSelection: false, canPaste: false },
       { kind: "editable" as const, hasSelection: true, canPaste: true },
@@ -170,6 +174,7 @@ describe("the list is shaped like something a person meant", () => {
       "adopt",
       "image",
       "glass",
+      "explorer",
       "guidance",
     ]);
   });
@@ -402,6 +407,45 @@ describe("standing instructions", () => {
       menuFor(t).find((i) => i.kind === "item" && i.id === "guidance") as { label: string };
     expect(label({ kind: "ground" }).label).toContain("wall");
     expect(label({ kind: "region" }).label).toContain("project");
+  });
+});
+
+/* A territory is a folder, and this is the one row that leaves the app for it.
+   The two withholdings are the interesting half — see `menu.ts`, and
+   `open::show_in_explorer` for why the label says "show" rather than "open". */
+describe("the folder a territory stands for", () => {
+  test("an ordinary territory can be shown in the file manager", () => {
+    expect(ids(menuFor({ kind: "region" }))).toContain("explorer");
+    /* An empty territory is still somewhere on disk, and one that has been
+       carried off to the glass has not moved on the disk at all. */
+    expect(ids(menuFor({ kind: "region", empty: true }))).toContain("explorer");
+    expect(ids(menuFor({ kind: "region", glass: true }))).toContain("explorer");
+  });
+
+  /* An imported layout brings the root it wanted rather than a placeholder, so
+     a territory can legitimately point at a folder this machine does not have
+     — `portage.ts` has the argument. Offering to show one is offering an error
+     you get every time, which is this file's standing answer for not offering
+     it at all. */
+  test("a territory pointing nowhere is offered nothing to show", () => {
+    expect(ids(menuFor({ kind: "region", nowhere: true }))).not.toContain("explorer");
+  });
+
+  /* The chat territory has a real folder and it is Skein's own, made so that
+     "no project" has an address — `store::chat_home` says in as many words that
+     it holds nothing and is never written to. A row whose answer is an empty
+     folder every time is a row you stop reading. */
+  test("nor is the folder chat cards stand in", () => {
+    expect(ids(menuFor({ kind: "region", chat: true }))).not.toContain("explorer");
+  });
+
+  /* The wall is not a folder and neither is a card's own menu — a card offers
+     "copy working directory", which is a different question with a different
+     answer. Kept to the one target that asked for it. */
+  test("nothing else offers it", () => {
+    for (const kind of ["ground", "card", "image", "widget", "prose", "editable"] as const) {
+      expect(ids(menuFor({ kind }))).not.toContain("explorer");
+    }
   });
 });
 

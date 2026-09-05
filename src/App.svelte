@@ -83,7 +83,11 @@
   /* `Carry` draws `Portage` — the same component/class split `Console` and
      `Shell` have, for the same case-insensitive-filesystem reason. */
   import Carry from "./lib/Carry.svelte";
-  import { Portage } from "./lib/portage.svelte";
+  /* `adrift` beside `Portage` and not held here — see the note by the `Portage`
+     construction below. The right-click is the third face to read the one
+     answer to "is that folder on this machine": a territory pointing nowhere is
+     offered nothing to show in Explorer. */
+  import { adrift, Portage } from "./lib/portage.svelte";
   import { waterfall } from "./lib/waterfall.svelte";
   import {
     completionFor,
@@ -1117,10 +1121,12 @@
         moved: territoryMoved(cwd),
         glass: !!spotOf(skein.projects.find((p) => p.root_path === cwd)),
         chat: skein.isChatHome(cwd),
+        nowhere: adrift.has(cwd),
         offers: offersOf(),
       };
       act = (id) => {
         if (id === "glass") canvas?.toggleGlass("region", cwd);
+        else if (id === "explorer") void skein.showInExplorer(cwd);
         else if (id === "chat") void openChat();
         else if (id === "new") void openIn(cwd);
         else if (id === "new-worktree") canvas?.startBranch(cwd);
