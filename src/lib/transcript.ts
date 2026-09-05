@@ -15,7 +15,7 @@
  * is type-only and erased at build, so nothing rune-bearing is pulled in here.
  */
 
-import { clip } from "./classify";
+import { RESEND_CAP, clip, isResendMark, splitResendMark } from "./classify";
 import type { Line } from "./conversation.svelte";
 import { isWakePrompt } from "./relay";
 import {
@@ -133,6 +133,46 @@ export function blocksOf(lines: Line[], tag = "l"): Block[] {
       out.push({ kind: "long", key: `${tag}${mark}${nth}`, line });
       continue;
     }
+    /* A prompt Skein sent again after a turn died before reaching a model
+       carries a sentence saying so, appended to your words — so the line is
+       partly yours and partly Skein's, which is the one shape none of the folds
+       above had. Drawn whole it is your `go` and four lines accounting for it,
+       and `healNote` has already told *you* the same thing from above, before
+       the wait.
+
+       So it is drawn as its two halves: your words as the line they are, and
+       the mark under them behind a cap. Folding rather than dropping, for the
+       reason the resume prompt is folded rather than dropped — what the agent
+       was actually handed is worth being able to read, and a panel that showed
+       one thing while the wire carried another is the divergence this family of
+       recognisers exists to prevent.
+
+       Asked after `roused`, so a resume prompt that was itself resent folds
+       whole and takes its mark with it rather than being split in two. */
+    const resent =
+      line.kind === "you" ? splitResendMark(line.text) : null;
+    if (resent) {
+      /* The body keeps the line's own identity — its `state`, so a send that
+         never left still wears its failed mark, and its `data-nav`, since your
+         prompt is a place in the conversation to travel back to. The mark gets
+         neither: it is not a round, and a `failed` cap here would say the
+         *mark* never went. */
+      if (resent.body) {
+        out.push({
+          kind: "line",
+          key: `${tag}${i}`,
+          line: { ...line, text: resent.body },
+        });
+      }
+      const nth = longs.get("h") ?? 0;
+      longs.set("h", nth + 1);
+      out.push({
+        kind: "long",
+        key: `${tag}h${nth}`,
+        line: { ...line, text: resent.mark, state: undefined },
+      });
+      continue;
+    }
     if (line.kind !== "tool") {
       out.push({ kind: "line", key: `${tag}${i}`, line });
       continue;
@@ -200,11 +240,21 @@ export function runFoldCap(line: Line): string {
  *  Both strings come from here rather than one from the component, so a kind
  *  added to `LONG` cannot be drawn with a cap that says nothing. */
 export function longFold(line: Line): { cap: string; hint: string } {
-  /* Rousing's prompt — the only `you` line that reaches a `long` block. What
-     it is and who sent it, since the words below are the one thing in the
-     column addressed to the agent rather than to you. A send that never left
-     says so here too: folded, the line's own `failed` mark is not on screen. */
+  /* Rousing's prompt, and the mark on a prompt Skein sent again — the two
+     `you` lines that reach a `long` block. What it is and who sent it, since
+     the words below are the one thing in the column addressed to the agent
+     rather than to you. A send that never left says so here too: folded, the
+     line's own `failed` mark is not on screen. */
   if (line.kind === "you") {
+    /* Asked first, because it is the one `you` fold that is not a whole prompt
+       but the tail of one — `blocksOf` has already drawn your words as their
+       own line above it. So none of the three tests below apply to it: it is
+       not rousing's, it did not fail, and the failed-send cap would be claiming
+       the *mark* never went when what never went was the prompt above, which is
+       wearing its own mark and is on screen to be read. */
+    if (isResendMark(line.text)) {
+      return { cap: RESEND_CAP, hint: "why skein sent this prompt twice" };
+    }
     /* Two prompts reach this fold and they are about different things — one
        says the *turn* was cut off, the other that a background job outlived the
        process listening for it and the turn was fine. A card roused for the

@@ -2231,6 +2231,52 @@ export function withResendMark(
   return `${stripResendMark(text)}\n\n${resendMark(kind, attempt)}`;
 }
 
+/** What the mark says while it is folded away in the panel.
+ *
+ *  Short, for `RESUME_CAP`'s reason — a fold cap is `nowrap` with an ellipsis
+ *  in a panel a third of a window wide — and read off the words themselves, so
+ *  the live fold and the one that reads the session back off disk cannot draw
+ *  it differently. It is the fourth cap and the first that is not rousing's,
+ *  which is why it is here beside the sentence it caps rather than in
+ *  `rousing.ts` with the other three. */
+export const RESEND_CAP = "sent again by skein — the attempt before it failed";
+
+/** The mark on its own rather than at the end of a prompt.
+ *
+ *  Anchored at the start, where `RESEND_MARK_RE` is anchored at the end,
+ *  because the two answer different questions: that one finds a mark *after*
+ *  somebody's words, this one recognises a line that is nothing else. Only
+ *  `splitResendMark` produces such a line, so the narrowness costs nothing.
+ *
+ *  The opening words rather than the whole shape, unlike the stripper — there
+ *  the width was the difference between taking off a mark and taking off a
+ *  paragraph of somebody's prose, and here there is no prose to take. */
+const RESEND_MARK_ONLY_RE = /^skein: attempt \d+ of \d+ at this prompt\./;
+
+export function isResendMark(text: string): boolean {
+  return RESEND_MARK_ONLY_RE.test(text);
+}
+
+/** A resent prompt in its two halves — your words, and skein's account of why
+ *  you are seeing them twice — or `null` if this prompt carries no mark.
+ *
+ *  For the panel and nothing else. The wire is unaffected: what went is one
+ *  string, `withResendMark` still writes it, and every recogniser in this
+ *  family still reads it whole. Splitting for the *drawing* is what lets the
+ *  mark be folded away without it being absent from the text — a mark present
+ *  on the wire and missing from the fold is the two folds disagreeing, which is
+ *  the shape of bug `01e00f30` took a machine-wide transcript sweep to run
+ *  down. See `transcript.ts::blocksOf`. */
+export function splitResendMark(
+  text: string,
+): { body: string; mark: string } | null {
+  const at = text.search(RESEND_MARK_RE);
+  if (at < 0) return null;
+  /* `RESEND_MARK_RE` opens on the two newlines that separate the halves, so the
+     mark starts two characters in and the body stops short of them. */
+  return { body: text.slice(0, at), mark: text.slice(at + 2) };
+}
+
 /** And what it says when they are spent. The card goes rust either way — this
  *  is so the rust has an account behind it rather than one bare status.
  *

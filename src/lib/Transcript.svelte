@@ -1133,7 +1133,8 @@
       {@render one(b.line, lineKey(b.line, b.key))}
     {:else if b.kind === "long"}
       <!-- What a compaction carried forward, the whole of a skill the agent
-           invoked, or the prompt rousing sent a card whose turn was cut off.
+           invoked, the prompt rousing sent a card whose turn was cut off, or
+           Skein's account of why a prompt it re-sent is in the column twice.
            Folded like a run of calls, but marked as its own thing: the words
            inside are neither yours nor the agent's — the CLI or Skein put them
            there — so they must not be able to be read as either. Closed until
@@ -1142,10 +1143,16 @@
            twenty lines of instructions addressed to somebody else — and the
            round you came here to read is on the far side of one.
 
-           One branch for all three, because the drawing is the same problem
-           three times and only the cap differs — `longFold` is where it does.
-           The `failed` mark is the resume prompt's alone: folded, the line's
-           own is not on screen to be read.
+           One branch for all four, because the drawing is the same problem four
+           times and only the cap differs — `longFold` is where it does. The
+           `failed` mark is the resume prompt's alone: folded, the line's own is
+           not on screen to be read.
+
+           The resend mark is the one that is not a whole line of its own on the
+           wire — it is the tail of a prompt, and `blocksOf` has drawn the rest
+           of that prompt as an ordinary `you` line directly above this block.
+           So here alone the thing above the fold and the thing inside it were
+           one string when they went.
 
            Parsed as markdown only when it is open. Both are written as headed
            sections and lists; parsing one on every keystroke of a live turn,

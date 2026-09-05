@@ -9,6 +9,12 @@ import {
 } from "../src/lib/transcript";
 import type { Line } from "../src/lib/conversation.svelte";
 import { RESUME_CAP, RESUME_FAILED_CAP, resumePrompt } from "../src/lib/rousing";
+import {
+  RESEND_CAP,
+  isResendMark,
+  resendMark,
+  withResendMark,
+} from "../src/lib/classify";
 
 const you = (text: string): Line => ({ kind: "you", text });
 const said = (text: string): Line => ({ kind: "text", text });
@@ -31,7 +37,15 @@ const shape = (lines: Line[]) =>
       b.kind === "line"
         ? b.line.kind
         : b.kind === "long"
-          ? `[${b.line.kind === "skill" ? "skill" : b.line.kind === "you" ? "resume" : "sum"}]`
+          ? `[${
+              b.line.kind === "skill"
+                ? "skill"
+                : b.line.kind === "you"
+                  ? isResendMark(b.line.text)
+                    ? "mark"
+                    : "resume"
+                  : "sum"
+            }]`
           : b.kind === "shell"
             ? "[run]"
             : `[${b.lines.length}]`,
@@ -332,5 +346,86 @@ describe("the prompt rousing sends folds too", () => {
   test("a roused prompt cannot open a compaction's fold", () => {
     const keys = blocksOf([carried("a"), roused()]).map((b) => b.key);
     expect(new Set(keys).size).toBe(2);
+  });
+});
+
+describe("a prompt skein sent again", () => {
+  // `withResendMark` appends skein's account of the retry to your words, so the
+  // line is partly yours and partly skein's — the one shape none of the folds
+  // above has. Drawn whole, a healed `go` is your one word and four lines
+  // explaining it, and `healNote` has already told you the same thing from
+  // above, before the wait.
+
+  const resent = (text: string, state?: Line["state"]): Line => {
+    const marked = withResendMark(text, "overloaded", 2);
+    return state ? { kind: "you", text: marked, state } : { kind: "you", text: marked };
+  };
+
+  /** Every block's line, in order — `tools` is the one kind that has none. */
+  const linesOf = (ls: Line[]) =>
+    blocksOf(ls).map((b) => (b.kind === "tools" ? null : b.line));
+
+  test("your words stay a line, and skein's account folds under them", () => {
+    expect(shape([resent("go")])).toBe("you [mark]");
+  });
+
+  test("the line drawn is your prompt, with the mark off it", () => {
+    expect(linesOf([resent("go")])[0]?.text).toBe("go");
+  });
+
+  test("what went is one string — only the drawing is in two halves", () => {
+    // The wire is unaffected by any of this. A mark present on the wire and
+    // missing from the fold is the two folds disagreeing, which is the shape of
+    // bug `01e00f30` took a machine-wide transcript sweep to run down.
+    const sent = withResendMark("go", "overloaded", 2);
+    expect(
+      linesOf([{ kind: "you", text: sent }])
+        .map((l) => l?.text)
+        .join("\n\n"),
+    ).toBe(sent);
+  });
+
+  test("the cap says why the prompt is here twice", () => {
+    expect(longFold(linesOf([resent("go")])[1]!).cap).toBe(RESEND_CAP);
+    expect(RESEND_CAP).toContain("skein");
+  });
+
+  test("a send that never left wears its mark on your words, not on the fold", () => {
+    // A `failed` cap here would be claiming the *mark* never went. What never
+    // went is the prompt above it, which is on screen wearing its own mark —
+    // which is the whole reason the resume prompt needs its cap to say so and
+    // this does not.
+    const [body, fold] = linesOf([resent("go", "failed")]);
+    expect(body?.state).toBe("failed");
+    expect(fold?.state).toBeUndefined();
+    expect(longFold(fold!).cap).toBe(RESEND_CAP);
+  });
+
+  test("an ordinary prompt is untouched", () => {
+    expect(shape([you("go")])).toBe("you");
+  });
+
+  test("a resume prompt that was itself resent folds whole", () => {
+    // Asked after `roused`, so it takes its mark down into the fold with it
+    // rather than being split in two — the whole line is skein's either way.
+    expect(shape([{ kind: "you", text: withResendMark(resumePrompt(), "dropped", 2) }])).toBe(
+      "[resume]",
+    );
+  });
+
+  test("two resent prompts in one column cannot open each other", () => {
+    const keys = blocksOf([resent("go"), resent("again")]).map((b) => b.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test("a resent prompt cannot open a roused one's fold", () => {
+    const keys = blocksOf([roused(), resent("go")]).map((b) => b.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test("an agent quoting a mark back is speech, and speech does not fold", () => {
+    expect(shape([said(`it said "${resendMark("overloaded", 2)}" and went again`)])).toBe(
+      "text",
+    );
   });
 });
