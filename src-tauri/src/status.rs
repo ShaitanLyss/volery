@@ -243,46 +243,353 @@ fn incidents_in(body: &serde_json::Value, key: &str) -> Vec<Incident> {
 /// evidence about exactly the thing you opened the widget to ask about.
 #[tauri::command]
 pub async fn claude_status() -> Result<Health, String> {
-    crate::off_main(|| {
-        let res = agent()
-            .get(SUMMARY)
-            .set("User-Agent", concat!("volery/", env!("CARGO_PKG_VERSION")))
-            .set("Accept", "application/json")
-            .call()
-            .map_err(|e| format!("could not reach status.claude.com: {e}"))?;
-        let body: serde_json::Value = res
-            .into_json()
-            .map_err(|e| format!("the status page's answer was not readable: {e}"))?;
+    crate::off_main(read).await?
+}
 
-        let components = body["components"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|c| {
-                        Some(Part {
-                            name: c["name"].as_str()?.to_string(),
-                            status: text(c, "status"),
-                            position: c["position"].as_i64().unwrap_or(0),
-                            group: c["group"].as_bool().unwrap_or(false),
-                            hidden_when_well: c["only_show_if_degraded"]
-                                .as_bool()
-                                .unwrap_or(false),
-                        })
+/// One read of the page, blocking.
+///
+/// Split out of the command above so the MCP tool can call it without an
+/// `off_main`: `ask::start` gives every MCP request a thread of its own — the
+/// parked question needed it — so the network call there is nobody's main
+/// thread. The command keeps its `off_main` for the reason stated above it.
+pub fn read() -> Result<Health, String> {
+    let res = agent()
+        .get(SUMMARY)
+        .set("User-Agent", concat!("volery/", env!("CARGO_PKG_VERSION")))
+        .set("Accept", "application/json")
+        .call()
+        .map_err(|e| format!("could not reach status.claude.com: {e}"))?;
+    let body: serde_json::Value = res
+        .into_json()
+        .map_err(|e| format!("the status page's answer was not readable: {e}"))?;
+
+    let components = body["components"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|c| {
+                    Some(Part {
+                        name: c["name"].as_str()?.to_string(),
+                        status: text(c, "status"),
+                        position: c["position"].as_i64().unwrap_or(0),
+                        group: c["group"].as_bool().unwrap_or(false),
+                        hidden_when_well: c["only_show_if_degraded"].as_bool().unwrap_or(false),
                     })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(Health {
-            indicator: text(&body["status"], "indicator"),
-            description: text(&body["status"], "description"),
-            updated_at: text(&body["page"], "updated_at"),
-            components,
-            incidents: incidents_in(&body, "incidents"),
-            maintenances: incidents_in(&body, "scheduled_maintenances"),
+                })
+                .collect()
         })
+        .unwrap_or_default();
+
+    Ok(Health {
+        indicator: text(&body["status"], "indicator"),
+        description: text(&body["status"], "description"),
+        updated_at: text(&body["page"], "updated_at"),
+        components,
+        incidents: incidents_in(&body, "incidents"),
+        maintenances: incidents_in(&body, "scheduled_maintenances"),
     })
-    .await?
+}
+
+/* ── the tool a card can call ──────────────────────────────────────────── */
+
+/// A card calls this as `mcp__skein__claude_status`.
+pub const STATUS_TOOL: &str = "claude_status";
+
+/// Why a card can ask this at all, when the widget above already answers it for
+/// a person.
+///
+/// The widget's whole argument is "is it me or is it them?", and an agent has
+/// exactly that question with none of the ways to answer it. A card whose turn
+/// just died sees one line — `API Error: 500 Internal server error` — and its
+/// two available conclusions are *retry blindly* and *my code is wrong*, both
+/// expensive when the truth is a third thing. That happened on this wall while
+/// this was being written: card 580c7a55 was opened to run an audit, died on a
+/// 500 before it read a single file, and neither it nor the card that opened it
+/// could tell an outage from a bug.
+///
+/// **Deferred rather than `alwaysLoad`, and that is a real decision rather than
+/// a default.** The loaded tier's rule is "named by `append_prompt`" or
+/// "reflex-shaped, where not looking is the failure", and a case can be made
+/// that this is the second — the default on a 500 genuinely is to blame
+/// yourself. What settles it the other way is the cost: every description in
+/// that tier is in front of every agent on every turn of every card, and this
+/// question arises rarely and *always with an error message attached*, which is
+/// itself a strong prompt to go looking. The hint carries the words that error
+/// message contains, so an agent searching at the moment it wants this finds
+/// it. If it turns out nobody does, promoting it is one word — and that should
+/// be decided on evidence rather than here.
+pub fn status_schema() -> serde_json::Value {
+    serde_json::json!({
+        "name": STATUS_TOOL,
+        "description":
+            "Whether Claude itself is up, read from status.claude.com. Call it when a \
+             turn, a tool or a subagent has just failed in a way that might not be \
+             your fault — a 500, an overloaded error, a request that timed out — \
+             **before** concluding the bug is in the code you are working on and \
+             starting to change it.\n\n\
+             What comes back is the page's own reading: the overall indicator, its \
+             own sentence for it, any component that is not operational, and any \
+             open incident with its newest update. Costs nothing and takes no other \
+             conversation's time.\n\n\
+             **A green page is not a promise about your request.** It means no \
+             widespread incident is being reported, which leaves both a transient \
+             error and a bug in your own work entirely possible — so read green as \
+             'stop blaming the API', not as 'retry until it works'. Do not poll it: \
+             an outage that has just begun and one about to end look identical a \
+             second apart, and nothing you learn by asking twice in a minute changes \
+             what you should do.",
+        "inputSchema": { "type": "object", "properties": {} }
+    })
+}
+
+/// Route a `tools/call` that belongs to this file. `None` for a name it does not
+/// claim, so `ask.rs` can go on asking.
+///
+/// Blocking, on the MCP request's own thread — `ask::start` gives every request
+/// one, so the network call here is nobody's main thread and wants no
+/// `off_main`. The `#[tauri::command]` above needs its own for the reason
+/// stated there.
+pub fn handle(tool: &str, _args: &serde_json::Value) -> Option<String> {
+    (tool == STATUS_TOOL).then(|| match read() {
+        Ok(h) => say(&h),
+        /* A page nobody could reach is **evidence**, not a failure to report,
+           and this is the same call the widget makes: an update check that
+           cannot run is a fact about plumbing, where a status page that cannot
+           be reached is a fact about the very thing being asked after. So it is
+           said plainly and pointed at the reading it does support — a machine
+           that cannot reach a public CDN is one whose API calls were probably
+           failing for the same reason. */
+        Err(e) => format!(
+            "Could not reach status.claude.com — {e}\n\n\
+             That is itself worth something. This page is CDN-hosted and answers \
+             from almost anywhere, so a machine that cannot reach it usually \
+             cannot reach the API either: read it as a network problem at this \
+             end rather than as no news."
+        ),
+    })
+}
+
+/// Fold a reading into the answer to "is it them?".
+///
+/// Prose rather than JSON, because every other tool on this server answers in
+/// prose and because what is wanted is a *judgement* — an agent handed a
+/// components array has to do this fold itself, and would do it differently
+/// every time.
+///
+/// The page's own sentence is quoted verbatim and never paraphrased. That is
+/// this file's standing rule for the widget and it binds harder here: an agent
+/// is likelier than a person to repeat what it is told as fact, so what it
+/// repeats had better be what the page actually said.
+pub fn say(h: &Health) -> String {
+    /* The indicator leads, but a component can drag it down. The page is
+       entitled to call one degraded component a `minor`, and has been observed
+       saying `none` while a component says it is down — so reporting "all
+       operational" over a component that is not would be the one dishonest
+       thing this could do. Group rows are dropped: a heading is not a service. */
+    let ill: Vec<&Part> = h
+        .components
+        .iter()
+        .filter(|c| !c.group && c.status != "operational")
+        .collect();
+
+    let calm = h.indicator == "none" && ill.is_empty() && h.incidents.is_empty();
+    let mut out = String::new();
+
+    if calm {
+        out.push_str(&format!(
+            "Claude looks up. status.claude.com says \"{}\" and reports no open \
+             incidents.\n\nSo whatever just failed is not a reported outage. It may \
+             still be transient — those happen without ever reaching the status page \
+             — or it may be your own code. Retrying once is reasonable; retrying in \
+             a loop is not.",
+            h.description
+        ));
+    } else {
+        out.push_str(&format!(
+            "Claude is NOT fully up. status.claude.com says \"{}\" (indicator: {}).",
+            h.description, h.indicator
+        ));
+        if !ill.is_empty() {
+            out.push_str("\n\nNot operational:");
+            for c in &ill {
+                out.push_str(&format!("\n  - {} — {}", c.name, c.status));
+            }
+        }
+        for inc in &h.incidents {
+            out.push_str(&format!(
+                "\n\nIncident: {} ({}, impact {})\n  {}",
+                inc.name, inc.status, inc.impact, inc.url
+            ));
+            /* The newest note only. There are rarely more than four, and the
+               older ones are the history of a thing you are being told about
+               now — the widget can open them out because a person reads at
+               their own pace, and an agent does not. */
+            if let Some(n) = inc.notes.first() {
+                out.push_str(&format!("\n  {}: {}", n.status, n.body.trim()));
+            }
+        }
+        out.push_str(
+            "\n\nIf what you were doing failed, this is very likely why. Say so to the \
+             user rather than working around it, and do not rewrite working code to \
+             accommodate an outage that will end.",
+        );
+    }
+
+    /* When the page last said anything, which is not when we asked. The widget
+       keeps those two apart for the same reason, and it matters more here: an
+       agent has no clock on the wall to check the answer against. */
+    if !h.updated_at.is_empty() {
+        out.push_str(&format!("\n\n(page last updated {})", h.updated_at));
+    }
+    out
+}
+
+#[cfg(test)]
+mod told {
+    use super::*;
+
+    fn part(name: &str, status: &str, group: bool) -> Part {
+        Part {
+            name: name.into(),
+            status: status.into(),
+            position: 1,
+            group,
+            hidden_when_well: false,
+        }
+    }
+
+    fn health(indicator: &str, description: &str, components: Vec<Part>) -> Health {
+        Health {
+            indicator: indicator.into(),
+            description: description.into(),
+            updated_at: "2026-09-04T01:00:00.000Z".into(),
+            components,
+            incidents: vec![],
+            maintenances: vec![],
+        }
+    }
+
+    #[test]
+    fn a_calm_page_says_so_without_licensing_a_retry_loop() {
+        let s = say(&health(
+            "none",
+            "All Systems Operational",
+            vec![part("Claude Code", "operational", false)],
+        ));
+        assert!(s.contains("Claude looks up"));
+        /* Verbatim, never paraphrased — an agent repeats what it is told as
+           fact, so what it repeats must be what the page said. */
+        assert!(s.contains("All Systems Operational"));
+        /* The half that stops this becoming a retry loop. A green page leaves
+           both a transient error and the agent's own bug entirely possible. */
+        assert!(
+            s.contains("retrying in a loop is not"),
+            "a green reading did not discourage a retry loop: {s}"
+        );
+    }
+
+    /// The one dishonest thing this could do: the page is entitled to call a
+    /// degraded component `none`, and has been observed doing it. Printing "all
+    /// operational" over a component that says it is down would be the widget's
+    /// "arguing with itself" bug, in a place an agent would act on.
+    #[test]
+    fn a_degraded_component_outranks_a_calm_indicator() {
+        let s = say(&health(
+            "none",
+            "All Systems Operational",
+            vec![part("Claude Code", "major_outage", false)],
+        ));
+        assert!(
+            s.contains("NOT fully up"),
+            "a down component was reported as everything being fine: {s}"
+        );
+        assert!(s.contains("Claude Code"));
+        assert!(s.contains("major_outage"));
+    }
+
+    /// A heading is not a service. Counting one as degraded would report an
+    /// outage that does not exist, which is the expensive direction here: an
+    /// agent told it is an outage stops work and tells the user.
+    #[test]
+    fn a_group_row_is_not_a_service() {
+        let s = say(&health(
+            "none",
+            "All Systems Operational",
+            vec![part("API", "degraded_performance", true)],
+        ));
+        assert!(s.contains("Claude looks up"), "a group row was read as an outage: {s}");
+    }
+
+    #[test]
+    fn an_incident_is_named_with_its_newest_note_and_its_link() {
+        let mut h = health("major", "Major Service Outage", vec![]);
+        h.incidents = vec![Incident {
+            id: "n0".into(),
+            name: "Elevated error rates".into(),
+            status: "investigating".into(),
+            impact: "major".into(),
+            url: "https://stspg.io/abc".into(),
+            started_at: "2026-09-04T00:30:00.000Z".into(),
+            /* Newest first, as Statuspage sends them — so the first is the one
+               that is true now and the rest are history. */
+            notes: vec![
+                Note {
+                    status: "investigating".into(),
+                    body: "  We are looking into it.  ".into(),
+                    at: "2026-09-04T00:40:00.000Z".into(),
+                },
+                Note {
+                    status: "identified".into(),
+                    body: "An older note nobody needs.".into(),
+                    at: "2026-09-04T00:31:00.000Z".into(),
+                },
+            ],
+            affects: vec![],
+        }];
+        let s = say(&h);
+        assert!(s.contains("Elevated error rates"));
+        assert!(s.contains("https://stspg.io/abc"));
+        assert!(s.contains("We are looking into it."));
+        assert!(
+            !s.contains("An older note nobody needs"),
+            "every note was printed; only the newest is true now: {s}"
+        );
+        /* The instruction that stops an outage becoming a refactor. */
+        assert!(s.contains("do not rewrite working code"));
+    }
+
+    /// When the *page* last spoke, which is not when we asked. An agent has no
+    /// clock on the wall to check the answer against, so the stamp has to be in
+    /// the answer.
+    #[test]
+    fn the_reading_carries_the_pages_own_timestamp() {
+        let s = say(&health("none", "All Systems Operational", vec![]));
+        assert!(s.contains("2026-09-04T01:00:00.000Z"));
+    }
+
+    #[test]
+    fn the_handler_claims_its_own_name_and_nothing_else() {
+        assert!(handle("board", &serde_json::json!({})).is_none());
+        assert_eq!(status_schema()["name"], STATUS_TOOL);
+    }
+
+    /// It must stay OUT of the always-loaded tier. That tier is in front of
+    /// every agent on every turn of every card, and this tool's whole argument
+    /// for being deferred is that its question always arrives with an error
+    /// message attached to prompt the search.
+    #[test]
+    fn it_is_not_in_the_tier_every_turn_pays_for() {
+        let mine = crate::ask::roster()
+            .into_iter()
+            .find(|t| t["name"] == STATUS_TOOL)
+            .expect("the status tool is advertised at all");
+        assert_ne!(
+            mine["_meta"]["anthropic/alwaysLoad"],
+            serde_json::json!(true),
+            "the status tool was promoted into the loaded tier; if that is deliberate, \
+             say why where the schema is written"
+        );
+    }
 }
 
 #[cfg(test)]

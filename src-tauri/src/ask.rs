@@ -703,6 +703,12 @@ pub(crate) fn roster() -> Vec<Value> {
              off, I fixed the bug that was filed",
         ),
         found_by(
+            crate::status::status_schema(),
+            "is claude down, is it me or them, api error, 500, overloaded, rate \
+             limited, request failed for no reason, outage, service status, is the \
+             api having problems",
+        ),
+        found_by(
             crate::relay::touched_schema(),
             "who else has edited this file, other agents, conflict, clash, is \
              anyone in my way, am I about to work over somebody, recent writes",
@@ -1250,6 +1256,10 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             .or_else(|| crate::board::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::sink::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::limits::handle(&app, &conversation_id, &tool, &args))
+                            /* Takes neither the app nor the caller: it asks a
+                               public page a question with no arguments, and the
+                               answer is the same for every card on the wall. */
+                            .or_else(|| crate::status::handle(&tool, &args))
                             .or_else(|| crate::later::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::pin::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::spawn::handle(&app, &conversation_id, &tool, &args))

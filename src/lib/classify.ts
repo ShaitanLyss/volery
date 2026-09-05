@@ -137,6 +137,12 @@ export const SKEIN_SPAWN_TOOL = "mcp__skein__spawn";
 export const SKEIN_CLOSE_TOOL = "mcp__skein__close";
 export const SKEIN_WAKE_TOOL = "mcp__skein__wake_me";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
+/** Whether Claude itself is up — the agent's half of the status widget.
+ *
+ *  Beside `allowance` because they are the same shape of question: both ask
+ *  after a condition outside the work that decides how the work should go, and
+ *  neither changes anything. */
+export const SKEIN_STATUS_TOOL = "mcp__skein__claude_status";
 
 /** And the dev servers, which a card can now read and drive.
  *
@@ -518,6 +524,14 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_ALLOWANCE_TOOL:
       return "checked the allowance";
+    /* Deliberately says what was *asked*, not what came back. Every other line
+       here names the gesture, and this one has a stronger reason than symmetry:
+       the answer changes minute to minute, so a line reading "claude is up"
+       would be a claim the transcript goes on making hours after it stopped
+       being true — and a card scrolled back to is exactly where somebody would
+       read it as still current. */
+    case SKEIN_STATUS_TOOL:
+      return "checked whether claude is up";
     /* The dev servers. `servers` and `server_log` read something the wall is
        already holding and cost nobody anything; `server` runs processes on this
        machine, so it gets the specific line — the same asymmetry `spawn` and
