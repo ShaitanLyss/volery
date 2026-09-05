@@ -26,7 +26,8 @@ import {
   type Kid,
   type Kin,
 } from "../src/lib/lineage";
-import type { Box, Pt } from "../src/lib/flow";
+import { tangentOn, type Box, type Pt } from "../src/lib/flow";
+import { MAX_SCALE } from "../src/lib/zoom";
 
 const CARD = { w: 240, h: 150 };
 
@@ -427,5 +428,169 @@ describe("the spine a charge runs along", () => {
     /* Not the child's rim: half a root is half a spine, so a charge cannot run
        further than the thing carrying it. */
     expect(dist(pts[pts.length - 1], limb.spine[3])).toBeGreaterThan(1);
+  });
+});
+
+/* The user's report, 2026-09-05: "the base is a flat line, and so when the shape
+   is turned to match a card on the side, the angle and flat base shows breaking
+   the illusion."
+
+   A sweep rather than three bearings, because three bearings is how it survived:
+   it was eyeballed due east, where the chord happens to run parallel to the edge
+   it exits, and every other bearing cuts across it. These are the numbers the
+   fix had to take to zero — 4.0px proud at the flush bearings, 6.8px at the
+   diagonals, against a 208x78 card at 1:1. */
+describe("the flat base is under the card at every bearing", () => {
+  const W = 208;
+  const H = 78;
+  /* `Card.svelte` draws a 4px corner radius, in card pixels, so the wall's zoom
+     scales it. A chord that clears the *rect* can still show through a corner. */
+  const RADIUS = 4;
+
+  function box(cx: number, cy: number, w: number, h: number): Box {
+    return { x: cx - w / 2, y: cy - h / 2, w, h };
+  }
+
+  /** How far outside a card a point is, in pixels. Negative is buried. */
+  function exposed(card: Box, p: Pt, radius: number): number {
+    const dx = Math.abs(p.x - (card.x + card.w / 2)) - (card.w / 2 - radius);
+    const dy = Math.abs(p.y - (card.y + card.h / 2)) - (card.h / 2 - radius);
+    return dx > 0 && dy > 0 ? Math.hypot(dx, dy) - radius : Math.max(dx, dy) - radius;
+  }
+
+  /** The worst either closing chord is left showing, over a whole turn.
+   *
+   *  `outline` is `[...up, ...down.reverse()]`, so the chord at the parent is
+   *  its first and last vertices and the one at the child is the pair either
+   *  side of the middle. Nothing else in the ring is a cut end: the long sides
+   *  may leave the card wherever they like, since that is a card occluding a
+   *  root rather than a root lying beside one. */
+  function turn(scale: number, w: number, h: number, apart: number, radius: number) {
+    const parent = box(0, 0, w, h);
+    let base = -Infinity;
+    let tip = -Infinity;
+    for (let deg = 0; deg < 360; deg += 0.25) {
+      const a = (deg * Math.PI) / 180;
+      const child = box(Math.cos(a) * apart, Math.sin(a) * apart, w, h);
+      const ring = outline(limbsFor(parent, [{ id: "k", box: child }], { scale, now: 0 })[0]);
+      const n = (ring.length - 2) / 2;
+      /* A card is opaque, so a chord is hidden if it is under *either* of them. */
+      const hid = (p: Pt) => Math.min(exposed(parent, p, radius), exposed(child, p, radius));
+      base = Math.max(base, hid(ring[0]), hid(ring[ring.length - 1]));
+      tip = Math.max(tip, hid(ring[n]), hid(ring[n + 1]));
+    }
+    return { base, tip };
+  }
+
+  test("no bearing on a full turn leaves the base showing", () => {
+    expect(turn(1, W, H, 520, RADIUS).base).toBeLessThan(-1);
+  });
+
+  /* The far end is the same defect at a fifth of the width — `TIP` is 1.1, so it
+     is a ~2px cut and nobody has ever seen it. Fixed with the base rather than
+     left, because it is one defect and one line of the same fix. */
+  test("nor the tip, at the child's rim", () => {
+    expect(turn(1, W, H, 520, RADIUS).tip).toBeLessThan(-1);
+  });
+
+  /* Widths are clamped at both ends of the zoom range and a corner radius is
+     not, so the two cross: at 4x a card's corner is 16px and the root is still
+     5.5px wide. `SEAT_CLEAR` follows the zoom for exactly that. */
+  test("at every zoom, and at all three densities", () => {
+    for (const scale of [0.2, 0.35, 0.5, 1, 2, MAX_SCALE]) {
+      for (const h of [78, 40, 105]) {
+        const { base, tip } = turn(scale, W * scale, h * scale, 520 * scale, RADIUS * scale);
+        expect({ scale, h, base: base < -1, tip: tip < -1 }).toEqual({
+          scale,
+          h,
+          base: true,
+          tip: true,
+        });
+      }
+    }
+  });
+
+  /* A card stuck to the glass is drawn 1:1 whatever the wall is zoomed to, so
+     its corner does not shrink with everything else. `limbsFor` cannot tell one
+     from a card on the wall, which is why `SEAT_CLEAR` never scales below its
+     own value. */
+  test("and on a card stuck to the glass, which does not scale", () => {
+    const { base, tip } = turn(0.3, W, H, 520, RADIUS);
+    expect(base).toBeLessThan(-1);
+    expect(tip).toBeLessThan(-1);
+  });
+
+  /* Cards sit on a fixed pitch (`SLOT_W` x `SLOT_H`), so the closest two are
+     ever laid is a diagonal neighbour ~274px away. Nearer than that they
+     overlap, which only two territories dragged across each other can do — and
+     there the limb is degenerate in every other way as well: `rimPoint` asked
+     from a point *inside* the child answers on its near side, so the whole root
+     lies under the parent and there is nothing showing to fix. */
+  test("down to the closest pitch two cards are ever laid at", () => {
+    for (const apart of [274, 300, 520, 1400]) {
+      const { base, tip } = turn(1, W, H, apart, RADIUS);
+      expect({ apart, base: base < -1, tip: tip < -1 }).toEqual({ apart, base: true, tip: true });
+    }
+  });
+
+  /* The seat is glued on along the tangent at `t = 0`, which is `dir` — shared
+     by every limb of a cluster. If it were not, a fork's limbs would each bury a
+     differently angled stub and the union that makes the trunk a trunk would
+     show a seam under the card. */
+  test("a fork's limbs bury the same stub, so the trunk still unions", () => {
+    const limbs = limbsFor(PARENT, [kid("a", 900, -160), kid("b", 900, 30), kid("c", 900, 210)], {
+      scale: 1,
+      now: 0,
+    });
+    expect(limbs.length).toBe(3);
+    const rings = limbs.map((l) => outline(l));
+    for (const limb of limbs) expect(limb.seat).toBeCloseTo(limbs[0].seat, 9);
+    for (const ring of rings) {
+      expect(ring[0].x).toBeCloseTo(rings[0][0].x, 9);
+      expect(ring[0].y).toBeCloseTo(rings[0][0].y, 9);
+    }
+  });
+
+  /* Before it has arrived, the far end is a growing head in mid-air with no card
+     to hide under. Tucking it there would be a root reaching past where it has
+     got to, which is the one thing `reach` exists to prevent. */
+  test("a root still growing is not tucked into a card it has not reached", () => {
+    const born = 0;
+    const [limb] = limbsFor(PARENT, [kid("a", 1200, 0, born)], {
+      scale: 1,
+      now: born + GROW_MS / 2,
+    });
+    expect(limb.reach).toBeLessThan(1);
+    expect(limb.tuck).toBeGreaterThan(0);
+    const ring = outline(limb, 8);
+    const head = { x: (ring[8].x + ring[9].x) / 2, y: (ring[8].y + ring[9].y) / 2 };
+    expect(dist(head, spine(limb, 1, 1, 1)[0])).toBeLessThan(0.001);
+  });
+
+  /* The whole reason the stub is glued on along the tangent rather than the
+     spine being moved back: the silhouette outside the card is the one that was
+     already there, so this fix cannot have changed how a root reads anywhere it
+     can be seen. */
+  test("nothing outside the card moved by so much as a quarter pixel", () => {
+    let worst = 0;
+    for (let deg = 0; deg < 360; deg += 0.5) {
+      const a = (deg * Math.PI) / 180;
+      const child = box(Math.cos(a) * 520, Math.sin(a) * 520, W, H);
+      const [limb] = limbsFor(box(0, 0, W, H), [{ id: "k", box: child }], { scale: 1, now: 0 });
+      const ring = outline(limb);
+      const [p, c1, c2, b] = limb.spine;
+      /* Where the outline used to start: on the offset curve at `t = 0`. */
+      const tan = tangentOn(p, c1, c2, b, 0);
+      const hw = halfWidthAt(0, limb.base, limb.tip);
+      const was = { x: p.x - tan.y * hw, y: p.y + tan.x * hw };
+      /* How far that vertex now falls off the edge that replaced it. */
+      const ux = ring[1].x - ring[0].x;
+      const uy = ring[1].y - ring[0].y;
+      worst = Math.max(
+        worst,
+        Math.abs((was.x - ring[0].x) * uy - (was.y - ring[0].y) * ux) / Math.hypot(ux, uy),
+      );
+    }
+    expect(worst).toBeLessThan(0.25);
   });
 });

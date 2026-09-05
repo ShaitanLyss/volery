@@ -179,6 +179,51 @@ export function rimPoint(box: Box, to: Pt, gap = 4): Pt {
   return { x: c.x + dx * out, y: c.y + dy * out };
 }
 
+/** How far from `p` along `dir` you have to travel before a disc of radius `r`
+ *  centred there lies wholly inside `box` — nought if it already does.
+ *
+ *  **The disc is the whole trick.** `lineage.ts` closes a limb with a flat chord
+ *  and needs that chord *under* the card rather than lying on the ground beside
+ *  it; a chord of half-length `r` sits inside the disc of radius `r` about its
+ *  middle whatever angle it is at, so asking about the disc answers for every
+ *  bearing at once and needs no trigonometry. It over-answers by at most the gap
+ *  between a chord and its circle, and every pixel of the over-answer is buried,
+ *  so it costs nothing to see.
+ *
+ *  Every answer is finite, because an infinity here would put a root's base
+ *  somewhere on the far side of the wall. A `dir` that never gets there — or has
+ *  no length at all, which is a degenerate curve whose direction means nothing —
+ *  is nought, and the caller draws what it would have drawn anyway. A box too
+ *  small to hold the disc on *both* axes seats at its own centre, which is as
+ *  deep as that box goes; too small on only one, and the other axis is still
+ *  worth answering exactly, since travelling further buries a stub for nothing. */
+export function seatDepth(box: Box, p: Pt, dir: Pt, r: number): number {
+  const dd = dir.x * dir.x + dir.y * dir.y;
+  if (dd === 0) return 0;
+  const c = centreOf(box);
+  const qx = p.x - c.x;
+  const qy = p.y - c.y;
+  /* As deep as the box goes: where `dir` from `p` passes closest to the centre. */
+  const centreward = Math.max(0, -(qx * dir.x + qy * dir.y) / dd);
+  let lo = 0;
+  let hi = Infinity;
+  const axes: [number, number, number][] = [
+    [qx, dir.x, Math.max(0, box.w / 2 - r)],
+    [qy, dir.y, Math.max(0, box.h / 2 - r)],
+  ];
+  for (const [q, d, half] of axes) {
+    if (d === 0) {
+      if (Math.abs(q) > half) return centreward;
+      continue;
+    }
+    const a1 = (-half - q) / d;
+    const a2 = (half - q) / d;
+    lo = Math.max(lo, Math.min(a1, a2));
+    hi = Math.min(hi, Math.max(a1, a2));
+  }
+  return lo > hi ? centreward : lo;
+}
+
 /** How far the strand bows out of the straight line between two cards.
  *
  *  Proportional to the distance, so a strand across the wall arcs and one

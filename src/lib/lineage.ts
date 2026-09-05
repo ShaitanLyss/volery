@@ -73,6 +73,7 @@ import {
   pointOn,
   rimPoint,
   samples as curveSamples,
+  seatDepth,
   tangentOn,
   type Box,
   type Pt,
@@ -106,6 +107,49 @@ export const BASE_MIN = 1.6;
 export const TIP_MIN = 0.6;
 /** What each child past the first adds to the shared base, so the fork reads. */
 export const PER_CHILD = 0.2;
+
+/* ── under the card ────────────────────────────────────────────────────────
+ *
+ * A limb is a filled polygon (`outline`), so it closes with a flat chord at each
+ * end — perpendicular to the tangent there, `2 × base` across at the parent and
+ * `2 × tip` at the child. Roots are drawn *behind* the cards, so a chord inside
+ * a card's footprint is invisible and one outside it is a sliced tab lying on
+ * the ground: the taper says "this comes out from under the card" and the cut
+ * end says "this is a shape next to the card".
+ *
+ * It was eyeballed due east, where the chord is parallel to the edge it exits
+ * and the eye forgives it. Measured over a full turn against a 208×78 card, the
+ * outboard endpoint stood **4.0px** proud at the two flush bearings and **6.8px**
+ * at the diagonals — so even the case it was checked at was wrong, just wrong
+ * parallel to the edge. (The 4px floor is `rimPoint`'s `gap`, which stands the
+ * whole limb clear of the card: right for a strand, which is drawn *over* the
+ * cards and must not look like a border, and exactly backwards for a root.)
+ *
+ * The fix is to carry the outline past its last sample, along the tangent there
+ * and at the same width, until the chord is under the card — `seat` at the
+ * parent, `tuck` at the child. A straight run along the tangent is both
+ * tangent- and width-continuous with the curve, so it adds a rectangle and no
+ * seam, and every limb of a cluster shares one, so the trunk still unions.
+ * Nothing else moves: the width profile is still read from the rim, `reach`
+ * still measures the visible limb, and `fork`, the bow and the sheen are
+ * untouched.
+ *
+ * Rejected: rounding the base, which shows a cap rather than a cut; and
+ * clipping the polygon against the card, which is a boolean op per card per
+ * frame on a path meant to be cheap.
+ */
+
+/** What the seat has to clear beyond the chord itself, in screen pixels.
+ *
+ *  A card's corner is rounded (`Card.svelte`, 4px) and its border is drawn on
+ *  the inside of that box, so a chord seated *exactly* on the rect is a chord
+ *  the card does not quite cover. The radius is in card pixels, which the wall's
+ *  `zoom` scales — but a card stuck to the glass is drawn 1:1 whatever the wall
+ *  is at, and `limbsFor` cannot tell the two apart, so this takes the larger of
+ *  the two readings. It is generous on purpose: every pixel of it is under a
+ *  card, so being wrong in this direction costs nothing to see and being wrong
+ *  in the other direction is the whole bug. */
+export const SEAT_CLEAR = 5;
 
 /** How wide a fan of children counts as one trunk. Two cards in roughly the
  *  same direction share a root; one across the wall gets its own. */
@@ -163,6 +207,12 @@ export type Limb = {
   /** Half-width at the parent and at the child. */
   base: number;
   tip: number;
+  /** How far past each end of the spine the outline is carried, so that the flat
+   *  chord closing it lands under the card there rather than on the ground
+   *  beside it. Screen pixels, along the tangent at that end. See "under the
+   *  card" above. */
+  seat: number;
+  tuck: number;
   /** How much of it exists yet, 0..1. */
   reach: number;
   /** How many limbs share this limb's trunk, for anything that wants to know
@@ -292,6 +342,11 @@ export function limbsFor(
     const forkLen = clamp(FORK_AT * near, FORK_MIN, FORK_MAX);
     const fork = { x: from.x + dir.x * forkLen, y: from.y + dir.y * forkLen };
     const { base, tip } = halfWidths(opts.scale, group.length);
+    /* Backwards along the trunk's own bearing, since the tangent at `t = 0` is
+       exactly `dir` — `fork` lies along it. Shared by every limb of the cluster,
+       which is what keeps the buried stub part of the same union. */
+    const clear = SEAT_CLEAR * Math.max(1, opts.scale);
+    const seat = seatDepth(parent, from, { x: -dir.x, y: -dir.y }, base + clear);
 
     group.forEach((k, i) => {
       const to = tos[i];
@@ -306,11 +361,17 @@ export function limbsFor(
         x: to.x - (u.x * len) / 3 - u.y * bow,
         y: to.y - (u.y * len) / 3 + u.x * bow,
       };
+      /* The tangent at `t = 1` is `to - into`, which is not the bearing the rim
+         point was found along: the bow tilts the arrival by up to a quarter
+         turn's worth of `BOW_MAX`. So the tuck follows the curve in, not the
+         line between the cards. */
       out.push({
         child: k.id,
         spine: [from, fork, into, to],
         base,
         tip,
+        seat,
+        tuck: seatDepth(k.box, to, unit(into, to), tip + clear),
         reach: reachOf(k.born, opts.now, opts.still),
         siblings: group.length,
       });
@@ -336,7 +397,13 @@ export function halfWidthAt(p: number, base: number, tip: number): number {
  *  Down one side and back the other, offset along the normal of the tangent —
  *  a variable-width stroke, which canvas has no primitive for. An empty array
  *  for a limb that has not grown enough to have a shape yet: two points and a
- *  fill is a stray pixel at the card's rim on the first frame of every spawn. */
+ *  fill is a stray pixel at the card's rim on the first frame of every spawn.
+ *
+ *  Both ends are carried past the last sample by `seat` and `tuck`, so that the
+ *  chords which close the polygon are under the cards rather than on the ground
+ *  — see "under the card" above. The far end only once the limb has *arrived*:
+ *  before that it is a growing head in mid-air with no card to hide under, and
+ *  pushing it forward would be a root reaching past where it has got to. */
 export function outline(limb: Limb, steps = STEPS): Pt[] {
   if (limb.reach <= 0.02) return [];
   const [a, c1, c2, b] = limb.spine;
@@ -349,8 +416,11 @@ export function outline(limb: Limb, steps = STEPS): Pt[] {
     const at = pointOn(a, c1, c2, b, t);
     const tan = tangentOn(a, c1, c2, b, t);
     const hw = halfWidthAt(p, limb.base, limb.tip);
-    up.push({ x: at.x - tan.y * hw, y: at.y + tan.x * hw });
-    down.push({ x: at.x + tan.y * hw, y: at.y - tan.x * hw });
+    const past = i === 0 ? -limb.seat : i === n && limb.reach >= 1 ? limb.tuck : 0;
+    const x = at.x + tan.x * past;
+    const y = at.y + tan.y * past;
+    up.push({ x: x - tan.y * hw, y: y + tan.x * hw });
+    down.push({ x: x + tan.y * hw, y: y - tan.x * hw });
   }
   return [...up, ...down.reverse()];
 }

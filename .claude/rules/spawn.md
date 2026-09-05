@@ -335,6 +335,23 @@ card passes under it rather than across its title, with no rim arithmetic to get
   because it is light crossing a room, and a root is a thing lying on the ground beside the
   cards — at `field` density a fixed 6px trunk against a 60px card reads as a cable somebody
   left out. Clamped at both ends, because at no zoom may the structure thin to nothing.
+- **A limb is carried past both its ends, under the cards.** A filled polygon closes with a
+  flat chord, and at the parent that chord is `2 × base` across and perpendicular to the
+  outgoing bearing. Drawn on the rim it is flush only where the bearing is due east or due
+  south, which is where it was eyeballed; at every other bearing it crosses the edge at an
+  angle and a sliced tab shows on the ground beside the card, which is the taper's whole claim
+  — *this comes out from under the card* — contradicted at the one place the eye lands.
+  Measured over a full turn against a 208×78 card at 1:1 it stood **4.0px** proud at the flush
+  bearings and **6.8px** at the diagonals; the 4px floor is `rimPoint`'s own `gap`, which is
+  right for a strand drawn *over* the cards and backwards for a root drawn under them. So
+  `outline` runs each end past its last sample along the tangent there and at the same width —
+  `seat` at the parent, `tuck` at the child — until `flow.seatDepth` says the chord is hidden.
+  A straight run along the tangent is both tangent- and width-continuous, so it adds a
+  rectangle and no seam; the silhouette outside the card moves by under a quarter of a pixel;
+  and a cluster shares one seat, so the trunk still unions. The tuck waits for `reach` to
+  finish: before that the far end is a growing head in mid-air with no card to hide under.
+  **A strand has no such defect** — `Flow` strokes its filaments with a round cap rather than
+  filling an outline, and it is meant to stop short of the rim anyway.
 - **A new root grows out; a restored one is simply there.** `born` is stamped by `Skein` when
   `spawn:asked` arrives — the moment it happened — and is absent for every pair read back at
   launch, or the wall would sprout twenty roots as though each card had just been opened. The

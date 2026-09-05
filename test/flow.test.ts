@@ -30,8 +30,10 @@ import {
   rimPoint,
   samples,
   screenBox,
+  seatDepth,
   stillAlpha,
   wakeAlpha,
+  type Pt,
   type Strand,
 } from "../src/lib/flow";
 import { CARD_BOX } from "../src/lib/layout";
@@ -91,6 +93,78 @@ describe("rimPoint", () => {
 
   test("a target on top of the card is the card, rather than a NaN", () => {
     expect(rimPoint(box, centreOf(box))).toEqual(centreOf(box));
+  });
+});
+
+/* The other half of the same question, and the mirror of `rimPoint`: that one
+   answers where a thing stops *short* of a card, this one how far past it you
+   must go for something of a given size to be hidden by it. `lineage.ts` is the
+   caller — a root closes with a flat chord and it has to be under the card. */
+describe("seating a thing under a card", () => {
+  const box = { x: 0, y: 0, w: 200, h: 100 };
+  const c = centreOf(box);
+  const inside = (p: Pt, r: number) =>
+    Math.abs(p.x - c.x) <= box.w / 2 - r + 1e-9 && Math.abs(p.y - c.y) <= box.h / 2 - r + 1e-9;
+  const walk = (p: Pt, dir: Pt, a: number) => ({ x: p.x + dir.x * a, y: p.y + dir.y * a });
+
+  test("it stops the moment the whole disc is inside, and not before", () => {
+    const p = { x: 260, y: 50 };
+    const dir = { x: -1, y: 0 };
+    const a = seatDepth(box, p, dir, 8);
+    /* 260 → the edge is 60 away, and 8 more buries a disc of radius 8. */
+    expect(a).toBeCloseTo(68, 9);
+    expect(inside(walk(p, dir, a), 8)).toBe(true);
+    expect(inside(walk(p, dir, a - 0.01), 8)).toBe(false);
+  });
+
+  test("a point already deep enough needs no travel at all", () => {
+    expect(seatDepth(box, c, { x: 1, y: 0 }, 8)).toBe(0);
+  });
+
+  /* The case the whole helper exists for: coming in at an angle, where the
+     binding axis is whichever runs out first — and for a card, which is much
+     wider than it is tall, that is nearly always the short one. */
+  test("the tighter of the two axes is the one that decides", () => {
+    const dir = { x: -Math.cos(0.5), y: -Math.sin(0.5) };
+    const p = { x: 400, y: 300 };
+    const a = seatDepth(box, p, dir, 8);
+    const at = walk(p, dir, a);
+    expect(inside(at, 8)).toBe(true);
+    /* On the boundary of the shrunken box rather than somewhere past it: this
+       must not bury more than it has to, since the stub it seats is drawn. */
+    const slack = Math.min(
+      box.w / 2 - 8 - Math.abs(at.x - c.x),
+      box.h / 2 - 8 - Math.abs(at.y - c.y),
+    );
+    expect(slack).toBeCloseTo(0, 6);
+  });
+
+  /* A box too thin to hold the disc is a real configuration rather than a
+     curiosity — a card at field density is 40px tall before the zoom has
+     touched it. The answer has to be finite either way: an Infinity here would
+     put a root's base somewhere on the far side of the wall. */
+  const thin = { x: 0, y: 0, w: 200, h: 6 };
+
+  test("an axis that cannot be satisfied does not stop the one that can", () => {
+    /* Dead along the thin box's own centre line: nothing will ever hide the
+       disc vertically, and travelling further than it takes to hide it
+       horizontally would bury the stub for nothing. */
+    expect(seatDepth(thin, { x: 260, y: 3 }, { x: -1, y: 0 }, 8)).toBeCloseTo(68, 9);
+  });
+
+  test("and when neither can, it seats at the box's own centre", () => {
+    /* As deep as this box goes, which is the most hiding there is to be had. */
+    expect(seatDepth(thin, { x: 260, y: 5 }, { x: -1, y: 0 }, 8)).toBeCloseTo(160, 9);
+  });
+
+  test("a direction pointing away from the card never gets there", () => {
+    /* Not an error and not an infinity: nought, so the caller draws what it
+       would have drawn before. */
+    expect(seatDepth(box, { x: 260, y: 50 }, { x: 1, y: 0 }, 8)).toBe(0);
+  });
+
+  test("a direction of no length is nought, not a NaN", () => {
+    expect(seatDepth(box, { x: 260, y: 50 }, { x: 0, y: 0 }, 8)).toBe(0);
   });
 });
 
