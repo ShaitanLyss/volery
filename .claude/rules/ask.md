@@ -107,14 +107,61 @@ client is *built* out of before concluding it is configured wrong: everything ab
 `MCP_TOOL_TIMEOUT` and `timeout` is true, was necessary, and was not sufficient, because the
 process reading our answer is a Bun runtime with opinions of its own.
 
-- **Ten minutes is also what a question costs when nobody is there**, and that is the answer
+- **The deadline scales with what is being asked**, and for most of this feature's life it did
+  not. A flat ten minutes is generous for one yes/no and tight for a real review: a call
+  carrying five questions, each with three or four options plus context and pros and cons,
+  expired **with the user still reading it** — *"ah it timed out, ask again, I was almost
+  done"* — and they answered all five immediately when re-asked, which is the evidence the
+  clock was the only thing wrong (sink `d2adbf74`). One number that means two different things
+  depending on the payload is a number that is wrong for one of them.
+
+  `answer_window` is `ANSWER_BASE` (10m, what one bare question still gets) plus
+  `ANSWER_PER_QUESTION` (3m) for each question past the first, plus `ANSWER_PER_OPTION` (20s)
+  for every option drawn — **the options are in there because the reading is in them.** One
+  decision between eight described alternatives is a longer read than four plain yes/nos, and
+  `option_schema` asks for a `detail` line on each precisely so they are worth reading. The
+  reported call comes out at 27 minutes; a three-way at 11, which is the point — nothing that
+  was already long enough got longer.
+
+  **`ANSWER_MAX` exists for a reason that is not patience.** `client_timeout_ms` is written
+  into the card's `--mcp-config` and `MCP_TOOL_TIMEOUT` **at spawn**, so the client's deadline
+  cannot scale with a call it has not received yet; it is set from the ceiling and every call
+  has to fit under it, or the client gives up first and writes its own sentence instead of
+  ours. Raising the client's number costs nothing on its own — a request nobody is feeding is
+  already killed by Bun's 300s clock at `FEED_EVERY`.
+
+  **And the timeout sentence now names its own duration, which is why `TIMED_OUT` is a
+  function.** `asking.ts::UNANSWERED` matches a reply back off disk on the *opening* alone
+  (`TIMED_OUT_OPENING`), so everything after it is free to vary; the wording it had while the
+  deadline was ten minutes is kept over there beside the new one, because a transcript already
+  on this disk carries it and will go on being folded.
+
+  **The arithmetic is written twice, on purpose, and both copies are tested against the same
+  table.** `Ask.svelte` draws a live countdown and it is real information rather than
+  decoration — it is what tells you whether to keep reading or answer now — so the number it
+  counts down to has to be the number the parking thread gives up on. Neither side can be
+  handed the other's answer without a field on `ask:opened` and a matching read in
+  `skein.svelte.ts`: the panel holds the *normalized* questions and `ask.rs` holds the raw
+  arguments. So `asking.ts::answerWindow` and `ask::answer_window` share the constants and the
+  counting rules, and `test/asking.test.ts` and `ask.rs`'s two window tests assert the same
+  payloads. One suite going red alone is the mirror saying it has drifted.
+
+  **What is still lost is the tail rather than the whole call, and it is not fixed here.**
+  A deadline that expires takes every answer already given with it: the agent is told nobody
+  answered, and has to re-ask everything, so the user re-reads and re-decides what they had
+  already decided. Preserving the partial needs the panel to push each answer to Rust as it is
+  given — a new command, a call site in `skein.svelte.ts`, and a decision about what "three of
+  five" reads as to an agent — which is a second piece of work rather than the other half of
+  this one. Filed as its own sink item.
+- **Ten minutes is also the floor when nobody is there**, and that is the answer
   rather than a bug. Reported 2026-08-20 by a card driven non-interactively: `ask_user` timed
   out on it twice, with no human anywhere near the wall. Both fired correctly. A tool whose
   whole purpose is to stop until a person decides has nothing better to do when there is no
   person, and guessing that there isn't one — because no window is focused, because the card
   is off screen — would answer for somebody who had merely gone to make coffee, which is the
-  one wrong answer here. What it costs is the agent's ten minutes, which is the price of the
-  question being real.
+  one wrong answer here. What it costs is the agent's window, which is the price of the
+  question being real — and note that a headless card asking five questions now waits nearly
+  half an hour for nobody, which is the one place the scaling is a cost rather than a fix.
   **The exception, and it is unfixed:** `ask:opened` is a fire-and-forget `emit`, so an ask
   raised before the front end has subscribed reaches nothing, cannot be drawn, and cannot be
   answered — ten minutes lost with certainty rather than by bad luck. Nothing holds a pending
@@ -123,7 +170,8 @@ process reading our answer is a Bun runtime with opinions of its own.
 - **The client is told to wait a minute longer than we do**, deliberately. Whichever side
   gives up first writes what the model reads, and ours is the sentence worth having — it
   says how long it waited and what to do next, where the client's says only that something
-  timed out. `ANSWER_TIMEOUT` stays the real deadline.
+  timed out. `answer_window` stays the real deadline, and the minute of headroom is measured
+  against `ANSWER_MAX` so it holds for the longest call anything can make.
 - **The heartbeats are not a way out.** The CLI streams `tool_progress` events every 30s for
   a call in flight, but they do not extend either of its deadlines — the abort landed on the
   same tick as the 60s heartbeat, and what the idle watchdog wants is a notification coming
@@ -159,7 +207,7 @@ a second set of keep-alive arithmetic, `park_and_stream` gained one parameter.
   at which the wall is still current — see `spawn.md` for why `close` re-reads everything there
   rather than trusting what it saw ten minutes earlier.
 - **Unanswered is passed as `None`, not as the sentence.** The timeout and the dismissal each
-  have prose of their own (`TIMED_OUT`, `DISMISSED`), and a settle that had to match on Skein's
+  have prose of their own (`timed_out`, `DISMISSED`), and a settle that had to match on Skein's
   own wording to find out whether a person decided anything would be the same duplicated-string
   bargain `answerNote` strikes with the CLI — worth it there, where there is no alternative, and
   gratuitous here, where a boolean crosses the same call.

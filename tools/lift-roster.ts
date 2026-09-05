@@ -143,7 +143,7 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
   {
     file: "src-tauri/src/ask.rs",
     items: [
-      "const ANSWER_TIMEOUT",
+      "const ANSWER_MAX",
       "fn client_timeout_ms",
       "fn preview_schema",
       "fn option_schema",

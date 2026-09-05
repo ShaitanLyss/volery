@@ -78,6 +78,62 @@ export const NO_PREFERENCE = "no preference — your call";
  *  `overflowOf`, which exists so the panel can say so. */
 export const MAX_QUESTIONS = 5;
 
+/* -- how long the whole call gets -----------------------------------------
+ *
+ * Mirrored in `ask.rs` — `ANSWER_BASE`, `ANSWER_PER_QUESTION`,
+ * `ANSWER_PER_OPTION`, `ANSWER_MAX`, `answer_window` — and the duplication is
+ * deliberate. `Ask.svelte` draws a live countdown, which is real information
+ * rather than decoration: it is what tells you whether to keep reading or answer
+ * now. The number it counts down to must be the number the parking thread gives
+ * up on, and neither side can be handed the other's answer without a field on
+ * `ask:opened` and a matching read in `skein.svelte.ts` — the panel holds the
+ * *normalized* questions and Rust holds the raw arguments. So what is shared is
+ * the arithmetic, and `ask.rs`'s tests assert the same table of payloads these
+ * do.
+ *
+ * It was a flat ten minutes, which meant two different things depending on what
+ * was asked. A call carrying five questions with three or four options each,
+ * context and pros and cons per option, expired with the user still reading it —
+ * "I was almost done, the answer time should scale with number of questions" —
+ * and they answered all five immediately when re-asked, which is the evidence
+ * the clock was the only thing wrong (sink `d2adbf74`). */
+
+/** The floor: what one bare question gets, and what every call used to get. */
+export const ANSWER_BASE = 600;
+
+/** What each question past the first adds. The first is what the floor pays
+ *  for. */
+export const ANSWER_PER_QUESTION = 180;
+
+/** What each drawn option adds, over every question in the call.
+ *
+ *  The reading load is in the options rather than the question count — one
+ *  decision between eight described alternatives is a longer read than four
+ *  plain yes/nos, and an option carries a `detail` line precisely so it is worth
+ *  reading. */
+export const ANSWER_PER_OPTION = 20;
+
+/** The ceiling, and it is not about patience. `ask.rs::client_timeout_ms` is
+ *  written into the card's `--mcp-config` at spawn, so the *client's* deadline
+ *  cannot scale with a call it has not received yet. It is set from this, and
+ *  every call has to fit under it or the client gives up first and writes its own
+ *  sentence instead of Skein's. */
+export const ANSWER_MAX = 2700;
+
+/** How long this call waits, in seconds, from what it is asking.
+ *
+ *  Takes the questions the panel will actually draw — so the cap, the dropped
+ *  empties and the placeholder are all already applied by `normalizeAsk`, which
+ *  is why this is the shorter half of the mirror. */
+export function answerWindow(questions: AskQuestion[]): number {
+  const n = Math.max(1, questions.length);
+  const options = questions.reduce((t, q) => t + q.options.length, 0);
+  return Math.min(
+    ANSWER_MAX,
+    ANSWER_BASE + ANSWER_PER_QUESTION * (n - 1) + ANSWER_PER_OPTION * options,
+  );
+}
+
 /** Enough of a question to name it, when the agent named nothing. */
 function headerFrom(question: string): string {
   const flat = question.replace(/\s+/g, " ").trim();
@@ -427,14 +483,21 @@ export function composeAnswer(questions: AskQuestion[], answers: Answers): strin
 }
 
 /* What `ask.rs` sends the agent when the question is never answered: the
-   ten-minute timeout, and the card being closed while it was still asking.
+   deadline running out, and the card being closed while it was still asking.
    Duplicated across the language boundary on purpose — the same bargain
    `isStopNote` strikes with the CLI's own wording, and for the same reason.
    The transcript fold reads a reply back off disk with nothing but its text to
    go on, so without this Skein's own sentence about an unanswered question is
    drawn as a sentence you said. Matched on the opening, since both go on to
-   tell the agent what to do instead. */
+   tell the agent what to do instead.
+
+   Which is also what let the timeout sentence start naming its own duration:
+   `ask.rs::TIMED_OUT_OPENING` is fixed and everything after it is free. The
+   wording it had while the deadline was a flat ten minutes stays here beside the
+   new one — a transcript on disk carries it and will go on being folded, and
+   dropping it would draw Skein's line as a sentence the user typed. */
 const UNANSWERED = [
+  "The user did not answer in time.",
   "The user did not answer within ten minutes.",
   "The user dismissed the question.",
 ];

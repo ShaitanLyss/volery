@@ -24,6 +24,7 @@
   import { parseMarkdown } from "./markdown";
   import {
     NO_PREFERENCE,
+    answerWindow,
     answeredCount,
     isComplete,
     panelsOf,
@@ -92,11 +93,14 @@
     free = chosen && !preset ? chosen : "";
   });
 
-  /* The agent gives up waiting after ten minutes and proceeds on its own
-     judgement, so the countdown is real information, not decoration. It is the
-     whole call's clock: several questions do not buy several deadlines. */
+  /* The agent gives up waiting and proceeds on its own judgement, so the
+     countdown is real information, not decoration. It is the whole call's clock:
+     several questions do not buy several deadlines — they buy one longer one.
+     `answerWindow` is the same arithmetic `ask.rs` parks on, mirrored rather
+     than sent, and the note there is why. */
+  const window = $derived(answerWindow(questions));
   const left = $derived(
-    Math.max(0, 600 - Math.floor((clock.t - ask.since) / 1000)),
+    Math.max(0, window - Math.floor((clock.t - ask.since) / 1000)),
   );
   const mins = $derived(Math.floor(left / 60));
   const secs = $derived(String(left % 60).padStart(2, "0"));

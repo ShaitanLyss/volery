@@ -33,14 +33,115 @@ use tauri::{AppHandle, Emitter, State};
 /// and a question you never noticed becomes an agent wedged until you quit. Ten
 /// minutes is long enough to be away from the desk and short enough that a
 /// forgotten card unsticks itself.
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
+///
+/// **It is a floor rather than the deadline**, and it was the deadline for the
+/// whole of this feature's life. A flat ten minutes is generous for one yes/no
+/// and tight for a genuine review: a call carrying five questions, each with
+/// three or four options, context and pros and cons per option, expired with the
+/// user *still reading it* — "ah it timed out, ask again, I was almost done"
+/// (sink `d2adbf74`). They answered all five immediately when re-asked, which is
+/// the evidence the clock was the only thing wrong. A deadline that does not
+/// scale with the payload is a deadline that means two different things
+/// depending on what was asked.
+const ANSWER_BASE: Duration = Duration::from_secs(600);
+
+/// What each question past the first adds. Not each question: the first one is
+/// what `ANSWER_BASE` already pays for.
+const ANSWER_PER_QUESTION: Duration = Duration::from_secs(180);
+
+/// What each option adds, over every question in the call.
+///
+/// The reading load is not the question count, it is the options — one decision
+/// between eight described alternatives is a longer read than four plain
+/// yes/nos, and `option_schema` asks for a `detail` line on each precisely so
+/// they are worth reading. Twenty seconds apiece is what a `label` and a
+/// `detail` cost to take in.
+const ANSWER_PER_OPTION: Duration = Duration::from_secs(20);
+
+/// The ceiling, and the reason there has to be one is not patience.
+///
+/// `client_timeout_ms` is written into the `--mcp-config` **once, at spawn**, so
+/// the client's own deadline cannot scale with a call it has not received yet.
+/// It is therefore set from this, and every call's window has to fit under it
+/// or the client gives up first and writes its own sentence instead of ours.
+const ANSWER_MAX: Duration = Duration::from_secs(2700);
+
+/// Past this many, a call is not asking a question, it is administering a
+/// survey — and the panel draws only this many. `asking.ts::MAX_QUESTIONS` is
+/// the same number and the same cap; see `answer_window`.
+const ANSWER_MAX_QUESTIONS: usize = 5;
 
 const DISMISSED: &str =
     "The user dismissed the question. Proceed using your best judgement.";
 
-const TIMED_OUT: &str =
-    "The user did not answer within ten minutes. Proceed using your best \
-     judgement, and say which way you went and why.";
+/// The opening of the timeout sentence, and the only part of it that is fixed.
+///
+/// `asking.ts::UNANSWERED` matches a reply back off disk on this prefix to tell
+/// Skein's own sentence from one the user wrote, so what follows it may vary and
+/// this may not. It changed once — it used to name ten minutes, which stopped
+/// being true the moment the deadline started scaling — and the old wording is
+/// kept over there beside this one, because a transcript already on disk carries
+/// it and will go on being folded.
+const TIMED_OUT_OPENING: &str = "The user did not answer in time.";
+
+fn timed_out(waited: Duration) -> String {
+    format!(
+        "{TIMED_OUT_OPENING} The question stood for {} minutes. Proceed using your best \
+         judgement, and say which way you went and why.",
+        waited.as_secs() / 60
+    )
+}
+
+/// How long *this* call waits, from what it is asking.
+///
+/// **Mirrored in `asking.ts::answerWindow`, and the duplication is deliberate
+/// and load-bearing.** `Ask.svelte` draws a live countdown, which is real
+/// information rather than decoration — it is what tells you whether to keep
+/// reading or answer now — and the number it counts down to has to be the number
+/// this thread gives up on. The panel has the *normalized* questions and this has
+/// the raw arguments, so neither can be handed the other's answer without a
+/// field on `ask:opened` and a matching read in `skein.svelte.ts`. What is shared
+/// instead is the arithmetic and the counting rules, with the same table of
+/// payloads asserted on both sides.
+///
+/// The counting mirrors `normalizeAsk`, and only the parts that change a count:
+/// a `questions[]` entry needs a non-empty `question` to be drawn, the
+/// single-question sugar is *appended* rather than preferred, an empty call
+/// still draws one placeholder question, the list is capped, and an option needs
+/// a non-empty `label`. Options past the cap are not counted because they are not
+/// drawn.
+fn answer_window(args: &Value) -> Duration {
+    let mut drawn: Vec<&Value> = Vec::new();
+    if let Some(list) = args.get("questions").and_then(|v| v.as_array()) {
+        drawn.extend(list.iter().filter(|q| said(q.get("question")).is_some()));
+    }
+    if said(args.get("question")).is_some() {
+        drawn.push(args);
+    }
+    drawn.truncate(ANSWER_MAX_QUESTIONS);
+
+    let options: usize = drawn
+        .iter()
+        .map(|q| match q.get("options").and_then(|v| v.as_array()) {
+            Some(list) => list.iter().filter(|o| said(o.get("label")).is_some()).count(),
+            None => 0,
+        })
+        .sum();
+    /* One, never zero: a call with nothing answerable in it is still drawn, as
+       the "(no question given)" placeholder, and still parks a turn. */
+    let questions = drawn.len().max(1);
+
+    let want = ANSWER_BASE
+        + ANSWER_PER_QUESTION * (questions as u32 - 1)
+        + ANSWER_PER_OPTION * options as u32;
+    want.min(ANSWER_MAX)
+}
+
+/// A field that would survive `normalizeAsk`'s trim: a string with something in
+/// it. Nothing else counts, on either side of the boundary.
+fn said(v: Option<&Value>) -> Option<&str> {
+    v.and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty())
+}
 
 /// How long the *client* must be told to wait, in milliseconds.
 ///
@@ -61,8 +162,16 @@ const TIMED_OUT: &str =
 /// says only that something timed out. The heartbeats the CLI streams
 /// (`tool_progress` every 30s) do not extend its own deadline, so there is
 /// nothing to send that would substitute for this.
+///
+/// It is `ANSWER_MAX` rather than the window a given call gets, because this is
+/// written into the `--mcp-config` at spawn and a card spawned this morning has
+/// no idea what it will be asked at four. So the ceiling travels and each call's
+/// own clock, which is always shorter, is the one that fires. Raising the
+/// client's number costs nothing: it is a bound on a request nobody is feeding,
+/// and a request nobody is feeding is already killed by Bun's 300s at
+/// `FEED_EVERY`.
 pub fn client_timeout_ms() -> u64 {
-    ANSWER_TIMEOUT.as_millis() as u64 + 60_000
+    ANSWER_MAX.as_millis() as u64 + 60_000
 }
 
 /// The `--mcp-config` a card is spawned with: one server, addressed to it.
@@ -536,6 +645,11 @@ fn park_and_stream(
     }
 
     let started = Instant::now();
+    /* Scaled to what was asked, and settled *before* the wait rather than
+       consulted during it — the arguments cannot change under a parked call, and
+       a deadline recomputed each tick is one that could. */
+    let window = answer_window(args);
+    let gave_up = timed_out(window);
     let mut fed: u64 = 0;
     let answer = loop {
         match rx.recv_timeout(FEED_EVERY) {
@@ -544,9 +658,9 @@ fn park_and_stream(
                asking. */
             Err(RecvTimeoutError::Disconnected) => break DISMISSED.to_string(),
             Err(RecvTimeoutError::Timeout) => {
-                if started.elapsed() >= ANSWER_TIMEOUT {
+                if started.elapsed() >= window {
                     forget();
-                    break TIMED_OUT.to_string();
+                    break gave_up;
                 }
                 fed += 1;
                 /* With a progress token this is a real notification, which
@@ -582,7 +696,7 @@ fn park_and_stream(
         }
     };
 
-    let real = answer != TIMED_OUT && answer != DISMISSED;
+    let real = !answer.starts_with(TIMED_OUT_OPENING) && answer != DISMISSED;
     /* The settle runs *here*, on the parking thread, after the answer is in and
        before the reply goes out — which is what makes a `close` genuinely
        deferred rather than merely delayed. It is also the last moment at which
@@ -1856,12 +1970,143 @@ mod tests {
     /// it abandons the call long before anybody has finished reading it.
     #[test]
     fn the_client_is_told_to_wait_longer_than_we_do() {
-        let ours = ANSWER_TIMEOUT.as_millis() as u64;
+        let ours = ANSWER_MAX.as_millis() as u64;
         assert!(
             client_timeout_ms() > ours,
             "the client would give up first and the user's answer would land nowhere"
         );
         assert!(client_timeout_ms() >= ours + 30_000, "not enough headroom to be sure");
+    }
+
+    /* -- how long a call gets ---------------------------------------------
+     *
+     * THE TABLE BELOW IS ASSERTED TWICE. `test/asking.test.ts` runs the same
+     * payloads through `answerWindow` and expects the same seconds, because the
+     * panel's countdown and this thread's deadline have to be one number seen
+     * from two sides. Change a constant here and that suite goes red, which is
+     * the whole point of writing it out rather than deriving it.
+     */
+
+    /// A flat window meant one thing for a yes/no and another for a review, and
+    /// the review is the one that lost. Five questions with options is where it
+    /// actually bit (sink `d2adbf74`).
+    #[test]
+    fn the_window_grows_with_what_is_being_asked() {
+        /* One bare question is exactly what it always was. */
+        assert_eq!(
+            answer_window(&json!({ "question": "ship it?" })).as_secs(),
+            600
+        );
+        /* One question, three options: barely moved. Nobody spends a quarter of
+           an hour on a three-way. */
+        assert_eq!(
+            answer_window(&json!({
+                "question": "ship it?",
+                "options": [{"label":"a"},{"label":"b"},{"label":"c"}]
+            }))
+            .as_secs(),
+            660
+        );
+        /* The reported call: five questions, three or four options each,
+           seventeen options between them. Ten minutes expired with the user
+           still reading; this gives twenty-seven. */
+        let five = json!({ "questions": [
+            { "question": "one",   "options": [{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"}] },
+            { "question": "two",   "options": [{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"}] },
+            { "question": "three", "options": [{"label":"a"},{"label":"b"},{"label":"c"}] },
+            { "question": "four",  "options": [{"label":"a"},{"label":"b"},{"label":"c"}] },
+            { "question": "five",  "options": [{"label":"a"},{"label":"b"},{"label":"c"}] },
+        ]});
+        assert_eq!(answer_window(&five).as_secs(), 600 + 4 * 180 + 17 * 20);
+
+        /* Options are counted because the reading is in them: one decision
+           between eight described alternatives is a longer read than four
+           yes/nos. */
+        let eight: Vec<Value> = (0..8).map(|i| json!({ "label": format!("{i}") })).collect();
+        assert_eq!(
+            answer_window(&json!({ "question": "which?", "options": eight })).as_secs(),
+            760
+        );
+    }
+
+    /// The counting has to match `normalizeAsk`, or the panel counts down to a
+    /// different number from the one this waits for.
+    #[test]
+    fn the_window_counts_what_the_panel_will_actually_draw() {
+        /* An entry with no question is not drawn, so it buys no time — and
+           neither do its options. */
+        assert_eq!(
+            answer_window(&json!({ "questions": [
+                { "question": "real",  "options": [{"label":"a"}] },
+                { "header": "empty", "options": [{"label":"a"},{"label":"b"}] },
+                { "question": "   " }
+            ]}))
+            .as_secs(),
+            620
+        );
+        /* An option with no label is dropped the same way. */
+        assert_eq!(
+            answer_window(&json!({
+                "question": "which?",
+                "options": [{"label":"a"},{"detail":"no label"},{"label":""}]
+            }))
+            .as_secs(),
+            620
+        );
+        /* The sugar is appended, not preferred: sending both means both. */
+        assert_eq!(
+            answer_window(&json!({
+                "questions": [{ "question": "one" }],
+                "question": "two"
+            }))
+            .as_secs(),
+            780
+        );
+        /* Nothing answerable is still one placeholder question and still parks
+           a turn, so it still gets the floor rather than nothing. */
+        assert_eq!(answer_window(&json!({})).as_secs(), 600);
+        /* Past the cap nothing is drawn, so nothing past it is paid for. */
+        let many: Vec<Value> = (0..9)
+            .map(|i| json!({ "question": format!("q{i}"), "options": [{"label":"a"}] }))
+            .collect();
+        assert_eq!(
+            answer_window(&json!({ "questions": many })).as_secs(),
+            600 + 4 * 180 + 5 * 20
+        );
+    }
+
+    /// The client's deadline is written at spawn and cannot scale with a call it
+    /// has not seen, so it is set from the ceiling — and the ceiling has to
+    /// actually hold.
+    #[test]
+    fn no_call_can_ask_for_longer_than_the_client_was_told_to_wait() {
+        let everything: Vec<Value> = (0..5)
+            .map(|i| {
+                let opts: Vec<Value> =
+                    (0..40).map(|j| json!({ "label": format!("{i}-{j}") })).collect();
+                json!({ "question": format!("q{i}"), "options": opts })
+            })
+            .collect();
+        let w = answer_window(&json!({ "questions": everything }));
+        assert_eq!(w, ANSWER_MAX, "the ceiling is reachable and holds");
+        assert!(
+            client_timeout_ms() > w.as_millis() as u64,
+            "ours must fire first, or the client writes the sentence"
+        );
+    }
+
+    /// `asking.ts::UNANSWERED` matches this prefix off disk to tell Skein's
+    /// sentence from one the user wrote. It may not drift, and what follows it
+    /// may — which is the only reason the duration can be in there at all.
+    #[test]
+    fn the_timeout_sentence_keeps_its_opening_whatever_it_waited() {
+        for secs in [600, 1200, 2700] {
+            let said = timed_out(Duration::from_secs(secs));
+            assert!(said.starts_with(TIMED_OUT_OPENING), "{said}");
+            assert!(said.contains(&format!("{} minutes", secs / 60)), "{said}");
+            assert!(said.contains("best judgement"), "{said}");
+        }
+        assert_eq!(TIMED_OUT_OPENING, "The user did not answer in time.");
     }
 
     /// The hard deadline is an environment variable and the idle one is not, so
@@ -1873,7 +2118,7 @@ mod tests {
         assert_eq!(server["url"], "http://127.0.0.1:51234/mcp/abc-123");
         assert_eq!(server["timeout"], client_timeout_ms());
         assert!(
-            server["timeout"].as_u64().unwrap() > ANSWER_TIMEOUT.as_millis() as u64,
+            server["timeout"].as_u64().unwrap() > ANSWER_MAX.as_millis() as u64,
             "the idle watchdog would abandon the call before we give up on it"
         );
     }

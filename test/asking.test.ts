@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ANSWER_MAX,
   MAX_QUESTIONS,
   NO_ANSWER_NOTE,
   NO_PREFERENCE,
   PREVIEW_VIEWPORT,
   answerNote,
+  answerWindow,
   answeredCount,
   askHeadline,
   askShown,
@@ -256,6 +258,73 @@ describe("composeAnswer", () => {
   });
 });
 
+/* THE TABLE BELOW IS ASSERTED TWICE. `ask.rs::the_window_grows_with_what_is_being_asked`
+   and its sibling run the same payloads through `answer_window` and expect the
+   same seconds. The panel's countdown and the parking thread's deadline are one
+   number seen from two sides, and neither side can be handed the other's answer
+   without a field on `ask:opened`; see the note above `answerWindow`. If one of
+   these two suites goes red on its own, that is the mirror telling you it has
+   drifted, which is what it is for. */
+describe("answerWindow", () => {
+  test("one bare question is exactly what every call used to get", () => {
+    expect(answerWindow([q("ship", "ship it?")])).toBe(600);
+  });
+
+  test("a three-way barely moves — nobody spends a quarter hour on one", () => {
+    expect(answerWindow([q("ship", "ship it?", ["a", "b", "c"])])).toBe(660);
+  });
+
+  test("the call that expired with the user still reading now gets 27 minutes", () => {
+    /* Five questions, three or four options each, seventeen between them —
+       the shape of the ask in sink d2adbf74, which died at ten minutes. */
+    const five = [
+      q("one", "one", ["a", "b", "c", "d"]),
+      q("two", "two", ["a", "b", "c", "d"]),
+      q("three", "three", ["a", "b", "c"]),
+      q("four", "four", ["a", "b", "c"]),
+      q("five", "five", ["a", "b", "c"]),
+    ];
+    expect(answerWindow(five)).toBe(600 + 4 * 180 + 17 * 20);
+  });
+
+  test("options are counted, because the reading is in them", () => {
+    const eight = Array.from({ length: 8 }, (_, i) => `${i}`);
+    expect(answerWindow([q("which", "which?", eight)])).toBe(760);
+  });
+
+  test("an empty call still gets the floor", () => {
+    /* `normalizeAsk` never returns nothing — a call with nothing answerable in
+       it still draws a placeholder and still parks a turn. Guarded anyway,
+       since a zero-length array here would otherwise price at 420. */
+    expect(answerWindow(normalizeAsk({}))).toBe(600);
+    expect(answerWindow([])).toBe(600);
+  });
+
+  test("nothing can ask for longer than the client was told to wait", () => {
+    const everything = Array.from({ length: MAX_QUESTIONS }, (_, i) =>
+      q(
+        `q${i}`,
+        `q${i}`,
+        Array.from({ length: 40 }, (_, j) => `${i}-${j}`),
+      ),
+    );
+    expect(answerWindow(everything)).toBe(ANSWER_MAX);
+  });
+
+  test("the cap is applied before the arithmetic, not after", () => {
+    /* Questions past MAX_QUESTIONS are not drawn, so they buy no time and
+       neither do their options — `normalizeAsk` has already dropped them, which
+       is the whole reason this half of the mirror is the short one. */
+    const raw = {
+      questions: Array.from({ length: 9 }, (_, i) => ({
+        question: `q${i}`,
+        options: [{ label: "a" }],
+      })),
+    };
+    expect(answerWindow(normalizeAsk(raw))).toBe(600 + 4 * 180 + 5 * 20);
+  });
+});
+
 describe("answerNote", () => {
   test("one question's answer is kept exactly as it was sent", () => {
     expect(answerNote("two widgets")).toEqual({ kind: "answer", text: "two widgets" });
@@ -287,8 +356,14 @@ describe("answerNote", () => {
   test("what ask.rs says when nobody answered is not something you said", () => {
     /* The same hazard `isStopNote` exists for, one layer over: read off disk
        the timeout is a `tool_result` like any other, and drawn as an answer it
-       puts Skein's sentence in your mouth. */
+       puts Skein's sentence in your mouth.
+
+       Three sentences rather than two: the timeout now names how long it
+       waited, so the fixed part is the opening — and the wording it had while
+       the deadline was a flat ten minutes is still on this machine's disk and
+       still gets folded. */
     for (const sent of [
+      "The user did not answer in time. The question stood for 27 minutes. Proceed using your best judgement, and say which way you went and why.",
       "The user did not answer within ten minutes. Proceed using your best judgement, and say which way you went and why.",
       "The user dismissed the question. Proceed using your best judgement.",
     ]) {
