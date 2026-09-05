@@ -27,6 +27,7 @@ import {
 import {
   contextWindowFor,
   healDelayMs,
+  withResendMark,
   healNote,
   HOLD_LINE,
   NUDGE_BUDGET,
@@ -1451,7 +1452,15 @@ export class Skein {
         await this.#repair(conv);
         if (this.#gone || conv.working) return;
       }
-      void this.send(conv, heal.text);
+      /* Marked, so the agent can account for the copy already in its context.
+         `withResendMark` strips any earlier attempt's mark before adding this
+         one — `heal.text` is `#lastSent`, which `echo` wrote from the last send,
+         which on attempt three is attempt two's marked text. The mark is a
+         *suffix* for a reason worth knowing before moving it: every recogniser
+         here anchors on a prompt's first words, so a prefix would stop the
+         resume prompt folding behind `RESUME_CAP` on precisely the retry the
+         mark exists to explain. See `resendMark`. */
+      void this.send(conv, withResendMark(heal.text, heal.kind, heal.attempt));
     }, wait);
     this.#heals.set(conv.id, t);
   }

@@ -2145,6 +2145,92 @@ export function healNote(kind: HealKind, attempt: number, waitMs: number): strin
     : `the api is overloaded — ${tail}`;
 }
 
+/** What a re-sent prompt carries so the agent can tell it from a second one.
+ *
+ *  `healNote` is the *person's* half of this and is not enough on its own: it
+ *  is a `meta` line in the panel, and the agent's context has never had
+ *  anything. What the agent gets is the same words twice — because the CLI
+ *  records a prompt when it **takes** it rather than when it answers it, so an
+ *  attempt that died before reaching a model is already in the session file and
+ *  the retry lands beside it. Confirmed on this machine 2026-09-05 while
+ *  settling sink `01e00f30`, which is what a card made of reading its own input
+ *  in that state: it filed a bug about the app sending twice.
+ *
+ *  **Appended, not prefixed, and that is the whole design.** Everything in this
+ *  codebase that recognises a prompt does it on the *first* words —
+ *  `isResumePrompt`, `isJobsPrompt`, `isRelayPrompt`, `localCommandAwaiting` —
+ *  because the live fold and the fold that reads a session back off disk share
+ *  nothing but the text. A prefix would break every one of them, and the first
+ *  casualty would be `RESUME_CAP`: the twenty-line resume prompt would stop
+ *  folding on exactly the retry this exists to explain, which is a cure that
+ *  hands the reader the disease. A suffix is invisible to all of them, and it
+ *  is where the explanation is wanted anyway — the duplicate is *above*, so the
+ *  sentence accounting for it goes at the bottom of the second copy.
+ *
+ *  It states the event and stops. It does not tell the agent what to do about
+ *  it, because there is nothing to do: the retry is the same request and the
+ *  answer is the same answer. A paragraph of advice here would be a third
+ *  statement of something no rule needs.
+ *
+ *  **The person sees it too, and that is accepted rather than overlooked.** The
+ *  panel draws a prompt line whole unless something folds it, so a healed `go`
+ *  now reads as four lines where it read as one — `healNote` having already
+ *  said the same thing a moment earlier, from above. Two audiences at two
+ *  moments is not the duplication `4dabbb75` is about: the note is *before* the
+ *  wait and is what stops a card re-sending in silence, and this is *in* what
+ *  went, which is the only place an agent can read anything. Folding it in the
+ *  panel is the obvious tidy and would mean a line kind of its own in
+ *  `transcript.ts`; it is worth doing when somebody is in that file anyway, and
+ *  is not worth reaching into it for.
+ *
+ *  Hedged on "if you can see these words twice" rather than asserting the copy
+ *  is there. It always has been in the four kinds this fires for, but a repair
+ *  rewrites the session between attempt one and attempt two, and an instruction
+ *  that sends an agent looking for something it cannot find is worse than one
+ *  that admits it is describing the usual case. Same bargain
+ *  `NUDGE_PROMPT_TEXT` strikes. */
+export function resendMark(kind: HealKind, attempt: number): string {
+  const why =
+    kind === "limited"
+      ? "the account was out of allowance"
+      : kind === "dropped"
+        ? "the connection dropped"
+        : kind === "malformed"
+          ? "the request was cut short on the way out"
+          : "the api was overloaded";
+  return (
+    `skein: attempt ${attempt} of ${HEAL_BUDGET[kind]} at this prompt. ` +
+    `the one before it failed before reaching a model — ${why} — so if you ` +
+    `can see these words twice, that is this attempt beside that one, not two ` +
+    `things being asked of you.`
+  );
+}
+
+/** The shape `resendMark` writes, so a second attempt can take the first one's
+ *  mark off before adding its own.
+ *
+ *  It has to, because `#lastSent` is whatever `echo` last drew and `echo` draws
+ *  the marked text — so without this, attempt three would carry attempt two's
+ *  sentence underneath its own and the count would be the only true thing left
+ *  in either. Matched on the whole shape rather than on the two opening words,
+ *  which is the difference between stripping a mark and stripping a paragraph
+ *  of somebody's prose that happens to begin the same way. */
+const RESEND_MARK_RE =
+  /\n\nskein: attempt \d+ of \d+ at this prompt\.[\s\S]*$/;
+
+export function stripResendMark(text: string): string {
+  return text.replace(RESEND_MARK_RE, "");
+}
+
+/** The prompt as it goes back out: the original, with this attempt's mark. */
+export function withResendMark(
+  text: string,
+  kind: HealKind,
+  attempt: number,
+): string {
+  return `${stripResendMark(text)}\n\n${resendMark(kind, attempt)}`;
+}
+
 /** And what it says when they are spent. The card goes rust either way — this
  *  is so the rust has an account behind it rather than one bare status.
  *

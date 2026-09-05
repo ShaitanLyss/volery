@@ -41,6 +41,9 @@ import {
   localAnswer,
   answeredLocally,
   localCommandAwaiting,
+  resendMark,
+  stripResendMark,
+  withResendMark,
   parseTaskNotification,
   systemTaskNote,
   sameModel,
@@ -2162,5 +2165,74 @@ describe("the nudge after a malformed tool call", () => {
     expect(RETRY_NOTE).toBe("a tool call came out malformed — asked for again");
     expect(RETRY_NOTE).toBe(RETRY_NOTE.toLowerCase());
     expect(RETRY_NOTE.length).toBeLessThan(60);
+  });
+});
+
+/* ── a prompt sent again ───────────────────────────────────────────────────
+ *
+ * `healNote` is the person's half and was for a long time the only half. The
+ * agent got the same words twice — the CLI records a prompt when it *takes* it,
+ * so an attempt that died before reaching a model is already in the session
+ * file and the retry lands beside it — and nothing anywhere said they were one
+ * prompt. A card auditing its own input in exactly that state filed sink
+ * `01e00f30` about the app sending twice. */
+describe("marking a re-sent prompt", () => {
+  test("it names skein, in the wall's register", () => {
+    /* The `7585a431` rule, one path over: nothing on the wire marks a prompt as
+       the app's, so the sentence has to. */
+    const m = resendMark("overloaded", 2);
+    expect(m.startsWith("skein")).toBe(true);
+    expect(m).toBe(m.toLowerCase());
+  });
+
+  test("it counts the attempt against the same budget the note does", () => {
+    expect(resendMark("overloaded", 2)).toContain(`2 of ${HEAL_BUDGET.overloaded}`);
+    expect(resendMark("dropped", 1)).toContain(`1 of ${HEAL_BUDGET.dropped}`);
+  });
+
+  test("each kind says its own cause, like healNote", () => {
+    const kinds = ["overloaded", "limited", "dropped", "malformed"] as const;
+    const said = kinds.map((k) => resendMark(k, 1));
+    expect(new Set(said).size).toBe(kinds.length);
+  });
+
+  test("it hedges, because a repair can rewrite the session between attempts", () => {
+    /* Asserting the copy is there would send an agent looking for something it
+       cannot always find. Same bargain `NUDGE_PROMPT_TEXT` strikes. */
+    expect(resendMark("overloaded", 2)).toContain("if you");
+  });
+
+  test("appended, never prefixed — the prompt still starts with its own words", () => {
+    /* THE load-bearing one. Every recogniser in this codebase anchors on a
+       prompt's first words, because the live fold and the fold that reads a
+       session off disk share nothing but the text. Turn this into a prefix and
+       the resume prompt stops folding behind `RESUME_CAP` on exactly the retry
+       the mark exists to explain. */
+    const marked = withResendMark("/compact", "overloaded", 2);
+    expect(marked.startsWith("/compact")).toBe(true);
+    expect(localCommandAwaiting([marked])).toBe(marked);
+  });
+
+  test("a second attempt replaces the first's mark rather than stacking on it", () => {
+    /* `heal.text` is `#lastSent`, which `echo` wrote from the last send — so on
+       attempt three it is attempt two's *marked* text. Without the strip the
+       count would be the only true thing left in either sentence. */
+    const one = withResendMark("go", "overloaded", 2);
+    const two = withResendMark(one, "overloaded", 3);
+    expect(two).toBe(withResendMark("go", "overloaded", 3));
+    expect(two.match(/skein: attempt/g)).toHaveLength(1);
+    expect(stripResendMark(two)).toBe("go");
+  });
+
+  test("it leaves alone a prompt that was never marked", () => {
+    expect(stripResendMark("go")).toBe("go");
+    expect(stripResendMark("")).toBe("");
+  });
+
+  test("and prose that merely opens the same way", () => {
+    /* Matched on the whole shape rather than on two words, which is the
+       difference between stripping a mark and eating somebody's paragraph. */
+    const said = "read this\n\nskein: attempt something else entirely";
+    expect(stripResendMark(said)).toBe(said);
   });
 });

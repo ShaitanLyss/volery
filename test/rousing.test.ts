@@ -13,6 +13,7 @@ import {
   resumePrompt,
   rouseOrder,
 } from "../src/lib/rousing";
+import { withResendMark } from "../src/lib/classify";
 
 /** A card, as much of one as the ordering reads. */
 const card = (id: string, dormant: boolean, interrupted = false) => ({
@@ -337,5 +338,28 @@ describe("unansweredRousePrompt", () => {
   test("the note says who did what, in the cap's own register", () => {
     expect(ALREADY_ROUSED_NOTE).toContain("skein");
     expect(ALREADY_ROUSED_NOTE).toBe(ALREADY_ROUSED_NOTE.toLowerCase());
+  });
+});
+
+/* The fold has to survive a re-send, and this is where that is asserted rather
+   than in `classify.test.ts` where the mark is written — the anchors live here,
+   and it is a change to *them* that would break it just as surely. */
+describe("a rouse prompt that was sent again", () => {
+  test("still folds, because the mark is a suffix", () => {
+    /* `#heal` re-sends `#lastSent`, and on an interrupted card that is the
+       resume prompt. If the mark ever moves to the front, this is the test that
+       says so — and what it costs in the app is the twenty-line prompt drawn
+       whole at the head of a card, which is the thing `RESUME_CAP` exists to
+       stop, on precisely the retry the mark exists to explain. */
+    expect(isResumePrompt(withResendMark(resumePrompt(), "overloaded", 2))).toBe(true);
+    expect(isJobsPrompt(withResendMark(jobsPrompt([lost("a")], 0), "dropped", 2))).toBe(true);
+  });
+
+  test("and the guard still recognises it in a restored transcript", () => {
+    /* Otherwise a card whose *retry* was the copy left unanswered would be sent
+       a third at the next launch, which is the bug this pair of changes is
+       between. */
+    const marked = withResendMark(resumePrompt(), "overloaded", 2);
+    expect(unansweredRousePrompt([{ kind: "you", text: marked }])).toBe("resume");
   });
 });
