@@ -208,11 +208,20 @@ until somebody noticed.
   outage, where every one of its turns 529'd for twenty-two minutes; the "doubled" nudges beside
   them are `NUDGE_BUDGET`'s two attempts, twelve seconds after each of two failures.
 
-  **Nothing about the heal changed and nothing should**: a turn that never reached a model has
-  to be tried again, or an interrupted card is never picked up at all. Worth carrying past this
-  file, though, because it is a general trap in anything that replays: **a retry of a prompt
-  that was recorded on receipt is a second copy in the context, not a second attempt at the
-  first.** The arithmetic and the timings are on `#heal` in `skein.svelte.ts`.
+  **The retry itself is right and did not change**: a turn that never reached a model has to be
+  tried again, or an interrupted card is never picked up at all. What was missing was a
+  *marker* — `healNote` tells the person and the agent was told nothing — and `withResendMark`
+  is it: the re-send now carries a sentence naming skein, the attempt and the cause. It is
+  **appended, never prefixed**, and that is the constraint to know before touching it. Every
+  recogniser here anchors on a prompt's first words, so a prefix would stop the resume prompt
+  folding behind `RESUME_CAP` on precisely the retry the mark exists to explain;
+  `rousing.test.ts` asserts that the fold and `unansweredRousePrompt` both survive a marked
+  prompt, because a change to the *anchors* breaks it just as surely as a change to the mark.
+
+  Worth carrying past this file, because it is a general trap in anything that replays: **a
+  retry of a prompt that was recorded on receipt is a second copy in the context, not a second
+  attempt at the first** — and the thing that makes it survivable is saying so in the copy that
+  arrives second. The arithmetic and the timings are on `#heal` in `skein.svelte.ts`.
 - **And two callers share one spawn rather than racing over it.** `wake`'s guard was
   `conv.dormant`, read before an `await` and cleared after it, with a Rust-side spawn that
   takes seconds — long enough for the queue, a click and a send to all be inside the window.
