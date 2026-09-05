@@ -472,10 +472,29 @@ The shared decisions, each learned on one subject and then true of the others:
 - **`FOLLOW` leads in all three**, because it is the setting that stays right: groups are added,
   projects come and go, runs are pressed hours after the widget was hung up. Nothing is hidden by
   it — the face names its subject in the header either way. Each subject supplies its own `live`
-  predicate for what "whichever is running" means, and following falls back to the first when
-  nothing is, because a wall where nothing is working still has one honest answer and a button
-  under it. A wall with one subject is not offered the knob at all: following it and naming it are
-  the same answer.
+  predicate for what "whichever is running" means. A wall with one subject is not offered the knob
+  at all: following it and naming it are the same answer.
+
+  **What a follower does when nothing is live was got wrong, and it cost the reading.** It took
+  `all[0]`, on the argument that a wall where nothing is working still has one honest answer and a
+  button under it — true of a wall where nothing has *ever* worked, false of the case that
+  actually hit. A build log follows a project through its compile, and the instant the compile
+  finishes nothing is live, so the widget wandered off to whichever project sorts first: usually
+  one that has never built anything, whose whole face is the words *this project has nothing to
+  build*. The log was thrown away at the exact moment it was complete, which is the moment you
+  were waiting for it (sink f2cce1c8, reported by the user). `buildlog.ts`'s own prose had
+  promised the opposite — *the moment it finishes the widget stays on it rather than wandering* —
+  against an `isLive` that could not possibly keep it: **a predicate answers "is this one
+  working" and nothing in it remembers which one just was.**
+
+  So `subjectOf` takes a fourth argument, `recency`, and falls back to the most recently live
+  subject before it falls back to the first. Each subject answers it with what it honestly knows:
+  `buildlog.ts::lastRun` is `endedAt ?? startedAt ?? 0`; `unreallog.ts::lastSeen` is coarser at
+  one-or-zero, because an `Editor` carries no clock and *this one has spoken* is all it can say —
+  still strictly better than alphabetical against nothing, and it stops a closed editor's kept
+  lines (which that file goes out of its way to keep) being dropped the moment the process exits.
+  The server log passes none and is right to: its `live` is the group's `running` flag, which
+  stays true through a crash, so there is nothing for it to wander away from.
 - **A start button and nothing else, in all three.** Stop and remove belong in a panel, spelled
   out. This is furniture on a wall you drag things around on, and a stop under the pointer where a
   reading used to be is a server killed by a mis-drag. `down.verb` may be null for the one case

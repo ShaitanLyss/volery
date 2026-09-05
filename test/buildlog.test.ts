@@ -4,6 +4,7 @@ import {
   diagnosticOf,
   isLive,
   keeping,
+  lastRun,
   problems,
   projectOptions,
   pulseOf,
@@ -188,13 +189,34 @@ describe("a build's dot", () => {
 });
 
 describe("which build the wall follows", () => {
-  /* A run in flight and nothing else. The moment it finishes the widget holds
-     still rather than wandering, because the finished log is the reading you
-     were waiting for. */
-  test("only one that is still going", () => {
+  test("live is a run in flight and nothing else", () => {
     expect(isLive(build({ state: "running" }))).toBe(true);
     expect(isLive(build({ state: "failed" }))).toBe(false);
     expect(isLive(build({ state: "ok" }))).toBe(false);
+  });
+
+  /* And then the half that was missing, which is sink f2cce1c8. `isLive` cannot
+     keep the widget still once the run ends — it answers "is this one going",
+     and the moment the answer is no everywhere, a follower with nothing else to
+     go on takes the first project on the wall. `lastRun` is what it goes on. */
+  test("a finished run is ranked by when it finished", () => {
+    expect(lastRun(build({ startedAt: 1_000, endedAt: 4_000 }))).toBe(4_000);
+  });
+
+  test("one still going is ranked by when it started", () => {
+    expect(lastRun(build({ state: "running", startedAt: 1_000, endedAt: null }))).toBe(1_000);
+  });
+
+  test("a project that has never run anything ranks nowhere at all", () => {
+    expect(lastRun(build({ state: "idle", startedAt: null, endedAt: null }))).toBe(0);
+  });
+
+  /* The three together are the whole fix: the project that just finished
+     compiling outranks the one that sorts first and has never built. */
+  test("the build that just ended beats a project with no runs", () => {
+    const done = build({ id: "b", state: "ok", startedAt: 1_000, endedAt: 4_000 });
+    const never = build({ id: "a", state: "idle", startedAt: null, endedAt: null });
+    expect(lastRun(done)).toBeGreaterThan(lastRun(never));
   });
 });
 

@@ -215,6 +215,23 @@ export type Editor = {
 /** Whether this is the editor to follow: one that is up. */
 export const isLive = (e: Editor) => e.open;
 
+/** Which closed editor a follower falls back to, when none is open.
+ *
+ * The same fallback the build log needed (`buildlog.ts::lastRun`, sink
+ * f2cce1c8) and the same reasoning: this file keeps a session's lines after the
+ * editor exits — *a log you were reading does not become less true because the
+ * process finished exiting* — and then `subjectOf` used to hand the widget the
+ * first project on the wall the moment the editor closed, which threw those
+ * lines away for a project that may never have opened one at all.
+ *
+ * Coarser than the build log's, because an `Editor` carries no clock: what it
+ * can honestly say is *this one has spoken during this wall's life* and nothing
+ * finer, so two projects whose editors have both been and gone tie and list
+ * order settles them. Better than alphabetical against nothing, which is what it
+ * replaces; a timestamp would want `actions.svelte.ts` to keep one per root and
+ * is worth doing the day two closed editors on one wall is a real case. */
+export const lastSeen = (e: Editor) => (e.log.length ? 1 : 0);
+
 export function pulseOf(e: Editor): "idle" | "live" | "dead" {
   return e.open ? "live" : "idle";
 }

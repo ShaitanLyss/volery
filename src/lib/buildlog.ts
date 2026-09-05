@@ -63,9 +63,28 @@ export type Build = {
 
 /** Whether this is the build to follow. A run in flight, and nothing else: a
  *  wall of six projects where one is compiling has exactly one answer to
- *  "whichever is running", and the moment it finishes the widget stays on it
- *  rather than wandering, because the finished log is the reading you wanted. */
+ *  "whichever is running". */
 export const isLive = (b: Build) => b.state === "running";
+
+/** When this project last had something to say, for a follower to fall back on.
+ *
+ * The other half of the promise above, and for a while the promise was made
+ * without it: the comment on `isLive` used to go on to claim that *the moment it
+ * finishes the widget stays on it rather than wandering, because the finished
+ * log is the reading you wanted*, and nothing implemented that. A predicate
+ * answers "is this one running" and cannot remember which one just was, so
+ * `subjectOf` fell through to the first project on the wall — very often one
+ * that has never built anything, whose face is the words "this project has
+ * nothing to build". Which is to say the widget threw the log away at the one
+ * moment it was finally complete, and the user reported exactly that
+ * (sink f2cce1c8).
+ *
+ * `endedAt` first so a finished run outranks one that started earlier and is
+ * still going — that case cannot arise through `subjectOf`, which asks `isLive`
+ * before it asks this, but a fallback that would answer wrongly if asked out of
+ * order is one nobody may reuse. Zero for a project that has never run
+ * anything, which is what keeps it out of the running entirely. */
+export const lastRun = (b: Build) => b.endedAt ?? b.startedAt ?? 0;
 
 /** The dot. `ok` and `cancelled` are both `rest` — done, and nothing to do — and
  *  the difference between them is in the note rather than in a colour, because

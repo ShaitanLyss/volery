@@ -6,6 +6,7 @@ import {
   isProblem,
   keeping,
   lastProblem,
+  lastSeen,
   parseLine,
   pulseOf,
   rowsOf,
@@ -281,6 +282,16 @@ describe("which editor the wall follows, and how it reads", () => {
   test("the one that is up", () => {
     expect(isLive(editor({ open: true }))).toBe(true);
     expect(isLive(editor({ open: false }))).toBe(false);
+  });
+
+  /* And when none is, the one whose lines are still worth reading. Without this
+     a follower took the first project on the wall the moment the editor closed
+     — throwing away the session this file deliberately keeps. Coarse on
+     purpose: an `Editor` carries no clock, so all it can say is that this one
+     spoke. */
+  test("a closed editor that has spoken outranks one that never has", () => {
+    expect(lastSeen(editor({ open: false, log: [ue()] }))).toBe(1);
+    expect(lastSeen(editor({ open: false, log: [] }))).toBe(0);
   });
 
   test("open is live and closed is idle rather than dead", () => {

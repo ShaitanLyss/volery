@@ -69,24 +69,61 @@ export function linesFor(h: number): number {
  *
  * `live` is what "whichever is running" means to this subject, and each of the
  * three answers it differently — a group that is up, a run that is still going,
- * a project whose editor is open. Given none, following simply takes the first,
- * which is the honest answer on a wall where nothing is working. */
+ * a project whose editor is open.
+ *
+ * ### And what a follower does when nothing is live, which was got wrong
+ *
+ * It used to take `all[0]`, on the argument that a wall where nothing is
+ * working has one honest answer. That is true of a wall where nothing has
+ * *ever* worked and false of the case it actually hit: a build log follows a
+ * project through its compile and then, the instant the compile finishes, no
+ * subject is live any more and the widget wanders off to whichever project sorts
+ * first — which is very often one that has never run anything, so the reading
+ * you were waiting three minutes for is replaced by "this project has nothing to
+ * build" at the exact moment it arrives (sink f2cce1c8). `buildlog.ts` even
+ * claims the opposite in prose: *the moment it finishes the widget stays on it
+ * rather than wandering, because the finished log is the reading you wanted.*
+ * `isLive` alone could never have kept that promise — a predicate answers "is
+ * this one working", and nothing in it remembers which one just was.
+ *
+ * So the fallback is *the most recently live subject*, and only then the first.
+ * `recency` is what each subject knows about that, bigger meaning more recent
+ * and zero meaning never; a subject that has no notion of it passes none and
+ * gets the old behaviour, which is right where nothing is ever put down — the
+ * server log's `live` stays true for a group that crashed, so there is nothing
+ * for it to wander away from. Ties keep list order, since `>` is strict. */
 export type Found<T> = { it: T } | { it: null; because: "none" | "gone" };
 
 export function subjectOf<T extends { id: string }>(
   want: string,
   all: T[],
   live?: (t: T) => boolean,
+  recency?: (t: T) => number,
 ): Found<T> {
   if (!all.length) return { it: null, because: "none" };
   if (want && want !== FOLLOW) {
     const named = all.find((t) => t.id === want);
     return named ? { it: named } : { it: null, because: "gone" };
   }
-  /* What is working, and only then whatever is there. You hang a log up to
-     watch the thing that is doing something; a wall where nothing is says so
-     with the first subject and whatever button it offers. */
-  return { it: (live ? all.find(live) : undefined) ?? all[0] };
+  /* What is working; then what worked last; then whatever is there. You hang a
+     log up to watch the thing that is doing something, and a thing that has
+     just stopped doing it is still that thing. A wall where nothing has ever
+     worked says so with the first subject and whatever button it offers. */
+  const working = live ? all.find(live) : undefined;
+  return { it: working ?? (recency ? latest(all, recency) : undefined) ?? all[0] };
+}
+
+function latest<T>(all: T[], recency: (t: T) => number): T | undefined {
+  let best: T | undefined;
+  let when = 0;
+  for (const t of all) {
+    const at = recency(t);
+    if (Number.isFinite(at) && at > when) {
+      best = t;
+      when = at;
+    }
+  }
+  return best;
 }
 
 /** The tail this widget has room for, and how much the filter is keeping back.

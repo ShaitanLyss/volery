@@ -25,6 +25,7 @@
     isLive,
     keeping,
     lastProblem,
+    lastSeen,
     NARROWING,
     pulseOf,
     rowsOf,
@@ -58,7 +59,12 @@
   const variant = $derived(variantOf(widget));
   const showing = $derived(textOf(widget, "showing", "all"));
   const stamps = $derived(onOf(widget, "stamps", false));
-  const subject = $derived(subjectOf(textOf(widget, "project", FOLLOW), editors, isLive));
+  /* `lastSeen` keeps a closed editor's kept lines in front of you rather than
+     wandering to whichever project sorts first — the same fallback the build log
+     needed, one subject over. */
+  const subject = $derived(
+    subjectOf(textOf(widget, "project", FOLLOW), editors, isLive, lastSeen),
+  );
   const editor = $derived(subject.it);
   const because = $derived("because" in subject ? subject.because : null);
   const rows = $derived(linesFor(widget.h));

@@ -21,6 +21,7 @@
     absence,
     isLive,
     keeping,
+    lastRun,
     NARROWING,
     problems,
     pulseOf,
@@ -55,7 +56,12 @@
 
   const variant = $derived(variantOf(widget));
   const showing = $derived(textOf(widget, "showing", "all"));
-  const subject = $derived(subjectOf(textOf(widget, "project", FOLLOW), builds, isLive));
+  /* `lastRun` is the fourth argument and the whole of sink f2cce1c8: without it
+     a follower drops the build it was watching the instant the build finishes,
+     and lands on whichever project sorts first. */
+  const subject = $derived(
+    subjectOf(textOf(widget, "project", FOLLOW), builds, isLive, lastRun),
+  );
   const build = $derived(subject.it);
   const because = $derived("because" in subject ? subject.because : null);
   const rows = $derived(linesFor(widget.h));

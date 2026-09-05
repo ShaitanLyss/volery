@@ -14,9 +14,10 @@ import {
    assertion below was learned about one of the three and then found to be true
    of the others. */
 
-type Thing = { id: string; busy: boolean };
-const thing = (id: string, busy = false): Thing => ({ id, busy });
+type Thing = { id: string; busy: boolean; at: number };
+const thing = (id: string, busy = false, at = 0): Thing => ({ id, busy, at });
 const isBusy = (t: Thing) => t.busy;
+const when = (t: Thing) => t.at;
 
 /* ── which one a widget is about ───────────────────────────────────────── */
 
@@ -31,11 +32,51 @@ describe("a log names its subject or says why it has none", () => {
     });
   });
 
-  /* A wall where nothing is working still has one honest answer, and whatever
-     button that subject offers under it. Returning nothing here would make the
-     widget useless precisely when it is most wanted. */
-  test("following falls back to the first when nothing is working", () => {
+  /* A wall where nothing has ever worked still has one honest answer, and
+     whatever button that subject offers under it. Returning nothing here would
+     make the widget useless precisely when it is most wanted. */
+  test("following falls back to the first when nothing has ever worked", () => {
     expect(subjectOf(FOLLOW, [thing("a"), thing("b")], isBusy).it?.id).toBe("a");
+  });
+
+  /* Sink f2cce1c8, which is this function's bug rather than the build log's. A
+     build log follows a project through its compile; the instant the compile
+     ends nothing is live, and taking `all[0]` handed the widget whichever
+     project sorts first — typically one that has never built anything, whose
+     face is the words "this project has nothing to build". The reading was
+     thrown away at the exact moment it was finally complete. */
+  test("following stays on what worked last, rather than on what sorts first", () => {
+    const all = [thing("a"), thing("b", false, 1_700)];
+    expect(subjectOf(FOLLOW, all, isBusy, when).it?.id).toBe("b");
+  });
+
+  test("something working still beats something that merely did", () => {
+    const all = [thing("a", true), thing("b", false, 9_999)];
+    expect(subjectOf(FOLLOW, all, isBusy, when).it?.id).toBe("a");
+  });
+
+  test("the most recent of several that have finished", () => {
+    const all = [thing("a", false, 300), thing("b", false, 900), thing("c", false, 40)];
+    expect(subjectOf(FOLLOW, all, isBusy, when).it?.id).toBe("b");
+  });
+
+  /* Zero is "never", not "long ago", or a wall where nothing has run would rank
+     its projects by the accident of a falsy timestamp. */
+  test("a subject that has never worked cannot win the fallback", () => {
+    const all = [thing("a"), thing("b")];
+    expect(subjectOf(FOLLOW, all, isBusy, when).it?.id).toBe("a");
+  });
+
+  test("subjects that tie keep the order the caller listed them in", () => {
+    const all = [thing("a", false, 500), thing("b", false, 500)];
+    expect(subjectOf(FOLLOW, all, isBusy, when).it?.id).toBe("a");
+  });
+
+  /* Pinning is pinning. A subject you named is not a race the most recent thing
+     on the wall can win. */
+  test("a pinned subject is not overruled by a more recent one", () => {
+    const all = [thing("a"), thing("b", false, 9_999)];
+    expect(subjectOf("a", all, isBusy, when).it?.id).toBe("a");
   });
 
   /* No predicate at all is a legitimate subject — one where "whichever is
