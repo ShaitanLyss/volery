@@ -19,6 +19,13 @@
 //! record say anything a picker shows, so the scan carries those two lines
 //! forward as text and parses them once the file is done.
 //!
+//! **And a session is reported in the wall's own spelling of where it was.**
+//! That is `settle_roots`, and it is the one thing here that looks at the
+//! database: a record's `cwd` is the path *as the child resolved it*, which
+//! under a junction is not the path the `project` row holds. Reading it
+//! faithfully and handing it on unchanged gave the wall a second territory
+//! pointing at the same repository.
+//!
 //! **And only the head and the tail of each file are read at all**, which this
 //! module claimed for a year while its loop went through every line of all
 //! 167 MB — `field` scanning a multi-megabyte tool result seven times over to
@@ -27,9 +34,10 @@
 //! how it was found. See `HEAD` and `TAIL` for what is read instead and the
 //! measurement that sized them.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -39,6 +47,9 @@ use tauri::{AppHandle, Manager};
 pub struct Session {
     /// The session id, which is the filename — and what `--resume` takes.
     id: String,
+    /// Where the session was, in the spelling **this wall** uses for that
+    /// directory — see `settle_roots`, which is the whole of the difference
+    /// between adopting a session into its territory and beside it.
     cwd: String,
     branch: Option<String>,
     title: Option<String>,
@@ -93,7 +104,101 @@ fn field(line: &str, key: &str) -> Option<String> {
 /// CLI has been used on this machine.
 #[tauri::command]
 pub async fn list_sessions(app: AppHandle) -> Result<Vec<Session>, String> {
-    crate::off_main(move || sessions_of(&app)).await?
+    crate::off_main(move || {
+        let mut out = sessions_of(&app)?;
+        settle_roots(&mut out, &wall_roots(&app));
+        Ok(out)
+    })
+    .await?
+}
+
+/// Every territory's root as the `project` table spells it.
+///
+/// Read inside `off_main` with everything else, so the store lock is never
+/// taken on the main thread. An empty answer — no store yet, a wedged mutex —
+/// leaves every session reported exactly as its transcript recorded it, which
+/// is what this command did for its whole life before `settle_roots`.
+fn wall_roots(app: &AppHandle) -> Vec<String> {
+    let Some(store) = app.try_state::<crate::store::Store>() else {
+        return Vec::new();
+    };
+    let Ok(conn) = store.0.lock() else {
+        return Vec::new();
+    };
+    crate::store::projects(&conn)
+        .map(|ps| ps.into_iter().map(|p| p.root_path).collect())
+        .unwrap_or_default()
+}
+
+/// Report each session under the spelling the wall already uses for the
+/// directory it was in, where the two are the same directory.
+///
+/// The reading above is right and stays: a record's own `cwd` is the only
+/// honest source, since the transcript's directory slug folds every
+/// non-alphanumeric character and nothing may decode it. But a record's `cwd`
+/// is the path **as the child resolved it**, and that is not always the path
+/// the wall typed. `C:\Users\lyss` on this machine is a junction to
+/// `C:\Users\flori`: Windows resolves a reparse point when a process's
+/// current directory is opened, so every record from a card in those two
+/// territories says `C:\Users\flori\codes\rise` while the `project` row
+/// says `C:\Users\lyss\codes\rise`. The same gap cost those cards their
+/// resume in 47e4d0f, from the other side.
+///
+/// Adopting one of them therefore made a second territory. `ensure_project`
+/// matches on `root_path` and found none at the resolved path, and `layout`
+/// groups cards by `cwd` against each territory's root — so the wall drew the
+/// same checkout twice, with the same dev servers under it, and neither half
+/// knew about the other.
+///
+/// Two properties this must keep, and both are why it is a *canonicalisation*
+/// rather than anything cleverer:
+///
+/// - **It never decodes a slug.** The only thing asked of the filesystem is
+///   "are these two paths the same directory", which it can answer exactly.
+/// - **It never merges paths that genuinely differ.** Only whole-directory
+///   identity counts: a session in a subdirectory of a territory, or in a git
+///   worktree of it, canonicalises to something else and is left alone. A root
+///   that is not on this machine — an imported territory pointing nowhere —
+///   cannot be canonicalised at all, so nothing is ever matched to it.
+///
+/// Cost is one `canonicalize` per territory plus one per *distinct* session
+/// cwd that is not already a territory's exact spelling, memoised below. The
+/// common case — a session in a folder the wall spells the same way — takes no
+/// syscall at all.
+fn settle_roots(sessions: &mut [Session], roots: &[String]) {
+    if roots.is_empty() {
+        return;
+    }
+    /* Canonical form → the spelling the wall holds. Built once, and only for
+       roots that are directories here. `or_insert` so that two territories
+       somehow naming one directory settle on the first rather than fighting. */
+    let mut real: HashMap<PathBuf, &str> = HashMap::new();
+    for r in roots {
+        if let Ok(p) = std::fs::canonicalize(r) {
+            real.entry(p).or_insert(r.as_str());
+        }
+    }
+    let exact: std::collections::HashSet<&str> = roots.iter().map(String::as_str).collect();
+    let mut seen: HashMap<String, Option<&str>> = HashMap::new();
+    for s in sessions.iter_mut() {
+        if exact.contains(s.cwd.as_str()) {
+            continue;
+        }
+        let cached = seen.get(&s.cwd).copied();
+        let hit = match cached {
+            Some(h) => h,
+            None => {
+                let h = std::fs::canonicalize(&s.cwd)
+                    .ok()
+                    .and_then(|p| real.get(&p).copied());
+                seen.insert(s.cwd.clone(), h);
+                h
+            }
+        };
+        if let Some(root) = hit {
+            s.cwd = root.to_string();
+        }
+    }
 }
 
 /// How much of a transcript's beginning is read, for the fields written once at
@@ -336,7 +441,23 @@ fn walk(root: &Path) -> Result<Vec<Session>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{field, walk};
+    use super::{field, settle_roots, walk, Session};
+
+    /// A session that says only where it was. Every other field is beside the
+    /// point for `settle_roots`, which reads and writes exactly one.
+    fn at(cwd: &str) -> Session {
+        Session {
+            id: "s".into(),
+            cwd: cwd.into(),
+            branch: None,
+            title: None,
+            model: None,
+            ctx_tokens: 0,
+            born_at: None,
+            last_at: None,
+            bytes: 0,
+        }
+    }
 
     #[test]
     fn a_field_is_read_without_parsing_the_line() {
@@ -505,5 +626,88 @@ mod tests {
         assert_eq!(ids, vec!["newest", "middle", "older"]);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The bug this module grew `settle_roots` for, in the one shape a string
+    /// test cannot reach: two spellings of one directory.
+    ///
+    /// A real junction, because that is what `C:\Users\lyss` is on the machine
+    /// this was found on — and every string comparison in this file passed
+    /// throughout, the same way every string test in `supervisor.rs` did when
+    /// the resume half of it shipped (47e4d0f).
+    #[test]
+    fn a_session_under_a_junction_is_reported_where_the_wall_already_looks() {
+        let base = std::env::temp_dir().join(format!("skein-sessions-junction-{}", std::process::id()));
+        let (real, link) = (base.join("real"), base.join("link"));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(real.join("codes").join("rise")).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !made {
+            /* No junction to be had — nothing to assert about one. Skipped
+               rather than failed: `mklink` is not this crate's to guarantee. */
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        /* What the wall holds is the junction spelling — that is the path that
+           was typed when the territory was made. What every transcript record
+           says is the resolved one, because Windows resolves a reparse point
+           when a process's current directory is opened. */
+        let root = link.join("codes").join("rise").to_string_lossy().into_owned();
+        let recorded = real.join("codes").join("rise").to_string_lossy().into_owned();
+        assert_ne!(root, recorded, "the two spellings must differ, or this proves nothing");
+
+        let mut sessions = vec![at(&recorded)];
+        settle_roots(&mut sessions, &[root.clone()]);
+        assert_eq!(sessions[0].cwd, root);
+
+        let _ = std::fs::remove_dir_all(&link);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The two things it must never do, both against real directories: a
+    /// session somewhere else stays where it was, and a session *inside* a
+    /// territory is not swallowed by it. Only whole-directory identity counts —
+    /// a worktree and a subfolder are their own places and a card in one is
+    /// not a card in the territory's root.
+    #[test]
+    fn only_the_same_directory_is_folded_and_never_one_below_it() {
+        let base = std::env::temp_dir().join(format!("skein-sessions-elsewhere-{}", std::process::id()));
+        let (root, inside, other) = (base.join("rise"), base.join("rise").join("apps"), base.join("nova"));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        let root_s = root.to_string_lossy().into_owned();
+        let mut sessions = vec![
+            at(&inside.to_string_lossy()),
+            at(&other.to_string_lossy()),
+        ];
+        let was: Vec<String> = sessions.iter().map(|s| s.cwd.clone()).collect();
+        settle_roots(&mut sessions, &[root_s]);
+        assert_eq!(sessions[0].cwd, was[0]);
+        assert_eq!(sessions[1].cwd, was[1]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A wall with no territories, and a territory that is not on this machine.
+    /// Neither can match anything, and both must leave the catalogue exactly as
+    /// the transcripts recorded it — an unrooted territory in particular, since
+    /// `canonicalize` cannot answer for a path that is not there and a fallback
+    /// that compared strings instead would match the wrong folder by its name.
+    #[test]
+    fn nothing_to_match_against_leaves_every_session_as_recorded() {
+        let mut sessions = vec![at(r"C:\atelier\skein")];
+        settle_roots(&mut sessions, &[]);
+        assert_eq!(sessions[0].cwd, r"C:\atelier\skein");
+
+        settle_roots(&mut sessions, &[r"D:\a-machine-this-is-not\skein".to_string()]);
+        assert_eq!(sessions[0].cwd, r"C:\atelier\skein");
     }
 }

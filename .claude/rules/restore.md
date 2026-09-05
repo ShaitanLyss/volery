@@ -400,6 +400,24 @@ included. Two things hold it together:
   `system/init`), so an imported ring is inferred by `windowForObserved`: occupancy above
   200k can only mean the wider window, and inference only ever widens. `#adoptModel`
   replaces the guess with the fact the moment the card wakes.
+- A session is reported **in the wall's own spelling of where it was**, and without that it
+  was adopted into a territory of its own. The catalogue takes each session's `cwd` from
+  inside the transcript records rather than decoding the directory slug, which is right and
+  is not negotiable — the slug folds every non-alphanumeric character and nothing may decode
+  it. But a record's `cwd` is the path *as the child resolved it*, and under a junction that
+  is not the path the wall typed: every record from a card in `nova` or `rise` says
+  `C:\Users\flori\codes\rise` while the `project` row says `C:\Users\lyss\codes\rise`.
+  Adopting one therefore missed twice over — `ensure_project` matches on `root_path` and
+  found nothing at the resolved path, and `layout` groups cards by `cwd` against each
+  territory's root — so the wall drew the same checkout twice, with the same dev servers
+  under it. `sessions::settle_roots` canonicalises both sides of that comparison and reports
+  the wall's spelling where the two are one directory. It is the same gap the paragraph above
+  records `transcript_dir_name` closing for the resume, met from the other end, and the same
+  general rule with the arrow reversed: **a path read out of another process's records is the
+  path it resolved, not the one we typed**, so anything matching it against our own has to
+  canonicalise. Only whole-directory identity counts — a subdirectory, a worktree or a
+  territory that is not on this machine at all matches nothing and is left exactly as
+  recorded.
 
 #### The catalogue reads the head and the tail, and for a year it read everything
 
