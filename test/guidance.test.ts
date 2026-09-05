@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { changed, gist, LIMIT, room, set, tidy } from "../src/lib/guidance";
+import {
+  changed,
+  gist,
+  LIMIT,
+  lockGist,
+  LOCKED_TOOLS,
+  room,
+  set,
+  tidy,
+} from "../src/lib/guidance";
 
 describe("tidy", () => {
   test("trims the ends and leaves the middle alone", () => {
@@ -107,5 +116,43 @@ describe("gist", () => {
     expect(gist("   \n\n  ")).toBe("");
     expect(gist(null)).toBe("");
     expect(gist(undefined)).toBe("");
+  });
+});
+
+describe("lockGist", () => {
+  test("names the tools it takes away, because the system prompt does too", () => {
+    const on = lockGist("skein", true);
+    for (const tool of LOCKED_TOOLS) expect(on).toContain(tool);
+    expect(on).toContain("skein");
+  });
+
+  test("says what is left, so the switch does not read as breaking the card", () => {
+    /* The half somebody deciding whether to turn it on needs: a locked card is
+       not a mute one. It reads, searches, runs commands, and hands the change
+       back in words. */
+    const on = lockGist("nova", true);
+    expect(on).toContain("read");
+    expect(on).toContain("run commands");
+    expect(on).toContain("hand a change back");
+  });
+
+  test("off says which of the two things this is, against the box beside it", () => {
+    /* The whole difficulty of this switch. The box asks; this refuses the
+       tools. A label that leaves somebody believing prose is enforcement is the
+       state the lock was built to end. */
+    const off = lockGist("rise", false);
+    expect(off).toContain("ask them not to");
+    expect(off).toContain("takes the editing tools away");
+  });
+
+  test("neither state claims more than it does", () => {
+    /* The shell is untouched and the honest strong version is a decision the
+       user is holding. Until then nothing here may say "read only" flat, as if
+       a card could not write at all. */
+    for (const locked of [true, false]) {
+      const out = lockGist("skein", locked);
+      expect(out).not.toContain("cannot write");
+      expect(out).not.toContain("no shell");
+    }
   });
 });

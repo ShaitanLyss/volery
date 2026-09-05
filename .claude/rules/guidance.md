@@ -185,15 +185,61 @@ not a write but a **proposal** — `ask.rs` already parks a `tools/call` until t
 so a card could offer the text and have them approve it, which keeps the frame honest because
 they did approve it. That needs a panel and roster room, and is in the sink rather than here.
 
-### These are instructions, not a lock
+### The instructions ask; the lock beside them refuses
 
-Worth stating because "this project is read-only" is the first thing anybody writes here,
-and it was the first thing asked for. A project card spawns with
-`--dangerously-skip-permissions`, so what is written here is read and followed, not
-enforced: nothing in this subsystem refuses a tool call. Enforcement would be
-`permissions.deny` rules in the `--settings` layer `hooks::settings` already builds, which
-is a different feature with a vocabulary of its own to settle — does `git commit` count as
-an edit, does `bun run test`. It has not been built, and the sink has the design.
+"This project is read-only" was the first thing anybody wrote here and the first thing
+asked for, and for a while it was only prose: read and followed, never enforced, on a card
+carrying `--dangerously-skip-permissions`. The **territory's lock** (sink 8dde1cc1) is the
+enforcing half. It is a switch in this panel, above the box, because it is the same thought
+at the same scope — and it is drawn as a switch rather than as more prose, because the one
+way to get this feature wrong is to leave somebody believing a paragraph is enforcement.
+
+The mechanism is three names: `{"permissions": {"deny": ["Edit", "Write", "NotebookEdit"]}}`
+in the `--settings` layer `hooks::settings` already builds, keyed off `project.read_only`
+(schema v29) and read in `spawn_now` by `store::read_only_of` — the fifth thing that line
+asks the store rather than its caller, for `worktree_of`'s reason, because the caller that
+would forget is the one that wakes every dormant card at launch.
+
+**It bites through the bypass flag, and that was worth a real turn rather than an
+assumption.** Every project card carries `--dangerously-skip-permissions`, so a deny the
+flag overrode would be a switch that is on and does nothing — the settings JSON exactly as
+written, no error anywhere, and the card editing the repository. `tools/probe-lock.ts`
+spawns two turns with Skein's own argv and the deny array as the only variable. The
+bundle's own `canUseTool` warning says as much in a parenthesis — *"auto-approves every
+tool call (except explicit deny rules)"* — but that is a sentence about the SDK callback
+path, and this is the module whose last matcher bug went unnoticed precisely because a
+no-op looks like nothing.
+
+**And it holds by withholding, not by refusing, which is why this file is still involved.**
+Measured against 2.1.233: a denied tool is *absent from the card's tool list*. It is not
+offered and then refused. That is the better half of the bargain — no denied call to pay
+for, and the card plans around the absence rather than being stopped mid-plan — with one
+cost: it is mute. "Not in my tool list" is indistinguishable from a CLI that never had the
+tool, so a locked card cannot tell the user why it will not edit, and the probe watched one
+spend two `ToolSearch` calls hunting for a `Write` that had been taken off it. So `compose`
+appends a section saying the lock is on, naming the three tools, and telling the card to
+**hand the change back in words rather than stop** — because the failure a locked card
+actually has is not editing anyway, it is giving up. Neither half is redundant: the sentence
+without the deny is what this feature already was, and the deny without the sentence is a
+card that has quietly lost a capability and does not know it.
+
+The lock goes **last** in the composed block, after whatever they wrote, and that is not
+cosmetic: an instruction saying "edit the file" against a lock saying the tool is gone is a
+contradiction, and the one that must win is the one that is true. The wall-versus-project
+precedence sentence stays where it is; it settles a different question.
+
+**What the lock does not deny is the shell**, and that is a held decision rather than an
+omission. A card with no `git log`, no `rg` and no `bun test` is not read-only, it is
+broken — so denying it wholesale is out — but a blocklist of writing verbs is leaky by
+construction and is a promise about what the switch *means*. The user was asked and chose
+to think about it: sink b3230b03 has the three options, and the trap for whoever builds it
+(`Bash(git commit:*)` is the wrong mechanism here — the Windows shell tool is called
+`PowerShell` on this machine and `hooks.rs` has already shipped one matcher that matched
+nothing). Until then the label claims exactly what is true and no more:
+`guidance.ts::lockGist` never says "read only" flat, and a test asserts it.
+
+Unlocked adds nothing at all — no `permissions` key on an ordinary project card, no
+paragraph. A feature nobody turned on must not change what any card on the wall can do.
 
 ### The limit, and why there is one
 

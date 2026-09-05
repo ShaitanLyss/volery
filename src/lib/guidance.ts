@@ -53,6 +53,36 @@ export function set(text: string | null | undefined): boolean {
   return !!text && text.trim().length > 0;
 }
 
+/** The three tools a locked territory refuses, named rather than summarised.
+ *
+ *  Named because the card is told them by name too (`guidance::compose`), and a
+ *  switch whose label says "no editing" against a system prompt that says
+ *  "`Edit`, `Write` and `NotebookEdit`" is two descriptions of one thing that
+ *  can drift. Mirrors the array in `hooks::settings`, which is what actually
+ *  denies them. */
+export const LOCKED_TOOLS = ["Edit", "Write", "NotebookEdit"] as const;
+
+/** What the read-only switch says about itself, at a given state.
+ *
+ *  Here rather than in the component for one reason: **the whole difficulty of
+ *  this switch is saying what it is without a tooltip.** The box beside it
+ *  *asks* a card not to edit; this *refuses it the tools*, and a label that does
+ *  not carry that distinction leaves somebody believing prose is enforcement —
+ *  which is the state sink `8dde1cc1` was filed about. Prose that load-bearing
+ *  wants a test.
+ *
+ *  It deliberately does not claim more than it does. The shell is untouched, so
+ *  this says "the editing tools" and never "read only" on its own; the honest
+ *  version of the strong claim is a decision the user has held (sink
+ *  `b3230b03`). */
+export function lockGist(name: string, locked: boolean): string {
+  return locked
+    ? `${LOCKED_TOOLS.join(", ")} are taken away from cards in ${name}. they can still read, ` +
+        `search and run commands, and are told to hand a change back in words rather than stop.`
+    : `cards in ${name} can edit it. the box below can ask them not to — this takes the ` +
+        `editing tools away, so there is nothing to refuse.`;
+}
+
 /** A one-line reading of a scope, for a tooltip or a menu — the first line that
  *  has anything on it, cut to `width` with an ellipsis.
  *

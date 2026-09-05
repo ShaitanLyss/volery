@@ -335,7 +335,7 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>) -> Option<String> {
 /// name should get rather than a guard that does not know whose commit it is
 /// looking at. The id is baked in here, once, rather than looked up per call:
 /// see `FLAG_CARD`.
-pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>) -> String {
+pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>, locked: bool) -> String {
     let mut root = serde_json::Map::new();
 
     /* The permissions a chat card is granted, and the whole of them. Moved here
@@ -359,6 +359,47 @@ pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>) -> String {
         root.insert(
             "permissions".into(),
             serde_json::json!({ "allow": ["WebSearch", "WebFetch"] }),
+        );
+    }
+
+    /* The read-only lock, and it is the whole enforcement — three tool names in
+       an array (sink `8dde1cc1`).
+
+       **It bites through `--dangerously-skip-permissions`, and that was worth a
+       real turn to prove rather than assume.** Every project card carries the
+       bypass flag, so a deny that the flag overrode would be a switch that is on
+       and does nothing — the worst available shape, since the settings JSON
+       would be exactly as written and no error would appear anywhere.
+       `tools/probe-lock.ts` spawns two turns with Skein's own argv and the deny
+       array as the only variable: with it, the file is not written.
+
+       **And it holds by withholding rather than by refusing**, which is the part
+       the bundle's own wording does not tell you: measured 2026-09-05 against
+       2.1.233, a denied tool is *not in the card's tool list at all*. It is not
+       offered and then refused. That is the better half of the bargain — no
+       denied call to pay for, and the card plans around the absence rather than
+       discovering it mid-turn — with one cost that has to be paid elsewhere:
+       nothing tells the card *why*. "Not in my tool list" is indistinguishable
+       from a CLI that never had the tool, so the card went looking through
+       `ToolSearch` first and could not have told the user the territory was
+       locked. `guidance::compose` says so in the system prompt for exactly that
+       reason, and the two halves are one feature.
+
+       **Three names, and the shell is deliberately not among them.** A card with
+       no `git log`, no `rg` and no `bun test` is not a read-only card, it is a
+       broken one, so denying the shell wholesale is out; and a blocklist of
+       writing shell verbs is leaky by construction and can refuse legitimate
+       work, which is a promise about what the switch means rather than an
+       implementation detail. Asked, and held for a decision — sink `b3230b03`
+       carries the question. Until it is answered the switch says what it does
+       and no more, which is why the panel's label names the tools.
+
+       Set beside a chat card's `allow` rather than merged with it, because the
+       two cases cannot both apply: a chat card has no file tool to deny. */
+    if locked {
+        root.insert(
+            "permissions".into(),
+            serde_json::json!({ "deny": ["Edit", "Write", "NotebookEdit"] }),
         );
     }
 
@@ -1621,7 +1662,7 @@ mod tests {
 
     #[test]
     fn settings_carry_the_hook_in_exec_form() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false)).unwrap();
         let h = &v["hooks"]["PreToolUse"][0];
         /* No matcher: the Windows shell tool was renamed once already and a
            matcher that stops matching says nothing when it does. See the
@@ -1632,9 +1673,47 @@ mod tests {
         assert_eq!(h["hooks"][0]["args"].as_array().unwrap().len(), 1);
         assert!(v.get("permissions").is_none(), "a project card gets no allow list");
 
-        let chat: serde_json::Value = serde_json::from_str(&settings(true, None)).unwrap();
+        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false)).unwrap();
         assert_eq!(chat["permissions"]["allow"][0], "WebSearch");
         assert_eq!(chat["hooks"]["PreToolUse"][0]["hooks"][0]["type"], "command");
+    }
+
+    /// The read-only lock, which is three names in an array and the whole of the
+    /// enforcement (sink `8dde1cc1`).
+    ///
+    /// **Asserted exactly**, both the set and its absence. A deny that lost a
+    /// name is a lock that is on and does not hold, and there is nothing to
+    /// notice from outside: the switch is still drawn, the settings JSON is
+    /// still valid, and the card edits the repository. The unlocked arm matters
+    /// as much — a `permissions` key appearing on every project card would be a
+    /// change to what every card on the wall can do, arriving from a feature
+    /// nobody turned on.
+    #[test]
+    fn a_locked_territory_denies_the_three_editing_tools_and_nothing_else() {
+        let open: serde_json::Value = serde_json::from_str(&settings(false, None, false)).unwrap();
+        assert!(open.get("permissions").is_none(), "an unlocked card is granted nothing");
+
+        let shut: serde_json::Value = serde_json::from_str(&settings(false, None, true)).unwrap();
+        let deny = shut["permissions"]["deny"].as_array().expect("a deny list");
+        assert_eq!(
+            deny.iter().filter_map(|d| d.as_str()).collect::<Vec<_>>(),
+            vec!["Edit", "Write", "NotebookEdit"]
+        );
+        /* And the shell is not in it, deliberately and pending a decision — a
+           card with no `git log` and no `bun test` is broken rather than
+           read-only. Sink `b3230b03`. Asserted in the negative so that adding it
+           is a choice somebody makes here rather than a line that slips in. */
+        for name in ["Bash", "PowerShell"] {
+            assert!(
+                !deny.iter().any(|d| d.as_str().is_some_and(|t| t.starts_with(name))),
+                "the shell was denied without the question being settled: {deny:?}"
+            );
+        }
+        /* The hook is still registered on a locked card. It carries the
+           backslash compensator and the shared-index guard, neither of which
+           has anything to do with the lock, and a card that lost them by being
+           locked would be a second feature turning off a first. */
+        assert_eq!(shut["hooks"]["PreToolUse"][0]["hooks"][0]["type"], "command");
     }
 
     /// The two occasions a card is handed back the background work it may have
@@ -1642,7 +1721,7 @@ mod tests {
     /// like `PreToolUse` — with no matcher, so nothing can quietly stop matching.
     #[test]
     fn the_two_forgetting_hooks_are_registered_the_same_way() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false)).unwrap();
         for ev in ["SessionStart", "UserPromptSubmit"] {
             let h = &v["hooks"][ev][0];
             assert!(h.get("matcher").is_none(), "{ev}: a matcher is a name that can rot");
@@ -1652,7 +1731,7 @@ mod tests {
         /* A chat card gets them too. It can run nothing, so it will never have a
            row — but the registration must not be the thing that decides that,
            or the day a chat card gains a tool the guard is silently absent. */
-        let chat: serde_json::Value = serde_json::from_str(&settings(true, None)).unwrap();
+        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false)).unwrap();
         assert!(chat["hooks"]["UserPromptSubmit"][0]["hooks"][0]["args"][0] == FLAG);
     }
 
@@ -2092,7 +2171,7 @@ mod tests {
     fn a_named_card_arms_the_guard_through_the_argv() {
         let dir = std::path::Path::new("C:/Users/x/AppData/Roaming/dev.skein.studio");
         let v: serde_json::Value =
-            serde_json::from_str(&settings(false, Some(("abc123", dir)))).unwrap();
+            serde_json::from_str(&settings(false, Some(("abc123", dir)), false)).unwrap();
         let args = v["hooks"]["PreToolUse"][0]["hooks"][0]["args"]
             .as_array()
             .unwrap()

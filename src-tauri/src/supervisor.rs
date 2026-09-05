@@ -773,9 +773,18 @@ fn spawn_now(
        the process this layer is being built for. A chat card gets them too and
        will never use them — it has no Bash tool to run a commit with. */
     let studio = app.state::<crate::store::Store>().1.clone();
+    /* And the lock, for the fifth time and the fifth iteration of one argument
+       (`kind_of`, `setup_of`, `worktree_of`, `gear_of`, and now this). It is the
+       enforcing half of what the guidance below can only ask for, and it is read
+       here rather than passed in for the reason all four before it were: the
+       caller that would have to remember is `wake`, and a lock that came off in
+       a rouse is one that comes off for every dormant card at launch, at once,
+       with nobody watching. A chat card is never locked and never needs to be —
+       it has no file tool to deny. */
+    let locked = !chat && crate::store::read_only_of(&app.state::<crate::store::Store>(), &id);
     cmd.args([
         "--settings",
-        &crate::hooks::settings(chat, Some((id.as_str(), studio.as_path()))),
+        &crate::hooks::settings(chat, Some((id.as_str(), studio.as_path())), locked),
     ]);
 
     /* What you told every card once instead of every turn — the wall's standing
@@ -789,7 +798,7 @@ fn spawn_now(
        person at the keyboard and do not stop being true because a card has no
        repository in front of it. */
     let standing =
-        crate::guidance::for_conversation(&app.state::<crate::store::Store>(), &id);
+        crate::guidance::for_conversation(&app.state::<crate::store::Store>(), &id, locked);
 
     /* What this card knows about itself, asked of the store for the fifth time
        and the fifth iteration of the same argument (`kind_of`, `setup_of`,
@@ -2375,10 +2384,11 @@ mod tests {
     /// Every source on this server that composes prose an agent reads, paired
     /// with its own text so the scan needs no path and no working directory.
     ///
-    /// **`servers.rs` is deliberately absent**, and only because another card is
-    /// rewriting those very strings as this lands (sink `11365b64`). It carries
-    /// four bare names today — `server`, `servers`, `server_log` — and belongs
-    /// on this list the moment that work is in.
+    /// **This is every module that answers a tool call, and it is meant to stay
+    /// that way.** `servers.rs` was held out for one afternoon while another
+    /// card rewrote those strings for sink `11365b64`, and went in with `689835a`
+    /// — a list with a standing exception is a list nobody trusts, so an
+    /// exclusion here wants a named reason and a date it comes out.
     ///
     /// `hooks.rs` is absent for a different and permanent reason: what it writes
     /// is a hook's own output rather than a tool result, and nothing in it names
@@ -2391,6 +2401,7 @@ mod tests {
         ("pin.rs", include_str!("pin.rs")),
         ("relay.rs", include_str!("relay.rs")),
         ("selector.rs", include_str!("selector.rs")),
+        ("servers.rs", include_str!("servers.rs")),
         ("sink.rs", include_str!("sink.rs")),
         ("smith.rs", include_str!("smith.rs")),
         ("spawn.rs", include_str!("spawn.rs")),

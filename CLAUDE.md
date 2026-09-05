@@ -97,6 +97,7 @@ node --experimental-strip-types tools/probe-browser.ts   # what a browser costs,
                                    # two clients can share one. NODE, not bun: playwright's
                                    # launch() never returns under bun on this machine.
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
+bun tools/probe-lock.ts            # whether permissions.deny bites through the bypass flag
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
 bun tools/lift-tunnel.ts           # same, for the spotify tunnel's ipv4-first sort

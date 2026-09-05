@@ -50,14 +50,33 @@
 //! comes back from a rouse — at launch, for every dormant card at once — with
 //! its project's instructions quietly missing.
 //!
-//! # These are instructions, not a lock
+//! # These are instructions, and beside them there is now a lock
 //!
-//! Worth stating because "this project is read-only" is the first thing anybody
-//! writes here. A project card spawns with `--dangerously-skip-permissions`, so
-//! what is written here is read and followed, not enforced: nothing in this file
-//! refuses a tool call. Enforcement would be `permissions.deny` rules in the
-//! `--settings` layer `hooks::settings` builds, which is a different feature
-//! with a vocabulary of its own to settle. It has not been built.
+//! "This project is read-only" was the first thing anybody wrote here, and for
+//! a while it was prose in a system prompt: read and followed, never enforced,
+//! on a card carrying `--dangerously-skip-permissions`. The territory's lock
+//! (sink `8dde1cc1`) is the enforcing half — three names in a `permissions.deny`
+//! array in the `--settings` layer `hooks::settings` builds, and that is the
+//! whole mechanism. It is set in this panel because it is the same thought at
+//! the same scope, and the two must not be able to disagree.
+//!
+//! **The lock needs this file, which is the part that is not obvious.** Measured
+//! against 2.1.233 (`tools/probe-lock.ts`): a denied tool is not offered and
+//! then refused, it is *absent from the card's tool list*. That is the better
+//! mechanism — nothing to pay for, and the card plans around it rather than
+//! being stopped mid-plan — but it is mute. "Not in my tool list" is
+//! indistinguishable from a CLI that never had the tool, so a locked card cannot
+//! tell the user *why* it will not edit, and the probe watched one spend two
+//! `ToolSearch` calls looking for a `Write` that had been taken away from it.
+//! So `compose` says the lock is on, in words, and the settings layer makes it
+//! true. Neither half is redundant: the sentence without the deny is what this
+//! feature already was, and the deny without the sentence is a card that has
+//! quietly lost a capability and does not know it.
+//!
+//! What the lock does **not** deny is the shell — a card with no `git log`, no
+//! `rg` and no `bun test` is not read-only, it is broken — and a blocklist of
+//! writing shell verbs is a promise about what the switch means rather than an
+//! implementation detail. That question was asked and is held: sink `b3230b03`.
 
 /// The most one scope may carry, in characters.
 ///
@@ -110,10 +129,10 @@ pub fn clip(text: &str) -> String {
 /// neither rare nor hypothetical: a wall that says "keep going, don't check in"
 /// against a project that says "ask before you touch anything" is a pair most
 /// people would write.
-pub fn compose(wall: &str, project: &str) -> Option<String> {
+pub fn compose(wall: &str, project: &str, locked: bool) -> Option<String> {
     let wall = wall.trim();
     let project = project.trim();
-    if wall.is_empty() && project.is_empty() {
+    if wall.is_empty() && project.is_empty() && !locked {
         return None;
     }
 
@@ -143,6 +162,36 @@ pub fn compose(wall: &str, project: &str) -> Option<String> {
         );
     }
 
+    /* Last, after whatever they wrote, because it is the one line here that is
+       not a preference: it is a fact about what this card can do, and an
+       instruction that contradicts it has already lost.
+
+       **It says what has been taken away and names it.** The card cannot work
+       this out for itself — `hooks::settings` denies by *withholding*, so the
+       tools are simply not in its list, which reads exactly like a CLI that
+       never had them. A card that does not know it is locked answers "I don't
+       seem to have a Write tool", which is true and useless; one that knows can
+       say what the user actually needs to hear.
+
+       And it says what to do instead, because the failure this replaces is not
+       an agent that edits anyway — it cannot — but an agent that stops. Writing
+       the patch out is the whole of what a read-only card is for. */
+    if locked {
+        out.push_str(
+            "\n## This territory is locked read-only\n\n\
+             They have set this project read-only in Volery, so `Edit`, `Write` \
+             and `NotebookEdit` have been taken away from you — that is why those \
+             tools are not in your list, rather than anything being broken. It is \
+             a deliberate setting of theirs and not something to work around.\n\n\
+             You can still read anything, search, and run commands. **Do the work \
+             and hand back the change rather than stopping**: say exactly what you \
+             would alter, in which file, and write the new text out in full so \
+             they can apply it. If you think the lock is in your way, say so and \
+             let them decide — it is one switch in the standing-instructions \
+             panel.\n",
+        );
+    }
+
     Some(out)
 }
 
@@ -152,9 +201,13 @@ pub fn compose(wall: &str, project: &str) -> Option<String> {
 /// unreadable row means an instruction is missing, and a card that starts
 /// without one is recoverable in a way a card that will not start at all is
 /// not. The panel is where you find out whether it took.
-pub fn for_conversation(store: &crate::store::Store, id: &str) -> Option<String> {
+pub fn for_conversation(
+    store: &crate::store::Store,
+    id: &str,
+    locked: bool,
+) -> Option<String> {
     let (wall, project) = crate::store::guidance_of(store, id);
-    compose(&wall, &project)
+    compose(&wall, &project, locked)
 }
 
 #[cfg(test)]
@@ -163,15 +216,15 @@ mod tests {
 
     #[test]
     fn nothing_to_say_adds_no_argument() {
-        assert!(compose("", "").is_none());
+        assert!(compose("", "", false).is_none());
         /* Whitespace is nothing to say. A panel left with a stray newline in it
            must not put an empty section in every card's system prompt. */
-        assert!(compose("  \n\t ", "\n\n").is_none());
+        assert!(compose("  \n\t ", "\n\n", false).is_none());
     }
 
     #[test]
     fn one_scope_is_still_labelled() {
-        let only_wall = compose("call me Lyss", "").unwrap();
+        let only_wall = compose("call me Lyss", "", false).unwrap();
         assert!(only_wall.contains("call me Lyss"));
         assert!(only_wall.contains("everywhere on this wall"));
         assert!(!only_wall.contains("for this project"));
@@ -179,7 +232,7 @@ mod tests {
            — it would be describing a conflict that cannot arise. */
         assert!(!only_wall.contains("disagree"));
 
-        let only_project = compose("", "read only, no edits").unwrap();
+        let only_project = compose("", "read only, no edits", false).unwrap();
         assert!(only_project.contains("read only, no edits"));
         assert!(only_project.contains("for this project"));
         assert!(!only_project.contains("everywhere on this wall"));
@@ -188,7 +241,7 @@ mod tests {
 
     #[test]
     fn both_scopes_carry_both_texts_and_the_tie_break() {
-        let out = compose("keep going without checking in", "ask before editing").unwrap();
+        let out = compose("keep going without checking in", "ask before editing", false).unwrap();
         assert!(out.contains("keep going without checking in"));
         assert!(out.contains("ask before editing"));
         assert!(out.contains("disagree"));
@@ -197,6 +250,53 @@ mod tests {
         let wall_at = out.find("keep going").unwrap();
         let project_at = out.find("ask before editing").unwrap();
         assert!(wall_at < project_at);
+    }
+
+    /// The lock is the one thing here that is not a preference, so it has to be
+    /// said whether or not anybody wrote anything.
+    ///
+    /// The empty case is the one that would have been missed: a territory with
+    /// no instructions at all and the switch on used to be `None`, which is no
+    /// `--append-system-prompt` at all — a card locked and never told.
+    #[test]
+    fn a_locked_territory_says_so_with_nothing_else_to_say() {
+        let out = compose("", "", true).expect("a locked card is told");
+        assert!(out.contains("locked read-only"), "{out}");
+        /* The three names, because "you cannot edit" leaves a card guessing at
+           which of its tools went and reaching for the others. */
+        for tool in ["Edit", "Write", "NotebookEdit"] {
+            assert!(out.contains(tool), "the lock did not name {tool}: {out}");
+        }
+        /* The half that stops it being a card that gives up: it cannot apply the
+           change, so the change has to come back in words. */
+        assert!(out.contains("hand back the change"), "{out}");
+        /* And the reason the sentence exists at all — the deny withholds rather
+           than refuses, so nothing else would tell the card this was on purpose
+           (`tools/probe-lock.ts`). */
+        assert!(out.contains("rather than anything being broken"), "{out}");
+    }
+
+    /// Unlocked is silent. The lock's paragraph on every card in every territory
+    /// would be the same words paid for everywhere to say "no".
+    #[test]
+    fn an_unlocked_territory_says_nothing_about_locks() {
+        assert!(compose("", "", false).is_none());
+        let out = compose("call me Lyss", "", false).unwrap();
+        assert!(!out.contains("read-only"), "{out}");
+    }
+
+    /// The lock goes last, after whatever they wrote.
+    ///
+    /// Not cosmetic: an instruction that says "edit the file" and a lock that
+    /// says the tool is gone are a contradiction, and the one that must win is
+    /// the one that is true. The panel's own precedence sentence stays where it
+    /// is — it settles wall against project, which is a different question.
+    #[test]
+    fn the_lock_is_the_last_word() {
+        let out = compose("go ahead and edit", "edit freely", true).unwrap();
+        let project_at = out.find("edit freely").expect("the project's text");
+        let lock_at = out.find("locked read-only").expect("the lock");
+        assert!(project_at < lock_at, "{out}");
     }
 
     #[test]
@@ -236,7 +336,7 @@ mod tests {
         /* The bound `LIMIT` exists for. Windows takes 32767 UTF-16 units for the
            whole argv, and this is the largest thing in it. */
         let big = "x".repeat(LIMIT);
-        let out = compose(&big, &big).unwrap();
+        let out = compose(&big, &big, false).unwrap();
         assert!(out.encode_utf16().count() < 12_000, "composed {} units", out.encode_utf16().count());
     }
 }

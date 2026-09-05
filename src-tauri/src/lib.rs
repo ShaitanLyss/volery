@@ -461,6 +461,7 @@ pub fn run() {
             store::set_wall_guidance,
             store::set_default_preset,
             store::set_project_guidance,
+            store::set_project_read_only,
             store::reroot_project,
             store::record_conversation,
             store::chat_home,

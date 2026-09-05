@@ -63,6 +63,19 @@ pub struct Project {
     /// per territory to draw that list would be a list that fills in.
     #[serde(default)]
     pub instructions: String,
+    /// Whether cards in this territory are refused the editing tools.
+    ///
+    /// The enforcing half of what `instructions` can only ask for, and the two
+    /// are set in one panel because they are one thought — "this repo is
+    /// read-only to you" is the first thing anybody writes in the box, and it
+    /// was prose in a system prompt until this existed (sink `8dde1cc1`).
+    ///
+    /// In the snapshot for `instructions`' reason: the panel draws a mark
+    /// against every territory that carries one, and a lock whose existence is
+    /// invisible from the wall is a lock somebody trips over rather than relies
+    /// on.
+    #[serde(default, rename = "readOnly")]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -189,7 +202,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 28;
+const SCHEMA_VERSION: i64 = 29;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -223,6 +236,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (26, migrate_v26),
     (27, migrate_v27),
     (28, migrate_v28),
+    (29, migrate_v29),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1316,6 +1330,28 @@ fn migrate_v28(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v28: {e}"))
 }
 
+/// The read-only lock: a territory whose cards may not edit it.
+///
+/// A column on `project` rather than a table, and beside `instructions` rather
+/// than anywhere else, because it is the same panel and the same scope — the
+/// answer `migrate_v23` already argued for its neighbour. `forget_project`'s
+/// cascade takes it with the row and no second delete has to remember.
+///
+/// **A boolean and not a mode.** The temptation is a column that could later
+/// hold `"read_only" | "no_shell" | …`, and it is the wrong shape for the same
+/// reason `gear` is the right one there: a gear is a set of states the user
+/// chooses between and this is one thing that is either on or off. What "read
+/// only" *denies* is a decision that has not been settled yet — the shell half
+/// is sink `b3230b03` and is deliberately not encoded here, because widening a
+/// boolean is one rung and unpicking a vocabulary written down too early is not.
+///
+/// Default 0, which is every territory that exists: a lock nobody asked for is
+/// a lock nobody wants, and this must not change what any card on the wall can
+/// do until somebody turns it on.
+fn migrate_v29(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "project", "read_only", "INTEGER NOT NULL DEFAULT 0")
+}
+
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
 /// one. Every failure here is `None` on purpose — a missing row, a locked
 /// database, a width some future build wrote as a negative — because the
@@ -1503,21 +1539,40 @@ fn dir_name(path: &str) -> String {
 pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Result<Project, String> {
     let conn = store.0.lock().unwrap();
     type Row =
-        (String, String, Option<f64>, Option<f64>, Option<f64>, Option<f64>, String);
+        (String, String, Option<f64>, Option<f64>, Option<f64>, Option<f64>, String, bool);
     let existing: Option<Row> = conn
         .query_row(
-            "SELECT id, name, x, y, glass_x, glass_y, instructions
+            "SELECT id, name, x, y, glass_x, glass_y, instructions, read_only
                FROM project WHERE root_path = ?1",
             params![root_path],
             |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
             },
         )
         .optional()
         .map_err(|e| e.to_string())?;
 
-    if let Some((id, name, x, y, glass_x, glass_y, instructions)) = existing {
-        return Ok(Project { id, name, root_path, x, y, glass_x, glass_y, instructions });
+    if let Some((id, name, x, y, glass_x, glass_y, instructions, read_only)) = existing {
+        return Ok(Project {
+            id,
+            name,
+            root_path,
+            x,
+            y,
+            glass_x,
+            glass_y,
+            instructions,
+            read_only,
+        });
     }
 
     let id = uuid_v4();
@@ -1542,6 +1597,10 @@ pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Resu
         /* A new territory says nothing of its own. The wall's instructions still
            reach every card in it — see `crate::guidance::compose`. */
         instructions: String::new(),
+        /* And it is not locked. Pointing at a directory is not asking for a
+           lock on it, and a territory that arrived already refusing to be
+           edited would be indistinguishable from a broken one. */
+        read_only: false,
     })
 }
 
@@ -1892,6 +1951,38 @@ fn guidance_rows(conn: &Connection, id: &str) -> (String, String) {
         .flatten()
         .unwrap_or_default();
     (wall, project)
+}
+
+/// Whether this card's territory is locked read-only.
+///
+/// The fifth thing `spawn_now` asks the store rather than its caller, and the
+/// same argument as `guidance_of` immediately above: `open` and `wake` both
+/// reach that line, and a capability travelling as an argument is one the caller
+/// that wakes every dormant card at launch would have to remember. A lock that
+/// came off in a rouse is a lock that comes off exactly when nobody is watching.
+///
+/// **Every failure answers `false`, and that is the arguable direction.** A lock
+/// that fails open is a lock that silently is not there; a lock that fails
+/// closed is a card that cannot work and cannot say why. The tie is broken by
+/// what each looks like from the outside: a card that will not edit a repository
+/// nobody locked is a bug reported as "Volery is broken", while an unlocked card
+/// in a locked territory is one the user is still in front of — the instructions
+/// half of the same panel is in its system prompt saying so, and the panel draws
+/// the lock. This is also `guidance_of`'s answer for the same reasons, one row
+/// over, and the two must not disagree about a wedged database.
+pub fn read_only_of(store: &Store, id: &str) -> bool {
+    let Ok(conn) = store.0.lock() else { return false };
+    conn.query_row(
+        "SELECT p.read_only
+           FROM conversation c JOIN project p ON p.id = c.project_id
+          WHERE c.id = ?1",
+        params![id],
+        |r| r.get::<_, bool>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or(false)
 }
 
 /// Where chat cards stand.
@@ -2811,7 +2902,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
 
     let mut ps = conn
         .prepare(
-            "SELECT id, name, root_path, x, y, glass_x, glass_y, instructions
+            "SELECT id, name, root_path, x, y, glass_x, glass_y, instructions, read_only
                FROM project ORDER BY created_at",
         )
         .map_err(|e| e.to_string())?;
@@ -2826,6 +2917,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 glass_x: r.get(5)?,
                 glass_y: r.get(6)?,
                 instructions: r.get(7)?,
+                read_only: r.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -2967,6 +3059,38 @@ pub fn set_project_guidance(
         return Err(format!("no project {project_id} on this wall"));
     }
     Ok(text)
+}
+
+/// Lock or unlock one territory.
+///
+/// Beside `set_project_guidance` because it is the same panel and the same
+/// scope, and answers the value it stored for the same reason that one does —
+/// a switch that goes on showing its own optimism after a failed write is a
+/// switch you stop believing.
+///
+/// **It does not reach a card already running.** Exactly like the instructions
+/// beside it, and for the same reason: the lock is in the `--settings` layer
+/// that was handed to the child when its process started, and nothing here
+/// restarts a live card to apply a preference. It takes effect on the next
+/// spawn — a wake, a clear, a restart — and the panel says so rather than
+/// leaving it to be discovered. See `crate::guidance`.
+#[tauri::command]
+pub fn set_project_read_only(
+    store: tauri::State<'_, Store>,
+    project_id: String,
+    locked: bool,
+) -> Result<bool, String> {
+    let conn = store.0.lock().map_err(|_| "the store is unavailable")?;
+    let n = conn
+        .execute(
+            "UPDATE project SET read_only = ?2 WHERE id = ?1",
+            params![project_id, locked],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("no project {project_id} on this wall"));
+    }
+    Ok(locked)
 }
 
 /* ── what the plain `+` opens ─────────────────────────────────────────────

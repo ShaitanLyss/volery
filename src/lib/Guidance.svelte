@@ -16,6 +16,15 @@
    * long things into. So `drafts` holds one per scope, the rail marks the ones
    * with unsaved work, and nothing is discarded without being asked.
    *
+   * **The lock is drawn as a lock, not as another box.** A territory can also be
+   * set read-only, and that is the same thought at the same scope — so it is in
+   * this panel rather than a second one. But it is not the same *kind* of thing:
+   * the box asks, the switch refuses the tools (`hooks::settings`). Drawn as a
+   * bar above the box with a real state, its own frame and a sentence naming
+   * what it takes away, because the one way to get this wrong is to leave
+   * somebody believing prose is enforcement — which is what it was until sink
+   * `8dde1cc1`.
+   *
    * **It says when an edit takes effect.** This is the one thing about the
    * feature that will otherwise be discovered as a bug: you write "keep answers
    * short", the card you are looking at goes on writing long ones, and there is
@@ -26,7 +35,7 @@
   import { untrack } from "svelte";
 
   import type { Project, Skein } from "./skein.svelte";
-  import { changed, gist, LIMIT, room, set, tidy } from "./guidance";
+  import { changed, gist, LIMIT, lockGist, room, set, tidy } from "./guidance";
 
   let {
     skein,
@@ -171,6 +180,38 @@
   }
 
   const marked = (p: Project) => set(drafts[p.id] ?? p.instructions);
+
+  /** The territory being written, when one is — the switch has no meaning at the
+   *  wall's scope, since the wall is not a repository anything is locked to. */
+  const territory = $derived(
+    scope === null ? null : (skein.projects.find((p) => p.id === scope) ?? null),
+  );
+
+  /** Its own in-flight flag rather than `saving`, so a slow lock does not grey
+   *  out the save button beside it and read as the panel having seized. */
+  let locking = $state(false);
+
+  async function toggleLock() {
+    const p = territory;
+    if (!p || locking) return;
+    locking = true;
+    fault = null;
+    try {
+      await skein.setProjectReadOnly(p.id, !p.readOnly);
+      /* Said in the same place a save is said, and with the same honesty about
+         when it lands: the deny is in the settings layer a card's process was
+         handed at spawn, so a running card keeps the state it started with. */
+      said = !p.readOnly
+        ? running
+          ? `locked — ${running} card${running === 1 ? "" : "s"} already running keep their tools until they next start`
+          : "locked"
+        : "unlocked";
+    } catch (err) {
+      fault = String(err);
+    } finally {
+      locking = false;
+    }
+  }
 </script>
 
 <svelte:window onkeydown={onkey} />
@@ -225,6 +266,22 @@
       </div>
 
       <div class="write">
+        {#if territory}
+          <div class="lock" class:shut={territory.readOnly}>
+            <button
+              class="switch"
+              role="switch"
+              aria-checked={territory.readOnly}
+              disabled={locking}
+              onclick={toggleLock}
+            >
+              <span class="pip" aria-hidden="true">{territory.readOnly ? "▪" : ""}</span>
+              <span class="what">read-only</span>
+            </button>
+            <span class="why">{lockGist(territory.name, territory.readOnly)}</span>
+          </div>
+        {/if}
+
         <label class="cap" for="guidance-box">
           {scope === null
             ? "Told to every card on this wall"
@@ -263,6 +320,73 @@
 </div>
 
 <style>
+  /* The switch reads as a thing with a state, where the box below reads as a
+     thing you write in — same panel, two kinds of gesture. Achromatic, per the
+     house rule: `shut` is a heavier frame and a filled pip, never a colour,
+     because colour on this wall means a card's status and nothing else. */
+  .lock {
+    display: flex;
+    align-items: baseline;
+    gap: 0.55rem;
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    padding: 0.4rem 0.55rem;
+  }
+
+  .lock.shut {
+    border-color: color-mix(in srgb, var(--ink) 45%, transparent);
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
+  }
+
+  .switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: none;
+    border: 0;
+    background: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .switch:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .pip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 0.9rem;
+    height: 0.9rem;
+    border: 1px solid color-mix(in srgb, var(--ink) 45%, transparent);
+    border-radius: 2px;
+    font-size: 0.6rem;
+    line-height: 1;
+  }
+
+  .lock.shut .pip {
+    border-color: var(--ink);
+  }
+
+  .what {
+    font-size: 0.8rem;
+    letter-spacing: 0.02em;
+  }
+
+  .lock.shut .what {
+    font-weight: 600;
+  }
+
+  .why {
+    font-size: 0.74rem;
+    line-height: 1.35;
+    opacity: 0.68;
+  }
+
   .scrim {
     position: fixed;
     inset: 0;
