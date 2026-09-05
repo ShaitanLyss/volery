@@ -65,7 +65,32 @@ const MAX_ARMED: i64 = 3;
 const MAX_SERVED: i64 = 12;
 const SERVED_WINDOW_MS: i64 = 60 * 60 * 1_000;
 
-const MAX_NOTE: usize = 1_200;
+/// How long a note to yourself may be.
+///
+/// **It was 1,200 and that was the one number in this file nobody had defended.**
+/// Every other bound here says what it is protecting — a round trip, an
+/// afternoon, a re-arming loop — and this one was a bare literal. It is also the
+/// *same* 1,200 that `sink.rs` enforced until 2026-09-03, where it left sixteen
+/// open items ending mid-sentence and was removed in favour of the store's 4,000
+/// (sink `7b26058e`, and see `store::MAX_SINK_BODY`). This copy survived that
+/// cleanup by being somewhere nobody was looking.
+///
+/// The argument for raising it is that the schema above **asks for a note this
+/// cap cannot carry**: it says to write to a stranger, to name the file, the
+/// pipeline, the command to re-run and what a good answer looks like. A tool
+/// that instructs you to be complete and then guillotines you at 1,200 is one
+/// that spends a whole round on a wake that arrives incomplete — which is the
+/// failure a wake exists to prevent, since the whole point is that the card has
+/// moved on and this note is all it has.
+///
+/// 4,000 rather than a new number of its own, because it is the figure the wall
+/// already reached for the two nearest things: `store::MAX_SINK_BODY` and
+/// `relay::MAX_BODY`. A note to yourself is the *cheapest* of those three — it
+/// costs no other card a turn, it is one row, and it is read exactly once — so
+/// there is no case for it being the tightest. What bounds abuse here is not
+/// length but `MAX_ARMED` and `MAX_SERVED`, which are the two that can see a
+/// loop.
+const MAX_NOTE: usize = 4_000;
 
 /// How often the table is looked at.
 ///
@@ -369,6 +394,29 @@ mod tests {
         assert_eq!(MIN_DELAY_S, 30);
         assert_eq!(MAX_DELAY_S, 12 * 60 * 60);
         assert!(MAX_SERVED * 5 * 60 >= 60 * 60, "an hour's watching at 5m apart must fit");
+    }
+
+    /// The cap has to be able to carry the note the schema asks for.
+    ///
+    /// This is the test the bare `1_200` never had, and it is written as a
+    /// relation rather than as a number so that tightening the cap without
+    /// reading the description fails here instead of in somebody's afternoon:
+    /// the tool says to name the file, the command to re-run and what a good
+    /// answer looks like, and a note doing all three does not fit in 1,200. The
+    /// real one that prompted this ran to 2,600 characters and lost 1,408 of
+    /// them.
+    ///
+    /// Held against the two nearest caps as well, since a note to yourself costs
+    /// nobody else a turn and has no business being the tightest text on the
+    /// wall.
+    #[test]
+    fn the_note_may_be_as_long_as_the_schema_asks_for() {
+        assert!(
+            MAX_NOTE >= 2_600,
+            "the note that found this was 2,600 characters and the schema asked for it"
+        );
+        assert_eq!(MAX_NOTE, crate::store::MAX_SINK_BODY);
+        assert!(MAX_NOTE >= crate::relay::MAX_BODY, "cheaper than a message, not dearer");
     }
 
     #[test]

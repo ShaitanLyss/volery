@@ -81,7 +81,11 @@ const SEND_WINDOW: Duration = Duration::from_secs(60);
 /// can read the file. Truncated rather than refused, since a message that is
 /// mostly right is worth delivering and an agent that had its send bounced will
 /// send it again slightly shorter, twice.
-const MAX_BODY: usize = 4_000;
+///
+/// Visible to the crate so `later.rs` can hold its own cap against it: a note a
+/// card writes to itself costs nobody else a turn, so it has no business being
+/// tighter than a message that does.
+pub(crate) const MAX_BODY: usize = 4_000;
 
 /// The first line of every delivered message, and the whole of how the front
 /// end knows one when it sees it.
