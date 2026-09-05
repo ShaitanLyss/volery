@@ -61,6 +61,8 @@ import {
   type LostJob,
   jobsPrompt,
   resumePrompt,
+  unansweredRousePrompt,
+  ALREADY_ROUSED_NOTE,
   rouseOrder,
 } from "./rousing";
 import { dayStart, turnRowKind } from "./usage";
@@ -312,7 +314,21 @@ export class Skein {
   #holdSweep: ReturnType<typeof setInterval> | null = null;
 
   /** This Skein has been let go of — see `detach`. Read by the rousing queue,
-   *  which is the one loop here that outlives a single tick. */
+   *  which is the one loop here that outlives a single tick.
+   *
+   *  **It is set before the replacement exists**, which is the half the guard
+   *  is worth nothing without and was checked rather than assumed while
+   *  narrowing sink `01e00f30` — one candidate there was two instances each
+   *  rousing once, doubling every resume prompt. Svelte's HMR wrapper
+   *  (`svelte/src/internal/client/dev/hmr.js`) calls `destroy_effect(effect)`
+   *  on the outgoing branch *before* it constructs the incoming one, and
+   *  `onDestroy` is a teardown that `destroy_effect` runs synchronously
+   *  (`index-client.js` implements it as `onMount(() => () => fn())`). So
+   *  `App.svelte`'s `onDestroy` → `detach()` → this flag has landed before the
+   *  new component's script body reaches `new Skein(studio)`, let alone before
+   *  the `$effect` that calls `load`. Two instances cannot both walk the queue.
+   *  That candidate is ruled out by reading; the other one — `--resume`
+   *  restoring a copy the app then sends again — is guarded in `rouse`. */
   #gone = false;
 
   /** Stop listening. Called when the component that built this goes away, which
@@ -1287,7 +1303,36 @@ export class Skein {
         const jobs = await invoke<LostJob[]>("pending_jobs", {
           conversationId: conv.id,
         }).catch(() => [] as LostJob[]);
-        if (lost && !conv.working) {
+        const owed = (lost || jobs.length > 0) && !conv.working;
+        /* What the session is already holding, asked only when there is a
+           prompt on the table.
+
+           `--resume` puts the whole transcript back in front of the model, and
+           a rouse prompt is *in* that transcript: it went down stdin like
+           anything else and the CLI recorded it as an ordinary `user` message.
+           So a card that was sent one and died before answering comes back
+           already holding it, and composing a second is a real send against a
+           real allowance for an agent that then reads the same instructions
+           twice, byte for byte, with nothing to say why. See
+           `unansweredRousePrompt`, and sink `01e00f30`.
+
+           Awaited here rather than left to `#fillHistory`, which is running
+           beside this queue: what is being asked of the transcript is not the
+           scrollback but whether to spend money, and that cannot be answered
+           off a file that has not arrived. `loadHistory` shares its in-flight
+           read, so this is the same one read either way. */
+        if (owed) await this.loadHistory(conv);
+        const already = owed ? unansweredRousePrompt(conv.history) : null;
+        if (already !== null) {
+          /* Said rather than done silently, for the reason every other thing
+             Skein does on its own behalf is said: a card left deliberately
+             alone must not read as one the queue forgot. The jobs are still
+             marked told — the row is about this card having been given the
+             news, and it has been. */
+          conv.note(ALREADY_ROUSED_NOTE);
+          conv.activity = "ready";
+          await this.#toldAboutJobs(conv, jobs);
+        } else if (lost && !conv.working) {
           /* Sent as an ordinary prompt, and the panel folds it away behind
              `RESUME_CAP` — which is what says the line is Skein's and not one
              you typed. It used to be a `meta` note written above the prompt
@@ -2662,8 +2707,27 @@ export class Skein {
    *  without this. Runs once per card — see the note on `Conversation.history`
    *  — from the wall's own load, and again when a card is opened or adopted so
    *  that no card is ever left waiting to be clicked. */
-  async loadHistory(c: Conversation) {
+  async loadHistory(c: Conversation): Promise<void> {
+    /* Shared rather than merely guarded, because one of the callers now needs
+       the *answer* and not just the side effect. `#fillHistory` and `rouse` run
+       side by side behind the painted wall, and `rouse` has to know whether the
+       session already holds a resume prompt before it composes another — so a
+       second caller arriving mid-read must wait for that read rather than fall
+       out of the `unread` guard and look at an empty `history`. Cleared in a
+       `finally`, so a failed read is retried rather than remembered. */
+    const inflight = this.#historyReads.get(c.id);
+    if (inflight) return inflight;
     if (c.historyState !== "unread") return;
+    const read = this.#readHistory(c).finally(() => {
+      this.#historyReads.delete(c.id);
+    });
+    this.#historyReads.set(c.id, read);
+    return read;
+  }
+
+  #historyReads = new Map<string, Promise<void>>();
+
+  async #readHistory(c: Conversation) {
     c.historyState = "loading";
     try {
       const t = await invoke<{ text: string; dropped_bytes: number } | null>(

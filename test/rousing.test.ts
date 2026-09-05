@@ -6,6 +6,8 @@ import {
   ROUSE_GAP_MS,
   isJobsPrompt,
   isResumePrompt,
+  unansweredRousePrompt,
+  ALREADY_ROUSED_NOTE,
   jobsLines,
   jobsPrompt,
   resumePrompt,
@@ -278,5 +280,62 @@ describe("resumePrompt carrying lost jobs", () => {
        the cap has to stay the one that says the turn was cut off. */
     expect(isResumePrompt(text)).toBe(true);
     expect(text).toContain("pick the work back up");
+  });
+});
+
+/* ── not sending what the session already holds ────────────────────────────
+ *
+ * A rouse prompt goes down the child's stdin like anything you type, so the CLI
+ * records it as an ordinary `user` message and `--resume` puts it back in front
+ * of the model. A card sent one that died before answering therefore comes back
+ * already holding it — and the rouse that follows composed a second, identical
+ * copy and sent it beside the first. Sink `01e00f30`. */
+describe("unansweredRousePrompt", () => {
+  const you = (text: string) => ({ kind: "you", text });
+  const said = (text: string) => ({ kind: "text", text });
+  const resume = you(resumePrompt());
+  const jobsy = you(jobsPrompt([lost("a")], 0));
+
+  test("nothing to guard against on an ordinary transcript", () => {
+    expect(unansweredRousePrompt([])).toBeNull();
+    expect(unansweredRousePrompt([you("go"), said("done")])).toBeNull();
+  });
+
+  test("a prompt nothing answered is one the model already has", () => {
+    expect(unansweredRousePrompt([said("earlier"), resume])).toBe("resume");
+    expect(unansweredRousePrompt([said("earlier"), jobsy])).toBe("jobs");
+  });
+
+  test("speech settles it — the turn it opened happened", () => {
+    /* And a later crash is a *new* turn, which is worth a new prompt. Without
+       this the guard would fire for the rest of the session's life and a card
+       genuinely cut off would come back to nothing. */
+    expect(unansweredRousePrompt([resume, said("looked, carried on")])).toBeNull();
+    expect(unansweredRousePrompt([resume, { kind: "tool", text: "git status" }])).toBeNull();
+  });
+
+  test("a prompt queued behind it does not answer it", () => {
+    /* Your own words, a note, a message from another card: all of them are
+       things sitting in the queue in front of an agent that has still not
+       spoken since the resume prompt arrived. */
+    expect(unansweredRousePrompt([resume, you("go")])).toBe("resume");
+    expect(unansweredRousePrompt([resume, { kind: "meta", text: "swapped" }])).toBe("resume");
+    expect(unansweredRousePrompt([resume, { kind: "relay", text: "from a card" }])).toBe("resume");
+  });
+
+  test("the newest unanswered one wins, whichever it is", () => {
+    expect(unansweredRousePrompt([said("x"), resume, jobsy])).toBe("jobs");
+    expect(unansweredRousePrompt([said("x"), jobsy, resume])).toBe("resume");
+  });
+
+  test("an agent quoting one has not been sent one", () => {
+    /* Same bargain `isResumePrompt` strikes, inherited: the test is anchored to
+       the first line, so speech about the prompt is not the prompt. */
+    expect(unansweredRousePrompt([you(`it said: ${resumePrompt()}`)])).toBeNull();
+  });
+
+  test("the note says who did what, in the cap's own register", () => {
+    expect(ALREADY_ROUSED_NOTE).toContain("skein");
+    expect(ALREADY_ROUSED_NOTE).toBe(ALREADY_ROUSED_NOTE.toLowerCase());
   });
 });

@@ -224,3 +224,47 @@ export function isResumePrompt(text: string): boolean {
     text.trimStart(),
   );
 }
+
+/** Which of skein's own rouse prompts this session already ends in, unanswered
+ *  — and so must not be sent a second time.
+ *
+ *  A resume prompt is written to the child's stdin like anything else, so the
+ *  CLI records it in the session file as an ordinary `user` message. `--resume`
+ *  then puts it back in front of the model. So a card that was sent one and
+ *  died before it could answer comes back **already holding it**, and the rouse
+ *  that follows composes a second, byte-identical copy and sends it beside the
+ *  first — two real sends against a real allowance, and an agent reading the
+ *  same instructions twice with nothing to say why.
+ *
+ *  That is the shape sink `01e00f30` reported, and it is worth guarding whether
+ *  or not it was the cause there: skein re-sending something the session
+ *  already holds is wrong on its own terms.
+ *
+ *  **Agent speech is what settles it.** A resume prompt the card answered is
+ *  history — the turn it opened happened, and a later crash is a new turn worth
+ *  a new prompt. One with no `text` or `tool` line after it was never taken up,
+ *  and the model has it either way. So the scan runs from the end and stops at
+ *  the first line of the agent's; anything else in between — your own words, a
+ *  note, a message from another card — is a prompt queued behind an unanswered
+ *  one, which does not make it answered.
+ *
+ *  Structural rather than typed against `Line` so this file stays pure. */
+export function unansweredRousePrompt(
+  lines: readonly { kind: string; text: string }[],
+): "resume" | "jobs" | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]!;
+    if (l.kind === "text" || l.kind === "tool") return null;
+    if (l.kind !== "you") continue;
+    if (isResumePrompt(l.text)) return "resume";
+    if (isJobsPrompt(l.text)) return "jobs";
+  }
+  return null;
+}
+
+/** Said instead of sending, so a card the rouse deliberately left alone does
+ *  not read as one it forgot. `meta`, like the other things skein says about a
+ *  conversation rather than in it, and shaped like `RESUME_CAP` because it is
+ *  the same event with the send taken out. */
+export const ALREADY_ROUSED_NOTE =
+  "resumed by skein — the prompt was already in the session";
