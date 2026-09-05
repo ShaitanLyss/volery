@@ -359,9 +359,27 @@ opposite of the truth in the one case it exists for.
 
 Four smaller calls, each of which would be a bug the other way round:
 
-- **The page's own sentence, verbatim.** "All Systems Operational", Title Case and all. This app
-  does not paraphrase somebody else's status page. The per-component word *is* ours
-  (`sayGrade`), because that is our summary of an enum rather than a restatement of a claim.
+- **The page's own sentence, verbatim — until it understates its own components.** "All Systems
+  Operational", Title Case and all. This app does not paraphrase somebody else's status page.
+  The per-component word *is* ours (`sayGrade`), because that is our summary of an enum rather
+  than a restatement of a claim.
+
+  What that missed is that Statuspage's site indicator summarises **incidents**, not
+  components, and Anthropic's incidents are opened with an impact a rung below what the
+  components are set to. On 2026-09-03 claude.ai, the API, Claude Code and Cowork were all
+  `partial_outage` for three hours (`incidents.json`, "Elevated errors for multiple models")
+  under an indicator whose canned sentence is "Minor Service Outage" — and the widget drew a
+  full-amber dot over the mildest words available, which is what the user reported. The grade
+  had been right the whole time; only the words were the aggregate. So `headlineOf` leads with
+  *our* word wherever `understates` holds, and keeps the page's sentence verbatim on the line
+  below rather than dropping it: the disagreement is drawn, which is what an instrument owes
+  when its two sources differ.
+
+  The second half of that bug is worth remembering on its own. The line carrying our word for
+  the grade was written `{#if grade !== "well" && !lead}` — suppressed whenever an incident was
+  open, i.e. **exactly and only when it had something to say**. A condition that hides a
+  reading in the presence of the thing the reading is about is a reading that can never be seen
+  to be wrong.
 - **The indicator leads, but a component can drag it down.** The page is entitled to call one
   degraded component a `minor`, and it knows things this does not. But it has been observed to
   say `none` while a component says it is down — the gap between a component being flipped and

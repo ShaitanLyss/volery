@@ -7,6 +7,8 @@ import {
   gradeOfImpact,
   gradeOfPart,
   gradeOfReading,
+  gradeClaimed,
+  headlineOf,
   hiddenBy,
   incidentsOf,
   isStale,
@@ -17,9 +19,9 @@ import {
   rowsOf,
   sayAge,
   sayGrade,
-  sayHeadline,
   STALE,
   toneOf,
+  understates,
   worse,
   type Grade,
   type Health,
@@ -158,12 +160,13 @@ describe("what a reading amounts to", () => {
   test("a quiet page is well, in the page's own sentence", () => {
     const r = got();
     expect(gradeOfReading(r)).toBe("well");
-    expect(sayHeadline(r)).toBe("All Systems Operational");
+    expect(headlineOf(r).line).toBe("All Systems Operational");
+    expect(headlineOf(r).sub).toBeNull();
   });
 
   test("a reading that never landed is unknown and says so", () => {
     expect(gradeOfReading(lost())).toBe("unknown");
-    expect(sayHeadline(lost())).toBe("could not reach the status page");
+    expect(headlineOf(lost()).line).toBe("could not reach the status page");
   });
 
   test("the page's indicator leads, because the page knows more than we do", () => {
@@ -190,7 +193,80 @@ describe("what a reading amounts to", () => {
   });
 
   test("a page with no sentence of its own falls back to our word", () => {
-    expect(sayHeadline(got({ description: "   " }))).toBe("operational");
+    expect(headlineOf(got({ description: "   " })).line).toBe("operational");
+  });
+});
+
+/* The bug the user reported on 2026-09-04, from the wire that caused it.
+   `incidents.json` for 2026-09-03 carries "Elevated errors for multiple models":
+   claude.ai, the API, Claude Code and Cowork all set to `partial_outage` from
+   13:26 to 16:23 UTC, while the site indicator — which Statuspage computes from
+   incident impact rather than from components — sat a rung below, and its canned
+   sentence with it. The dot was already honest; the words were not, and the one
+   line carrying our own word for the grade was suppressed by the presence of an
+   incident, i.e. exactly whenever there was one. */
+describe("the page's own sentence may not understate the page's own components", () => {
+  const outage = () =>
+    got({
+      indicator: "minor",
+      description: "Minor Service Outage",
+      components: [
+        part("claude.ai", "partial_outage", 1),
+        part("Claude Console (platform.claude.com)", "operational", 2),
+        part("Claude API (api.anthropic.com)", "partial_outage", 3),
+        part("Claude Code", "partial_outage", 4),
+      ],
+      incidents: [
+        incident({
+          name: "Elevated errors for multiple models",
+          status: "identified",
+          impact: "major",
+          affects: ["claude.ai", "Claude API (api.anthropic.com)", "Claude Code"],
+        }),
+      ],
+    });
+
+  test("the reading grades on the components, not on the indicator", () => {
+    expect(gradeClaimed(outage())).toBe("watch");
+    expect(gradeOfReading(outage())).toBe("wrong");
+    expect(understates(outage())).toBe(true);
+  });
+
+  test("our word leads, and it is the word for what is actually down", () => {
+    expect(headlineOf(outage()).line).toBe("partial outage");
+    expect(headlineOf(outage()).line).not.toMatch(/minor/i);
+  });
+
+  test("the page's sentence is kept verbatim rather than dropped", () => {
+    expect(headlineOf(outage()).sub).toBe('page says "Minor Service Outage"');
+  });
+
+  /* An open incident is not the trigger and never was — the sub line is about
+     two sources disagreeing, and the previous shape hid it whenever an incident
+     existed, which is the only time the disagreement matters. */
+  test("a page agreeing with itself says one thing and no more", () => {
+    const r = got({
+      indicator: "major",
+      description: "Partial System Outage",
+      components: [part("Claude Code", "partial_outage", 4)],
+      incidents: [incident({ impact: "major" })],
+    });
+    expect(understates(r)).toBe(false);
+    expect(headlineOf(r)).toEqual({ line: "Partial System Outage", sub: null });
+  });
+
+  /* The direction that must never invert: the page saying something *worse* than
+     its components is the page knowing more than we do, and it keeps the floor. */
+  test("a page worse than its own components keeps its own sentence", () => {
+    const r = got({ indicator: "critical", description: "Major Service Outage" });
+    expect(gradeOfReading(r)).toBe("broken");
+    expect(understates(r)).toBe(false);
+    expect(headlineOf(r).line).toBe("Major Service Outage");
+  });
+
+  test("a reading that never landed claims nothing either way", () => {
+    expect(gradeClaimed(lost())).toBe("unknown");
+    expect(understates(lost())).toBe(false);
   });
 });
 

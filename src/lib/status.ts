@@ -169,9 +169,11 @@ export function gradeOfImpact(impact: string): Grade {
 /** What to call a component's state, in the wall's register — lowercase, quiet,
  *  sentence-shaped. Not the page's own wording, which is Title Case and written
  *  for a web page: "Degraded Performance" in a 0.62rem row is shouting. The
- *  *headline* keeps the page's exact sentence (`description`), because
- *  paraphrasing somebody else's overall status is a thing this app has no
- *  business doing; a per-component word is our own summary of an enum. */
+ *  headline keeps the page's exact sentence (`description`) wherever that
+ *  sentence is not milder than the page's own components — paraphrasing somebody
+ *  else's overall status is a thing this app has no business doing, and drawing
+ *  it over a worse reading is a thing it has less business doing still
+ *  (`headlineOf`). A per-component word is our own summary of an enum. */
 export function sayGrade(g: Grade): string {
   switch (g) {
     case "well":
@@ -257,11 +259,57 @@ export function gradeOfReading(r: Reading): Grade {
   return g;
 }
 
-/** The headline, in the page's own words where there are any. */
-export function sayHeadline(r: Reading): string {
-  if (!r.got) return "could not reach the status page";
+/** What the page's own indicator claims, apart from what its components say.
+ *
+ * Held separately from `gradeOfReading` because the two disagreeing is the whole
+ * of the bug below, and a reading that cannot state both halves cannot notice
+ * it. */
+export function gradeClaimed(r: Reading): Grade {
+  return r.got ? gradeOf(r.health.indicator) : "unknown";
+}
+
+/** Whether the page's own headline is milder than the page's own components.
+ *
+ * Statuspage's site indicator is a summary of *incidents*, and Anthropic's
+ * incidents are opened with an auto-calculated impact that runs a rung below
+ * what the components are set to — so a partial outage of claude.ai, the API,
+ * Claude Code and Cowork all at once sat under a `minor` indicator, whose canned
+ * sentence is "Minor Service Outage". */
+export function understates(r: Reading): boolean {
+  return rankOf(gradeOfReading(r)) > rankOf(gradeClaimed(r));
+}
+
+/** The headline reading: a big line and, where the two sources disagree, a small
+ *  one under it.
+ *
+ * ### The bug this shape exists to prevent
+ *
+ * `gradeOfReading` floors the grade on the worst component, so the dot has been
+ * honest since the widget shipped. The *words* were not: they were
+ * `description`, verbatim, which is the page's aggregate sentence about the
+ * whole site. On 2026-09-03 Claude's page carried an incident that set claude.ai,
+ * Claude API, Claude Code and Claude Cowork to `partial_outage` for three hours
+ * (`incidents.json`, incident "Elevated errors for multiple models") while the
+ * site indicator stayed a rung below it — so the widget drew a full-amber dot
+ * over the sentence "Minor Service Outage", and reported the mildest reading
+ * available for the worst thing that had happened that week. The one line that
+ * carried *our* word for the grade was suppressed by `!lead`, i.e. exactly and
+ * only when there was an incident open to suppress it.
+ *
+ * So: our word leads whenever the page's own sentence would understate its own
+ * components, and the page's sentence is kept verbatim below it rather than
+ * dropped. Nothing is paraphrased away — the disagreement is drawn, which is
+ * what an instrument owes when its two sources differ. */
+export type Headline = { line: string; sub: string | null };
+
+export function headlineOf(r: Reading): Headline {
+  if (!r.got) return { line: "could not reach the status page", sub: null };
   const said = r.health.description.trim();
-  return said || sayGrade(gradeOfReading(r));
+  const grade = gradeOfReading(r);
+  if (understates(r)) {
+    return { line: sayGrade(grade), sub: said ? `page says "${said}"` : null };
+  }
+  return { line: said || sayGrade(grade), sub: null };
 }
 
 /** The components worth drawing, worst first.

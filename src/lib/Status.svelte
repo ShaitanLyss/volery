@@ -23,11 +23,14 @@
    *   do. Same reasoning behind the age: a reading taken forty minutes ago while
    *   the window was behind something else says so.
    *
-   * - **The page's own sentence, verbatim.** "All Systems Operational" is drawn
-   *   as written, Title Case and all. This app does not get to paraphrase
-   *   somebody else's status page. The per-component word *is* ours
-   *   (`sayGrade`), because that is our summary of an enum rather than a
-   *   restatement of a claim.
+   * - **The page's own sentence, verbatim — until it understates.** "All Systems
+   *   Operational" is drawn as written, Title Case and all: this app does not get
+   *   to paraphrase somebody else's status page. But Statuspage's site indicator
+   *   summarises *incidents*, not components, and it has been observed a full
+   *   rung below its own component list — so where the two disagree our word
+   *   leads and the page's sentence is drawn beneath it rather than dropped
+   *   (`headlineOf`). The per-component word *is* ours (`sayGrade`), because that
+   *   is our summary of an enum rather than a restatement of a claim.
    */
 
   import { clock } from "./conversation.svelte";
@@ -36,14 +39,13 @@
     clip,
     gradeOfImpact,
     gradeOfReading,
+    headlineOf,
     hiddenBy,
     incidentsOf,
     isStale,
     latestNote,
     rowsOf,
     sayAge,
-    sayGrade,
-    sayHeadline,
     toneOf,
     type Incident,
   } from "./status";
@@ -74,6 +76,13 @@
 
   const reading = $derived(beacon.reading);
   const grade = $derived(reading ? gradeOfReading(reading) : "unknown");
+  /* Two lines rather than one, and the second exists only where the page's own
+     sentence is milder than the page's own components — see `headlineOf`. It is
+     *not* conditional on there being no incident open, which is how a full-amber
+     dot came to sit over the words "Minor Service Outage" for three hours on
+     2026-09-03: the sub line carried our word for the grade and was suppressed
+     by `!lead`, i.e. by the presence of the very thing it was describing. */
+  const headline = $derived(reading ? headlineOf(reading) : null);
   const stale = $derived(!!reading && isStale(reading, now));
   const incidents = $derived(reading ? incidentsOf(reading, withPlanned) : []);
 
@@ -147,9 +156,9 @@
     {/if}
   {:else}
     <div class="head">
-      <span class="line" style:color={toneOf(grade)}>{sayHeadline(reading)}</span>
-      {#if grade !== "well" && !lead}
-        <span class="sub">{sayGrade(grade)}</span>
+      <span class="line" style:color={toneOf(grade)}>{headline?.line}</span>
+      {#if headline?.sub}
+        <span class="sub">{headline.sub}</span>
       {/if}
     </div>
   {/if}
