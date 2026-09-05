@@ -92,6 +92,18 @@ pub struct Sample {
     pub cores: usize,
     /// The whole machine, 0–100.
     pub cpu: f32,
+    /// Each logical core, 0–100, in the order the platform lists them — which
+    /// is what `cores` counts and what the per-core widget draws one lane per.
+    ///
+    /// Sent on every sample rather than behind a flag, and it is the cheap half
+    /// of this call by a distance: `refresh_cpu_usage` has already read every
+    /// core to compute the global figure above, so this is a `Vec<f32>` of the
+    /// numbers it used and nothing else. The expensive part of a sample is the
+    /// process enumeration, which is unchanged. Sixteen floats against a few
+    /// hundred process rows is not a payload anything can feel, and a flag
+    /// would mean two shapes of answer for one poller to serve — which is the
+    /// arrangement `scope` already avoids by sampling the superset once.
+    pub per_core: Vec<f32>,
     pub mem_used: u64,
     pub mem_total: u64,
     /// How many processes the scope actually held, before any cap.
@@ -270,6 +282,7 @@ pub async fn sample_performance(
             scope: if machine { "machine".into() } else { "skein".into() },
             cores: sys.cpus().len().max(1),
             cpu: sys.global_cpu_usage(),
+            per_core: sys.cpus().iter().map(|c| c.cpu_usage()).collect(),
             mem_used: sys.used_memory(),
             mem_total: sys.total_memory(),
             counted,

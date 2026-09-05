@@ -31,10 +31,15 @@ import { paceOf, type Pace } from "./clock";
    differently in two places is a widget that comes back off disk following
    nothing. */
 import { FOLLOW } from "./logface";
+/* The spans a per-core graph offers, taken from the file that resolves them into
+   durations — a knob whose label says "the last minute" against a window that is
+   something else would be an instrument lying about its own axis. */
+import { DEFAULT_SPAN, SPANS } from "./cores";
 
 export type WidgetKind =
   | "clock"
   | "performance"
+  | "cores"
   | "timer"
   | "pomodoro"
   | "spotify"
@@ -104,10 +109,23 @@ export type Source =
  * A family still has to be a **subject** rather than a bin: four logs are four
  * views of one substrate, the billboard and the sink are both what the agents
  * wrote down, and what Claude costs and whether Claude is up are two questions
- * about the same service. The two things left standing alone are standing alone
- * on purpose — the performance meter is the only reading of *this machine*, and
- * the browser is the only thing on the wall you work *in*. */
-export type WidgetFamily = "room" | "claude" | "forge" | "asana" | "notes" | "logs";
+ * about the same service. The one thing left standing alone is standing alone on
+ * purpose — the browser is the only thing on the wall you work *in*.
+ *
+ * `machine` was written here as the counter-example: *the performance meter is
+ * the only reading of this machine*, so it had no family and its own row. The
+ * per-core graph is the second, and the two are as plainly one subject as any
+ * pair in the table — what this machine is costing, and what its cores are
+ * doing. So the exception became a family rather than being argued around,
+ * which is the whole reason a family is a field. */
+export type WidgetFamily =
+  | "room"
+  | "machine"
+  | "claude"
+  | "forge"
+  | "asana"
+  | "notes"
+  | "logs";
 
 /** What each family's row says.
  *
@@ -122,6 +140,10 @@ export type WidgetFamily = "room" | "claude" | "forge" | "asana" | "notes" | "lo
 export const FAMILIES: { id: WidgetFamily; label: string }[] = [
   /* The catalogue's own first group, in the catalogue's own words. */
   { id: "room", label: "hang up something for the room" },
+  /* What this machine is costing and what its cores are doing. "this machine"
+     rather than "performance", because the word people reach for is the thing
+     being read rather than the quantity. */
+  { id: "machine", label: "hang up a reading of this machine" },
   /* What the service costs and whether it is answering. Two questions, one
      subject — and the subject is the thing this whole app is a face for. */
   { id: "claude", label: "hang up a claude reading" },
@@ -350,6 +372,8 @@ export const WIDGETS: WidgetSpec[] = [
   {
     kind: "performance",
     label: "performance",
+    family: "machine",
+    short: "what it is costing",
     offer: "hang up the performance meter",
     note: "what this studio's own processes are costing",
     box: { w: 300, h: 210 },
@@ -377,6 +401,53 @@ export const WIDGETS: WidgetSpec[] = [
         ],
         "skein",
       ),
+    ],
+  },
+  {
+    /* One graph per core, off the same sampler the meter above already runs.
+       Task Manager's information design and none of its look — see the head of
+       `cores.ts`, where the two halves of that are set out. */
+    kind: "cores",
+    label: "cores",
+    family: "machine",
+    short: "what its cores are doing",
+    offer: "hang up a per-core graph",
+    note: "each core of this machine, and how hard it is working",
+    /* Wider than it is tall, because the default is sixteen lanes and a lane is
+       a time series: `gridOf` turns this box into 4×4 cells of about 66×38,
+       which is the shape a small graph wants. */
+    box: { w: 300, h: 180 },
+    /* The floor is the `bars` reading rather than the grid — one lane per core
+       with no history needs a height and a sliver of width, where a graph needs
+       enough of both to have a shape. Past this the face says so; it does not
+       shrink the cells further. */
+    min: { w: 120, h: 62 },
+    params: [
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "grid", label: "a graph per core" },
+          { value: "bars", label: "a bar per core, right now" },
+          { value: "spread", label: "the machine, and its busiest core" },
+        ],
+        "grid",
+      ),
+      /* How far back the lanes go. Two, and they are two questions rather than
+         two speeds — what a core is doing now, against whether it has been at it
+         the whole time. `cores.ts` holds the durations, so the label and the
+         window it names cannot drift apart. */
+      choice(
+        "span",
+        "showing",
+        SPANS.map((s) => ({ value: s.value, label: s.label })),
+        DEFAULT_SPAN,
+      ),
+      /* Off by default. Sixteen numerals over sixteen small graphs is a widget
+         you read instead of glance at, and the position in the grid is already
+         the core's name — but a machine where one core is pinned is exactly when
+         you want to know *which*, and then this is the knob. */
+      toggle("numbers", "core numbers", false),
     ],
   },
   {

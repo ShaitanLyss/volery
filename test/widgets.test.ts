@@ -21,6 +21,7 @@ import {
   variantsOf,
   offersOf,
   FAMILIES,
+  runs,
 } from "../src/lib/widgets";
 import {
   arcPath,
@@ -49,6 +50,7 @@ import {
   type Proc,
   type Sample,
 } from "../src/lib/perf";
+import { DEFAULT_SPAN, SPANS, spanOf } from "../src/lib/cores";
 
 /* ── the catalogue ─────────────────────────────────────────────────────── */
 
@@ -622,6 +624,57 @@ describe("a mad clock", () => {
       config: { pace: "sideways" },
     });
     expect(w?.config[PACE]).toBe("real");
+  });
+});
+
+/* ── the per-core graph ────────────────────────────────────────────────── */
+
+describe("the per-core graph is a kind like any other", () => {
+  /* The catalogue is the whole vocabulary, so a new kind needs one spec and one
+     arm in `WidgetNode` — everything else is derived. These are the four
+     derivations, asserted once so the next kind added can be checked the same
+     way. */
+  test("it arrives with every knob at its default", () => {
+    const w = newWidget("cores", 0, 0);
+    expect(w.kind).toBe("cores");
+    expect(w.config[VARIANT]).toBe("grid");
+    expect(w.config.span).toBe(DEFAULT_SPAN);
+    expect(w.config.numbers).toBe(false);
+    /* The frame is joined on by `paramsOf`, so a new kind gets it by existing
+       rather than by remembering. */
+    expect(w.config[FRAME]).toBe("framed");
+  });
+
+  test("its span knob offers exactly the spans that resolve to a window", () => {
+    /* A label saying "the last minute" against a window that is something else
+       is an instrument lying about its own axis, so the knob is built from
+       `cores.ts`'s own table rather than written out again here. */
+    const spans = optionsOf(newWidget("cores", 0, 0)).filter((o) =>
+      o.id.startsWith("cfg:span:"),
+    );
+    expect(spans).toHaveLength(SPANS.length);
+    for (const s of SPANS) expect(spanOf(s.value)).toBe(s.ms);
+  });
+
+  test("it is not a thing that runs, so nothing offers to start it", () => {
+    expect(runs("cores")).toBe(false);
+  });
+
+  test("its three readings are three questions, and the menu can switch them", () => {
+    expect(variantsOf("cores").map((v) => v.value)).toEqual(["grid", "bars", "spread"]);
+  });
+
+  /* The performance meter stood alone in the catalogue because it was the only
+     reading of this machine, which the comment on `WidgetFamily` said in so
+     many words. It is not any more, and a family is a field precisely so that
+     the answer to that is a family rather than an argument. */
+  test("it stands with the performance meter, as one reading of one machine", () => {
+    const family = offersOf().find((o) => o.id === "family:machine");
+    expect(family && "items" in family).toBe(true);
+    expect(family && "items" in family && family.items.map((i) => i.id)).toEqual([
+      "performance",
+      "cores",
+    ]);
   });
 });
 

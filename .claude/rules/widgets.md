@@ -219,6 +219,60 @@ spawn is somebody's terminal and must never be labelled as one of our cards.
 - **Every number goes through one formatter.** A row printing 0.2% under a header printing 0%
   is a meter arguing with itself.
 
+#### The per-core graph
+
+Added 2026-09-05 at the user's own ask (sink `30c8c359`, *"inspired by task manager"*). One
+small graph per core, off the **same sampler the meter above already runs** — `cores.ts` is
+pure and holds the arithmetic, `Cores.svelte` draws it, and `meter.svelte.ts` folds each
+sample's `per_core` into a ring on the way past. No second poller, no second call, and a wall
+with neither widget up still asks nothing at all: it inherits the whole of the meter's
+attach/detach bound by not having a bound of its own.
+
+**It answers what a single CPU percentage cannot be asked.** A build pinned to one core and a
+build using twelve are the same number and two different afternoons, and the meter next door
+cannot say which because it is folding *processes*. That is why this is a kind rather than a
+variant of the meter: the subject is the machine's cores, and nothing in it knows what a
+process is.
+
+##### What was taken from Task Manager, and what was deliberately not
+
+Its **information design**: one graph per core, a grid that reflows as the box changes, one
+shared vertical scale so the lanes are comparable at a glance, the newest sample at the right.
+Not its **look** — that is saturated green fill on a printed grid, and on this wall colour is
+reserved for status. A core at 96% is not a failure and rust would say it was; a core at 4% is
+not a card working and celadon would say that. So a lane is ink, the fill under it is the same
+ink at low opacity, and the only thing that varies across sixteen cells is how much of it there
+is. It reads as the performance meter's sibling because it is drawn out of the same box of
+parts — the header is that file's header, line for line.
+
+- **The history is stamped, not counted.** Each reading is kept with the instant it was taken
+  and every span is a duration, so x is a function of *age*. Three things follow: a skipped
+  tick draws as a gap instead of being quietly smoothed into a healthy line; nothing here has
+  to know the meter's `EVERY`, so a label reading "the last minute" cannot become a lie when
+  that constant changes in another file for an unrelated reason; and a meter that stopped and
+  started again cannot glue the two ends together, since the old readings are simply outside
+  the span. `KEEP` is a count because memory is measured in counts — sixteen cores at 240
+  readings is under four thousand floats, held only while somebody is looking.
+- **The ring is cleared when the last widget detaches.** The span filter would drop those
+  readings for being too old anyway; clearing at the boundary says so rather than relying on
+  it.
+- **A box too small for legible cells falls back to the bars reading**, which is the same
+  question with the history taken off — a bar needs a height where a graph needs a width too.
+  Said out loud in `fits`, rather than shrinking the cells into sixteen grey smudges.
+- **`INSET` is five here where `Speedo.svelte` uses two, and the difference is the cell.** The
+  lanes are drawn `preserveAspectRatio="none"` into cells about thirty pixels tall, so a
+  viewBox unit is a third of a pixel: two units is 0.6px, less than half of the 1.2px
+  non-scaling stroke, and a core at 100% lost the top half of its line to the clip and read as
+  a *filled block*. Found in a render of sixteen loaded cores, not by reasoning. The general
+  shape is worth keeping — **a headroom expressed in viewBox units is a headroom whose size
+  depends on how big the box turned out to be**, and that is fine on one large dial and wrong
+  on sixteen small cells.
+- **It made a family out of an exception.** `WidgetFamily`'s own comment named the performance
+  meter as the thing that stands alone because it is "the only reading of *this machine*". It
+  is not any more, and the two are as plainly one subject as any pair in the table, so
+  `machine` is a family now and both hang behind one row. That is the whole reason a family is
+  a field rather than a position in the list.
+
 #### Listing what a card holds, and ending one of them
 
 A count was never enough on its own. A row said `4` and there was no way to ask which four,

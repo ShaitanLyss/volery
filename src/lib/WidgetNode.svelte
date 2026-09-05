@@ -29,6 +29,7 @@
   import type { Duo, Run } from "./timing";
   import Clock from "./Clock.svelte";
   import Perf from "./Perf.svelte";
+  import Cores from "./Cores.svelte";
   import Timer from "./Timer.svelte";
   import Pomodoro from "./Pomodoro.svelte";
   import Usage from "./Usage.svelte";
@@ -280,6 +281,10 @@
       <Clock {widget} />
     {:else if widget.kind === "performance"}
       <Perf {widget} {meter} {naming} {onreveal} />
+    {:else if widget.kind === "cores"}
+      <!-- Same holder as the meter above, which is the whole of the argument
+           for it: one sampler however many readers. -->
+      <Cores {widget} {meter} />
     {:else if widget.kind === "timer"}
       <Timer {widget} onrun={setRun} onduo={setDuo} />
     {:else if widget.kind === "pomodoro"}

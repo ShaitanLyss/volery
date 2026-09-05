@@ -32,6 +32,11 @@ export type Sample = {
   scope: string;
   cores: number;
   cpu: number;
+  /** Each logical core, 0–100, in the platform's own order. Optional on this
+   *  side alone: the field is always sent, but a front end running against an
+   *  older build would otherwise read `undefined` into a graph. `cores.ts` owns
+   *  what is done with it. */
+  per_core?: number[];
   mem_used: number;
   mem_total: number;
   counted: number;
