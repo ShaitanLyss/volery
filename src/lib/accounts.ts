@@ -9,10 +9,15 @@
  * The whole of `.claude/rules/accounts.md` is the reasoning. The three rules
  * that shape every function below:
  *
- *  - **The order is an order.** Lowest rank that is allowed to work gets the
- *    work. Never the one with the most headroom — spreading by headroom leaves
- *    three part-spent subscriptions and no clean one, and a reserve is only a
- *    reserve if something guards it.
+ *  - **The order is an order, and a tier is a declaration of equivalence.**
+ *    Work falls to the lowest *priority* that is allowed to take it and only
+ *    moves to the next once that whole tier is spent — because spreading by
+ *    headroom across the lot leaves three part-spent subscriptions and no clean
+ *    one, and a reserve is only a reserve if something guards it. *Within* one
+ *    priority that guard is deliberately given up: putting two accounts on one
+ *    tier is saying these are the same pocket, so the least-spent of them takes
+ *    the next turn and they run down together. `rank` orders inside a tier and
+ *    breaks the tie.
  *  - **Two ceilings, and only one of them is yours.** A cap you set is a
  *    decision you can unmake; the server's 100% is a fact you can only wait
  *    out. They are kept apart all the way to the face because they mean
@@ -32,7 +37,24 @@ import { binding, until, type Window } from "./limits";
  *  turn. `standingOf` is where that distinction is drawn. */
 export type Account = {
   label: string;
-  /** Lower goes first. Dense or sparse, both fine — only the order is read. */
+  /** The tier this account is in, and the first thing work is sorted by. Lower
+   *  runs first, and a whole tier is spent before the next one is touched.
+   *
+   *  **Accounts sharing a priority are declared equivalent**, which is the
+   *  whole of what a tier means: the least-spent of them takes the next turn,
+   *  so they run down together rather than in sequence. One account per tier is
+   *  the strict waterfall this started as, and is what every wall that predates
+   *  the column still has — `migrate_v30` gives each existing row a tier of its
+   *  own precisely so that an upgrade changes nothing about where money goes.
+   *
+   *  Dense or sparse, both fine, as with `rank`. It is 1-based rather than
+   *  0-based because it is the one number in this module a person names out
+   *  loud ("priority 1 for the company accounts") and reads back off the panel;
+   *  a tier called zero is a tier nobody asked for. */
+  priority: number;
+  /** Lower goes first *within a tier*, and the tie-break when two accounts in
+   *  one are equally spent. Dense or sparse, both fine — only the order is
+   *  read. */
   rank: number;
   enabled: boolean;
   /** Window `kind` → the percentage past which this account stops taking new
@@ -141,6 +163,56 @@ export function availableAt(blockers: Blocker[]): number | null {
     if (b.resetsAt > out) out = b.resetsAt;
   }
   return out;
+}
+
+/** How spent this account is, as a fraction of what it is *allowed* to spend:
+ *  the tightest window, `used / capFor(...)`, taken as the max across every
+ *  window `blockersFor` walks. 0 is untouched, 1 is at its ceiling.
+ *
+ *  This is the balancer inside a tier, and it is deliberately not the raw
+ *  percentage. What has to be equalised, if two accounts on one priority are to
+ *  run out together, is **how close each is to being refused** — and a cap is
+ *  part of that distance. An account capped at 50% sitting at 40% has spent 0.8
+ *  of its allowance; an uncapped one at 60% has spent 0.6. The capped one is
+ *  nearer the door, so it should take less work, which the raw percentages get
+ *  exactly backwards.
+ *
+ *  It reads `capFor` and the same window set as `blockersFor` rather than a
+ *  second copy of either, for the reason `speaksWith` gives at length: two
+ *  definitions of "full" in one module drift, and what that looks like from
+ *  outside is a face reading calm about an account the wall will not send work
+ *  to. Here the drift would be quieter and worse — a tier that keeps choosing
+ *  the account nearest its ceiling and blocks it, over and over.
+ *
+ *  **An unmeasured account counts as empty**, and is therefore preferred inside
+ *  its tier. That is the same bargain `standingOf` strikes and states in full:
+ *  there is no evidence it is spent, refusing it would make a reserve
+ *  unreachable, and what is lost is one turn that may cross a ceiling of yours
+ *  before the store refreshes. It is also the honest degradation on a fresh
+ *  wall — with no readings at all every account ties at 0 and `rank` decides,
+ *  which is exactly the strict waterfall this had before tiers existed.
+ *
+ *  The divide is guarded on both ends. `capFor` legitimately returns 0 for a
+ *  cap of zero, which means "never start work here"; such an account is already
+ *  `blocked` so the balancer never sees it, but 0/0 is `NaN` and `40/0` is
+ *  `Infinity`, and a comparison against either silently picks the wrong
+ *  account rather than failing. A zero ceiling has no headroom by definition,
+ *  so it reports 1. A `used` that is not a finite number is read as 0 for the
+ *  same reason `cleanCaps` clamps: this figure comes off a wire. */
+export function spentOf(
+  account: Account,
+  allowance: Allowance | undefined,
+  bypass: boolean,
+): number {
+  if (!allowance || !allowance.ok) return 0;
+  let worst = 0;
+  for (const w of allowance.windows) {
+    const used = Number.isFinite(w.used) ? Math.max(0, w.used) : 0;
+    const cap = capFor(account, w.kind, bypass);
+    const spent = cap <= 0 ? 1 : used / cap;
+    if (spent > worst) worst = spent;
+  }
+  return worst;
 }
 
 /* ── the one window an account speaks with ────────────────────────*/
@@ -279,11 +351,41 @@ export function several(accounts: Account[]): boolean {
   return usable(accounts).length > 1;
 }
 
-/** Rank order, and it is the only order anything here reads. Ties broken by
- *  label so the list is stable across restarts rather than however SQLite felt
- *  about it. */
+/** Tier first, then rank, and it is the only order anything here reads. Ties
+ *  broken by label so the list is stable across restarts rather than however
+ *  SQLite felt about it.
+ *
+ *  Priority ahead of rank because the tier is now the coarse order and rank is
+ *  the fine one inside it, and because this is also the *panel's* order: a list
+ *  that drew a priority-2 account above a priority-1 one would be showing the
+ *  bands out of the sequence work actually falls through them, which is the one
+ *  thing this panel is arranged to make legible. `choose` does its own
+ *  partition rather than leaning on this, but it walks the list in this order,
+ *  so the tie between two equally-spent accounts in a tier falls to rank. */
 export function ordered(accounts: Account[]): Account[] {
-  return [...accounts].sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
+  return [...accounts].sort(
+    (a, b) => a.priority - b.priority || a.rank - b.rank || a.label.localeCompare(b.label),
+  );
+}
+
+/** One priority band and everyone in it, in `ordered` order.
+ *
+ *  The panel's shape, and pure so the grouping is tested rather than written
+ *  inline in a `{#each}`. Bands come out in the order work falls through them
+ *  and carry their own number, which is the user's rather than an index —
+ *  priorities may be sparse (nothing re-densifies what somebody typed), and a
+ *  header saying "priority 2" over accounts stored at 5 would be a panel
+ *  quietly disagreeing with the field you set it in. */
+export type Tier = { priority: number; accounts: Account[] };
+
+export function tiers(accounts: Account[]): Tier[] {
+  const out: Tier[] = [];
+  for (const a of ordered(accounts)) {
+    const last = out[out.length - 1];
+    if (last && last.priority === a.priority) last.accounts.push(a);
+    else out.push({ priority: a.priority, accounts: [a] });
+  }
+  return out;
 }
 
 export type Choice =
@@ -299,23 +401,42 @@ export type Choice =
 
 /** Which account the next turn goes to.
  *
- *  Waterfall, with one refinement: **a card swaps when it must, not when it
- *  could.** `stickTo` is the account the card is already running on, and if
- *  that account is still ready it wins regardless of rank. New work — a fresh
- *  card, a dormant one waking, a held one released — passes `null` and gets the
- *  lowest-ranked ready account, so the consumption order is exactly the
- *  waterfall that was asked for.
+ *  **A waterfall of tiers, load-balanced inside each tier.** The lowest
+ *  *priority* that has anything ready takes the work, and only when every
+ *  account in it is blocked does the next priority get looked at — so a tier is
+ *  a reserve exactly as a single account used to be. Inside the chosen tier the
+ *  account that has spent least of its own allowance goes, `spentOf` being what
+ *  "least" means, so accounts on one priority run down together instead of in
+ *  sequence. Ties fall to `ordered`, which is rank then label.
+ *
+ *  A one-account-per-tier registry is therefore the strict waterfall unchanged,
+ *  which is what every wall that predates the `priority` column has and what
+ *  `migrate_v30` is careful to keep.
+ *
+ *  Then one refinement, which is older than tiers and untouched by them: **a
+ *  card swaps when it must, not when it could.** `stickTo` is the account the
+ *  card is already running on, and if that account is still ready it wins ahead
+ *  of all of the above. New work — a fresh card, a dormant one waking, a held
+ *  one released — passes `null` and goes through the tiers.
  *
  *  The refinement is not a softening of it. Without stickiness a card that
  *  moved to account two at 4pm moves back to account one the moment its
  *  five-hour window rolls, and pays the uncached re-read of its whole context
  *  both times — twice, for a conversation that was running perfectly well. New
- *  work still always falls to the lowest available account, which is the part
- *  that keeps the reserve a reserve.
+ *  work still always falls to the lowest available tier, which is the part that
+ *  keeps the reserve a reserve.
+ *
+ *  It does mean a card sitting on a priority-2 account stays there while
+ *  priority 1 has room, and that is deliberate rather than an edge nobody
+ *  noticed: it is the same trade the rule has always made, and it is bounded —
+ *  the card came to be there because priority 1 was spent, and every *new* card
+ *  meanwhile is going to priority 1. The alternative is paying the full uncached
+ *  re-read of a fifty-turn conversation to move it somewhere it is not needed.
  *
  *  `hold` beats `none` whenever anything is merely blocked, because those are
  *  answered differently: one is a wait and the other is a thing to go and fix.
  */
+
 export function choose(
   accounts: Account[],
   allowances: Record<string, Allowance>,
@@ -337,12 +458,37 @@ export function choose(
     if (held?.state === "ready") return { kind: "use", label: stickTo, swapFrom: null };
   }
 
-  const ready = standings.find((s) => s.state === "ready");
-  if (ready) {
+  /* The lowest tier with anything ready in it. Read off the ready accounts
+     rather than off the registry, so a whole priority that is blocked or
+     switched off is stepped over exactly as a single account always was — a
+     tier nobody can use is not a tier the work waits behind. */
+  let tier: number | null = null;
+  for (let i = 0; i < list.length; i++) {
+    if (standings[i]!.state !== "ready") continue;
+    const p = list[i]!.priority;
+    if (tier === null || p < tier) tier = p;
+  }
+
+  if (tier !== null) {
+    /* And the least-spent inside it. Strictly `<`, so a tie is won by whoever
+       came first in `ordered` — rank, then label — which is both the promised
+       tie-break and what makes a wall with no readings at all behave exactly as
+       the strict waterfall did. */
+    let pick = list[0]!;
+    let least = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const account = list[i]!;
+      if (standings[i]!.state !== "ready" || account.priority !== tier) continue;
+      const spent = spentOf(account, allowances[account.label], bypass);
+      if (spent < least) {
+        least = spent;
+        pick = account;
+      }
+    }
     return {
       kind: "use",
-      label: ready.label,
-      swapFrom: stickTo !== null && stickTo !== ready.label ? stickTo : null,
+      label: pick.label,
+      swapFrom: stickTo !== null && stickTo !== pick.label ? stickTo : null,
     };
   }
 
@@ -392,6 +538,25 @@ export function sayBlocked(blockers: Blocker[]): string {
   return worst.by === "you"
     ? `at your cap on the ${what}${scope}`
     : `the ${what}${scope} is spent`;
+}
+
+/** What one priority band is for, in one line under its number.
+ *
+ *  Two facts and no more: whether this tier shares its work, and what has to
+ *  happen before it is touched at all. Those are the two things the tiers
+ *  feature added and the two a person cannot read off the list on its own — a
+ *  band of two looks exactly like a band of one with a row above it unless
+ *  something says which.
+ *
+ *  `above` is the priority of the band immediately before this one, or null for
+ *  the first. Naming the one immediately above rather than "the tiers above" is
+ *  concrete and stays true: the waterfall means being held for the previous
+ *  band implies being held for every band before that. */
+export function sayTier(count: number, above: number | null): string {
+  const shared = count > 1 ? "shared — whichever is least spent takes the next turn" : "";
+  if (above === null) return shared || "takes the work first";
+  const after = `held back until priority ${above} is spent`;
+  return shared ? `${shared}, and ${after}` : after;
 }
 
 /** The same thing in three words, for a face that has already named the window.
@@ -509,10 +674,19 @@ const MAX_LABEL = 64;
  *  flatten the arrangement being carried. */
 export type AccountDoc = {
   label: string;
+  /** Travels for the same reason `enabled` does, and more plainly: the tiers
+   *  *are* the waterfall being carried. A document that dropped them would
+   *  arrive as a flat list of singletons, which is a different spending policy
+   *  wearing the same labels — and silently, since nothing on the far side
+   *  could tell it had been flattened. */
+  priority: number;
   rank: number;
   enabled: boolean;
   caps: Record<string, number>;
 };
+
+/** The lowest priority a document may name. 1-based, as the column is. */
+const FIRST_TIER = 1;
 
 /** The document itself, as an object.
  *
@@ -524,17 +698,27 @@ export type AccountDoc = {
  *  Ranks are re-densified to 0…n-1 in `ordered` order rather than copied,
  *  because `rank` is only ever meaningful as an ordering — `reorder_accounts`
  *  makes the same point from the other side — and this is a document a person
- *  reads, where 0,3,7 invites a guess about what went missing. */
+ *  reads, where 0,3,7 invites a guess about what went missing.
+ *
+ *  **Priorities are copied rather than densified**, which is the opposite call
+ *  and the same reasoning read the other way round. A rank is a position and
+ *  nothing else, so renumbering it loses nothing; a priority is a number
+ *  somebody chose and typed, and rewriting their 1 and 5 as 1 and 2 would be
+ *  this document quietly disagreeing with the panel it was exported from. What
+ *  has to survive the trip is which accounts share a tier, and copying keeps
+ *  that exactly. */
 export function accountsDoc(
   accounts: Account[],
   opts: { withSignIns?: boolean } = {},
 ): Record<string, unknown> {
   const list: AccountDoc[] = ordered(accounts).map((a, i) => ({
     label: a.label,
+    priority: a.priority,
     rank: i,
     enabled: a.enabled,
     caps: cleanCaps(a.caps),
   }));
+
   return {
     skeinAccounts: EXPORT_VERSION,
     /* A line for whoever reads this in a paste buffer or a text editor,
@@ -649,15 +833,36 @@ export function cleanCaps(raw: unknown): Record<string, number> {
  *  not claim it. A missing `enabled` is *on*: a hand-written `{"label":"work"}`
  *  is somebody asking for an account, and one that arrives switched off for
  *  want of a field it never had is a row that does nothing and does not say
- *  why. */
+ *  why.
+ *
+ *  **A missing `priority` becomes `rank + 1`**, which is `migrate_v30`'s rule
+ *  and is here for exactly its reason: every document written before tiers
+ *  existed describes a strict waterfall, and the reading of it that preserves
+ *  that is one tier per account in the order it already gives. Defaulting to a
+ *  single shared tier would take a carried reserve and turn it into a pool —
+ *  the one mistake in this feature that spends money without anything on screen
+ *  changing. Where the rank is missing too there is nothing to derive from and
+ *  the account sorts last, as it does by rank.
+ *
+ *  A priority below 1 is not honoured, since the column is 1-based, and falls
+ *  back the same way rather than being clamped up into tier 1 — clamping would
+ *  silently merge a hand-written 0 with whatever else is there, which is the
+ *  same flattening one paragraph up. */
 export function cleanAccount(raw: unknown): AccountDoc | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
   const label = cleanLabel(r.label);
   if (!label) return null;
-  const rank =
-    typeof r.rank === "number" && Number.isFinite(r.rank) ? r.rank : Number.MAX_SAFE_INTEGER;
-  return { label, rank, enabled: r.enabled !== false, caps: cleanCaps(r.caps) };
+  const ranked = typeof r.rank === "number" && Number.isFinite(r.rank);
+  const rank = ranked ? (r.rank as number) : Number.MAX_SAFE_INTEGER;
+  const named =
+    typeof r.priority === "number" && Number.isFinite(r.priority) && r.priority >= FIRST_TIER;
+  const priority = named
+    ? Math.round(r.priority as number)
+    : ranked
+      ? Math.round(rank) + 1
+      : Number.MAX_SAFE_INTEGER;
+  return { label, priority, rank, enabled: r.enabled !== false, caps: cleanCaps(r.caps) };
 }
 
 /** Every usable account in a list, in the order the document puts them.
@@ -665,7 +870,9 @@ export function cleanAccount(raw: unknown): AccountDoc | null {
  *  Deduplicated case-insensitively for `freeLabel`'s reason — two rows over one
  *  credential store — with the last of a set winning, as `cleanThemes` does.
  *  Sorted here rather than by the caller because the order *is* the thing being
- *  carried, so a reader of this function should never be holding it unsorted. */
+ *  carried, so a reader of this function should never be holding it unsorted —
+ *  and sorted by `ordered`'s rule, tier then rank, since a hand-edited document
+ *  may perfectly well list its accounts in neither. */
 export function cleanAccounts(raw: unknown): AccountDoc[] {
   const list = Array.isArray(raw) ? raw : [];
   const byLabel = new Map<string, AccountDoc>();
@@ -673,7 +880,7 @@ export function cleanAccounts(raw: unknown): AccountDoc[] {
     const a = cleanAccount(entry);
     if (a) byLabel.set(a.label.toLowerCase(), a);
   }
-  return [...byLabel.values()].sort((a, b) => a.rank - b.rank);
+  return [...byLabel.values()].sort((a, b) => a.priority - b.priority || a.rank - b.rank);
 }
 
 /** Accounts out of exported text, normalized like anything else read back.
@@ -748,6 +955,19 @@ export type Merge = {
  *  deliberate press of `move`, which is where a decision about spending
  *  belongs.
  *
+ *  **Incoming tiers keep their shape and are pushed past every tier that is
+ *  here**, which is that rule read one column over, and it matters more than
+ *  the rank version does. The shape has to survive — two imported accounts that
+ *  shared a priority still share one, or the document did not carry the thing
+ *  it exists to carry — but a pasted tier 1 landing *on* the local tier 1 would
+ *  put an unsigned row into the pocket the next turn comes out of, and worse,
+ *  would declare it equivalent to the account you have been spending. So
+ *  incoming priorities are renumbered to consecutive tiers starting just past
+ *  the highest one here: same grouping, same order, and no paste can reach the
+ *  head of the queue. It is the one place a priority is densified rather than
+ *  copied, and that is the difference between a number somebody typed and one
+ *  this function had to invent.
+ *
  *  **Except for a row that carries a sign-in, which is matched rather than
  *  renamed**, and `carrying` is how it is told. The rename rule is right about
  *  a configuration and wrong about a credential, because the two collisions
@@ -769,6 +989,15 @@ export function mergeAccounts(
 ): Merge {
   const here = ordered(existing);
   const taken = new Set(here.map((a) => a.label));
+  /* The first tier an import may occupy, and the map from the document's own
+     priorities onto the tiers below it. Built over every incoming row rather
+     than only the added ones, so a matched row does not close the gap between
+     two tiers that were apart in the document. */
+  const below = here.reduce((n, a) => Math.max(n, a.priority), FIRST_TIER - 1) + 1;
+  const tiersBelow = new Map<number, number>();
+  for (const p of [...new Set(incoming.map((d) => d.priority))].sort((a, b) => a - b)) {
+    tiersBelow.set(p, below + tiersBelow.size);
+  }
   /* Both maps are keyed lowercase, `freeLabel`'s reason exactly: on this
      filesystem a document's `Lyss` and a local `lyss` are one credential
      store, so they have to be one account here too. */
@@ -790,7 +1019,12 @@ export function mergeAccounts(
     taken.add(label);
     if (label !== doc.label) renamed.push({ from: doc.label, to: label });
     landings[doc.label] = label;
-    added.push({ ...doc, label, rank: here.length + added.length });
+    added.push({
+      ...doc,
+      label,
+      priority: tiersBelow.get(doc.priority) ?? below,
+      rank: here.length + added.length,
+    });
   }
   return {
     added,

@@ -25,12 +25,15 @@ import {
   sayImported,
   sayInstalled,
   sayLife,
+  sayTier,
   sayUnmeasured,
   sayUnsigned,
   speaksWith,
   several,
+  spentOf,
   standingOf,
   swapNote,
+  tiers,
   usable,
   type Account,
   type AccountDoc,
@@ -57,7 +60,15 @@ function win(over: Partial<Window> = {}): Window {
 }
 
 function acct(label: string, over: Partial<Account> = {}): Account {
-  return { label, rank: 0, enabled: true, caps: {}, signedIn: true, ...over };
+  return { label, priority: 1, rank: 0, enabled: true, caps: {}, signedIn: true, ...over };
+}
+
+/** Three accounts as `migrate_v30` leaves a registry that predates tiers: one
+ *  per tier, in the order they already had. Every test that asserts the strict
+ *  waterfall still holds is written against this rather than against hand-set
+ *  priorities, so it is the migration's own arrangement being proved. */
+function migrated(labels: string[], over: Partial<Account>[] = []): Account[] {
+  return labels.map((l, i) => acct(l, { rank: i, priority: i + 1, ...(over[i] ?? {}) }));
 }
 
 /** An account with nothing spent on it. */
@@ -243,9 +254,13 @@ describe("standing", () => {
 });
 
 describe("the waterfall", () => {
-  const one = acct("one", { rank: 0, caps: { session: 80 } });
-  const two = acct("two", { rank: 1, caps: { weekly_all: 50 } });
-  const three = acct("three", { rank: 2 });
+  /* One account per tier, which is what `migrate_v30` leaves and therefore what
+     every wall that predates tiers is running. These are the tests that say the
+     strict waterfall is unchanged by the feature. */
+  const [one, two, three] = migrated(
+    ["one", "two", "three"],
+    [{ caps: { session: 80 } }, { caps: { weekly_all: 50 } }, {}],
+  ) as [Account, Account, Account];
 
   test("rank order, not registry order", () => {
     expect(ordered([three, one, two]).map((a) => a.label)).toEqual(["one", "two", "three"]);
@@ -297,9 +312,250 @@ describe("the waterfall", () => {
   });
 });
 
+describe("how spent an account is", () => {
+  test("nothing read yet counts as empty", () => {
+    expect(spentOf(acct("a"), undefined, false)).toBe(0);
+  });
+
+  /* `standingOf`'s bargain, and the same one: no reading is not evidence of
+     being spent, and refusing an unmeasured account would make a reserve
+     unreachable. Inside a tier that comes out as "prefer it", which is the
+     honest reading of "we have no reason to think it is full". */
+  test("an allowance that could not be read counts as empty too", () => {
+    expect(spentOf(acct("a"), { ok: false, fault: "no network" }, false)).toBe(0);
+  });
+
+  test("with no caps it is the fullest window's own percentage", () => {
+    expect(spentOf(acct("a"), spent(40, 10), false)).toBeCloseTo(0.4);
+    expect(spentOf(acct("a"), spent(10, 40), false)).toBeCloseTo(0.4);
+  });
+
+  /* The whole reason this is not the raw percentage. The capped account is
+     nearer the door it will be turned away at, and a balancer that reads the
+     percentages has it exactly backwards. */
+  test("a cap makes an account nearer its ceiling than a fuller uncapped one", () => {
+    const capped = acct("capped", { caps: { session: 50 } });
+    const open = acct("open", {});
+    expect(spentOf(capped, spent(40), false)).toBeCloseTo(0.8);
+    expect(spentOf(open, spent(60), false)).toBeCloseTo(0.6);
+    expect(spentOf(capped, spent(40), false)).toBeGreaterThan(spentOf(open, spent(60), false));
+  });
+
+  test("a bypass measures against the server's ceiling instead of yours", () => {
+    const a = acct("a", { caps: { session: 50 } });
+    expect(spentOf(a, spent(40), true)).toBeCloseTo(0.4);
+  });
+
+  /* A cap of zero is "never start work here", so there is no headroom to be a
+     fraction of. Such an account is already blocked and never reaches the
+     balancer — but 0/0 is NaN and 40/0 is Infinity, and a comparison against
+     either picks the wrong account silently instead of failing. */
+  test("a cap of zero is fully spent rather than NaN or Infinity", () => {
+    const zero = acct("zero", { caps: { session: 0 } });
+    expect(spentOf(zero, spent(0), false)).toBe(1);
+    expect(spentOf(zero, spent(40), false)).toBe(1);
+    expect(Number.isFinite(spentOf(zero, spent(40), false))).toBe(true);
+  });
+
+  test("a used figure that is not a number is read as nothing spent", () => {
+    const a: Allowance = {
+      ok: true,
+      at: T0,
+      windows: [win({ used: Number.NaN }), win({ kind: "weekly_all", used: 20 })],
+    };
+    expect(spentOf(acct("a"), a, false)).toBeCloseTo(0.2);
+  });
+});
+
+describe("tiers", () => {
+  test("accounts sharing a priority come out as one band", () => {
+    const list = [
+      acct("c", { priority: 2, rank: 2 }),
+      acct("a", { priority: 1, rank: 0 }),
+      acct("b", { priority: 1, rank: 1 }),
+    ];
+    expect(tiers(list).map((t) => [t.priority, t.accounts.map((a) => a.label)])).toEqual([
+      [1, ["a", "b"]],
+      [2, ["c"]],
+    ]);
+  });
+
+  /* Nothing re-densifies what somebody typed, so a header has to carry the
+     stored number rather than its index — a band drawn "priority 2" over
+     accounts set to 5 is a panel disagreeing with its own field. */
+  test("a sparse priority keeps its own number", () => {
+    const list = [acct("a", { priority: 1 }), acct("b", { priority: 5 })];
+    expect(tiers(list).map((t) => t.priority)).toEqual([1, 5]);
+  });
+
+  test("the order inside a band is rank, then label", () => {
+    const list = [
+      acct("z", { priority: 1, rank: 0 }),
+      acct("a", { priority: 1, rank: 0 }),
+      acct("m", { priority: 1, rank: -1 }),
+    ];
+    expect(tiers(list)[0]!.accounts.map((a) => a.label)).toEqual(["m", "a", "z"]);
+  });
+
+  test("an empty registry has no bands", () => {
+    expect(tiers([])).toEqual([]);
+  });
+});
+
+describe("a tier of more than one", () => {
+  /* The user's own example: two company accounts sharing priority 1, a personal
+     one held at priority 2. */
+  const co1 = acct("co-a", { priority: 1, rank: 0 });
+  const co2 = acct("co-b", { priority: 1, rank: 1 });
+  const mine = acct("personal", { priority: 2, rank: 2 });
+  const all = [co1, co2, mine];
+
+  test("the least spent of the tier takes the next turn", () => {
+    const c = choose(all, { "co-a": spent(40), "co-b": spent(10), personal: fresh() });
+    expect(c).toEqual({ kind: "use", label: "co-b", swapFrom: null });
+  });
+
+  test("and it changes hands as they fill, so the tier runs down together", () => {
+    const c = choose(all, { "co-a": spent(10), "co-b": spent(40), personal: fresh() });
+    expect(c.kind === "use" && c.label).toBe("co-a");
+  });
+
+  /* The reserve is still a reserve: the personal account is emptier than both
+     company accounts throughout and is never chosen while either can work. */
+  test("the tier below is untouched while anything above it can work", () => {
+    const c = choose(all, { "co-a": spent(95), "co-b": spent(70), personal: fresh() });
+    expect(c.kind === "use" && c.label).toBe("co-b");
+  });
+
+  test("and is only reached once the whole tier above is spent", () => {
+    const c = choose(all, { "co-a": spent(100), "co-b": spent(100), personal: fresh() });
+    expect(c).toEqual({ kind: "use", label: "personal", swapFrom: null });
+  });
+
+  test("a tier nobody can use is stepped over rather than waited behind", () => {
+    const off = [
+      acct("co-a", { priority: 1, rank: 0, enabled: false }),
+      acct("co-b", { priority: 1, rank: 1, signedIn: false }),
+      mine,
+    ];
+    expect(choose(off, { personal: fresh() })).toEqual({
+      kind: "use",
+      label: "personal",
+      swapFrom: null,
+    });
+  });
+
+  /* Equal spend has to be settled by something stable, or the wall picks a
+     different account every three minutes and every one of those is an uncached
+     re-read waiting to happen. */
+  test("equally spent accounts fall to rank", () => {
+    const c = choose(all, { "co-a": spent(40), "co-b": spent(40), personal: fresh() });
+    expect(c.kind === "use" && c.label).toBe("co-a");
+  });
+
+  test("with nothing read at all the tier falls to rank, as it always did", () => {
+    const c = choose(all, {});
+    expect(c.kind === "use" && c.label).toBe("co-a");
+  });
+
+  /* An unmeasured account is preferred inside its tier: there is no evidence it
+     is spent, and the first turn on it refreshes the store. */
+  test("an unmeasured account is preferred over a measured one", () => {
+    const c = choose(all, { "co-a": spent(30), "co-b": { ok: false, fault: "no network" } });
+    expect(c.kind === "use" && c.label).toBe("co-b");
+  });
+
+  /* Deliberate, and the existing rule rather than a new exception: the card is
+     on priority 2 because priority 1 was spent, moving it back costs the full
+     uncached re-read of its context, and every *new* card meanwhile is going to
+     priority 1. */
+  test("a card already on a lower tier stays there while a higher one has room", () => {
+    const c = choose(
+      all,
+      { "co-a": fresh(), "co-b": fresh(), personal: fresh() },
+      { stickTo: "personal" },
+    );
+    expect(c).toEqual({ kind: "use", label: "personal", swapFrom: null });
+  });
+
+  test("but it is moved up the moment its own account will not take work", () => {
+    const c = choose(
+      all,
+      { "co-a": spent(60), "co-b": spent(20), personal: spent(100) },
+      { stickTo: "personal" },
+    );
+    expect(c).toEqual({ kind: "use", label: "co-b", swapFrom: "personal" });
+  });
+
+  test("every tier blocked is still a hold on the earliest door", () => {
+    const c = choose(all, {
+      "co-a": { ok: true, at: T0, windows: [win({ used: 100, resetsAt: T0 + 3 * HOUR })] },
+      "co-b": { ok: true, at: T0, windows: [win({ used: 100, resetsAt: T0 + 5 * HOUR })] },
+      personal: { ok: true, at: T0, windows: [win({ used: 100, resetsAt: T0 + HOUR })] },
+    });
+    expect(c.kind === "hold" && c.until).toBe(T0 + HOUR);
+  });
+});
+
+/* The one thing in this feature that cannot be got wrong. A wall that upgrades
+   into tiers must spend exactly what it spent yesterday, because nothing on
+   screen has changed and nobody has been asked anything. */
+describe("what the migration must not change", () => {
+  const registry = migrated(["one", "two", "three"]);
+
+  test("a migrated registry still chooses in rank order", () => {
+    expect(registry.map((a) => a.priority)).toEqual([1, 2, 3]);
+    expect(choose(registry, { one: fresh(), two: fresh(), three: fresh() })).toEqual({
+      kind: "use",
+      label: "one",
+      swapFrom: null,
+    });
+  });
+
+  /* The failure a `DEFAULT 0` would have shipped: with every account in one
+     tier the emptiest wins, so a reserve you had been guarding takes the next
+     turn. The pooled arrangement is asserted beside it so the reason the
+     migration is written the way it is stays visible. */
+  test("and not by headroom, which is what one shared tier would have done", () => {
+    const guarded = choose(registry, { one: spent(60), two: spent(30), three: spent(5) });
+    expect(guarded.kind === "use" && guarded.label).toBe("one");
+
+    const pooled = registry.map((a) => ({ ...a, priority: 1 }));
+    const spread = choose(pooled, { one: spent(60), two: spent(30), three: spent(5) });
+    expect(spread.kind === "use" && spread.label).toBe("three");
+  });
+
+  test("each account still empties before the next is touched", () => {
+    const c = choose(registry, { one: spent(100), two: spent(40), three: fresh() });
+    expect(c.kind === "use" && c.label).toBe("two");
+  });
+});
+
+describe("what a band says about itself", () => {
+  test("the first band of one just takes the work", () => {
+    expect(sayTier(1, null)).toBe("takes the work first");
+  });
+
+  test("a band of more than one says it shares", () => {
+    expect(sayTier(2, null)).toContain("least spent");
+  });
+
+  test("a later band says what has to be spent before it", () => {
+    expect(sayTier(1, 1)).toBe("held back until priority 1 is spent");
+  });
+
+  test("and a later band of several says both", () => {
+    const said = sayTier(3, 2);
+    expect(said).toContain("least spent");
+    expect(said).toContain("priority 2 is spent");
+  });
+});
+
 describe("sticking to an account", () => {
-  const one = acct("one", { rank: 0, caps: { session: 80 } });
-  const two = acct("two", { rank: 1 });
+  const [one, two] = migrated(["one", "two"], [{ caps: { session: 80 } }, {}]) as [
+    Account,
+    Account,
+  ];
 
   /* A card swaps when it must, not when it could. Account one has come back
      and outranks two, but this card is mid-conversation on two and moving it
@@ -326,8 +582,10 @@ describe("sticking to an account", () => {
 });
 
 describe("when nothing is available", () => {
-  const one = acct("one", { rank: 0, caps: { session: 80 } });
-  const two = acct("two", { rank: 1, caps: { session: 80 } });
+  const [one, two] = migrated(
+    ["one", "two"],
+    [{ caps: { session: 80 } }, { caps: { session: 80 } }],
+  ) as [Account, Account];
 
   test("holds, rather than failing", () => {
     const c = choose([one, two], { one: spent(85), two: spent(90) });
@@ -555,10 +813,13 @@ describe("carrying the waterfall between machines", () => {
      shape of the waterfall and never a credential, so every imported row has to
      be visibly unsigned rather than plausibly signed in. */
 
+  /* A shared tier and a reserve behind it, rather than three singletons: the
+     tiers are half of what a carried waterfall *is*, so the fixture every
+     round-trip test runs against has to have some. */
   const three = [
-    acct("work", { rank: 0, caps: { session: 80, weekly: 60 } }),
-    acct("perso", { rank: 1, enabled: false }),
-    acct("team", { rank: 2, signedIn: false }),
+    acct("work", { priority: 1, rank: 0, caps: { session: 80, weekly: 60 } }),
+    acct("perso", { priority: 1, rank: 1, enabled: false }),
+    acct("team", { priority: 2, rank: 2, signedIn: false }),
   ];
 
   test("the document is a versioned wrapper round the accounts", () => {
@@ -613,10 +874,89 @@ describe("carrying the waterfall between machines", () => {
   test("a round trip is the same waterfall", () => {
     const back = importAccounts(exportAccounts(three));
     expect(back).toEqual([
-      { label: "work", rank: 0, enabled: true, caps: { session: 80, weekly: 60 } },
-      { label: "perso", rank: 1, enabled: false, caps: {} },
-      { label: "team", rank: 2, enabled: true, caps: {} },
+      { label: "work", priority: 1, rank: 0, enabled: true, caps: { session: 80, weekly: 60 } },
+      { label: "perso", priority: 1, rank: 1, enabled: false, caps: {} },
+      { label: "team", priority: 2, rank: 2, enabled: true, caps: {} },
     ]);
+  });
+
+  /* The tiers are half of what a waterfall is, so a document that dropped them
+     would arrive as a flat list of singletons — a different spending policy
+     wearing the same labels, and silently, since nothing on the far side could
+     tell it had been flattened. */
+  test("a shared tier survives the round trip as a shared tier", () => {
+    const back = importAccounts(exportAccounts(three));
+    expect(back.map((a) => a.priority)).toEqual([1, 1, 2]);
+  });
+
+  test("a document written before tiers reads as one account per tier", () => {
+    const back = importAccounts(
+      JSON.stringify({
+        skeinAccounts: 1,
+        accounts: [
+          { label: "one", rank: 0, enabled: true, caps: {} },
+          { label: "two", rank: 1, enabled: true, caps: {} },
+          { label: "three", rank: 2, enabled: true, caps: {} },
+        ],
+      }),
+    );
+    expect(back.map((a) => a.priority)).toEqual([1, 2, 3]);
+    /* And therefore chooses exactly as that document's wall did — the same
+       guarantee `migrate_v30` makes about a database, made about a file. */
+    const asAccounts = back.map((a) => acct(a.label, { priority: a.priority, rank: a.rank }));
+    expect(choose(asAccounts, {}).kind === "use" && choose(asAccounts, {}).label).toBe("one");
+  });
+
+  /* A hand-written 0 is not honoured, since the column is 1-based, and falls
+     back rather than being clamped up — clamping would merge it into tier 1
+     with whatever is already there, which is the flattening one test up. */
+  test("a priority below one falls back rather than joining the first tier", () => {
+    expect(cleanAccount({ label: "a", rank: 3, priority: 0 })!.priority).toBe(4);
+  });
+
+  test("an import keeps its tier shape but lands below everything here", () => {
+    const here = [
+      acct("mine-a", { priority: 1, rank: 0 }),
+      acct("mine-b", { priority: 2, rank: 1 }),
+    ];
+    const merge = mergeAccounts(here, [
+      { label: "in-a", priority: 1, rank: 0, enabled: true, caps: {} },
+      { label: "in-b", priority: 1, rank: 1, enabled: true, caps: {} },
+      { label: "in-c", priority: 2, rank: 2, enabled: true, caps: {} },
+    ]);
+    /* Two shared, one behind them — the incoming shape exactly — but starting
+       past the highest tier already here, so no paste reaches the head of the
+       queue. */
+    expect(merge.added.map((a) => [a.label, a.priority])).toEqual([
+      ["in-a", 3],
+      ["in-b", 3],
+      ["in-c", 4],
+    ]);
+  });
+
+  test("an import into an empty registry starts at the first tier", () => {
+    const merge = mergeAccounts([], [
+      { label: "a", priority: 4, rank: 0, enabled: true, caps: {} },
+      { label: "b", priority: 9, rank: 1, enabled: true, caps: {} },
+    ]);
+    expect(merge.added.map((a) => a.priority)).toEqual([1, 2]);
+  });
+
+  /* A matched row is a credential arriving for an account already here, not a
+     row being created — but it must not close a gap the document had, or two
+     tiers that were apart come back as one. */
+  test("a matched row does not collapse the tiers behind it", () => {
+    const here = [acct("lyss", { priority: 1, rank: 0 })];
+    const merge = mergeAccounts(
+      here,
+      [
+        { label: "lyss", priority: 1, rank: 0, enabled: true, caps: {} },
+        { label: "other", priority: 2, rank: 1, enabled: true, caps: {} },
+      ],
+      { carrying: ["lyss"] },
+    );
+    expect(merge.matched).toEqual([{ from: "lyss", to: "lyss" }]);
+    expect(merge.added.map((a) => [a.label, a.priority])).toEqual([["other", 3]]);
   });
 
   /* Three shapes, because all three are things a person plausibly pastes and
@@ -670,6 +1010,7 @@ describe("carrying the waterfall between machines", () => {
        never had is a row that does nothing and does not say why. */
     expect(cleanAccount({ label: "work" })).toEqual({
       label: "work",
+      priority: Number.MAX_SAFE_INTEGER,
       rank: Number.MAX_SAFE_INTEGER,
       enabled: true,
       caps: {},
@@ -757,10 +1098,13 @@ describe("carrying the waterfall between machines", () => {
   test("a colliding label is renamed, and the one already here is untouched", () => {
     const here = [acct("work", { caps: { session: 80 } })];
     const merge = mergeAccounts(here, [
-      { label: "work", rank: 0, enabled: true, caps: { session: 20 } },
+      { label: "work", priority: 1, rank: 0, enabled: true, caps: { session: 20 } },
     ]);
+    /* Tier 2, not the tier 1 the document named: an unsigned row must not land
+       in the pocket the next turn comes out of, still less be declared
+       equivalent to the account already being spent from it. */
     expect(merge.added).toEqual([
-      { label: "work-2", rank: 1, enabled: true, caps: { session: 20 } },
+      { label: "work-2", priority: 2, rank: 1, enabled: true, caps: { session: 20 } },
     ]);
     expect(merge.renamed).toEqual([{ from: "work", to: "work-2" }]);
     expect(merge.order).toEqual(["work", "work-2"]);

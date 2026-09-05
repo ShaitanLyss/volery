@@ -202,7 +202,7 @@ impl Store {
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 29;
+const SCHEMA_VERSION: i64 = 30;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -237,6 +237,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (27, migrate_v27),
     (28, migrate_v28),
     (29, migrate_v29),
+    (30, migrate_v30),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1350,6 +1351,50 @@ fn migrate_v28(conn: &Connection) -> Result<(), String> {
 /// do until somebody turns it on.
 fn migrate_v29(conn: &Connection) -> Result<(), String> {
     add_column(conn, "project", "read_only", "INTEGER NOT NULL DEFAULT 0")
+}
+
+/// A priority beside every account's rank, so the waterfall can have tiers in
+/// it: work falls to the lowest priority that will take it, and accounts
+/// *sharing* a priority split that work between them by how spent each is.
+///
+/// **The backfill is the whole of this rung and it cannot be got wrong.** Every
+/// existing row gets `rank + 1`, which puts each account in a tier of its own —
+/// so a wall that upgrades keeps the strict waterfall it had, byte for byte,
+/// and the feature changes nothing at all until somebody puts two accounts on
+/// one number. The alternative, an `INTEGER NOT NULL DEFAULT 0` and nothing
+/// else, is why this comment is long: it would land every account in one shared
+/// tier, which turns a reserve somebody was guarding into a pool and spends it
+/// on the next turn — with nothing on screen having changed and nobody having
+/// been asked. A schema change may not move money.
+///
+/// `rank + 1` rather than `rank` because the column is 1-based: it is the one
+/// number in this subsystem a person says out loud ("priority 1 for the company
+/// accounts") and types into the panel, and a tier called zero is a tier nobody
+/// asked for. `add_account` starts a fresh registry at 1 for the same reason,
+/// so a migrated wall and a new one agree about what the first tier is called.
+/// The ordering is identical either way — `+ 1` is monotone and injective, so
+/// the tiers come out in exactly the rank order that was already there.
+///
+/// **The backfill is tied to creating the column, not to the column's value**,
+/// which is the difference between a rung that is safe to re-run and one that
+/// looks it. `add_column` is already a no-op the second time; a bare `UPDATE
+/// account SET priority = rank + 1` after it is not, and a `WHERE priority = 1`
+/// guard only appears to help — it matches exactly the rows somebody has since
+/// *moved into* the first tier, so re-running would scatter the arrangement it
+/// was meant to protect. Asking whether the column was there a moment ago
+/// answers the question actually being asked: is this the upgrade, or a second
+/// walk over a database that has already had it.
+///
+/// See `.claude/rules/accounts.md`.
+fn migrate_v30(conn: &Connection) -> Result<(), String> {
+    let upgrading = !has_column(conn, "account", "priority")?;
+    add_column(conn, "account", "priority", "INTEGER NOT NULL DEFAULT 1")?;
+    if upgrading {
+        conn.execute("UPDATE account SET priority = rank + 1", [])
+            .map_err(|e| format!("migrate v30: {e}"))?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS account_tier ON account(priority, rank);")
+        .map_err(|e| format!("migrate v30: {e}"))
 }
 
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
@@ -6149,6 +6194,93 @@ mod tests {
             (spend_row(&conn, 0).unwrap() * 100.0).round(),
             12495.0,
             "every kind of row, including the label this build did not write"
+        );
+    }
+
+    /// The one thing in the tiers feature that cannot be got wrong. Every
+    /// account on a wall that upgrades must land in a tier of its own, in the
+    /// order it already had, so the strict waterfall it was running is what it
+    /// comes back running. A shared default would have turned a reserve
+    /// somebody was guarding into a pool and spent it on the next turn, with
+    /// nothing on screen having changed.
+    #[test]
+    fn the_tier_rung_leaves_every_existing_account_in_a_tier_of_its_own() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        // Up to the rung before this one, so the accounts below are written by
+        // a schema that has never heard of a priority.
+        for (n, step) in STEPS.iter() {
+            if *n >= 30 {
+                break;
+            }
+            step(&conn).unwrap();
+        }
+        assert!(!has_column(&conn, "account", "priority").unwrap());
+        for (label, rank) in [("work", 0), ("perso", 1), ("reserve", 2)] {
+            conn.execute(
+                "INSERT INTO account (label, rank, enabled, caps, added_at)
+                 VALUES (?1, ?2, 1, '{}', 0)",
+                params![label, rank],
+            )
+            .unwrap();
+        }
+
+        migrate_v30(&conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT label, priority FROM account ORDER BY rank")
+            .unwrap();
+        let got: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("work".to_string(), 1),
+                ("perso".to_string(), 2),
+                ("reserve".to_string(), 3),
+            ],
+            "one tier each, in rank order, and none of them called zero"
+        );
+    }
+
+    /// A rung either lands with its number or does not land at all, so it has to
+    /// survive being run twice — and this one has a backfill in it, which
+    /// `add_column` cannot make idempotent on its own. The arrangement a person
+    /// has since set is what a re-run must not touch.
+    #[test]
+    fn the_tier_rung_does_not_rewrite_tiers_on_a_second_walk() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO account (label, rank, priority, enabled, caps, added_at)
+             VALUES ('co-a', 0, 1, 1, '{}', 0), ('co-b', 1, 1, 1, '{}', 0),
+                    ('mine', 2, 2, 1, '{}', 0)",
+            [],
+        )
+        .unwrap();
+
+        // `db()` has already walked the whole ladder, so these are the re-runs.
+        migrate_v30(&conn).unwrap();
+        migrate_v30(&conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT label, priority FROM account ORDER BY rank")
+            .unwrap();
+        let got: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("co-a".to_string(), 1),
+                ("co-b".to_string(), 1),
+                ("mine".to_string(), 2),
+            ],
+            "the shared tier is still shared — a re-run is not a reset"
         );
     }
 

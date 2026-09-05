@@ -152,6 +152,11 @@ pub fn signed_in(app: &AppHandle, label: &str) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub label: String,
+    /// The tier. Lower runs first, a whole tier is spent before the next is
+    /// touched, and accounts sharing one are declared equivalent — `choose` in
+    /// `accounts.ts` is the policy and `migrate_v30` is why an upgraded wall
+    /// still has one account per tier.
+    pub priority: i64,
     pub rank: i64,
     pub enabled: bool,
     /// Window `kind` → percentage ceiling. Free-form because the rate limiter's
@@ -165,24 +170,35 @@ pub struct Account {
 pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Account>, String> {
     let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
     let mut stmt = conn
-        .prepare("SELECT label, rank, enabled, caps FROM account ORDER BY rank, label")
+        .prepare(
+            "SELECT label, rank, enabled, caps, priority FROM account
+             ORDER BY priority, rank, label",
+        )
         .map_err(|e| format!("read accounts: {e}"))?;
     let rows = stmt
         .query_map([], |r| {
             let label: String = r.get(0)?;
             let caps: String = r.get(3)?;
-            Ok((label, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, caps))
+            Ok((
+                label,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                caps,
+                r.get::<_, i64>(4)?,
+            ))
         })
         .map_err(|e| format!("read accounts: {e}"))?;
 
     let mut out = Vec::new();
     for row in rows {
-        let (label, rank, enabled, caps) = row.map_err(|e| format!("read accounts: {e}"))?;
+        let (label, rank, enabled, caps, priority) =
+            row.map_err(|e| format!("read accounts: {e}"))?;
         let has = signed_in(&app, &label);
         out.push(Account {
             caps: serde_json::from_str(&caps).unwrap_or_else(|_| serde_json::json!({})),
             signed_in: has,
             label,
+            priority,
             rank,
             enabled: enabled != 0,
         });
@@ -210,7 +226,9 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
 /// answer the question it was actually asked.
 pub fn usable_labels(app: &AppHandle, conn: &rusqlite::Connection) -> Vec<String> {
     let Ok(mut stmt) =
-        conn.prepare("SELECT label FROM account WHERE enabled != 0 ORDER BY rank, label")
+        conn.prepare(
+            "SELECT label FROM account WHERE enabled != 0 ORDER BY priority, rank, label",
+        )
     else {
         return Vec::new();
     };
@@ -238,11 +256,20 @@ pub fn add_account(store: State<'_, Store>, label: String) -> Result<(), String>
     let next: i64 = conn
         .query_row("SELECT COALESCE(MAX(rank), -1) + 1 FROM account", [], |r| r.get(0))
         .unwrap_or(0);
+    /* A tier of its own, at the end. Joining the last tier would be a new
+       account silently declared equivalent to one you are already spending, and
+       an account added is an account nobody has said anything about yet — the
+       same argument `mergeAccounts` makes about an import landing below
+       everything here. `COALESCE(MAX, 0) + 1`, so the first account on a fresh
+       wall is priority 1 and agrees with what `migrate_v30` leaves. */
+    let tier: i64 = conn
+        .query_row("SELECT COALESCE(MAX(priority), 0) + 1 FROM account", [], |r| r.get(0))
+        .unwrap_or(1);
     conn.execute(
-        "INSERT INTO account (label, rank, enabled, caps, added_at)
-         VALUES (?1, ?2, 1, '{}', ?3)
+        "INSERT INTO account (label, rank, priority, enabled, caps, added_at)
+         VALUES (?1, ?2, ?3, 1, '{}', ?4)
          ON CONFLICT(label) DO NOTHING",
-        rusqlite::params![label, next, crate::store::now()],
+        rusqlite::params![label, next, tier, crate::store::now()],
     )
     .map_err(|e| format!("add account: {e}"))?;
     Ok(())
@@ -298,6 +325,41 @@ pub fn reorder_accounts(store: State<'_, Store>, labels: Vec<String>) -> Result<
         .map_err(|e| format!("reorder accounts: {e}"))?;
     }
     tx.commit().map_err(|e| format!("reorder accounts: {e}"))?;
+    Ok(())
+}
+
+/// Put one account in a tier.
+///
+/// **One row at a time, unlike `reorder_accounts` above**, and the difference is
+/// worth stating because the two look like the same gesture. A rank is only
+/// meaningful *against the other ranks*, so a half-applied reorder leaves two
+/// accounts claiming one position and the tie broken by label — a wall quietly
+/// spending the wrong subscription, which is why that one is a transaction over
+/// the whole list. A priority is meaningful on its own: it is the tier this
+/// account is in, two accounts sharing one is not a collision but the entire
+/// point of the feature, and there is no arrangement of the other rows that can
+/// make this row's number wrong. So there is nothing here for a transaction to
+/// protect, and writing one row keeps the panel's gesture and the store's write
+/// the same size.
+///
+/// Clamped to 1 rather than refused. The column is 1-based, the panel's field is
+/// `min="1"`, and a zero arriving from anywhere else is somebody meaning "first"
+/// — refusing it would leave a row in a tier nobody can name.
+#[tauri::command]
+pub fn set_account_priority(
+    store: State<'_, Store>,
+    label: String,
+    priority: i64,
+) -> Result<(), String> {
+    store
+        .0
+        .lock()
+        .map_err(|_| "the store is wedged".to_string())?
+        .execute(
+            "UPDATE account SET priority = ?1 WHERE label = ?2",
+            rusqlite::params![priority.max(1), label],
+        )
+        .map_err(|e| format!("set priority: {e}"))?;
     Ok(())
 }
 

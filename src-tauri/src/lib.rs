@@ -414,6 +414,7 @@ pub fn run() {
             accounts::remove_account,
             accounts::sign_out,
             accounts::reorder_accounts,
+            accounts::set_account_priority,
             accounts::set_account_enabled,
             accounts::set_account_caps,
             accounts::stored_accounts,

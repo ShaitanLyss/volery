@@ -56,7 +56,9 @@ export type Presence =
 type RawAllowance = { label: string; report: Report | null; fault: string | null };
 
 export class Waterfall {
-  /** The registry, in rank order as Rust returns it. */
+  /** The registry, in tier-then-rank order as Rust returns it — `ordered`'s
+   *  rule, made by the `ORDER BY` in `list_accounts` so the panel never has to
+   *  re-sort what it draws. */
   list = $state<Account[]>([]);
   /** Label → the last allowance answer for it. */
   allowances = $state<Record<string, Allowance>>({});
@@ -267,20 +269,47 @@ export class Waterfall {
     await this.refresh();
   }
 
-  /** Move one account up or down the order.
+  /** Move one account up or down the order *within its tier*.
    *
    *  The whole list is written rather than the one row, because `rank` is only
    *  meaningful as an ordering: a half-applied reorder leaves two accounts
    *  claiming the same rank, the tie broken by label, and a wall quietly
    *  spending the wrong subscription. `reorder_accounts` takes the list and
-   *  writes it in one transaction. */
+   *  writes it in one transaction.
+   *
+   *  Refused at a tier boundary rather than allowed to fall through it, and
+   *  this is the half a reader has to be told about. `list` arrives sorted by
+   *  priority first, so swapping the last row of one tier with the first of the
+   *  next writes two ranks and changes *nothing anybody can see* — the
+   *  priorities still decide, and the list redraws exactly as it was. A button
+   *  that visibly does nothing is worse than one that is not offered, so the
+   *  panel disables it at the edges and this refuses it besides. Which tier an
+   *  account is in is `setPriority`, a different decision with its own
+   *  control. */
   async move(label: string, by: -1 | 1) {
-    const labels = this.list.map((a) => a.label);
-    const at = labels.indexOf(label);
+    const at = this.list.findIndex((a) => a.label === label);
     const to = at + by;
-    if (at < 0 || to < 0 || to >= labels.length) return;
+    if (at < 0 || to < 0 || to >= this.list.length) return;
+    if (this.list[at]!.priority !== this.list[to]!.priority) return;
+    const labels = this.list.map((a) => a.label);
     [labels[at], labels[to]] = [labels[to]!, labels[at]!];
     await invoke("reorder_accounts", { labels });
+    await this.refresh();
+  }
+
+  /** Put one account in a tier.
+   *
+   *  One row, where `move` writes the whole list, and `accounts.rs` has the
+   *  argument: a rank is only meaningful against the other ranks, while a
+   *  priority is meaningful on its own and two accounts sharing one is the
+   *  point of the feature rather than a collision. Nothing another row holds
+   *  can make this row's number wrong, so there is nothing for a transaction to
+   *  protect. */
+  async setPriority(label: string, priority: number) {
+    await invoke("set_account_priority", {
+      label,
+      priority: Math.max(1, Math.round(priority)),
+    });
     await this.refresh();
   }
 
