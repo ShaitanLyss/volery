@@ -28,9 +28,11 @@
     sayImported,
     sayInstalled,
     sayLife,
+    sayTier,
     sayUnmeasured,
     sayUnsigned,
     standingOf,
+    tiers,
     type Install,
     type Merge,
     type SignIn,
@@ -169,6 +171,36 @@
       standing: standingOf(a, waterfall.allowances[a.label], false),
     })),
   );
+
+  /** The same thing in bands, which is what the panel is actually arranged as.
+   *
+   *  The grouping is `tiers` in the pure module rather than an inline reduce
+   *  here, so what a band *is* has one definition and it is the one `choose`
+   *  partitions by. `above` is carried on each band because the header says
+   *  what has to be spent before this one is touched, and that sentence needs
+   *  its neighbour's number — which only the list knows. */
+  const bands = $derived.by(() => {
+    const byLabel = new Map(standings.map((s) => [s.account.label, s.standing]));
+    return tiers(waterfall.list).map((t, i, all) => ({
+      priority: t.priority,
+      above: i === 0 ? null : all[i - 1]!.priority,
+      rows: t.accounts.map((a) => ({ account: a, standing: byLabel.get(a.label)! })),
+    }));
+  });
+
+  /** Put an account in a tier, from the field on its row. Blank and anything
+   *  unreadable leave it where it is — unlike a cap, where blank is the real
+   *  and different instruction "no ceiling", every account is in exactly one
+   *  tier and there is no such thing as none. */
+  async function setTier(label: string, raw: string) {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n)) return;
+    try {
+      await waterfall.setPriority(label, n);
+    } catch (err) {
+      say(String(err));
+    }
+  }
 
   /** Which account the next new turn would go to, drawn as a mark on the row so
    *  the order is legible as a consequence rather than as a number. */
@@ -322,6 +354,13 @@
     try {
       for (const a of merge.added) {
         await invoke("add_account", { label: a.label });
+        /* Always, not only when it differs from what `add_account` chose. That
+           default is "a tier of its own at the end", which is right for a row
+           somebody typed and wrong for an import — `mergeAccounts` has already
+           worked out which incoming rows shared a tier and where the lot of
+           them lands, and letting the store's default win for some of them
+           would flatten exactly the shape the document was carrying. */
+        await invoke("set_account_priority", { label: a.label, priority: a.priority });
         if (Object.keys(a.caps).length > 0) {
           await invoke("set_account_caps", { label: a.label, caps: a.caps });
         }
@@ -550,8 +589,9 @@
     </div>
 
     <p class="note">
-      Work falls through these in order — the first account that is under its ceiling takes it,
-      and the next one is only touched when that one is spent. A cap is <b>yours</b>: the
+      Work falls through these in priority order — a whole priority is spent before the next one
+      is touched. Accounts sharing a priority share the work: whichever has spent least of its
+      allowance takes the next turn, so they run down together. A cap is <b>yours</b>: the
       account's own limit still applies underneath it, and nothing here can spend past that.
     </p>
 
@@ -584,185 +624,223 @@
         </p>
       {/if}
 
-      {#each standings as { account, standing }, i (account.label)}
-        <div class="acct" class:off={!account.enabled} class:next={account.label === nextUp}>
-          <div class="row">
-            <span class="rank">{i + 1}</span>
-            <span class="label">{account.label}</span>
-
-            {#if account.label === nextUp}
-              <span class="tag next-tag">next</span>
-            {/if}
-
-            {#if standing.state === "ready"}
-              {#if standing.unmeasured}
-                <!-- Ready, and saying so, but the ceiling you set cannot be
-                     checked against a reading nobody has. Its own tag rather
-                     than a dimmed "ready": the difference is whether your caps
-                     are in force, which is not a detail. -->
-                <span class="tag unmeasured">ready · unmeasured</span>
-                <span class="dim">{sayUnmeasured(standing.unmeasured)}</span>
-              {:else}
-                <span class="tag ready">ready</span>
-              {/if}
-            {:else if standing.state === "blocked"}
-              <span class="tag held">{sayBlocked(standing.blockers)}</span>
-              {#if standing.availableAt !== null}
-                <span class="dim">back in {until(standing.availableAt - now)}</span>
-              {:else}
-                <span class="dim">no reset named</span>
-              {/if}
-            {:else}
-              <span class="tag bad">{standing.why}</span>
-            {/if}
-
-            <span class="grow"></span>
-
-            <button class="chip" disabled={i === 0} onclick={() => waterfall.move(account.label, -1)}
-              title="earlier in the order">↑</button>
-            <button
-              class="chip"
-              disabled={i === standings.length - 1}
-              onclick={() => waterfall.move(account.label, 1)}
-              title="later in the order">↓</button>
-            <button
-              class="chip"
-              onclick={() => waterfall.setEnabled(account.label, !account.enabled)}
-              title={account.enabled ? "stop using this account" : "use this account again"}
-            >{account.enabled ? "on" : "off"}</button>
+      {#each bands as band (band.priority)}
+        <!-- ── one priority ──────────────────────────────────────────────
+             Drawn in `--edge` and nothing else: a band is structure, like the
+             wall's other furniture, and colour here is reserved for status.
+             The header carries the two facts the rows cannot show on their own
+             — whether this tier shares its work, and what has to be spent
+             before it is touched at all. -->
+        <div class="band">
+          <div class="bandhead">
+            <span class="tiermark">priority {band.priority}</span>
+            <span class="tierwhat">{sayTier(band.rows.length, band.above)}</span>
           </div>
 
-          <!-- ── the ceilings ─────────────────────────────────────────── -->
-          {#if account.signedIn}
-            <div class="caps">
-              {#each capKinds(account.label) as kind (kind)}
-                {@const used = usedOf(account.label, kind)}
-                {@const cap = capOf(account.label, kind)}
-                <label class="cap">
-                  <span class="capname">{nameOf(account.label, kind)}</span>
-                  <span class="used">{used === null ? "—" : pct(used)}</span>
-                  <span class="of">stop at</span>
-                  <input
-                    class="capin"
-                    type="number"
-                    min="0"
-                    max="100"
-                    placeholder="—"
-                    value={cap ?? ""}
-                    onchange={(e) => setCap(account.label, kind, e.currentTarget.value)}
-                  />
-                  <span class="pc">%</span>
-                </label>
-              {:else}
-                <span class="dim">no windows read yet</span>
-              {/each}
-            </div>
-          {/if}
+          <div class="bandrows">
+            {#each band.rows as { account, standing }, i (account.label)}
+              <div class="acct" class:off={!account.enabled} class:next={account.label === nextUp}>
+                <div class="row">
+                  <span class="label">{account.label}</span>
 
-          <div class="acts">
-            {#if !account.signedIn}
-              <button
-                class="go"
-                disabled={signinRunning[account.label]}
-                onclick={() => signIn(account.label)}
-              >{signinRunning[account.label] ? "signing in…" : "sign in"}</button>
-            {:else}
-              <button
-                class="chip"
-                onclick={() => signIn(account.label)}
-                title="sign in again, replacing this account's credential"
-              >
-                sign in again
-              </button>
-              <button
-                class="chip danger"
-                onmousedown={(e) => e.stopPropagation()}
-                onclick={() => {
-                  if (arming === `signout:${account.label}`) {
-                    void waterfall.signOut(account.label);
-                    arming = null;
-                    say(`signed ${account.label} out`);
-                  } else arming = `signout:${account.label}`;
-                }}
-              >{arming === `signout:${account.label}` ? "really sign out?" : "sign out"}</button>
-            {/if}
-            <span class="grow"></span>
-            <button
-              class="chip danger"
-              onmousedown={(e) => e.stopPropagation()}
-              onclick={() => {
-                if (arming === `remove:${account.label}`) {
-                  void waterfall.remove(account.label);
-                  arming = null;
-                  say(`removed ${account.label} — it is still signed in`);
-                } else arming = `remove:${account.label}`;
-              }}
-            >{arming === `remove:${account.label}` ? "really remove?" : "remove"}</button>
-          </div>
-
-          <!-- ── a sign-in in progress ──────────────────────────────────
-               No terminal: `claude auth login` runs on pipes and opens the
-               browser itself, so what is left to draw is the waiting, the URL
-               for a browser that did not open, and the paste field for the
-               manual path. Shown while running and kept after a failure, since
-               the failure is the thing worth reading. -->
-          {#if signinRunning[account.label] || progressOf(account.label).fault}
-            {@const p = progressOf(account.label)}
-            <div class="signin">
-              {#if p.fault}
-                <span class="tag bad">{p.fault}</span>
-              {:else if p.prompting}
-                <span class="dim">
-                  waiting in the browser — if it asks you for a code, paste it here
-                </span>
-              {:else if p.opened}
-                <span class="dim">a browser is open — finish signing in there</span>
-              {:else}
-                <span class="dim">starting…</span>
-              {/if}
-
-              {#if signinRunning[account.label]}
-                <div class="signin-row">
-                  {#if p.url}
-                    <!-- The browser was opened by the CLI. This is for when it
-                         could not be — and it is a button rather than a link
-                         because a webview must not navigate itself to it. -->
-                    <button class="chip" onclick={() => openAuthorize(p.url!)}>
-                      open the sign-in page
-                    </button>
+                  {#if account.label === nextUp}
+                    <span class="tag next-tag">next</span>
                   {/if}
-                  <input
-                    class="codein"
-                    placeholder="paste the code, or the whole callback url"
-                    value={pasting[account.label] ?? ""}
-                    oninput={(e) =>
-                      (pasting = { ...pasting, [account.label]: e.currentTarget.value })}
-                    onkeydown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void paste(account.label);
-                      }
-                    }}
-                  />
+
+                  {#if standing.state === "ready"}
+                    {#if standing.unmeasured}
+                      <!-- Ready, and saying so, but the ceiling you set cannot be
+                           checked against a reading nobody has. Its own tag rather
+                           than a dimmed "ready": the difference is whether your caps
+                           are in force, which is not a detail. -->
+                      <span class="tag unmeasured">ready · unmeasured</span>
+                      <span class="dim">{sayUnmeasured(standing.unmeasured)}</span>
+                    {:else}
+                      <span class="tag ready">ready</span>
+                    {/if}
+                  {:else if standing.state === "blocked"}
+                    <span class="tag held">{sayBlocked(standing.blockers)}</span>
+                    {#if standing.availableAt !== null}
+                      <span class="dim">back in {until(standing.availableAt - now)}</span>
+                    {:else}
+                      <span class="dim">no reset named</span>
+                    {/if}
+                  {:else}
+                    <span class="tag bad">{standing.why}</span>
+                  {/if}
+
+                  <span class="grow"></span>
+
+                  <!-- Which tier, typed rather than nudged. The user's own words for
+                       this feature were "assign priority 1 to both my company
+                       accounts", so the control is the number they said: one press
+                       reaches any arrangement, and there is none of the ambiguity a
+                       pair of move-me-a-band-over arrows has about whether it means
+                       "join the band below" or "make a new one". -->
+                  <label class="tierset" title="which priority this account is in">
+                    <span class="tierlab">priority</span>
+                    <input
+                      class="tierin"
+                      type="number"
+                      min="1"
+                      value={account.priority}
+                      onchange={(e) => setTier(account.label, e.currentTarget.value)}
+                    />
+                  </label>
+                  <!-- Within the band only. Across one these would write two ranks
+                       and change nothing visible, since the priorities still decide
+                       the order — see `waterfall.move`. -->
                   <button
                     class="chip"
-                    disabled={!(pasting[account.label] ?? "").trim()}
-                    onclick={() => paste(account.label)}
-                  >hand it over</button>
-                  <span class="grow"></span>
-                  <button class="chip" onclick={() => cancelSignin(account.label)}>stop</button>
+                    disabled={i === 0}
+                    onclick={() => waterfall.move(account.label, -1)}
+                    title="earlier inside this priority">↑</button>
+                  <button
+                    class="chip"
+                    disabled={i === band.rows.length - 1}
+                    onclick={() => waterfall.move(account.label, 1)}
+                    title="later inside this priority">↓</button>
+                  <button
+                    class="chip"
+                    onclick={() => waterfall.setEnabled(account.label, !account.enabled)}
+                    title={account.enabled ? "stop using this account" : "use this account again"}
+                  >{account.enabled ? "on" : "off"}</button>
                 </div>
-                {#if (pasting[account.label] ?? "").trim() && !looksLikeCode(pasting[account.label] ?? "")}
-                  <!-- A hint and never a block: this is a guess about a format
-                       the CLI defines, and a wrong guess must not be able to
-                       stop a sign-in finishing. -->
-                  <span class="dim">
-                    that does not look like a code — it is usually two parts joined by a #
-                  </span>
+
+                <!-- ── the ceilings ─────────────────────────────────────────── -->
+                {#if account.signedIn}
+                  <div class="caps">
+                    {#each capKinds(account.label) as kind (kind)}
+                      {@const used = usedOf(account.label, kind)}
+                      {@const cap = capOf(account.label, kind)}
+                      <label class="cap">
+                        <span class="capname">{nameOf(account.label, kind)}</span>
+                        <span class="used">{used === null ? "—" : pct(used)}</span>
+                        <span class="of">stop at</span>
+                        <input
+                          class="capin"
+                          type="number"
+                          min="0"
+                          max="100"
+                          placeholder="—"
+                          value={cap ?? ""}
+                          onchange={(e) => setCap(account.label, kind, e.currentTarget.value)}
+                        />
+                        <span class="pc">%</span>
+                      </label>
+                    {:else}
+                      <span class="dim">no windows read yet</span>
+                    {/each}
+                  </div>
                 {/if}
-              {/if}
-            </div>
-          {/if}
+
+                <div class="acts">
+                  {#if !account.signedIn}
+                    <button
+                      class="go"
+                      disabled={signinRunning[account.label]}
+                      onclick={() => signIn(account.label)}
+                    >{signinRunning[account.label] ? "signing in…" : "sign in"}</button>
+                  {:else}
+                    <button
+                      class="chip"
+                      onclick={() => signIn(account.label)}
+                      title="sign in again, replacing this account's credential"
+                    >
+                      sign in again
+                    </button>
+                    <button
+                      class="chip danger"
+                      onmousedown={(e) => e.stopPropagation()}
+                      onclick={() => {
+                        if (arming === `signout:${account.label}`) {
+                          void waterfall.signOut(account.label);
+                          arming = null;
+                          say(`signed ${account.label} out`);
+                        } else arming = `signout:${account.label}`;
+                      }}
+                    >{arming === `signout:${account.label}` ? "really sign out?" : "sign out"}</button>
+                  {/if}
+                  <span class="grow"></span>
+                  <button
+                    class="chip danger"
+                    onmousedown={(e) => e.stopPropagation()}
+                    onclick={() => {
+                      if (arming === `remove:${account.label}`) {
+                        void waterfall.remove(account.label);
+                        arming = null;
+                        say(`removed ${account.label} — it is still signed in`);
+                      } else arming = `remove:${account.label}`;
+                    }}
+                  >{arming === `remove:${account.label}` ? "really remove?" : "remove"}</button>
+                </div>
+
+                <!-- ── a sign-in in progress ──────────────────────────────────
+                     No terminal: `claude auth login` runs on pipes and opens the
+                     browser itself, so what is left to draw is the waiting, the URL
+                     for a browser that did not open, and the paste field for the
+                     manual path. Shown while running and kept after a failure, since
+                     the failure is the thing worth reading. -->
+                {#if signinRunning[account.label] || progressOf(account.label).fault}
+                  {@const p = progressOf(account.label)}
+                  <div class="signin">
+                    {#if p.fault}
+                      <span class="tag bad">{p.fault}</span>
+                    {:else if p.prompting}
+                      <span class="dim">
+                        waiting in the browser — if it asks you for a code, paste it here
+                      </span>
+                    {:else if p.opened}
+                      <span class="dim">a browser is open — finish signing in there</span>
+                    {:else}
+                      <span class="dim">starting…</span>
+                    {/if}
+
+                    {#if signinRunning[account.label]}
+                      <div class="signin-row">
+                        {#if p.url}
+                          <!-- The browser was opened by the CLI. This is for when it
+                               could not be — and it is a button rather than a link
+                               because a webview must not navigate itself to it. -->
+                          <button class="chip" onclick={() => openAuthorize(p.url!)}>
+                            open the sign-in page
+                          </button>
+                        {/if}
+                        <input
+                          class="codein"
+                          placeholder="paste the code, or the whole callback url"
+                          value={pasting[account.label] ?? ""}
+                          oninput={(e) =>
+                            (pasting = { ...pasting, [account.label]: e.currentTarget.value })}
+                          onkeydown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void paste(account.label);
+                            }
+                          }}
+                        />
+                        <button
+                          class="chip"
+                          disabled={!(pasting[account.label] ?? "").trim()}
+                          onclick={() => paste(account.label)}
+                        >hand it over</button>
+                        <span class="grow"></span>
+                        <button class="chip" onclick={() => cancelSignin(account.label)}>stop</button>
+                      </div>
+                      {#if (pasting[account.label] ?? "").trim() && !looksLikeCode(pasting[account.label] ?? "")}
+                        <!-- A hint and never a block: this is a guess about a format
+                             the CLI defines, and a wrong guess must not be able to
+                             stop a sign-in finishing. -->
+                        <span class="dim">
+                          that does not look like a code — it is usually two parts joined by a #
+                        </span>
+                      {/if}
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          </div>
         </div>
       {/each}
 
@@ -969,10 +1047,14 @@
     color: var(--st-fail);
   }
 
+  /* The gap between bands is deliberately wider than the gap inside one.
+     Proximity is the strongest grouping cue there is and it costs no ink, which
+     matters here because the alternatives are all colour or weight and neither
+     is available to structure on this wall. */
   .body {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
+    gap: 0.8rem;
     overflow-y: auto;
     padding-right: 0.2rem;
   }
@@ -1005,11 +1087,85 @@
     gap: 0.45rem;
     flex-wrap: wrap;
   }
-  .rank {
+  /* A band is structure, so it is drawn the way the wall draws furniture: one
+     rule in `--edge` down its left and nothing else. No fill, no colour, no
+     border round the group — the accounts inside already have boxes, and a box
+     inside a box reads as two things rather than as a heading over a list. */
+  .band {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  /* The header is a section rule with words on it — the quietest way to say
+     "a group starts here" that does not need a box. The hairline runs to the
+     right margin so the band reads as a full-width division of the list rather
+     than as a caption that happens to sit above some rows. */
+  .bandhead {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .bandhead::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--edge);
+  }
+  /* And the rows are held together by one rule down their left, which is what
+     carries the band's *extent* — the header says a group starts, this says
+     how far it goes. Indented enough to clear the account boxes' own borders,
+     which are `--rule` and lighter than this: a group rule the same weight as
+     its members' would read as a fourth box rather than as the thing holding
+     them. */
+  .bandrows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    border-left: 1px solid var(--edge);
+    padding-left: 0.6rem;
+    margin-left: 0.15rem;
+  }
+  .tiermark {
+    font-family: var(--util);
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--paper-dim);
+  }
+  .tierwhat {
     font-family: var(--util);
     font-size: 0.7rem;
     color: var(--paper-faint);
-    min-width: 1ch;
+  }
+
+  .tierset {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-family: var(--util);
+    font-size: 0.68rem;
+  }
+  .tierlab {
+    color: var(--paper-faint);
+  }
+  .tierin {
+    /* `.capin`'s arithmetic, two digits narrower: nobody has ninety tiers, and
+       the spinners go for the same reason — Chromium reserves room for them on
+       hover, which clips the figure in a field this size. */
+    width: 4.5ch;
+    background: var(--well);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    color: var(--paper);
+    font-family: var(--util);
+    font-size: 0.68rem;
+    padding: 0.05rem 0.2rem;
+    text-align: right;
+    appearance: textfield;
+  }
+  .tierin::-webkit-outer-spin-button,
+  .tierin::-webkit-inner-spin-button {
+    appearance: none;
+    margin: 0;
   }
   .label {
     font-family: var(--util);
