@@ -35,6 +35,144 @@ about what voice is for, and the cheapest one to build is not obviously the wron
 
 ---
 
+## What was decided, 2026-09-05
+
+**Design 3 is the channel and Design 2 is the interpreter. The grammar stays, as a fast path
+rather than as the product.** In the user's own terms: *"I don't think 1 will be good enough, I
+want to be able to speak quite naturally, possibly do several commands in one — however I think
+it's worth exploring 1 rather than jumping straight to agent call. I also want 3, the wall
+listens."*
+
+Two things in that reply change what is written below, and both are corrections rather than
+additions.
+
+**The cost of Design 2 was mispriced.** This file argued it in money. It is a subscription, so
+the cost is *allowance* — and that is not a softer version of the same objection, it is a
+different objection, because **the wall already measures allowance and money it never
+measured.** `limits.ts` reads the account's own windows off `/api/oauth/usage` and already
+answers `binding()`, `tierOf()`, `resetIn()` and `why()`; the horizon and the title-bar figure
+already draw it. So the steward's cost lands in an instrument that is on the wall today, and
+the degradation writes itself: **when the binding window goes `urgent`, the ladder stops
+escalating and the grammar becomes the whole of it**, with the wall saying so rather than going
+quiet. That is a feature, and it needs no new measurement. (It must read the same waterfall
+`accounts.rs` does — with several subscriptions signed in, a spent window is often a swap
+rather than a wall, and a voice layer that gave up on the first `urgent` would be giving up
+early.)
+
+**"Several commands in one" makes the unit a plan, not an op.** Everything below that talks
+about *an op* being confirmed or run is wrong by one level. The unit is an ordered list.
+
+### The ladder, and the rule that decides the rung
+
+```text
+audio ──▶ address matched offline ──▶ grammar ──▶ accounted for the whole utterance?
+                                                   ├─ yes ─▶ plan, now, free
+                                                   └─ no  ─▶ steward ─▶ plan
+                                                                        │
+                                        ┌───────────────────────────────┘
+                                        ▼
+                        every op only changes how you look?
+                          ├─ yes ─▶ run it
+                          └─ no  ─▶ speak the plan back, confirm, then run
+```
+
+**The escalation rule is that the grammar answers only when it can account for the entire
+utterance.** Leftover words escalate. This is not a new rule either — it is
+`resolveCommand`'s *exact-and-whole* clause from `commands.md`, one layer up, and it exists
+there for the identical reason:
+
+> The exact-and-whole rule is there because reading `/clear` out of `/clear the deck` would
+> throw away the rest of what was typed.
+
+A grammar that matched *"select card A"* out of *"select card A and open image.png in
+caravan"* would do exactly that, and silently. So a partial match is not a match. That single
+rule is what makes the two rungs safe to stack: the grammar cannot half-understand, so
+anything it does answer is complete, and everything else is the steward's. It is also why the
+grammar being rigid stops mattering — rigidity is only a cost when there is nothing underneath.
+
+What the grammar is *for*, under this arrangement, is narrower and much more defensible than
+being the product: **the utterances that must not cost a round trip.** *"select card A"*,
+*"stop"*, *"fit the wall"*, *"open image dot png in caravan"* — gestures whose whole value is
+being instant, where a two-second parse would make voice worse than the mouse it replaces. It
+should be small on purpose. Ten or fifteen entries, not fifty.
+
+### A plan is the unit, and it is one gesture
+
+```ts
+type Plan = {
+  /** In order. A plan is ordered even when the ops commute — you said them in an order. */
+  steps: { op: string; args: Record<string, unknown>; said: string }[];
+  /** The whole plan in one sentence, for speaking back. Built from `said`, never by a model. */
+  reads: string;
+  /** The strictest disposition among the steps. One confirm for the plan, never one per step. */
+  needs: "nothing" | "confirmation";
+};
+```
+
+Four rules, and each of them is a decision this file is making rather than reporting:
+
+- **One confirm for the plan, and the strictest step decides it.** *"Select card A and tell
+  caravan to halt"* is one confirm, not a free op followed by a question. Confirming twice for
+  one sentence is how a person learns to stop using a feature.
+- **No half-execution, ever.** If step three of five fails, the wall stops there and says which
+  step and why. The alternative — carrying on down the list — produces a wall in a state
+  nobody asked for, and the only thing worse than a misheard command is half of one.
+- **A plan is one entry in whatever remembers gestures**, the way a drag is one press
+  (`undo.md`). Note this is mostly moot, given the boundary above: the steps a plan may run
+  without asking are precisely the ones the undo stack refuses. Which is the point — there is
+  nothing to take back because nothing was changed.
+- **`reads` is templated from the plan's own data, never composed by a model.** *"send 'halt
+  work' to caravan and the auth work — yes?"* is a template over structured fields. It is free,
+  instant, deterministic, and identical every time, and a confirmation you have heard the same
+  way fifty times is one you can act on without listening hard. Only *answers to questions*
+  (*"what is card three doing?"*) need a model to write prose, and those are the case where
+  spending a turn on the wording is the whole point.
+
+### What the parse costs, and which model should do it
+
+The steward's job is not reasoning. It is **natural language to an ordered list of ops with
+resolved referents against a known wall** — structured extraction with a closed schema, which
+is the task class small models are best at. So: **Haiku 4.5 (`claude-haiku-4-5-20251001`)
+first**, for latency as much as for allowance, with Sonnet as the fallback if compound
+utterances or ambiguous referents parse badly. That ordering is a guess about parse quality and
+should be measured before it is believed — the probe is at the end.
+
+This also settles the shape question left open under Design 2 below. A fork of the addressed
+card (`aside.rs`'s mechanism) inherits that card's model, which for a wall of Opus cards is the
+wrong one for this job by a wide margin. So the steward wants to be **its own spawn with its own
+`--model`**, not a fork — which costs the `/btw` machinery but buys the model choice, and the
+model choice is worth more.
+
+### Latency, and what is drawn across it
+
+Design 3's address is matched offline and is therefore instant; the parse is not. So the gap
+between *"caravan,"* and anything happening is the one thing that will decide whether this feels
+good, and it has to be drawn:
+
+1. **The address lands immediately** — the card lights the moment its name is heard, before a
+   single word of payload. This is free, and it is most of the perceived responsiveness.
+2. **The partial transcript draws as it arrives**, under the addressed card. `glass.ts` already
+   sticks a thing to a pane in screen space without moving where it is.
+3. **The parse is `busy`-shaped, not `working`-shaped.** `turns.md` already separates these —
+   *"`busy` is a second question, not a widening of `working`"* — and a steward parse is work
+   running with no turn open, which is `busy` exactly.
+4. **Then the plan is spoken and drawn together**, because a confirmation you can only hear is
+   no use at the wall and one you can only see is no use across the room.
+
+### What is now unresolved, and was not before
+
+- **Barge-in.** With an always-on channel *and* a wall that speaks, the recogniser will hear
+  the wall. It must not act on its own voice, and it must stop talking when you start. Neither
+  is hard; both are easy to forget until they happen.
+- **Ducking librespot.** The wall plays music through the same device (`spotify.md`). Speaking
+  over it needs a duck, and the volume control is already there.
+- **Whether a misparse is worth a correction turn.** *"No, the other caravan"* is a second
+  round trip to fix a first one. The cheap answer is that a rejected confirmation drops the
+  plan and says nothing further, and you say it again. Worth trying that before building
+  anything cleverer.
+
+---
+
 ## The five examples are one shape, and it is not a grammar of sentences
 
 The instinct is to read the examples as five sentence patterns and start writing a grammar.
@@ -358,9 +496,23 @@ edge cases found.
 A model in the loop of this app's own controls, with cards running permissions-bypassed, is not
 something to hand a broadcast to. So:
 
-- **Cheap and reversible ops run immediately** — `focus`, `select`, `deselect`, `viewport`,
-  `fit`, `rename`, `post`, `widget.add`. `undo.ts` can take them back, and asking about them
-  would make voice slower than the mouse, which is the whole reason not to use voice.
+- **Ops that only change how you look run immediately** — `focus`, `select`, `deselect`,
+  `viewport`, `fit`, `find look-at`, `widget.add`, `rename`. Asking about them would make voice
+  slower than the mouse, which is the whole reason not to use voice. **The line is already
+  drawn, and not by this feature**: it is `undo.md`'s boundary, verbatim —
+
+  > Nothing that left this machine is on the stack — no prompt, no broadcast, no `!` line, no
+  > `actions` run, no relay message, no board notice, nothing git. […] **The viewport is not on
+  > it either.** Panning and zooming are how you *look* at this wall, not changes to it.
+  > Selection is out for the same reason.
+
+  Read the two halves together and the undo stack turns out to be a *complement* of the confirm
+  list: everything undo refuses because it left the machine is exactly what voice must confirm,
+  and everything undo refuses because it is only looking is exactly what voice may do at once.
+  Nothing has to be classified twice, and a new op's disposition is decided by a question the
+  repo already had an answer to. (An earlier draft of this file said these ops were safe
+  because *"`undo.ts` can take them back"*. It cannot — that is precisely the boundary above,
+  and the real argument is the better one.)
 - **Everything else proposes.** The steward returns a plan; the plan comes up through the
   existing `ask_user` panel with the affected cards lit on the wall behind it. One press
   accepts. This is not new surface: it is the app's own confirm gesture, being used for the
@@ -379,11 +531,16 @@ gains is a thing you can then ask for out loud, with nothing added to a grammar.
 
 ### What it costs
 
-Money and latency per utterance — a request, so seconds rather than milliseconds, and *"select
-card A"* becoming a billed round trip is a strange trade for a gesture the mouse does
-instantly. Non-determinism where Design 1 has a test. A new tool tier that can drive the wall.
-And the honest one: it puts a language model between you and the controls of the thing you use
-to supervise language models.
+**Allowance and latency per utterance** — see the correction under *What was decided*: this
+section originally said *money*, which overstated it, and the difference matters because the
+wall already has an instrument for allowance and never had one for money. What survives the
+correction is the latency: a request is seconds rather than milliseconds, and *"select card A"*
+becoming a round trip is a strange trade for a gesture the mouse does instantly. That is the
+whole argument for keeping the grammar as a fast path underneath.
+
+Non-determinism where Design 1 has a Bun suite. A new tool tier whose subject is the window.
+And the honest one, which no correction touches: it puts a language model between you and the
+controls of the thing you use to supervise language models.
 
 **Best if** you want to *talk* to the wall rather than learn to command it, and you would
 rather pay per sentence than memorise a grammar.
@@ -526,9 +683,21 @@ In this repo's own style — one variable each, and say what it returned.
 | What does a local Whisper cost here — latency for a five-second utterance, model size, and does `candle` build without a C toolchain? | a scratch crate each for `whisper-rs` and `candle`. The toolchain half is the one that decides between them |
 | What does an always-on stream cost in CPU, and does it show up in the meter? | `perf.ts` and the process meter already exist; run it for an hour |
 | Do card handles survive being spoken? | the cheapest probe of all: read twenty real card titles off this wall aloud into whichever engine wins, and count |
+| Can Haiku 4.5 parse a compound utterance into an ordered plan with referents resolved, and how fast? | needs no audio and no app: a `tools/probe-steward.ts` feeding thirty written utterances — compound, ambiguous, and deliberately malformed — to the tool schema against a fixture wall, and scoring the plans by hand. **This is the probe that decides whether the decided shape is the right one**, and it is runnable today |
+| Does the recogniser hear the wall's own voice? | play the read-back through the speakers with the stream live and see whether a plan comes back addressed to nobody |
 | Does `rank()` actually find a file from a spoken filename, and how much normalisation does it need? | no app and no microphone required — feed real transcript strings (`image png`, `image dot png`, `assets image P N G`) into the existing scorer against this repo's own file list and look at the top three. A `test/voice.test.ts` case from the start, since the answer is a fixture rather than a measurement |
 
 ## A recommendation, which is a recommendation
+
+**Superseded by the decision at the top of this file** — kept because two thirds of it held and
+the third that did not is instructive. It recommended 1 → 3 with 2 last, on the strength of 2's
+cost. The cost was mispriced (money, not allowance) and the recommendation leaned on it, so 2
+moved from *last* to *the interpreter the whole thing routes through*. What held: that 1 is
+nearly all shared work and is not thrown away, that 3 is the reason, and that 2 is much smaller
+and safer built as a fall-through from 1 than on its own. That last point is now the
+architecture rather than a suggestion.
+
+The original text follows.
 
 **Build 1, then 3, and treat 2 as an addition to either rather than an alternative.**
 
