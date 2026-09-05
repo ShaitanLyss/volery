@@ -771,20 +771,30 @@ const SPEND_WINDOW_MS: i64 = 24 * 60 * 60 * 1_000;
 pub fn allowance_schema() -> serde_json::Value {
     serde_json::json!({
         "name": ALLOWANCE_TOOL,
+        /* "the Claude subscription", definite and singular, was half of the
+           bug this file's `scope_line` fixes: a wall can hold several accounts
+           and swap a card between them, so the article was a claim about the
+           wall made by a tool that reads one member of it. The description is
+           where an agent forms its expectation of what the number means, so it
+           has to be the first place that says "one account" out loud. */
         "description":
-            "How much of the Claude subscription's allowance is left, and what this \
-             wall has spent in the last day. Read it **before** committing to \
-             something expensive — a fan-out of subagents, an exhaustive audit, a \
+            "How much of **this card's own account's** Claude allowance is left, and \
+             what this wall has spent in the last day. Read it **before** committing \
+             to something expensive — a fan-out of subagents, an exhaustive audit, a \
              long autonomous loop — so the shape of the work is a decision rather \
              than something a rate limit makes for you halfway through.\n\n\
-             What comes back is the account's own figures: a percentage used per \
-             window, when each rolls, and the plan they are a percentage of. Costs \
-             nothing and takes no other conversation's time.\n\n\
-             Use it to scale ambition, and say what you did: if the session window is \
-             nearly spent, one careful pass beats ten agents, and the user should be \
-             told that is why. If there is plenty, spend it. **Do not** call it every \
-             turn out of habit — it answers a question about a plan, and a plan does \
-             not change between one edit and the next.",
+             What comes back is one account's own figures: a percentage used per \
+             window, when each rolls, and the plan they are a percentage of. A wall \
+             can hold several accounts and move a card between them, so a spent \
+             reading here is not a spent wall — the answer says how many other \
+             accounts there are, and it does not read them. Costs nothing and takes \
+             no other conversation's time.\n\n\
+             Use it to scale ambition, and say what you did. With nothing behind it, \
+             a nearly-spent window means one careful pass rather than ten agents, and \
+             the user should be told that is why. With another account usable, a \
+             spent one is a reason to expect a swap and not a reason to stop. **Do \
+             not** call it every turn out of habit — it answers a question about a \
+             plan, and a plan does not change between one edit and the next.",
         "inputSchema": { "type": "object", "properties": {} }
     })
 }
@@ -810,18 +820,29 @@ pub fn handle(
 fn do_allowance(app: &AppHandle, caller: &str) -> String {
     /* One lock for both readings. They are two unrelated questions of the same
        connection and there is no reason to contend for it twice. */
-    let (spent, label) = app
+    let (spent, label, usable) = app
         .try_state::<crate::store::Store>()
         .and_then(|s| {
             s.0.lock().ok().map(|conn| {
                 (
                     crate::store::spend_over(&conn, now_ms() - SPEND_WINDOW_MS),
                     crate::store::account_of(&conn, caller),
+                    crate::accounts::usable_labels(app, &conn),
                 )
             })
         })
-        .unwrap_or((0.0, None));
+        .unwrap_or((0.0, None, Vec::new()));
     let day = format!("This wall has spent ${spent:.2} in the last 24 hours.");
+
+    /* How much of the wall this reading is *not*. The scoping below is right and
+       stays; what was missing is any admission of it, and a percentage with no
+       scope stated is read as the wall's. A card with no account of its own is
+       on the CLI's global sign-in, which is not one of these rows, so every
+       usable account is one this reading passes over. */
+    let others = usable
+        .iter()
+        .filter(|l| Some(l.as_str()) != label.as_deref())
+        .count();
 
     /* **The asking card's account, not the wall's.** This passed `""` — the
        CLI's own sign-in — for every caller, so a card spawned on a registered
@@ -859,7 +880,8 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
                  thing to scale to. But it is also what a sign-in that has expired or \
                  was never made looks like, and those are worth fixing rather than \
                  working around. Do not report to the user that they are on per-token \
-                 billing on the strength of this line alone."
+                 billing on the strength of this line alone.{}",
+                elsewhere(others)
             )
         }
     };
@@ -870,7 +892,7 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
        what gets asked, a percentage with no name on it is a percentage the user
        cannot check. `source` is where the credential was found and never a
        fragment of it — the rule the rest of this file keeps. */
-    out.push_str(&format!("Account: {}.\n", report.source));
+    out.push_str(&scope_line(&report.source, others));
     if let Some(plan) = &report.plan {
         out.push_str(&format!("Plan: {plan}.\n"));
     }
@@ -887,7 +909,15 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
             Some(s) => format!(" ({s})"),
             None => String::new(),
         };
-        let binding = if w.active { " — this is the binding one" } else { "" };
+        /* "this is the binding one" was a sentence about the wall wearing a
+           sentence about a window: on a waterfall the binding window of one
+           account binds this card until it is swapped, and binds nothing else.
+           Naming what it binds costs three words. */
+        let binding = if w.active {
+            " — the binding one on this account"
+        } else {
+            ""
+        };
         out.push_str(&format!(
             "- {}{scope}: {:.0}% used{resets}{binding}\n",
             w.kind, w.used
@@ -912,7 +942,51 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
         .iter()
         .map(|w| w.used)
         .fold(0.0f64, f64::max);
-    format!("{out}\n{day}\n\n{}", advice_for(worst))
+    format!("{out}\n{day}\n\n{}", advice_for(worst, others))
+}
+
+/* -- saying how much of the wall this is -----------------------------------
+ *
+ * The scoping this file does is right and is not what follows. `token` reads the
+ * asking card's *own* account, for the reason written above it, and that stays.
+ * What was wrong is that the answer never said so: a percentage arrives with no
+ * scope attached, an agent reads it as the state of the wall, and on a waterfall
+ * it is the state of one member of it.
+ *
+ * It cost a real session. A card on a spent `personal` account read "this is the
+ * binding one / almost nothing is left / do not fan out", believed it, told the
+ * user to hold four and a half hours of work and declined to start anything. The
+ * user had three accounts and the two biggest were untouched (sink `0b4ba579`).
+ *
+ * So neither of the two functions below reads another account -- that would undo
+ * the scoping, and the note on `token` is the argument for it -- and both of them
+ * stop the answer from implying there are none.
+ */
+
+/// How many other usable accounts this reading passes over, said in words, or
+/// nothing at all when it passes over none.
+///
+/// A suffix rather than a sentence of its own, because it has to attach to the
+/// failure arm too: "no allowance could be read for this account" is *more*
+/// likely to stop an agent than a high percentage is, and it was equally silent
+/// about the rest of the wall.
+fn elsewhere(others: usize) -> String {
+    match others {
+        0 => String::new(),
+        1 => " One other account on this wall is usable, and nothing above is a reading \
+              of it."
+            .to_string(),
+        n => format!(
+            " {n} other accounts on this wall are usable, and nothing above is a reading \
+             of any of them."
+        ),
+    }
+}
+
+/// Whose figures these are, and whether they are the wall's -- the first line of
+/// the answer, so the scope is established before any number is.
+fn scope_line(source: &str, others: usize) -> String {
+    format!("Account: {source}.{}\n", elsewhere(others))
 }
 
 /// What to *do* about the number, which is the whole point of reporting one.
@@ -921,17 +995,51 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
 /// ignored: the agent goes on to do exactly what it was going to do, because
 /// nothing told it what a different number would have meant. Pure, so the ladder
 /// is tested rather than eyeballed.
-fn advice_for(worst: f64) -> &'static str {
-    if worst >= 90.0 {
-        "Almost nothing is left. Do the smallest correct thing, do not fan out, and tell \
-         the user the allowance is why."
-    } else if worst >= 70.0 {
-        "Enough for careful work and not for a wide fan-out. Prefer one good pass over \
-         several speculative ones, and say that is the trade you made."
-    } else if worst >= 40.0 {
-        "Comfortable. Spend it on being thorough where thoroughness pays."
+///
+/// Two ladders, because the same percentage means two different things. Alone on
+/// the wall, a spent window really is the end of the work, and the strict arm is
+/// the one that was always right. With another account usable, the same window
+/// means this *card* is close to being swapped -- which is a thing to expect, not
+/// a thing to stop for, and no rung of the second ladder may say otherwise.
+fn advice_for(worst: f64, others: usize) -> String {
+    if others == 0 {
+        return if worst >= 90.0 {
+            "Almost nothing is left. Do the smallest correct thing, do not fan out, and tell \
+             the user the allowance is why."
+        } else if worst >= 70.0 {
+            "Enough for careful work and not for a wide fan-out. Prefer one good pass over \
+             several speculative ones, and say that is the trade you made."
+        } else if worst >= 40.0 {
+            "Comfortable. Spend it on being thorough where thoroughness pays."
+        } else {
+            "Plenty. There is no reason to hold back on this account's behalf."
+        }
+        .to_string();
+    }
+
+    let rest = if others == 1 {
+        "one usable account behind it".to_string()
     } else {
-        "Plenty. There is no reason to hold back on this account's behalf."
+        format!("{others} usable accounts behind it")
+    };
+    if worst >= 90.0 {
+        format!(
+            "This account is nearly spent, and it has {rest} that were not read here. A card \
+             whose account runs out is swapped onto the next one, so this is a reason to \
+             expect a swap rather than to stop: scale the work to the job. If you mention a \
+             limit to the user, name the account -- do not report the wall as spent on the \
+             strength of one member of it."
+        )
+    } else if worst >= 70.0 {
+        format!(
+            "This account is well into its window, with {rest}. Expect a swap before you \
+             expect a wall: scale the work to the job, and name the account rather than the \
+             wall if a limit comes up."
+        )
+    } else if worst >= 40.0 {
+        format!("Comfortable, with {rest}. Spend it on being thorough where thoroughness pays.")
+    } else {
+        format!("Plenty, with {rest}. There is no reason to hold back.")
     }
 }
 
@@ -1085,20 +1193,73 @@ mod tests {
         assert!(d.contains("Do not"), "{d}");
     }
 
-    /// The number does nothing without the instruction — see `advice_for`.
+    /// Every rung of the ladder, on a wall with one account — see `advice_for`.
+    /// The number does nothing without the instruction.
     #[test]
     fn the_advice_turns_at_each_step_and_never_says_nothing() {
-        assert!(advice_for(95.0).contains("smallest correct thing"));
+        assert!(advice_for(95.0, 0).contains("smallest correct thing"));
         assert!(
-            advice_for(90.0).contains("smallest correct thing"),
+            advice_for(90.0, 0).contains("smallest correct thing"),
             "the edge belongs to the stricter arm"
         );
-        assert!(advice_for(75.0).contains("fan-out"));
-        assert!(advice_for(50.0).contains("Comfortable"));
-        assert!(advice_for(0.0).contains("Plenty"));
+        assert!(advice_for(75.0, 0).contains("fan-out"));
+        assert!(advice_for(50.0, 0).contains("Comfortable"));
+        assert!(advice_for(0.0, 0).contains("Plenty"));
         for w in [0.0, 39.9, 40.0, 69.9, 70.0, 89.9, 90.0, 100.0, 140.0] {
-            assert!(!advice_for(w).is_empty(), "{w}");
+            for others in [0, 1, 4] {
+                assert!(!advice_for(w, others).is_empty(), "{w} / {others}");
+            }
         }
+    }
+
+    /// The sentence that cost a session, and the whole of `0b4ba579`.
+    ///
+    /// A card on a spent account was told "almost nothing is left, do not fan
+    /// out", believed it about the *wall*, and stopped — with two untouched
+    /// subscriptions behind it. So: with another account usable, nothing in the
+    /// answer may be a thing an agent would down tools over. Asserted against the
+    /// phrases that actually did it rather than against a paraphrase of them.
+    #[test]
+    fn no_rung_tells_an_agent_to_stop_while_another_account_is_usable() {
+        const STOPPERS: [&str; 4] = [
+            "Almost nothing is left",
+            "do not fan out",
+            "not for a wide fan-out",
+            "smallest correct thing",
+        ];
+        for w in [0.0, 39.9, 40.0, 69.9, 70.0, 89.9, 90.0, 100.0, 140.0] {
+            for others in [1, 2, 7] {
+                let said = advice_for(w, others);
+                for stop in STOPPERS {
+                    assert!(!said.contains(stop), "{w} / {others}: {said}");
+                }
+                /* And it must still say the others are there. An answer that
+                   merely stops discouraging is one an agent reads as a wall with
+                   one account on it, which is the same wrong picture. */
+                assert!(said.contains("behind it"), "{w} / {others}: {said}");
+            }
+        }
+    }
+
+    /// A reading with no scope on it is read as the wall's, so the scope goes
+    /// first — and says nothing where there is nothing to say.
+    #[test]
+    fn the_answer_names_its_account_and_owns_up_to_the_rest_of_the_wall() {
+        let alone = scope_line("the 'personal' account", 0);
+        assert!(
+            alone.starts_with("Account: the 'personal' account."),
+            "{alone}"
+        );
+        assert!(!alone.contains("usable"), "nothing to disclaim: {alone}");
+
+        let one = scope_line("the 'personal' account", 1);
+        assert!(one.contains("One other account"), "{one}");
+
+        let many = scope_line("the CLI's sign-in", 3);
+        assert!(many.contains("3 other accounts"), "{many}");
+        assert!(many.contains("nothing above is a reading"), "{many}");
+
+        assert!(elsewhere(0).is_empty());
     }
 
     #[test]

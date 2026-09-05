@@ -190,6 +190,38 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
     Ok(out)
 }
 
+/// The labels that could actually take work: registered, switched on, and with
+/// a credential in their store. Rank order, like everything else here.
+///
+/// The Rust mirror of `accounts.ts::usable`, and it exists for one caller.
+/// `limits.rs` answers an agent's question about **one** account's allowance —
+/// its own card's, and the note on `token` is the long argument for why that
+/// scoping is right — and it has to be able to say whether that account is the
+/// whole wall. Reported as though it were, a spent account reads as a spent
+/// subscription: a card did exactly that, told the user to hold four and a half
+/// hours of work, and declined to start anything, with two untouched
+/// subscriptions sitting behind it in the order (sink `0b4ba579`).
+///
+/// `signed_in` is a file check and this runs under the store's lock, which is
+/// the bargain `list_accounts` above already strikes: a handful of `is_file()`
+/// calls against the local disk, against a second acquisition of a mutex the
+/// whole wall shares. Degrades to empty rather than erroring — a caller that
+/// cannot count the wall's accounts should say nothing about them, not refuse to
+/// answer the question it was actually asked.
+pub fn usable_labels(app: &AppHandle, conn: &rusqlite::Connection) -> Vec<String> {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT label FROM account WHERE enabled != 0 ORDER BY rank, label")
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok)
+        .filter(|l| signed_in(app, l))
+        .collect()
+}
+
 /// Add an account to the registry, at the end of the order.
 ///
 /// Registering and signing in are two gestures, not one: an account can exist

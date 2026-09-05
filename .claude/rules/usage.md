@@ -368,6 +368,28 @@ off in the middle of it.
   advice attached gets read, agreed with, and then ignored — the agent does exactly what it was
   going to do, because nothing told it what a different number would have meant. It is pure so
   the ladder is tested.
+- **And there are two ladders, because the reading is one account and the advice was about the
+  wall.** The scoping above is right; the *prose around it* was not. "this is the binding one",
+  "almost nothing is left", "do not fan out" are all claims about a wall, derived from one
+  member of it, and on 2026-09-04 a card on a spent `personal` account believed them: it told
+  the user to hold four and a half hours of work and declined to start anything, with two
+  untouched subscriptions sitting behind it in the order (sink `0b4ba579`). The failure is worth
+  naming precisely, because it is not a wrong number — every figure in that answer was correct.
+  **A reading with no scope stated is read at the widest scope available**, and the widest scope
+  an agent has in mind is the wall.
+
+  So three things say the scope now, and none of them reads another account, which would undo
+  the scoping. `scope_line` opens the answer with whose figures these are and how many usable
+  accounts it passed over (`accounts::usable_labels`, the Rust mirror of `accounts.ts::usable`),
+  and the same suffix is attached to the *failure* arm — "could not be read" is more likely to
+  stop an agent than a high percentage is, and it was equally silent. `is_active` reads "the
+  binding one **on this account**", three words that stop a window binding a card from reading
+  as a window binding the wall. And `advice_for` takes the count: alone, the strict ladder is
+  the one that was always right; with another account usable, every rung says *expect a swap*
+  and none of them may say anything an agent would down tools over — which is asserted directly,
+  against the four phrases that actually did it. The tool's own description lost its definite
+  article for the same reason; it is where an agent forms its expectation of what the number
+  covers.
 - **A rolling day, not "today".** `spend_since`'s cutoff comes from the front end because the
   timezone lives there; nothing in Rust knows where midnight is, and a guessed one is wrong
   twice a year and every morning before breakfast. `store::spend_over` takes the window instead
