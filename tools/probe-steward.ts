@@ -554,6 +554,23 @@ async function ask(model: string, say: string): Promise<{ said: string; ms: numb
        the shipped steward owes the same pair. */
     "--strict-mcp-config",
     "--mcp-config", '{"mcpServers":{}}',
+    /* **`--tools` and `--mcp-config` are variadic, and the prompt is a
+       positional — so neither may be the last flag.** Both are `<x...>` in the
+       CLI's own help, and commander goes on collecting until it meets something
+       beginning with `-`. Put either immediately before the prompt and it eats
+       it, which fails in two different disguises:
+
+         claude … --mcp-config '{"mcpServers":{}}' "say this"
+           → Invalid MCP configuration: MCP config file not found: …/say this
+         claude … --tools "" "say this"
+           → Input must be provided either through stdin or as a prompt argument
+
+       The first cost three bad measurements on 2026-09-05: it exits in ~600ms,
+       and a timing harness reads that as *fast* rather than as *failed*, so
+       "MCP loading costs 1.4s" was recorded off a run that never made a
+       request. **A wrong argv here does not look like a wrong argv; it looks
+       like a result.** `--append-system-prompt` sits last on purpose — it takes
+       exactly one value, which terminates whatever was collecting above it. */
     "--append-system-prompt", systemPrompt(),
   ];
 
