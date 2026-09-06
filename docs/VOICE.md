@@ -432,8 +432,26 @@ behaviour inside a wry window is unverified here and its failure mode is a silen
 promise; the recognition half of the Web Speech API (`webkitSpeechRecognition`) is a
 Chrome-branded feature that reaches Google's servers and is very likely absent from WebView2
 entirely; and audio arriving in the front end would have to be shipped back down to Rust
-anyway for any local engine. **Capture in Rust, in every design.** The webview's *output* half
-(`speechSynthesis`) is a different question with a different likely answer — see *Unknowns*.
+anyway for any local engine. **Capture in Rust, in every design.**
+
+**And that closes the question rather than deferring it, which this file got wrong once.** The
+*Unknowns* table below used to carry two rows — does `getUserMedia` work here, is
+`webkitSpeechRecognition` present — written as part of a sweep of everything not yet known, and
+never reconciled against the decision three paragraphs up. They were dead the moment capture
+moved to Rust: **the webview never sees audio in any design here.** A transcript is text and
+goes up the ordinary event pipeline, so there is nothing for `getUserMedia` to be needed for
+and no permission to negotiate; and `webkitSpeechRecognition` is doubly moot, since Design 3's
+always-on microphone forces local recognition regardless of what Chromium would have offered.
+Both rows are gone. Probing them would have cost an afternoon to answer a question about a road
+not taken — and worse, a green answer would have read as an option still open.
+
+**The webview's *output* half is a genuinely separate question and stays open.** Nothing about
+where audio is *captured* decides where it is *played*: `speechSynthesis.speak()` is one line
+against a WinRT `SpeechSynthesizer` piping PCM into rodio, and the voices available differ.
+Ducking librespot is not the tiebreak it first looks like — the volume control is already
+there and reachable by `invoke` from either side, and `speechSynthesis` fires an `end` event
+to un-duck on — so this comes down to voice quality and nothing else, which is exactly what a
+probe can answer.
 
 ### And the key it is held down with has a ladder to join
 
@@ -791,9 +809,7 @@ In this repo's own style — one variable each, and say what it returned.
 
 | unknown | probe |
 |---|---|
-| Does `getUserMedia` work in this wry/WebView2 window, and if it fails, how? | a `tools/probe-mic.ts` page loaded in a dev build; expect either a permission event nobody handles or a silent rejection |
-| Does `window.speechSynthesis` work in WebView2, and which voices? | same page. If yes, Design 3's output half costs nothing at all |
-| Is `webkitSpeechRecognition` present? | same page. Expected absent — it is Chrome-branded and reaches Google |
+| Does `window.speechSynthesis` work in WebView2, and which voices? | a `tools/probe-voice.html` loaded in a dev build. **The only webview audio question left** — see below. If yes, Design 3's output half costs nothing at all |
 | Does Windows' `SpeechRecognizer` with a **list constraint** run fully offline, and what does it cost to construct? | a scratch crate per `build.md`'s variant 3, with the `windows` crate and the speech feature — *not* an `examples/` probe, which cannot run on the gnu toolchain |
 | Does its **topic** (dictation) constraint really require the online privacy setting? | the same crate, with the setting off. This decides whether Design 1 needs Whisper at all |
 | What does a local Whisper cost here — latency for a five-second utterance, model size, and does `candle` build without a C toolchain? | a scratch crate each for `whisper-rs` and `candle`. The toolchain half is the one that decides between them |
