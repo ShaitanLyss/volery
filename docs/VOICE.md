@@ -788,6 +788,37 @@ whichever way the choice goes.
    holding one input stream, a job-object-free concern since nothing is spawned, emitting audio
    frames or transcripts as events the front end folds. Push-to-talk and always-on are the same
    module with a different gate.
+
+   **Where the line between Rust and the front end falls, since this file asserted `voice.ts`
+   without ever arguing it.** Rust owns **audio → text and the wake gate**; the front end owns
+   **text → plan → execution**. The parse is in TypeScript because *both of its ends are*, not
+   because the front end happens to be written in it:
+
+   - **The wall's state is there.** Card titles, `Region.project` → `cwd`, and the file list
+     (`finding.md`: *a file list fetched once and scored here*) are front-end `$state`.
+     Resolving referents in Rust means shipping the whole wall down per utterance or keeping a
+     second copy of it.
+   - **The plan can only execute there.** Every step lands on `ControlHost` — `h.skein.send`,
+     `h.studio.pickCards`, `h.finder.lookAt`. A plan built in Rust crosses straight back.
+   - **The scorer already exists and is already tested.** A Rust file-resolver would be a
+     second `score()` that has to agree with the first, which is the restated-registry rot
+     `build.md` names by example: `ask.rs`'s roster list went stale twice while compiling
+     perfectly every time.
+   - **The pipeline is already this shape.** Reader thread → `app.emit` → the front end folds
+     it. A transcript is one more event on the pipe that carries `conv:event`.
+
+   **The wake gate is the exception, and it is a real one.** Design 3's address match — is
+   *"caravan,"* one of the handles on this wall — runs on every audio frame and decides whether
+   anything goes up the pipe at all. Hot path, closed-set match rather than a parse, and it
+   belongs beside the recogniser; sending continuous partials to the webview only to discover
+   nobody was addressed is the wrong shape. So the split is by *what the code needs*, not by
+   language: state-hungry and once-per-utterance goes up, frame-rate and self-contained stays
+   down.
+
+   One argument deliberately **not** relied on: `build.md`'s *"~570 assertions and not one of
+   them runs here by default"* is about a machine with no MSVC, and this one has had it since
+   2026-08-17. What is left is a speed claim — 2953 Bun tests in 1.4s against a compile-and-link
+   — which is worth something for a table that will be iterated on, and is not the decider.
 2. **`src/lib/voice.ts`, pure**, added to the `test` script — the verb table, the four
    referent resolvers, the payload boundary, and the spoken-path normalisation. Even Design 2
    wants it: something has to hold the cheap-versus-proposes table, and a model must not be the
