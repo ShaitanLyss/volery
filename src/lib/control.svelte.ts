@@ -32,7 +32,8 @@ import { living, type EffectKind } from "./ambience";
 import { readingScale } from "./layout";
 import { pressed, type Kind } from "./pick";
 import { spotOf } from "./glass";
-import { matchCards } from "./voice";
+import { hear, matchCards, spoke } from "./voice";
+import type { Voicing } from "./voicing.svelte";
 import type { Board } from "./images.svelte";
 import type { Widgets } from "./widgets.svelte";
 import type { Meter } from "./meter.svelte";
@@ -482,9 +483,15 @@ export class Control {
   readonly #gen: number;
   #unlisten: (() => void) | null = null;
 
-  constructor(host: ControlHost) {
+  /** The one voice seam, so `voice.say` drives the same thing a spoken sentence
+   *  will. Held rather than made per op, because it caches a file list per
+   *  territory and a fresh one every call would ripgrep the tree per sentence. */
+  #voicing: Voicing;
+
+  constructor(host: ControlHost, voicing: Voicing) {
     this.#gen = claim();
     this.#host = host;
+    this.#voicing = voicing;
     this.#ops = this.#table();
     this.#watchErrors();
     void this.#attach();
@@ -2390,6 +2397,35 @@ export class Control {
         if (op.y !== undefined) h.studio.y = Number(op.y);
         if (op.scale !== undefined) h.studio.scale = Number(op.scale);
         return { viewport: { x: h.studio.x, y: h.studio.y, scale: h.studio.scale, lod: h.studio.lod } };
+      },
+
+      /* ── voice ──
+       *
+       * The whole path from a sentence to the wall moving, driven with text
+       * instead of a microphone. That is not a stand-in for the real thing so
+       * much as the thing minus its front door: `voice.ts` never sees audio in
+       * any design, a transcript is text on the ordinary event pipeline, and so
+       * everything below the recogniser is exactly this. It is drivable, and
+       * therefore testable, before a single frame of audio has been captured.
+       *
+       * `voice.hear` parses and runs nothing, so a test can assert what was
+       * understood apart from what it did — the two fail differently and a
+       * surface that could only see the second could not tell them apart. */
+      "voice.hear": async (op) => {
+        const say = String(op.say ?? op.text ?? "");
+        const plan = hear(say, await this.#voicing.wallFor(say));
+        return { plan, escalated: plan === null };
+      },
+
+      "voice.say": async (op) => {
+        const say = String(op.say ?? op.text ?? "");
+        const heard = await this.#voicing.say(say, !!op.confirmed);
+        await settle();
+        return {
+          ...heard,
+          /* What the wall would say back, which is "" whenever it worked. */
+          spoke: heard.kind === "carried" ? spoke(heard.outcome) : "",
+        };
       },
 
       fit: () => {

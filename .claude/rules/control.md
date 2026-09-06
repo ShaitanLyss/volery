@@ -110,6 +110,30 @@ this suite explains why it would be a guard that cannot fail: this suite runs wi
 in the background, which is exactly where `watching` re-arms `following` on every arriving
 event. The judgement lives in `follow.ts` and is tested there, with no DOM to arrange.
 
+### Voice is the second pair of hands, and it is not a client of this
+
+`voice.hear` and `voice.say` drive the whole path from a sentence to the wall moving, with a
+keyboard where the microphone will be. That is not a stand-in: `voice.ts` never sees audio in
+any of the three designs in `docs/VOICE.md` — a transcript is text on the ordinary event
+pipeline — so everything below the recogniser is exactly what these two ops drive. The
+feature is therefore drivable, and testable, before a frame of audio has been captured.
+
+They are here because this is the surface for driving the app from outside, and **not**
+because voice goes through it. `App.svelte` builds the `ControlHost` unconditionally and hands
+the same object to `new Control(...)` and to `new Voicing(...)`; only the listening socket is
+gated on `SKEIN_CONTROL`. Arming a loopback port in every install so a voice layer had
+somewhere to POST would be the parallel path rule one exists to forbid, wearing a disguise.
+
+The pair is deliberate and it is the same split as `press` versus `real.press`, one subsystem
+over: **`voice.hear` parses and runs nothing**, so a test can assert what was *understood*
+apart from what was *done*. Those two fail differently — a misparse and a dead handle look
+identical from a surface that can only see the wall afterwards — and the day the steward rung
+lands, `voice.hear` is the op that can score it without spending anything on the wall.
+
+`voice.say` will not carry out a plan whose disposition is `confirmation` unless it is passed
+`confirmed: true`. That gate is in `Voicing.say` rather than in the op, so a future keystroke
+cannot forget it.
+
 There is no `eval` op, on purpose. Editing any front-end file hot-reloads `App.svelte` and
 constructs a second `Control`; a generation counter on `window` (not module scope) keeps the
 superseded one silent — this once caused a single `open` op to spawn two agents.

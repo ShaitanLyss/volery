@@ -3083,6 +3083,79 @@ ti("End reaches the bottom of the file, because the sheet holds the keyboard", a
   await ctl("find", { do: "hide" });
 });
 
+/* ── voice, driven with text ─────────────────────────────────────────────
+ *
+ * The whole path from a sentence to the wall moving, with a keyboard where the
+ * microphone will be. That is not a stand-in: `voice.ts` never sees audio in
+ * any of the three designs, a transcript is text on the ordinary event
+ * pipeline, and so everything below the recogniser is exactly what these ops
+ * drive. See `docs/VOICE.md`.
+ *
+ * `voice.hear` runs nothing, which is what lets a test separate *what was
+ * understood* from *what happened* — the two fail differently, and a surface
+ * that could only see the second could not tell a misparse from a dead handle.
+ */
+
+t("a sentence it is certain of resolves against the real wall", async () => {
+  /* The scratch card by its own title, which is what a mouth would produce.
+     Nothing here needs the title to be anything in particular: the claim is
+     that the wall the parse ran against is the live one. */
+  const { title } = await cardOf(card);
+  const heard = await ctl("voice.hear", { say: `select ${title}` });
+  expect(heard.escalated).toBe(false);
+  expect(heard.plan.steps.map((s: { op: string }) => s.op)).toEqual(["select"]);
+  expect(heard.plan.steps[0].args.cards).toEqual([card]);
+  expect(heard.plan.needs).toBe("nothing");
+});
+
+t("a sentence with more in it than the grammar can account for escalates", async () => {
+  const { title } = await cardOf(card);
+  const heard = await ctl("voice.hear", { say: `select ${title} and tell it to stop` });
+  expect(heard.escalated).toBe(true);
+  expect(heard.plan).toBeNull();
+});
+
+t("a plan that only changes how you look at the wall simply happens", async () => {
+  await ctl("deselect");
+  const { title } = await cardOf(card);
+  const said = await ctl("voice.say", { say: `select ${title}` });
+  expect(said.kind).toBe("carried");
+  expect(said.outcome).toEqual({ kind: "done", ran: 1 });
+  /* Success says nothing, which is the design and not an empty field. */
+  expect(said.spoke).toBe("");
+  /* And the wall actually moved — the claim the parse alone cannot make. */
+  expect((await snapshot()).studio.selected).toContain(card);
+});
+
+t("a plan that would change the wall is held for a yes", async () => {
+  const { title } = await cardOf(card);
+  const said = await ctl("voice.say", { say: `stop ${title}` });
+  expect(said.kind).toBe("confirm");
+  expect(said.plan.needs).toBe("confirmation");
+  /* Nothing ran: no outcome came back at all, which is stronger than an outcome
+     saying nothing happened. */
+  expect(said.outcome).toBeUndefined();
+});
+
+t("deselecting by voice is the wall's own deselect", async () => {
+  const { title } = await cardOf(card);
+  await ctl("voice.say", { say: `select ${title}` });
+  expect((await snapshot()).studio.selected.length).toBeGreaterThan(0);
+  await ctl("voice.say", { say: "deselect" });
+  expect((await snapshot()).studio.selected).toEqual([]);
+});
+
+t("a file named out loud opens in the viewer", async () => {
+  /* `voice.ts` normalises the spoken separator, and the territory's file list is
+     fetched on demand — so this is also the only test that the fetch lands. */
+  const dir = WALL.split(sep).pop()!;
+  const heard = await ctl("voice.hear", { say: `open control dot svelte dot ts in ${dir}` });
+  /* The scratch territory holds no such file, so the honest answer is to
+     escalate rather than to open something adjacent. Asserting the *refusal*
+     is the part that keeps the loose rung from ever picking. */
+  expect(heard.escalated).toBe(true);
+});
+
 /* ── nothing broke on the way past ───────────────────────────────────── */
 
 t("the page threw nothing while all of that happened", async () => {

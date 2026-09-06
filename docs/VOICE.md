@@ -323,8 +323,40 @@ a remark, a question, or a referent it is not certain of. Nothing it answers is 
 it answers is a remark, and it never answers an utterance whose right answer is a question —
 those three are the test, and they are the whole of what makes the rung safe to stack.
 
-**Still no audio, no Rust, and nothing wired to the app.** `hear()` takes a `Wall` nobody
-builds yet and returns a `Plan` nobody runs. The next unit is the one that changes that.
+### The seam, and the wall drivable by text — same day
+
+`src/lib/voicing.svelte.ts` builds a `Wall` out of the running app and a `Hands` onto it, and
+`voice.hear` / `voice.say` on the control surface drive the whole path with a keyboard where
+the microphone will be.
+
+**That is not a stand-in for the real thing.** `voice.ts` never sees audio in any of the three
+designs — capture is Rust's, and a transcript arrives as text on the ordinary event pipeline —
+so everything below the recogniser is exactly what these two ops drive. The feature is
+drivable, and testable from `wall.test.ts`, before a frame of audio has been captured. Six
+tests are in there; they need a live armed app and have not been run yet.
+
+`Voicing` takes a `ControlHost` — the handles `App.svelte` already builds, described in its own
+comment as *"the handles a pair of hands would have"*. A voice is a pair of hands, so that is
+not an analogy. It is emphatically **not** a client of the control surface: that surface is off
+unless `SKEIN_CONTROL=1`, and arming a loopback socket in every install so voice had somewhere
+to POST would be the parallel-path rule broken in disguise. The *host* is built
+unconditionally and is just an object; `App.svelte` now names it and hands the same one to
+both. One seam, two pairs of hands.
+
+Three decisions in it worth having written down:
+
+- **`voice.hear` runs nothing.** The pair exists so a test can separate *what was understood*
+  from *what happened* — they fail differently, and a surface that could only see the wall
+  afterwards could not tell a misparse from a dead handle. It is also the op that will score
+  the steward rung without spending anything on the wall.
+- **The confirm gate is in `Voicing.say`, not in the op.** The set it protects is `IMMEDIATE`'s
+  complement, and a caller that forgot would be a broadcast to a wall of cards spawned with
+  `--dangerously-skip-permissions`. One place, so a future keystroke cannot omit it.
+- **A card that vanished between the parse and the run throws**, which is what makes `carry`'s
+  `stopped` outcome a real branch rather than a shape nothing produces.
+
+**Still no audio and no Rust.** What is missing is the recogniser, the wake gate, the steward
+rung, and something to press. Everything from the text onwards is built.
 
 ### What is now unresolved, and was not before
 

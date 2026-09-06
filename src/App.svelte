@@ -62,7 +62,8 @@
   import { MOTIONS } from "./lib/motion";
   import { Motion } from "./lib/motion.svelte";
   import { Actions, conflictBadge, conflictPrompt, NO_STATUS } from "./lib/actions.svelte";
-  import { Control } from "./lib/control.svelte";
+  import { Control, type ControlHost } from "./lib/control.svelte";
+  import { Voicing } from "./lib/voicing.svelte";
   import { ink } from "./lib/theme.svelte";
   import Canvas from "./lib/Canvas.svelte";
   import Dock from "./lib/Dock.svelte";
@@ -2332,10 +2333,12 @@
     await skein.close(conv, "you");
   }
 
-  /* The control surface, off unless SKEIN_CONTROL asked for it. It gets the
-     same handles a pair of hands would — nothing here is a second code path,
-     which is the only way a green run says anything about the real app. */
-  const control = new Control({
+  /* The handles a pair of hands would have. Named rather than inlined into
+     `new Control(...)` because there are now two pairs of hands: the control
+     surface, and voice. Neither is a second code path into the app — which is
+     the only reason a green control run says anything about the real one, and
+     the only reason a spoken plan lands where a mouse would. */
+  const hands: ControlHost = {
     skein,
     studio,
     board,
@@ -2388,7 +2391,10 @@
       } else if (name === "chime") attention.chime = value;
     },
     shellCwd,
-  });
+  };
+
+  /* The control surface, off unless SKEIN_CONTROL asked for it. */
+  const control = new Control(hands, new Voicing(hands));
 
   /* ── The header at narrow widths ──────────────────────────────────────────
      This bar is the title bar, and it used to be a flex row with no floor: it
