@@ -358,6 +358,83 @@ Three decisions in it worth having written down:
 **Still no audio and no Rust.** What is missing is the recogniser, the wake gate, the steward
 rung, and something to press. Everything from the text onwards is built.
 
+### The steward's pure half, and the probe that was scoring nothing
+
+`src/lib/steward.ts`: the prompt that goes out, the tolerant read of what comes back, and the
+validation that decides what a reply is allowed to *become*. No spawning — that is the smaller
+half and it belongs to whatever owns a long-lived `claude`.
+
+**The probe was scoring a prompt only the probe had.** The system prompt lived in
+`tools/probe-steward.ts`, so 28/30 was a number about a string nothing else would ever send —
+the same shape of gap `probe-guidance.ts` was green over for a fortnight. It is now imported
+from `steward.ts`, and the whole body was checked byte-for-byte against what was measured
+before committing to the claim. It matches, so the number survives the move.
+
+Two details of that move are worth keeping. The op table's column widths are **fixed
+constants, not derived from the longest entry**: a derived width means adding a nineteenth verb
+silently reflows all eighteen existing lines of a measured prompt, and the diff would read as
+whitespace rather than as a re-measurement. And the vocabulary is deliberately **wider than
+what can be carried out** — eighteen ops offered against `CARRIERS`' eight — because narrowing
+it to what is wired would have the model quietly re-plan a sentence into the ops it was
+allowed, and *"close that card"* answered by selecting it is worse than *"nothing here can
+close"*.
+
+#### The `said` field was breaking this document's own rule
+
+This file says `reads` is templated and never composed by a model, for a stated reason: *a
+confirmation you have heard the same way fifty times is one you can act on without listening
+hard.* The probe's schema then asks the model for `said`, "a short phrase naming this step" —
+and `Plan.reads` is built from the steps' `said`. So `reads` was model-composed after all.
+
+Fixed by never reading it. `phraseOf()` in `voice.ts` is now the one place that says how a
+step sounds, and **both rungs go through it**, so a grammar-built plan and a steward-built plan
+read identically. It also removed a smaller leak in the same direction: say *"let go"* and the
+wall now says *"deselect"*, because what it is confirming is the op and not your wording.
+
+The field stays in the schema, unread. Taking it out is an unmeasured change to a prompt whose
+numbers are the reason for building this rung, and a short phrase naming the step is plausibly
+the model doing itself some good.
+
+#### The measurement is not a safety property, and `understand()` is the difference
+
+Haiku 28/30, zero acted on a remark across sixty utterances, seven of them written to be
+misread. That is a finding about a model on a Friday. Treating it as a guarantee would be the
+whole mistake — a reply arrives from a process, over a pipe, and the wall it proposes to move
+holds cards spawned with `--dangerously-skip-permissions`. So every claim the reply makes that
+can be re-checked, is:
+
+| what the reply says | what is checked |
+|---|---|
+| a card | is a **live id**. The model is *given* the ids, so a title here is not a near miss to resolve — it is the one rule of the prompt not being followed, and resolving it would hide that |
+| a territory | resolves, and both its name and its root are carried, so nothing looks the root up again somewhere it can fail quietly |
+| a path | is a **member of that territory's own file list**, verbatim. Not scored — the whole list was in the prompt |
+| a payload | **appears in the utterance.** Rule 3 turned from an instruction into a check |
+| `kind`, `minutes` | one of four; a positive number |
+| an arg nothing declares | **dropped, not refused.** An arg no handler reads cannot do anything, and refusing on one would throw away a good plan |
+| `needs` | never read. `planOf` computes it |
+| `said` | never read. See above |
+
+And when a reply **contradicts itself, the field that does nothing wins**: a model that both
+proposed steps and filled in `decline` has given two answers, and acting on a remark is the
+worst failure available here where declining a real instruction costs you saying it again.
+
+Two honest limits, stated rather than papered over:
+
+- **The verbatim check is stricter than anything that has been measured.** The probe's `text`
+  column looked for a chosen fragment as a substring; this requires the whole payload to appear
+  in the utterance. The prompt tells the model to resolve spoken separators (*"dot"* → `.`),
+  meant for paths — and a model that applies it to a *payload*, sending `markdown.ts` where
+  *"markdown dot ts"* was said, will fail the check while looking entirely sensible. Utterance
+  29 would show it. **The prompt is left byte-identical rather than pre-emptively reworded**:
+  if a run shows this, the change is motivated; if not, nothing was spent finding out. The
+  probe now grades through `understand()` and prints what the gate made of every reply, so the
+  next run answers it.
+- **A substring cannot catch truncation.** *"halt"* is a substring of *"…to halt work"*, so a
+  shortened payload passes. Not fixed, because the fix is worse: catching it needs knowing
+  where the payload *ends*, and one sentence can hold two payloads neither of which is at the
+  end. The asymmetry is why this is acceptable — truncation sends fewer of your own words,
+  never somebody else's.
+
 ### What is now unresolved, and was not before
 
 - **Barge-in.** With an always-on channel *and* a wall that speaks, the recogniser will hear

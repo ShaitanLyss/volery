@@ -502,6 +502,77 @@ export function dispositionOf(ops: string[]): "nothing" | "confirmation" {
   return ops.every((o) => IMMEDIATE.has(o)) ? "nothing" : "confirmation";
 }
 
+/** The title of a card that is still there, or the bare id if it has gone.
+ *
+ *  The id rather than "a card that has gone", because this ends up in a
+ *  sentence the wall speaks back *before* the plan runs, and by then nothing has
+ *  gone anywhere. A readback that hedged would be hedging about the wrong
+ *  moment. */
+function titleOf(wall: Wall, id: unknown): string {
+  return wall.cards.find((c) => c.id === id)?.title ?? String(id);
+}
+
+/** How a step reads when the wall says it back.
+ *
+ *  **One place, used by both rungs, and that is the whole point of it being a
+ *  function.** `reads` is what you hear before a plan you have to confirm, and
+ *  the argument for templating it rather than having a model compose it is that
+ *  *a confirmation you have heard the same way fifty times is one you can act on
+ *  without listening hard*. Two phrasings for the same op would break exactly
+ *  that — and so, quietly, would letting the synonym you happened to say leak
+ *  into the readback. Say "let go" and the wall still says "deselect", because
+ *  what it is confirming is the op and not your wording.
+ *
+ *  The unknown-op arm is not dead code: `steward.ts`'s vocabulary is wider than
+ *  what `CARRIERS` can run, so an op can legitimately reach here before it can
+ *  be carried out. */
+export function phraseOf(op: string, args: Record<string, unknown>, wall: Wall): string {
+  const card = () => titleOf(wall, args.card);
+  const cards = () =>
+    (Array.isArray(args.cards) ? args.cards : [args.card])
+      .map((id) => titleOf(wall, id))
+      .join(" and ");
+  switch (op) {
+    case "focus":
+      return `focus ${card()}`;
+    case "select":
+      return `select ${cards()}`;
+    case "deselect":
+      return "deselect";
+    case "viewport.fit":
+      return "fit the wall";
+    case "open":
+      return `open a card in ${args.project}`;
+    case "chat":
+      return "open a card with no project";
+    case "send":
+    case "broadcast":
+      return `send "${args.text}" to ${cards()}`;
+    case "answer":
+      return `answer ${card()} "${args.text}"`;
+    case "stop":
+      return `stop ${card()}`;
+    case "rename":
+      return `call ${card()} "${args.title}"`;
+    case "clear":
+      return `clear ${card()}`;
+    case "close":
+      return `close ${card()}`;
+    case "aside":
+      return `${args.aside === false ? "pick up" : "put aside"} ${card()}`;
+    case "find.lookAt":
+      return `open ${args.path} in ${args.project}`;
+    case "sink.add":
+      return `file "${args.title}" in the sink for ${args.project}`;
+    case "post":
+      return `post "${args.subject}" on the billboard`;
+    case "timer.set":
+      return `set a timer for ${args.minutes} minutes`;
+    default:
+      return op;
+  }
+}
+
 /** The one way a plan is made.
  *
  *  Both derived fields are computed here rather than accepted from a caller,
@@ -634,43 +705,31 @@ export function hear(utterance: string, wall: Wall): Plan | null {
       /* Leftover words are the whole point of the rule: "fit the wall then
          select the ring" is not a `viewport.fit`. */
       if (rest) return null;
-      return planOf([{ op: entry.op, args: { ...extra }, said: best.phrase }]);
+      const args = { ...extra };
+      return planOf([{ op: entry.op, args, said: phraseOf(entry.op, args, wall) }]);
     }
 
     case "card": {
       if (!rest && !entry.orFocused) return null;
       const card = certain(resolveCard(wall, rest || null));
       if (!card) return null;
-      const verb = entry.op === "aside" ? (extra.aside ? "put aside" : "pick up") : entry.op;
-      return planOf([
-        { op: entry.op, args: { card: card.id, ...extra }, said: `${verb} ${card.title}` },
-      ]);
+      const args = { card: card.id, ...extra };
+      return planOf([{ op: entry.op, args, said: phraseOf(entry.op, args, wall) }]);
     }
 
     case "cards": {
       if (!rest) return null;
       const hit = resolveCards(wall, rest).map(certain);
       if (!hit.length || hit.some((c) => !c)) return null;
-      const cards = hit as VoiceCard[];
-      return planOf([
-        {
-          op: entry.op,
-          args: { cards: cards.map((c) => c.id), ...extra },
-          said: `${entry.op} ${cards.map((c) => c.title).join(" and ")}`,
-        },
-      ]);
+      const args = { cards: (hit as VoiceCard[]).map((c) => c.id), ...extra };
+      return planOf([{ op: entry.op, args, said: phraseOf(entry.op, args, wall) }]);
     }
 
     case "territory": {
       const where = certain(resolveTerritory(wall, rest));
       if (!where) return null;
-      return planOf([
-        {
-          op: entry.op,
-          args: { project: where.project, cwd: where.cwd, ...extra },
-          said: `open a card in ${where.project}`,
-        },
-      ]);
+      const args = { project: where.project, cwd: where.cwd, ...extra };
+      return planOf([{ op: entry.op, args, said: phraseOf(entry.op, args, wall) }]);
     }
 
     case "file-in-territory": {
@@ -683,13 +742,8 @@ export function hear(utterance: string, wall: Wall): Plan | null {
       if (!where) return null;
       const path = certain(resolveFile(where.files, rest.slice(0, at)));
       if (!path) return null;
-      return planOf([
-        {
-          op: entry.op,
-          args: { project: where.project, cwd: where.cwd, path, ...extra },
-          said: `open ${path} in ${where.project}`,
-        },
-      ]);
+      const args = { project: where.project, cwd: where.cwd, path, ...extra };
+      return planOf([{ op: entry.op, args, said: phraseOf(entry.op, args, wall) }]);
     }
   }
 }

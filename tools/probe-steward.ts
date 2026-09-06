@@ -78,158 +78,44 @@ import { CASES, CARDS, FOCUSED, TERRITORIES, type Case } from "../test/fixtures/
 
 import { dispositionOf } from "../src/lib/voice";
 
-/* ── the op vocabulary the steward is given ───────────────────────────────────
+/* ── the prompt, and the reading of the reply ─────────────────────────────────
  *
- * Real ops, named as `control.svelte.ts` names them, with `find.lookAt` and
- * `sink.add` spelled as `docs/VOICE.md` proposes them (the first is
- * `find do=look-at` in the table today; the second does not exist yet and is the
- * one gap the design found).
+ * Both imported, and until this file existed neither was. The prompt lived here,
+ * which meant **this probe scored a prompt only this probe had** — a number
+ * about nothing, and the sort of gap `probe-guidance.ts` was green for a
+ * fortnight over. `stewardPrompt(wall)` is now what the app sends, so 28/30 is a
+ * claim about the product.
+ *
+ * `understand()` came with it, and it changes what a run means. It re-checks
+ * every referent against the wall, every path against the territory's own file
+ * list, and every payload against the transcript — so `usable` below is not
+ * another rubric, it is **the gate the app will actually put a reply through**.
+ * A reply can be graded right by the columns beside it and still be refused
+ * there, and the interesting runs are the ones where those two disagree.
+ *
+ * **What is unmeasured, stated because it is a prediction and not a result:**
+ * the verbatim check is stricter than the `text` column ever was — that one
+ * looked for a chosen fragment as a substring, this one requires the whole
+ * payload to appear in the utterance. The prompt tells the model to resolve
+ * spoken separators ("dot" → "."), which is meant for paths, and a model that
+ * applies it to a *payload* — sending "markdown.ts" where "markdown dot ts" was
+ * said — will fail the check while looking entirely sensible. Utterance 29 is
+ * the one that would show it. The prompt is deliberately left byte-identical to
+ * what scored 28/30 rather than pre-emptively reworded: if the run shows this,
+ * the change is motivated; if it does not, the wording is fine and nothing was
+ * spent finding out.
  */
-const OPS = `
-focus        {card}                  bring one card to the front
-select       {cards: [...]}          gather cards — the dock aims a prompt at these
-deselect     {}                      let go of everything
-open         {project}               open a NEW card in a territory
-chat         {}                      open a new card with no project
-send         {card, text}            send a prompt to one card
-broadcast    {cards: [...], text}    send the same prompt to several cards
-stop         {card}                  end the turn a card is in the middle of
-rename       {card, title}           call a card something else
-clear        {card}                  end a card's session and give it a fresh one
-close        {card}                  take a card off the wall
-aside        {card, aside: true}     put a card by, or pick it back up
-find.lookAt  {project, path}         open a file in the reading panel
-sink.add     {project, title, body, kind}  file a finding in the wall's sink
-post         {subject, body}         put a standing notice on the billboard
-viewport.fit {}                      fit the whole wall in the window
-timer.set    {minutes, label}        set a countdown
-answer       {card, text}            answer a question a card has parked
-`.trim();
 
-function systemPrompt(): string {
-  const cards = CARDS.map(
-    (c) =>
-      `  ${c.id}  "${c.title}"  in ${c.project}${c.working ? "  (working)" : ""}${
-        c.id === FOCUSED ? "  ← focused" : ""
-      }`,
-  ).join("\n");
+import { replyIn, stewardPrompt, understand, type Reply } from "../src/lib/steward";
+import type { Wall } from "../src/lib/voice";
 
-  const territories = TERRITORIES.map(
-    (t) => `  ${t.project}  →  ${t.cwd}\n${t.files.map((f) => `      ${f}`).join("\n")}`,
-  ).join("\n");
-
-  return `You turn one spoken sentence into an ordered plan of operations on a studio wall of
-Claude Code conversations. Each conversation is a "card". Each repository the wall
-knows is a "territory" or "project".
-
-The sentence has been transcribed from speech, so separators may arrive as words:
-"dot" for ".", "slash" for "/", "dash" for "-", "underscore" for "_". Spelled-out
-extensions ("P N G") mean the extension. Resolve them.
-
-# The wall right now
-
-Cards:
-${cards}
-
-Territories, and every file in each:
-${territories}
-
-# The operations you may use
-
-${OPS}
-
-# Answer with exactly one JSON object and nothing else
-
-{
-  "steps": [ { "op": "...", "args": { ... }, "said": "a short phrase naming this step" } ],
-  "ask": null,
-  "decline": null,
-  "question": null
-}
-
-Exactly one of "steps", "ask", "decline" and "question" is used; the rest stay null.
-
-Rules, in order of how much they matter:
-
-1. **Never invent a referent.** Every card is named by its id above; every project
-   by its name; every path by its exact spelling above. If what was said does not
-   clearly pick one, set "ask" to the question you would put to the user and leave
-   "steps" empty. Guessing is the worst thing you can do here.
-2. **An instruction inside a payload is not an operation.** "tell the auth work to
-   stop and commit" is ONE step — a send, carrying the words "stop and commit". It
-   is not a stop, and it is not a stop followed by a send. The operations are the
-   things the user is telling *you* to do; everything after "tell X to…" or
-   "saying…" is a message for X and you must not read verbs out of it.
-3. **A payload is carried verbatim.** When a step sends text to a card, or files a
-   sink item, the words the user said are the words that go — never a tidied,
-   expanded or politer version of them. "halt work" is "halt work".
-4. **Several instructions in one sentence are several steps, in the order spoken.**
-   Do not merge two messages to two different cards into one broadcast unless the
-   same words go to both.
-5. **A plural means every one that qualifies.** "stop everything" is a step for
-   each card marked working above — enumerate them all, or ask. Half of a plural
-   is the one answer that is worse than either.
-6. **A remark is not a plan.** Somebody talking about their work ("we should open a
-   card for that at some point") is a remark: set "decline" and leave "steps"
-   empty. Opening a card here would be the worst thing you could do.
-7. **A question about the wall goes in "question"**, not in "decline" and not in
-   prose — "what is sink triage doing?" is a fair thing to ask and it is simply
-   not a plan. Put the question there and leave the rest null.
-8. Do not decide whether the plan needs confirming. That is not yours; omit it.`;
-}
-
-
+const WALL: Wall = { cards: CARDS, territories: TERRITORIES, focusedId: FOCUSED };
+const systemPrompt = () => stewardPrompt(WALL);
 
 /* ── running one ─────────────────────────────────────────────────────────────── */
 
 const CWD = import.meta.dir + "/../.scratch/steward-probe";
 const CLAUDE = "claude";
-
-type Reply = {
-  steps: { op: string; args: Record<string, unknown>; said?: string }[];
-  ask: string | null;
-  decline: string | null;
-  /** A spoken question — *"what is sink triage doing?"*
-   *
-   *  **This field is here because the probe found it missing.** The first run
-   *  told the model to `decline` a question, and on "what is sink triage doing?"
-   *  it broke format entirely and answered in prose — the only unparseable reply
-   *  in thirty. That is not a model failure so much as a schema that had nowhere
-   *  for a legitimate input to go: asking the wall something is one of the
-   *  things voice is *for*, and lumping it in with "this was only a remark"
-   *  denies it a slot. `docs/VOICE.md` already says answers to questions are the
-   *  one case worth spending a turn on the wording — so a question is a fourth
-   *  outcome, not a refusal. */
-  question: string | null;
-};
-
-/** The reply, or null if nothing parseable came back.
- *
- *  Tolerant on purpose: a model that wraps its JSON in a fence or a sentence has
- *  made a formatting mistake, not a parse mistake, and scoring the two together
- *  would hide whichever is the real problem. The formatting failures are counted
- *  separately (`fenced`) so the distinction survives into the summary. */
-function extract(said: string): { reply: Reply | null; fenced: boolean } {
-  const fence = said.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const body = fence ? fence[1] : said;
-  const open = body.indexOf("{");
-  const shut = body.lastIndexOf("}");
-  if (open < 0 || shut <= open) return { reply: null, fenced: !!fence };
-  try {
-    const v = JSON.parse(body.slice(open, shut + 1));
-    return {
-      reply: {
-        steps: Array.isArray(v.steps) ? v.steps : [],
-        ask: v.ask ?? null,
-        decline: v.decline ?? null,
-        question: v.question ?? null,
-      },
-      fenced: !!fence || open > 0,
-    };
-  } catch {
-    return { reply: null, fenced: !!fence };
-  }
-}
 
 async function ask(model: string, say: string): Promise<{ said: string; ms: number; model: string }> {
   const args = [
@@ -330,6 +216,16 @@ type Score = {
    *  apart so "right, on the reading I did not write down first" never hides
    *  inside a plain pass. */
   viaAlt: boolean;
+  /** What `understand()` — the gate the app will actually put this reply through
+   *  — made of it, and why if it refused.
+   *
+   *  Reported *beside* the columns above rather than folded into them, because
+   *  the two are different questions and the interesting runs are the ones where
+   *  they disagree. A reply can be graded right by every column and still be
+   *  refused here (a payload the model tidied, a path it adjusted), and it can be
+   *  graded wrong and still pass here (a defensible reading of an ambiguous
+   *  sentence). Folding them would hide exactly the cases worth reading. */
+  gate: string;
   got: string;
 };
 
@@ -338,8 +234,12 @@ function argsText(step: { args: Record<string, unknown> }): string {
 }
 
 function grade(c: Case, reply: Reply | null, fenced: boolean): Score {
-  const bad: Score = { shape: false, ops: false, refs: false, text: false, needs: false, parsed: false, fenced, steps: 0, viaAlt: false, got: "—" };
+  const bad: Score = { shape: false, ops: false, refs: false, text: false, needs: false, parsed: false, fenced, steps: 0, viaAlt: false, gate: "unusable", got: "—" };
   if (!reply) return bad;
+
+  /* The shipped gate, on the real utterance and the real wall. */
+  const u = understand(reply, c.say, WALL);
+  const gate = u.kind === "unusable" ? `unusable: ${u.why}` : u.kind;
 
   const shapeGot: Case["want"] = reply.steps.length
     ? "plan"
@@ -390,6 +290,7 @@ function grade(c: Case, reply: Reply | null, fenced: boolean): Score {
     fenced,
     steps: reply.steps.length,
     viaAlt,
+    gate,
     got:
       shapeGot === "plan"
         ? gotOps.join(" → ") || "empty plan"
@@ -446,7 +347,7 @@ for (const model of MODELS) {
         const c = queue.shift();
         if (!c) return;
         const { said, ms, model: ran } = await ask(model, c.say);
-        const { reply, fenced } = extract(said);
+        const { reply, fenced } = replyIn(said);
         rows.push({ c, s: grade(c, reply, fenced), ms, ran });
       }
     }),
@@ -466,7 +367,8 @@ for (const model of MODELS) {
       `${all ? "  ok " : "FAIL "}${String(c.id).padStart(2)}  ${String(ms).padStart(5)}ms  ${flags}` +
         `${s.fenced ? "  (fenced)" : ""}${s.parsed ? "" : "  (unparseable)"}\n` +
         `        say  ${c.say}\n` +
-        `        got  ${s.got}` +
+        `        got  ${s.got}\n` +
+        `        gate ${s.gate}` +
         (all ? "" : `\n        want ${c.want}${c.ops ? `: ${c.ops.join(" → ")}` : ""}${c.refs ? `  refs ${c.refs.join(", ")}` : ""}`),
     );
   }
@@ -495,6 +397,14 @@ for (const model of MODELS) {
       `  right ops       ${tally((s) => s.ops)}/${n}\n` +
       `  referents       ${tally((s) => s.refs)}/${n}\n` +
       `  payload verbatim${tally((s) => s.text)}/${n}\n` +
+      /* What the app would have done with these replies, which is the only
+         column that is about the product rather than about the model. A gap
+         between this and `wholly right` is the thing to read: replies the rubric
+         liked and the gate refused are either a check that is too strict or a
+         prompt that needs a clause, and the `gate` line on each case says which
+         check bit. */
+      `  the gate allowed ${tally((s) => !s.gate.startsWith("unusable"))}/${n}` +
+      `   (as a plan: ${tally((s) => s.gate === "plan")})\n` +
       `  latency         median ${times[Math.floor(times.length / 2)]}ms, worst ${times[times.length - 1]}ms\n` +
       (dangerous.length
         ? `  ⚠ ACTED ON A REMARK: ${dangerous.map((r) => r.c.id).join(", ")} — read these before anything else\n`
