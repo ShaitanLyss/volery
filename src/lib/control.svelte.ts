@@ -32,6 +32,7 @@ import { living, type EffectKind } from "./ambience";
 import { readingScale } from "./layout";
 import { pressed, type Kind } from "./pick";
 import { spotOf } from "./glass";
+import { matchCards } from "./voice";
 import type { Board } from "./images.svelte";
 import type { Widgets } from "./widgets.svelte";
 import type { Meter } from "./meter.svelte";
@@ -568,29 +569,24 @@ export class Control {
 
   /* ── lookups ─────────────────────────────────────────────────────────── */
 
-  /** Find a card by id, by exact title, or by 1-based index on the wall.
-   *  Tests read better as `{"card": "caravan"}` than as a pasted uuid. */
+  /** Find a card by id, by exact title, by a substring of either, or by index
+   *  on the wall. Tests read better as `{"card": "caravan"}` than as a pasted
+   *  uuid.
+   *
+   *  The ladder itself moved to `voice.ts::matchCards`, because voice needs the
+   *  same five rungs against the same wall and two copies that must agree are
+   *  one ladder and one bug — `control.md`'s rule against a parallel path holds
+   *  for a lookup as much as for a socket. What stayed here is everything about
+   *  being an *op*: which key to read, and what to throw. `matchCards` returns
+   *  every card at the rung that answered, since voice has to be able to say
+   *  "which one?"; this takes the first, exactly as it always did. */
   #card(op: Op, key = "id"): Conversation {
     const want = op[key] ?? op.card ?? op.conversationId;
-    const convs = this.#host.skein.convs;
-    if (want === undefined || want === null) {
-      const f = convs.find((c) => c.id === this.#host.focusedId());
-      if (f) return f;
-      throw new Error("no card named and none focused");
-    }
-    if (typeof want === "number") {
-      const c = convs[want];
-      if (!c) throw new Error(`no card at index ${want}`);
-      return c;
-    }
-    const s = String(want);
-    const hit =
-      convs.find((c) => c.id === s) ??
-      convs.find((c) => c.title === s) ??
-      convs.find((c) => c.title.toLowerCase().includes(s.toLowerCase())) ??
-      convs.find((c) => c.project.toLowerCase().includes(s.toLowerCase()));
-    if (!hit) throw new Error(`no card matching "${s}"`);
-    return hit;
+    const m = matchCards(this.#host.skein.convs, want as string | number | null, this.#host.focusedId());
+    if (m) return m.cards[0];
+    if (want === undefined || want === null) throw new Error("no card named and none focused");
+    if (typeof want === "number") throw new Error(`no card at index ${want}`);
+    throw new Error(`no card matching "${String(want)}"`);
   }
 
   #cards(op: Op): Conversation[] {

@@ -275,6 +275,57 @@ with no check at all, because the headline is what gets read.
 side-task of its own per invocation and it sorts first — so `keys()[0]` labelled an entire
 Sonnet run as Haiku. The busiest model is the one that answered.)
 
+### The pure core, built 2026-09-06
+
+`src/lib/voice.ts` and `test/voice.test.ts`, with the fixture wall and the thirty utterances
+moved to `test/fixtures/wall.ts` so the two rungs are scored against the same thing — a ladder
+whose halves were measured on two different walls has produced two numbers that cannot be
+compared. `tools/probe-steward.ts` now imports both, and imports `dispositionOf` too rather
+than holding a second copy of the table it is meant to be attesting to.
+
+Two decisions were made by writing it that this file had not made, and both were forced by the
+fixture rather than chosen.
+
+**A substring match is not certainty for a channel that mishears.** `matchCards` is
+`#card()`'s five-rung ladder, lifted whole so the control surface and voice cannot drift into
+two ladders — but voice trusts only the exact rungs (`id`, `title`, exact-but-for-case, index,
+focused). The case that settled it is the fixture's sharpest: `caravan` is a territory *and* a
+substring of the one card titled `caravan onboarding copy`, so the ladder answers with exactly
+one card, unambiguously, at the `partial` rung. Perfectly reasonable where somebody typed an
+abbreviation on purpose and can see what came back; catastrophic where "select caravan" would
+silently gather one card out of a territory of them. So it is one resolver and two degrees of
+trust in it, and a partial match still comes back as `ambiguous` rather than `missing` — which
+is what lets the caller offer a list instead of claiming never to have heard of the thing.
+
+**The file resolver has no threshold in it.** The obvious design scores every path and takes
+the winner if it is far enough ahead of the runner-up, which needs a constant nobody can
+justify and turns *never invent a referent* into a number. The three rungs are structural
+instead: a basename that **is** what you said, a basename that **contains** it, and — for
+everything else — no answer at all, only a ranked list to ask with. `rank()` is still what
+furnishes the list, so `finding.ts`'s scorer is doing the work it was always going to do; it
+simply never gets to decide. The cost is real and points the right way: *"open the theme
+file"* asks rather than guessing, and there is already a fuzzy finder on this wall, driven by
+a keyboard that can see the list.
+
+Two smaller things, recorded because they are the kind that get tidied away:
+
+- **`halt` is not a stop verb.** It was, for about ten minutes. "halt work" is the payload in
+  the user's own first example — words *sent to* a card — and a verb that is also somebody's
+  most likely dictation is a verb worth not having. `stop` costs nothing to say instead.
+- **`stop` is in the grammar and not in `IMMEDIATE`, and that is not an inconsistency.** How
+  fast a plan is understood and whether it may run unasked are different questions. Saying
+  "stop the auth work" should cost no round trip; it should still be confirmed.
+
+The grammar answers **8 of the thirty**, and the count is pinned in the test so a change in
+coverage is something somebody decided rather than something that happened. The other
+twenty-two escalate, which is the ladder working: every one of them is a compound, a payload,
+a remark, a question, or a referent it is not certain of. Nothing it answers is wrong, nothing
+it answers is a remark, and it never answers an utterance whose right answer is a question —
+those three are the test, and they are the whole of what makes the rung safe to stack.
+
+**Still no audio, no Rust, and nothing wired to the app.** `hear()` takes a `Wall` nobody
+builds yet and returns a `Plan` nobody runs. The next unit is the one that changes that.
+
 ### What is now unresolved, and was not before
 
 - **Barge-in.** With an always-on channel *and* a wall that speaks, the recogniser will hear
