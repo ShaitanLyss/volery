@@ -416,9 +416,24 @@ The fifth example looked like the one that would need the most new machinery. It
 - **The viewer draws images.** `finding.ts::IMAGES` covers png, jpg, jpeg, gif, webp, bmp, ico,
   avif, and `find.rs::read_media` hands them over as data URLs. So *show it in the file viewer*
   is the existing behaviour, not a request for a new one.
-- **The candidate list is already in the front end.** `finding.md`: *a file list fetched once
-  and scored here*. So matching a spoken filename costs no round trip and can happen inside the
-  pure module.
+- **The candidate list is already in the front end — for one territory.** `finding.md`: *a file
+  list fetched once and scored here*. The scoring is free and happens inside the pure module,
+  which is the half that holds. ~~So matching a spoken filename costs no round trip.~~
+  **Corrected 2026-09-06**, on reading `finder.svelte.ts` rather than its rule: `Finder.root` is
+  a single `$state("")` and `list()` replaces `files` wholesale for that one root. So the list
+  to hand belongs to whichever territory the finder was last opened on, which for voice is
+  almost never the one you just named. *"Open image.png in caravan"* while the finder sits on
+  volery needs a `find_files` for caravan — about 100ms, by the finder's own measurement.
+
+  This does not change the pure core: `resolveFile(files, said)` already takes the list as an
+  argument, so the fetch belongs to the caller. What it changes is *when*. Prefetching every
+  territory at launch is a ripgrep per territory that is stale by the time it is used;
+  fetching inside the parse would make the fast rung async, which is the one thing it must not
+  be. So it is **fetched on demand and cached per root**, and `territoriesIn()` — pure, three
+  lines — names the territories an utterance mentions so the caller can have the list in hand
+  before either rung runs. The first sentence naming a territory pays ~100ms; every one after
+  it is free. Under the grammar's own budget, and three orders of magnitude under the
+  steward's.
 - **And `score()` already treats the query the way a mouth produces one.** This is the lucky
   part. Its own comment:
 

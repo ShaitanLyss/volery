@@ -5,8 +5,8 @@
  * onwards happens here** — not because the front end is written in TypeScript
  * but because *both ends of the parse already are*. The wall a referent
  * resolves against is front-end `$state` (card titles, `Region.project` → `cwd`,
- * and the file list `finding.md` says is "fetched once and scored here"), and
- * every step a plan produces lands on a `ControlHost` method. A parse in Rust
+ * the file list `find_files` hands the finder), and every step a plan produces
+ * lands on a handle the wall already exposes to a pair of hands. A parse in Rust
  * would need the wall shipped down to it and the plan shipped back up, twice
  * per utterance, to arrive at the same place.
  *
@@ -692,4 +692,132 @@ export function hear(utterance: string, wall: Wall): Plan | null {
       ]);
     }
   }
+}
+
+/* ── which territories an utterance is about ──────────────────────────────────
+ *
+ * Pure, three lines, and it exists because of a correction. `docs/VOICE.md` had
+ * it that the file list was already in the front end and a spoken filename
+ * therefore cost no round trip. Half true: `finding.ts`'s scoring is free and
+ * happens here, but `Finder.root` is a single `$state("")` and `list()` replaces
+ * `files` wholesale for that one root — so the list to hand belongs to whichever
+ * territory the finder was last opened on, which for voice is almost never the
+ * one you just named.
+ *
+ * The fetch belongs to the caller, since `resolveFile` takes the list as an
+ * argument. What this decides is *when*. Prefetching every territory at launch
+ * is a ripgrep apiece, stale by the time it is used; fetching inside the parse
+ * would make the fast rung async, which is the one thing it must not be. So the
+ * caller asks this what the sentence is about, has those lists in hand, and then
+ * parses. First sentence naming a territory pays about 100ms; every one after it
+ * is free.
+ */
+
+/** Every territory the utterance names, on a whole-word match.
+ *
+ *  Deliberately generous — it costs a cached `find_files` to be wrong and a
+ *  failed parse to be too narrow, and those are not the same price. */
+export function territoriesIn(utterance: string, wall: Wall): VoiceTerritory[] {
+  const low = ` ${tidy(utterance).toLowerCase()} `;
+  return wall.territories.filter((t) => low.includes(` ${t.project.toLowerCase()} `));
+}
+
+/* ── carrying it out ──────────────────────────────────────────────────────────
+ *
+ * Still pure: a plan is carried out against a `Hands`, which is an interface and
+ * not the app. That is the same bargain `control.svelte.ts` strikes with
+ * `ControlHost` — *"the handles a pair of hands would have"* — and it is taken
+ * rather than depending on `ControlHost` itself for two reasons. `ControlHost`
+ * is forty-odd handles wide because the control surface drives the whole wall
+ * from outside; voice needs eight. And depending on it would drag a runes module
+ * into a pure one, which is the boundary this file is on the right side of.
+ *
+ * The app supplies the adapter. `control.md`'s rule holds either way: these land
+ * on the wall's own seams, never beside them.
+ */
+
+/** What a plan needs a pair of hands to be able to do. */
+export type Hands = {
+  focus(card: string): void | Promise<void>;
+  select(cards: string[]): void | Promise<void>;
+  deselect(): void | Promise<void>;
+  fit(): void | Promise<void>;
+  stop(card: string): void | Promise<void>;
+  aside(card: string, aside: boolean): void | Promise<void>;
+  open(cwd: string): void | Promise<void>;
+  lookAt(cwd: string, path: string): void | Promise<void>;
+};
+
+type Carrier = (args: Record<string, unknown>, hands: Hands) => void | Promise<void>;
+
+/** One op, one pair of hands. Keyed by the op names `control.svelte.ts` uses,
+ *  so a step is legible against the table the rest of the wall is driven by. */
+const CARRIERS: Record<string, Carrier> = {
+  focus: (a, h) => h.focus(String(a.card)),
+  select: (a, h) => h.select(Array.isArray(a.cards) ? a.cards.map(String) : []),
+  deselect: (_a, h) => h.deselect(),
+  "viewport.fit": (_a, h) => h.fit(),
+  stop: (a, h) => h.stop(String(a.card)),
+  /* Absent means putting by, since that is the direction with a spoken verb of
+     its own. Only an explicit `false` picks a card back up. */
+  aside: (a, h) => h.aside(String(a.card), a.aside !== false),
+  open: (a, h) => h.open(String(a.cwd)),
+  "find.lookAt": (a, h) => h.lookAt(String(a.cwd), String(a.path)),
+};
+
+export type Outcome =
+  /** Every step, in order. */
+  | { kind: "done"; ran: number }
+  /** Nothing ran, and nothing was going to — refused before the first step. */
+  | { kind: "refused"; why: string }
+  /** `at` steps ran and the one at index `at` did not. */
+  | { kind: "stopped"; at: number; step: Step; why: string };
+
+/** Which of a plan's ops nothing here can carry out. */
+export function uncarriable(plan: Plan): string[] {
+  return [...new Set(plan.steps.map((s) => s.op))].filter((o) => !(o in CARRIERS));
+}
+
+/** Carry a plan out, in order, stopping at the first step that will not go.
+ *
+ *  **No half-execution, and the two halves of that are different.** An op with
+ *  no carrier is knowable before anything happens, so the whole plan is refused
+ *  and nothing runs — discovering it at step three would leave the wall in a
+ *  state nobody asked for, which is worse than a misheard sentence. A step that
+ *  *fails* can only be found by trying it, so the walk stops there and says
+ *  which one and why. What it must never do is carry on down the list.
+ *
+ *  Sequential on purpose, even where the steps commute: you said them in an
+ *  order, and a plan that ran them at once could not say where it got to. */
+export async function carry(plan: Plan, hands: Hands): Promise<Outcome> {
+  const cannot = uncarriable(plan);
+  if (cannot.length) return { kind: "refused", why: `nothing here can ${cannot.join(" or ")}` };
+
+  for (let i = 0; i < plan.steps.length; i++) {
+    const step = plan.steps[i];
+    try {
+      await CARRIERS[step.op](step.args, hands);
+    } catch (err) {
+      return { kind: "stopped", at: i, step, why: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  return { kind: "done", ran: plan.steps.length };
+}
+
+/** What the wall says once a plan is over, or "" for nothing.
+ *
+ *  **Success says nothing, and that is a decision rather than an omission.** The
+ *  wall moved; you are looking at it. A voice that answers "done" to every
+ *  gesture is the thing that makes people stop using one, and the confirmation
+ *  before a risky plan is where the speaking budget belongs. Failure always
+ *  speaks, because a plan that quietly did not happen is indistinguishable from
+ *  one that was never heard.
+ *
+ *  Templated, for the same reason `reads` is: only *answers to questions* are
+ *  worth a model composing prose for. */
+export function spoke(outcome: Outcome): string {
+  if (outcome.kind === "done") return "";
+  if (outcome.kind === "refused") return `nothing happened — ${outcome.why}`;
+  if (outcome.at === 0) return `nothing happened — ${outcome.why}`;
+  return `${outcome.at} done, then stopped at "${outcome.step.said}" — ${outcome.why}`;
 }

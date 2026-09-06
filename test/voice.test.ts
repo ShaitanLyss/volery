@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  carry,
   certain,
   dispositionOf,
   hear,
@@ -12,7 +13,11 @@ import {
   resolveFile,
   resolveTerritory,
   spelt,
+  spoke,
   spoken,
+  territoriesIn,
+  uncarriable,
+  type Hands,
 } from "../src/lib/voice";
 import { CARDS, CASES, FOCUSED, TERRITORIES, WALL } from "./fixtures/wall";
 
@@ -411,5 +416,148 @@ describe("the thirty utterances", () => {
        thing that happened. Every one of these is a gesture whose whole value is
        being instant; everything else on the list costs a round trip on purpose. */
     expect(answered.map((c) => c.id)).toEqual([1, 3, 5, 11, 12, 15, 23, 26]);
+  });
+});
+
+describe("territoriesIn — what to have a file list for before parsing", () => {
+  test("names the territories an utterance mentions", () => {
+    expect(territoriesIn("open image dot png in caravan", WALL).map((t) => t.project)).toEqual([
+      "caravan",
+    ]);
+    expect(
+      territoriesIn("open a card in volery and one in orchard", WALL).map((t) => t.project),
+    ).toEqual(["volery", "orchard"]);
+  });
+
+  test("whole words, so a territory is not found inside another word", () => {
+    expect(territoriesIn("select the caravanserai work", WALL)).toEqual([]);
+  });
+
+  test("trailing punctuation does not hide the last word", () => {
+    expect(territoriesIn("open a card in caravan.", WALL).map((t) => t.project)).toEqual([
+      "caravan",
+    ]);
+  });
+
+  test("nothing named is nothing to fetch", () => {
+    expect(territoriesIn("select the auth work", WALL)).toEqual([]);
+  });
+});
+
+/** A pair of hands that only writes down what it was asked to do. */
+function stub(fails?: { op: string; why: string }) {
+  const log: string[] = [];
+  const note = (line: string) => {
+    if (fails && line.startsWith(fails.op)) throw new Error(fails.why);
+    log.push(line);
+  };
+  const hands: Hands = {
+    focus: (c) => note(`focus ${c}`),
+    select: (cs) => note(`select ${cs.join("+")}`),
+    deselect: () => note("deselect"),
+    fit: () => note("fit"),
+    stop: (c) => note(`stop ${c}`),
+    aside: (c, a) => note(`aside ${c} ${a}`),
+    open: (cwd) => note(`open ${cwd}`),
+    lookAt: (cwd, p) => note(`lookAt ${cwd} ${p}`),
+  };
+  return { hands, log };
+}
+
+describe("carry — the plan, in order, or not at all", () => {
+  test("every step, in the order it was said", async () => {
+    const { hands, log } = stub();
+    const plan = planOf([
+      { op: "select", args: { cards: ["c1", "c5"] }, said: "select two" },
+      { op: "find.lookAt", args: { cwd: "C:/work/caravan", path: "a.png" }, said: "open a.png" },
+      { op: "viewport.fit", args: {}, said: "fit the wall" },
+    ]);
+    expect(await carry(plan, hands)).toEqual({ kind: "done", ran: 3 });
+    expect(log).toEqual(["select c1+c5", "lookAt C:/work/caravan a.png", "fit"]);
+  });
+
+  test("an op nothing can carry refuses the whole plan before anything runs", async () => {
+    /* Knowable in advance, so it is knowable *instead of* leaving the wall half
+       moved. This is the half of no-half-execution that costs nothing. */
+    const { hands, log } = stub();
+    const plan = planOf([
+      { op: "select", args: { cards: ["c1"] }, said: "select the auth work" },
+      { op: "sink.add", args: {}, said: "file a finding" },
+    ]);
+    expect(await carry(plan, hands)).toEqual({
+      kind: "refused",
+      why: "nothing here can sink.add",
+    });
+    expect(log).toEqual([]);
+  });
+
+  test("a step that fails stops the walk and says which one", async () => {
+    const { hands, log } = stub({ op: "stop", why: "that card has gone" });
+    const step = { op: "stop", args: { card: "c1" }, said: "stop the auth work" };
+    const plan = planOf([
+      { op: "select", args: { cards: ["c5"] }, said: "select the ring" },
+      step,
+      { op: "viewport.fit", args: {}, said: "fit the wall" },
+    ]);
+    expect(await carry(plan, hands)).toEqual({
+      kind: "stopped",
+      at: 1,
+      step,
+      why: "that card has gone",
+    });
+    /* And in particular it did not go on to fit the wall. */
+    expect(log).toEqual(["select c5"]);
+  });
+
+  test("aside defaults to putting by, and only an explicit false picks up", async () => {
+    const { hands, log } = stub();
+    await carry(planOf([{ op: "aside", args: { card: "c6" }, said: "put aside" }]), hands);
+    await carry(
+      planOf([{ op: "aside", args: { card: "c6", aside: false }, said: "pick up" }]),
+      hands,
+    );
+    expect(log).toEqual(["aside c6 true", "aside c6 false"]);
+  });
+
+  test("every op the grammar can produce has a pair of hands for it", () => {
+    /* The claim that makes `refused` a real answer rather than a dead branch:
+       nothing the fast rung emits may ever be un-carriable, because the fast
+       rung is the one that runs without asking. */
+    for (const c of CASES) {
+      const p = hear(c.say, WALL);
+      if (p) expect([c.id, uncarriable(p)]).toEqual([c.id, []]);
+    }
+  });
+
+  test("an empty plan is done, having done nothing", async () => {
+    const { hands, log } = stub();
+    expect(await carry(planOf([]), hands)).toEqual({ kind: "done", ran: 0 });
+    expect(log).toEqual([]);
+  });
+});
+
+describe("spoke — what the wall says afterwards", () => {
+  test("success says nothing, because you are looking at the wall", () => {
+    expect(spoke({ kind: "done", ran: 3 })).toBe("");
+  });
+
+  test("a refusal always speaks, since nothing visibly happened", () => {
+    expect(spoke({ kind: "refused", why: "nothing here can post" })).toBe(
+      "nothing happened — nothing here can post",
+    );
+  });
+
+  test("a plan stopped partway says how far it got and where it stuck", () => {
+    const step = { op: "stop", args: {}, said: "stop the auth work" };
+    expect(spoke({ kind: "stopped", at: 2, step, why: "that card has gone" })).toBe(
+      '2 done, then stopped at "stop the auth work" — that card has gone',
+    );
+  });
+
+  test("stopping on the first step is the same as nothing happening", () => {
+    const step = { op: "stop", args: {}, said: "stop the auth work" };
+    expect(spoke({ kind: "stopped", at: 0, step, why: "that card has gone" })).toBe(
+      "nothing happened — that card has gone",
+    );
   });
 });
