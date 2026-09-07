@@ -43,6 +43,10 @@ import type { Meter } from "./meter.svelte";
 import { crowds } from "./crowds.svelte";
 /* And the same, for the one question asked of the network at launch. */
 import { releases } from "./release.svelte";
+/* And the same again, for the one player. The wall has exactly one `deck`, so
+   reaching it here is the widget's own path rather than a second one to
+   `spotify.rs` — which is rule one of this surface. */
+import { deck } from "./deck.svelte";
 import type { Ledger } from "./ledger.svelte";
 /* Aliased throughout: `tierOf` is also an Azure DevOps verb in this file, and
    the two taxonomies must not be able to be mistaken for one another. */
@@ -2098,6 +2102,80 @@ export class Control {
       usage: async (op) => {
         if (op.read) await h.ledger.refresh();
         return ledgerSnapshot(h);
+      },
+
+      /** The music, driven through the same `deck` the widget drives — the
+       *  singleton out of `deck.svelte.ts`, not a second path to `spotify.rs`.
+       *  Rule one of this surface, and the reason this op is three lines of its
+       *  own rather than four `invoke`s: a test that called the commands
+       *  directly would prove the *backend* works and say nothing about the
+       *  thing on the wall.
+       *
+       *  `do` names the verb. `play` is the deck's `spotify_play`, deliberately
+       *  not the `put_on` a card reaches — that one refuses while something is
+       *  already playing, which is the guard protecting a person from an agent
+       *  and is nonsense applied to a person who has just asked. See the
+       *  comment on `put_on` in `spotify.rs`.
+       *
+       *  **There is no `link` verb and there must not be.** Signing in parks on
+       *  a browser and a human being for up to three minutes; a surface that
+       *  could start one could hang a test run on somebody noticing a tab. The
+       *  credential is set up from the wall, once, by the user — this op
+       *  reports `linked` so a run can say plainly that it is not, which is a
+       *  skip and not a failure. */
+      spotify: async (op) => {
+        const verb = String(op.do ?? "status");
+        if (verb === "start") await deck.start();
+        else if (verb === "stop") await deck.stop();
+        else if (verb === "play") {
+          const uri = String(op.uri ?? "");
+          if (!uri) throw new Error("spotify play needs a uri");
+          await deck.play(uri);
+        } else if (verb !== "status") {
+          throw new Error(`no such spotify verb: ${verb} — status, start, stop, play`);
+        }
+        await deck.refresh();
+        const s = deck.state;
+        return {
+          linked: deck.linked,
+          busy: deck.busy,
+          phase: s.phase,
+          fault: s.fault,
+          device: s.device,
+          positionMs: s.positionMs,
+          moving: s.since !== null,
+          searchFault: deck.searchFault,
+          track: s.track
+            ? { name: s.track.name, artists: s.track.artists, album: s.track.album }
+            : null,
+        };
+      },
+
+      /** What the process has been saying about itself.
+       *
+       *  The app log is a ring in Rust (`applog.rs`) drawn by a widget, which
+       *  means until now the only reader was a person who already knew to go and
+       *  look. Every interesting librespot failure is one of these lines — the
+       *  module note there lists six, each of which was a day's confusion — so a
+       *  wall test that cannot read them can watch Spotify fail and not say why.
+       *
+       *  `target` and `level` filter, `tail` caps. Defaults are deliberately
+       *  narrow: the unfiltered ring is two thousand lines and most of them are
+       *  `wry`. */
+      applog: async (op) => {
+        const all = await invoke<
+          { at: number; level: string; target: string; text: string }[]
+        >("app_log");
+        const want = op.target ? String(op.target) : null;
+        const levels = op.level
+          ? new Set(String(op.level).split(",").map((s) => s.trim()))
+          : null;
+        const rows = all.filter(
+          (l) =>
+            (!want || l.target.startsWith(want)) && (!levels || levels.has(l.level)),
+        );
+        const tail = Math.max(1, Math.min(500, Number(op.tail ?? 60)));
+        return { total: all.length, shown: rows.length, lines: rows.slice(-tail) };
       },
 
       /** What Azure DevOps is saying. `read` takes both readings now rather than

@@ -771,6 +771,35 @@ walked into again here *while writing the paragraph warning about it*. The lesso
 casing rule, which everybody here knows; it is that **naming a `*.svelte.ts` after its
 component is the default move, and the default move is wrong.** Name it for what it holds.
 
+##### The ring is read back, and a fault says what the dependency said
+
+Written here first as a thing not done — *"nothing folds the log into a fault message … a
+genuine improvement and a smaller change than the file"* — and then done, which is the only
+entry on that list so far to move.
+
+`applog::last_complaint(prefix, within)` walks the ring newest-first and answers the freshest
+`warn`-or-worse line from one target. `spotify.rs` puts it behind every sentence it says about
+a receiver that would not start or did not stay up, so *"spotify did not answer within 30s"*
+now arrives with `Tried too many access points` attached.
+
+Three things about it generalise past Spotify, and a second caller should keep all three:
+
+- **It is bounded in time, and that is the load-bearing part.** A complaint from ten minutes
+  ago is not the explanation for something that happened now, and attaching one manufactures a
+  causal link out of adjacency — worse than saying nothing, because it reads as evidence.
+  `within` is the *caller's* judgement about its own subject; nothing in `applog.rs` guesses
+  it, and `spotify.rs`'s two minutes has a test against being tightened.
+- **`warn` and worse only.** `info` is a dependency narrating what is going right, and the
+  newest such line is almost always something that succeeded immediately before the thing that
+  failed. Taking the newest line regardless of level answers *"Connecting to AP …"* — true,
+  and the exact opposite of a diagnosis.
+- **`None` is returned rather than a likely cause.** Silence is a real answer and the caller
+  has to be able to tell it from a diagnosis.
+
+This is not a second logging mechanism. It is the one that exists, asked a question — which is
+the whole argument of this section, turned round: the lines were always in the process, and
+until now the only reader was somebody who already knew to go and look.
+
 ##### What this deliberately does not do yet
 
 **It does not survive a crash.** The ring is in memory, so the one exit that actually loses
@@ -780,11 +809,6 @@ the same: write as you go, to a rolling file under `%APPDATA%\dev.skein.studio`.
 built because the ring answers the question that prompted it and a file is a second set of
 decisions (rotation, size, what happens when the disk is full) that deserve their own
 afternoon. Whoever takes it should know the in-memory half is not the argument against it.
-
-**And nothing folds the log into a fault message.** When `spotify_start` fails, the last few
-`librespot` lines are the diagnosis and the user still has to go and look at a widget for them.
-Attaching them to the returned string would be a genuine improvement and is a smaller change
-than the file.
 
 #### The sweep
 
@@ -813,4 +837,10 @@ The control surface has `widget.add`, `widget.set`, `widget.update`, `widget.rem
 `widget.select`, and `snapshot` reports `widgets` and `meter`. `meter.sampling` is reported
 apart from the widget count for the reason ambience reports `drawing` apart from `canvas`: a
 meter on the wall with a dead sampler and one with a live sampler look identical from outside.
+
+It also has `applog`, which is the app's own log with `target` and `level` filters and a
+`tail` cap — the same ring, read from outside instead of drawn. Not a convenience: a wall test
+that cannot read these lines can watch a subsystem fail and be unable to say why, which is the
+whole complaint this section opens with, one audience along. The defaults are narrow on
+purpose, because the unfiltered ring is `KEEP` lines and most of them are `wry`.
 

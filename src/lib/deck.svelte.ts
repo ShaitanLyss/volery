@@ -281,7 +281,13 @@ export class Deck {
 /**
  * The wall has one of these. A module-level singleton rather than something
  * `App.svelte` threads through `WidgetNode`, because that file is somebody
- * else's and a widget is the only thing that ever wants this — if a second
- * subsystem ever needs it, promote it to a prop then and not before.
+ * else's and a widget was the only thing that wanted this.
+ *
+ * There is a second reader now — `control.svelte.ts`'s `spotify` op — and it is
+ * not the case the "promote it to a prop" note was holding the door open for.
+ * The control surface is not a component and can take no prop; the whole of its
+ * first rule is that an op drives the app's own seam rather than a path beside
+ * it, and reaching this object *is* reaching the widget's own path. A prop
+ * would give it one the widget does not use.
  */
 export const deck = new Deck();

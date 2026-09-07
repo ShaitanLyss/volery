@@ -698,8 +698,43 @@ them in one afternoon was the argument; the rotation is written back on every ru
 is dead after the first.
 
 None of this needed to be a probe. Every line quoted above was emitted by librespot at
-`INFO`, `WARN` or `ERROR` while the app was running, into a `log` sink the app does not
-install. Sink `7786cf73`.
+`INFO`, `WARN` or `ERROR` while the app was running, into a `log` sink the app did not
+install. Sink `7786cf73`. It installs one now — `applog.rs`, the ring the log widget draws —
+so the lines are in this process while it runs, and the sentence above stopped being an
+argument for a probe and became an argument for reading them.
+
+### And the fault says what librespot said, because the reason was never missing
+
+`start_inner` awaits the Spirc task and emits `Closed { fault }` when it returns. The task
+returns `()` — not a `Result`, not an error, nothing — so the obvious reading is that the
+reason is unavailable and a fixed sentence is the best on offer. That is what shipped: *"the
+spotify session ended — the wall is no longer a device"*, said identically for a network drop,
+an expired credential, a dealer that never started and the account being taken somewhere else.
+
+The reason was not unavailable. Every exit path in `SpircTask::run` logs it immediately before
+taking it, and the three lines quoted higher up this page — `starting dealer failed: …`,
+`Tried too many access points`, `… selected, but none received` — are exactly those. They were
+already in `applog`'s ring while the wall said it did not know. `describe_end` asks
+`applog::last_complaint("librespot", FAULT_WINDOW)` and puts the answer in the fault.
+
+Two things about it are load-bearing:
+
+- **The window is a bound on evidence, not a performance knob.** A complaint from ten minutes
+  ago is not the explanation for a drop that happened now, and attaching one manufactures a
+  causal link out of adjacency — worse than saying nothing, because it reads as evidence.
+  `FAULT_WINDOW` is two minutes: long enough that a line from during the connect still counts,
+  short enough that it cannot reach back into a previous, unrelated session. The two minutes
+  are *reasoned* from the 253s ladder above rather than measured, so the guard
+  (`the_fault_window_reaches_back_past_a_connect_attempt`) asserts the relation the reasoning
+  supports — `FAULT_WINDOW > CONNECT_BUDGET` — and not the number itself.
+- **`is_invalid` splits the sentence in two, because they are two bugs.** *Spotify dropped us*
+  — network, credential, another client — against *the receiver's task returned while the
+  session was still perfectly good*, which is the 0.14.4 shape this page spends a section on.
+  Collapsing them is how that one hid for a release: it reads as a network problem and answers
+  to none of the fixes for one.
+
+Silence is left as silence. A clean exit complains about nothing, and inventing a likely cause
+there would be a guess wearing the clothes of a report.
 
 ## A card may choose what plays, and deliberately cannot drive it
 
@@ -855,11 +890,45 @@ that would sink the search half alone while leaving `put_on` working, so `fetch_
 answers a 403 by saying exactly that rather than reporting an HTTP code — a card that hits it
 should learn what it means rather than go looking in its own arguments.
 
+### The music can be driven from outside, and there is no `link` verb
+
+The control surface has a `spotify` op — `status`, `start`, `stop`, `play` — and it reaches
+`deck.svelte.ts`, the same singleton the widget drives, rather than the four `invoke`s
+underneath it. That is rule one of that surface and it is not a formality here: a test that
+called the commands directly would prove `spotify.rs` works and say nothing about the thing on
+the wall, which is where every bug on this page actually lived.
+
+`play` is `spotify_play` and not `put_on`, for the reason the section above gives: the refusal
+is the user's own scoping against an *agent*, and applied to a run that has just asked it is
+noise.
+
+**There is deliberately no `link`.** Signing in parks on a browser and a person for up to
+`LINK_BUDGET` — three minutes — so a surface that could start one could hang a run on somebody
+noticing a tab. The credential is set up from the wall, once, by hand. The op reports `linked`
+instead, so a run that finds it false can say so plainly and skip; a skip is an honest answer
+where a three-minute hang is not.
+
+The reply carries `phase`, `fault` and `searchFault` together because `deck`'s verbs do not
+throw — `#guard` folds a failure into `state.fault` and `play` folds one into `searchFault`.
+An op that only reported success would report success for a receiver that never came up.
+
 ### Running these tests
 
-`cargo test` cannot run on this machine, and `check-gnu.sh --profile test` only *typechecks*
-the assertions, which reads exactly like a green test run without being one. `bun
-tools/lift-selector.ts` lifts the pure half into a throwaway and actually executes it — 26
-assertions. It regenerates from `selector.rs` every run and keeps nothing, because a copy that
-can go stale will, and it goes on passing while it does. Run it *and* `--profile test`: the
-lift proves the bodies, and only the in-place check proves the paths.
+**`cd src-tauri && cargo test`, and that is a change from what this section used to say.** It
+said *"`cargo test` cannot run on this machine"*, which was true when it was written and has
+not been since MSVC arrived here on 2026-08-17. Confirmed 2026-09-07: the whole suite compiles
+and runs, 739 assertions, 28 of them `selector`'s.
+
+`bun tools/lift-selector.ts` was the answer while that was true, and it **no longer runs
+here** — it reads `src-tauri/target/x86_64-pc-windows-gnu/debug/deps` for a `serde_json` rlib,
+and nothing builds to the gnu target now, so it dies with `ENOENT` on a path that will not
+reappear unless somebody runs `bash tools/check-gnu.sh` first. That is not a bug to fix on
+sight: the lift is still the only thing that works when the *dependency graph* is broken
+rather than the toolchain, which for a Spotify file is not hypothetical — `librespot-core`'s
+`vergen` conflict had the cargo gate red for every card on this wall for a stretch on
+2026-08-27. Keep it, know it needs `check-gnu.sh` first, and reach for `cargo test` otherwise.
+
+The general shape, since this section is itself the example: **a justification that names a
+machine's limitation is a justification with an expiry date on it.** This one outlived its
+premise by three weeks and spent that time telling people the gate they should have been
+running could not be run.

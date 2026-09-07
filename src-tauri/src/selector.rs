@@ -130,7 +130,38 @@ fn encode(s: &str) -> String {
 /// The id is checked for shape but not for length: 22 base-62 characters is the
 /// usual thing, and hard-coding it would reject a kind whose ids Spotify sizes
 /// differently — a bound that buys nothing and breaks silently later.
-pub(crate) fn normalize_uri(input: &str) -> Result<(String, String), String> {
+///
+/// ### Why this answers a struct rather than the pair it used to
+///
+/// It returned `(String, String)` and that shipped a bug for the whole life of
+/// the feature. Two same-typed fields in a tuple is a shape where the order is
+/// invisible to the compiler: `do_put_on` read the call as `(kind, uri)` and
+/// `spotify_play` read the identical call as `(uri, kind)`. So the door a
+/// *card* reaches worked, and the door the **user's own widget** reaches — the
+/// one under every search result they click — loaded the literal uri `"track"`
+/// and got `URI does not belong to Spotify` back. It never surfaced, because
+/// `spirc.load` answers `Ok` and the refusal arrives later as a log line: the
+/// widget said "idle", the wall stayed silent, and nothing anywhere said why.
+///
+/// Named fields cost one line at each call site and make the mistake
+/// unspellable. Worth stating as the general shape, since this codebase returns
+/// pairs in several places: **a tuple whose elements share a type is a swap the
+/// compiler will not catch, and the swap is silent exactly when both halves are
+/// plausible strings.**
+/* `Debug` so `unwrap_err` works in the assertions below — the derive is for the
+   tests and nothing reads it at runtime. Note `lift-selector.ts` strips
+   `Serialize` by name and leaves this alone, which is the behaviour its own
+   comment warns about: a lift that silently dropped a derive would compile into
+   a different thing. */
+#[derive(Debug)]
+pub(crate) struct Selection {
+    /// `track`, `album`, `playlist`, `artist`, `show`, `episode`.
+    pub kind: String,
+    /// The canonical `spotify:kind:id`, whatever shape came in.
+    pub uri: String,
+}
+
+pub(crate) fn normalize_uri(input: &str) -> Result<Selection, String> {
     let raw = input.trim();
     if raw.is_empty() {
         return Err("no uri was given — `mcp__skein__records` answers with the ones to use"
@@ -175,7 +206,10 @@ pub(crate) fn normalize_uri(input: &str) -> Result<(String, String), String> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err(format!("{id:?} is not a spotify id"));
     }
-    Ok((kind.clone(), format!("spotify:{kind}:{id}")))
+    Ok(Selection {
+        uri: format!("spotify:{kind}:{id}"),
+        kind,
+    })
 }
 
 /// Whether a kind is a *context* — a thing with tracks in it — or a single item.
@@ -599,12 +633,12 @@ fn do_put_on(app: &AppHandle, args: &Value) -> String {
             .to_string();
     };
 
-    let (kind, uri) = match normalize_uri(raw) {
-        Ok(pair) => pair,
+    let sel = match normalize_uri(raw) {
+        Ok(sel) => sel,
         Err(why) => return why,
     };
 
-    match crate::spotify::put_on(app, &uri, is_context(&kind)) {
+    match crate::spotify::put_on(app, &sel.uri, is_context(&sel.kind)) {
         Ok(said) => said,
         Err(why) => why,
     }
@@ -729,35 +763,88 @@ mod tests {
 
     #[test]
     fn a_uri_survives_being_a_uri() {
-        let (kind, uri) = normalize_uri("spotify:album:1weenld61qoidwYuZ1GESA").unwrap();
-        assert_eq!(kind, "album");
-        assert_eq!(uri, "spotify:album:1weenld61qoidwYuZ1GESA");
+        let sel = normalize_uri("spotify:album:1weenld61qoidwYuZ1GESA").unwrap();
+        assert_eq!(sel.kind, "album");
+        assert_eq!(sel.uri, "spotify:album:1weenld61qoidwYuZ1GESA");
     }
 
     /// The share button's link, tracking parameter and all. This is the shape a
     /// user actually pastes, so it is the one most likely to arrive.
     #[test]
     fn a_share_link_loses_its_tracking_parameter() {
-        let (kind, uri) =
+        let sel =
             normalize_uri("https://open.spotify.com/track/4vLYewWIvqHfKtJDk8c8tq?si=abc123")
                 .unwrap();
-        assert_eq!(kind, "track");
-        assert_eq!(uri, "spotify:track:4vLYewWIvqHfKtJDk8c8tq");
+        assert_eq!(sel.kind, "track");
+        assert_eq!(sel.uri, "spotify:track:4vLYewWIvqHfKtJDk8c8tq");
     }
 
     /// The locale segment Spotify inserts for some users and not others —
     /// exactly the kind of thing that works on one machine and not the next.
     #[test]
     fn an_intl_segment_is_skipped() {
-        let (_, uri) =
+        let sel =
             normalize_uri("https://open.spotify.com/intl-de/album/1weenld61qoidwYuZ1GESA").unwrap();
-        assert_eq!(uri, "spotify:album:1weenld61qoidwYuZ1GESA");
+        assert_eq!(sel.uri, "spotify:album:1weenld61qoidwYuZ1GESA");
     }
 
     #[test]
     fn a_bare_host_is_still_a_link() {
-        let (_, uri) = normalize_uri("open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M").unwrap();
-        assert_eq!(uri, "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M");
+        let sel = normalize_uri("open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M").unwrap();
+        assert_eq!(sel.uri, "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M");
+    }
+
+    /// The bug this struct exists to prevent, pinned by its observable effect
+    /// rather than by its shape.
+    ///
+    /// `spotify_play` destructured `normalize_uri` backwards, so `uri` held the
+    /// *kind* — the literal five characters `track` — and every record the user
+    /// clicked in the widget was handed to `Spirc::load` as that. Spotify
+    /// answered `URI does not belong to Spotify`; the widget said "idle".
+    ///
+    /// A test that only checked `sel.kind == "track"` would have passed
+    /// throughout, because the kind was always right; it was the *other* half
+    /// that was wrong. So this asserts the thing that actually reached the
+    /// wire: whatever comes out as `uri` is a full `spotify:` uri and is never
+    /// a bare kind.
+    #[test]
+    fn the_uri_is_never_the_bare_kind() {
+        for input in [
+            "spotify:track:2u6rLo8cuQ91qse20KNPT8",
+            "https://open.spotify.com/track/2u6rLo8cuQ91qse20KNPT8",
+            "spotify:album:1weenld61qoidwYuZ1GESA",
+            "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+        ] {
+            let sel = normalize_uri(input).unwrap();
+            assert!(
+                sel.uri.starts_with("spotify:"),
+                "{input} gave uri {:?}, which is not a uri",
+                sel.uri
+            );
+            assert_ne!(sel.uri, sel.kind, "{input} gave the kind as the uri");
+            assert!(
+                !KINDS.contains(&sel.uri.as_str()),
+                "{input} gave the bare kind {:?} as the uri",
+                sel.uri
+            );
+        }
+    }
+
+    /// `is_context` decides `from_context_uri` against `from_tracks`, and it is
+    /// fed `sel.kind`. Handed a whole uri — which is what the swapped
+    /// destructuring did — it silently answers false for everything, so an
+    /// album would have loaded as a single track even once the uri was right.
+    #[test]
+    fn is_context_answers_about_a_kind_not_a_uri() {
+        let album = normalize_uri("spotify:album:1weenld61qoidwYuZ1GESA").unwrap();
+        assert!(is_context(&album.kind));
+        assert!(
+            !is_context(&album.uri),
+            "a whole uri must not read as a context — that is the swap, one layer on"
+        );
+
+        let track = normalize_uri("spotify:track:2u6rLo8cuQ91qse20KNPT8").unwrap();
+        assert!(!is_context(&track.kind));
     }
 
     #[test]

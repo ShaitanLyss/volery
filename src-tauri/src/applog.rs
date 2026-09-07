@@ -60,7 +60,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -254,6 +254,59 @@ pub fn app_log() -> Vec<Line> {
     RING.lock().map(|r| r.iter().cloned().collect()).unwrap_or_default()
 }
 
+/// The newest `warn`-or-worse line from `prefix`, provided it is recent enough
+/// to plausibly be about the thing that just happened.
+///
+/// ### Why a subsystem gets to read the log back
+///
+/// This module's whole argument is that a dependency's own words are a bug's
+/// diagnosis — the block at the top of this file is six librespot lines, each
+/// of which *was* the answer to a day's confusion. Until now they were only
+/// ever drawn in the log widget, which means the diagnosis reached somebody
+/// who already knew to go and look.
+///
+/// `spotify.rs` is the case that forces the issue. librespot's Spirc task
+/// returns `()` and every one of its exit paths logs why immediately before
+/// taking it (`starting dealer failed: …`, `Tried too many access points`,
+/// `… selected, but none received`) — so the reason exists, is already in this
+/// ring, and was being thrown away in favour of a hardcoded sentence. Reading
+/// it back is not a second logging mechanism; it is the one we have, asked a
+/// question.
+///
+/// **Bounded in time, and that is the load-bearing part.** A complaint from ten
+/// minutes ago is not the explanation for a drop that happened now, and
+/// attaching one would manufacture a causal link out of adjacency — a worse
+/// failure than saying nothing, because it reads as evidence. `within` is the
+/// caller's judgement about its own subject; nothing here guesses it.
+pub fn last_complaint(prefix: &str, within: Duration) -> Option<String> {
+    let floor = now_ms().saturating_sub(within.as_millis() as u64);
+    let ring = RING.lock().ok()?;
+    pick_complaint(&ring, prefix, floor)
+}
+
+/// The choosing, with the clock and the lock left outside so it can be asserted.
+///
+/// Newest first, stopping at the first line older than `floor` rather than
+/// filtering the whole ring: the ring is in push order, so everything past that
+/// point is older still. `warn` and `error` only — `info` is librespot narrating
+/// its ordinary progress ("Connecting to AP …"), and the newest such line is
+/// almost always something that went *right* just before the thing that went
+/// wrong.
+fn pick_complaint(ring: &VecDeque<Line>, prefix: &str, floor: u64) -> Option<String> {
+    ring.iter()
+        .rev()
+        .take_while(|l| l.at >= floor)
+        .find(|l| matches!(l.level, "error" | "warn") && l.target.starts_with(prefix))
+        .map(|l| l.text.clone())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +376,89 @@ mod tests {
     fn off_really_is_off() {
         let (everything, _) = parse_spec("off");
         assert_eq!(everything, F::Off);
+    }
+
+    /* ── reading the log back ──────────────────────────────────────────────*/
+
+    fn line(at: u64, level: &'static str, target: &str, text: &str) -> Line {
+        Line { at, level, target: target.into(), text: text.into() }
+    }
+
+    /// The case this exists for, in librespot's own words — the exact line
+    /// `.claude/rules/spotify.md` records as the whole diagnosis of the 0.14.4
+    /// bug, which the wall was throwing away.
+    #[test]
+    fn the_newest_complaint_is_the_one_returned() {
+        let ring = VecDeque::from(vec![
+            line(1_000, "error", "librespot_core::session", "Tried too many access points"),
+            line(2_000, "error", "librespot_connect::spirc", "starting dealer failed: No access point available for endpoint dealer"),
+        ]);
+        assert_eq!(
+            pick_complaint(&ring, "librespot", 0).as_deref(),
+            Some("starting dealer failed: No access point available for endpoint dealer")
+        );
+    }
+
+    /// `info` is librespot narrating what is going *right*. Taking the newest
+    /// line regardless of level would have answered "Connecting to AP …" — a
+    /// true statement and the opposite of a diagnosis.
+    #[test]
+    fn progress_is_not_a_complaint() {
+        let ring = VecDeque::from(vec![
+            line(1_000, "error", "librespot_core::session", "Tried too many access points"),
+            line(2_000, "info", "librespot_core::session", "Connecting to AP \"ap-gae2.spotify.com:443\""),
+        ]);
+        assert_eq!(
+            pick_complaint(&ring, "librespot", 0).as_deref(),
+            Some("Tried too many access points")
+        );
+    }
+
+    /// The bound that keeps this honest. A complaint from before the window is
+    /// not evidence about what just happened, and attaching it would invent a
+    /// causal link out of adjacency.
+    #[test]
+    fn a_stale_complaint_is_not_evidence() {
+        let ring = VecDeque::from(vec![line(
+            1_000,
+            "error",
+            "librespot_core::session",
+            "Tried too many access points",
+        )]);
+        assert_eq!(pick_complaint(&ring, "librespot", 5_000), None);
+    }
+
+    /// Somebody else's error is not ours. `wry` and `hyper` are noisy and share
+    /// the ring.
+    #[test]
+    fn another_subsystems_error_is_not_borrowed() {
+        let ring = VecDeque::from(vec![
+            line(2_000, "error", "wry::webview", "something about a webview"),
+        ]);
+        assert_eq!(pick_complaint(&ring, "librespot", 0), None);
+        assert_eq!(
+            pick_complaint(&ring, "wry", 0).as_deref(),
+            Some("something about a webview")
+        );
+    }
+
+    /// Silence is a real answer: a clean shutdown complains about nothing, and
+    /// the caller must be able to tell that from a diagnosis.
+    #[test]
+    fn nothing_said_is_none_rather_than_a_guess() {
+        assert_eq!(pick_complaint(&VecDeque::new(), "librespot", 0), None);
+    }
+
+    /// `take_while` stops at the first line older than the floor, so a ring
+    /// whose older half is full of complaints costs nothing to scan — and, more
+    /// importantly, cannot reach past the window to find one.
+    #[test]
+    fn the_scan_stops_at_the_window_rather_than_filtering_past_it() {
+        let mut ring = VecDeque::new();
+        for at in 0..50 {
+            ring.push_back(line(at, "error", "librespot_core::session", "old noise"));
+        }
+        ring.push_back(line(9_000, "info", "librespot_core::session", "fine"));
+        assert_eq!(pick_complaint(&ring, "librespot", 5_000), None);
     }
 }

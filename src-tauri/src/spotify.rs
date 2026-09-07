@@ -674,6 +674,13 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
         ..Default::default()
     };
 
+    /* Cloned before `Spirc::new` takes it, because the question `describe_end`
+       asks — did the *session* go invalid, or did the task return while it was
+       still good — can only be asked of the session itself, and by then it has
+       been moved. `Session` is an `Arc` inside, so this is a handle rather than
+       a copy of anything. */
+    let ended_session = session.clone();
+
     /* Bounded, because librespot bounds none of this and its own worst case is
        four minutes of silence. */
     let (spirc, task) = match tokio::time::timeout(
@@ -682,13 +689,19 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
     )
     .await
     {
+        /* Both arms carry librespot's own words for the same reason `describe_end`
+           does, and this is the arm that needs it most: *"did not answer within
+           30s"* is entirely true and says nothing at all, while `Tried too many
+           access points` underneath it is the whole diagnosis. */
         Err(_) => {
-            return Err(format!(
+            return Err(with_complaint(&format!(
                 "spotify did not answer within {}s",
                 CONNECT_BUDGET.as_secs()
-            ))
+            )))
         }
-        Ok(Err(e)) => return Err(format!("spotify would not open a session: {e}")),
+        Ok(Err(e)) => {
+            return Err(with_complaint(&format!("spotify would not open a session: {e}")))
+        }
         Ok(Ok(v)) => v,
     };
 
@@ -717,9 +730,7 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
             &ended,
             &state,
             Wire::Closed {
-                fault: Some(
-                    "the spotify session ended — the wall is no longer a device".to_string(),
-                ),
+                fault: Some(describe_end(&ended_session)),
             },
         );
     });
@@ -746,6 +757,76 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
         emit(app, &state, Wire::Session { device });
     }
     Ok(())
+}
+
+/// How far back librespot's last complaint may be and still count as the
+/// explanation for a session that has just ended.
+///
+/// Generous rather than tight, because the interesting exits are *slow*: the
+/// access-point ladder complains for over four minutes before giving up, and
+/// `Tried too many access points` lands well after the first failure that
+/// caused it. Reasoned from the 253s figure `.claude/rules/spotify.md` records
+/// rather than measured here, so treat it as a starting value: if a real drop
+/// ever arrives with no complaint attached, this is the first thing to widen.
+/// Two minutes cannot reach back into a previous, unrelated session, which is
+/// the only thing the bound itself has to prevent.
+const FAULT_WINDOW: Duration = Duration::from_secs(120);
+
+/// Say why the receiver stopped, in librespot's own words where it has any.
+///
+/// ### Why this is not simply a constant, which is what it used to be
+///
+/// The Spirc task returns `()`. Not `Result`, not an error — nothing. So the
+/// obvious reading is that the reason is unavailable and a fixed sentence is
+/// the best that can be done, which is what shipped: *"the spotify session
+/// ended — the wall is no longer a device"*, said identically for a network
+/// drop, an expired credential, a dealer that never started and an account
+/// signed in somewhere else.
+///
+/// The reason is not unavailable. Every exit path in `SpircTask::run` logs it
+/// immediately before taking it — `starting dealer failed: {why}` returns on
+/// the spot, `error!("{} selected, but none received")` breaks the loop, and
+/// the loop condition itself is `!session.is_invalid()`. Those lines go through
+/// the `log` crate, which is to say through `applog`, which is to say they were
+/// already sitting in a ring in this process while the wall said it did not
+/// know. `applog.rs`'s own module note makes exactly this argument about
+/// exactly these lines; this is that note applied one layer up.
+///
+/// ### The two answers are different bugs, so they are worded differently
+///
+/// `is_invalid` distinguishes *Spotify dropped us* — the network went, the
+/// credential expired, another client took the account — from *the receiver's
+/// task returned while the session was still perfectly good*, which is the
+/// 0.14.4 shape: an empty dealer list, a stream that ended, a session that
+/// authenticates and then quietly is not there. Collapsing them is how the
+/// second one hid for a release, because it reads as a network problem and
+/// answers to none of the fixes for one.
+fn describe_end(session: &Session) -> String {
+    with_complaint(if session.is_invalid() {
+        "the spotify session ended — the wall is no longer a device"
+    } else {
+        "the spotify receiver stopped while the session was still good — the wall \
+         is no longer a device"
+    })
+}
+
+/// Our sentence, plus librespot's own if it made one recently enough to be about
+/// this.
+///
+/// One function rather than the same three lines at each site, because every
+/// caller is the same arrangement: **ours names the shape of the failure and
+/// librespot's names the cause.** Two of them would otherwise drift into wording
+/// the same evidence differently, which is worse here than anywhere — a fault
+/// string is read by somebody trying to tell two failures apart.
+///
+/// Silence is a real answer and is left as one. A clean exit complains about
+/// nothing, and inventing a likely cause here would be a guess wearing the
+/// clothes of a report.
+fn with_complaint(base: &str) -> String {
+    match crate::applog::last_complaint("librespot", FAULT_WINDOW) {
+        Some(why) => format!("{base}. librespot said: {why}"),
+        None => base.to_string(),
+    }
 }
 
 fn stop_inner(app: &AppHandle) {
@@ -782,8 +863,13 @@ pub async fn spotify_stop(app: AppHandle) -> Result<(), String> {
 /// first: a flag is a thing an agent can set.
 #[tauri::command]
 pub async fn spotify_play(app: AppHandle, uri: String) -> Result<(), String> {
-    let (uri, kind) = crate::selector::normalize_uri(&uri)?;
-    let as_context = crate::selector::is_context(&kind);
+    /* Named fields, and the whole reason `normalize_uri` grew them: this line
+       used to read `let (uri, kind) = …` against a function answering
+       `(kind, uri)`, so every track clicked in the widget was loaded as the
+       literal uri `"track"`. See `Selection`. */
+    let sel = crate::selector::normalize_uri(&uri)?;
+    let uri = sel.uri;
+    let as_context = crate::selector::is_context(&sel.kind);
 
     let state = app.state::<Spotify>();
     let live = state.live.lock().unwrap();
@@ -1116,5 +1202,24 @@ mod tests {
             "a password manager and a second factor take longer than this"
         );
         assert!(LINK_BUDGET > CONNECT_BUDGET, "a person is slower than an access point");
+    }
+
+    /// The other constant that is only wrong in the tightening direction, and
+    /// the reason it is guarded rather than merely commented: the line that
+    /// explains an exit is routinely much older than the exit. That is reasoned
+    /// from the 253s ladder in `.claude/rules/spotify.md` rather than measured
+    /// here — so the guard is deliberately a *relation* between two constants
+    /// and not a number, since the relation is the part the reasoning actually
+    /// supports. A window narrower than a whole connect attempt cannot reach the
+    /// complaint that *caused* the attempt to be the last one, so it answers
+    /// `None` on exactly the failures worth diagnosing — and `None` is silence,
+    /// which reads as "nothing was said" rather than as "I did not look far
+    /// enough back".
+    #[test]
+    fn the_fault_window_reaches_back_past_a_connect_attempt() {
+        assert!(
+            FAULT_WINDOW > CONNECT_BUDGET,
+            "a complaint made during the connect must still count as its explanation"
+        );
     }
 }
