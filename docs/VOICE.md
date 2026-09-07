@@ -516,6 +516,46 @@ so the two disagreeing reads as normal rather than as a fault.
   is a number to change once somebody can hear it being wrong. Setting one now would be an
   unmeasured guess about the one thing whose whole quality is how it feels.
 
+### The key, and the bar that answers
+
+`v`. Bare, no modifier — and it is **the wall's first single-letter shortcut**, which the
+branch immediately below it in `onGlobalKey` had until now been able to say did not exist. A
+bare printable key with a card in hand goes into that card's draft, so this costs the letter v
+as a draft's *first* character when typing straight at the wall. Asked for as a bare key rather
+than Alt+V because a gesture made dozens of times a day should not want two hands; the trade is
+one letter out of twenty-six, and the field is a click or a Tab away.
+
+It sits *above* the draft branch rather than beside it, so it holds whether or not a card is in
+hand. Gating it on an empty selection would have made one key mean two things depending on
+what was picked, which is a worse bargain than losing a letter.
+
+**Press to talk, not hold**, and that is the recogniser's doing rather than the shortcut's.
+`RecognizeAsync` is one-shot: it opens the microphone and ends on its own end-of-speech
+silence, and there is no *stop now and give me what you have*. So the release has nothing to
+do. Hold-to-release wants `SpeechContinuousRecognitionSession` — which is also exactly what
+the always-on channel of Design 3 needs, so **those two arrive together or not at all**, and
+that is the single most useful thing to know before picking up this file.
+
+`Hearing.svelte` draws one bar in normal flow between the wall and the dock, over four states:
+listening, what was heard, a plan waiting for a yes, and why nothing happened. The rule it
+exists for:
+
+> **A voice layer that mishears and then goes quiet is indistinguishable from one that did not
+> hear you**, and the second is the failure people give up over.
+
+So the transcript is shown whatever came of it, and nothing clears on a timer — the next
+utterance or an Escape is what moves it on. Enter and Escape belong to a pending plan, high in
+the key ladder for Alt+I's reason: Escape stops a turn further down and Enter belongs to the
+draft, and neither is what you meant while the wall is asking whether to do the thing you just
+said. `confirm()` carries the plan that was *already understood* rather than re-reading the
+words, since the wall may have moved since you were shown it.
+
+**What is verified and what is not.** `bun run check` and the suites are green, and the Rust
+side was run for real. The key, the bar's layout and a genuine sentence going all the way to
+the wall moving have **not** been seen in the running app — the microphone is the one thing
+here no test can reach, which is what `examples/voice-probe.rs` exists for and why this
+paragraph is in the file rather than in a commit message.
+
 ### What is now unresolved, and was not before
 
 - **Barge-in.** With an always-on channel *and* a wall that speaks, the recogniser will hear
