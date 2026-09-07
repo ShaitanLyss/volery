@@ -51,13 +51,16 @@
 //! vocabulary grows a second language.
 
 use serde::Serialize;
+use tauri::Emitter;
 
 #[cfg(windows)]
 use windows::{
-    core::{Interface, HSTRING},
+    core::{Interface, Ref, HSTRING},
+    Foundation::TypedEventHandler,
     Globalization::Language,
     Media::SpeechRecognition::{
-        ISpeechRecognitionConstraint, SpeechRecognitionConfidence, SpeechRecognitionResultStatus,
+        ISpeechRecognitionConstraint, SpeechRecognitionConfidence,
+        SpeechRecognitionHypothesisGeneratedEventArgs, SpeechRecognitionResultStatus,
         SpeechRecognitionScenario, SpeechRecognitionTopicConstraint, SpeechRecognizer,
     },
     Win32::System::Com::CoIncrementMTAUsage,
@@ -193,8 +196,24 @@ pub fn hearing() -> Result<Hearing, String> {
     Ok(Hearing { system, dictation, ready })
 }
 
+/// The words so far, while somebody is still talking.
+///
+/// **This is the feature that tells you the microphone is working**, and the
+/// reason it is worth its own callback rather than being a nicety: a one-shot
+/// recognition is up to five seconds of initial silence plus however long you
+/// speak, and a bar that says only *listening…* for all of it cannot be told
+/// apart from a bar that is listening to nothing at all. Watching your own words
+/// appear is the only evidence available before the answer arrives.
+///
+/// It costs no move to continuous recognition, which is the part worth knowing:
+/// `HypothesisGenerated` fires during `RecognizeAsync`, so the one-shot gesture
+/// and the running commentary are the same call. Hold-to-release still needs
+/// `SpeechContinuousRecognitionSession`; this did not.
+///
+/// A hypothesis is a *guess in progress* and is routinely wrong until the final
+/// result replaces it — so nothing may act on one. It is drawn and discarded.
 #[cfg(windows)]
-pub fn listen(language: &str) -> Result<Heard, String> {
+pub fn listen(language: &str, partial: impl Fn(&str) + Send + 'static) -> Result<Heard, String> {
     apartment();
     let began = std::time::Instant::now();
     let fail = |e: windows::core::Error| explain(e.code().0, &e.message());
@@ -218,12 +237,35 @@ pub fn listen(language: &str) -> Result<Heard, String> {
         .map_err(fail)?;
     rec.CompileConstraintsAsync().map_err(fail)?.get().map_err(fail)?;
 
+    /* The running commentary. Registered after the constraints compile and
+       before anything is listened for, and torn off again below — the token is
+       kept rather than dropped on the floor, since the recogniser outlives this
+       function only if something goes wrong and a handler holding the callback
+       past that would be a leak nobody could see. */
+    let token = rec
+        .HypothesisGenerated(&TypedEventHandler::new(
+            move |_sender: Ref<'_, SpeechRecognizer>,
+                  args: Ref<'_, SpeechRecognitionHypothesisGeneratedEventArgs>| {
+                if let Some(args) = args.as_ref() {
+                    if let Ok(text) = args.Hypothesis().and_then(|h| h.Text()) {
+                        partial(&text.to_string());
+                    }
+                }
+                /* Never propagates. A failure to draw a guess must not be
+                   allowed to fail the recognition it is a guess about. */
+                Ok(())
+            },
+        ))
+        .map_err(fail)?;
+
     /* The timeouts are left as Windows sets them — measured here as 5s of
        initial silence and 0.5s of end silence. 0.5s is probably too eager for a
        sentence with a pause in it, and that is a number to change once somebody
        can hear it being wrong; setting one now would be an unmeasured guess
        about a thing whose whole point is how it feels. */
-    let result = rec.RecognizeAsync().map_err(fail)?.get().map_err(fail)?;
+    let result = rec.RecognizeAsync().map_err(fail)?.get();
+    let _ = rec.RemoveHypothesisGenerated(token);
+    let result = result.map_err(fail)?;
 
     let status = result.Status().map_err(fail)?;
     if let Some(why) = why_empty(status) {
@@ -263,7 +305,7 @@ pub fn hearing() -> Result<Hearing, String> {
 }
 
 #[cfg(not(windows))]
-pub fn listen(_language: &str) -> Result<Heard, String> {
+pub fn listen(_language: &str, _partial: impl Fn(&str) + Send + 'static) -> Result<Heard, String> {
     Err("speech recognition is Windows-only here".into())
 }
 
@@ -287,9 +329,22 @@ pub async fn voice_hearing() -> Result<Hearing, String> {
 /// rather than as a precaution: on the main thread this would stop the whole
 /// wall being painted for the duration and then land the backlog at once.
 #[tauri::command]
-pub async fn voice_listen(language: Option<String>) -> Result<Heard, String> {
+pub async fn voice_listen(
+    app: tauri::AppHandle,
+    language: Option<String>,
+) -> Result<Heard, String> {
     let language = language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
-    crate::off_main(move || listen(&language)).await?
+    crate::off_main(move || {
+        listen(&language, move |words| {
+            /* One more event on the pipe that already carries `conv:event`, which
+               is the whole of why nothing downstream of here needs to know a
+               microphone exists. Failures are dropped: a guess that did not
+               reach the window is a guess, and the recognition it belongs to is
+               still running. */
+            let _ = app.emit("voice:hypothesis", words);
+        })
+    })
+    .await?
 }
 
 #[cfg(test)]

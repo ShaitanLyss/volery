@@ -39,6 +39,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen as onEvent } from "@tauri-apps/api/event";
 import type { ControlHost } from "./control.svelte";
 import {
   carry,
@@ -108,6 +109,19 @@ export class Voicing {
   /** What the wall says back, or `""` when it worked — see `spoke()`, which
    *  argues that success saying nothing is a decision rather than an omission. */
   says = $state("");
+  /** The words so far, while you are still talking.
+   *
+   *  **This is what tells you the microphone is working.** A recognition is up
+   *  to five seconds of initial silence plus however long you speak, and a bar
+   *  that says only *listening…* for all of it cannot be told apart from one
+   *  listening to nothing — which is the single most demoralising way for a
+   *  voice feature to fail, because there is no way to tell a dead microphone
+   *  from a slow one.
+   *
+   *  A hypothesis is a guess in progress and is routinely wrong until the final
+   *  result replaces it, so **nothing acts on this** — it is drawn and thrown
+   *  away. It is not a setting: the off position of that knob is the bug. */
+  partial = $state("");
 
   /** One project's file list per root, fetched once and kept.
    *
@@ -264,8 +278,22 @@ export class Voicing {
     this.listening = true;
     this.said = "";
     this.says = "";
+    this.partial = "";
     this.pending = null;
+
+    /* Subscribed for the duration of this one call and dropped in the `finally`.
+       `CLAUDE.md` warns that anything holding a Tauri subscription needs
+       releasing, and this is how that is answered without a lifecycle: the
+       subscription cannot outlive the gesture, so there is nothing for an
+       `onDestroy` to remember and a superseded generation of this class holds
+       no listener at all. */
+    let hush: (() => void) | null = null;
     try {
+      hush = await onEvent<string>("voice:hypothesis", (e) => {
+        /* Guarded on `listening` because an event from a recognition that has
+           already ended must not repaint a bar showing its result. */
+        if (this.listening) this.partial = e.payload;
+      });
       const heard = await invoke<Transcript>("voice_listen", {});
       this.said = heard.text;
       const what = await this.say(heard.text);
@@ -283,6 +311,8 @@ export class Voicing {
       this.says = err instanceof Error ? err.message : String(err);
     } finally {
       this.listening = false;
+      this.partial = "";
+      hush?.();
     }
   }
 
@@ -305,6 +335,7 @@ export class Voicing {
     this.pending = null;
     this.said = "";
     this.says = "";
+    this.partial = "";
   }
 
   /** Is there anything to draw? */

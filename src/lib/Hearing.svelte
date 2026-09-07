@@ -28,7 +28,14 @@
   <div class="hearing" role="status" aria-live="polite">
     {#if voicing.listening}
       <span class="ear" aria-hidden="true"></span>
-      <span class="what">listening…</span>
+      {#if voicing.partial}
+        <!-- The words so far. Dimmer than a finished transcript because it is a
+             guess in progress and will be replaced — so it reads as something
+             still settling rather than as an answer. -->
+        <span class="guess">{voicing.partial}</span>
+      {:else}
+        <span class="what">listening…</span>
+      {/if}
     {:else}
       {#if voicing.said}
         <!-- Quoted, so a transcript that is itself a sentence about the wall
@@ -113,6 +120,18 @@
   .what,
   .says {
     color: var(--paper-dim);
+  }
+
+  /* A guess in progress: fainter than `--paper-dim`, and italic, so it is
+     visibly not yet the answer. The width is held from the left so the words
+     grow rightwards rather than the bar shuffling under your eye — a centred
+     transcript that re-centres on every syllable is unreadable. */
+  .guess {
+    color: var(--paper-mute);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .heard {
