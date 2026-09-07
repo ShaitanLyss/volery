@@ -34,7 +34,13 @@ fn main() {
     }
 
     println!("\nspeak now — try \"select the auth work and fit the wall\"");
-    match skein_lib::voice::listen(skein_lib::voice::DEFAULT_LANGUAGE) {
+    /* The partial callback is printed rather than discarded, because *when* the
+       recogniser commits to a word is half of what a probe about a speech stack
+       is asking. A `|_| {}` here would compile and answer a narrower question
+       than the one this file exists for. */
+    match skein_lib::voice::listen(skein_lib::voice::DEFAULT_LANGUAGE, |partial| {
+        println!("  … {partial}");
+    }) {
         Ok(h) => println!("heard in {}ms ({}): {:?}", h.ms, h.confidence, h.text),
         Err(e) => println!("nothing heard — {e}"),
     }
