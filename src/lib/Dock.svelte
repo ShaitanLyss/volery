@@ -21,7 +21,7 @@
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
   import { askShown } from "./asking";
-  import { completionForChoice, typingChoice, typingName, type Command } from "./commands";
+  import { completionForChoice, slashAt, typingChoice, type Command } from "./commands";
   import { nameBesideProject } from "./naming";
   import { promptPath } from "./shell";
   import { BANG, isBang, kindLabel, tokens, type Completion, type Match } from "./bang";
@@ -87,11 +87,54 @@
   /* A draft that stops being a command being typed is a new question, so the
      dismissal does not outlive it. Without this, one Escape silenced the
      palette for the rest of the session. Both stages count: dismissing over
-     `/model son` must not be undone by the very next keystroke. */
+     `/model son` must not be undone by the very next keystroke.
+
+     Asked of `slashAt` rather than `typingName` now that a name can sit inside
+     a sentence: the question is whether the *caret* is still in one, and moving
+     it out of the word you dismissed over is as much a new question as deleting
+     the word would be. Read against `field.commandsOff` being what suppresses
+     `field.token` — this has to ask the draft directly, or the dismissal would
+     hide the very thing that clears it. */
   $effect(() => {
-    if (typingName(field.text) === null && typingChoice(field.text) === null) {
+    if (
+      slashAt(field.text, field.caret) === null &&
+      typingChoice(field.text) === null
+    ) {
       field.commandsOff = false;
     }
+  });
+
+  /** Where the caret is, off the textarea itself.
+   *
+   *  Everything the palette's first stage does keys on which word the caret is
+   *  in, and there is no one event that reports every way it moves — `input`
+   *  covers typing, `keyup` the arrows and Home/End, `click` a pointer landing
+   *  mid-word, and `focus` coming back to a draft you left. Four cheap handlers
+   *  rather than `selectionchange`, which is engine-dependent and would fail
+   *  silently by leaving the palette matching the end of the line.
+   *
+   *  Never called for a write this app made: those go through `Field.put`,
+   *  which puts the caret back to meaning the end of the text. */
+  function caretMoved() {
+    field.caret = prompt?.selectionStart ?? null;
+  }
+
+  /** Whichever of the palette's two stages is up. Bound by both, since they are
+   *  the arms of one `if` and never both on screen. */
+  let palette = $state<HTMLElement | undefined>(undefined);
+
+  /* The lit row is kept in view, because the palette is now long enough to need
+     it: Volery's own commands plus every skill the card has came to 31 rows on
+     the wall this was written for. It scrolls rather than being cut off at some
+     number — a list that silently stops at ten says a card has no skill that it
+     does have, which is worse than a list you have to scroll. Found by asking
+     the DOM rather than by binding the lit button, because which button is lit
+     changes with an index and `bind:this` does not take a condition. */
+  $effect(() => {
+    field.at;
+    field.commands;
+    field.choices;
+    palette?.querySelector(".cmd.on")?.scrollIntoView({ block: "nearest" });
   });
 
   /* The lit row goes back to the top when the list under it is replaced, or
@@ -189,7 +232,12 @@
        else the agent offers is its business, and there is no way to enumerate
        it from here. -->
   {#if field.choices.length && field.choosing}
-    <div class="palette" role="listbox" aria-label="/{field.choosing.cmd.name} values">
+    <div
+      class="palette"
+      role="listbox"
+      aria-label="/{field.choosing.cmd.name} values"
+      bind:this={palette}
+    >
       {#each field.choices as choice, i (choice.value)}
         {@const on = choice === field.choicePick}
         <button
@@ -220,7 +268,7 @@
       <p class="detail">{field.choosing.cmd.detail}</p>
     </div>
   {:else if field.commands.length}
-    <div class="palette" role="listbox" aria-label="skein field.commands">
+    <div class="palette" role="listbox" aria-label="skein field.commands" bind:this={palette}>
       {#each field.commands as cmd, i (cmd.name)}
         {@const on = cmd === field.commandPick}
         <button
@@ -329,6 +377,10 @@
         bind:this={prompt}
         bind:value={field.text}
         onkeydown={onkey}
+        oninput={caretMoved}
+        onkeyup={caretMoved}
+        onclick={caretMoved}
+        onfocus={caretMoved}
         placeholder={field.banging
           ? "run a command in this card's directory…"
           : targets.length > 1
@@ -496,6 +548,15 @@
     border-radius: 3px;
     padding: 0.25rem;
     gap: 1px;
+    /* About twelve rows, then it scrolls. The list was nine entries long for
+       the whole of this palette's life and is now nine plus every skill the
+       card declares — 31 on the wall this was measured on, which unbounded is a
+       popup taller than the transcript it covers. Scrolled rather than cut,
+       because a list that silently stops says a card has no skill that it does
+       have; `Dock`'s effect keeps the lit row in view. */
+    max-height: 17rem;
+    overflow-y: auto;
+    scrollbar-width: thin;
   }
   .palette .cmd {
     display: flex;
@@ -534,11 +595,19 @@
     color: var(--paper-dim);
   }
   /* One line about the lit entry, since a summary short enough to scan cannot
-     also say what will be lost. */
+     also say what will be lost.
+
+     Stuck to the bottom of the box now that the box scrolls: it describes
+     whichever row is lit, which is a row you are looking at, so it must not
+     scroll out of sight along with the rows you are not. Opaque for the same
+     reason — the entries pass underneath it. */
   .palette .detail {
-    margin: 0.15rem 0.45rem 0.2rem;
-    padding-top: 0.3rem;
+    position: sticky;
+    bottom: -0.25rem;
+    margin: 0.15rem 0 -0.25rem;
+    padding: 0.3rem 0.45rem 0.25rem;
     border-top: 1px solid var(--edge);
+    background: var(--surface);
     color: var(--paper-mute);
     font-family: var(--util);
     font-size: 0.7rem;

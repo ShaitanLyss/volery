@@ -3,6 +3,7 @@ paths:
   - "src/lib/commands.ts"
   - "src/lib/Dock.svelte"
   - "src/lib/field.svelte.ts"
+  - "src-tauri/src/slash.rs"
   - "test/commands.test.ts"
 ---
 
@@ -29,6 +30,168 @@ is one entry in `COMMANDS` and one arm in `runCommand`.
   thing to say to an agent, and that is the way to say it.
 - **A command reaches as far as a prompt does and costs the same modifier.** Clearing five
   gathered cards at once must not be easier than talking to them.
+
+#### Three vocabularies under one slash
+
+`COMMANDS` is fixed because it is *this window's* vocabulary. Two others are not, and the
+palette offers all three:
+
+| what | where it comes from | read by | may sit |
+|---|---|---|---|
+| Volery's own | `COMMANDS`, fixed | this window | head only |
+| the CLI's own | `COMMANDS`, `by: "cli"` | the CLI | head only |
+| the project's own | `.claude/commands/**.md`, walked by `slash.rs` | the CLI | head only |
+| the card's skills | `system/init`'s `skills`, folded | **the model** | anywhere |
+
+`paletteExtras` composes the two dynamic ones and `matchCommands` decides which of them is
+reachable from where the caret is. **Ordering is locality** — this window's, then the
+project's, then the card's — which is also the order `system/init` lists them in, so it is a
+habit people already have. Locality settles collisions too, by keeping the first of any name:
+a project that writes its own `/code-review` shadows the skill of that name, and nothing
+shadows `/clear`.
+
+#### The project's own commands, walked rather than folded
+
+`slash.rs` walks `<cwd>/.claude/commands/` and then `~/.claude/commands/`, and it is the only
+one of the three vocabularies that touches a disk.
+
+**It is walked even though the wire carries it, and the measurement is the reason.** Probed
+2026-09-07 with `tools/probe-skills.ts` after seeding three files into a scratch project:
+`slash_commands` came back with 60 names, ordered **project commands first, then the skills,
+then the CLI's built-ins** — so the set wanted here is a *prefix* of that array. Taking it
+would mean depending on the order of an undocumented list, which breaks without saying so.
+Subtracting does not work either: `slash_commands − skills` still leaves ~30 built-ins, and
+the only way to name those is a table of them, which goes stale the next time the CLI grows
+one. A walk answers the question by construction.
+
+- **And it brings something the wire has not got.** A command file may carry a
+  `description:` in its frontmatter, so unlike a skill these rows say what they do in their
+  author's own words. Where there is none the row says where it came from, which is what
+  every skill's row says — the summary column is never empty.
+- **Cross-checked against the CLI's own naming.** `bare.md`, `deep/nested.md` and `hello.md`
+  enumerate to `bare`, `deep:nested` and `hello`, name for name what `slash_commands`
+  reported. A subdirectory is a **colon**, the same spelling a plugin's skills use, which is
+  why `NAME_CHAR` admits one.
+- **`by: "cli"`, so nothing is intercepted.** This is the rule the file opens with, now with
+  a way to *find* the commands it protects: `/commit` is the project's and reaches the agent
+  unread. `resolveCommand` still answers only for Volery's own.
+- **Head-only, unlike a skill**, because the CLI expands the file when a prompt *begins* with
+  the name. `/commit` mid-sentence is text.
+- **Not a YAML parser, deliberately.** One scalar out of a block whose shape the CLI
+  documents, read out of the first 4KB. Every failure has the same harmless answer: a row
+  that says where it came from instead of what it does. A `description:` past the closing
+  `---` is prose about something else and is not taken.
+- **Bounded on depth, count and bytes**, and the depth bound is there for the case a walk
+  must never meet — a directory symlink pointing at its own parent, which is an error
+  nowhere and would otherwise spin. `entry.file_type()` rather than `metadata`, so a symlink
+  is seen as one.
+- **Sorted, not in `read_dir` order.** A palette whose rows move when the same repo is
+  opened on another machine is one nobody can build a habit on.
+- **Asked once per directory, for the life of the wall** (`Skein.learnSlash` /
+  `slashFor`). This is a one-shot read like the finder's file list, not a fourth poller — the
+  architecture note is about things asked *repeatedly* because no event announces them. The
+  trade is explicit: a command file added while the app is up is not offered until the next
+  launch, and re-walking on every focus change would put a directory read behind a keystroke
+  for a set that changes about once a month. `learnSlash` asks and `slashFor` only reads, so
+  nothing can start a walk from inside a `$derived`.
+- **A failure is recorded as "nothing".** A project with no commands and a directory that
+  could not be read offer the same palette, and neither is worth a fault on the wall.
+
+#### Skills, which are the agent's — and the slash that stopped having to lead
+
+Which **skills** a card has depends on its directory, on which plugins are installed and
+which of those are scoped to that project, and on the build of Claude Code behind it. So
+nothing in `commands.ts` names one — they are folded off the wire, and `skillCommand` turns a
+name into a palette row.
+
+**The wire publishes them, which is what makes this cheap.** Probed 2026-09-06 against claude
+2.1.233 with `tools/probe-skills.ts`, spawning with Skein's exact argv: three of
+`system/init`'s keys are catalogues of what the agent answers to by name — `slash_commands`
+(52 here, and everything in the table above bar Volery's own, in one list), `skills` (22, a
+contiguous run inside it), and `agents` (8, a different vocabulary again) — beside a `plugins`
+array giving each plugin's `name`, `path` and `source`. `Conversation.skills` is a fold over
+that array and nothing goes and looks.
+
+- **Names only, so a summary is derived or it is invented.** There is no description anywhere
+  on any of the three arrays and no per-skill path. `skillCommand` derives what it can from
+  the name — `tx-toolkit:committee` announces its plugin, a bare `dataviz` announces that it
+  has none. Reading descriptions off disk was considered and dropped: a plugin's `SKILL.md`
+  *is* findable from `plugins[].path` and a project's from the cwd, but the CLI's own
+  built-ins were 16 of the 22 here and live inside a 320MB binary, on disk nowhere. Half a
+  palette with summaries is worse than none, and a hardcoded table is one that goes stale the
+  first time somebody rewords a skill.
+- **`by: "skill"` is a third carrier, not a third interception.** It is sent exactly as a
+  `cli` command is — `runCommand`'s branch is `by !== "skein"` — and the word exists because
+  the *reader* differs. That is what licenses the whole of the next bullet. It also keeps
+  skills out of `cliCommand`, which has to stay a question about the CLI: a card named after
+  `/dataviz make me a chart` is named after something you said, where one named `compact`
+  never would be.
+- **Everything at the head, skills anywhere** — the last column of the table above, and
+  `by === "skill"` is the whole test. `slashAt` finds the slash-name the *caret* is in rather
+  than matching the whole draft, so `make a chart with /dat` opens the palette. The reason is
+  not convenience: `/clear` is carried out here, `/compact` and `/commit` are parsed by the
+  CLI, and none of those reads anything but the start of a prompt — offering one mid-sentence
+  would be offering something that cannot run from there. A skill is invoked by the *model*,
+  through the `Skill` tool (`tools/probe-skill.ts` has the whole shape: a `tool_result` saying
+  "Launching skill: …", then the skill's own text injected as a `user` message), so its name
+  is prose and its position in the sentence is prose too.
+- **The slash must begin a word, and that is the whole guard.** `src/lib/clear.ts`, `and/or`,
+  `12/3`, `C:/Users` and `https://example.com/dataviz` all contain one and none of them opens
+  anything. A leading space still says prose for the *head* case — `resolveCommand` refuses
+  ` /clear` — but it cannot say so here, since a slash inside a line is by definition preceded
+  by one. What separates the two is `span.from`: zero is a command being typed, anything else
+  is a word in a sentence.
+- **Enter runs what is lit only when the name is the whole draft**, and completes it
+  otherwise (`spansWhole`, `Field.whole`). Running the lit entry over `make a chart with /dat`
+  would send `/dataviz` and throw away everything in front of it. At that row Enter and Tab
+  agree, which is exactly what they already do on a command that has not been given its value.
+- **The name is the whole token, wherever inside it the caret sits**, and that is what makes a
+  stale caret harmless: every position inside a token gives one answer, and `Field.caret` is
+  `null` for "wherever the text ends" — which is both the honest reading of a caret nothing has
+  reported and precisely what this behaved as before there was one. Every write that replaces
+  the whole line goes through `Field.put`, which puts it back to null; a caret measured against
+  a sentence that no longer exists is how a palette ends up matching a word nobody can see.
+- **A skill's completion carries a space** (`completionFor`) and it is deliberately not
+  `takesText`, which would make it `stillWriting` with nothing after it and stop Enter ever
+  sending `/dataviz` at all. It takes whatever you say next, and mid-sentence the space is what
+  lets you keep writing.
+- **A skill under one of our own names is dropped rather than drawn twice.** Two rows under one
+  name is a palette whose keys collide, and "what does `/clear` do here" has one answer.
+- **The palette scrolls now, and does not cap.** Nine commands plus every skill was 31 rows on
+  the wall this was written for. A list that silently stops at ten says a card has no skill
+  that it does have; `Dock.svelte` keeps the lit row in view and the detail line is stuck to
+  the bottom, since it describes a row you are looking at.
+
+**And the list is stored on the row, which is the half that makes the feature visible at all.**
+The same probe spawned with Skein's argv and sent *nothing*: no `system/init` after fifteen
+seconds. The CLI emits one only after the first message lands — which is the same thing
+`CLAUDE.md` records about a freshly spawned card not being dormant — so a roused card has
+nothing on the wire to fold at exactly the moment somebody opens the palette to write their
+first prompt of the session. Schema v31's `skills_json` is that, and it is `permission_mode`'s
+argument one column over: a dormant card emits no init, and init is the only thing that ever
+names these.
+
+- **Opaque, on the bargain `widget.config_json` names.** Nothing in Rust reads it and
+  `skillsFrom` normalises every read down to something drawable, so a name shaped in a way this
+  build has never seen costs a palette row rather than a migration.
+- **NULL and `[]` are different facts.** NULL is "nobody has ever asked this card"; `[]` is a
+  card whose agent said it has none. Both draw the same palette and only one of them is a
+  fact — and the distinction is what lets `update_conversation` keep COALESCEing safely while
+  still being able to *empty* the column, since an emptying arrives as the string `[]` rather
+  than as an absence. A plugin uninstalled has to be able to leave the palette.
+- **Written when it lands, not at the next settling turn.** `#persistConv` spends
+  `skillsFresh` on the init that set it. A `result`-time write would store the list one turn
+  after the turn it was wanted for, and an init arrives for every dequeued prompt, so guarding
+  on the value rather than the event is what keeps this from being a JSON blob rewritten per
+  turn.
+- **A build that names no skills leaves the stored list alone.** `#adoptSkills` returns on a
+  missing array, the same reading `gearOfInit`'s `null` takes: silence is not an empty list,
+  and folding one would throw away a perfectly good stored list the first time an older CLI
+  answered.
+
+`snapshot.cards[]` carries `skills`, because that is the only way from outside to tell the two
+halves apart — a card told its skills and a card restored with them look identical in the
+palette, and only one of them proves the column works.
 
 #### The CLI's own commands, offered but not taken
 

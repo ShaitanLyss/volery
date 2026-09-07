@@ -53,7 +53,7 @@ import { Flights, type SentEvent } from "./relay.svelte";
 import { Board } from "./board.svelte";
 import { Sink } from "./sink.svelte";
 import { Gates } from "./gates.svelte";
-import { cliCommand, isEffort } from "./commands";
+import { cliCommand, isEffort, type SlashCommand } from "./commands";
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, type Preset } from "./presets";
 import { UNNAMED, isNamed, titleFromPrompt } from "./naming";
@@ -2365,6 +2365,56 @@ export class Skein {
    *  This is the collision feature paying a dividend before it exists: the
    *  moment before a prompt fans out is exactly when you want to know that two
    *  of your targets share a working tree. */
+  /* ── the project's own slash commands ─────────────────────────────────────
+   *
+   * The third vocabulary the dock's palette offers, and the only one that has
+   * to be fetched: Volery's own are a fixed list and a card's skills are folded
+   * off `system/init`, but `.claude/commands/` is a directory. `slash.rs` walks
+   * it; this holds what came back.
+   *
+   * **A one-shot read, not a fourth poller.** The architecture note about the
+   * three places that go and look is about things asked *repeatedly* because no
+   * event announces them. This is asked once per directory and cached for the
+   * life of the wall, which is the same bargain the finder's file list strikes
+   * (`.claude/rules/finding.md`) — so a command file added while the app is up
+   * is not offered until the next launch, and that is the trade rather than an
+   * oversight. Re-walking on every focus change would put a directory read
+   * behind a keystroke for a set that changes about once a month. */
+
+  /** What each directory offers under a slash, keyed by cwd. */
+  #slash = $state<Record<string, SlashCommand[]>>({});
+
+  /** Which directories have been asked, including the ones still in flight and
+   *  the ones that failed. Kept apart from `#slash` so a directory with nothing
+   *  in it — which is most of them — is asked exactly once rather than on every
+   *  read of an empty answer. */
+  #slashAsked = new Set<string>();
+
+  /** Walk this directory's `.claude/commands/`, once ever.
+   *
+   *  Fire-and-forget: the palette is correct without it and gains rows when the
+   *  answer lands. A failure is recorded as "nothing", because a project with no
+   *  commands and a directory that could not be read offer the same palette and
+   *  neither is worth a fault on the wall. */
+  learnSlash(cwd: string) {
+    if (!cwd || this.#slashAsked.has(cwd)) return;
+    this.#slashAsked.add(cwd);
+    void invoke<SlashCommand[]>("project_commands", { cwd })
+      .then((rows) => {
+        this.#slash[cwd] = Array.isArray(rows) ? rows : [];
+      })
+      .catch(() => {
+        this.#slash[cwd] = [];
+      });
+  }
+
+  /** What that directory offered, or nothing yet. A plain read — asking is
+   *  `learnSlash`, deliberately, so nothing can start a directory walk from
+   *  inside a `$derived`. */
+  slashFor(cwd: string): SlashCommand[] {
+    return this.#slash[cwd] ?? [];
+  }
+
   async sharedTree(convs: Conversation[]): Promise<string[]> {
     if (convs.length < 2) return [];
     const ids = new Set(convs.map((c) => c.id));
@@ -3036,6 +3086,21 @@ export class Skein {
   /** Keep the row current enough that a dormant card can show what it reached
    *  without ever spawning the session behind it. */
   #persistConv(c: Conversation, ev: any) {
+    /* The skills a card has arrive once per process, on `system/init`, and they
+       are written the moment they land rather than at the next settling turn —
+       the palette that offers them is wanted *before* a card's first prompt, so
+       waiting for a `result` would store them one turn after the turn they were
+       needed for. Guarded on `skillsFresh` rather than on the event, since an
+       init arrives for every dequeued prompt and the answer is the same every
+       time; the flag is spent here so a card that never changes its skills
+       writes the row exactly once. */
+    if (c.skillsFresh) {
+      c.skillsFresh = false;
+      void invoke("update_conversation", {
+        id: c.id,
+        skillsJson: JSON.stringify(c.skills),
+      }).catch(() => {});
+    }
     if (ev?.type === "result") {
       void this.#adoptAiTitle(c);
       void this.#adoptEffort(c);

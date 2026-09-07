@@ -91,8 +91,10 @@
   import { adrift, Portage } from "./lib/portage.svelte";
   import { waterfall } from "./lib/waterfall.svelte";
   import {
+    completeAt,
     completionFor,
     completionForChoice,
+    paletteExtras,
     resolveCommand,
     stillWriting,
     type Command,
@@ -1599,6 +1601,40 @@
    * is the project's and goes to the agent untouched; nothing here may swallow
    * a command it does not recognise. */
 
+  /** Whichever card the dock is really pointed at.
+   *
+   *  The focused card, falling back to the first of a marquee gathering, so a
+   *  line typed over a selection with no ring still has somewhere honest to go.
+   *  Both things in the dock that are about *one* card read this: the palette's
+   *  extra vocabulary, and the `!` line's directory. One derived rather than two
+   *  copies of the expression — they have never disagreed and a second spelling
+   *  is the only way they could start to.
+   *
+   *  A broadcast takes this card's vocabulary, which can name a skill one of the
+   *  others has not got. The agent says so, which is the ordinary answer to a
+   *  name it does not know, and the alternative is intersecting five lists into
+   *  a palette that gets quieter the more cards you gather. */
+  const dockCard = $derived(focused ?? targets[0] ?? null);
+
+  /* The project's own command files, walked once per directory. Asked here
+     rather than inside the composition below, because that one is a fold and a
+     fold must not start a directory walk. */
+  $effect(() => {
+    const cwd = dockCard?.cwd;
+    if (cwd) skein.learnSlash(cwd);
+  });
+
+  /* What the palette offers beside Volery's own, which is the *card's* and the
+     *project's* rather than this window's — see `commands.ts`. Handed to the
+     field rather than reached for from inside it, which is what keeps `Field` a
+     fold over the draft and nothing else. */
+  $effect(() => {
+    field.extra = paletteExtras(
+      dockCard ? skein.slashFor(dockCard.cwd) : [],
+      dockCard?.skills ?? [],
+    );
+  });
+
   /* ── the `!` line ──────────────────────────────────────────────────────
    *
    * `bang.ts` owns what a draft means and how it is coloured; `Bang` owns the
@@ -1612,10 +1648,11 @@
    *
    *  One card, never the gathering, and the bar says which — a shell command
    *  runs in *a* directory, and broadcasting one would run it once per card in
-   *  what is very often the same tree. Falling back to the first of a marquee
-   *  gathering rather than to nothing, so a line typed over a selection with no
-   *  ring still has somewhere honest to go, and the bar names it. */
-  const bangCard = $derived(focused ?? targets[0] ?? null);
+   *  what is very often the same tree. That is `dockCard`, which is where the
+   *  falling-back-to-a-marquee reasoning now lives: the palette wanted the same
+   *  card for its own reasons, and one derived is the only way two readings of
+   *  "the card the dock is pointed at" cannot drift apart. */
+  const bangCard = $derived(dockCard);
 
   /* An offering standing over a draft that is no longer a shell line would be a
      popup completing paths into a sentence. */
@@ -1633,7 +1670,7 @@
     const card = bangCard;
     if (!cmd || !card) return;
     bang.close();
-    field.text = "";
+    field.put("");
     await bang.run(card, cmd, handOver);
   }
 
@@ -1662,6 +1699,24 @@
     if (only) await takeCompletion(only.offer, only.only);
   }
 
+  /** Put a palette name into the line where the caret is, and leave you there.
+   *
+   *  What Tab does, and what Enter does when the name is a word inside a
+   *  sentence rather than the whole draft. The caret is set on `Field` as well
+   *  as on the textarea, because the textarea's own report comes from an event
+   *  and there is no event here — writing only one of the two would leave the
+   *  palette matching against a position from before the completion landed. */
+  async function completeName(cmd: Command) {
+    const span = field.token;
+    if (!span) return;
+    const done = completeAt(field.text, span, completionFor(cmd));
+    field.text = done.text;
+    field.caret = done.caret;
+    field.at = 0;
+    await tick();
+    prompt?.setSelectionRange(done.caret, done.caret);
+  }
+
   async function runCommand(cmd: Command, broadcast: boolean, arg = "") {
     /* Only the ones that act on cards need one. `/resume` acts on the wall —
        it offers the sessions on disk, which is the same offer whatever is
@@ -1679,7 +1734,7 @@
        version of it that lived here was wrong in a way nothing could see. See
        `stillWriting` for what was wrong and how long it had been. */
     if (stillWriting(cmd, arg)) {
-      field.text = completionFor(cmd);
+      field.put(completionFor(cmd));
       field.at = 0;
       return;
     }
@@ -1696,10 +1751,13 @@
     /* The value goes with it. It could not before, because a command carrying
        one never got past the guard above — so `/${cmd.name}` alone was the
        whole of what there ever was to send. */
-    if (cmd.by === "cli") {
+    /* And a skill is carried out the same way, by the agent rather than by the
+       CLI — see `commands.ts`. The reader differs and nothing else about this
+       line does: either way Volery has only helped you type it. */
+    if (cmd.by !== "skein") {
       return sendText(arg ? `/${cmd.name} ${arg}` : `/${cmd.name}`, broadcast);
     }
-    field.text = "";
+    field.put("");
     field.at = 0;
     /* Forced open rather than `openImport()`, which toggles: toggling is the
        right answer for a button you press twice and the wrong one for a
@@ -1755,7 +1813,7 @@
        the refusal flashes exactly that reading, which is the answer and is
        already on screen; anything more would be prose about a key. */
     if (targets.length > 1 && !broadcast) return field.refuse();
-    field.text = "";
+    field.put("");
     field.at = 0;
     if (targets.length === 1) await skein.send(targets[0], text);
     else await skein.broadcast(targets, text);
@@ -1777,8 +1835,19 @@
       return sendText(completionForChoice(cmd, field.choicePick), broadcast);
     }
     /* With the palette open the key means "run what is lit", exactly as it
-       does in the CLI: `/cle` and Enter runs clear. */
-    if (field.commandPick) return runCommand(field.commandPick, broadcast);
+       does in the CLI: `/cle` and Enter runs clear.
+
+       Unless the lit name is a *word inside a sentence*, which is what skills
+       made possible — `make a chart with /dat` has a palette open over the last
+       four characters, and running the lit entry there would send `/dataviz`
+       and throw away everything you typed in front of it. So Enter completes it
+       and leaves you writing, which is exactly what Tab does; at that row the
+       two keys agree, the way they already agree on a command that has not been
+       given its value. */
+    if (field.commandPick) {
+      if (!field.whole) return completeName(field.commandPick);
+      return runCommand(field.commandPick, broadcast);
+    }
 
     const text = field.text.trim();
     if (!text || targets.length === 0) return;
@@ -2002,10 +2071,17 @@
          the last thing before Enter is the command exactly as it will be sent. */
       if (e.key === "Tab" && (field.choicePick || field.commandPick)) {
         e.preventDefault();
-        field.text =
-          field.choicePick && field.choosing
-            ? completionForChoice(field.choosing.cmd, field.choicePick)
-            : completionFor(field.commandPick!);
+        /* The values stage replaces the whole line, because it *is* the whole
+           line — `typingChoice` is anchored at the head. The names stage
+           replaces only the slash-word the caret is in, which for a draft that
+           is nothing but that word comes out identical to what this used to do,
+           and for `use /dat| for the chart` puts the name where the word was
+           instead of throwing the sentence away. */
+        if (field.choicePick && field.choosing) {
+          field.put(completionForChoice(field.choosing.cmd, field.choicePick));
+        } else {
+          void completeName(field.commandPick!);
+        }
         return;
       }
     }
@@ -2279,6 +2355,10 @@
          keystroke that caused it is not something to leave to chance. */
       e.preventDefault();
       field.text += e.key;
+      /* Null rather than the new length, which would be the same number today
+         and a lie the moment anything appends more than one character: null
+         *means* the end of the text, so it stays true however this grows. */
+      field.caret = null;
       void focusDraft();
     }
   }
@@ -2314,7 +2394,7 @@
     /* Before the focus moves, so a line still being written is handed to the
        wall rather than parked under a card that no longer exists — which is the
        same as losing it. What the card had parked goes with the card. */
-    field.text = drafts.release(conv.id, field.text);
+    field.put(drafts.release(conv.id, field.text));
     /* Both of these are ahead of the await for the reason `Skein.close` now puts
        the removal ahead of its own: everything the eye is owed by this gesture
        happens when the gesture happens, and none of it waits on a command that
@@ -2360,7 +2440,7 @@
     setFocused: (id) => (focusedId = id),
     deselect: ondeselect,
     draft: () => field.text,
-    setDraft: (t) => (field.text = t),
+    setDraft: (t) => field.put(t),
     commands: () => field.commands,
     choices: () => field.choices.map((c) => c.value),
     targets: () => targets,

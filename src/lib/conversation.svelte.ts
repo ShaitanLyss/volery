@@ -70,7 +70,7 @@ import { costStep } from "./usage";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
 import { UNNAMED } from "./naming";
-import { effortAnswer, isEffort, type Effort } from "./commands";
+import { effortAnswer, isEffort, skillsFrom, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
 import type { Answers, AskQuestion } from "./asking";
@@ -843,6 +843,31 @@ export class Conversation {
    *  still holds the level this one replaces. Spent on the next settling
    *  turn — one read, not the rest of the session. */
   effortStated = $state(false);
+
+  /** The skills this card's agent has, by name, out of `system/init`.
+   *
+   *  Which ones a card has is not something this window could work out: it
+   *  depends on the directory, on which plugins are installed and which of them
+   *  are scoped to that project, and on the build of Claude Code behind it. The
+   *  wire says so directly — a `skills` array beside `slash_commands`, `agents`
+   *  and `plugins`, names only and no descriptions (probed 2026-09-06 against
+   *  2.1.233 with `tools/probe-skills.ts`) — so this is a fold over an event
+   *  that already arrives rather than anything that goes and looks.
+   *
+   *  Empty until an init lands, which is only after the card's first message of
+   *  the process — spawning and sending nothing sat silent for the whole of the
+   *  same probe's fifteen-second wait. That is why the list is stored on the row
+   *  and restored with it: the palette that offers these is wanted *before* the
+   *  first prompt rather than after it. See `store::migrate_v31`.
+   *
+   *  `commands.ts` turns a name into a palette row and nothing else reads it. */
+  skills = $state<string[]>([]);
+
+  /** The skills changed and the row has not been told. Spent by `#persistConv`
+   *  on the init that set it, so the write happens once per process rather than
+   *  a JSON blob per settling turn. */
+  skillsFresh = $state(false);
+
   /** The session's running total, as `result.total_cost_usd` reports it — not
    *  the last turn's. See `lastTurn` for that. */
   costUsd = $state(0);
@@ -1083,6 +1108,9 @@ export class Conversation {
     effort?: string | null;
     /** Optional because a row written before schema v23 has no gear. */
     permissionMode?: string | null;
+    /** The skills the last `system/init` named, as the JSON array it was stored
+     *  as. Opaque to Rust and normalised here — see `skillsFrom`. */
+    skillsJson?: string | null;
   }): Conversation {
     const c = new Conversation(
       row.id,
@@ -1162,6 +1190,14 @@ export class Conversation {
        A row from before the column existed is null, which is the truth about
        it: no card had a gear to be in. */
     c.gear = gearOfWire(row.permissionMode ?? "bypassPermissions");
+    /* Same argument as the gear one line up, one subsystem over: a dormant card
+       emits no `system/init`, and init is the only thing on the wire that names
+       a card's skills — so without the column the dock's palette would have
+       nothing to offer until each card had taken a turn, which is precisely the
+       moment you would have wanted it. Never written by the card and never
+       trusted: `skillsFresh` stays false, so a restored list is redrawn rather
+       than re-stored, and the next init overwrites it with what is true now. */
+    c.skills = skillsFrom(row.skillsJson);
     c.activity = row.interrupted ? "interrupted" : "dormant";
     return c;
   }
@@ -1463,6 +1499,30 @@ export class Conversation {
     }
     this.model = model;
     this.contextWindow = contextWindowFor(model);
+  }
+
+  /** Take the skills an init declared, and mark them for the row if they moved.
+   *
+   *  Guarded on the value rather than on the event, because an init arrives for
+   *  every dequeued prompt and the answer is the same every time — writing a
+   *  JSON blob per turn to say so would be a row rewritten for nothing.
+   *
+   *  A build that names no skills leaves the list exactly as it was. That is the
+   *  same reading `#adoptModel`'s `null` gear takes: silence is not an empty
+   *  list, and folding one would throw away a perfectly good stored list the
+   *  first time an older CLI answered. An init that carries the field and an
+   *  empty array *is* an emptying, and is taken — a plugin uninstalled has to be
+   *  able to leave the palette. */
+  #adoptSkills(said: unknown) {
+    if (!Array.isArray(said)) return;
+    const names = said.filter(
+      (s): s is string => typeof s === "string" && s.trim().length > 0,
+    );
+    /* Compared as text: the array is rebuilt on every init, so identity says
+       nothing and the only question is whether the names moved. */
+    if (names.join(" ") === this.skills.join(" ")) return;
+    this.skills = names;
+    this.skillsFresh = true;
   }
 
   /** What the occupancy itself says about the window.
@@ -1881,6 +1941,7 @@ export class Conversation {
              one is no longer the current state of this card. */
           this.died = false;
           if (ev.model) this.#adoptModel(ev.model, true);
+          this.#adoptSkills(ev.skills);
           /* The gear this turn is running under — which is not always what the
              card is set to, since an init for a turn already in flight when the
              mode changed reports the old one. `#initGear` holds the rule; see

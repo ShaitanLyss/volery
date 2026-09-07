@@ -3,12 +3,19 @@ import {
   COMMANDS,
   EFFORT_LEVELS,
   cliCommand,
+  completeAt,
   effortAnswer,
   completionFor,
   completionForChoice,
   matchChoices,
   matchCommands,
+  paletteExtras,
+  projectCommand,
   resolveCommand,
+  skillCommand,
+  skillsFrom,
+  slashAt,
+  spansWhole,
   stillWriting,
   typingChoice,
   typingName,
@@ -532,5 +539,337 @@ describe("/btw, the question asked beside a conversation", () => {
     const done = resolveCommand("/btw which branch is this on?");
     expect(done?.cmd.name).toBe("btw");
     expect(done?.arg).toBe("which branch is this on?");
+  });
+});
+
+/* ── skills, a project's own commands, and a slash that may sit anywhere ──── */
+
+/** What the wall this was written on actually declared, in the order the wire
+ *  gave them — a plugin's, a plugin whose name repeats its skill's, and three
+ *  bare ones. Probed 2026-09-06 against claude 2.1.233; `system/init` named 22
+ *  and these are the shapes among them. */
+const SKILLS = [
+  "tx-toolkit:committee",
+  "frontend-design:frontend-design",
+  "dataviz",
+  "code-review",
+  "loop",
+];
+
+/** What `slash.rs` reports for a project that keeps commands of its own, in the
+ *  shapes the probe seeded and the CLI then named back: a described one, one
+ *  with no frontmatter at all, and one from a subdirectory. */
+const PROJECT = [
+  { name: "commit", description: "stage and commit what this work touched", scope: "project" },
+  { name: "bare", description: null, scope: "project" },
+  { name: "deep:nested", description: "a command in a subdirectory", scope: "project" },
+];
+
+const extras = paletteExtras(PROJECT, SKILLS);
+
+const offered = (draft: string, caret?: number | null) =>
+  matchCommands(draft, caret, paletteExtras([], SKILLS)).map((c) => c.name);
+
+const offeredAll = (draft: string, caret?: number | null) =>
+  matchCommands(draft, caret, extras).map((c) => c.name);
+
+describe("the slash-name the caret is in", () => {
+  test("a name at the head is the whole draft, as it always was", () => {
+    expect(slashAt("/clear", null)).toEqual({ from: 0, to: 6, name: "clear" });
+    expect(spansWhole("/clear", slashAt("/clear", null)!)).toBe(true);
+  });
+
+  test("a name inside a sentence is found, and is not the whole draft", () => {
+    const span = slashAt("make a chart with /dataviz", null)!;
+    expect(span).toEqual({ from: 18, to: 26, name: "dataviz" });
+    expect(spansWhole("make a chart with /dataviz", span)).toBe(false);
+  });
+
+  test("the slash has to begin a word, which is what keeps prose out", () => {
+    /* Every one of these contains a slash and none of them is a name being
+       typed. This is the whole guard: without it the palette would open on a
+       path, a fraction and a date. */
+    for (const prose of [
+      "what about src/lib/clear.ts",
+      "and/or",
+      "on 12/3",
+      "C:/Users/flori",
+      "https://example.com/dataviz",
+    ]) {
+      expect(slashAt(prose, null)).toBeNull();
+      expect(offered(prose)).toEqual([]);
+    }
+  });
+
+  test("a newline counts as the start of a word, and so does a space", () => {
+    expect(slashAt("first line\n/dataviz", null)?.name).toBe("dataviz");
+    expect(slashAt("use /dataviz", null)?.name).toBe("dataviz");
+  });
+
+  test("the name is the whole token, wherever inside it the caret sits", () => {
+    /* Putting the caret back into the middle of a name you can already see has
+       to match the name you can see — and it is what makes a stale caret
+       harmless, since every position inside the token gives one answer. */
+    for (const at of [1, 3, 6]) {
+      expect(slashAt("/clear", at)?.name).toBe("clear");
+    }
+  });
+
+  test("a caret before the slash is not in the name", () => {
+    expect(slashAt("/clear", 0)).toBeNull();
+  });
+
+  test("a caret past the end of the text is clamped rather than trusted", () => {
+    /* The draft can be rewritten under a position that was true a keystroke
+       ago, and the answer has to be about the text that is here now. */
+    expect(slashAt("/clear", 400)?.name).toBe("clear");
+    expect(slashAt("/clear", -5)).toBeNull();
+  });
+
+  test("null is the end of the text, which is what this did before it had one", () => {
+    expect(slashAt("/cle")).toEqual(slashAt("/cle", null));
+    expect(slashAt("/cle")).toEqual(slashAt("/cle", 4));
+  });
+
+  test("a colon is part of a name, because a plugin's skills are named with one", () => {
+    expect(slashAt("/tx-toolkit:committee", null)?.name).toBe(
+      "tx-toolkit:committee",
+    );
+  });
+});
+
+describe("commands at the head, skills anywhere", () => {
+  test("a bare slash at the head offers everything, ours first", () => {
+    expect(offered("/")).toEqual([...COMMANDS.map((c) => c.name), ...SKILLS]);
+  });
+
+  test("a bare slash inside a sentence offers only the skills", () => {
+    /* A command is carried out by this window or parsed by the CLI, and neither
+       reads the middle of a prompt — offering `/clear` there would be offering
+       to run something that cannot be run from there. */
+    expect(offered("please use /")).toEqual(SKILLS);
+  });
+
+  test("a skill is found at the head beside the commands", () => {
+    expect(offered("/dat")).toEqual(["dataviz"]);
+    /* Prefix before contains, which is the rule the commands already had: `loop`
+       starts with it and `clear`, `model` and `plan` merely have an l in them,
+       so the one you meant is lit. */
+    expect(offered("/l")[0]).toBe("loop");
+    expect(offered("/l")).toContain("clear");
+  });
+
+  test("a skill is found mid-sentence and a command with the same letters is not", () => {
+    /* `/c` at the head is `clear` and `compact` and `code-review`; in the middle
+       of a line it is only ever skills, because only a skill would work from
+       there. */
+    expect(offered("/c")).toContain("clear");
+    expect(offered("/c")).toContain("code-review");
+    const inside = offered("make a chart with /c");
+    expect(inside[0]).toBe("code-review");
+    expect(inside).not.toContain("clear");
+    expect(inside).not.toContain("compact");
+  });
+
+  test("the plugin half of a name is not something anybody types", () => {
+    /* Prefix first and then merely containing, which is the rule that already
+       made `/ear` find `clear` — and is what finds `tx-toolkit:committee` from
+       the only part of it a person knows. */
+    expect(offered("/committee")).toEqual(["tx-toolkit:committee"]);
+  });
+
+  test("a card with no skills gets exactly the palette it always had", () => {
+    expect(matchCommands("/")).toEqual(matchCommands("/", null, []));
+    expect(offered("/zzz")).toEqual([]);
+  });
+});
+
+describe("the project's own commands, which are head-only like the CLI's", () => {
+  test("they are offered at the head, ahead of the skills", () => {
+    /* Locality: this window's own first, then the project's, then the card's —
+       which is also the order `system/init` lists them in. */
+    expect(offeredAll("/")).toEqual([
+      ...COMMANDS.map((c) => c.name),
+      "commit",
+      "bare",
+      "deep:nested",
+      ...SKILLS,
+    ]);
+  });
+
+  test("but never inside a sentence, because the CLI only reads the head", () => {
+    /* A file in `.claude/commands/` is expanded by the CLI when a prompt
+       *begins* with its name. `/commit` in the middle of a line is text, so
+       offering it there would be offering something that cannot run. Only
+       skills survive the move. */
+    expect(offeredAll("/com").length).toBeGreaterThan(1);
+    expect(offeredAll("/com")).toContain("commit");
+    const inside = offeredAll("and then /com");
+    expect(inside).toEqual(["tx-toolkit:committee"]);
+  });
+
+  test("a subdirectory is typed with a colon, as the CLI names it", () => {
+    /* `.claude/commands/deep/nested.md` → `deep:nested`, measured against the
+       real `slash_commands` array. So the name has to survive `slashAt`. */
+    expect(offeredAll("/deep:nes")).toEqual(["deep:nested"]);
+    expect(slashAt("/deep:nested", null)?.name).toBe("deep:nested");
+  });
+
+  test("it says what it does in its author's own words where it can", () => {
+    /* The one row in this palette that is not reduced to its provenance — a
+       command file may carry a `description:`, where the wire says nothing at
+       all about a skill. */
+    const commit = extras.find((c) => c.name === "commit")!;
+    expect(commit.summary).toBe("stage and commit what this work touched");
+    /* And where it has none, it says where it came from, like a skill's row. */
+    const bare = extras.find((c) => c.name === "bare")!;
+    expect(bare.summary).toContain(".claude/commands");
+    expect(projectCommand({ name: "x", scope: "user" }).summary).toContain("~/.claude");
+  });
+
+  test("it is sent, not intercepted — the rule this file opened with", () => {
+    /* `/commit` is the project's command and has to reach the agent unread.
+       Nothing here takes custody of one, and it is the CLI that reads it. */
+    const commit = extras.find((c) => c.name === "commit")!;
+    expect(commit.by).toBe("cli");
+    expect(resolveCommand("/commit")).toBeNull();
+    expect(completionFor(commit)).toBe("/commit");
+  });
+});
+
+describe("what the three vocabularies do when they collide", () => {
+  test("nothing may shadow one of Volery's own", () => {
+    /* Two rows under one name is a palette whose `{#each}` keys collide, and
+       "what does `/clear` do here" has one answer. */
+    const both = paletteExtras([{ name: "clear" }], ["clear"]);
+    expect(both).toEqual([]);
+    expect(matchCommands("/clear", null, both).map((c) => c.name)).toEqual(["clear"]);
+    expect(matchCommands("/clear", null, both)[0].by).toBe("skein");
+  });
+
+  test("the project's own beats a skill of the same name", () => {
+    /* Locality again: the thing written in this repo is the thing you meant. */
+    const both = paletteExtras([{ name: "code-review", description: "ours" }], SKILLS);
+    const row = both.find((c) => c.name === "code-review")!;
+    expect(row.by).toBe("cli");
+    expect(row.summary).toBe("ours");
+    expect(both.filter((c) => c.name === "code-review")).toHaveLength(1);
+  });
+
+  test("the same name twice from one source is one row", () => {
+    expect(paletteExtras([], ["dataviz", "dataviz"])).toHaveLength(1);
+    expect(paletteExtras([{ name: "commit" }, { name: "commit" }], [])).toHaveLength(1);
+  });
+
+  test("names arrive lowercased, or a row would be unreachable", () => {
+    /* The palette matches in lowercase, so a `Commit.md` that could only be
+       found by typing `/Commit` would be a row nobody can reach. `slash.rs`
+       folds it too; this is the belt to that braces. */
+    expect(paletteExtras([{ name: "Commit" }], ["DataViz" ]).map((c) => c.name)).toEqual([
+      "commit",
+      "dataviz",
+    ]);
+  });
+
+  test("an empty name is not a row", () => {
+    expect(paletteExtras([{ name: "  " }], ["", "   "])).toEqual([]);
+  });
+});
+
+describe("a skill is the agent's, not this window's and not the CLI's", () => {
+  const dataviz = skillCommand("dataviz");
+  const committee = skillCommand("tx-toolkit:committee");
+
+  test("it says where it came from, since that is all the name carries", () => {
+    /* The wire publishes names and nothing else — no description, no path — and
+       the CLI's own built-ins are inside the binary rather than on disk. So the
+       summary is derived from the name or it is invented, and invented is a
+       table that goes stale. */
+    expect(committee.summary).toBe("a skill from tx-toolkit");
+    expect(dataviz.summary).toBe("a skill this card has");
+    expect(dataviz.summary).toBe(dataviz.summary.toLowerCase());
+    expect(dataviz.detail.length).toBeGreaterThan(0);
+  });
+
+  test("this window never takes custody of one", () => {
+    /* `resolveCommand` answers only for Volery's own, so `/dataviz` falls
+       through and goes to the agent as the prompt it is — exactly what
+       `/commit` does, and for the same reason. */
+    expect(resolveCommand("/dataviz")).toBeNull();
+    expect(resolveCommand("/dataviz make a chart")).toBeNull();
+  });
+
+  test("and it is not one of the CLI's, which is a different question", () => {
+    /* `cliCommand` decides whether a card may be named after what you typed. A
+       skill *is* something you said to the agent, so `/dataviz make a chart` is
+       a perfectly good name for a card and `/model sonnet` is not. */
+    expect(cliCommand("/dataviz make a chart")).toBeNull();
+    expect(dataviz.by).toBe("skill");
+  });
+
+  test("it reaches cards, so it costs the reach modifier like a prompt", () => {
+    expect(dataviz.needsCard).toBe(true);
+  });
+
+  test("completing one leaves a space to carry on writing in", () => {
+    /* Not `takesText`, which would make it incomplete with nothing after it and
+       stop Enter ever sending `/dataviz` at all — but a skill does take whatever
+       you say next, and mid-sentence the space is what lets you keep typing. */
+    expect(completionFor(dataviz)).toBe("/dataviz ");
+    expect(stillWriting(dataviz, "")).toBe(false);
+  });
+});
+
+describe("where a completion lands", () => {
+  test("at the head it replaces the whole draft, as completing used to", () => {
+    const span = slashAt("/cle", null)!;
+    expect(completeAt("/cle", span, "/clear")).toEqual({
+      text: "/clear",
+      caret: 6,
+    });
+  });
+
+  test("mid-sentence it replaces the word and keeps the sentence", () => {
+    const draft = "make a chart with /dat for me";
+    const span = slashAt(draft, 22)!;
+    expect(completeAt(draft, span, "/dataviz ")).toEqual({
+      text: "make a chart with /dataviz  for me",
+      caret: 27,
+    });
+  });
+
+  test("the caret lands after what was inserted, not at the end of the line", () => {
+    const draft = "/dat and then some more";
+    const span = slashAt(draft, 4)!;
+    const done = completeAt(draft, span, "/dataviz ");
+    expect(done.text.slice(0, done.caret)).toBe("/dataviz ");
+  });
+});
+
+describe("the skills stored on a card's row", () => {
+  test("what was folded comes back", () => {
+    expect(skillsFrom(JSON.stringify(SKILLS))).toEqual(SKILLS);
+  });
+
+  test("a card nobody has ever asked has none", () => {
+    /* NULL is "no init has ever named these", which is every card from before
+       the column and every card that has not spoken. It draws the palette this
+       has always drawn. */
+    expect(skillsFrom(null)).toEqual([]);
+    expect(skillsFrom(undefined)).toEqual([]);
+    expect(skillsFrom("")).toEqual([]);
+  });
+
+  test("anything unexpected degrades to none rather than reaching the palette", () => {
+    /* The bargain every opaque JSON column here strikes: Rust carries the text
+       and never reads it, and being wrong costs a palette row rather than a
+       migration. */
+    expect(skillsFrom("not json at all")).toEqual([]);
+    expect(skillsFrom('{"skills":["dataviz"]}')).toEqual([]);
+    expect(skillsFrom('["dataviz",7,null,"  "]')).toEqual(["dataviz"]);
+  });
+
+  test("names are trimmed and counted once", () => {
+    expect(skillsFrom('[" dataviz ","dataviz"]')).toEqual(["dataviz"]);
   });
 });

@@ -47,6 +47,11 @@ mod sessions;
 mod signin;
 mod shell;
 mod sink;
+/* The third vocabulary under the dock's slash: the markdown files a project
+   keeps in `.claude/commands/`. The other two need no module — Volery's own are
+   a fixed list in `commands.ts`, and a card's skills are folded off
+   `system/init`. This one is the only one on a disk. */
+mod slash;
 mod smith;
 mod spawn;
 mod spotify;
@@ -453,6 +458,7 @@ pub fn run() {
             sink::sink_delete,
             sink::sink_release,
             sink::sink_tool,
+            slash::project_commands,
             spawn::spawned_by,
             spawn::lineage,
             sessions::list_sessions,

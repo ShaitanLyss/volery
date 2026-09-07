@@ -152,6 +152,12 @@ pub struct StoredConversation {
     /// wall would come back drawn as making until each card was woken.
     #[serde(rename = "permissionMode")]
     pub permission_mode: Option<String>,
+    /// The skills the card's agent last declared, as the JSON array they were
+    /// stored as — opaque here and normalised by the front end. Carried on the
+    /// restore for the reason above it: a dormant card emits no `system/init`,
+    /// and init is the only thing that ever names these. See `migrate_v31`.
+    #[serde(rename = "skillsJson")]
+    pub skills_json: Option<String>,
     /// Canvas position. `None` means "let the layout place it".
     pub x: Option<f64>,
     pub y: Option<f64>,
@@ -273,7 +279,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 30;
+const SCHEMA_VERSION: i64 = 31;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -309,6 +315,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (28, migrate_v28),
     (29, migrate_v29),
     (30, migrate_v30),
+    (31, migrate_v31),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1468,6 +1475,32 @@ fn migrate_v30(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("migrate v30: {e}"))
 }
 
+/// The skills a card's agent declared, so the dock can offer them before the
+/// card has spoken.
+///
+/// Carried on the restore for the reason the gear is (`migrate_v24`), and it is
+/// the sharper version of that argument rather than another instance of it. A
+/// dormant card emits no `system/init`, and init is the *only* place on the wire
+/// that names a card's skills — probed 2026-09-06 against claude 2.1.233, which
+/// puts a `skills` array of names there beside `slash_commands` and `plugins`,
+/// and which sends no init at all until the first message lands. So without this
+/// column the palette that offers them would be empty until each card had taken
+/// a turn, which is precisely the moment somebody wanted it.
+///
+/// An opaque JSON column, on the bargain `widget.config_json` names: nothing in
+/// Rust reads it, and `commands::skillsFrom` normalises it on every read and
+/// degrades to an empty list. So a name with a shape this build has never seen
+/// costs a palette row rather than a migration, and there is nothing here that
+/// could put a bad value somewhere it would be trusted.
+///
+/// NULL rather than `'[]'`, and the two are not the same: NULL is "nobody has
+/// ever asked this card", which is every card that existed before this column,
+/// while `'[]'` is a card whose agent said it has none. Both draw the same
+/// palette; only one of them is a fact.
+fn migrate_v31(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "conversation", "skills_json", "TEXT")
+}
+
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
 /// one. Every failure here is `None` on purpose — a missing row, a locked
 /// database, a width some future build wrote as a negative — because the
@@ -2270,6 +2303,14 @@ fn import_row(
 /// arrives `true`, from the one gesture that sets it, and the only thing that
 /// unsets it is `clear_row` — which is already the command for "put this card
 /// back to its defaults" and clears the title in the same statement.
+///
+/// `skills_json` is COALESCEd safely for a third reason again, and it is worth
+/// naming because the column *does* need to be able to empty: a plugin
+/// uninstalled must be able to leave the palette. It can, because an emptying
+/// arrives as the string `[]` rather than as an absence — the front end sends
+/// the list it folded, whatever length it is, and only when an init changed it.
+/// Absent still means "this call is not about the skills", which is every other
+/// caller.
 #[tauri::command]
 pub fn update_conversation(
     store: tauri::State<'_, Store>,
@@ -2282,6 +2323,7 @@ pub fn update_conversation(
     aside: Option<bool>,
     named_by_hand: Option<bool>,
     effort: Option<String>,
+    skills_json: Option<String>,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
     conn.execute(
@@ -2293,7 +2335,8 @@ pub fn update_conversation(
            interrupted   = COALESCE(?6, interrupted),
            aside         = COALESCE(?7, aside),
            named_by_hand = COALESCE(?8, named_by_hand),
-           effort        = COALESCE(?9, effort)
+           effort        = COALESCE(?9, effort),
+           skills_json   = COALESCE(?10, skills_json)
          WHERE id = ?1",
         params![
             id,
@@ -2304,7 +2347,8 @@ pub fn update_conversation(
             interrupted,
             aside,
             named_by_hand,
-            effort
+            effort,
+            skills_json
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -3046,7 +3090,8 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                     c.model, c.interrupted, c.last_ctx_frac, c.last_ending, c.aside,
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
-                    c.permission_mode, c.held_text, c.held_why, c.held_until
+                    c.permission_mode, c.held_text, c.held_why, c.held_until,
+                    c.skills_json
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
               WHERE c.closed_at IS NULL
@@ -3081,6 +3126,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 held_text: r.get(22)?,
                 held_why: r.get(23)?,
                 held_until: r.get(24)?,
+                skills_json: r.get(25)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -5839,6 +5885,9 @@ mod tests {
         assert_eq!(v, SCHEMA_VERSION);
         // Including the rung that never got to run.
         assert!(has_column(&conn, "conversation", "named_by_hand").unwrap());
+        // And the last one on the ladder, so a rung added without a stamp bump
+        // is caught here rather than by `load_studio` failing at launch.
+        assert!(has_column(&conn, "conversation", "skills_json").unwrap());
         // And the re-run columns are single, not doubled or dropped.
         assert!(has_column(&conn, "conversation", "kind").unwrap());
     }
@@ -6161,6 +6210,63 @@ mod tests {
         assert_eq!(title, "the auth work");
         assert_eq!(flagged, 1, "the mark that stops the title being replaced");
         assert_eq!(frac, 0.4, "the rest of the turn still settled");
+    }
+
+    /// The column the dock's palette reads, and the three states it has to be
+    /// able to hold apart. Nobody has ever asked this card is NULL; a card whose
+    /// agent said it has none is `[]`; and a settling turn that says nothing
+    /// about skills must leave whichever of those it found alone.
+    #[test]
+    fn the_skills_a_card_declared_survive_a_turn_that_says_nothing_about_them() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        import_row(&conn, "c1", "p1", "C:/x", Some("go on then"), None, None, None).unwrap();
+
+        let before: Option<String> = conn
+            .query_row("SELECT skills_json FROM conversation WHERE id = 'c1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(before, None, "a card nobody has ever asked");
+
+        // The init, as `Skein.#persistConv` sends it.
+        let said = r#"["dataviz","tx-toolkit:committee"]"#;
+        conn.execute(
+            "UPDATE conversation SET skills_json = COALESCE(?2, skills_json) WHERE id = ?1",
+            params!["c1", Some(said)],
+        )
+        .unwrap();
+
+        // And a settling turn afterwards, which names every column but this one.
+        conn.execute(
+            "UPDATE conversation SET
+               last_ctx_frac = COALESCE(?2, last_ctx_frac),
+               skills_json   = COALESCE(?3, skills_json)
+             WHERE id = ?1",
+            params!["c1", Some(0.4), None::<String>],
+        )
+        .unwrap();
+
+        let kept: Option<String> = conn
+            .query_row("SELECT skills_json FROM conversation WHERE id = 'c1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some(said), "an absent argument is not an emptying");
+
+        // A plugin uninstalled has to be able to leave the palette, and does:
+        // an emptying arrives as `[]`, which is a value rather than an absence.
+        conn.execute(
+            "UPDATE conversation SET skills_json = COALESCE(?2, skills_json) WHERE id = ?1",
+            params!["c1", Some("[]")],
+        )
+        .unwrap();
+        let emptied: Option<String> = conn
+            .query_row("SELECT skills_json FROM conversation WHERE id = 'c1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(emptied.as_deref(), Some("[]"));
     }
 
     /// Clearing is the one thing that unsets it, and it has to: the title it

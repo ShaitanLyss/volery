@@ -794,6 +794,13 @@ export class Control {
            landed at all — the acknowledgement it is folded from is a
            `control_response`, which leaves no line in the transcript. */
         gear: c.gear,
+        /* The skills the card's agent declared, which is the only way from out
+           here to tell the two halves of that feature apart: whether an init
+           was folded, and whether the row it was stored on came back. A card
+           restored with skills and a card that has just been told them look
+           identical in the palette, and only one of them proves the column
+           works. */
+        skills: [...c.skills],
         /* Beside it, and not derivable from it: a card writes a plan while
            planning and keeps it after being put back into making, which is the
            state the whole gesture exists to produce. */

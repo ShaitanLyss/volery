@@ -86,7 +86,8 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # control.rs,
                               # supervisor.rs,
                               # creds.rs, asana.rs,
-                              # servers.rs, shell.rs, nvim.rs, find.rs, sessions.rs, project.rs,
+                              # servers.rs, shell.rs, nvim.rs, find.rs, slash.rs, sessions.rs,
+                              # project.rs,
                               # usage.rs,
                               # tunnel.rs, applog.rs,
                               # limits.rs
@@ -97,6 +98,10 @@ node --experimental-strip-types tools/probe-browser.ts   # what a browser costs,
                                    # two clients can share one. NODE, not bun: playwright's
                                    # launch() never returns under bun on this machine.
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
+bun tools/probe-skills.ts          # what system/init publishes about skills, commands and
+                                   # plugins; `silent` shows it publishes nothing at all
+                                   # until a first message lands, `seeded` how a project's
+                                   # own .claude/commands/ are named back
 bun tools/probe-lock.ts            # whether permissions.deny bites through the bypass flag
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
@@ -145,7 +150,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
 | `gates.md` | whether the tree builds: folding the gate runs cards already make rather than running any, why `PostToolUse` cannot see a failure, what a reading may honestly claim about a tree it only half-watched, and the two faces one record wears | `gates.ts`, `gates.svelte.ts`, `Gatehouse.svelte`, `tools/probe-gates.ts` |
-| `commands.md` | slash commands, why Skein reads only its own names, clearing a card, and a side question asked beside a conversation | `commands.ts`, `Dock.svelte`, `field.svelte.ts`, `aside.rs` |
+| `commands.md` | slash commands over three vocabularies — Volery's own, a project's `.claude/commands/`, and a card's skills — why Skein reads only its own names, why a skill may sit anywhere in a line, clearing a card, and a side question asked beside a conversation | `commands.ts`, `Dock.svelte`, `field.svelte.ts`, `slash.rs`, `aside.rs` |
 | `guidance.md` | standing instructions: the wall's and a territory's, why they are a system prompt rather than a `CLAUDE.md` or a hook, what a live card does not hear, and why they are instructions rather than a lock | `guidance.rs`, `guidance.ts`, `Guidance.svelte` |
 | `control.md` | the control surface and the two rules that make a green run mean something | `control.rs`, `control.svelte.ts`, `wall.test.ts` |
 | `glass.md` | sticking a thing to a pane in screen space without moving where it is | `glass.ts` |
