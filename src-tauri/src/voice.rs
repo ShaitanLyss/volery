@@ -229,8 +229,28 @@ pub fn listen(language: &str) -> Result<Heard, String> {
     if let Some(why) = why_empty(status) {
         return Err(why.to_string());
     }
+
+    /* **A success can still carry no words, and the first real run did exactly
+       that.** With the privacy policy accepted and nobody speaking, this returns
+       `Status::Success` after ~7s with `Text: ""` and `Confidence: Rejected` —
+       not `TimeoutExceeded`, which is what `why_empty` was watching for. So an
+       empty transcript went downstream as a transcript, and `hear("")` would
+       escalate an utterance with nothing in it to a model, spending a request to
+       be told that silence is not a plan.
+
+       Keyed on the *text* rather than on the confidence, deliberately. An empty
+       string is the absence of a transcript, which is a fact; a `rejected`
+       confidence with words in it is the recogniser telling you it guessed, and
+       throwing that away here would be the thresholding the `confidence` field
+       exists to avoid — the rung with the wall in front of it is the one that
+       can weigh a doubtful sentence against what is actually on the wall. */
+    let text = result.Text().map_err(fail)?.to_string();
+    if text.trim().is_empty() {
+        return Err("nothing was said".into());
+    }
+
     Ok(Heard {
-        text: result.Text().map_err(fail)?.to_string(),
+        text,
         confidence: confidence_of(result.Confidence().map_err(fail)?).to_string(),
         language: language.to_string(),
         ms: began.elapsed().as_millis() as u64,
@@ -307,6 +327,21 @@ mod tests {
            so a recogniser left to itself hands back words no rung can parse and
            the failure is "it hears me and nothing happens". */
         assert_eq!(DEFAULT_LANGUAGE, "en-US");
+    }
+
+    #[test]
+    fn a_timeout_and_a_silent_success_are_the_same_thing_to_say() {
+        /* The two ways silence arrives. `TimeoutExceeded` is the one that was
+           expected; `Success` with an empty string is the one the first real
+           recognition actually produced, and they must not read differently to
+           whoever is listening for an answer. */
+        assert_eq!(
+            why_empty(SpeechRecognitionResultStatus::TimeoutExceeded),
+            Some("nothing was said")
+        );
+        /* And a plain success says nothing here, so the empty-text guard beside
+           it is the only thing standing between silence and a spent request. */
+        assert_eq!(why_empty(SpeechRecognitionResultStatus::Success), None);
     }
 
     #[cfg(windows)]
