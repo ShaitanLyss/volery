@@ -60,6 +60,10 @@ mod tunnel;
 mod update;
 mod usage;
 mod vault;
+/* `pub` so `examples/voice-probe.rs` can reach it — the microphone is the one
+   thing in this app that cannot be tested without a person, so the probe is how
+   somebody checks theirs. */
+pub mod voice;
 mod window;
 mod workflow;
 mod worktree;
@@ -579,6 +583,8 @@ pub fn run() {
             control::control_real_wheel,
             control::control_real_key,
             status::claude_status,
+            voice::voice_hearing,
+            voice::voice_listen,
             spotify::spotify_link,
             spotify::spotify_forget,
             spotify::spotify_start,

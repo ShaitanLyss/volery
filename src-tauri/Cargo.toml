@@ -136,6 +136,18 @@ url = "2"
 # Job objects. A dev server is `npm run dev` spawning node spawning more node;
 # killing the parent leaves orphans holding ports. A job object kills the tree.
 windows = { version = "0.61", features = [
+    # Hearing what was said. Windows' own on-device recogniser, which costs four
+    # features on a crate that is already here against whisper's 75-150MB model
+    # file and a C++ build. Probed 2026-09-06 with a scratch crate: the en-US and
+    # fr-FR DNN engines are installed and a dictation grammar compiles in 3-5ms.
+    # `Globalization` is for the `Language` the recogniser has to be *told*,
+    # since this machine's system speech language is fr-FR and the wall's verbs
+    # are English. See `voice.rs`, which also records the one thing it will not
+    # do without a privacy setting this app does not touch.
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Media_SpeechRecognition",
     "Win32_Foundation",
     # CreateJobObjectW takes a SECURITY_ATTRIBUTES, which lives behind this.
     "Win32_Security",

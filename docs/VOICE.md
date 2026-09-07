@@ -355,8 +355,9 @@ Three decisions in it worth having written down:
 - **A card that vanished between the parse and the run throws**, which is what makes `carry`'s
   `stopped` outcome a real branch rather than a shape nothing produces.
 
-**Still no audio and no Rust.** What is missing is the recogniser, the wake gate, the steward
-rung, and something to press. Everything from the text onwards is built.
+**At the time of writing this section, still no audio and no Rust** — the recogniser landed
+after it, below. What remains missing is the wake gate, the steward's standing child, and
+something to press.
 
 ### The steward's pure half, and the probe that was scoring nothing
 
@@ -434,6 +435,81 @@ Two honest limits, stated rather than papered over:
   where the payload *ends*, and one sentence can hold two payloads neither of which is at the
   end. The asymmetry is why this is acceptable — truncation sends fewer of your own words,
   never somebody else's.
+
+### The recogniser, chosen by probe — and the gate it is behind
+
+`src-tauri/src/voice.rs`, `examples/voice-probe.rs`. Audio in, one line of text out; nothing
+downstream of it knows a microphone exists.
+
+**The engine question is settled, and it was not close.** Probed 2026-09-06 with a throwaway
+crate (`build.md`'s pattern — a *library* question answered outside the app's dependency graph,
+so a "no" costs nothing):
+
+```text
+system language:  fr-FR
+dictation:        en-US fr-FR
+en-US: compile SpeechRecognitionResultStatus(0) in 5ms
+fr-FR: compile SpeechRecognitionResultStatus(0) in 3ms
+```
+
+Windows' own on-device DNN engines are installed for both languages, and compiling a dictation
+grammar costs 3–5ms. The whole cost is **four more features on the `windows` crate this tree
+already depends on for job objects** — no model file, no new crate, no C++ build. Against
+whisper's 75–150MB download that is not a close call for a first cut, and the seam does not
+move if it is revisited: a transcript is text either way.
+
+Two candidates were checked and set aside. **SAPI** (`Win32_Media_Speech`, the pre-cloud
+desktop recogniser, `MS-1033-80-DESK` here) needs no privacy policy and is reachable from the
+same crate — but it is poor at free dictation, and free dictation is the whole point of the
+steward rung existing. **whisper** stays the answer if the gate below is unacceptable.
+
+#### The gate, which is the user's to open and not this app's
+
+`RecognizeAsync` refuses with `0x80045509` — *SPERR_SPEECH_PRIVACY_POLICY_NOT_ACCEPTED* —
+until Windows' speech privacy policy has been accepted (Settings → Privacy & security →
+Speech). **Note exactly where the line falls: compiling the grammar is allowed, recognising is
+not** — which is why every probe looked healthy right up to the moment it listened, and is
+worth knowing before reading a green result as a working microphone.
+
+Nothing in this app changes that setting or asks the OS to, and the reason is not squeamishness:
+the local engines being installed does **not** establish that accepting the policy keeps audio
+on the machine, and no probe here is in a position to answer that. So the decision stays with
+whoever owns the machine, and what the code does instead is **name the gate exactly**:
+
+```text
+nothing heard — windows has not accepted its speech privacy policy —
+Settings → Privacy & security → Speech, then try again
+```
+
+That turned the one blocking unknown into a verifiable feature. The gate *is* this machine's
+current state, so the failure path is the one path that could be tested end to end — and it
+was, through the same code the key will call rather than a rehearsal of it.
+
+`explain()` names **two** HRESULTs and passes every other one through verbatim, and the
+asymmetry is deliberate: naming HRESULTs out of memory is how a confident wrong message gets
+in front of somebody, and a wrong explanation is worse than a raw code because a raw code can
+be searched for and a plausible lie cannot. `0x80045509` is named because this machine produces
+it; `E_ACCESSDENIED` because it means one thing everywhere.
+
+#### It has to be *told* a language, and that would have failed silently
+
+`SystemSpeechLanguage` here is **fr-FR**. Left to itself the recogniser listens in French and
+hands back French — which the grammar in `voice.ts` cannot parse a word of, since its verbs are
+`select`, `stop`, `open`. That fails as *"it hears me and nothing happens"*, with nothing
+anywhere to say why. So `DEFAULT_LANGUAGE` is `en-US` rather than the system's, it is an
+argument for the day the vocabulary grows a second language, and `Hearing.system` is reported
+so the two disagreeing reads as normal rather than as a fault.
+
+#### Two smaller decisions worth not re-litigating
+
+- **`CoIncrementMTAUsage`, not `RoInitialize`.** The recognition runs on `spawn_blocking`'s
+  pool, so the thread needing an apartment is one this code does not own and cannot
+  uninitialize; `RoInitialize` per call would take a reference on each and give none back.
+  Asking the runtime to keep an MTA *existing* is what is actually wanted.
+- **The timeouts are left as Windows sets them** — measured here as 5s of initial silence and
+  0.5s of end silence. 0.5s is probably too eager for a sentence with a pause in it, and that
+  is a number to change once somebody can hear it being wrong. Setting one now would be an
+  unmeasured guess about the one thing whose whole quality is how it feels.
 
 ### What is now unresolved, and was not before
 
