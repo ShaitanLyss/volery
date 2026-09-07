@@ -191,6 +191,32 @@ defaulting to `dev.skein.studio` so every existing invocation is unchanged.
 Vite gets its own port too (1421, `dev:lab`), since `strictPort` is on and two dev builds
 would otherwise race :1420.
 
+**And since 2026-09-07 the lab is not only the polite choice — for one kind of work it is the
+only one.** `store::may_migrate` refuses a debug build the studio's own database whenever the
+tree carries a schema rung the installed app has not seen, because running it there is what
+locked Volery out of its own wall: a card on schema v31 ran `bun run tauri dev`, the rung
+landed on 86 real cards, and the installed v30 build then correctly refused a file from the
+future on every launch. Recovering meant editing `user_version` by hand.
+
+So the lab is where a migration gets developed, and the recipe when it needs real data is a
+file copy rather than a flag:
+
+```powershell
+Copy-Item "$env:APPDATA\dev.skein.studio\skein.db" "$env:APPDATA\dev.skein.lab\skein.db"
+bun run lab      # migrates the copy, and nothing the installed app will ever open
+```
+
+There is no override, which is a decision rather than an omission — an escape hatch gets
+reached for under exactly the load that produced the incident, and the whole reason the
+refusal can be this blunt is that the lab already exists one command away. What the guard
+deliberately still allows is a debug build *opening* the studio when the tree is level with
+the installed build, since reading the real wall is most of what a dev build is for; that is
+the same judgement `SKEIN_NO_WAKE` makes, one door down.
+
+`test/wall.test.ts` follows the identifier for this reason too — it reads `SKEIN_ID` the way
+`ctl.ts` does, because a suite pointed at the studio while driving the lab asserts against a
+database no op it sent had touched.
+
 This is stronger isolation than the two quiet flags, and they solve a different problem.
 `SKEIN_NO_WAKE` and `SKEIN_NO_SERVERS` make a second instance safe *against the same store* —
 read their docstrings, which name this exact pairing. The lab needs neither, because an empty

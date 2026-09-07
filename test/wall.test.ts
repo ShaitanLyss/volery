@@ -8,8 +8,15 @@
  *
  * Excluded from the default `bun test` run: it needs a Skein to be running.
  *
- *   $env:SKEIN_CONTROL="1"; bun run tauri dev      # in one terminal
- *   bun run test:wall                              # in another
+ *   $env:SKEIN_CONTROL="1"; bun run lab            # in one terminal
+ *   $env:SKEIN_ID="dev.skein.lab"; bun run test:wall   # in another
+ *
+ * The lab rather than `bun run tauri dev`, which is a change of advice: the two
+ * used to differ only in whose cards a crash mid-op left behind. They now also
+ * differ in whether there is anything to drive at all — `store::may_migrate`
+ * refuses a debug build the real wall while the tree carries a migration the
+ * installed app has not seen. Driving the studio still works with the tree level
+ * with the installed build, and needs no `SKEIN_ID`; the lab always works.
  *
  * Add SKEIN_CONTROL_INPUT="1" to also run the two tests that move the real
  * cursor. They are skipped by default, because they steal focus and click
@@ -40,7 +47,21 @@ import { menuFor, type MenuItem } from "../src/lib/menu";
 import { MOTIONS } from "../src/lib/motion";
 import { offersOf } from "../src/lib/widgets";
 
-const DIR = join(process.env.APPDATA ?? "", "dev.skein.studio");
+/** Which instance this suite is driving, the way `tools/ctl.ts` decides it and
+ *  for the same reason: `identifier` is what `app_data_dir()` resolves, so it
+ *  picks the store, the `control.json` and the wall in one value. Defaulting to
+ *  the real studio leaves every existing invocation unchanged.
+ *
+ *  `SKEIN_ID="dev.skein.lab"` alongside `bun run lab` is the pairing to reach
+ *  for, and it stopped being merely tidier the day `store::may_migrate` landed:
+ *  a debug build now *refuses* the real wall while the tree carries a migration
+ *  the installed app has not seen, so with one pending there is no running app
+ *  on `dev.skein.studio` for this suite to find. Both halves have to move
+ *  together — pointed at the studio while driving the lab, every assertion here
+ *  would read a database no op it sent had touched. */
+const IDENTIFIER = process.env.SKEIN_ID?.trim() || "dev.skein.studio";
+
+const DIR = join(process.env.APPDATA ?? "", IDENTIFIER);
 const CONTROL = join(DIR, "control.json");
 const DB = join(DIR, "skein.db");
 

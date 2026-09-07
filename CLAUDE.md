@@ -370,6 +370,16 @@ deliberately not in `classify.ts`, which is about an agent rather than about a r
   a native `MessageBoxW` and names the file first. Not `tauri_plugin_dialog`, which the rest
   of the app uses: its `blocking_show` needs an event loop to pump, and nothing in `setup` has
   one yet. Anything else added to `setup` that can fail before the window shows owes the same.
+- **And a migration is the installed build's to run, so `bun run lab` is where one gets
+  developed.** `bun run tauri dev` opens the *real* wall — that is the first line of the
+  Commands block above and it is not a mistake — which means a tree carrying a new
+  `SCHEMA_VERSION` upgrades the database the installed app depends on, and the installed app
+  then refuses a file from the future on every launch, correctly. That cost a wall of 86 cards
+  a hand-edited `user_version` on 2026-09-07. `store::may_migrate` now refuses it at the door:
+  a debug build may open the studio, and may not carry its schema forward. The lab
+  (`bun run lab`, identifier `dev.skein.lab`) is a store of its own with no such limit, and a
+  migration that needs real data gets a copy of the file rather than an override — there
+  deliberately is none. See `.claude/rules/control.md`.
 - **Tauri arg names**: `invoke` converts camelCase to the command's snake_case parameters.
   A misspelled key is silently dropped into `None` rather than erroring — this is how
   `lastTier` vs `last_ending` left the column NULL for every turn ever taken, and cost every

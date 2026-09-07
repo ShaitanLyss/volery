@@ -191,9 +191,80 @@ impl Store {
             .map_err(|e| e.to_string())?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| e.to_string())?;
+        /* Before `migrate` rather than inside it, because the question is about
+           a write that has not happened yet — and because this is the only path
+           in the process that migrates at all, so it is the whole of the door.
+           `open_readonly` deliberately does not migrate, and says why. */
+        let at: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(|e| format!("read schema version: {e}"))?;
+        may_migrate(at, is_the_installed_wall(&dir), cfg!(debug_assertions))?;
         migrate(&conn)?;
         Ok(Store(Mutex::new(conn), dir))
     }
+}
+
+/// The `%APPDATA%` folder holding the wall the *installed* app opens.
+///
+/// Spelled here rather than asked of Tauri, because the question is about the
+/// **shipped** identifier and not the running one: the lab merges its own
+/// `identifier` over the config (`tauri.lab.conf.json`), so `app.config()`
+/// answers `dev.skein.lab` in precisely the case this exists to tell apart. One
+/// more literal of a string `vault.rs` and `creds.rs` already spell, and it is
+/// the same kind of literal — a name the disk depends on, per CLAUDE.md.
+const WALL_IDENTIFIER: &str = "dev.skein.studio";
+
+/// Is `dir` the store the installed app opens, rather than a lab of one's own?
+fn is_the_installed_wall(dir: &std::path::Path) -> bool {
+    /* `file_name` rather than a compare over the whole string, so a trailing
+       separator is not a different wall. */
+    dir.file_name().and_then(|n| n.to_str()) == Some(WALL_IDENTIFIER)
+}
+
+/// May this build walk that database's schema forward?
+///
+/// **A debug build must not migrate the wall the installed app opens.** The day
+/// this cost was 2026-09-07: a card working on schema v31 ran `bun run tauri
+/// dev`, which opens the real store, and the rung ran against a wall of 86
+/// cards and 711 turns. Nothing was lost — the step was one nullable column —
+/// but the installed v30 build then refused its own database on every launch,
+/// correctly and by design (see `migrate`), and the only way back in was
+/// editing the file's `user_version` by hand. "Volery does not open any more",
+/// with the whole of the cause sitting in a stamp.
+///
+/// The refusal is narrow on purpose, and all three halves of it are load-bearing:
+///
+/// - **Only when a rung is pending.** A debug build *opening* the real wall is
+///   ordinary and useful — `SKEIN_NO_WAKE` exists for exactly that, looking at
+///   real work without it acting — so this must not slide into "dev builds get
+///   an empty wall". It bites on the one act a release build cannot undo.
+/// - **Only the installed wall.** The lab (`bun run lab`, identifier
+///   `dev.skein.lab`) is a store of its own and migrates freely, which is what
+///   makes this cheap to obey rather than a thing to be worked around. A guard
+///   with no sanctioned way past it is a guard somebody deletes.
+/// - **Only a debug build.** The binary that writes a schema should be the
+///   binary that reads it, and for the installed app those are one build.
+///
+/// There is deliberately no override. An escape hatch would be reached for
+/// under exactly the load that produced the incident, and the lab is already
+/// one command — with a file copy behind it for the case that wants real data.
+///
+/// `dev_build` is a parameter rather than a `cfg!` read in here, because
+/// `cargo test` is itself a debug build: asked inside, the release arm would be
+/// the one arm no test could ever reach.
+fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), String> {
+    if at >= SCHEMA_VERSION || !installed_wall || !dev_build {
+        /* `at > SCHEMA_VERSION` is a file from a *newer* build, which is
+           `migrate`'s own refusal to make and a better-worded one for it. */
+        return Ok(());
+    }
+    Err(format!(
+        "this is the wall the installed app opens, and this is a debug build carrying \
+         schema v{SCHEMA_VERSION} against a file at v{at} — migrating it would leave the \
+         installed app refusing its own wall until it is rebuilt. `bun run lab` is a wall \
+         of your own; copy this file into %APPDATA%\\dev.skein.lab\\ first if the work \
+         needs real data."
+    ))
 }
 
 /// Schema version. Bump it and add a row to `STEPS` for every change.
@@ -5788,6 +5859,44 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION + 4, "the stamp must be left alone");
+    }
+
+    /// The door a debug build may not walk through, and the three ways it stays
+    /// open. Only the first of these is a refusal; the value of the other four
+    /// is that a guard nobody can work with is a guard that gets deleted.
+    #[test]
+    fn a_debug_build_may_not_carry_the_installed_walls_schema_forward() {
+        // The one refusal: 2026-09-07, in a line.
+        let err = may_migrate(SCHEMA_VERSION - 1, true, true)
+            .expect_err("a debug build must not migrate the installed wall");
+        // And it has to name the way out, since that is the whole of its value.
+        assert!(err.contains("bun run lab"), "{err}");
+
+        // The release build, which is the one that will read what it writes.
+        assert!(may_migrate(SCHEMA_VERSION - 1, true, false).is_ok());
+        // The lab, which is a wall of its own and migrates freely.
+        assert!(may_migrate(SCHEMA_VERSION - 1, false, true).is_ok());
+        // Nothing pending: a debug build opening the real wall is ordinary, and
+        // has to stay so — `SKEIN_NO_WAKE` exists to do exactly that.
+        assert!(may_migrate(SCHEMA_VERSION, true, true).is_ok());
+        // A file from a newer build is `migrate`'s refusal, not this one's.
+        assert!(may_migrate(SCHEMA_VERSION + 1, true, true).is_ok());
+    }
+
+    /// Which directory is the wall. The lab is told apart by its identifier and
+    /// nothing else, so this is the whole of the distinction the guard rests on.
+    #[test]
+    fn only_the_shipped_identifier_is_the_installed_wall() {
+        use std::path::Path;
+        let roaming = "C:/Users/x/AppData/Roaming";
+        assert!(is_the_installed_wall(&Path::new(roaming).join("dev.skein.studio")));
+        assert!(!is_the_installed_wall(&Path::new(roaming).join("dev.skein.lab")));
+        // A trailing separator is the same wall, not another one.
+        assert!(is_the_installed_wall(Path::new(
+            "C:/Users/x/AppData/Roaming/dev.skein.studio/"
+        )));
+        // And a folder that merely contains one is not it.
+        assert!(!is_the_installed_wall(Path::new(roaming)));
     }
 
     /// Adding a column that is already there is the step already having run, not
