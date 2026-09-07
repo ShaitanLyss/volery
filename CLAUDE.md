@@ -92,6 +92,9 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # tunnel.rs, applog.rs,
                               # limits.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
+cd src-tauri && cargo run --example voice-probe    # which speech engines this machine has, and
+                                   # `-- listen` for one spoken utterance. The microphone is
+                                   # the one thing here no test can reach
 cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
 cd src-tauri && cargo run --example slash-probe    # what a directory offers under a slash
 bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, with your config

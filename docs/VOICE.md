@@ -465,6 +465,11 @@ steward rung existing. **whisper** stays the answer if the gate below is unaccep
 
 #### The gate, which is the user's to open and not this app's
 
+**Opened 2026-09-06**, by the user, on their own machine — `HasAccepted: 1`. So voice hears
+now. The paragraphs below stay in the present tense because the gate is a property of the
+recogniser rather than of this machine, and the next machine starts behind it; sink `f9112b41`
+records whisper as the way out of depending on it at all.
+
 `RecognizeAsync` refuses with `0x80045509` — *SPERR_SPEECH_PRIVACY_POLICY_NOT_ACCEPTED* —
 until Windows' speech privacy policy has been accepted (Settings → Privacy & security →
 Speech). **Note exactly where the line falls: compiling the grammar is allowed, recognising is
@@ -1094,7 +1099,7 @@ In this repo's own style — one variable each, and say what it returned.
 | Does `window.speechSynthesis` work in WebView2, and which voices? | a `tools/probe-voice.html` loaded in a dev build. **The only webview audio question left** — see below. If yes, Design 3's output half costs nothing at all |
 | ~~Does Windows' `SpeechRecognizer` with a **list constraint** run fully offline, and what does it cost to construct?~~ | **Superseded, 2026-09-06.** The scratch crate got built and the answer went the other way: a *dictation* constraint is what shipped, because a recogniser restricted to a word list could never hand the steward a sentence it had not been told about. Construction cost is answered either way — 3–5ms to compile |
 | ~~Does its **topic** (dictation) constraint really require the online privacy setting?~~ | **Answered, and decisively: yes.** `RecognizeAsync` returns `0x80045509` — *SPERR_SPEECH_PRIVACY_POLICY_NOT_ACCEPTED* — with the setting untouched. The sharp part is where the line falls: **compiling** the grammar is allowed, so every probe looks healthy until it listens. See *The recogniser, chosen by probe* |
-| What does a local Whisper cost here — latency for a five-second utterance, model size, and does `candle` build without a C toolchain? | a scratch crate each for `whisper-rs` and `candle`. **Deferred rather than pending**: this is now only worth spending if the privacy gate above is unacceptable, since Windows' recogniser costs four crate features against Whisper's 75–150MB download. The toolchain half is still the one that would decide between them |
+| What does a local Whisper cost here — latency for a five-second utterance, model size, and does `candle` build without a C toolchain? | a scratch crate each for `whisper-rs` and `candle`. **Deferred rather than pending, and written down as sink `f9112b41`**: only worth spending if the privacy gate above matters or if accuracy disappoints, since Windows' recogniser costs four crate features against Whisper's 75–150MB download. The toolchain half still decides between the two. The honest counterweight is in the sink item: Windows owns the microphone and the end-of-speech detection, so switching engines means taking on capture and VAD that are currently somebody else's problem |
 | What does an always-on stream cost in CPU, and does it show up in the meter? | `perf.ts` and the process meter already exist; run it for an hour |
 | Do card handles survive being spoken? | the cheapest probe of all: read twenty real card titles off this wall aloud into whichever engine wins, and count. **Now runnable** — `cargo run --example voice-probe -- listen`, once the privacy gate is open |
 | ~~Can Haiku 4.5 parse a compound utterance into an ordered plan with referents resolved, and how fast?~~ | **Answered** — `tools/probe-steward.ts`, 2026-09-05/06. Haiku 28/30, Sonnet 27/30, zero dangerous actions in sixty utterances, 6–10s median. See *What the probe returned* |
