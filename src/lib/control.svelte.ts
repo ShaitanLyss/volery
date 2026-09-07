@@ -150,12 +150,6 @@ export type ControlHost = {
    *  never both up: an empty `commands` is a palette that is down *or* one that
    *  has moved on to the values, and from outside those look identical. */
   choices: () => string[];
-  /** Whether Enter would *run* the lit row or send the draft. Reported
-   *  because it is invisible otherwise: `/commit` offering
-   *  `tx-toolkit:committee` as a suggestion and `/commit` about to be
-   *  hijacked by it are the same `commands` list from out here, and the whole
-   *  difference is which key claims the row. See `mayRunOn`. */
-  canRun: () => boolean;
   targets: () => Conversation[];
   waiting: () => Conversation[];
   clashing: () => string[];
@@ -1018,7 +1012,12 @@ export class Control {
          and is not Skein's to intercept. */
       commands: h.commands().map((c) => c.name),
       choices: h.choices(),
-      canRun: h.canRun(),
+      /* Which directories have had their vocabulary asked for. A palette that
+         is thin because nothing was asked and one that is thin because the
+         directory offers little are the same `commands` list from out here, and
+         the warm pass at load is the whole difference between the palette being
+         ready when you reach for it and filling in after you type. */
+      slashAsked: { ...h.skein.slashAsked },
       targets: h.targets().map((c) => c.id),
       waiting: h.waiting().map((c) => c.id),
       clashing: h.clashing(),

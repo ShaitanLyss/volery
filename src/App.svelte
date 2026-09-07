@@ -1852,13 +1852,11 @@
        given its value. */
     if (field.commandPick) {
       if (!field.whole) return completeName(field.commandPick);
-      /* And only when Enter may claim the lit row: an abbreviation of one of
-         our own runs, where one of the agent's has to have been typed in
-         full. `/commit` lights `tx-toolkit:committee` through its published
-         alias, and running that would send a name nobody chose — so it falls
-         through to the ordinary prompt path, which is where `/commit` was
-         always going. See `mayRunOn`. */
-      if (field.canRun) return runCommand(field.commandPick, broadcast);
+      /* An exact name outranks every abbreviation of another one, so the lit
+         row here is already the right one — see the bands in `matchCommands`.
+         That is what keeps `/commit` reaching the agent in a repo that has a
+         `/commit`, without a second rule about which key may claim a row. */
+      return runCommand(field.commandPick, broadcast);
     }
 
     const text = field.text.trim();
@@ -2455,7 +2453,6 @@
     setDraft: (t) => field.put(t),
     commands: () => field.commands,
     choices: () => field.choices.map((c) => c.value),
-    canRun: () => field.canRun,
     targets: () => targets,
     waiting: () => waiting,
     clashing: () => clashing,

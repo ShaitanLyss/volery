@@ -1138,12 +1138,18 @@ t("the dock runs a slash command instead of sending it, and only its own", async
      false, so the press sends `/commit` to the agent as the words it is. That
      is the safety property this whole file rests on, and it very nearly went
      when the palette stopped being nine names. */
+  /* And an unrecognised name is not intercepted. What proves that is no longer
+     an empty list — the palette now offers everything the agent answers to, and
+     `committee`, the alias the CLI publishes for `tx-toolkit:committee`, begins
+     with the same letters as `/commit`. So it is offered, and what matters is
+     that it does not come *first*: this tree has no `/commit` of its own, so
+     nothing here is exact and the palette is completing a partial name. The
+     directory that does have one is the test below. */
   await ctl("type", { text: "/commit" });
-  const loose = await snapshot();
-  expect(loose.canRun).toBe(false);
-  /* Where an abbreviation of one of ours still runs. */
+  expect((await snapshot()).commands).toContain("tx-toolkit:committee");
+  /* An abbreviation of one of ours is still lit first. */
   await ctl("type", { text: "/cl" });
-  expect((await snapshot()).canRun).toBe(true);
+  expect((await snapshot()).commands[0]).toBe("clear");
   /* And a name in nobody's vocabulary still opens nothing at all. */
   await ctl("type", { text: "/zzzznope" });
   expect((await snapshot()).commands).toEqual([]);
@@ -1204,6 +1210,38 @@ t("a command that takes a value opens its values instead of running", async () =
   await ctl("type", { text: "" });
 });
 
+t("a directory is asked what it answers to before anybody types", async () => {
+  /* The whole of what makes the palette usable on a first message: the
+     vocabulary is a real `claude` answering a control request, about 1.2s, and
+     if that is asked when a card is first *focused* then the first `/` you type
+     opens Volery's nine names and grows to sixty-six a second later. So it is
+     asked at load for every directory the wall stands on, and again the moment
+     a card is opened in a new one — before the spawn, before the row. */
+  const before = await snapshot();
+  expect(Object.keys(before.slashAsked).length).toBeGreaterThan(0);
+  /* The suite's own tree, which `beforeAll` put a card in. */
+  expect(Object.keys(before.slashAsked).some((d) => inside(d, SUITE))).toBe(true);
+
+  /* And a directory nobody has seen is asked as the card opens rather than
+     when it is next clicked. */
+  const dir = join(SUITE, `warm-${Date.now()}`);
+  mkdirSync(dir, { recursive: true });
+  expect(Object.keys((await snapshot()).slashAsked)).not.toContain(dir);
+  const { id } = await ctl("open", { dir });
+  opened.push(id);
+  expect(Object.keys((await snapshot()).slashAsked)).toContain(dir);
+
+  /* Asked once ever, however many cards stand in it. */
+  const { id: second } = await ctl("open", { dir });
+  opened.push(second);
+  const asked = Object.keys((await snapshot()).slashAsked).filter((d) => d === dir);
+  expect(asked).toHaveLength(1);
+
+  await ctl("close", { id: second });
+  await ctl("close", { id });
+  await ctl("forget", { cwd: dir }).catch(() => {});
+}, 20_000);
+
 t("the palette offers what the agent answers to, walked off no disk", async () => {
   /* A directory of its own, and it has to be: the vocabulary is asked once per
      cwd for the life of the wall, so a tree another test has already focused a
@@ -1217,6 +1255,13 @@ t("the palette offers what the agent answers to, walked off no disk", async () =
     "---\ndescription: the wall test's own command\nargument-hint: [branch]\n---\nSay hello.\n",
   );
   writeFileSync(join(dir, ".claude", "commands", "deep", "nested.md"), "No frontmatter.\n");
+  /* A name that collides with a plugin skill's published alias, on purpose:
+     `committee` starts with `commit`, and a repo that keeps its own `/commit`
+     must get its own — that is the rule this whole file opens with. */
+  writeFileSync(
+    join(dir, ".claude", "commands", "commit.md"),
+    "---\ndescription: stage and commit what this work touched\n---\nCommit it.\n",
+  );
 
   const { id } = await ctl("open", { dir });
   opened.push(id);
@@ -1252,6 +1297,13 @@ t("the palette offers what the agent answers to, walked off no disk", async () =
      as mid-line-eligible on purpose. */
   await ctl("feed", { id, event: { type: "system", subtype: "init", skills: [] } });
   expect((await cardOf(id)).skillsKnown).toBe(true);
+
+  /* The collision, against a real one on disk: `tx-toolkit:committee` is
+     offered and the project's own is what Enter would run. */
+  await ctl("type", { text: "/commit" });
+  const both = (await snapshot()).commands;
+  expect(both[0]).toBe("commit");
+  expect(both).toContain("tx-toolkit:committee");
 
   await ctl("type", { text: "and then /wallhel" });
   expect((await snapshot()).commands).toEqual([]);

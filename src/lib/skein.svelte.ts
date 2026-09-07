@@ -732,6 +732,12 @@ export class Skein {
       this.groups = s.server_groups.map((g) => new GroupRuntime(g));
       this.loaded = true;
 
+      /* And ask what each of the wall's directories answers to under a slash,
+         spaced out and awaited by nobody. This is the difference between a
+         palette that is ready when you first reach for it and one that fills in
+         a second after you have typed — see `warmSlash`. */
+      this.warmSlash();
+
       /* Holds that came back with the wall. Two things are owed them, and the
          60s sweep is only one of them: it will reach a held card eventually, but
          a card whose door opened while the app was shut would sit there for up
@@ -968,6 +974,14 @@ export class Skein {
            it is somewhere rather than wherever the list implies. */
         this.#settlePlaces();
       }
+      /* What this directory answers to, asked as soon as it is known to have a
+         card on it rather than when one is first focused. Opening a card focuses
+         it, so the dock's own effect would ask a moment later anyway — the point
+         is the moment: this fires before the spawn and before the row, which buys
+         the whole of the time it takes you to move a hand to the keyboard.
+         Deduplicated, so a second card in the same tree costs nothing. */
+      this.learnSlash(cwd);
+
       const id = given ?? crypto.randomUUID();
       /* The row goes in *before* the spawn, which is the other way round from
          how this read for most of the app's life. `spawn_conversation` asks the
@@ -2390,12 +2404,21 @@ export class Skein {
    *  read of an empty answer. */
   #slashAsked = new Set<string>();
 
-  /** Walk this directory's `.claude/commands/`, once ever.
+  /** Ask this directory what it answers to under a slash, once ever.
    *
-   *  Fire-and-forget: the palette is correct without it and gains rows when the
-   *  answer lands. A failure is recorded as "nothing", because a project with no
-   *  commands and a directory that could not be read offer the same palette and
-   *  neither is worth a fault on the wall. */
+   *  Fire-and-forget: the palette is correct without it and gains rows when
+   *  the answer lands, about 1.2s later. A failure is recorded as *nothing*,
+   *  because a directory the request failed for and one with nothing to offer
+   *  draw the same palette and neither is worth a fault on the wall.
+   *
+   *  **Called early on purpose**, and that is the whole of what `warmSlash`
+   *  below is for. It used to be reached only from the dock's own effect on
+   *  the focused card — which is null until you click something, so a freshly
+   *  loaded wall asked nobody anything, and the first `/` you typed opened a
+   *  palette holding Volery's nine names and then grew to sixty-six a second
+   *  later. Right about the vocabulary and useless at the moment you wanted
+   *  it. The dock's effect stays, as the backstop for a directory that
+   *  arrives some other way. */
   learnSlash(cwd: string) {
     if (!cwd || this.#slashAsked.has(cwd)) return;
     this.#slashAsked.add(cwd);
@@ -2404,8 +2427,71 @@ export class Skein {
         this.#slash[cwd] = Array.isArray(rows) ? rows : [];
       })
       .catch(() => {
-        this.#slash[cwd] = [];
+        /* A failure is *nothing* for the palette — a directory the request failed
+           for and one with nothing to offer draw the same rows, and neither is
+           worth a fault on the wall. What it must not be is **cached** as
+           nothing, which is what this used to do and what cost an afternoon to
+           see: the mark in `#slashAsked` said "asked", the empty answer said
+           "offers nothing", and between them a directory whose throwaway lost a
+           race — a busy machine, a cold start past the twenty seconds — had a
+           palette of nine names for the rest of the session with no way to ask
+           again. Indistinguishable, from the wall, from a project that really
+           has nothing.
+
+           So the mark comes off and nothing is written. The next time this
+           directory becomes the dock's card the effect asks again, which bounds
+           the retries by hand movements rather than by a timer — there is no
+           loop here and none wanted. */
+        this.#slashAsked.delete(cwd);
       });
+  }
+
+  /** Ask for every directory the wall is standing on, spaced out.
+   *
+   *  One short-lived `claude` per *directory* rather than per card — a
+   *  territory of nine cards is one request — and deduplicated by
+   *  `learnSlash`, so this is a handful of processes on a wall of any size.
+   *
+   *  Spaced by `ROUSE_GAP_MS` for exactly the reason the rouse queue is:
+   *  launch is already the busiest moment this app has, painting a wall and
+   *  giving every dormant card its process back, and a fistful of simultaneous
+   *  spawns on top of that is a thundering herd of our own making. Nothing
+   *  waits on it — the wall is complete and correct without a single row of
+   *  this, which is what makes spacing it free.
+   *
+   *  Deliberately not awaited by `load`, and deliberately after it: this is
+   *  speculative work about a keystroke nobody has made yet, and it must never
+   *  be between the database and the first frame. */
+  warmSlash() {
+    const roots = [...new Set(this.convs.map((c) => c.cwd).filter(Boolean))];
+    void (async () => {
+      for (const cwd of roots) {
+        /* Re-checked each time round rather than filtered up front: the dock's
+           own effect may have asked for one of these while the queue was
+           waiting, and `learnSlash` is the single place that knows. */
+        if (this.#gone) return;
+        this.learnSlash(cwd);
+        await new Promise((r) => setTimeout(r, ROUSE_GAP_MS));
+      }
+    })();
+  }
+
+  /** What has been asked, and how many rows came back for each.
+   *
+   *  Reported because the three ways this can be quiet are indistinguishable
+   *  otherwise, and telling them apart is the whole of debugging it: nothing
+   *  asked (no key), asked and answered with nothing (`0`), and asked and
+   *  answered with rows the palette is somehow not drawing (a count, and an
+   *  empty `commands`). A `.catch` that records a failure as *nothing* is the
+   *  right behaviour for the wall and hides exactly this from a test, so the
+   *  count is the way back in. */
+  get slashAsked(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const cwd of this.#slashAsked) {
+      const rows = this.#slash[cwd];
+      out[cwd] = rows === undefined ? -1 : rows.length;
+    }
+    return out;
   }
 
   /** What that directory offered, or nothing yet. A plain read — asking is

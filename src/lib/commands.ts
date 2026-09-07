@@ -513,46 +513,6 @@ export function paletteExtras(
   return out;
 }
 
-/** May Enter *run* this lit row, given what has actually been typed?
- *
- *  The rule exists because the palette stopped being nine names this window
- *  owns, and the two things it has to hold at once pull opposite ways.
- *
- *  `/cle` + Enter clears, as it does in the CLI. That is a shorthand worth
- *  having and it is documented behaviour here.
- *
- *  `/commit` + Enter must send `/commit`. It is the project's own command and
- *  the rule at the top of this file says it reaches the agent unread — and it
- *  very nearly stopped doing so, because `committee` is the alias the CLI
- *  publishes for `tx-toolkit:committee` and `"committee".startsWith("commit")`.
- *  Enter would have run a skill nobody named.
- *
- *  Prefix-versus-containing does not separate those: both are prefix hits. What
- *  separates them is **whose catalogue the row is from**. `COMMANDS` is nine
- *  names, closed, this window's, and known to whoever is typing — a prefix there
- *  is an abbreviation. The agent's vocabulary is dozens of names, open, and
- *  different in every directory, so a prefix there can silently be a *different
- *  command from the one you typed in full*, which is exactly what the standing
- *  rule forbids. So: abbreviation for ours, exactness for theirs.
- *
- *  Nothing is narrowed and nothing hidden either way — the row is drawn, Tab
- *  takes it, the arrows reach it. All this decides is which key claims it, and
- *  when Enter declines, the draft goes to the agent as the words it is.
- *
- *  An empty name is a browse — `/` alone lights the first row on purpose — so it
- *  may run anything. */
-export function mayRunOn(cmd: Command, typed: string): boolean {
-  const name = typed.trim().toLowerCase();
-  if (!name) return true;
-  /* Asked of the catalogue rather than of `by`: `/compact` and `/model` are the
-     CLI's to carry out but they are *this file's* to offer, so `/comp` is an
-     abbreviation like any other. What matters is whether this window chose the
-     name, not who runs it. */
-  const ours = COMMANDS.some((c) => c.name === cmd.name);
-  if (ours) return cmd.name.startsWith(name);
-  return [cmd.name, ...(cmd.aliases ?? [])].includes(name);
-}
-
 /** What the palette should offer for this draft, in the order to show it.
  *
  *  Empty for anything that is not a slash-name under the caret — which is also
@@ -583,19 +543,35 @@ export function matchCommands(
   const name = span.name;
   if (!name) return pool;
   /* Three bands, best first, and a row appears in exactly one of them.
-     `leads` is a prefix of the name or of one of its aliases — the case you
-     meant, so `/rev` puts `code-review` at the top through `review`, and
-     `/committee` finds `tx-toolkit:committee` through the alias the CLI
-     publishes for exactly that. `holds` is anything merely containing it, which
-     is what keeps `/ear` finding `clear`.
-     An alias is a way to *find* a name and never a row of its own: what is
-     drawn and what is sent is the canonical name, so what you pick is what the
-     agent sees. */
+
+     `exact` is the band that carries the safety property this file opens with,
+     and it is here because the palette stopped being nine names. `/commit` is
+     the project's own command and has to reach the agent unread — but
+     `committee` is the alias the CLI publishes for `tx-toolkit:committee` and
+     `"committee".startsWith("commit")`, so on a plain prefix sort a repo with a
+     real `/commit` could have Enter run a skill nobody named. A name that *is*
+     a name outranks every abbreviation of another one, which settles it in the
+     one place the ordering is decided rather than by a second rule about which
+     key may claim a row. It also settles it in the direction that helps: where
+     the typed name means nothing on its own — `/dat` — the completion is the
+     whole point, and Enter running `dataviz` is what anybody would want.
+
+     `leads` is a prefix of the name or of one of its aliases, so `/rev` puts
+     `code-review` at the top through `review` and `/committee` finds
+     `tx-toolkit:committee` through the alias published for exactly that.
+     `holds` is anything merely containing it, which keeps `/ear` finding
+     `clear`.
+
+     An alias is a way to *find* a name and never a row of its own: what is drawn
+     and what is sent is the canonical name, so what you pick is what the agent
+     sees. */
   const names = (c: Command) => [c.name, ...(c.aliases ?? [])];
+  const exact = (c: Command) => names(c).includes(name);
   const leads = (c: Command) => names(c).some((n) => n.startsWith(name));
   const holds = (c: Command) => names(c).some((n) => n.includes(name));
   return [
-    ...pool.filter(leads),
+    ...pool.filter(exact),
+    ...pool.filter((c) => !exact(c) && leads(c)),
     ...pool.filter((c) => !leads(c) && holds(c)),
   ];
 }

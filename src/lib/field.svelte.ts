@@ -1,7 +1,6 @@
 import type { Command } from "./commands";
 import {
   cliCommand,
-  mayRunOn,
   matchChoices,
   matchCommands,
   resolveCommand,
@@ -122,19 +121,6 @@ export class Field {
   /** Is anything being chosen? The keys the palette borrows are borrowed by
    *  both of its stages. */
   palette = $derived(this.commands.length > 0 || this.choices.length > 0);
-
-  /** May Enter *run* the lit row, or only send what was typed?
-   *
-   *  No when the lit row is merely a containing match — you typed `/commit`
-   *  and the palette is showing you `tx-toolkit:committee` because its alias
-   *  contains those letters. Running that would send a name nobody chose,
-   *  which is the one thing the slash rules forbid. See `mayRunOn`.
-   *
-   *  True with nothing lit as well, which is the honest reading: there is no
-   *  row to be wrong about, and `send` only reaches this when there is one. */
-  canRun = $derived(
-    !this.commandPick || mayRunOn(this.commandPick, this.token?.name ?? ""),
-  );
 
   /** Is the palette choosing the whole draft, or a word inside a sentence?
    *

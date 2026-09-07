@@ -107,8 +107,34 @@ deciding what to derive.
   A one-shot read like the finder's file list, not a fourth poller. The trade is explicit: a
   command file added while the app is up is not offered until the next launch. `learnSlash`
   asks and `slashFor` only reads, so nothing can start a spawn from inside a `$derived`.
-- **A failure is recorded as "nothing".** A project the request failed for and one with nothing
-  to offer draw the same palette, and neither is worth a fault on the wall.
+- **And asked *early*, which is the difference between a palette that works on a first
+  message and one that is right a second too late.** It was reached only from the dock's
+  effect on the focused card — and `focusedId` is null until you click something, so a
+  freshly loaded wall asked nobody anything and the first `/` you typed opened Volery's nine
+  names and then grew to sixty-six. Two places ask now: `warmSlash` at load, for every
+  directory the wall stands on, spaced by `ROUSE_GAP_MS` for the reason the rouse queue is
+  spaced — launch is already the busiest moment this app has; and `#openIn`, before the row
+  and before the spawn, which buys the time it takes a hand to reach the keyboard. One
+  request per *directory*, so a territory of nine cards is one. The dock's effect stays as
+  the backstop. Nothing awaits any of it — the wall is complete without a row of it, which
+  is what makes spacing it free. `snapshot.slashAsked` is how a test sees that it happened,
+  since a thin palette and an unasked one are the same `commands` list from outside.
+  What is left is the floor: a territory opened *just now* and typed into within about a
+  second. That is the CLI's own start-up and there is nowhere to get it from faster.
+- **A failure is *nothing*, and must not be cached as nothing.** A directory the request
+  failed for and one with nothing to offer draw the same rows, and neither is worth a fault
+  on the wall — but the first version wrote `[]` and left the directory marked asked, so a
+  throwaway that lost a race (a busy machine, a cold start past the twenty seconds) left that
+  palette holding Volery's nine names for the rest of the session, indistinguishable from a
+  project that really has nothing. The mark comes off instead and nothing is written, so the
+  next time the directory is the dock's card it is asked again. Retries bounded by hand
+  movements, not by a timer.
+- **`snapshot.slashAsked` is a directory-to-count map, not a list**, and that shape is what
+  made the bug above findable: nothing asked (no key), asked and answered with nothing (`0`),
+  and asked and answered with rows the palette is somehow not drawing (a count beside an
+  empty `commands`) are three different faults that a list cannot tell apart. `-1` is a
+  request still in flight. A `.catch` that is right for the wall hides exactly this, so the
+  count is the way back in.
 - **A refusal is an answer.** `commands_from` returns an empty list for a `subtype: "error"`
   reply rather than `None`, or the reader would sit until the twenty-second timeout on a
   request that had already been declined.
@@ -149,20 +175,20 @@ may sit anywhere. `by === "skill"` is the whole test.
   (`spansWhole`, `Field.whole`). Running the lit entry over `make a chart with /dat` would
   send `/dataviz` and throw away everything in front of it. At that row Enter and Tab agree,
   which is exactly what they already do on a command that has not been given its value.
-- **And only when Enter may *claim* the lit row, which is a rule the big palette
-  forced.** `/cle` + Enter clears — an abbreviation of one of our nine, documented and
-  worth having. `/commit` + Enter must send `/commit`, because it is the project's own
-  command and the rule at the top of this file says it reaches the agent unread. It very
-  nearly stopped doing so: `committee` is the alias the CLI publishes for
-  `tx-toolkit:committee`, `"committee".startsWith("commit")`, and Enter would have run a
-  skill nobody named. Prefix-versus-containing does not separate those — both are prefix
-  hits. **Whose catalogue the row is from** does: `COMMANDS` is nine closed names this
-  window owns and whoever is typing knows, so a prefix there is an abbreviation, while the
-  agent's vocabulary is open and different per directory, so a prefix there can silently be
-  a different command from the one you typed in full. `mayRunOn` is that rule — abbreviation
-  for ours, exactness for theirs, and the alias counts as the name. Nothing is narrowed and
-  nothing hidden either way: the row is drawn, Tab takes it, the arrows reach it, and when
-  Enter declines the draft goes to the agent as the words it is.
+- **A name that *is* a name outranks every abbreviation of another one**, and that band is
+  where the rule at the top of this file survived the palette growing. `/commit` is the
+  project's own command and has to reach the agent unread — but `committee` is the alias the
+  CLI publishes for `tx-toolkit:committee` and `"committee".startsWith("commit")`, so on a
+  plain prefix sort a repo with a real `/commit` could have had Enter run a skill nobody
+  named. `matchCommands` sorts in three bands — exact, then leading, then merely containing
+  — so the exact name is lit and Enter runs the right thing.
+
+  It was briefly a *veto on Enter* instead (`mayRunOn`: abbreviation for ours, exactness for
+  theirs), and driving the real wall is what showed that up: `/dat` lit `dataviz` and Enter
+  sent `/dat`, which nothing answers to. Worse than the bug it fixed. The ordering settles
+  both directions at once — where the typed name means something, it wins; where it means
+  nothing, the completion is the whole point. **A rule about which key may act is the wrong
+  shape for a question about which row is right.**
 - **The name is the whole token, wherever inside it the caret sits**, which is what makes a
   stale caret harmless: every position inside a token gives one answer. `Field.caret` is
   `null` for "wherever the text ends" — both the honest reading of a caret nothing has

@@ -7,7 +7,6 @@ import {
   effortAnswer,
   completionFor,
   completionForChoice,
-  mayRunOn,
   matchChoices,
   matchCommands,
   paletteExtras,
@@ -804,52 +803,62 @@ describe("none of it is intercepted, which is the rule this file opened with", (
   });
 });
 
-describe("which key may claim a lit row", () => {
+describe("a name that is a name outranks an abbreviation of another", () => {
   /* The safety property this file opens with, met from a direction that did not
-     exist when it was written. `/commit` is the project's own command and has to
-     reach the agent unread — and it very nearly stopped doing so, because
-     `committee` is the alias the CLI publishes for `tx-toolkit:committee` and it
-     begins with those same letters. */
+     exist when it was written — and settled in the ordering rather than by a
+     second rule about which key may claim a row.
 
-  test("the offending case is really offered, so this is not hypothetical", () => {
+     `/commit` is the project's own command and has to reach the agent unread.
+     But `committee` is the alias the CLI publishes for `tx-toolkit:committee`
+     and `"committee".startsWith("commit")`, so on a plain prefix sort a repo
+     with a real `/commit` could have had Enter run a skill nobody named. */
+
+  test("the collision is real, so this is not hypothetical", () => {
     expect(offered("/commit")).toContain("tx-toolkit:committee");
   });
 
-  test("Enter may not run one of the agent's on a partial name", () => {
-    /* Not because it is a weak match — `committee`.startsWith(`commit`) is true.
-       Because it is *theirs*, and a prefix of a name in a vocabulary that
-       changes per directory can silently be a different command from the one
-       you typed in full. */
-    expect(mayRunOn(row("tx-toolkit:committee"), "commit")).toBe(false);
-    expect(mayRunOn(row("code-review"), "code")).toBe(false);
+  test("where the typed name exists, it is lit and nothing outranks it", () => {
+    /* `commit` is in VOCAB, so a repo that has one gets its own command — which
+       is the whole of what the rule protects. */
+    expect(offered("/commit")[0]).toBe("commit");
   });
 
-  test("but typing one of theirs in full does run it", () => {
-    expect(mayRunOn(row("tx-toolkit:committee"), "tx-toolkit:committee")).toBe(true);
-    /* Including by the alias, which is the only part anybody types. */
-    expect(mayRunOn(row("tx-toolkit:committee"), "committee")).toBe(true);
-    expect(mayRunOn(row("code-review"), "review")).toBe(true);
+  test("an exact alias counts as the name", () => {
+    /* Nobody types the plugin half, and the CLI publishes the short form for
+       exactly that reason. */
+    expect(offered("/committee")[0]).toBe("tx-toolkit:committee");
+    expect(offered("/review")[0]).toBe("code-review");
   });
 
-  test("an abbreviation of one of ours still runs, as it always has", () => {
-    /* "`/cle` + Enter clears, as in the CLI" — nine closed names this window
-       owns and whoever is typing knows. */
-    const clear = COMMANDS.find((c) => c.name === "clear")!;
-    expect(mayRunOn(clear, "cle")).toBe(true);
-    expect(mayRunOn(clear, "clear")).toBe(true);
-    /* And the CLI's own that *we* offer count as ours: they are this file's to
-       put in the palette whoever carries them out. */
-    expect(mayRunOn(COMMANDS.find((c) => c.name === "compact")!, "comp")).toBe(true);
+  test("where it does not exist, the completion is the point", () => {
+    /* `/dat` means nothing on its own, so lighting `dataviz` and running it on
+       Enter is what anybody would want — the opposite of the case above, and the
+       reason this is an ordering rule rather than a veto on Enter. */
+    expect(offered("/dat")[0]).toBe("dataviz");
   });
 
-  test("a browse may run anything, because nothing has been typed to be wrong about", () => {
-    expect(mayRunOn(row("dataviz"), "")).toBe(true);
-    expect(mayRunOn(row("dataviz"), "   ")).toBe(true);
+  test("ours still abbreviate, as they always have", () => {
+    /* "`/cle` + Enter clears, as in the CLI." */
+    expect(offered("/cle")[0]).toBe("clear");
+    expect(offered("/comp")[0]).toBe("compact");
   });
 
-  test("it is asked case-insensitively, like everything else here", () => {
-    expect(mayRunOn(row("dataviz"), "DATAVIZ")).toBe(true);
-    expect(mayRunOn(COMMANDS.find((c) => c.name === "clear")!, "CLE")).toBe(true);
+  test("an exact match beats a prefix even from further down the pool", () => {
+    /* Pool order is the CLI's, so the guard has to be the band and not the
+       accident of which came first. `loop` is last in VOCAB and `/loop` must
+       still beat anything merely starting with those letters. */
+    const withLonger = paletteExtras(
+      [{ name: "loop-forever" }, ...VOCAB],
+      SKILLS,
+      true,
+    );
+    expect(matchCommands("/loop", null, withLonger)[0].name).toBe("loop");
+  });
+
+  test("the three bands are exhaustive and disjoint", () => {
+    /* A row appears once or not at all — the palette keys its rows by name. */
+    const shown = offered("/e");
+    expect(new Set(shown).size).toBe(shown.length);
   });
 });
 
