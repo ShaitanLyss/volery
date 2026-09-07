@@ -99,12 +99,18 @@ export const PRESETS: Preset[] = [
   {
     id: "bug",
     label: "a bug that has resisted",
-    note: "opus · high",
-    model: "opus",
+    note: "opus[1m] · high",
+    model: "opus[1m]",
     effort: "high",
-    /* The obvious fix was not it. This is the first preset worth its cost —
-       and it is deliberately not the 1M window, since a bug that needs the
-       whole tree in front of it is the one below. */
+    /* The obvious fix was not it. This is the first preset worth its cost, and
+       the wide window is now part of it: `opus` and `opus[1m]` are the same
+       $5/$25 per MTok — one row in the price table, no long-context premium —
+       so holding back the 1M window bought nothing and cost the card room.
+       Which is the shape of the bug this preset is for: the obvious fix was not
+       it, so the answer is somewhere you have not looked yet, and a card that
+       compacts halfway through looking has lost the half it already read. The
+       row below is still a different preset, because what separates them is the
+       effort rather than the window. */
   },
   {
     id: "deep",

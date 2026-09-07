@@ -43,7 +43,7 @@ describe("what the + offers before a card is opened", () => {
 
   test("the ids are unique and stable, since rows are opened under them", () => {
     expect(new Set(PRESETS.map((p) => p.id)).size).toBe(PRESETS.length);
-    expect(presetById("bug")?.model).toBe("opus");
+    expect(presetById("bug")?.model).toBe("opus[1m]");
     expect(presetById("nothing-like-this")).toBeUndefined();
     expect(presetById(undefined)).toBeUndefined();
   });
@@ -59,21 +59,43 @@ describe("what the + offers before a card is opened", () => {
     }
   });
 
-  test("only the presets asking for room ask for the 1M window", () => {
+  test("the wide window is asked for wherever it is not the cheap end", () => {
     /* `contextWindowFor` reads the tier out of the alias, which is what sizes
-       the ring before `system/init` has said anything. A preset that meant to
-       be cheap and quietly carries `[1m]` is one that costs five times what
-       its note implies. */
+       the ring before `system/init` has said anything — and the tier is free:
+       `opus` and `opus[1m]` are one row in the price table at $5/$25 per MTok,
+       as are `sonnet` and `sonnet[1m]` at $2/$10. So a `[1m]` nobody asked for
+       costs nothing, which is why this test no longer names two ids: the note
+       beside the label still has to say the tier, and `presetPicks` is what
+       shows it. What is asserted is the direction — the two presets that exist
+       to be cheap keep the small window, since the point of the cheap end is a
+       card that cannot quietly grow into a large one. */
     const wide = PRESETS.filter((p) => contextWindowFor(p.model) === 1_000_000);
-    expect(wide.map((p) => p.id)).toEqual(["read", "deep"]);
+    expect(wide.map((p) => p.id)).toEqual(["read", "bug", "deep"]);
+    for (const p of PRESETS) {
+      if (contextWindowFor(p.model) === 1_000_000) {
+        expect(p.note).toContain("[1m]");
+      }
+    }
   });
 
   test("they run cheapest to dearest, which is the only order the menu implies", () => {
-    const rank = (p: (typeof PRESETS)[number]) =>
-      ["haiku", "sonnet", "sonnet[1m]", "opus", "opus[1m]"].indexOf(p.model);
+    /* Two terms, because the window is not one of them any more. The family is
+       what the rate is charged at, and within a family the effort is what a
+       turn spends — so `opus[1m] · high` sits below `opus[1m] · xhigh` and the
+       tier decides nothing. Ranked lexicographically, and ties are allowed:
+       two rows at the same price are a real arrangement, and the label is what
+       tells them apart. */
+    const rank = (p: (typeof PRESETS)[number]): [number, number] => [
+      ["haiku", "sonnet", "opus", "fable"].indexOf(
+        p.model.replace(/\[.*\]$/, ""),
+      ),
+      p.effort ? EFFORT_LEVELS.indexOf(p.effort) : -1,
+    ];
     const ranks = PRESETS.map(rank);
-    expect(ranks).not.toContain(-1);
-    expect([...ranks].sort((a, b) => a - b)).toEqual(ranks);
+    expect(ranks.map(([family]) => family)).not.toContain(-1);
+    const cmp = (a: [number, number], b: [number, number]) =>
+      a[0] - b[0] || a[1] - b[1];
+    expect([...ranks].sort(cmp)).toEqual(ranks);
   });
 });
 

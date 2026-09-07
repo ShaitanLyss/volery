@@ -203,9 +203,9 @@ retrofit and the cheap end stays one right-click away.
 
 `xhigh` rather than `high` is Anthropic's own per-model guidance read the other way round from
 the bullet below: start at `xhigh` for coding and agentic work specifically, `high` for most
-other intelligence-sensitive workloads. The `bug` preset still reads `high` and that is a
-separate question nobody has answered yet — this changed what the `+` does, not what the five
-rows say.
+other intelligence-sensitive workloads. The `bug` preset still reads `high`, which is the
+level the docs give for exactly that kind of work — a hard question rather than a long agentic
+run — so the two rows differ by effort and nothing else now that both hold the wide window.
 
 **Three states, not two, and the nullable column is the whole of why.** `store::default_preset`
 answers `Option<String>`, and `presets.defaultPresetFor` is the one place the three are told
@@ -272,6 +272,17 @@ of this menu is for.
   point of the menu: `haiku · low` next to a spawn that sends no `--effort` is the row lying
   about what it buys. `Preset.effort` is therefore optional, and `presets.test.ts` asserts
   that the only preset without one is the only model without the parameter.
+
+**The window is not one of the two axes, and it was priced as though it were.** The catalogue
+was built when `[1m]` read as the expensive tier — the `bug` preset said so in as many words,
+"deliberately not the 1M window" — and that is not what the price table says: Opus 5 is one
+row at $5/$25 per MTok whatever the tier, as Sonnet 5 is one row at $2/$10. So holding the
+wide window back from `bug` bought nothing and cost the card room, which is the one thing a
+bug that has resisted the obvious fix actually needs: the answer is somewhere you have not
+looked, and a card that compacts halfway through looking has thrown away the half it read.
+`bug` is `opus[1m] · high` now, and what separates it from `deep` is the effort alone. The
+cheap end keeps the small window on a different argument — not the rate, but that a card
+opened to be cheap should not be able to quietly grow into a large one.
 
 The model stored is an alias (`opus[1m]`, `sonnet`), not a full id, so a preset does not go
 stale the week a new model ships. Probed 2026-08-20 against claude 2.1.233: `opus[1m]` →
