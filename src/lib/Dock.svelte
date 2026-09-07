@@ -124,8 +124,8 @@
   let palette = $state<HTMLElement | undefined>(undefined);
 
   /* The lit row is kept in view, because the palette is now long enough to need
-     it: Volery's own commands plus every skill the card has came to 31 rows on
-     the wall this was written for. It scrolls rather than being cut off at some
+     it: Volery's own nine plus everything the agent answers to came to 66 rows
+     on the wall this was written for. It scrolls rather than being cut off at some
      number — a list that silently stops at ten says a card has no skill that it
      does have, which is worse than a list you have to scroll. Found by asking
      the DOM rather than by binding the lit button, because which button is lit
@@ -291,6 +291,14 @@
                `opens` is the same claim for a command that puts up a panel
                instead — `/resume` offers you the sessions on disk. -->
           <span class="name">/{cmd.name}{cmd.choices || cmd.opens ? "…" : ""}</span>
+          <!-- What it takes, in the CLI's own words: `[interval] [prompt]`,
+               `<model>`, `branch`. Beside the name rather than in the summary,
+               because it is the shape of the line you are about to write and
+               not a description of what the thing does. Set in mono for the
+               same reason a completion is: it is text that will be typed. -->
+          {#if cmd.hint}
+            <span class="hint">{cmd.hint}</span>
+          {/if}
           <span class="summary">{cmd.summary}</span>
           <span class="grow"></span>
           <!-- A click is the one way in here that does not pass through the
@@ -580,6 +588,17 @@
   .palette .name {
     font-family: var(--mono);
     font-size: 0.72rem;
+  }
+  /* Faint, and in the mono a completion lands in: this is the shape of what
+     you are about to type rather than prose about it. */
+  .palette .hint {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    color: var(--paper-faint);
+    white-space: nowrap;
+  }
+  .palette .cmd.on .hint {
+    color: var(--paper-mute);
   }
   .palette .summary {
     color: var(--paper-mute);

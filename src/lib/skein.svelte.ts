@@ -2399,7 +2399,7 @@ export class Skein {
   learnSlash(cwd: string) {
     if (!cwd || this.#slashAsked.has(cwd)) return;
     this.#slashAsked.add(cwd);
-    void invoke<SlashCommand[]>("project_commands", { cwd })
+    void invoke<SlashCommand[]>("slash_commands", { cwd })
       .then((rows) => {
         this.#slash[cwd] = Array.isArray(rows) ? rows : [];
       })
@@ -3086,21 +3086,6 @@ export class Skein {
   /** Keep the row current enough that a dormant card can show what it reached
    *  without ever spawning the session behind it. */
   #persistConv(c: Conversation, ev: any) {
-    /* The skills a card has arrive once per process, on `system/init`, and they
-       are written the moment they land rather than at the next settling turn —
-       the palette that offers them is wanted *before* a card's first prompt, so
-       waiting for a `result` would store them one turn after the turn they were
-       needed for. Guarded on `skillsFresh` rather than on the event, since an
-       init arrives for every dequeued prompt and the answer is the same every
-       time; the flag is spent here so a card that never changes its skills
-       writes the row exactly once. */
-    if (c.skillsFresh) {
-      c.skillsFresh = false;
-      void invoke("update_conversation", {
-        id: c.id,
-        skillsJson: JSON.stringify(c.skills),
-      }).catch(() => {});
-    }
     if (ev?.type === "result") {
       void this.#adoptAiTitle(c);
       void this.#adoptEffort(c);

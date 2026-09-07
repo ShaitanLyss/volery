@@ -70,7 +70,7 @@ import { costStep } from "./usage";
 import { detailOf, recognise } from "./gates";
 import { until } from "./limits";
 import { UNNAMED } from "./naming";
-import { effortAnswer, isEffort, skillsFrom, type Effort } from "./commands";
+import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
 import type { Answers, AskQuestion } from "./asking";
@@ -863,10 +863,15 @@ export class Conversation {
    *  `commands.ts` turns a name into a palette row and nothing else reads it. */
   skills = $state<string[]>([]);
 
-  /** The skills changed and the row has not been told. Spent by `#persistConv`
-   *  on the init that set it, so the write happens once per process rather than
-   *  a JSON blob per settling turn. */
-  skillsFresh = $state(false);
+  /** Has an init ever *said* which of this card's names are skills?
+   *
+   *  A different question from `skills.length`, and the palette needs the
+   *  difference: a card whose agent genuinely has no skills is a real answer and
+   *  must narrow what is offered mid-sentence exactly as a populated one does,
+   *  where a card that has taken no turn has told us nothing and should not.
+   *  `paletteExtras` degrades toward offering *more* on the second. */
+  skillsKnown = $state(false);
+
 
   /** The session's running total, as `result.total_cost_usd` reports it — not
    *  the last turn's. See `lastTurn` for that. */
@@ -1108,9 +1113,6 @@ export class Conversation {
     effort?: string | null;
     /** Optional because a row written before schema v23 has no gear. */
     permissionMode?: string | null;
-    /** The skills the last `system/init` named, as the JSON array it was stored
-     *  as. Opaque to Rust and normalised here — see `skillsFrom`. */
-    skillsJson?: string | null;
   }): Conversation {
     const c = new Conversation(
       row.id,
@@ -1190,14 +1192,6 @@ export class Conversation {
        A row from before the column existed is null, which is the truth about
        it: no card had a gear to be in. */
     c.gear = gearOfWire(row.permissionMode ?? "bypassPermissions");
-    /* Same argument as the gear one line up, one subsystem over: a dormant card
-       emits no `system/init`, and init is the only thing on the wire that names
-       a card's skills — so without the column the dock's palette would have
-       nothing to offer until each card had taken a turn, which is precisely the
-       moment you would have wanted it. Never written by the card and never
-       trusted: `skillsFresh` stays false, so a restored list is redrawn rather
-       than re-stored, and the next init overwrites it with what is true now. */
-    c.skills = skillsFrom(row.skillsJson);
     c.activity = row.interrupted ? "interrupted" : "dormant";
     return c;
   }
@@ -1518,11 +1512,15 @@ export class Conversation {
     const names = said.filter(
       (s): s is string => typeof s === "string" && s.trim().length > 0,
     );
+    /* Set before the early return below, and that is the whole reason it is a
+       field rather than `skills.length > 0`: an init carrying an empty array has
+       *told* us this card has no skills, which narrows the palette, where a card
+       that has never spoken has told us nothing and must not. */
+    this.skillsKnown = true;
     /* Compared as text: the array is rebuilt on every init, so identity says
        nothing and the only question is whether the names moved. */
     if (names.join(" ") === this.skills.join(" ")) return;
     this.skills = names;
-    this.skillsFresh = true;
   }
 
   /** What the occupancy itself says about the window.

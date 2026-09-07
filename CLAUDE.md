@@ -93,15 +93,17 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # limits.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 cd src-tauri && cargo run --example find-probe -- .. "off_main"   # what ripgrep costs on a tree
+cd src-tauri && cargo run --example slash-probe    # what a directory offers under a slash
 bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, with your config
 node --experimental-strip-types tools/probe-browser.ts   # what a browser costs, and whether
                                    # two clients can share one. NODE, not bun: playwright's
                                    # launch() never returns under bun on this machine.
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
-bun tools/probe-skills.ts          # what system/init publishes about skills, commands and
-                                   # plugins; `silent` shows it publishes nothing at all
-                                   # until a first message lands, `seeded` how a project's
-                                   # own .claude/commands/ are named back
+bun tools/probe-skills.ts initialize   # the whole slash vocabulary with a description
+                                   # each, off the control route, before any prompt. Bare
+                                   # shows what system/init publishes; `silent` that it
+                                   # publishes nothing until a first message lands;
+                                   # `seeded` adds three .claude/commands/ files
 bun tools/probe-lock.ts            # whether permissions.deny bites through the bypass flag
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo

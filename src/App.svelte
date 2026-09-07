@@ -1632,6 +1632,12 @@
     field.extra = paletteExtras(
       dockCard ? skein.slashFor(dockCard.cwd) : [],
       dockCard?.skills ?? [],
+      /* Whether the skill/command split is *known* for this card, which is a
+         different question from whether the list is empty — a card whose agent
+         genuinely has no skills must narrow the palette exactly as a populated
+         one does. Only an init answers it, so before the card's first turn every
+         row is treated as mid-line-eligible. See `paletteExtras`. */
+      dockCard?.skillsKnown ?? false,
     );
   });
 
@@ -1846,7 +1852,13 @@
        given its value. */
     if (field.commandPick) {
       if (!field.whole) return completeName(field.commandPick);
-      return runCommand(field.commandPick, broadcast);
+      /* And only when Enter may claim the lit row: an abbreviation of one of
+         our own runs, where one of the agent's has to have been typed in
+         full. `/commit` lights `tx-toolkit:committee` through its published
+         alias, and running that would send a name nobody chose — so it falls
+         through to the ordinary prompt path, which is where `/commit` was
+         always going. See `mayRunOn`. */
+      if (field.canRun) return runCommand(field.commandPick, broadcast);
     }
 
     const text = field.text.trim();
@@ -2443,6 +2455,7 @@
     setDraft: (t) => field.put(t),
     commands: () => field.commands,
     choices: () => field.choices.map((c) => c.value),
+    canRun: () => field.canRun,
     targets: () => targets,
     waiting: () => waiting,
     clashing: () => clashing,

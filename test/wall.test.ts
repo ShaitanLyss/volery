@@ -1123,8 +1123,29 @@ t("the dock runs a slash command instead of sending it, and only its own", async
   await ctl("type", { text: "/" });
   expect((await snapshot()).commands).toContain("clear");
   await ctl("type", { text: "/cl" });
-  expect((await snapshot()).commands).toEqual(["clear"]);
+  /* Narrowed, but not to one row any more: the palette now offers everything
+     the agent answers to as well, and this machine has a `claude-api` skill
+     whose name also starts with `cl`. What has to hold is that Volery's own
+     comes first — locality — and that the list really did narrow. */
+  const narrowed = (await snapshot()).commands;
+  expect(narrowed[0]).toBe("clear");
+  expect(narrowed.length).toBeLessThan(9);
+  /* And an unrecognised name is not intercepted. What proves that is no longer
+     an empty list: the palette now offers everything the agent answers to, and
+     `committee` — the alias the CLI publishes for `tx-toolkit:committee` —
+     begins with the same letters as `/commit`. So it is offered, as a
+     suggestion Tab would take, and **Enter may not claim it**: `canRun` is
+     false, so the press sends `/commit` to the agent as the words it is. That
+     is the safety property this whole file rests on, and it very nearly went
+     when the palette stopped being nine names. */
   await ctl("type", { text: "/commit" });
+  const loose = await snapshot();
+  expect(loose.canRun).toBe(false);
+  /* Where an abbreviation of one of ours still runs. */
+  await ctl("type", { text: "/cl" });
+  expect((await snapshot()).canRun).toBe(true);
+  /* And a name in nobody's vocabulary still opens nothing at all. */
+  await ctl("type", { text: "/zzzznope" });
   expect((await snapshot()).commands).toEqual([]);
 
   /* Submitted with the palette lit, the key runs the command rather than
@@ -1183,57 +1204,17 @@ t("a command that takes a value opens its values instead of running", async () =
   await ctl("type", { text: "" });
 });
 
-t("the palette offers the skills a card declared, and stores them", async () => {
-  const id = await newCard();
-  await ctl("focus", { id });
-
-  /* Before an init there is nothing to offer, which is the ordinary state of a
-     card that has not spoken — and exactly the palette this had before skills. */
-  await ctl("type", { text: "/dat" });
-  expect((await snapshot()).commands).toEqual([]);
-
-  /* The shape `system/init` really carries, read off claude 2.1.233 with
-     `tools/probe-skills.ts`: names, no descriptions, plugin ones prefixed. */
-  await ctl("feed", {
-    id,
-    event: {
-      type: "system",
-      subtype: "init",
-      skills: ["dataviz", "tx-toolkit:committee"],
-    },
-  });
-  expect((await cardOf(id)).skills).toEqual(["dataviz", "tx-toolkit:committee"]);
-
-  await ctl("type", { text: "/dat" });
-  expect((await snapshot()).commands).toEqual(["dataviz"]);
-  /* Nobody types the plugin half of a name. */
-  await ctl("type", { text: "/committee" });
-  expect((await snapshot()).commands).toEqual(["tx-toolkit:committee"]);
-
-  /* And the row followed, so the palette knows them before this card's first
-     prompt of the next session — which is the whole reason it is stored. */
-  const db = new Database(DB, { readonly: true });
-  try {
-    const row = db
-      .query("SELECT skills_json AS s FROM conversation WHERE id = ?1")
-      .get(id) as Reply;
-    expect(JSON.parse(row.s)).toEqual(["dataviz", "tx-toolkit:committee"]);
-  } finally {
-    db.close();
-  }
-});
-
-t("the palette offers the project's own commands, walked off its disk", async () => {
-  /* A directory of its own, and it has to be: the walk is done once per cwd for
-     the life of the wall, so a tree another test has already focused a card in
-     has a cold answer cached. That is the documented trade — a command file
-     added while the app is up is not offered until the next launch — and here it
-     is the reason this test brings its own folder. */
+t("the palette offers what the agent answers to, walked off no disk", async () => {
+  /* A directory of its own, and it has to be: the vocabulary is asked once per
+     cwd for the life of the wall, so a tree another test has already focused a
+     card in has its answer cached. That is the documented trade — a command file
+     added while the app is up waits for the next launch — and here it is the
+     reason this test brings its own folder. */
   const dir = join(SUITE, `slash-${Date.now()}`);
   mkdirSync(join(dir, ".claude", "commands", "deep"), { recursive: true });
   writeFileSync(
     join(dir, ".claude", "commands", "wallhello.md"),
-    "---\ndescription: the wall test's own command\n---\nSay hello.\n",
+    "---\ndescription: the wall test's own command\nargument-hint: [branch]\n---\nSay hello.\n",
   );
   writeFileSync(join(dir, ".claude", "commands", "deep", "nested.md"), "No frontmatter.\n");
 
@@ -1241,40 +1222,76 @@ t("the palette offers the project's own commands, walked off its disk", async ()
   opened.push(id);
   await ctl("focus", { id });
 
-  /* Fire-and-forget behind the focus, so the rows arrive rather than being
-     awaited — the palette is correct without them and gains them when the walk
-     lands. */
+  /* One `control_request { subtype: "initialize" }` in a throwaway process, and
+     the whole vocabulary comes back with a description each — the project's own
+     files, every skill, and the CLI's built-ins, none of which are on a disk
+     anywhere this window could read. About 1.2s, so this waits rather than
+     asserting straight away. */
   await ctl("type", { text: "/wallhel" });
   await until(
-    "the project's own commands to be walked",
+    "the directory's own vocabulary to be asked for",
     () => snapshot(),
     (s: Reply) => s.commands.includes("wallhello"),
-    5000,
+    15000,
   );
 
   /* A subdirectory is typed with a colon, which is how the CLI names it. */
   await ctl("type", { text: "/deep:nes" });
   expect((await snapshot()).commands).toEqual(["deep:nested"]);
 
-  /* And it is head-only, like every other thing the CLI parses: mid-sentence it
+  /* And the CLI's own built-ins are in there too, which is the half that used to
+     be impossible: they live inside the binary and on disk nowhere. */
+  await ctl("type", { text: "/securit" });
+  expect((await snapshot()).commands).toContain("security-review");
+
+  /* A command file is head-only, like everything the CLI parses: mid-sentence it
      is text, so offering it would be offering something that cannot run. */
+  /* An init first, carrying an empty `skills` array — which is a real answer
+     and narrows the palette exactly as a populated one does. Without it this
+     card has never spoken, `skillsKnown` is false, and every row is treated
+     as mid-line-eligible on purpose. */
+  await ctl("feed", { id, event: { type: "system", subtype: "init", skills: [] } });
+  expect((await cardOf(id)).skillsKnown).toBe(true);
+
   await ctl("type", { text: "and then /wallhel" });
   expect((await snapshot()).commands).toEqual([]);
-});
+
+  /* Closed and its territory forgotten, rather than left for `afterAll`: a
+     directory of its own is what this test needs and a territory standing on
+     the wall for the rest of the run is not — the tests after it measure
+     "the second project" and would find this one.
+
+     Twenty seconds, because the vocabulary is a real `claude` answering a
+     control request — about 1.2s warm, and bun's per-test default is five. */
+  await ctl("close", { id });
+  await ctl("forget", { cwd: dir }).catch(() => {});
+}, 20_000);
 
 t("a skill completes inside a sentence, where a command is not even offered", async () => {
   const id = await newCard();
   await ctl("focus", { id });
+  /* The label of which names are skills is the one thing `initialize` does not
+     carry, so it is folded off `system/init` — fed here rather than earned with
+     a real turn. */
   await ctl("feed", {
     id,
     event: { type: "system", subtype: "init", skills: ["dataviz"] },
   });
+  expect((await cardOf(id)).skills).toEqual(["dataviz"]);
+  expect((await cardOf(id)).skillsKnown).toBe(true);
 
-  /* A command is parsed by the CLI or carried out here, and neither reads the
-     middle of a prompt — so mid-sentence the palette offers skills and nothing
-     else. `/c` at the head would name `clear` and `compact`. */
-  await ctl("type", { text: "make a chart with /c" });
-  expect((await snapshot()).commands).toEqual([]);
+  await until(
+    "the vocabulary to arrive",
+    () => {
+      void ctl("type", { text: "/dat" });
+      return snapshot();
+    },
+    (s: Reply) => s.commands.includes("dataviz"),
+    15000,
+  );
+
+  /* Mid-sentence the palette offers skills and nothing else: a command is
+     parsed by the CLI or run here, and neither reads the middle of a prompt. */
   await ctl("type", { text: "make a chart with /dat" });
   expect((await snapshot()).commands).toEqual(["dataviz"]);
 
@@ -1291,7 +1308,8 @@ t("a skill completes inside a sentence, where a command is not even offered", as
      whole thing rests on. */
   await ctl("type", { text: "what about src/lib/dataviz.ts" });
   expect((await snapshot()).commands).toEqual([]);
-});
+}, 20_000);
+
 
 t("the CLI's own commands are offered but never intercepted", async () => {
   const id = await newCard();
@@ -1304,7 +1322,9 @@ t("the CLI's own commands are offered but never intercepted", async () => {
      absence of any Skein-side effect: `/clear` repoints the session, and
      `/compact` must leave the card exactly as it found it. */
   await ctl("type", { text: "/comp" });
-  expect((await snapshot()).commands).toEqual(["compact"]);
+  /* Ours first again; `autocompact` is one of the CLI's own and also contains
+     the letters. */
+  expect((await snapshot()).commands[0]).toBe("compact");
 
   const before = await cardOf(id);
   await ctl("type", { text: "/compact focus on the auth work" });

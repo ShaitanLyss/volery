@@ -150,6 +150,12 @@ export type ControlHost = {
    *  never both up: an empty `commands` is a palette that is down *or* one that
    *  has moved on to the values, and from outside those look identical. */
   choices: () => string[];
+  /** Whether Enter would *run* the lit row or send the draft. Reported
+   *  because it is invisible otherwise: `/commit` offering
+   *  `tx-toolkit:committee` as a suggestion and `/commit` about to be
+   *  hijacked by it are the same `commands` list from out here, and the whole
+   *  difference is which key claims the row. See `mayRunOn`. */
+  canRun: () => boolean;
   targets: () => Conversation[];
   waiting: () => Conversation[];
   clashing: () => string[];
@@ -801,6 +807,11 @@ export class Control {
            identical in the palette, and only one of them proves the column
            works. */
         skills: [...c.skills],
+        /* Beside them, and not derivable from them: an empty list from a card
+           that has spoken and an empty list from one that has not are the same
+           array out here, and the whole difference is which narrowing the
+           palette is applying mid-sentence. */
+        skillsKnown: c.skillsKnown,
         /* Beside it, and not derivable from it: a card writes a plan while
            planning and keeps it after being put back into making, which is the
            state the whole gesture exists to produce. */
@@ -1007,6 +1018,7 @@ export class Control {
          and is not Skein's to intercept. */
       commands: h.commands().map((c) => c.name),
       choices: h.choices(),
+      canRun: h.canRun(),
       targets: h.targets().map((c) => c.id),
       waiting: h.waiting().map((c) => c.id),
       clashing: h.clashing(),

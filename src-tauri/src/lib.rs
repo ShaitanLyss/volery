@@ -8,7 +8,9 @@ mod ask;
 mod accounts;
 mod bang;
 mod browser;
-mod claude;
+/// Where the `claude` binary is. Public so `examples/slash-probe.rs` can find
+/// the same one the app spawns rather than assuming it is on PATH.
+pub mod claude;
 mod clip;
 mod board;
 /// Public so `examples/azdo-probe.rs` can drive the real reading rather than a
@@ -47,11 +49,14 @@ mod sessions;
 mod signin;
 mod shell;
 mod sink;
-/* The third vocabulary under the dock's slash: the markdown files a project
-   keeps in `.claude/commands/`. The other two need no module — Volery's own are
-   a fixed list in `commands.ts`, and a card's skills are folded off
-   `system/init`. This one is the only one on a disk. */
-mod slash;
+/// Everything under the dock's slash that is *not* Volery's own: the CLI's
+/// built-ins, a project's `.claude/commands/`, and every skill. Asked of a
+/// `claude` over the control route rather than worked out here — see the
+/// module's own header for the two designs that tried the other way.
+///
+/// Public so `examples/slash-probe.rs` can drive the real request rather than a
+/// copy of it, the same arrangement `find` and `azdo` have.
+pub mod slash;
 mod smith;
 mod spawn;
 mod spotify;
@@ -458,7 +463,7 @@ pub fn run() {
             sink::sink_delete,
             sink::sink_release,
             sink::sink_tool,
-            slash::project_commands,
+            slash::slash_commands,
             spawn::spawned_by,
             spawn::lineage,
             sessions::list_sessions,

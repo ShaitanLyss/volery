@@ -7,16 +7,15 @@ import {
   effortAnswer,
   completionFor,
   completionForChoice,
+  mayRunOn,
   matchChoices,
   matchCommands,
   paletteExtras,
-  projectCommand,
   resolveCommand,
-  skillCommand,
-  skillsFrom,
   slashAt,
   spansWhole,
   stillWriting,
+  vocabRow,
   typingChoice,
   typingName,
 } from "../src/lib/commands";
@@ -544,10 +543,25 @@ describe("/btw, the question asked beside a conversation", () => {
 
 /* ── skills, a project's own commands, and a slash that may sit anywhere ──── */
 
-/** What the wall this was written on actually declared, in the order the wire
- *  gave them — a plugin's, a plugin whose name repeats its skill's, and three
- *  bare ones. Probed 2026-09-06 against claude 2.1.233; `system/init` named 22
- *  and these are the shapes among them. */
+/** What `initialize` really answers with, trimmed to the shapes that matter —
+ *  a plugin's skill with the un-prefixed alias the CLI publishes for it, a
+ *  plugin whose name repeats its skill's, three bare skills, a project command
+ *  with a hint, one with no description at all, and one from a subdirectory.
+ *  Probed 2026-09-07 against claude 2.1.233 with `tools/probe-skills.ts
+ *  initialize`; `slash.rs` has the measurements. */
+const VOCAB = [
+  { name: "commit", description: "stage and commit what this work touched (project)" },
+  { name: "bare", description: "No frontmatter at all. (project)" },
+  { name: "deep:nested", description: "a command in a subdirectory (project)", argumentHint: "branch" },
+  { name: "tx-toolkit:committee", description: "(tx-toolkit) Convene a panel.", aliases: ["committee"] },
+  { name: "frontend-design:frontend-design", description: "(frontend-design) Visual design.", aliases: ["frontend-design"] },
+  { name: "dataviz", description: "Charts that read as one system." },
+  { name: "code-review", description: "Review the current diff.", argumentHint: "[low|medium|high]", aliases: ["review"] },
+  { name: "loop", description: "Run a prompt on an interval.", argumentHint: "[interval] [prompt]" },
+];
+
+/** Which of those the agent calls skills — `system/init`'s array, the only
+ *  authoritative label, and the one thing `initialize` does not say. */
 const SKILLS = [
   "tx-toolkit:committee",
   "frontend-design:frontend-design",
@@ -556,22 +570,17 @@ const SKILLS = [
   "loop",
 ];
 
-/** What `slash.rs` reports for a project that keeps commands of its own, in the
- *  shapes the probe seeded and the CLI then named back: a described one, one
- *  with no frontmatter at all, and one from a subdirectory. */
-const PROJECT = [
-  { name: "commit", description: "stage and commit what this work touched", scope: "project" },
-  { name: "bare", description: null, scope: "project" },
-  { name: "deep:nested", description: "a command in a subdirectory", scope: "project" },
-];
+/** The palette's extra rows with the split known, which is a card that has
+ *  taken a turn. */
+const extras = paletteExtras(VOCAB, SKILLS, true);
 
-const extras = paletteExtras(PROJECT, SKILLS);
+/** And with it unknown — a card that has never spoken. */
+const unlabelled = paletteExtras(VOCAB, [], false);
 
 const offered = (draft: string, caret?: number | null) =>
-  matchCommands(draft, caret, paletteExtras([], SKILLS)).map((c) => c.name);
-
-const offeredAll = (draft: string, caret?: number | null) =>
   matchCommands(draft, caret, extras).map((c) => c.name);
+
+const row = (n: string) => extras.find((c) => c.name === n)!;
 
 describe("the slash-name the caret is in", () => {
   test("a name at the head is the whole draft, as it always was", () => {
@@ -638,187 +647,252 @@ describe("the slash-name the caret is in", () => {
   });
 });
 
-describe("commands at the head, skills anywhere", () => {
+describe("everything at the head, skills anywhere", () => {
   test("a bare slash at the head offers everything, ours first", () => {
-    expect(offered("/")).toEqual([...COMMANDS.map((c) => c.name), ...SKILLS]);
+    /* Locality: this window's own, then the CLI's whole vocabulary in the order
+       it published it — which puts a project's own commands before the skills. */
+    expect(offered("/")).toEqual([
+      ...COMMANDS.map((c) => c.name),
+      ...VOCAB.map((v) => v.name),
+    ]);
   });
 
   test("a bare slash inside a sentence offers only the skills", () => {
-    /* A command is carried out by this window or parsed by the CLI, and neither
-       reads the middle of a prompt — offering `/clear` there would be offering
-       to run something that cannot be run from there. */
+    /* Volery's own are run here, and the CLI's own and a project's command files
+       are parsed by the CLI — none of the three reads the middle of a prompt, so
+       offering one there would be offering something that cannot run. */
     expect(offered("please use /")).toEqual(SKILLS);
   });
 
-  test("a skill is found at the head beside the commands", () => {
+  test("a name is found at the head beside the commands", () => {
     expect(offered("/dat")).toEqual(["dataviz"]);
-    /* Prefix before contains, which is the rule the commands already had: `loop`
-       starts with it and `clear`, `model` and `plan` merely have an l in them,
-       so the one you meant is lit. */
+    /* Prefix before contains, which is the rule the commands already had. */
     expect(offered("/l")[0]).toBe("loop");
     expect(offered("/l")).toContain("clear");
   });
 
-  test("a skill is found mid-sentence and a command with the same letters is not", () => {
-    /* `/c` at the head is `clear` and `compact` and `code-review`; in the middle
-       of a line it is only ever skills, because only a skill would work from
-       there. */
+  test("mid-sentence, a command with the same letters is not offered", () => {
     expect(offered("/c")).toContain("clear");
-    expect(offered("/c")).toContain("code-review");
+    expect(offered("/c")).toContain("commit");
     const inside = offered("make a chart with /c");
-    expect(inside[0]).toBe("code-review");
     expect(inside).not.toContain("clear");
-    expect(inside).not.toContain("compact");
+    expect(inside).not.toContain("commit");
+    /* Both skills whose name or alias starts with a c, in the order the CLI
+       published them — `committee` is an alias, and an alias leads exactly as
+       a name does. */
+    expect(inside).toEqual(["tx-toolkit:committee", "code-review"]);
   });
 
-  test("the plugin half of a name is not something anybody types", () => {
-    /* Prefix first and then merely containing, which is the rule that already
-       made `/ear` find `clear` — and is what finds `tx-toolkit:committee` from
-       the only part of it a person knows. */
-    expect(offered("/committee")).toEqual(["tx-toolkit:committee"]);
+  test("not knowing which are skills means offering more, not less", () => {
+    /* A card that has taken no turn has no `skills` array, and the honest
+       fallback is every row rather than none: picking one mid-sentence only ever
+       *inserts its text*, since Enter completes rather than runs once there is
+       prose around it. The cost of being wrong that way is a row you did not
+       want; the other way it is the whole feature missing on a fresh card. */
+    const inside = matchCommands("use /c", null, unlabelled).map((c) => c.name);
+    expect(inside).toContain("code-review");
+    expect(inside).toContain("commit");
+    /* Volery's own are still head-only — those are never in `extra`. */
+    expect(inside).not.toContain("clear");
   });
 
-  test("a card with no skills gets exactly the palette it always had", () => {
+  test("an empty skills array is a real answer and narrows it", () => {
+    /* `skillsKnown` rather than `skills.length`: a card whose agent genuinely
+       has no skills must narrow the palette exactly as a populated one does. */
+    const known = paletteExtras(VOCAB, [], true);
+    expect(matchCommands("use /c", null, known)).toEqual([]);
+  });
+
+  test("a card with nothing extra gets exactly the palette it always had", () => {
     expect(matchCommands("/")).toEqual(matchCommands("/", null, []));
     expect(offered("/zzz")).toEqual([]);
   });
 });
 
-describe("the project's own commands, which are head-only like the CLI's", () => {
-  test("they are offered at the head, ahead of the skills", () => {
-    /* Locality: this window's own first, then the project's, then the card's —
-       which is also the order `system/init` lists them in. */
-    expect(offeredAll("/")).toEqual([
-      ...COMMANDS.map((c) => c.name),
-      "commit",
-      "bare",
-      "deep:nested",
-      ...SKILLS,
-    ]);
+describe("the aliases the CLI publishes", () => {
+  test("a name is found through its alias, and the canonical name is what shows", () => {
+    /* `review` is `code-review`'s published alias, and `committee` is the
+       un-prefixed form of `tx-toolkit:committee` — the only part of it anybody
+       types. An alias is a way to *find* a name, never a row of its own. */
+    expect(offered("/rev")).toEqual(["code-review"]);
+    expect(offered("/committee")).toEqual(["tx-toolkit:committee"]);
+    expect(offered("/")).not.toContain("review");
+    expect(offered("/")).not.toContain("committee");
   });
 
-  test("but never inside a sentence, because the CLI only reads the head", () => {
-    /* A file in `.claude/commands/` is expanded by the CLI when a prompt
-       *begins* with its name. `/commit` in the middle of a line is text, so
-       offering it there would be offering something that cannot run. Only
-       skills survive the move. */
-    expect(offeredAll("/com").length).toBeGreaterThan(1);
-    expect(offeredAll("/com")).toContain("commit");
-    const inside = offeredAll("and then /com");
-    expect(inside).toEqual(["tx-toolkit:committee"]);
+  test("an alias that repeats its own name is dropped", () => {
+    /* `frontend-design:frontend-design` publishes `frontend-design`, which is a
+       real alias; one identical to the name itself would be noise. */
+    expect(vocabRow({ name: "x", aliases: ["x", "y"] }, false).aliases).toEqual(["y"]);
   });
 
-  test("a subdirectory is typed with a colon, as the CLI names it", () => {
-    /* `.claude/commands/deep/nested.md` → `deep:nested`, measured against the
-       real `slash_commands` array. So the name has to survive `slashAt`. */
-    expect(offeredAll("/deep:nes")).toEqual(["deep:nested"]);
-    expect(slashAt("/deep:nested", null)?.name).toBe("deep:nested");
-  });
-
-  test("it says what it does in its author's own words where it can", () => {
-    /* The one row in this palette that is not reduced to its provenance — a
-       command file may carry a `description:`, where the wire says nothing at
-       all about a skill. */
-    const commit = extras.find((c) => c.name === "commit")!;
-    expect(commit.summary).toBe("stage and commit what this work touched");
-    /* And where it has none, it says where it came from, like a skill's row. */
-    const bare = extras.find((c) => c.name === "bare")!;
-    expect(bare.summary).toContain(".claude/commands");
-    expect(projectCommand({ name: "x", scope: "user" }).summary).toContain("~/.claude");
-  });
-
-  test("it is sent, not intercepted — the rule this file opened with", () => {
-    /* `/commit` is the project's command and has to reach the agent unread.
-       Nothing here takes custody of one, and it is the CLI that reads it. */
-    const commit = extras.find((c) => c.name === "commit")!;
-    expect(commit.by).toBe("cli");
-    expect(resolveCommand("/commit")).toBeNull();
-    expect(completionFor(commit)).toBe("/commit");
+  test("aliases are matched mid-sentence too, for a skill", () => {
+    expect(
+      matchCommands("chart it with /committee", null, extras).map((c) => c.name),
+    ).toEqual(["tx-toolkit:committee"]);
   });
 });
 
-describe("what the three vocabularies do when they collide", () => {
+describe("what the CLI says about each row is what is drawn", () => {
+  test("the description is the summary, in its author's words", () => {
+    /* The whole reason for asking rather than working it out. An earlier version
+       of this invented a summary from the shape of the name, because the only
+       source then in use carried names and nothing else. */
+    expect(row("dataviz").summary).toBe("Charts that read as one system.");
+    expect(row("commit").summary).toBe(
+      "stage and commit what this work touched (project)",
+    );
+    /* Including for the CLI's own built-ins, which are inside a 320MB binary
+       and on disk nowhere — the case that used to be unanswerable. */
+    expect(row("code-review").summary).toBe("Review the current diff.");
+  });
+
+  test("a row with no description at all still reads as something", () => {
+    expect(vocabRow({ name: "x" }, true).summary).toBe("a skill this card has");
+    expect(vocabRow({ name: "x" }, false).summary).toBe("the agent's own command");
+  });
+
+  test("the detail says who reads it, which is what decides where it may sit", () => {
+    expect(row("dataviz").detail).toContain("anywhere in a sentence");
+    expect(row("commit").detail).toContain("start of a line");
+  });
+
+  test("the hint is carried, and is not a claim that the row is incomplete", () => {
+    /* `takesText` would make it `stillWriting` with nothing after it, and Enter
+       on `/loop` would then never send anything — but `/loop` is perfectly
+       runnable bare. */
+    expect(row("loop").hint).toBe("[interval] [prompt]");
+    expect(row("deep:nested").hint).toBe("branch");
+    expect(row("dataviz").hint).toBeUndefined();
+    expect(stillWriting(row("loop"), "")).toBe(false);
+  });
+
+  test("a row that takes something is completed with a space to write in", () => {
+    expect(completionFor(row("loop"))).toBe("/loop ");
+    expect(completionFor(row("deep:nested"))).toBe("/deep:nested ");
+    /* A skill gets it either way: it takes whatever you say after it whether or
+       not the CLI thought to describe that, and it is the one kind of row that
+       gets completed mid-sentence. */
+    expect(completionFor(row("dataviz"))).toBe("/dataviz ");
+    /* And one that takes nothing does not, so Enter sends it as it stands. */
+    expect(completionFor(row("commit"))).toBe("/commit");
+    expect(completionFor(row("bare"))).toBe("/bare");
+  });
+});
+
+describe("none of it is intercepted, which is the rule this file opened with", () => {
+  test("this window never takes custody of one", () => {
+    /* `resolveCommand` answers only for Volery's own, so all of these fall
+       through and go to the agent as the prompts they are — exactly what
+       `/commit` always did. */
+    expect(resolveCommand("/dataviz")).toBeNull();
+    expect(resolveCommand("/dataviz make a chart")).toBeNull();
+    expect(resolveCommand("/commit")).toBeNull();
+  });
+
+  test("a skill is not one of the CLI's, which is a different question", () => {
+    /* `cliCommand` decides whether a card may be named after what you typed. A
+       skill *is* something you said to the agent, so `/dataviz make a chart` is
+       a fine name for a card where `/model sonnet` is not. */
+    expect(cliCommand("/dataviz make a chart")).toBeNull();
+    expect(row("dataviz").by).toBe("skill");
+    expect(row("commit").by).toBe("cli");
+  });
+
+  test("every row reaches cards, so it costs the reach modifier like a prompt", () => {
+    for (const c of extras) expect(c.needsCard).toBe(true);
+  });
+});
+
+describe("which key may claim a lit row", () => {
+  /* The safety property this file opens with, met from a direction that did not
+     exist when it was written. `/commit` is the project's own command and has to
+     reach the agent unread — and it very nearly stopped doing so, because
+     `committee` is the alias the CLI publishes for `tx-toolkit:committee` and it
+     begins with those same letters. */
+
+  test("the offending case is really offered, so this is not hypothetical", () => {
+    expect(offered("/commit")).toContain("tx-toolkit:committee");
+  });
+
+  test("Enter may not run one of the agent's on a partial name", () => {
+    /* Not because it is a weak match — `committee`.startsWith(`commit`) is true.
+       Because it is *theirs*, and a prefix of a name in a vocabulary that
+       changes per directory can silently be a different command from the one
+       you typed in full. */
+    expect(mayRunOn(row("tx-toolkit:committee"), "commit")).toBe(false);
+    expect(mayRunOn(row("code-review"), "code")).toBe(false);
+  });
+
+  test("but typing one of theirs in full does run it", () => {
+    expect(mayRunOn(row("tx-toolkit:committee"), "tx-toolkit:committee")).toBe(true);
+    /* Including by the alias, which is the only part anybody types. */
+    expect(mayRunOn(row("tx-toolkit:committee"), "committee")).toBe(true);
+    expect(mayRunOn(row("code-review"), "review")).toBe(true);
+  });
+
+  test("an abbreviation of one of ours still runs, as it always has", () => {
+    /* "`/cle` + Enter clears, as in the CLI" — nine closed names this window
+       owns and whoever is typing knows. */
+    const clear = COMMANDS.find((c) => c.name === "clear")!;
+    expect(mayRunOn(clear, "cle")).toBe(true);
+    expect(mayRunOn(clear, "clear")).toBe(true);
+    /* And the CLI's own that *we* offer count as ours: they are this file's to
+       put in the palette whoever carries them out. */
+    expect(mayRunOn(COMMANDS.find((c) => c.name === "compact")!, "comp")).toBe(true);
+  });
+
+  test("a browse may run anything, because nothing has been typed to be wrong about", () => {
+    expect(mayRunOn(row("dataviz"), "")).toBe(true);
+    expect(mayRunOn(row("dataviz"), "   ")).toBe(true);
+  });
+
+  test("it is asked case-insensitively, like everything else here", () => {
+    expect(mayRunOn(row("dataviz"), "DATAVIZ")).toBe(true);
+    expect(mayRunOn(COMMANDS.find((c) => c.name === "clear")!, "CLE")).toBe(true);
+  });
+});
+
+
+describe("what the vocabularies do when they collide", () => {
   test("nothing may shadow one of Volery's own", () => {
     /* Two rows under one name is a palette whose `{#each}` keys collide, and
        "what does `/clear` do here" has one answer. */
-    const both = paletteExtras([{ name: "clear" }], ["clear"]);
+    const both = paletteExtras([{ name: "clear", description: "theirs" }], ["clear"], true);
     expect(both).toEqual([]);
     expect(matchCommands("/clear", null, both).map((c) => c.name)).toEqual(["clear"]);
     expect(matchCommands("/clear", null, both)[0].by).toBe("skein");
   });
 
-  test("the project's own beats a skill of the same name", () => {
-    /* Locality again: the thing written in this repo is the thing you meant. */
-    const both = paletteExtras([{ name: "code-review", description: "ours" }], SKILLS);
-    const row = both.find((c) => c.name === "code-review")!;
-    expect(row.by).toBe("cli");
-    expect(row.summary).toBe("ours");
-    expect(both.filter((c) => c.name === "code-review")).toHaveLength(1);
-  });
-
-  test("the same name twice from one source is one row", () => {
-    expect(paletteExtras([], ["dataviz", "dataviz"])).toHaveLength(1);
-    expect(paletteExtras([{ name: "commit" }, { name: "commit" }], [])).toHaveLength(1);
+  test("the first of any duplicate name wins", () => {
+    const twice = paletteExtras(
+      [
+        { name: "dataviz", description: "first" },
+        { name: "dataviz", description: "second" },
+      ],
+      [],
+      true,
+    );
+    expect(twice).toHaveLength(1);
+    expect(twice[0].summary).toBe("first");
   });
 
   test("names arrive lowercased, or a row would be unreachable", () => {
-    /* The palette matches in lowercase, so a `Commit.md` that could only be
-       found by typing `/Commit` would be a row nobody can reach. `slash.rs`
-       folds it too; this is the belt to that braces. */
-    expect(paletteExtras([{ name: "Commit" }], ["DataViz" ]).map((c) => c.name)).toEqual([
-      "commit",
-      "dataviz",
-    ]);
+    /* The palette matches in lowercase, so a `Commit.md` findable only by typing
+       `/Commit` would be a row nobody can reach. `slash.rs` folds it too; this
+       is the belt to that braces. */
+    expect(
+      paletteExtras([{ name: "Commit" }, { name: " DataViz " }], [], true).map(
+        (c) => c.name,
+      ),
+    ).toEqual(["commit", "dataviz"]);
   });
 
   test("an empty name is not a row", () => {
-    expect(paletteExtras([{ name: "  " }], ["", "   "])).toEqual([]);
+    expect(paletteExtras([{ name: "  " }, { name: "" }], [], true)).toEqual([]);
   });
 });
 
-describe("a skill is the agent's, not this window's and not the CLI's", () => {
-  const dataviz = skillCommand("dataviz");
-  const committee = skillCommand("tx-toolkit:committee");
-
-  test("it says where it came from, since that is all the name carries", () => {
-    /* The wire publishes names and nothing else — no description, no path — and
-       the CLI's own built-ins are inside the binary rather than on disk. So the
-       summary is derived from the name or it is invented, and invented is a
-       table that goes stale. */
-    expect(committee.summary).toBe("a skill from tx-toolkit");
-    expect(dataviz.summary).toBe("a skill this card has");
-    expect(dataviz.summary).toBe(dataviz.summary.toLowerCase());
-    expect(dataviz.detail.length).toBeGreaterThan(0);
-  });
-
-  test("this window never takes custody of one", () => {
-    /* `resolveCommand` answers only for Volery's own, so `/dataviz` falls
-       through and goes to the agent as the prompt it is — exactly what
-       `/commit` does, and for the same reason. */
-    expect(resolveCommand("/dataviz")).toBeNull();
-    expect(resolveCommand("/dataviz make a chart")).toBeNull();
-  });
-
-  test("and it is not one of the CLI's, which is a different question", () => {
-    /* `cliCommand` decides whether a card may be named after what you typed. A
-       skill *is* something you said to the agent, so `/dataviz make a chart` is
-       a perfectly good name for a card and `/model sonnet` is not. */
-    expect(cliCommand("/dataviz make a chart")).toBeNull();
-    expect(dataviz.by).toBe("skill");
-  });
-
-  test("it reaches cards, so it costs the reach modifier like a prompt", () => {
-    expect(dataviz.needsCard).toBe(true);
-  });
-
-  test("completing one leaves a space to carry on writing in", () => {
-    /* Not `takesText`, which would make it incomplete with nothing after it and
-       stop Enter ever sending `/dataviz` at all — but a skill does take whatever
-       you say next, and mid-sentence the space is what lets you keep typing. */
-    expect(completionFor(dataviz)).toBe("/dataviz ");
-    expect(stillWriting(dataviz, "")).toBe(false);
-  });
-});
 
 describe("where a completion lands", () => {
   test("at the head it replaces the whole draft, as completing used to", () => {
@@ -843,33 +917,5 @@ describe("where a completion lands", () => {
     const span = slashAt(draft, 4)!;
     const done = completeAt(draft, span, "/dataviz ");
     expect(done.text.slice(0, done.caret)).toBe("/dataviz ");
-  });
-});
-
-describe("the skills stored on a card's row", () => {
-  test("what was folded comes back", () => {
-    expect(skillsFrom(JSON.stringify(SKILLS))).toEqual(SKILLS);
-  });
-
-  test("a card nobody has ever asked has none", () => {
-    /* NULL is "no init has ever named these", which is every card from before
-       the column and every card that has not spoken. It draws the palette this
-       has always drawn. */
-    expect(skillsFrom(null)).toEqual([]);
-    expect(skillsFrom(undefined)).toEqual([]);
-    expect(skillsFrom("")).toEqual([]);
-  });
-
-  test("anything unexpected degrades to none rather than reaching the palette", () => {
-    /* The bargain every opaque JSON column here strikes: Rust carries the text
-       and never reads it, and being wrong costs a palette row rather than a
-       migration. */
-    expect(skillsFrom("not json at all")).toEqual([]);
-    expect(skillsFrom('{"skills":["dataviz"]}')).toEqual([]);
-    expect(skillsFrom('["dataviz",7,null,"  "]')).toEqual(["dataviz"]);
-  });
-
-  test("names are trimmed and counted once", () => {
-    expect(skillsFrom('[" dataviz ","dataviz"]')).toEqual(["dataviz"]);
   });
 });

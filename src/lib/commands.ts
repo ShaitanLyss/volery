@@ -46,38 +46,35 @@
  * sending the text puts a line in the transcript saying what you did, where a
  * control message changes the model with nothing to show for it.
  *
- * ── skills, which are the agent's rather than anybody's here ────────────────
+ * ── and everything else under the slash, which is the agent's ──────────────
  *
- * The catalogue below is fixed because it is *this window's* vocabulary. Skills
- * are not: which ones a card has depends on its directory, on which plugins are
- * installed and scoped to it, and on which build of Claude Code it is running —
- * so nothing here may name one. They are folded off the wire instead, and
- * `skillCommand` turns a name into a row.
+ * The catalogue below is fixed because it is *this window's* vocabulary. What
+ * the agent answers to is not: it depends on the directory, on which plugins are
+ * installed and scoped to it, on the project's own `.claude/commands/`, and on
+ * which build of Claude Code is behind it. So nothing here may name one of
+ * those, and `vocabRow` turns a published row into a palette row.
  *
- * **The wire publishes them, and that is the whole reason this is cheap.**
- * Probed 2026-09-06 against claude 2.1.233 with `tools/probe-skills.ts`,
- * spawning with Skein's exact argv: `system/init` carries a `skills` array of
- * 22 names beside `slash_commands`, `agents` and `plugins` — no descriptions,
- * no paths, just the names. So a skill's `summary` here says where it came from
- * (which is derivable from the name: `tx-toolkit:committee` is that plugin's)
- * and nothing else. Inventing summaries would be a table that went stale the
- * first time somebody reworded a skill, and the CLI's own built-ins are inside
- * the binary rather than on disk, so there is nowhere honest to read them from.
+ * **The CLI publishes the whole list, with descriptions, before any prompt.**
+ * One `control_request { subtype: "initialize" }` on a child's stdin answers in
+ * about 1.2 seconds with `commands: [{ name, description, argumentHint,
+ * aliases }]` — 57 of them on this machine. `slash.rs` owns that request and its
+ * measurements, including the two wrong designs it replaced: a walk of
+ * `.claude/commands/` that reinvented one field worse, and a schema column
+ * holding what `system/init` had said, because init only arrives after a card's
+ * first message. Neither was needed. Read that header before changing anything
+ * here about where a name comes from.
  *
- * The same probe answers the other question this file has to settle — *where in
- * a line a name may sit*. `/compact` is parsed by the CLI, so it only means
- * anything at the head of a prompt. A skill is not parsed by anything: the model
- * reads the prompt and invokes it through the `Skill` tool (`tools/probe-skill.ts`
- * caught the whole shape of that — a `tool_result` saying "Launching skill: …"
- * and then the skill's own text injected as a `user` message). So a skill's name
- * is prose, and the palette offers skills wherever the caret is while it offers
- * commands only at the head. See `slashAt`.
- *
- * `system/init` arrives only after the first message lands — probed the same
- * day by spawning with Skein's argv and sending *nothing*, which sat silent for
- * fifteen seconds — so the list is stored per card and restored with it. That is
- * `store::migrate_v31`, and it exists because the palette is wanted most before
- * a card's first prompt of a session rather than after it. */
+ * What this file still decides is **where in a line a name may sit**, and that
+ * is the one thing `initialize` does not say. `/compact` and `/commit` are
+ * *parsed by the CLI*, so they only mean anything at the head of a prompt. A
+ * skill is parsed by nothing: the model reads the prompt and invokes it through
+ * the `Skill` tool (`tools/probe-skill.ts` caught the whole shape — a
+ * `tool_result` saying "Launching skill: …", then the skill's own text injected
+ * as a `user` message). So a skill's name is prose and may sit anywhere, and
+ * `by === "skill"` is the whole test. `system/init`'s `skills` array is the only
+ * authoritative label of which is which, it arrives with a card's first turn,
+ * and until then `paletteExtras` treats every row as mid-line-eligible — see
+ * its note on why not knowing means offering *more*. */
 
 /** One of a command's fixed values, offered the way the commands are. */
 export type Choice = {
@@ -142,6 +139,27 @@ export type Command = {
    *  and goes to the agent. Incomplete without it, the same way `/model` is:
    *  `/rename` alone names nothing. */
   takesText?: boolean;
+  /** What the agent's own row says it takes — `"<model>"`, `"[interval]
+   *  [prompt]"`, `"branch"`. The CLI's `argumentHint`, absent where there is
+   *  none.
+   *
+   *  Deliberately **not** `takesText`, which is a stronger claim: that one makes
+   *  a command *incomplete* without an argument, so Enter opens a space rather
+   *  than running anything. `/loop` takes an interval and is perfectly runnable
+   *  without one, and a row that could never be sent would be worse than a row
+   *  that sends early. All this decides is whether a completion leaves a space
+   *  to write in, and whether the row shows what goes there. */
+  hint?: string;
+  /** Other names the same thing answers to, as the CLI publishes them: `review`
+   *  for `code-review`, `committee` for `tx-toolkit:committee`, `reset` and
+   *  `new` for `clear`.
+   *
+   *  Matched but never *drawn* as a row of their own, which is the whole of the
+   *  design: an alias is a way to *find* a name, not a second name for the
+   *  palette to list. Listing them would put five rows in front of you for one
+   *  thing, and it is the canonical name that gets sent — so what you pick is
+   *  what the agent sees. */
+  aliases?: string[];
 };
 
 /* The models `--model` takes as aliases, read out of the 2.1.232 binary
@@ -397,135 +415,142 @@ export function completeAt(
   };
 }
 
-/** The skill names out of the opaque column they are stored in.
- *
- *  The bargain every `*_json` column in this app strikes: Rust carries the text
- *  and never reads it, and a normaliser here degrades anything unexpected to
- *  something drawable rather than letting it reach the palette. A row from a
- *  build that stored something else, a truncated write, a null — all of them are
- *  "this card has no skills we know of", which is the ordinary state of a card
- *  that has never taken a turn and costs nothing to be wrong about.
- *
- *  Trimmed and de-duplicated here rather than at the palette, so what is drawn
- *  and what is stored cannot disagree about how many there are. */
-export function skillsFrom(json: string | null | undefined): string[] {
-  if (!json) return [];
-  try {
-    const said: unknown = JSON.parse(json);
-    if (!Array.isArray(said)) return [];
-    return [
-      ...new Set(
-        said
-          .filter((s): s is string => typeof s === "string")
-          .map((s) => s.trim())
-          .filter(Boolean),
-      ),
-    ];
-  } catch {
-    return [];
-  }
-}
 
 /** One markdown file in a `.claude/commands/` directory, as `slash.rs` reports
  *  it. Opaque here beyond these three fields. */
 export type SlashCommand = {
-  /** What is typed after the slash, subdirectories folded to colons. */
+  /** What is typed after the slash. A plugin's skills and a command in a
+   *  subdirectory are both spelled with a colon. */
   name: string;
-  /** Its frontmatter `description:`, where it has one. */
+  /** What it does, in its author's words. Empty where the CLI gave none. */
   description?: string | null;
-  /** `project` for one in the working tree, `user` for one in `~/.claude`. */
-  scope?: string | null;
+  /** What it takes after the name — `"<model>"`, `"[interval] [prompt]"`. Empty
+   *  for one that takes nothing. */
+  argumentHint?: string | null;
+  /** Shorter names for the same thing, as the CLI publishes them. */
+  aliases?: string[] | null;
 };
 
-/** A command the project or the user wrote, as a row the palette can draw.
+/** One name the agent answers to, as a row the palette can draw.
  *
- *  `by: "cli"`, and that is the whole of what it shares with `/compact`: a file
- *  in `.claude/commands/` is expanded by the CLI when a prompt *begins* with its
- *  name, so it is sent verbatim and it is head-only. That is the rule this file
- *  opened with — `/commit` is the project's command and must reach the agent
- *  unread — and the only thing that has changed is that the dock can now help
- *  you find one. Nothing here takes custody of it: `resolveCommand` still
- *  answers for Volery's own and nothing else.
+ *  Everything drawn here is the **CLI's own account of itself**, which is the
+ *  whole point of asking rather than working it out: the description is the
+ *  author's, the hint is what the thing takes, and the provenance the CLI writes
+ *  into the description (`… (project)`, `(tx-toolkit) …`) comes free. An earlier
+ *  version of this function invented a summary from the shape of the name,
+ *  because the only source then in use — `system/init`'s `skills` array —
+ *  carries names and nothing else. See `slash.rs`.
  *
- *  It is the one row in the palette that can say what it does **in its author's
- *  own words**, since a command file may carry a `description:` where the wire
- *  carries nothing at all about a skill. Where it has none, the summary says
- *  where it came from, which is what a skill's row says. */
-export function projectCommand(said: SlashCommand): Command {
+ *  `by` is the one judgement left, and it decides *where in a line the name may
+ *  sit* rather than who runs it — nothing here is intercepted either way.
+ *  `skill` for a name the model invokes out of the prose, `cli` for everything
+ *  else, which the CLI parses at the head of a prompt. Which is which comes from
+ *  `system/init`; `paletteExtras` holds that decision. */
+export function vocabRow(said: SlashCommand, isSkill: boolean): Command {
   const described = (said.description ?? "").trim();
+  const hint = (said.argumentHint ?? "").trim();
   return {
     name: said.name,
-    summary:
-      described ||
-      (said.scope === "user"
-        ? "a command of your own, from ~/.claude"
-        : "a command this project keeps in .claude/commands"),
-    detail:
-      "the project's own command, sent as the prompt it is — the CLI expands the file behind it, which is why it only means anything at the start of a line",
+    /* A name with no description at all is possible and must still read as
+       something: the CLI gives even a frontmatter-less command file a line off
+       its body, so this is the empty-string case rather than the usual one. */
+    summary: described || (isSkill ? "a skill this card has" : "the agent's own command"),
+    detail: isSkill
+      ? `${described || "a skill this card has"} — sent as the prompt it is, and the agent runs the skill itself, so the name can sit anywhere in a sentence`
+      : `${described || "the agent's own command"} — sent as the prompt it is, and the CLI reads it, which is why it only means anything at the start of a line`,
     needsCard: true,
-    by: "cli",
-  };
-}
-
-/** A skill the card has declared, as a row the palette can draw.
- *
- *  Everything here is derived from the name, because the name is all the wire
- *  carries — see the note at the top of this file. The summary says where it
- *  came from, since `tx-toolkit:committee` announces its plugin and a bare
- *  `dataviz` announces that it did not come from one. */
-export function skillCommand(name: string): Command {
-  const at = name.indexOf(":");
-  return {
-    name,
-    summary: at > 0 ? `a skill from ${name.slice(0, at)}` : "a skill this card has",
-    detail:
-      "sent as the prompt it is — the agent reads the name and runs the skill itself, so it can sit anywhere in a sentence and take whatever you say after it",
-    needsCard: true,
-    by: "skill",
+    by: isSkill ? "skill" : "cli",
+    /* Not `takesText`, which would make the row *incomplete* and stop Enter
+       ever sending it. This only says whether a completion leaves a space to
+       write in — see `completionFor`. */
+    hint: hint || undefined,
+    aliases: (said.aliases ?? [])
+      .map((a) => (a ?? "").trim().toLowerCase())
+      .filter((a) => a && a !== said.name),
   };
 }
 
 /** The rows the palette offers beside Volery's own, in the order to show them.
  *
- *  Three vocabularies meet under one slash, and the ordering is *locality*:
- *  `COMMANDS` first because they are this window's, then the project's own
- *  command files, then the card's skills. That is also the order
- *  `system/init`'s `slash_commands` puts them in — project commands lead it,
- *  measured 2026-09-07 — so it is a habit people reading this palette already
- *  have.
+ *  The list arrives whole from `slash.rs` — one `initialize` request, every name
+ *  the agent answers to, in the CLI's own order, which puts a project's own
+ *  commands first and then the skills and then the built-ins. That order is
+ *  kept: it is locality, and it is the order anybody reading this palette has
+ *  already learned from the CLI itself.
  *
- *  Locality settles the collisions too, by keeping the first of any name: a
- *  project that writes its own `/code-review` shadows the skill of that name,
- *  and neither can shadow `/clear`. Two rows under one name would be a palette
- *  whose `{#each}` keys collide, and "what does `/clear` do here" has one
- *  answer.
+ *  `skills` is the *labelling* half and comes from a different place —
+ *  `system/init`, folded per card — because nothing in the `initialize` reply
+ *  says which names are skills, and the palette needs that to know which may sit
+ *  mid-sentence.
  *
- *  Names are lowercased on the way in, since the palette matches in lowercase —
- *  `slash.rs` already does it, and doing it here as well means a row cannot
- *  arrive unreachable from some other caller.
+ *  **Not knowing yet means offering more, not less.** A card that has taken no
+ *  turn has no `skills` array, and the honest fallback is to treat every row as
+ *  mid-line-eligible rather than none: picking a command inside a sentence only
+ *  ever *inserts its text*, since Enter completes rather than runs once there is
+ *  prose around it, so the cost of being wrong that way is a row you did not
+ *  want. The cost the other way is the whole feature missing on a fresh card.
+ *  `skillsKnown` is the flag rather than `skills.length`, because a card whose
+ *  agent genuinely has no skills is a real answer and must narrow the palette
+ *  exactly as a populated one does.
  *
- *  Composed in this file rather than in the dock so the ordering is a decision
- *  with a test on it, like the rest of what is here. */
+ *  Volery's own names win any collision, and the first of any duplicate wins the
+ *  rest: two rows under one name would be a palette whose `{#each}` keys
+ *  collide, and "what does `/clear` do here" has one answer. */
 export function paletteExtras(
-  project: readonly SlashCommand[] = [],
+  vocab: readonly SlashCommand[] = [],
   skills: readonly string[] = [],
+  skillsKnown = false,
 ): Command[] {
+  const isSkill = new Set(skills.map((s) => (s ?? "").trim().toLowerCase()).filter(Boolean));
   const seen = new Set(COMMANDS.map((c) => c.name));
   const out: Command[] = [];
-  const take = (cmd: Command) => {
-    if (!cmd.name || seen.has(cmd.name)) return;
-    seen.add(cmd.name);
-    out.push(cmd);
-  };
-  for (const one of project) {
+  for (const one of vocab) {
     const name = (one?.name ?? "").trim().toLowerCase();
-    if (name) take(projectCommand({ ...one, name }));
-  }
-  for (const said of skills) {
-    const name = (said ?? "").trim().toLowerCase();
-    if (name) take(skillCommand(name));
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(vocabRow({ ...one, name }, skillsKnown ? isSkill.has(name) : true));
   }
   return out;
+}
+
+/** May Enter *run* this lit row, given what has actually been typed?
+ *
+ *  The rule exists because the palette stopped being nine names this window
+ *  owns, and the two things it has to hold at once pull opposite ways.
+ *
+ *  `/cle` + Enter clears, as it does in the CLI. That is a shorthand worth
+ *  having and it is documented behaviour here.
+ *
+ *  `/commit` + Enter must send `/commit`. It is the project's own command and
+ *  the rule at the top of this file says it reaches the agent unread — and it
+ *  very nearly stopped doing so, because `committee` is the alias the CLI
+ *  publishes for `tx-toolkit:committee` and `"committee".startsWith("commit")`.
+ *  Enter would have run a skill nobody named.
+ *
+ *  Prefix-versus-containing does not separate those: both are prefix hits. What
+ *  separates them is **whose catalogue the row is from**. `COMMANDS` is nine
+ *  names, closed, this window's, and known to whoever is typing — a prefix there
+ *  is an abbreviation. The agent's vocabulary is dozens of names, open, and
+ *  different in every directory, so a prefix there can silently be a *different
+ *  command from the one you typed in full*, which is exactly what the standing
+ *  rule forbids. So: abbreviation for ours, exactness for theirs.
+ *
+ *  Nothing is narrowed and nothing hidden either way — the row is drawn, Tab
+ *  takes it, the arrows reach it. All this decides is which key claims it, and
+ *  when Enter declines, the draft goes to the agent as the words it is.
+ *
+ *  An empty name is a browse — `/` alone lights the first row on purpose — so it
+ *  may run anything. */
+export function mayRunOn(cmd: Command, typed: string): boolean {
+  const name = typed.trim().toLowerCase();
+  if (!name) return true;
+  /* Asked of the catalogue rather than of `by`: `/compact` and `/model` are the
+     CLI's to carry out but they are *this file's* to offer, so `/comp` is an
+     abbreviation like any other. What matters is whether this window chose the
+     name, not who runs it. */
+  const ours = COMMANDS.some((c) => c.name === cmd.name);
+  if (ours) return cmd.name.startsWith(name);
+  return [cmd.name, ...(cmd.aliases ?? [])].includes(name);
 }
 
 /** What the palette should offer for this draft, in the order to show it.
@@ -557,14 +582,22 @@ export function matchCommands(
       : extra.filter((c) => c.by === "skill");
   const name = span.name;
   if (!name) return pool;
-  const starts = pool.filter((c) => c.name.startsWith(name));
-  /* Prefix first, then anything merely containing it, so `/ear` still finds
-     `clear` without letting it outrank a real prefix match — and so that
-     `/committee` finds `tx-toolkit:committee`, whose plugin half nobody types. */
-  const rest = pool.filter(
-    (c) => !c.name.startsWith(name) && c.name.includes(name),
-  );
-  return [...starts, ...rest];
+  /* Three bands, best first, and a row appears in exactly one of them.
+     `leads` is a prefix of the name or of one of its aliases — the case you
+     meant, so `/rev` puts `code-review` at the top through `review`, and
+     `/committee` finds `tx-toolkit:committee` through the alias the CLI
+     publishes for exactly that. `holds` is anything merely containing it, which
+     is what keeps `/ear` finding `clear`.
+     An alias is a way to *find* a name and never a row of its own: what is
+     drawn and what is sent is the canonical name, so what you pick is what the
+     agent sees. */
+  const names = (c: Command) => [c.name, ...(c.aliases ?? [])];
+  const leads = (c: Command) => names(c).some((n) => n.startsWith(name));
+  const holds = (c: Command) => names(c).some((n) => n.includes(name));
+  return [
+    ...pool.filter(leads),
+    ...pool.filter((c) => !leads(c) && holds(c)),
+  ];
 }
 
 /** The named command, exactly.
@@ -717,16 +750,20 @@ export function cliCommand(text: string): Command | null {
  *  takes prose gets it for the same reason, with the cursor where the writing
  *  starts instead of against the name.
  *
- *  A skill gets the space on a third argument, and it is the one this file grew
- *  last. It is not `takesText` — that would make it `stillWriting` with nothing
- *  after it, and Enter on `/dataviz` would then never send anything — but a
- *  skill does take whatever you care to say after its name, and it is the one
- *  row that can be completed in the *middle* of a sentence, where landing the
- *  caret hard against the name would mean deleting nothing and typing a space
- *  before you could carry on. The space also closes the palette, which is what
- *  a completed word should do. */
+ *  A row from the agent's own vocabulary gets the space when it says it takes
+ *  something — `hint`, which is the CLI's `argumentHint`. It is not `takesText`:
+ *  that would make it `stillWriting` with nothing after it, and Enter on
+ *  `/dataviz` would never send anything. The space is also what closes the
+ *  palette, which is what a completed word should do, and it is what lets a
+ *  completion land in the *middle* of a sentence without the caret ending up
+ *  hard against the name.
+ *
+ *  A skill gets it either way, hint or no hint: a skill takes whatever you care
+ *  to say after it whether or not the CLI thought to describe that, and it is
+ *  the one kind of row that can be completed mid-sentence, where the space is
+ *  the difference between carrying on and reaching for the spacebar first. */
 export function completionFor(cmd: Command): string {
-  return cmd.choices || cmd.takesText || cmd.by === "skill"
+  return cmd.choices || cmd.takesText || cmd.hint || cmd.by === "skill"
     ? `/${cmd.name} `
     : `/${cmd.name}`;
 }
