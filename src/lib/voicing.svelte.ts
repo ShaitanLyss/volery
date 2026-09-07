@@ -43,6 +43,7 @@ import type { ControlHost } from "./control.svelte";
 import {
   carry,
   hear,
+  spoke,
   territoriesIn,
   type Hands,
   type Outcome,
@@ -67,8 +68,46 @@ export type Heard =
   | { kind: "confirm"; plan: Plan }
   | { kind: "carried"; plan: Plan; outcome: Outcome };
 
+/** One utterance as `src-tauri/src/voice.rs` hands it over.
+ *
+ *  Named apart from `Heard` above, which is what *became* of an utterance. The
+ *  two are one word in English and two different things here, and conflating
+ *  them is how a transcript ends up where a plan was wanted. */
+export type Transcript = {
+  text: string;
+  confidence: "high" | "medium" | "low" | "rejected";
+  language: string;
+  ms: number;
+};
+
 export class Voicing {
   #host: ControlHost;
+
+  /* ── what the wall is doing about your voice ──────────────────────────────
+   *
+   * Four fields rather than one status enum, because they are not exclusive:
+   * a plan can be waiting for a yes *and* the transcript that produced it still
+   * worth reading, and the bar that draws them wants both at once.
+   *
+   * **The one thing this must never be is quiet.** A voice layer that mishears
+   * and then does nothing is indistinguishable from one that did not hear you,
+   * and the second is the failure people give up over — so `said` holds the
+   * transcript whatever came of it, and `says` holds the reason when nothing
+   * did. Neither clears on a timer: nothing here schedules anything, and the
+   * next utterance or an Escape is what moves it on.
+   */
+
+  /** A recognition is open. Also the guard against starting a second one — the
+   *  recogniser owns the microphone for the duration and two would fight. */
+  listening = $state(false);
+  /** The last transcript, kept even when nothing came of it. */
+  said = $state("");
+  /** A plan understood but not carried out, because at least one step is not
+   *  something you may do to the wall without being asked. */
+  pending = $state<Plan | null>(null);
+  /** What the wall says back, or `""` when it worked — see `spoke()`, which
+   *  argues that success saying nothing is a decision rather than an omission. */
+  says = $state("");
 
   /** One project's file list per root, fetched once and kept.
    *
@@ -203,5 +242,73 @@ export class Voicing {
     if (!plan) return { kind: "escalate", said: utterance };
     if (plan.needs === "confirmation" && !confirmed) return { kind: "confirm", plan };
     return { kind: "carried", plan, outcome: await carry(plan, this.hands()) };
+  }
+
+  /* ── the whole gesture, from a key to the wall moving ─────────────────────── */
+
+  /** Listen for one utterance, understand it, and do what may simply be done.
+   *
+   *  **Press to talk, not hold to talk**, and the difference is the recogniser's
+   *  rather than a shortcut. `RecognizeAsync` is one-shot: it opens the
+   *  microphone and ends on its own end-of-speech silence, and there is no "stop
+   *  now and give me what you have". So the key press starts it and the release
+   *  has nothing to do — pretending otherwise would be a binding that ignores
+   *  half of itself. True hold-to-release wants
+   *  `SpeechContinuousRecognitionSession`, which is also what the always-on mode
+   *  needs, so the two arrive together or not at all.
+   *
+   *  Never throws. Every way this can fail ends up in `says`, because the caller
+   *  is a keystroke and a keystroke has nowhere to put an exception. */
+  async listen(): Promise<void> {
+    if (this.listening) return;
+    this.listening = true;
+    this.said = "";
+    this.says = "";
+    this.pending = null;
+    try {
+      const heard = await invoke<Transcript>("voice_listen", {});
+      this.said = heard.text;
+      const what = await this.say(heard.text);
+      if (what.kind === "confirm") this.pending = what.plan;
+      else if (what.kind === "escalate") {
+        /* The grammar could not account for the whole sentence, and the rung
+           underneath it does not exist yet. Said plainly rather than as a
+           failure: the words were heard, and what is missing is a feature. */
+        this.says = "not understood — only the eight instant verbs are wired so far";
+      } else this.says = spoke(what.outcome);
+    } catch (err) {
+      /* Where the privacy-policy message arrives, and every other thing the
+         recogniser refuses for. `voice.rs::explain` has already turned it into
+         a sentence naming what to change. */
+      this.says = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.listening = false;
+    }
+  }
+
+  /** Carry out the plan that was waiting for a yes.
+   *
+   *  Carries the plan that was *already understood* rather than parsing the
+   *  words again — the wall may have moved since, and re-reading the sentence
+   *  against a changed wall could produce a different plan from the one you were
+   *  shown and agreed to. A card that has gone in the meantime comes back
+   *  through `carry` as `stopped`, naming the step. */
+  async confirm(): Promise<void> {
+    const plan = this.pending;
+    if (!plan) return;
+    this.pending = null;
+    this.says = spoke(await carry(plan, this.hands()));
+  }
+
+  /** Let go of what was heard, and of anything waiting on a yes. */
+  dismiss(): void {
+    this.pending = null;
+    this.said = "";
+    this.says = "";
+  }
+
+  /** Is there anything to draw? */
+  get showing(): boolean {
+    return this.listening || !!this.pending || !!this.said || !!this.says;
   }
 }

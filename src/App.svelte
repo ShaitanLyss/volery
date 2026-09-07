@@ -64,6 +64,7 @@
   import { Actions, conflictBadge, conflictPrompt, NO_STATUS } from "./lib/actions.svelte";
   import { Control, type ControlHost } from "./lib/control.svelte";
   import { Voicing } from "./lib/voicing.svelte";
+  import Hearing from "./lib/Hearing.svelte";
   import { ink } from "./lib/theme.svelte";
   import Canvas from "./lib/Canvas.svelte";
   import Dock from "./lib/Dock.svelte";
@@ -2159,6 +2160,26 @@
       return;
     }
 
+    /* A plan waiting for a yes owns Enter and Escape, and it is this high for
+       the same reason Alt+I is: it has to beat what those keys mean everywhere
+       else. Escape stops a turn further down this ladder and Enter belongs to
+       the draft, and neither is what you meant while the wall is asking whether
+       to carry out something you said out loud. Only these two keys, and only
+       while something is actually pending — so the branch is invisible the rest
+       of the time. */
+    if (voicing.pending && !isTyping(e.target)) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        await voicing.confirm();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        voicing.dismiss();
+        return;
+      }
+    }
+
     /* An open shell owns the keyboard. Every branch below is aimed at the wall
        or at the reading, and the two that reach past a field regardless —
        ctrl+arrow's scroll and ctrl+0's reading size — would otherwise fire
@@ -2348,8 +2369,37 @@
       for (const id of studio.pickedOf("image")) void board.remove(id);
       for (const id of studio.pickedOf("widget")) void widgets.remove(id);
     } else if (
+      /* **Press to talk.** The one single-letter shortcut on this wall, and it
+         is worth being explicit about what it costs, because the branch
+         immediately below says there are none: a bare printable key with a card
+         in hand goes into that card's draft, so taking `v` means you can no
+         longer *start* a draft with the letter v by typing at the wall. Asked
+         for as a bare key rather than Alt+V, on the grounds that a gesture you
+         make dozens of times a day should not want two hands — and the trade is
+         one letter out of twenty-six, only ever as a draft's first character,
+         with the field a click or a Tab away when you want it.
+
+         Above the draft branch rather than beside it, so it holds whether or
+         not a card is in hand. Gating it on an empty selection would have made
+         one key mean two things depending on what was picked, which is worse
+         than losing a letter.
+
+         Press, not hold: `RecognizeAsync` is one-shot and ends on its own
+         end-of-speech silence, so the release has nothing to do. See
+         `Voicing.listen`. */
+      (e.key === "v" || e.key === "V") &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !menu &&
+      !isTyping(e.target)
+    ) {
+      e.preventDefault();
+      await voicing.listen();
+    } else if (
       /* Start typing with a card in hand and the words go to it. The wall has
-         no single-letter shortcuts, so a printable key means only one thing —
+         no single-letter shortcuts *except* the one above, so a printable key
+         means only one thing —
          and reaching for the mouse to click a field you were already looking at
          is the sort of small tax that adds up across a day. */
       e.key.length === 1 &&
@@ -2484,7 +2534,12 @@
   };
 
   /* The control surface, off unless SKEIN_CONTROL asked for it. */
-  const control = new Control(hands, new Voicing(hands));
+  /* The one voice seam. Named rather than inlined into `new Control(...)`
+     because two things need it now: the control surface's `voice.*` ops, which
+     drive the whole path with text where the microphone will be, and the bar
+     that draws what was heard. */
+  const voicing = new Voicing(hands);
+  const control = new Control(hands, voicing);
 
   /* ── The header at narrow widths ──────────────────────────────────────────
      This bar is the title bar, and it used to be a flex row with no floor: it
@@ -3171,6 +3226,8 @@
          show. -->
     <Dogears {finder} />
   </main>
+
+  <Hearing {voicing} />
 
   <Dock
     {field}
