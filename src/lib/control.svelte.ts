@@ -2144,8 +2144,25 @@ export class Control {
           const uri = String(op.uri ?? "");
           if (!uri) throw new Error("spotify play needs a uri");
           await deck.play(uri);
+        } else if (verb === "search") {
+          const q = String(op.query ?? "");
+          if (!q) throw new Error("spotify search needs a query");
+          await deck.search(q);
+          return {
+            searching: deck.searching,
+            searchFault: deck.searchFault,
+            hits: deck.hits.map((h) => ({
+              kind: h.kind,
+              uri: h.uri,
+              title: h.title,
+              by: h.by,
+              extra: h.extra,
+            })),
+          };
         } else if (verb !== "status") {
-          throw new Error(`no such spotify verb: ${verb} — status, start, stop, play`);
+          throw new Error(
+            `no such spotify verb: ${verb} — status, start, stop, play, search`,
+          );
         }
         await deck.refresh();
         const s = deck.state;

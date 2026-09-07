@@ -736,6 +736,89 @@ Two things about it are load-bearing:
 Silence is left as silence. A clean exit complains about nothing, and inventing a likely cause
 there would be a guess wearing the clothes of a report.
 
+## Search does not need the Web API either, and the claim that it did was wrong
+
+Sink `ce8a3ddb`: `records` answered *"spotify is rate-limiting this wall"* on the **first**
+search of a session, and again 75 seconds later. That is not a request rate. `/v1/search` is
+reached with a token minted through librespot's OAuth — i.e. through Spotify's own first-party
+`CLIENT_ID` — and Spotify buckets that endpoint per client id, so the quota belongs to every
+librespot, ncspot and Spotifyd installation on earth. A wall cannot drain it by waiting
+politely, and a first-call 429 is the steady state rather than an anomaly.
+
+**The fix was not a better retry. It was that the other door existed all along.** This file
+said, in its own module header and in the section above:
+
+> `SpClient` has `get_metadata`, `get_context`, `get_playlist` and `get_radio_for_track` and
+> **no catalogue search of any kind**, so there is nothing to reach for locally.
+
+`SpClient::get_context`'s doc comment, in librespot 0.8.0, lists its supported uris and the
+third one is:
+
+```text
+/// - search: `spotify:search:<search+query>` (whitespaces are replaced with `+`)
+```
+
+`/context-resolve/v1/spotify:search:crying+fire`, on the **spclient** host, over the channel
+the session already holds, with librespot's client token — the request the desktop client makes
+when you type in its search box. It needs no registration, no second credential and nothing
+from the user. The claim above had survived a full rewrite of this page because nobody re-read
+a doc comment two hundred lines down a file they were already editing. **"The library does not
+expose it" is a claim about where you looked.**
+
+### It answers *which* tracks and nothing about them, which is the whole reason there are two legs
+
+Probed 2026-09-08 against a live session. `spotify:search:crying+fire` returned **20 rows**
+while `/v1/search` was answering 429 on the same wall in the same minute — and every row's
+`ContextTrack.metadata` map came back **empty**. The logged key set for the first row was the
+empty string. So the endpoint is a ranked list of opaque ids, which on its own is exactly
+enough to be useless: nobody can choose from twenty base-62 strings.
+
+`librespot_metadata::Track::get` is the second leg, over the same spclient channel, and carries
+`name`, `album.name`, `artists[].name`, `duration` and `is_explicit`. `search_tracks` spawns
+one per row it intends to keep and then **awaits them in order**, which is what preserves
+Spotify's own relevance ranking — the entire value of a search — while costing one round trip
+instead of eight. `tauri::async_runtime::spawn` rather than a `JoinSet`, because this crate's
+`tokio` carries `time`, `net` and `io-util` and no `rt`.
+
+Measured end to end through the control surface, three queries: **648-807 ms** including the
+`ctl.ts` process start, eight hits each, correct leader every time (`bonobo black sands` ->
+Bonobo, *Black Sands*; `radiohead weird fishes` -> Radiohead, *Weird Fishes / Arpeggi*).
+
+The rows keep their metadata map rather than being flattened into a struct, and that is
+deliberate: if Spotify ever starts populating it, `search_tracks` sees a non-empty map, returns
+early and the second leg simply stops being reached. The keys `selector.rs` reads have several
+spellings each for the same reason — they are undocumented, so `resolve_context` logs the set
+it actually received at `debug` and the day this stops producing titles the reason is already
+in the log.
+
+### What it costs, and why the Web API is kept rather than deleted
+
+Two real narrowings, both stated at `resolve_context` rather than discovered later:
+
+- **It needs a live session**, where the Web API needed only a token. `records`' description has
+  always promised that a search works with the player stopped, so `search_catalogue` keeps that
+  promise by falling back. The widget pays nothing — its magnifier is only drawn when there is a
+  session at all, which the section above already argued for on other grounds.
+- **It answers tracks.** A context is a thing with tracks in it, so there are no album, playlist
+  or artist buckets. Observed while probing: `kind of blue` over the context door leads with
+  *Take Five*, because it is ranking tracks and the thing being named is a record. So the door
+  is chosen on the caller's own `types` — no `track` among them means the context door **cannot**
+  answer the question asked and is skipped entirely, rather than answering an album query with
+  eight songs.
+
+`search_catalogue` is the one place that decides, so the two doors cannot drift apart, and both
+produce `Hit` — nothing downstream learns there are two paths. When the context door fails the
+error reported is the **fallback's**, since that describes the request actually refused;
+reporting "the player is not running" to somebody whose real problem is a 429 would be worse
+than either message alone.
+
+### What this leaves unresolved
+
+The fourth unproven leg above — whether the borrowed client id is *accepted* by
+`api.spotify.com/v1/search` — is **still unproven**, and now harder to reach: the 429 arrives
+before any 403 could. It no longer blocks anything, which is the point of having a door that
+does not depend on the answer.
+
 ## A card may choose what plays, and deliberately cannot drive it
 
 The user asked for this in one line — *"add mcp tools for agents to control the volery

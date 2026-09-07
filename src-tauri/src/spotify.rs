@@ -291,6 +291,13 @@ struct Live {
     spirc: Spirc,
     mixer: Arc<dyn Mixer>,
     device: String,
+    /// Kept so the catalogue can be searched over the channel librespot already
+    /// holds open, rather than over `api.spotify.com`. See `resolve_context`.
+    ///
+    /// A handle, not a copy — `Session` is an `Arc` inside — and it is the same
+    /// session `Spirc` is driving, deliberately: a second session would be a
+    /// second authentication and a second device in somebody's Connect list.
+    session: Session,
 }
 
 #[derive(Default)]
@@ -680,6 +687,10 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
        been moved. `Session` is an `Arc` inside, so this is a handle rather than
        a copy of anything. */
     let ended_session = session.clone();
+    /* A second handle, for `Live`, so `resolve_context` can search the
+       catalogue over this same session. Cloned here for the same reason as
+       the one above: `Spirc::new` takes the original. */
+    let live_session = session.clone();
 
     /* Bounded, because librespot bounds none of this and its own worst case is
        four minutes of silence. */
@@ -753,6 +764,7 @@ async fn start_inner(app: &AppHandle, name: Option<String>) -> Result<(), String
             spirc,
             mixer,
             device: device.clone(),
+            session: live_session,
         });
         emit(app, &state, Wire::Session { device });
     }
@@ -822,6 +834,219 @@ fn describe_end(session: &Session) -> String {
 /// Silence is a real answer and is left as one. A clean exit complains about
 /// nothing, and inventing a likely cause here would be a guess wearing the
 /// clothes of a report.
+/// One row out of a resolved context: a uri and whatever Spotify said about it.
+///
+/// Plain `std` types on purpose. The obvious thing is to hand `selector.rs` the
+/// `Context` protobuf and let it read the fields, and that would put a
+/// `librespot-protocol` type in a file whose pure half is asserted by
+/// `tools/lift-selector.ts` — which links `serde_json` and nothing else, and is
+/// the only gate that still works when the dependency graph is the thing that is
+/// broken. The flattening is four lines; keeping that property is worth them.
+pub(crate) type ContextRow = (String, std::collections::HashMap<String, String>);
+
+/// Search the catalogue over the session librespot already holds open.
+///
+/// ### Why this exists, and why it is not the Web API
+///
+/// `records` and `spotify_search` go to `GET api.spotify.com/v1/search` with a
+/// token minted through librespot's OAuth, i.e. through Spotify's **own
+/// first-party client id** (`CLIENT_ID`, and see the rule for why that id is the
+/// mechanism rather than an accident). Spotify buckets that endpoint's rate
+/// limit *per client id*, and that id is presented by every librespot, ncspot
+/// and Spotifyd installation in the world — so the quota is a global one this
+/// wall neither owns nor can drain by waiting. Observed 2026-09-07: **429 on the
+/// first search of a session, and again 75 seconds later.** Sink `ce8a3ddb`.
+///
+/// `SpClient::get_context` is a different door. `/context-resolve/v1/{uri}` on
+/// the **spclient** host, over the authenticated channel the session already
+/// has, with librespot's client token — the same request the desktop client
+/// makes when you type in its search box. It documents `spotify:search:<q>` as a
+/// supported uri in as many words, with `+` for spaces.
+///
+/// ### What it costs, stated plainly
+///
+/// **It needs a live session, where the Web API only needed a token.** That is a
+/// real narrowing and it is why this is a *preference* rather than a
+/// replacement: `records`' description has always promised a search works with
+/// the player stopped, and `search_catalogue` keeps that promise by falling back.
+/// The widget pays nothing either way — its magnifier is only drawn when there
+/// is a session at all.
+///
+/// **It answers tracks.** A context is a thing with tracks in it, so there are
+/// no album, playlist or artist buckets the way `/v1/search` has them. For "find
+/// me this song so I can put it on", which is what both doors are for, that is
+/// the whole of what is wanted; for the rest the Web API is still there.
+pub(crate) async fn resolve_context(app: &AppHandle, uri: &str) -> Result<Vec<ContextRow>, String> {
+    /* Cloned out from under the lock, because what follows is a network round
+       trip and holding `live` across it would park every other command that
+       wants the session — the `off_main` lesson, one layer in. */
+    let session = {
+        let state = app.state::<Spotify>();
+        let held = state.live.lock().map_err(|_| "the session lock is poisoned")?;
+        held.as_ref().map(|l| l.session.clone())
+    };
+    let Some(session) = session else {
+        return Err("the player is not running, so there is no session to search over".into());
+    };
+
+    let ctx = tokio::time::timeout(SEARCH_BUDGET, session.spclient().get_context(uri))
+        .await
+        .map_err(|_| {
+            with_complaint(&format!(
+                "spotify did not answer the search within {}s",
+                SEARCH_BUDGET.as_secs()
+            ))
+        })?
+        .map_err(|e| with_complaint(&format!("spotify would not resolve that search: {e}")))?;
+
+    let rows: Vec<ContextRow> = ctx
+        .pages
+        .iter()
+        .flat_map(|p| p.tracks.iter())
+        .map(|t| (t.uri().to_string(), t.metadata.clone()))
+        .collect();
+
+    /* The metadata keys are undocumented and are Spotify's to change, so the set
+       actually received is logged once per search at `debug`. That is the same
+       argument `applog`'s ring makes from the other side: the day this stops
+       producing titles, the reason should already be in the log rather than
+       needing a probe to rediscover. */
+    if let Some((_, meta)) = rows.first() {
+        let mut keys: Vec<&str> = meta.keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        log::debug!(
+            target: "volery::selector",
+            "context {uri:?} gave {} rows; first row's metadata keys: {}",
+            rows.len(),
+            keys.join(", ")
+        );
+    } else {
+        log::debug!(target: "volery::selector", "context {uri:?} gave no rows");
+    }
+
+    Ok(rows)
+}
+
+/// Search the catalogue, and fill in what the search itself does not say.
+///
+/// ### The measurement this is shaped by
+///
+/// `context-resolve` **works** — probed 2026-09-08 against a live session,
+/// `spotify:search:crying+fire` answered **20 rows** where `/v1/search` was
+/// answering 429 on the same wall in the same minute. But every row's
+/// `metadata` map came back **empty**: the logged key set for the first row was
+/// the empty string. So the endpoint answers *which* tracks and says nothing
+/// about them, which is exactly enough to be useless on its own — a list of
+/// twenty opaque ids is not something anybody can choose from.
+///
+/// That is why this is two legs rather than one, and why the row shape kept its
+/// metadata map: `librespot_metadata::Track` fetches over the *same* spclient
+/// channel and carries `name`, `album.name`, `artists[].name`, `duration` and
+/// `is_explicit`. The keys written here are the ones `selector.rs`'s
+/// `TITLE_KEYS` and friends already read, so if Spotify ever starts populating
+/// the map itself the first leg simply begins answering and this one stops
+/// being reached.
+///
+/// ### Why the second leg is spawned rather than looped
+///
+/// One `Track::get` is one round trip, and a sequential loop over eight of them
+/// is eight of them end to end while somebody watches a text field. They are
+/// spawned and then **awaited in order**, which is what keeps Spotify's own
+/// relevance ranking — the whole value of a search — while paying for one round
+/// trip instead of eight. `tauri::async_runtime::spawn` rather than a `JoinSet`
+/// because this crate's `tokio` has `time`, `net` and `io-util` and no `rt`;
+/// Tauri's own handle is the runtime that exists here.
+///
+/// Bounded by `limit` before any of it is spawned, so a search never costs more
+/// round trips than rows the caller asked for. A row that fails to hydrate is
+/// dropped rather than drawn blank, and says so in the log.
+pub(crate) async fn search_tracks(
+    app: &AppHandle,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ContextRow>, String> {
+    use librespot_metadata::{Metadata, Track};
+
+    let rows = resolve_context(app, &crate::selector::search_context_uri(query)).await?;
+
+    /* If Spotify ever fills the map in, believe it and spend nothing. */
+    if rows.iter().any(|(_, m)| !m.is_empty()) {
+        return Ok(rows);
+    }
+
+    let session = {
+        let state = app.state::<Spotify>();
+        let held = state.live.lock().map_err(|_| "the session lock is poisoned")?;
+        held.as_ref().map(|l| l.session.clone())
+    };
+    let Some(session) = session else {
+        return Err("the session went away mid-search".into());
+    };
+
+    let wanted: Vec<String> = rows
+        .iter()
+        .map(|(uri, _)| uri.clone())
+        .filter(|uri| uri.starts_with("spotify:track:"))
+        .take(limit)
+        .collect();
+
+    let mut handles = Vec::with_capacity(wanted.len());
+    for uri in wanted {
+        let session = session.clone();
+        handles.push(tauri::async_runtime::spawn(async move {
+            let id = librespot_core::SpotifyUri::from_uri(&uri).ok()?;
+            let track = tokio::time::timeout(SEARCH_BUDGET, Track::get(&session, &id))
+                .await
+                .ok()?
+                .ok()?;
+            let mut meta = std::collections::HashMap::new();
+            meta.insert("title".to_string(), track.name.clone());
+            let by = track
+                .artists
+                .iter()
+                .map(|a| a.name.as_str())
+                .filter(|n| !n.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !by.is_empty() {
+                meta.insert("artist_name".to_string(), by);
+            }
+            if !track.album.name.is_empty() {
+                meta.insert("album_title".to_string(), track.album.name.clone());
+            }
+            if track.duration > 0 {
+                meta.insert("duration".to_string(), track.duration.to_string());
+            }
+            Some((uri, meta))
+        }));
+    }
+
+    let asked = handles.len();
+    let mut out = Vec::with_capacity(asked);
+    for h in handles {
+        if let Ok(Some(row)) = h.await {
+            out.push(row);
+        }
+    }
+    if out.len() < asked {
+        log::info!(
+            target: "volery::selector",
+            "{} of {asked} search rows had no readable metadata and were dropped",
+            asked - out.len()
+        );
+    }
+    Ok(out)
+}
+
+/// How long a catalogue search gets before it is called a failure.
+///
+/// Brisk where `CONNECT_BUDGET` is generous, because a search is a thing
+/// somebody is *waiting on* with a text field open — the session is already
+/// authenticated and the round trip is one request, so a slow answer here is a
+/// failure rather than a long connect. Comfortably inside `FAULT_WINDOW`, so a
+/// complaint logged during the attempt is still attached to its own failure.
+const SEARCH_BUDGET: Duration = Duration::from_secs(10);
+
 fn with_complaint(base: &str) -> String {
     match crate::applog::last_complaint("librespot", FAULT_WINDOW) {
         Some(why) => format!("{base}. librespot said: {why}"),

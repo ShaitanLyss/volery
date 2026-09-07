@@ -20,11 +20,22 @@
 //! app already holds — no second network round trip, no device-id juggling, and
 //! no dependency on the account being Premium *for the load itself*.
 //!
-//! **Search is the other way round.** `SpClient` has `get_metadata`,
-//! `get_context`, `get_playlist` and `get_radio_for_track` and no catalogue
-//! search of any kind, so there is nothing to reach for locally: `records` is a
-//! real `GET /v1/search` against `api.spotify.com`. That is the whole reason
-//! this file has an HTTP path at all.
+//! **Search was believed to be the other way round, and it is not.** This said
+//! `SpClient` had "no catalogue search of any kind, so there is nothing to reach
+//! for locally". That was wrong, and it mattered: the Web API search it sent us
+//! to shares its rate limit with every librespot install on earth and answers
+//! 429 on a first call (sink `ce8a3ddb`), so the one door named here was the one
+//! door that does not work. `SpClient::get_context` documents
+//! `spotify:search:<query>` as a supported uri — a search over the session
+//! librespot already holds, which `spotify.rs::resolve_context` now uses and
+//! `search_catalogue` prefers.
+//!
+//! The HTTP path stays, as the fallback and not the spine: it is the only door
+//! that needs no live session, and the only one that can answer about albums,
+//! playlists and artists rather than tracks alone. The lesson is the ordinary
+//! one — **"the library does not expose it" is a claim about where you looked**,
+//! and this one survived a rewrite of the rule beside it because nobody re-read
+//! the doc comment two hundred lines further down the same file.
 //!
 //! ## The one judgement call, stated where it can be found
 //!
@@ -277,6 +288,94 @@ pub(crate) struct Hit {
     /// The one extra fact worth a token: an album's year, a track's duration, a
     /// playlist's length.
     pub extra: String,
+}
+
+/// The metadata keys a resolved context row is read through, most-preferred
+/// first.
+///
+/// **Several spellings each, and that is not defensiveness for its own sake.**
+/// These keys are undocumented — `ContextTrack.metadata` is a bare
+/// `map<string, string>` in the proto, and the names are whatever Spotify's own
+/// client happens to send. So the honest options are to hard-code one guess and
+/// break silently when it changes, or to read a small ordered set and say in the
+/// log which one answered. `spotify.rs::resolve_context` logs the keys it
+/// actually received at `debug` for exactly this reason.
+///
+/// A missing title is the one that matters: a row with no title is a row nobody
+/// can choose, so `hits_from_context` drops it rather than drawing a blank line.
+const TITLE_KEYS: &[&str] = &["title", "name", "track_name"];
+const ARTIST_KEYS: &[&str] = &["artist_name", "artist", "artists", "album_artist_name"];
+const ALBUM_KEYS: &[&str] = &["album_title", "album_name", "album"];
+const DURATION_KEYS: &[&str] = &["duration", "duration_ms"];
+
+fn meta_at(meta: &std::collections::HashMap<String, String>, keys: &[&str]) -> String {
+    for k in keys {
+        if let Some(v) = meta.get(*k) {
+            let v = v.trim();
+            if !v.is_empty() {
+                return v.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Turn resolved context rows into the same `Hit`s a Web API search produces.
+///
+/// One vocabulary for two doors, which is the point: the widget and `records`
+/// both render `Hit`, so a search that came from `context-resolve` and a search
+/// that came from `/v1/search` are indistinguishable downstream. Nothing in the
+/// front end learns that there are two paths.
+///
+/// Only tracks come out, because a context is a thing with tracks in it — see
+/// `resolve_context`, which states that cost rather than hiding it.
+pub(crate) fn hits_from_context(rows: &[crate::spotify::ContextRow], limit: usize) -> Vec<Hit> {
+    let mut out = Vec::new();
+    for (uri, meta) in rows {
+        /* A local file has a `spotify:local:` uri that no load will take, and
+           the search results of an account with local files include them. */
+        if uri.is_empty() || !uri.starts_with("spotify:track:") {
+            continue;
+        }
+        let title = meta_at(meta, TITLE_KEYS);
+        if title.is_empty() {
+            continue; /* nothing anybody could choose from */
+        }
+
+        let album = meta_at(meta, ALBUM_KEYS);
+        let ms = meta_at(meta, DURATION_KEYS).parse::<u64>().unwrap_or(0);
+        let mut extra = album;
+        if ms > 0 {
+            if !extra.is_empty() {
+                extra.push_str(" · ");
+            }
+            extra.push_str(&fmt_ms(ms));
+        }
+
+        out.push(Hit {
+            kind: "track".into(),
+            uri: uri.clone(),
+            title,
+            by: meta_at(meta, ARTIST_KEYS),
+            extra,
+        });
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// `spotify:search:<query>`, in the spelling `get_context` documents.
+///
+/// `+` for spaces is librespot's own stated requirement, not a guess. Everything
+/// else is left alone: this is a uri path segment rather than a query string, and
+/// percent-encoding it defeats the endpoint.
+pub(crate) fn search_context_uri(query: &str) -> String {
+    format!(
+        "spotify:search:{}",
+        query.trim().split_whitespace().collect::<Vec<_>>().join("+")
+    )
 }
 
 fn str_at(v: &Value, key: &str) -> String {
@@ -541,6 +640,7 @@ pub(crate) fn refuse_while_playing(playing: bool, now: Option<&str>) -> Option<S
 /// the thread that paints every card on the wall. See CLAUDE.md.
 #[tauri::command]
 pub async fn spotify_search(
+    app: AppHandle,
     query: String,
     types: Option<String>,
     limit: Option<usize>,
@@ -552,12 +652,77 @@ pub async fn spotify_search(
     let types = clean_types(types.as_deref());
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    crate::off_main(move || {
-        let token = crate::spotify::access_token()?;
-        let body = fetch_search(&token, &search_url(&query, &types, limit))?;
-        Ok(parse_hits(&body))
-    })
-    .await?
+    crate::off_main(move || search_catalogue(Some(&app), &query, &types, limit)).await?
+}
+
+/// One search, over whichever door can actually answer.
+///
+/// **Order matters and it is the whole of this change.** `context-resolve` over
+/// the live session is tried first because it is the one that works: the Web
+/// API's `/v1/search` shares its rate limit with every librespot install on
+/// earth and answers 429 on a first call (sink `ce8a3ddb`). The Web API is kept
+/// as the fallback rather than deleted, because it is the only door that needs
+/// no session and the only one that can answer about albums, playlists and
+/// artists.
+///
+/// **A refusal from the good door is not a reason to stop.** If there is no
+/// session, or the context resolve fails, this falls through — and if the
+/// fallback then fails too, the error reported is the **fallback's**, since that
+/// is the one describing the request that was actually refused. What would be
+/// wrong is reporting "the player is not running" to somebody whose real problem
+/// is a 429, or vice versa; so the context door's complaint is carried into the
+/// log rather than into the answer.
+///
+/// Both doors produce `Hit`, so nothing downstream knows which one answered.
+fn search_catalogue(
+    app: Option<&AppHandle>,
+    query: &str,
+    types: &str,
+    limit: usize,
+) -> Result<Vec<Hit>, String> {
+    /* The context door answers with tracks and only tracks, so a caller who
+       asked for *no* tracks must not be sent through it — `types=album` would
+       otherwise come back as eight songs, which is not a worse answer to the
+       question so much as an answer to a different one. Observed while probing:
+       "kind of blue" over the context door leads with Take Five, because it is
+       ranking tracks and the thing being named is a record.
+       When `track` is among the types the context door goes first, since a
+       track is what both of this file's tools exist to put on. */
+    let tracks_wanted = types.split(',').any(|t| t.trim() == "track");
+
+    if let Some(app) = app.filter(|_| tracks_wanted) {
+        /* `block_on` rather than making this async, because both callers are
+           already on a thread of their own — `do_records` gets one per MCP
+           request (see `handle`) and `spotify_search` is inside `off_main`. This
+           is never the main thread and never a tokio worker, which is the pair
+           of conditions `CLAUDE.md`'s rule is actually about. */
+        match tauri::async_runtime::block_on(crate::spotify::search_tracks(app, query, limit)) {
+            Ok(rows) => {
+                let hits = hits_from_context(&rows, limit);
+                if !hits.is_empty() {
+                    return Ok(hits);
+                }
+                /* Resolved, and nothing usable in it. Fall through rather than
+                   answering "no results": an empty context is as likely to mean
+                   the metadata keys moved as it is to mean the catalogue has
+                   nothing, and the Web API can tell those apart. */
+                log::debug!(
+                    target: "volery::selector",
+                    "context search for {query:?} resolved {} rows but no usable hits — \
+                     falling back to the web api",
+                    rows.len()
+                );
+            }
+            Err(why) => log::info!(
+                target: "volery::selector",
+                "context search for {query:?} did not answer ({why}) — falling back to the web api"
+            ),
+        }
+    }
+
+    let token = crate::spotify::access_token()?;
+    let body = fetch_search(&token, &search_url(query, types, limit))?;
+    Ok(parse_hits(&body))
 }
 
 fn fetch_search(token: &str, url: &str) -> Result<Value, String> {
@@ -597,7 +762,7 @@ fn fetch_search(token: &str, url: &str) -> Result<Value, String> {
     }
 }
 
-fn do_records(args: &Value) -> String {
+fn do_records(app: &AppHandle, args: &Value) -> String {
     let Some(query) = args.get("query").and_then(|q| q.as_str()) else {
         return "say what to search for, in `query`.".to_string();
     };
@@ -613,13 +778,8 @@ fn do_records(args: &Value) -> String {
         .map(|l| l as usize)
         .unwrap_or(DEFAULT_LIMIT);
 
-    let token = match crate::spotify::access_token() {
-        Ok(t) => t,
-        Err(why) => return why,
-    };
-
-    match fetch_search(&token, &search_url(query, &types, limit)) {
-        Ok(body) => render_hits(query, &parse_hits(&body)),
+    match search_catalogue(Some(app), query, &types, limit) {
+        Ok(hits) => render_hits(query, &hits),
         Err(why) => why,
     }
 }
@@ -655,7 +815,7 @@ fn do_put_on(app: &AppHandle, args: &Value) -> String {
 /// card that asked.
 pub fn handle(app: &AppHandle, _conversation_id: &str, tool: &str, args: &Value) -> Option<String> {
     match tool {
-        RECORDS_TOOL => Some(do_records(args)),
+        RECORDS_TOOL => Some(do_records(app, args)),
         PUT_ON_TOOL => Some(do_put_on(app, args)),
         _ => None,
     }
@@ -845,6 +1005,107 @@ mod tests {
 
         let track = normalize_uri("spotify:track:2u6rLo8cuQ91qse20KNPT8").unwrap();
         assert!(!is_context(&track.kind));
+    }
+
+    /* ── the context door ──────────────────────────────────────────────────*/
+
+    fn meta(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    /// `+` for spaces is librespot's own documented requirement for
+    /// `spotify:search:`, and this is a uri path segment rather than a query
+    /// string — so percent-encoding it, which `encode` exists to do for the Web
+    /// API, would defeat the endpoint.
+    #[test]
+    fn a_search_uri_joins_words_with_plus() {
+        assert_eq!(search_context_uri("crying fire"), "spotify:search:crying+fire");
+        assert_eq!(search_context_uri("  kind   of  blue "), "spotify:search:kind+of+blue");
+        assert_eq!(search_context_uri("bonobo"), "spotify:search:bonobo");
+    }
+
+    /// The real shape, from the probe on 2026-09-08: `context-resolve` answers
+    /// uris and an **empty** metadata map, and `spotify.rs::search_tracks`
+    /// hydrates it from `librespot_metadata::Track` under these keys.
+    #[test]
+    fn a_hydrated_row_reads_like_a_web_api_hit() {
+        let rows = vec![(
+            "spotify:track:2u6rLo8cuQ91qse20KNPT8".to_string(),
+            meta(&[
+                ("title", "Crying Fire"),
+                ("artist_name", "Avatar"),
+                ("album_title", "Crying Fire"),
+                ("duration", "248000"),
+            ]),
+        )];
+        let hits = hits_from_context(&rows, 8);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, "track");
+        assert_eq!(hits[0].title, "Crying Fire");
+        assert_eq!(hits[0].by, "Avatar");
+        assert_eq!(hits[0].extra, "Crying Fire · 4:08");
+    }
+
+    /// A row nobody could choose from is dropped rather than drawn as a blank
+    /// line. This is the state every row arrives in before hydration, so
+    /// getting it wrong would have filled the widget with empty rows rather
+    /// than falling back.
+    #[test]
+    fn a_row_with_no_title_is_dropped() {
+        let rows = vec![
+            ("spotify:track:aaaaaaaaaaaaaaaaaaaaaa".to_string(), meta(&[])),
+            (
+                "spotify:track:bbbbbbbbbbbbbbbbbbbbbb".to_string(),
+                meta(&[("title", "Something")]),
+            ),
+        ];
+        let hits = hits_from_context(&rows, 8);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Something");
+    }
+
+    /// An account with local files gets `spotify:local:` rows in its search
+    /// results, and no load will take one — so they must not reach a list whose
+    /// every row is meant to be playable.
+    #[test]
+    fn a_local_file_is_not_offered() {
+        let rows = vec![(
+            "spotify:local:::Snomads+Island:127".to_string(),
+            meta(&[("title", "something on disk")]),
+        )];
+        assert!(hits_from_context(&rows, 8).is_empty());
+    }
+
+    /// The limit is the caller's and is applied to *usable* rows, not to the
+    /// twenty the context returns — `search_tracks` spawns one metadata round
+    /// trip per row it intends to keep, so an off-by-one here is paid for in
+    /// network calls.
+    #[test]
+    fn the_limit_counts_hits_and_not_rows() {
+        let rows: Vec<_> = (0..20)
+            .map(|i| {
+                (
+                    format!("spotify:track:{i:022}"),
+                    meta(&[("title", "a title")]),
+                )
+            })
+            .collect();
+        assert_eq!(hits_from_context(&rows, 3).len(), 3);
+        assert_eq!(hits_from_context(&rows, 50).len(), 20);
+    }
+
+    /// Spotify may start populating the map itself, and the several spellings
+    /// exist because these keys are undocumented. `title`/`name` is the pair
+    /// most likely to move.
+    #[test]
+    fn a_second_spelling_of_a_key_is_read() {
+        let rows = vec![(
+            "spotify:track:cccccccccccccccccccccc".to_string(),
+            meta(&[("name", "By The Other Name"), ("album", "An Album")]),
+        )];
+        let hits = hits_from_context(&rows, 8);
+        assert_eq!(hits[0].title, "By The Other Name");
+        assert_eq!(hits[0].extra, "An Album");
     }
 
     #[test]
