@@ -98,14 +98,73 @@ describe("resolveCard — the same ladder, trusted less", () => {
     expect(certain(resolveCard(WALL, "sink triage"))?.id).toBe("c6");
   });
 
-  test("a substring is heard but never certain", () => {
-    /* The fixture's sharpest trap: `caravan` is a territory *and* a substring of
-       exactly one card's title, so the ladder answers with one card and no
-       ambiguity of its own. Voice must not take it. */
-    const r = resolveCard(WALL, "caravan");
+  test("a fragment picks the best match, which is the whole point of it", () => {
+    /* You should not have to recite a twenty-eight-character title without a
+       slip. This is the behaviour that replaced an exact-only resolver, on the
+       argument that the confirm gate — not the resolver — is what carries the
+       risk: the ops a card can reach without being asked are all in
+       `IMMEDIATE`, and every one of them only changes how you look at the
+       wall. */
+    expect(certain(resolveCard(WALL, "auth"))?.id).toBe("c1");
+    expect(certain(resolveCard(WALL, "onboarding"))?.id).toBe("c2");
+    expect(certain(resolveCard(WALL, "ring occupancy"))?.id).toBe("c4");
+    expect(certain(resolveCard(WALL, "triage"))?.id).toBe("c6");
+  });
+
+  test("an exact title still beats a fragment of a longer one", () => {
+    /* The half of the old strictness worth keeping. `the ring` is an identity
+       and is settled before anything is scored, so it can never lose to
+       `fixing the ring occupancy bug` on a tiebreak. */
+    expect(certain(resolveCard(WALL, "the ring"))?.id).toBe("c5");
+  });
+
+  test("a territory's name resolves to the card that resembles it", () => {
+    /* The trade this change accepted, stated as a test so it is a decision and
+       not a surprise: `caravan` is a territory *and* a fragment of exactly one
+       card's title, and best-match now takes the card. Harmless where it
+       lands — `select` is immediate and visible — and the alternative was
+       refusing every abbreviation on the wall. */
+    expect(certain(resolveCard(WALL, "caravan"))?.id).toBe("c2");
+  });
+
+  test("a word that names nothing on the wall stays missing", () => {
+    /* "Never invent a referent" survives fuzzy matching, and this is what keeps
+       it: `score()` answers null unless the query is a *subsequence* of the
+       title, so unrelated words resolve to nothing rather than to the least-bad
+       card in the room. */
+    expect(resolveCard(WALL, "the deployment work").kind).toBe("missing");
+    expect(resolveCard(WALL, "everything").kind).toBe("missing");
+    expect(resolveCard(WALL, "zebra").kind).toBe("missing");
+  });
+
+  test("the noun the gesture is about is not the name of anything", () => {
+    /* Found by utterance 19 the moment fuzzy went in: `card` is a subsequence
+       of `caravan onboarding copy` — c, a, r, then the d in "onboarding" — so
+       "select card" silently gathered a card. A filler word has to be refused
+       explicitly, because the scorer will otherwise find it. */
+    for (const filler of ["card", "the card", "this card", "this one", "conversation"]) {
+      expect([filler, resolveCard(WALL, filler).kind]).toEqual([filler, "missing"]);
+    }
+  });
+
+  test("a query too short to discriminate does not get to answer", () => {
+    /* A length, not a score threshold. One or two characters are a subsequence
+       of very nearly every title on any wall, so the ranking would carry no
+       information — that is a claim about what the input can determine, which
+       is a fair thing to write a constant about. An exact title of any length
+       is unaffected, being settled before anything is scored. */
+    expect(certain(resolveCard(WALL, "t"))).toBeNull();
+    expect(certain(resolveCard(WALL, "th"))).toBeNull();
+  });
+
+  test("a genuine tie asks rather than tossing a coin", () => {
+    const twins = [
+      { id: "a", title: "alpha work", project: "x", working: false },
+      { id: "b", title: "alpha work", project: "y", working: false },
+    ];
+    const r = resolveCard({ ...WALL, cards: twins }, "alpha");
     expect(r.kind).toBe("ambiguous");
-    expect(certain(r)).toBeNull();
-    if (r.kind === "ambiguous") expect(r.among.map((c) => c.id)).toEqual(["c2"]);
+    if (r.kind === "ambiguous") expect(r.among.map((c) => c.id)).toEqual(["a", "b"]);
   });
 
   test("two cards at a trusted rung are ambiguous", () => {
@@ -338,7 +397,8 @@ describe("hear — every way it refuses, which is the safety property", () => {
   });
 
   test("a referent it is not certain of", () => {
-    refuses("select caravan");
+    /* `select caravan` is deliberately absent — it resolves now, by best match.
+       See the resolver's own tests above. */
     refuses("select the deployment work");
     refuses("select card");
     refuses("open in caravan");
@@ -407,7 +467,15 @@ describe("the thirty utterances", () => {
     /* An `ask` case is one where the right answer is a question. The grammar has
        no way to ask, so its only correct move is to escalate — a plan here would
        be a guess dressed as certainty. */
-    const guessed = CASES.filter((c) => c.want === "ask" && hear(c.say, WALL) !== null);
+    const guessed = CASES.filter(
+      /* `also` is what makes this honest. Two of the fixture's `ask` cases have
+         a second defensible reading written down beside them — "select caravan"
+         and "open in caravan" — and answering one of *those* is not a guess, it
+         is the alternative the fixture already sanctions. Scoring it as a
+         failure would make the grammar look reckless for doing the thing the
+         case says is acceptable. */
+      (c) => c.want === "ask" && !c.also && hear(c.say, WALL) !== null,
+    );
     expect(guessed.map((c) => c.id)).toEqual([]);
   });
 
@@ -415,7 +483,7 @@ describe("the thirty utterances", () => {
     /* Pinned so a change in coverage is a thing somebody decided rather than a
        thing that happened. Every one of these is a gesture whose whole value is
        being instant; everything else on the list costs a round trip on purpose. */
-    expect(answered.map((c) => c.id)).toEqual([1, 3, 5, 11, 12, 15, 23, 26]);
+    expect(answered.map((c) => c.id)).toEqual([1, 3, 5, 11, 12, 14, 15, 23, 26]);
   });
 });
 

@@ -31,11 +31,17 @@
  * away half a sentence — silently, which is the part that matters. So a partial
  * match is not a match, and everything the grammar does answer is complete.
  *
- * Most of that rule costs nothing to enforce, because the card resolver already
- * leans the safe way: its substring rung asks whether a *title contains the
- * query*, never the reverse, so a longer query never spuriously matches a
- * shorter title. "select the ring and fit the wall" finds no card, and escalates
- * by itself.
+ * Most of that rule costs nothing to enforce, because of what the card resolver
+ * requires rather than because of any check here. It scores fuzzily and takes
+ * the best match — but `score()` answers null unless the query is a
+ * *subsequence* of the title, so leftover words do not resemble a card at all:
+ * "select the ring and fit the wall" splits into a card and a piece matching
+ * nothing, the utterance goes unaccounted for, and it escalates by itself.
+ *
+ * (This paragraph used to argue the opposite — that the resolver was safe
+ * because it demanded an exact title. It was changed on 2026-09-08 for a stated
+ * reason, recorded on `resolveCard`: the confirm gate, not the resolver, is what
+ * carries the risk, so the strictness was being paid for twice.)
  *
  * ## What is not here, and is not an oversight
  *
@@ -48,7 +54,7 @@
  * *refuse* such an utterance, not to parse one.
  */
 
-import { rank, splitPath } from "./finding";
+import { rank, score, splitPath } from "./finding";
 
 /* ── the wall, as voice sees it ───────────────────────────────────────────────
  *
@@ -267,28 +273,115 @@ export function matchCards<T extends Named>(
   return null;
 }
 
-/** The rungs a *spoken* referent may be certain on.
+/** The rungs that answer outright, before anything is scored.
  *
- *  The substring rungs are missing from this on purpose, and the case that
- *  settled it is in the fixture: `caravan` is a territory, and it is also a
- *  substring of the card titled `caravan onboarding copy`. `matchCards` answers
- *  that with exactly one card at the `partial` rung — perfectly reasonable for
- *  the control surface, where somebody *typed* an abbreviation on purpose and
- *  can see what came back — and catastrophic for voice, where "select caravan"
- *  would silently gather one card out of a territory of them.
- *
- *  So the ladder is one resolver and the trust in it is two. A partial match is
- *  still worth having: it becomes `ambiguous` rather than `missing`, which is
- *  what lets the caller offer a list instead of claiming never to have heard of
- *  the thing. It simply is not an answer. */
+ *  An id, an exact title, an exact-but-for-case title, an index, or the focused
+ *  card. These are *identities* rather than resemblances, so a card whose title
+ *  is exactly what you said always wins — which is the half that keeps
+ *  `the ring` from ever losing to `fixing the ring occupancy bug`. Everything
+ *  else goes to the scorer below. */
 const TRUSTED = new Set<CardMatch<unknown>["by"]>(["id", "title", "spoken", "index", "focused"]);
 
-/** One card, by what it was called out loud. */
+/** How many candidates to offer when the best of them is genuinely tied. */
+const OFFER = 5;
+
+/** A whole query that names no card, however much it sounds like one.
+ *
+ *  *"select card"*, *"select this one"* — the noun the gesture is about rather
+ *  than the name of anything. It has to be refused explicitly because the
+ *  scorer will otherwise find it: `card` is a subsequence of `caravan
+ *  onboarding copy` (c-a-r … d in "onboarding"), so *"select card"* silently
+ *  gathered a card. Found by the fixture's own utterance 19 the moment fuzzy
+ *  matching went in, which is the whole reason that case is written down. */
+const CARD_FILLER = /^(?:the|this|that)?\s*(?:card|one|conversation)$/;
+
+/** The shortest query the scorer is allowed to answer.
+ *
+ *  **A length, not a score threshold**, and the difference is the point. A
+ *  one- or two-character query is a subsequence of very nearly every title on
+ *  any wall, so it does not *discriminate* — the scorer would dutifully rank
+ *  something first and the ranking would carry no information. That is a
+ *  statement about what the input can possibly determine, which is a fair thing
+ *  to write a constant about; "close enough to be right" is not, and is why
+ *  `resolveFile` still refuses to have one. An exact title of any length is
+ *  unaffected, since identities are settled before anything is scored. */
+const SHORTEST_FUZZY = 3;
+
+/** One card, by what it was called out loud.
+ *
+ *  ## Fuzzy, and picking the best match
+ *
+ *  **This used to refuse anything short of an exact title, and that was wrong in
+ *  practice.** The argument for it is still in the repository's history and it
+ *  was not a bad one: `caravan` is a territory *and* a substring of the card
+ *  titled `caravan onboarding copy`, so a substring rung meant "select caravan"
+ *  could silently gather one card out of a territory of them. The conclusion
+ *  drawn was that a spoken referent must be an identity or nothing.
+ *
+ *  What that missed is **who is protected by what**. The ops a resolved card can
+ *  reach without being asked are exactly `IMMEDIATE` — `select`, `focus`,
+ *  `deselect`, `aside` — and every one of them only changes *how you look at the
+ *  wall*, which is `undo.md`'s own reason for keeping them off the undo stack. A
+ *  fuzzy match that picks the wrong card there costs a glance and is corrected
+ *  by saying it again. Everything that actually changes the wall reads the
+ *  *resolved title* back before doing anything: you hear "stop the auth work?"
+ *  and say no. So the confirm gate was already carrying the risk, and the
+ *  strictness was being paid for twice — once by the person having to recite a
+ *  twenty-eight-character card title without a slip.
+ *
+ *  So: score every title, **take the best**, and ask only when the top two are
+ *  genuinely tied. `finding.ts::score()` does the scoring, which is the same
+ *  scorer the file finder uses and is already the right one for speech — its own
+ *  comment notes that a space in the query is a separator rather than something
+ *  to find, which is exactly the shape a transcript has.
+ *
+ *  It is still not a threshold, which matters: `score()` answers null unless the
+ *  query is a *subsequence* of the title, so words with no relation to any card
+ *  resolve to nothing rather than to the least-bad thing on the wall. "Never
+ *  invent a referent" is kept by the subsequence requirement rather than by a
+ *  constant nobody can justify — the same shape `resolveFile` uses, and the
+ *  reason this is a change of trust rather than a change of kind.
+ *
+ *  Note `resolveFile` is deliberately **not** given the same treatment. A wall
+ *  holds a handful of cards you can see; a territory holds tens of thousands of
+ *  paths you cannot, and opening the wrong file confidently is a different kind
+ *  of wrong from selecting the wrong card. */
 export function resolveCard(wall: Wall, said: string | null): Resolved<VoiceCard> {
   const m = matchCards(wall.cards, said, wall.focusedId);
-  if (!m) return missing(said ?? "");
-  if (!TRUSTED.has(m.by)) return ambiguous(m.cards);
-  return m.cards.length === 1 ? found(m.cards[0]) : ambiguous(m.cards);
+  if (m && TRUSTED.has(m.by)) {
+    return m.cards.length === 1 ? found(m.cards[0]) : ambiguous(m.cards);
+  }
+
+  const query = (said ?? "").trim();
+  if (!query) return missing("");
+  if (CARD_FILLER.test(query.toLowerCase())) return missing(query);
+  if (query.replace(/\s+/g, "").length < SHORTEST_FUZZY) {
+    return m ? ambiguous(m.cards) : missing(query);
+  }
+
+  const ranked = wall.cards
+    .map((card) => ({ card, hit: score(card.title, query) }))
+    .filter((r): r is { card: VoiceCard; hit: NonNullable<typeof r.hit> } => !!r.hit)
+    .sort((a, b) => b.hit.score - a.hit.score);
+
+  if (ranked.length) {
+    /* Tied on the actual number, not "close". `score()` already prefers the
+       shorter path and the earlier word start, so two cards scoring identically
+       really are equally good answers to what was said — and that is the one
+       case where picking either would be a coin toss dressed as a decision. */
+    if (ranked.length > 1 && ranked[1].hit.score === ranked[0].hit.score) {
+      return ambiguous(
+        ranked.filter((r) => r.hit.score === ranked[0].hit.score).slice(0, OFFER).map((r) => r.card),
+      );
+    }
+    return found(ranked[0].card);
+  }
+
+  /* Nothing resembled a title. `matchCards` may still have found cards by their
+     *project*, which is a real reading of "select caravan" — every card standing
+     in that territory — but not one this function can answer, since it returns
+     one card. Offered rather than denied, so the caller can ask. */
+  return m ? ambiguous(m.cards) : missing(query);
 }
 
 /** Several cards, from one spoken list.
