@@ -2134,6 +2134,35 @@
       await shell.toggle(shellCwd());
       return;
     }
+    /* Alt+V, and press to talk — one recognition, ending on its own
+       end-of-speech silence, because `RecognizeAsync` is one-shot and has no
+       "stop now and give me what you have". So there is nothing for a keyup to
+       do and this is a press rather than a hold.
+
+       **Which is what makes a modifier the right call rather than a cost.** It
+       was briefly bare `v`, on the reasonable argument that a hold you make
+       dozens of times a day should not want two hands — but a single press does
+       not want two hands either, and a bare letter had to be taken off the
+       branch at the bottom of this ladder that puts any printable key into the
+       focused card's draft. Alt+letter buys that letter back for nothing.
+
+       Beside Alt+I and above everything else for Alt+I's own reasons — Chromium
+       binds no Alt+letter as a text gesture and `decorations: false` leaves no
+       menu bar to collide with — plus one this gesture adds: firing while you
+       are typing is not a concession here, it is most of the point. A bare `v`
+       could never work from inside the draft, and reaching for the mouse to
+       leave a field before you can speak to the wall is exactly the tax voice
+       is meant to remove.
+
+       It always means *command the wall*, never *dictate into the draft*. The
+       second is a real and different feature — Design 1's spoken draft in
+       `docs/VOICE.md` — and it wants its own gesture rather than this one
+       quietly changing meaning based on where the caret is. */
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "v" || e.key === "V")) {
+      e.preventDefault();
+      await voicing.listen();
+      return;
+    }
     /* **Ctrl+F belongs to whatever it was opened over, and never to the
        browser.** Above the two panel guards below, and swallowed
        unconditionally, which is the half that matters: the webview's own find
@@ -2369,37 +2398,8 @@
       for (const id of studio.pickedOf("image")) void board.remove(id);
       for (const id of studio.pickedOf("widget")) void widgets.remove(id);
     } else if (
-      /* **Press to talk.** The one single-letter shortcut on this wall, and it
-         is worth being explicit about what it costs, because the branch
-         immediately below says there are none: a bare printable key with a card
-         in hand goes into that card's draft, so taking `v` means you can no
-         longer *start* a draft with the letter v by typing at the wall. Asked
-         for as a bare key rather than Alt+V, on the grounds that a gesture you
-         make dozens of times a day should not want two hands — and the trade is
-         one letter out of twenty-six, only ever as a draft's first character,
-         with the field a click or a Tab away when you want it.
-
-         Above the draft branch rather than beside it, so it holds whether or
-         not a card is in hand. Gating it on an empty selection would have made
-         one key mean two things depending on what was picked, which is worse
-         than losing a letter.
-
-         Press, not hold: `RecognizeAsync` is one-shot and ends on its own
-         end-of-speech silence, so the release has nothing to do. See
-         `Voicing.listen`. */
-      (e.key === "v" || e.key === "V") &&
-      !e.ctrlKey &&
-      !e.metaKey &&
-      !e.altKey &&
-      !menu &&
-      !isTyping(e.target)
-    ) {
-      e.preventDefault();
-      await voicing.listen();
-    } else if (
       /* Start typing with a card in hand and the words go to it. The wall has
-         no single-letter shortcuts *except* the one above, so a printable key
-         means only one thing —
+         no single-letter shortcuts, so a printable key means only one thing —
          and reaching for the mouse to click a field you were already looking at
          is the sort of small tax that adds up across a day. */
       e.key.length === 1 &&
