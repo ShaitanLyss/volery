@@ -542,7 +542,16 @@ fn token() -> Result<String, String> {
     })
 }
 
-fn get(path: &str) -> Result<serde_json::Value, String> {
+/* The four wire verbs are `pub(crate)` so `docket.rs` — Asana as a *card*
+   reaches it — can spend them without a second client, a second base url or a
+   second vocabulary of errors. That is the same seam `smith.rs` has onto
+   `azdo.rs`, drawn one notch lower because the credential here is one string
+   rather than a four-rung ladder: what crosses is a request, and `token` and
+   `BASE` stay private, so no caller can hold the secret or compose a url
+   against another host. `docket.rs` therefore inherits `forge::agent`'s
+   native-certs configuration for free, which on this network is the whole
+   reason a card cannot simply curl Asana itself. */
+pub(crate) fn get(path: &str) -> Result<serde_json::Value, String> {
     let token = token()?;
     answer(
         crate::forge::agent()
@@ -553,7 +562,7 @@ fn get(path: &str) -> Result<serde_json::Value, String> {
     )
 }
 
-fn post(path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+pub(crate) fn post(path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
     let token = token()?;
     answer(
         crate::forge::agent()
@@ -561,6 +570,39 @@ fn post(path: &str, body: serde_json::Value) -> Result<serde_json::Value, String
             .set("Authorization", &format!("Bearer {token}"))
             .set("Accept", "application/json")
             .send_json(body),
+    )
+}
+
+/// Asana's partial update. A `PUT /tasks/{gid}` **merges** — only the fields in
+/// the body are touched — which is what makes "change the title alone" express
+/// ible, and is also the trap `smith::amend_pull` records one service over: a
+/// caller that sends `notes: ""` because it had nothing to say empties a
+/// description nobody asked it to touch. Hence every optional field on the way
+/// here is an `Option` all the way to the wire.
+pub(crate) fn put(path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+    let token = token()?;
+    answer(
+        crate::forge::agent()
+            .put(&format!("{BASE}{path}"))
+            .set("Authorization", &format!("Bearer {token}"))
+            .set("Accept", "application/json")
+            .send_json(body),
+    )
+}
+
+/// `DELETE /tasks/{gid}`, which is **not** a hard delete: Asana moves the task
+/// to a deleted state the person whose board it is can undo from their own
+/// trash for 30 days. That is the fact the confirmation quotes, and it is why
+/// this verb exists here at all — `smith.rs`'s floor turns on whether an act is
+/// reversible by the person whose name is on it, and this one is.
+pub(crate) fn delete(path: &str) -> Result<serde_json::Value, String> {
+    let token = token()?;
+    answer(
+        crate::forge::agent()
+            .delete(&format!("{BASE}{path}"))
+            .set("Authorization", &format!("Bearer {token}"))
+            .set("Accept", "application/json")
+            .call(),
     )
 }
 

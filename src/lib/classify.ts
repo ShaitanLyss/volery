@@ -205,6 +205,26 @@ export const SKEIN_PULL_REQUEST_TOOL = "mcp__skein__pull_request";
 export const SKEIN_RECORDS_TOOL = "mcp__skein__records";
 export const SKEIN_PUT_ON_TOOL = "mcp__skein__put_on";
 
+/** Asana, as a card reaches it.
+ *
+ *  `tasks` is a reading. `task` is the second tool on this server whose effect
+ *  is **outside this machine** — it creates, edits, moves, comments on, ticks or
+ *  deletes a task in somebody's Asana workspace, under the user's own name, on
+ *  a board other people read.
+ *
+ *  So the line below reads *wants to* for the same reason
+ *  `SKEIN_PULL_REQUEST_TOOL`'s does, and the reason is sharper here: **every**
+ *  action parks on a question, not just the destructive ones. At the moment the
+ *  call lands nothing has happened and the question may still be up, so a past
+ *  tense would be the transcript claiming an outcome the wall has not got. The
+ *  tool's own answer is where the outcome is, and it says whether the user
+ *  agreed.
+ *
+ *  Volery names these `tasks` and `task` in `docket.rs`'s `pub const *_TOOL`,
+ *  and `.claude/rules/asana.md` has the reasoning. */
+export const SKEIN_TASKS_TOOL = "mcp__skein__tasks";
+export const SKEIN_TASK_TOOL = "mcp__skein__task";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -601,6 +621,41 @@ export function describeTool(name: string, input: any): string {
       const kind = /^spotify:([a-z]+):/.exec(arg(input?.uri) ?? "")?.[1];
       if (!kind) return "chose something to put on";
       return `chose ${/^[aeiou]/.test(kind) ? "an" : "a"} ${kind} to put on`;
+    }
+    /* Asana. The reading names what was asked for; the write says `wants to`,
+       because every one of its six actions parks on a question — see the note
+       above `SKEIN_TASK_TOOL`. */
+    case SKEIN_TASKS_TOOL: {
+      const t = arg(input?.task);
+      if (t) return "read an asana task";
+      const p = arg(input?.project);
+      return p ? `read the ${clip(p, 24)} board` : "looked over what asana has on them";
+    }
+    case SKEIN_TASK_TOOL: {
+      /* The task's own name is not in the arguments for five of the six — a
+         card names a gid, which is not worth drawing — so the line carries the
+         verb, which is the part somebody glancing at the card wants. `create`
+         is the exception and names what it would make. */
+      switch (arg(input?.action)) {
+        case "create": {
+          const n = arg(input?.name);
+          return n ? `wants to create an asana task: ${clip(n, 40)}` : "wants to create an asana task";
+        }
+        case "update":
+          return "wants to edit an asana task";
+        case "move":
+          return "wants to move an asana task between columns";
+        case "comment":
+          return "wants to comment on an asana task";
+        case "complete":
+          return input?.done === false
+            ? "wants to reopen an asana task"
+            : "wants to tick off an asana task";
+        case "delete":
+          return "wants to delete an asana task";
+        default:
+          return "wants to change an asana task";
+      }
     }
     case "ExitPlanMode":
       return "wants the plan approved";

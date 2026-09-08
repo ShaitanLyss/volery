@@ -19,6 +19,7 @@ mod board;
 pub mod azdo;
 mod control;
 mod creds;
+mod docket;
 /// The rows a forge answers in, and the two providers that fill them. `forge`
 /// is vocabulary-neutral on purpose — see its header for the line between a
 /// projection that is honest and one that is a lie.

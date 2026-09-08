@@ -934,6 +934,41 @@ pub(crate) fn roster() -> Vec<Value> {
             "create pull request open a PR raise a PR edit PR title description \
              update PR body az repos pr create gh pr create certificate error ssl",
         ),
+        /* Asana. The hints carry **the words on the ticket rather than the name
+           of the service**, because a card is usually holding a sentence
+           somebody typed — "the RISE board", "what's assigned to me" — and does
+           not know this wall has an Asana connection at all.
+
+           Two collisions were fixed here rather than discovered later, and both
+           are with tools that are *already* about pieces of work:
+
+           - **`take` and `done` are the sink's**, and they own the plain words
+             `claim`, `finished` and `tick it off`. So every hint below is
+             qualified `asana`, `board`, `ticket` or `column`, and `done`'s
+             sense of finishing is deliberately not claimed by `task` — a card
+             that means the sink's pile must not land on somebody's Asana.
+           - **`tasks` against Claude Code's own `Task`/`TaskOutput`**, which
+             are subagents and have nothing to do with either. Nothing here can
+             stop that being typed, but the hint names Asana, a board and an
+             assignee in the first breath, which is what the matcher scores.
+
+           `task`'s hint says **asks first** in as many words. That is not
+           decoration: an agent choosing between doing something itself and
+           parking a turn on somebody's attention should know which it is
+           picking before it picks, and the hint is the only text it reads
+           before the schema. */
+        found_by(
+            crate::docket::tasks_schema(),
+            "asana tasks assigned to me my tickets what am I working on read the asana board \
+             a project's columns kanban backlog sprint what does the ticket say read a task \
+             description acceptance criteria",
+        ),
+        found_by(
+            crate::docket::task_schema(),
+            "create an asana task edit a ticket move a card to another column change the \
+             status on the board comment on a ticket tick off an asana task delete a task \
+             update the description — asks the user first",
+        ),
         /* The music. Both hints are written in **the words a person says about
            music** rather than around either tool's name, because nobody thinks
            "records" — they think "put something on".
@@ -1386,6 +1421,56 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             return;
                         }
 
+                        /* `task` is the fourth, and always — the same block as
+                           `pull_request` for the same reason, one service over.
+                           It creates, edits, moves, comments on, ticks or
+                           deletes a task in somebody's Asana workspace, under
+                           the user's own name, on a board other people read.
+
+                           The gate is *wider* here than the forge's and that is
+                           deliberate rather than cautious. `smith.rs` can scope
+                           a card to its own territory, because the
+                           org/project/repo triple comes off the card's own git
+                           remote and a card physically cannot name somebody
+                           else's repository. Asana has no such anchor — a
+                           project is not derivable from a working directory —
+                           and an Asana PAT is unscoped, so the confirmation is
+                           standing in for a scope that does not exist. Hence
+                           every action parks, including the ones that look
+                           small: `docket::task` decides once and hands back
+                           what to do about it, and every refusal and argument
+                           problem comes back as `Now`, so nothing reaches a
+                           person until the call is worth their attention. */
+                        if tool == crate::docket::TASK_TOOL {
+                            match crate::docket::task(&app, &conversation_id, &args) {
+                                crate::docket::Writing::Now(said) => {
+                                    respond(
+                                        req,
+                                        json!({
+                                            "jsonrpc": "2.0", "id": id,
+                                            "result": { "content": [
+                                                { "type": "text", "text": said }
+                                            ] }
+                                        }),
+                                    );
+                                }
+                                crate::docket::Writing::Ask { question, settle } => {
+                                    let asks = app.state::<Asks>();
+                                    park_and_stream(
+                                        &app,
+                                        &asks,
+                                        &conversation_id,
+                                        &id,
+                                        &question,
+                                        progress,
+                                        req,
+                                        Some(settle),
+                                    );
+                                }
+                            }
+                            return;
+                        }
+
                         let answer = crate::relay::handle(&app, &conversation_id, &tool, &args)
                             .or_else(|| crate::board::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::sink::handle(&app, &conversation_id, &tool, &args))
@@ -1421,6 +1506,16 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                forge's *write* is not in this chain; see the
                                block above. */
                             .or_else(|| crate::smith::handle(&app, &conversation_id, &tool, &args))
+                            /* Asana's *reading*, here rather than above for the
+                               reason the forge's two are: it reads. It is the
+                               slowest arm in this chain — `tasks` with no
+                               arguments is one request per workspace, and a
+                               board is three — which is affordable on the same
+                               bargain, that this parks nobody but its own
+                               caller on a thread `ask::start` gave it. Asana's
+                               *write* is not in this chain; see the block
+                               above. */
+                            .or_else(|| crate::docket::handle(&app, &conversation_id, &tool, &args))
                             /* The music, last for the same reason and on the
                                same bargain: `records` is a `GET /v1/search`
                                against api.spotify.com and blocks this thread

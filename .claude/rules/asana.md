@@ -6,6 +6,7 @@ paths:
   - "src/lib/Tasks.svelte"
   - "src/lib/Health.svelte"
   - "src-tauri/src/asana.rs"
+  - "src-tauri/src/docket.rs"
   - "test/asana.test.ts"
 ---
 
@@ -292,3 +293,119 @@ works and nothing is unreachable, but the obvious gesture does nothing. That is 
 existing rule rather than this widget's bug — the log widgets have it too — and changing it
 means deciding that some widgets eat the wheel, which is a decision about the wall and not
 about Asana.
+
+## Asana a card can reach — `docket.rs`
+
+Two MCP tools on the skein server: `tasks`, which reads, and `task`, which is the one verb and
+has six actions. The arrangement is `smith.rs`'s one service over, and the file is a door onto
+`asana.rs` rather than a second client — `get`, `post`, `put` and `delete` became `pub(crate)`
+and the token and base url did not, so what crosses the seam is a request and never the secret.
+
+### Why it exists: a credential the app was holding and not lending
+
+Volery takes an Asana PAT, keeps it in the Windows credential vault, verifies it, and draws
+three widgets off it. An agent on the same wall had no route to any of that — it could see a
+kanban board eight feet away and could not read the task it had been asked to work on. There
+is no CLI to fall back to either: `integrations.ts` marks Asana `sole: true` precisely because
+**nothing else on this machine holds an Asana credential**, so a card asking "what does the
+ticket say" had no answer at all.
+
+**The certificate is why a card could not route around us, and it is deliberately not the
+argument for the file.** `app.asana.com` is intercepted here exactly as `dev.azure.com` is —
+probed 2026-09-04, a leaf issued by `ca.macquarietelecom-103950.au.goskope.com`, the same
+Netskope CA — so a card that shells out to `curl` reads a certificate error where Volery's
+`ureq` succeeds against the same host. But `smith.rs` exists because `az` is *broken* on this
+network and `gh` is not; here there is no tool to compare against, and the capability is
+**absent** rather than broken. Keeping those two arguments apart is what stops the next
+integration being justified by a certificate that has nothing to do with it.
+
+### Every write asks, and it is one rule rather than a table
+
+`smith.rs` gates its one verb and states the floor as *a card may write only what a person
+would type into a text field*. Both are inherited and the gate is drawn wider: **there is no
+unattended write in this file.** Not create, not a comment, not a checkbox, and **not a move**
+— even though a move is the one write the widget itself makes on a drag.
+
+That asymmetry with the widget is the point rather than an inconsistency. A drag is a gesture a
+person made, on a board they were looking at, that they undo by dragging it back. A card's
+`move` is none of those, and the person whose board it is may not be at the wall at all.
+
+**The confirmation is standing in for a scope that does not exist**, which is why it is
+unconditional rather than reserved for the destructive verbs. Two facts pull against each
+other:
+
+- **An Asana PAT is unscoped.** `integrations.ts` records this in a field that exists to stop
+  the panel implying otherwise: a token is the whole of what the account can do, across every
+  workspace it can see. There is no narrower credential to hand a card.
+- **A card cannot be scoped to a territory the way `smith.rs` scopes one.** There, the
+  org/project/repo triple comes off the card's own git remote, so a card *physically cannot*
+  name somebody else's repository. Asana has no such anchor — a project is not derivable from a
+  working directory — so a card **must** be able to name one, and the blast radius the forge
+  closed by construction is open here by necessity.
+
+So every question names the project and the task in the user's own words, and the thing being
+approved is *where* as much as *what*. A card reaching into a workspace nobody expected it to
+touch is visible in the one place it has to pass through.
+
+**`delete` is offered, and it needed checking rather than arguing.** The floor turns on whether
+an act is reversible by the person whose name is on it, and `DELETE /tasks/{gid}` is not a hard
+delete — Asana moves the task to that person's own trash, restorable for 30 days. So it clears
+the same bar `pull_request`'s create does, and it is refused the way `merge` is refused there:
+by not being reachable without a person, rather than by not existing. The question says where
+it goes and for how long, because that is the fact that makes the decision.
+
+A **chat card is refused outright**, the same rule `smith.rs` states: a credential-carrying
+tool is exactly the reach that card kind exists to deny.
+
+### Three things the reading had to get right
+
+- **`notes` only where it was asked for.** The description is far and away the largest field on
+  a task, so a board carrying sixty of them would spend a context window saying what one call
+  says better. `tasks` with a `task` gid is the reading that carries it, and the schema says to
+  use it before an `update` — because `notes` is replaced wholesale, which is
+  `smith::amend_pull`'s trap one service over.
+- **The section is matched on *this* project's gid.** A task can be in several, and taking the
+  first membership files it under whichever column it occupies on somebody else's board. That
+  is the one bug in this grouping that produces a *plausible* answer rather than an error, so
+  it is the assertion the lift exists for.
+- **A project is resolved by gid or by name**, exact before substring, and **ambiguity is
+  answered with the candidates rather than resolved by picking**. An agent acting on a sentence
+  somebody typed holds `"RISE"`, not a gid; refusing that would make the tool usable only after
+  it had already been used once. Guessing between two matches would put a write on the wrong
+  board behind a confirmation that named the wrong board, which is the failure the whole file is
+  arranged to make impossible.
+
+### `move` sends no position, and unlike the widget that is right
+
+The section above records that `addTask` with no position puts the task at the **top** of the
+column, and that the widget therefore always sends one. A card has expressed no opinion about
+where in the column, so Asana's default is also the only honest answer and inventing a
+neighbour would be the tool deciding something nobody asked it to. The tool's reply says where
+it landed, so the card is not left guessing either.
+
+### Where it sits, and what is proven
+
+Both tools are on the **discoverable** tier with search hints in `ask::roster`, on the argument
+that tier is for: a card knows from its prompt whether it is working on a ticket, and the
+overwhelming majority of turns on this wall touch neither. Two collisions were fixed at the
+hint rather than discovered later — **`take` and `done` are the sink's** and own the plain
+words `claim` and `tick it off`, so every hint here is qualified `asana`, `board`, `ticket` or
+`column`; and `tasks` has to out-rank Claude Code's own `Task`/`TaskOutput`, which are
+subagents, so the hint names Asana and an assignee in the first breath.
+
+`classify.ts` says **wants to** for every action of `task`, not just the destructive ones,
+because every one of them parks — a past tense would be the transcript claiming an outcome
+while the question is still up.
+
+`bun tools/lift-docket.ts` runs 12 assertions for real on a machine with no MSVC, which is the
+rule `build.md` states: **`approved` is the whole of the gate**, and neither direction of it is
+visible to a typecheck. A version returning `true` for every answer compiles, passes
+`check-gnu`, and hands every agent on the wall an unscoped Asana token.
+
+**No request has ever been made through these tools.** The readings reuse the wire the widgets
+exercise daily, so those are as proven as the widgets are; the six writes — `put`, `delete`,
+`/tasks`, `/sections/{gid}/addTask` from a card, `/tasks/{gid}/stories` — have never touched
+Asana, and at the time of writing **there is no Asana PAT in this machine's vault** (checked
+2026-09-04: `dev.skein.studio/asana-pat` is absent). Recorded here rather than discovered later
+for the reason `4951f398` exists: a feature green on every gate and never once run is a known
+unknown, and saying so is the only thing that keeps it one. The first real call is the test.
