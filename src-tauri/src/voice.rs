@@ -18,11 +18,51 @@
 //! fr-FR: compile SpeechRecognitionResultStatus(0) in 3ms
 //! ```
 //!
-//! So the on-device DNN engines are installed for both, and compiling a
-//! dictation grammar costs 3–5ms and needs **no model download and no new
-//! crate** — only four more features on the `windows` crate this tree already
-//! depends on for job objects. Against whisper, which wants a 75–150MB model
-//! file and a C++ build, that is not a close call for a first cut.
+//! Compiling a dictation grammar costs 3–5ms and needs **no model download and
+//! no new crate** — only four more features on the `windows` crate this tree
+//! already depends on for job objects. Against whisper, which wants a 75–150MB
+//! model file and a C++ build, that read as an easy first cut.
+//!
+//! ## It reads audio off this machine, and the probe above did not show that
+//!
+//! **The inference from that probe was wrong, and it was wrong in the direction
+//! that matters.** `SupportedTopicLanguages` answering `en-US fr-FR` says which
+//! languages a *topic constraint* is available in. It does not say the
+//! recognition happens here, and it does not. Microsoft's own documentation
+//! says so in three places, most plainly on `SpeechRecognitionTopicConstraint`
+//! itself: *"a pre-defined grammar constraint provided through a web service"*,
+//! *"a remote web service performs the recognition and returns the results to
+//! the device"*, *"they are online (not on the device) … they do require a
+//! connection to a network"*. So `listen` below, which uses exactly that
+//! constraint, sends the microphone to Microsoft. That is what the privacy
+//! policy in the next section is a policy *about*, and reading the gate as an
+//! arbitrary obstacle rather than as the disclosure it is, is how this file came
+//! to describe a cloud service as "Windows' own on-device recogniser".
+//!
+//! **And on this network it does not work at all.** Measured 2026-09-08 with a
+//! scratch crate, same argv as `listen`, seven silent one-shot recognitions:
+//!
+//! ```text
+//! topic constraint (what listen uses) : status 6 (Unknown), 7/7, 0.9–7.3s
+//! list constraint  (a local grammar)  : status 0 (Success), 3/3, 5.5–6.3s
+//! ```
+//!
+//! The local path behaves correctly — it listens out its whole 5s initial-silence
+//! window and reports hearing nothing. The web-service path never gets that far,
+//! and one attempt gave up after 924ms, which is not long enough to have listened
+//! to anything. The endpoints resolve and accept TCP:443, but the TLS is
+//! terminated by this network's Netskope proxy (issuer
+//! `CN=ca.macquarietelecom-*.au.goskope.com`, the same interception `azdo.md`
+//! records) — which is the likeliest reason the speech client hangs up, though
+//! that last step is inference and not something measured here.
+//!
+//! **So voice does not work on this network and cannot be made to by retrying.**
+//! What is left is a real choice rather than a bug: a `SpeechRecognitionListConstraint`
+//! or SRGS grammar runs on the machine and is proven working above, but only ever
+//! matches phrases enumerated in advance — which is the shape `listen` deliberately
+//! rejected below, because the steward rung exists so you can say anything. Whisper
+//! (16fa718) is the other end of it: local, offline, unrestricted, and a model file
+//! plus a C++ build. Nothing here picks between them.
 //!
 //! ## The one thing it will not do, and where that leaves us
 //!
@@ -33,12 +73,14 @@
 //! **recognising** does not, which is why the probe looked entirely healthy right
 //! up to the moment it listened.
 //!
-//! Nothing here changes that setting or asks the OS to. It is a privacy setting
-//! on somebody's machine, the local engines being installed does *not* establish
-//! that accepting it keeps audio on the machine, and this file is in no position
-//! to answer that question. What it does instead is **name the gate exactly**, so
-//! the failure is one line telling you what to change rather than a microphone
-//! that does nothing.
+//! Nothing here changes that setting or asks the OS to. What it does instead is
+//! **name the gate exactly**, so the failure is one line telling you what to
+//! change rather than a microphone that does nothing.
+//!
+//! This file used to add that the local engines being installed *did not*
+//! establish that accepting the policy keeps audio on the machine, and that it
+//! was in no position to answer the question. The hedge was right and the
+//! question is now answered: it does not. See the section above.
 //!
 //! ## And it must be told a language, because the wall's verbs are English
 //!
@@ -146,13 +188,14 @@ pub(crate) fn explain(code: i32, message: &str) -> String {
 /// were now past it.
 ///
 /// `Unknown` is named because **this machine produces it**, which is the same
-/// standard `explain` holds its two named HRESULTs to. Measured 2026-09-08 with
-/// a bare WinRT script outside the app — six silent one-shot recognitions on an
-/// idle en-US machine, microphone allowed and the speech privacy policy
-/// accepted, returned `Unknown` **twice**, both after ~4s, where a healthy
-/// silent run returns `Success` with an empty string after ~5.4s (the
-/// documented initial-silence timeout). So it is intermittent, it is nothing
-/// the person did, and the only useful thing to say about it is *try again*.
+/// standard `explain` holds its two named HRESULTs to — and what it means was
+/// got wrong once already, in the reassuring direction. It first read *"it does
+/// that intermittently; try again"*, from six silent runs where it appeared
+/// twice. Widening the sample killed that reading: with the topic constraint
+/// actually attached it is **7 out of 7**, and a local list constraint on the
+/// same machine and microphone is 0 out of 3. It is not intermittent and
+/// retrying does not help — it is the web service `listen` depends on, not
+/// answering. See the module note above.
 fn why_empty(status: SpeechRecognitionResultStatus) -> Option<String> {
     let said = match status {
         SpeechRecognitionResultStatus::Success => return None,
@@ -165,8 +208,9 @@ fn why_empty(status: SpeechRecognitionResultStatus) -> Option<String> {
             "dictation is not installed for that language"
         }
         SpeechRecognitionResultStatus::Unknown => {
-            "windows ended the recognition without saying why — it does that \
-             intermittently; try again"
+            "the online dictation service did not answer — the predefined \
+             dictation grammar runs on microsoft's servers rather than on this \
+             machine, so this is the network rather than the microphone"
         }
         /* Not guessed at, and not silent either. The type is a newtype over an
            i32 whose derived `Debug` prints the number rather than the name, so
@@ -453,12 +497,15 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn the_intermittent_one_this_machine_produces_says_to_try_again() {
-        /* `Unknown` is roughly one silent recognition in three here (see the
-           note on `why_empty`), so the sentence has to end in the thing that
-           actually works rather than in a diagnosis. */
+    fn the_one_this_machine_produces_names_the_network_and_not_the_microphone() {
+        /* 7/7 with the topic constraint attached, against 0/3 for a local list
+           constraint on the same machine and microphone — so the one thing this
+           sentence must not do is send somebody to look at their microphone.
+           The first version of it said "try again", which was read off a sample
+           too small to see that the constraint was the variable. */
         let said = why_empty(SpeechRecognitionResultStatus::Unknown).expect("not a success");
-        assert!(said.contains("try again"), "{said}");
+        assert!(said.contains("network"), "{said}");
+        assert!(!said.contains("try again"), "{said}");
         /* And it is named, so it does not go out carrying a raw number. */
         assert!(!said.contains("status "), "{said}");
     }
