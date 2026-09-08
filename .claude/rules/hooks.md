@@ -280,6 +280,41 @@ both edited is credited to neither, so the deny fires only when *this* card neve
 problem is that several cards are running git in it at once. A guard against a shared index
 must not become another writer to it.
 
+### And a fifth thing, which is not a hook at all
+
+`--secret <service> --card <id> --db <path>` is intercepted in the same place and for the same
+reason — it must not open a window or join the wall — and is otherwise nothing like the rest of
+this file. **Volery never invokes it. The card does**, in its own shell.
+
+It exists because of a Windows fact: an environment can only be set when a process starts.
+`.claude/rules/asana.md` has the whole design, but the shape matters here because this module is
+now two unrelated things behind one interception. A card the user has granted an integration's
+credential gets it as a variable in its process environment at the next spawn; the turn that
+*asks* for the grant is running in a process that started before the user agreed, and nothing
+can reach into it. So the answer to that one turn is a command:
+
+```bash
+export ASANA_ACCESS_TOKEN=$(volery --secret asana --card <id> --db <path>)
+```
+
+Three properties, and each is the same class of decision the hooks above make:
+
+- **It prints nothing unless the wall's database says that card was granted it**, and nothing on
+  every failure too — an unreadable database, an unknown service, a card with no grant. A
+  version that printed a diagnostic would put it where a shell is about to assign it to a
+  variable; one that printed the token when it could not check would hand out a credential on
+  the strength of an error. Fails **closed**, which is the opposite of the compensator two
+  sections up, and deliberately: that one fails open because refusing a command it cannot parse
+  would stop a card working, and this one fails closed because the cost of being wrong is a
+  credential rather than a shell call.
+- **No trailing newline.** It is written to be captured, and while `$(…)` strips them Python's
+  `subprocess` and PowerShell's `$()` do not always. A bearer token with a stray `\n` fails with
+  a 401 that names nothing.
+- **Read-only database**, through `store::open_readonly`, per `sweep`'s rule.
+
+The GUI-subsystem note above covers this too: with no console attached the standard handles are
+whatever the parent redirected, which for a command substitution is a pipe.
+
 ### The argv a card's hook is given
 
 `--bash-hook` alone is the compensator and nothing else. `--card <id> --db <path>`, added by

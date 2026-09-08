@@ -787,6 +787,47 @@ fn spawn_now(
         &crate::hooks::settings(chat, Some((id.as_str(), studio.as_path())), locked),
     ]);
 
+    /* A credential the user has agreed this card may hold, put where a script
+       naturally looks for one.
+
+       **The environment and not the `--settings` layer**, though both were
+       probed working (2026-09-04, claude 2.1.241: `env` in a `--settings` file
+       reaches the shell tool, and so does anything set on this process). The
+       settings layer is passed as an inline JSON *argument* four lines above,
+       so a token in it would sit in `claude.exe`'s command line — which any
+       process on this machine can read, where an environment block needs debug
+       rights. Same secret, two hiding places, and only one of them is one.
+
+       Inherited by every Bash, PowerShell and script call the card makes,
+       because those are children of this process (probed the same day:
+       `GOT=inherited-…` came back through the shell tool). That is the whole
+       feature — the token is usable and is in no transcript.
+
+       **Set at spawn because an environment can only be set at spawn.** There
+       is no supported way to change a running process's environment on Windows,
+       which is why a grant given mid-turn does not reach the turn that asked
+       for it, and why `--secret` exists for that turn. It also means a grant
+       taken back does not reach a live process — see `store::drop_secret_grants`,
+       which says so rather than implying otherwise.
+
+       Never on a chat card. That card kind reaches nothing on this machine and
+       `docket::permitted` refuses it the tools outright, so a credential in its
+       environment would be the one hole in a sandbox whose whole claim is that
+       it has none — and it is refused here as well as there, because a
+       capability that depends on one check is a capability one edit from being
+       ungated. */
+    if !chat
+        && crate::store::secret_granted(
+            &app.state::<crate::store::Store>().0.lock().unwrap(),
+            &id,
+            crate::docket::SERVICE,
+        )
+    {
+        if let Some(secret) = crate::creds::token(crate::docket::SERVICE) {
+            cmd.env(crate::docket::TOKEN_ENV, secret);
+        }
+    }
+
     /* What you told every card once instead of every turn — the wall's standing
        instructions and this card's territory's, composed. Read from the store
        here for the fourth time and the fourth iteration of the same argument;

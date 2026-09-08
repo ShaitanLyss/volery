@@ -90,6 +90,8 @@ const ITEMS = [
   "const TASKS_TOOL",
   "const TASK_TOOL",
   "const TOKEN_TOOL",
+  "const SERVICE",
+  "const TOKEN_ENV",
   "fn token_schema",
 ];
 
@@ -112,6 +114,7 @@ const TESTS = [
   "the_token_takes_its_own_word_and_not_the_writes_one",
   "asking_for_the_token_without_a_reason_is_refused_before_anybody_is_asked",
   "the_token_schema_says_what_it_cannot_take_back",
+  "the_env_var_is_the_name_asana_tooling_already_reads",
 ];
 
 /** The per-file machinery, closed over one file's lines. */
@@ -263,4 +266,5 @@ try {
   console.error(e);
   process.exit(1);
 }
+
 

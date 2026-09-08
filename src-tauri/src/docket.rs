@@ -119,6 +119,18 @@ pub const TASK_TOOL: &str = "task";
 /// touching.
 pub const TOKEN_TOOL: &str = "asana_token";
 
+/// The service id `creds.rs` knows this token by, and `store::secret_grant`
+/// records a grant against.
+pub(crate) const SERVICE: &str = "asana";
+
+/// What a granted card finds the token under.
+///
+/// The name Asana's own tooling and every community client already read, so a
+/// script an agent writes reaches for it without being told — which is most of
+/// the value of an environment variable over a tool result the agent has to
+/// remember to thread through by hand.
+pub(crate) const TOKEN_ENV: &str = "ASANA_ACCESS_TOKEN";
+
 /// How many tasks one board or list answers with.
 ///
 /// A board on a real workspace runs to a few hundred, and the whole of one is
@@ -445,20 +457,26 @@ pub fn token_schema() -> Value {
              **What you are being given is not scoped and cannot be narrowed.** An Asana PAT is \
              the entire account: every workspace, every project, read and write, with no \
              permission subset to request. There is no version of this that hands you less.\n\n\
-             **It goes into this conversation's transcript, on disk, in plain text, \
-             permanently** — a tool result is written to the session file like any other, and \
-             nothing can take it back out afterwards. Two things follow that are your \
-             responsibility rather than the tool's:\n\n\
-             - **Never repeat it in your reply, in a commit, in a file, in a comment, or to \
-             another card.** Use it and do not quote it. Volery does not redact it for you.\n\
-             - **Do not write it into a script, a `.env`, a config file or a shell history.** \
-             Pass it in the request you are about to make and let it go.\n\n\
-             On this machine you can use it directly with no certificate workaround: the \
+             **The token is never put in this conversation.** What you get back is a grant: \
+             from your next turn onward the token is in your process environment as \
+             `ASANA_ACCESS_TOKEN`, which every Bash, PowerShell and script call you make \
+             inherits. Read it at the point of use — `$ASANA_ACCESS_TOKEN`, \
+             `$env:ASANA_ACCESS_TOKEN`, `os.environ[\"ASANA_ACCESS_TOKEN\"]` — and **never \
+             print it, echo it, log it, commit it, write it into a file, or repeat it to \
+             another card**. A transcript is on disk for ever and nothing can take it back \
+             out.\n\n\
+             The turn you ask on is the exception, and the answer hands you a one-line command \
+             for it: an environment is fixed when a process starts, and yours started before \
+             the user agreed.\n\n\
+             On this machine you can call the API directly with no certificate workaround: the \
              network intercepts TLS, and `CURL_CA_BUNDLE`, `SSL_CERT_FILE` and \
              `REQUESTS_CA_BUNDLE` are already set in the environment, so `curl`, Python and \
              Node all reach `app.asana.com` (verified 2026-09-04). The API is \
              `https://app.asana.com/api/1.0`, and the header is `Authorization: Bearer <the \
              token>`.\n\n\
+             The grant lasts until this card is **closed or cleared**, so you do not need to \
+             ask again on a later turn — check whether `ASANA_ACCESS_TOKEN` is already set \
+             before calling this.\n\n\
              If the user says no, that is an answer. Do not ask again for the same job — say \
              what you could not do, and get on with the rest.",
         "inputSchema": {
@@ -1019,10 +1037,15 @@ pub(crate) fn token(app: &AppHandle, caller: &str, args: &Value) -> Writing {
                  directly.\n\n**It says it needs it for:**\n\n---\n\n{}\n\n---\n\nThe token is \
                  {}, and Asana tokens are **not scoped** — this is the whole account, every \
                  workspace, read and write. There is no narrower thing to give it.\n\n\
-                 **It will be written into this card's transcript, on disk, in plain text, and \
-                 stay there.** Nothing here can take it back afterwards, and *forget it* in the \
-                 tokens panel will only remove Volery's copy — so if you want it dead you \
-                 revoke it at Asana, under my settings → apps → manage developer apps.\n\n\
+                 **It goes into the card's environment, not into the conversation** — as \
+                 `{TOKEN_ENV}`, where its shell and script calls will find it. It is written to \
+                 no file and appears in no transcript, so what you are agreeing to is this card \
+                 being able to *use* your account, rather than a copy of the token existing \
+                 somewhere new.\n\n\
+                 **It lasts until you close or clear this card.** There is no expiry and no \
+                 separate way to take it back — closing the card is how, and a card you clear \
+                 has to ask again. If you want the token itself dead, that is Asana's side: my \
+                 settings → apps → manage developer apps.\n\n\
                  If you would rather it did not have this, say no: `tasks` and `task` still \
                  work, and the card will be told to carry on without it.",
                 clip(&reason, MAX_SHOWN),
@@ -1041,37 +1064,81 @@ pub(crate) fn token(app: &AppHandle, caller: &str, args: &Value) -> Writing {
         }]
     });
 
+    let card = caller.to_string();
     Writing::Ask {
         question: q,
-        settle: Box::new(move |_app, answer| {
+        settle: Box::new(move |app, answer| {
             let Some(answer) = answer else {
                 return unanswered("the token");
             };
             if !approved(answer, HAND_IT_OVER) {
                 return declined("the token", answer, KEEP_IT);
             }
-            /* Read here rather than captured above, so a token cleared or
-               replaced while the question stood is not one this closure hands
-               over from ten minutes ago. Same reason `creds.rs` reads the vault
-               per request instead of caching: a token deleted in Control Panel
-               stops working immediately rather than at the next detach. */
-            let Some(secret) = crate::creds::token("asana") else {
-                return "the user agreed, but there is no asana token stored any more — it was \
-                        removed while the question was up. Nothing was handed over."
+            /* The grant, and **not the token**. Nothing this function returns
+               carries the secret, which is the whole of the redesign: a tool
+               result is written to the session transcript on disk in plain text
+               and stays there, where an environment variable is in no file at
+               all. See the section above. */
+            let Some(store) = app.try_state::<crate::store::Store>() else {
+                return "the user agreed, but the wall's store is unavailable, so the grant \
+                        could not be recorded and nothing was handed over."
                     .to_string();
             };
+            let wrote = store
+                .0
+                .lock()
+                .map_err(|_| "the store is unavailable".to_string())
+                .and_then(|conn| crate::store::grant_secret(&conn, &card, SERVICE, &reason));
+            if let Err(why) = wrote {
+                return format!(
+                    "the user agreed, but the grant could not be recorded ({why}), so nothing \
+                     was handed over. Say so rather than trying again."
+                );
+            }
+            /* The command for *this* turn, because an environment is fixed when
+               a process starts and this process started before the user agreed.
+               Built here rather than described, so the card has something it can
+               run rather than a shape it has to assemble — and quoted, since
+               both paths can hold spaces. */
+            let now = match (std::env::current_exe(), crate::store::db_path(app)) {
+                (Ok(exe), Some(db)) => format!(
+                    "\n\nFor **this turn only**, your process was started before the grant \
+                     existed, so its environment does not have it yet. Fetch it once and it is \
+                     in your shell for the rest of the turn:\n\n\
+                     ```bash\n\
+                     export {TOKEN_ENV}=$(\"{}\" {} {SERVICE} {} {} {} \"{}\")\n\
+                     ```\n\n\
+                     That command prints nothing at all unless this card is granted, so it is \
+                     safe to leave in a script — but do not echo what it returns.",
+                    exe.display(),
+                    crate::hooks::FLAG_SECRET,
+                    crate::hooks::FLAG_CARD,
+                    card,
+                    crate::hooks::FLAG_DB,
+                    db.display(),
+                ),
+                /* No path to name is not a failure of the grant — the variable
+                   still lands at the next spawn. Say what is true and no more,
+                   rather than printing a command with a hole in it. */
+                _ => "\n\nYour current process was started before the grant existed, so its \
+                      environment does not have it yet; it will from your next turn."
+                    .to_string(),
+            };
             format!(
-                "The user agreed. The token is below — **do not repeat it anywhere**: not in \
-                 your reply, not in a file, not in a commit, not to another card. It is already \
-                 in this transcript and must not go anywhere else.\n\n\
-                 token: {secret}\n\n\
+                "The user agreed, and the grant is recorded against this card.\n\n\
+                 **The token is not in this reply, and must not be put in one.** From your next \
+                 turn onward it is in your environment as `{TOKEN_ENV}` — every Bash, \
+                 PowerShell and script call you make inherits it, so read it with \
+                 `$env:{TOKEN_ENV}`, `$ {TOKEN_ENV}` or `os.environ[\"{TOKEN_ENV}\"]` at the \
+                 point of use and never print it.{now}\n\n\
                  Use it as `Authorization: Bearer <token>` against \
                  `https://app.asana.com/api/1.0`. No certificate workaround is needed on this \
                  machine — the network intercepts TLS, and CURL_CA_BUNDLE, SSL_CERT_FILE and \
                  REQUESTS_CA_BUNDLE are already set, so curl, Python and Node all reach the \
                  host (verified 2026-09-04).\n\n\
-                 It is unscoped, so every request you make is the user's whole account acting \
-                 under their name. Stay inside what you said you needed it for: {}",
+                 The grant lasts until this card is closed or cleared. It is unscoped, so every \
+                 request you make is the user's whole account acting under their name — stay \
+                 inside what you said you needed it for: {}",
                 clip(reason.trim(), 200)
             )
         }),
@@ -1660,18 +1727,43 @@ mod tests {
     #[test]
     fn the_token_schema_says_what_it_cannot_take_back() {
         /* The description is the only thing an agent reads before deciding
-           whether to reach for this, and three of its claims are the whole
-           reason it is safe to offer at all: that the token is unscoped, that
-           it lands in the transcript permanently, and that it must not be
-           repeated. A schema that lost any of them would still compile, still
-           register, and still be found. */
+           whether to reach for this, and four of its claims are the whole
+           reason it is safe to offer at all: that the token is unscoped, where
+           it will actually arrive, that it must never be printed, and how long
+           the grant lasts. A schema that lost any of them would still compile,
+           still register, and still be found.
+
+           The last one earns its place for a reason the others do not: without
+           it an agent re-asks on every turn, which is a question the user is
+           trained to click through — the way an approval stops meaning
+           anything. */
         let text = token_schema()["description"].as_str().unwrap().to_string();
-        for claim in ["not scoped", "transcript", "plain text", "Never repeat it"] {
+        for claim in ["not scoped", TOKEN_ENV, "never", "closed or cleared"] {
             assert!(text.contains(claim), "the token schema stopped saying {claim:?}");
         }
+        /* And the environment is named as the place it arrives, rather than the
+           reply — the whole of the redesign, and a sentence that would read as
+           fine if it silently went back to promising the token inline. */
+        assert!(
+            text.contains("never put in this conversation"),
+            "the token schema stopped promising the token stays out of the transcript"
+        );
         /* And `reason` is required, or the guard above is a suggestion. */
         let req = token_schema()["inputSchema"]["required"].as_array().unwrap().clone();
         assert_eq!(req, vec![json!("reason")]);
+    }
+
+    #[test]
+    fn the_env_var_is_the_name_asana_tooling_already_reads() {
+        /* Most of the value of an environment variable over a tool result is
+           that a script an agent writes reaches for the right name without
+           being told. A house-style rename here would be silent: everything
+           still compiles, the token is still exported, and every Asana client
+           on the machine stops finding it. */
+        assert_eq!(TOKEN_ENV, "ASANA_ACCESS_TOKEN");
+        /* And the service id is what `creds.rs` answers for, since `spawn_now`
+           and `--secret` both look the token up by it. */
+        assert_eq!(SERVICE, "asana");
     }
 
     #[test]

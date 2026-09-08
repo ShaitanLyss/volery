@@ -181,6 +181,25 @@ pub fn compensate(command: &str) -> String {
 /// owns and never a second thing that could wedge it. See `sweep`.
 pub fn intercept() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    /* The second thing this binary is, and it is here rather than in `main` for
+       the reason the hook is: it must not open a window or join the wall.
+       `--secret <service> --card <id> --db <path>` prints a credential to stdout
+       and exits, and prints **nothing** unless the wall's own database says that
+       card was granted it.
+       See `docket.rs` for what a grant is and `serve_secret` just below for why
+       this exists at all rather than the token simply being in the environment. */
+    if args.iter().any(|a| a == FLAG_SECRET) {
+        if let Some(out) = serve_secret(
+            after(&args, FLAG_SECRET),
+            after(&args, FLAG_CARD),
+            after(&args, FLAG_DB),
+        ) {
+            print!("{out}");
+        }
+        return true;
+    }
+
     if !args.iter().any(|a| a == FLAG) {
         return false;
     }
@@ -194,6 +213,51 @@ pub fn intercept() -> bool {
         print!("{out}");
     }
     true
+}
+
+/// Print a granted credential, or print nothing.
+///
+/// **This exists because an environment can only be set when a process starts.**
+/// `spawn_now` puts a granted token in the card's environment, which is where a
+/// script should find one — but the turn that *asks* for the grant is running in
+/// a process that was spawned before the user agreed, and there is no supported
+/// way to change its environment from outside. Without this, a card would be
+/// told "granted, now end your turn and come back", which is a feature nobody
+/// would use at the moment they needed it.
+///
+/// So the answer to that turn is a command it can run:
+///
+/// ```text
+/// export ASANA_ACCESS_TOKEN=$(volery --secret asana --card <id> --db <path>)
+/// ```
+///
+/// and from the next spawn onward the variable is simply there.
+///
+/// **Every failure prints nothing**, which is the direction that matters: an
+/// unreadable database, a missing card, a service nobody has heard of and a
+/// card with no grant all produce empty output and exit 0. A version that
+/// printed a diagnostic would put it where a shell is about to assign it to a
+/// variable, and a version that printed the token when it could not check would
+/// hand out a credential on the strength of an error.
+///
+/// No newline, for the same reason: this is written to be captured by `$(…)`,
+/// and while command substitution strips trailing newlines, Python's
+/// `subprocess` and PowerShell's `$()` do not always. A bearer token with a
+/// stray `\n` in it fails with a 401 that names nothing.
+///
+/// The database is opened **read-only** through `store::open_readonly`, which is
+/// the same rule `sweep` follows and for the same reason: a short-lived process
+/// that ran the migration ladder would be a second writer racing the wall.
+fn serve_secret(service: Option<&str>, card: Option<&str>, db: Option<&str>) -> Option<String> {
+    let (service, card, db) = (service?, card?, db?);
+    /* Asked of the same registry the panel and `asana.rs` use, so an id nothing
+       answers for is refused by name rather than reaching the vault — the
+       property `creds.rs` chose a service vocabulary for. */
+    let conn = crate::store::open_readonly(std::path::Path::new(db))?;
+    if !crate::store::secret_granted(&conn, card, service) {
+        return None;
+    }
+    crate::creds::token(service)
 }
 
 /// The value given after a flag, if it was given at all.
@@ -488,6 +552,13 @@ pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>, locked: bool
 /// place `tauri.conf.json` already puts it.
 pub const FLAG_CARD: &str = "--card";
 pub const FLAG_DB: &str = "--db";
+
+/// What this binary is asked by, to hand a card a credential it was granted.
+///
+/// Not in the settings layer and never spawned by us — the *card* runs this, in
+/// its own shell, on the one turn where the environment cannot yet carry the
+/// answer. See `serve_secret`.
+pub const FLAG_SECRET: &str = "--secret";
 
 /// A `git commit` with nothing naming what it should commit.
 #[derive(Debug, Clone, PartialEq)]

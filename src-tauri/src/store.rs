@@ -273,7 +273,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 30;
+const SCHEMA_VERSION: i64 = 31;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -309,6 +309,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (28, migrate_v28),
     (29, migrate_v29),
     (30, migrate_v30),
+    (31, migrate_v31),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1468,6 +1469,106 @@ fn migrate_v30(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("migrate v30: {e}"))
 }
 
+/// Which cards the user has agreed may hold an integration's credential.
+///
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: a new table
+/// with nothing to backfill, since until now nothing could be granted.
+///
+/// **A row is a grant and its absence is the whole of the refusal**, which is
+/// what keeps this from drifting the way a status column would. `docket::token`
+/// writes one when the user presses the button; `spawn_now` reads it to decide
+/// whether the card's process gets `ASANA_ACCESS_TOKEN`; `--secret` reads it to
+/// decide whether to print anything. Three readers, one fact, no state machine.
+///
+/// **The grant dies with the card, and both ways of ending one delete it.**
+/// Closing is a *soft* close here — `closed_at` is set and the row stays — so
+/// the foreign key's `ON DELETE CASCADE` does not fire, and
+/// `close_conversation_record` has to delete these explicitly. Clearing keeps
+/// the same card id and takes a new session, which is a different conversation
+/// in every sense that matters here, so it deletes them too. The cascade is
+/// still worth having for the one path that really removes a row (forgetting a
+/// project), where nothing else would.
+///
+/// `service` rather than a boolean column on `conversation`, because the second
+/// integration that wants this should cost a row and not a migration — the
+/// bargain `creds.rs`'s table already strikes one layer up.
+///
+/// `reason` is kept for no functional purpose: nothing reads it to decide
+/// anything. It is there so that "why does this card have my Asana token" has an
+/// answer that is not "somebody clicked yes once", which is the question a grant
+/// with no expiry will eventually be asked.
+fn migrate_v31(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS secret_grant (
+            conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            service         TEXT NOT NULL,
+            granted_at      INTEGER NOT NULL,
+            reason          TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (conversation_id, service)
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v31: {e}"))
+}
+
+/// Record that this card may hold this service's credential.
+///
+/// `INSERT OR REPLACE`, so asking twice is not an error and the newer reason
+/// wins — a card that asked again after a clear is describing what it wants it
+/// for *now*.
+pub fn grant_secret(
+    conn: &Connection,
+    conversation_id: &str,
+    service: &str,
+    reason: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO secret_grant (conversation_id, service, granted_at, reason)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![conversation_id, service, now(), reason],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Whether this card may hold this service's credential.
+///
+/// **Every failure is `false`.** A missing table, a locked database, a row from
+/// some future build: none of them is evidence that the user said yes, and the
+/// direction matters more here than anywhere else in this file — a read that
+/// answered `true` because it could not tell would hand out a credential on the
+/// strength of an error.
+pub fn secret_granted(conn: &Connection, conversation_id: &str, service: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM secret_grant WHERE conversation_id = ?1 AND service = ?2",
+        params![conversation_id, service],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// Take back every grant this card holds.
+///
+/// Called from both endings — `close_conversation_record` and `clear_row`'s
+/// caller — because a soft close leaves the row and the cascade never fires.
+///
+/// **It does not reach a running process**, and nothing here pretends it does:
+/// an environment is fixed when a process starts, so a card whose grant is
+/// deleted keeps `ASANA_ACCESS_TOKEN` until it is respawned. That is harmless
+/// for the two callers, since both of them are ending or resetting the card
+/// anyway — but it is the reason there is no `revoke` command aimed at a live
+/// card, which would be a button that did nothing visible for the rest of the
+/// session. `--secret` re-reads this on every call, so that half is immediate.
+pub fn drop_secret_grants(conn: &Connection, conversation_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM secret_grant WHERE conversation_id = ?1",
+        params![conversation_id],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 
 /// The last window frame, in physical pixels, or `None` if there isn't a usable
 /// one. Every failure here is `None` on purpose — a missing row, a locked
@@ -2339,6 +2440,13 @@ pub fn clear_conversation(
     {
         let conn = store.0.lock().unwrap();
         clear_row(&conn, &id, &session_id)?;
+        /* And any credential it was trusted with. A cleared card keeps its id
+           and takes a new session, which is a different conversation in every
+           sense this matters for — the agent that was granted the token has no
+           memory of asking, and the person who agreed was agreeing to what that
+           conversation said it needed it for. Inside the same lock as
+           `clear_row`, so a card cannot come back cleared and still granted. */
+        drop_secret_grants(&conn, &id)?;
     }
     /* Clearing mechanism (2) — see `board.rs`. A card that has been reset is not
        still doing what its notice says it is doing, and the notice would outlive
@@ -2641,6 +2749,20 @@ pub struct Foreign {
 /// The database is in WAL, which a read-only connection reaches through the
 /// `-shm` file rather than by reading the journal itself — so this works
 /// *because the app is running*, which is exactly when the only caller exists.
+/// Where this wall's database file is, for the two things that have to name it
+/// to something outside the process.
+///
+/// Both callers hand the path to a *different* process — `hooks::settings` bakes
+/// it into a card's hook argv, and `docket::token` writes it into the command a
+/// granted card runs — so it is derived in one place rather than each of them
+/// joining `skein.db` onto the studio directory. `tauri.conf.json` owns the
+/// folder name and CLAUDE.md is explicit about what a second hard-coding of it
+/// costs; this is the file name paying the same rule.
+pub fn db_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    Some(app.try_state::<Store>()?.1.join("skein.db"))
+}
+
 pub fn open_readonly(db: &std::path::Path) -> Option<Connection> {
     use rusqlite::OpenFlags;
     Connection::open_with_flags(
@@ -2918,6 +3040,13 @@ pub fn close_conversation_record(
             params![id, now()],
         )
         .map_err(|e| e.to_string())?;
+        /* And any credential it was trusted with. **The cascade does not fire
+           here** — this is a soft close, the row stays and only `closed_at` is
+           set — so a grant left behind would sit in the table for the life of
+           the database, and would be handed straight back if that session were
+           ever adopted onto the wall again. Deleted explicitly, in the same
+           lock as the close. */
+        drop_secret_grants(&conn, &id)?;
     }
     /* Its notices go with it. A command rather than a query, which is why this
        reaches into `board` where nothing else in this file does: the billboard's

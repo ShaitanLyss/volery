@@ -406,24 +406,91 @@ machine it can, since Credential Manager is readable by any process running as t
 for an escape is not detection, it is removing the reason to reach for it.** A sanctioned door
 with a person standing in it beats an unsanctioned one with nobody.
 
-**Nothing is masked, and that is the decision most likely to be second-guessed.** The token
-comes back as a tool result, which is written to the session transcript on disk in plain text
-and stays there. Redacting it in `toolcall.ts` would leave the bytes exactly where they are and
-make the reading *look* safer — the direction this codebase refuses everywhere else, and the
-same argument `checkFailed` makes about a check that is wrong in the reassuring direction. So
-the question says it instead, and says the consequence that actually changes what somebody
-should do: **Volery's own *forget it* stops being enough.** Clearing the vault entry removes
-Volery's copy and not the one now on disk, so revocation moves to Asana — *my settings → apps →
-manage developer apps*. That is the one thing a person would otherwise assume they still
-controlled from here.
+#### What it hands over is a grant, not the secret
+
+**The first cut returned the token as the tool result, and that was the wrong shape.** A tool
+result is written to the session transcript on disk, in plain text, permanently — so approving
+once put a copy of an unscoped credential in a file nothing can edit afterwards, and Volery's
+own *forget it* stopped being enough, because clearing the vault removes Volery's copy and not
+that one. Masking it in `toolcall.ts` was considered and refused for the right reason (the bytes
+would still be on disk, so the reading would only *look* safer — `checkFailed`'s argument about
+being wrong in the reassuring direction), but refusing the theatre is not the same as fixing the
+leak.
+
+**The fix is that the token never enters the conversation at all.** What the settle records is a
+row in `secret_grant`; what a granted card gets is `ASANA_ACCESS_TOKEN` **in its process
+environment**, set by `spawn_now`. Every Bash, PowerShell and script call a card makes is a
+child of that process and inherits it, so a script reaches for `os.environ` and finds it without
+being told — which is most of the value over a tool result the agent has to remember to thread
+through by hand.
+
+Three things were probed on 2026-09-04 against claude 2.1.241 before any of this was built, and
+each one decided a line of it:
+
+- **`env` in a `--settings` file does reach the shell tool.** It is nevertheless *not* the route
+  used, and this is the load-bearing negative result: `supervisor` passes `--settings` as an
+  inline JSON **argument**, so a token in it would sit in `claude.exe`'s command line, which any
+  process on this machine can read. An environment block needs debug rights. Same secret, two
+  hiding places, and only one of them is one.
+- **A variable set on the `claude` process reaches the shell tool** (`GOT=inherited-…` came back
+  through it). That is the mechanism.
+- **`curl`, Python and Node all reach `app.asana.com`** and get a 401 rather than a TLS failure,
+  because `CURL_CA_BUNDLE`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` are set in this
+  environment. Unlike `az` against `dev.azure.com` there is no certificate wall, so a card can
+  genuinely use the thing it was given.
+
+#### An environment can only be set at spawn, and that is the whole of the awkwardness
+
+There is no supported way to change a running process's environment on Windows. Two consequences
+follow and both are stated in the code rather than left to be discovered:
+
+- **The turn that asks cannot see it.** Its process started before the user agreed. Telling the
+  card *"granted, now end your turn and come back"* would be a feature nobody uses at the moment
+  they need it — so `hooks::serve_secret` exists: `volery --secret asana --card <id> --db <path>`
+  prints the token to stdout, and prints **nothing at all** unless the wall's own database says
+  that card was granted it. The answer to the asking turn is a one-line `export …=$(…)` built
+  with the real paths, so the card has something to run rather than a shape to assemble. It is
+  the same "this binary is also a subprocess its cards invoke" pattern `--bash-hook` already
+  establishes, and it opens the database **read-only** for `sweep`'s reason.
+- **A grant taken back does not reach a live process either.** That is why there is no revoke
+  command aimed at a running card — it would be a button that did nothing visible for the rest
+  of the session. `--secret` re-reads the grant on every call, so *that* half is immediate.
+
+#### The grant dies with the card, and both endings delete it
+
+`secret_grant` is keyed on `(conversation_id, service)`. **A row is a grant and its absence is
+the whole of the refusal**, which is what keeps three readers — the settle that writes it,
+`spawn_now`, and `--secret` — agreeing about one fact with no state machine between them.
+
+- **Closing deletes it explicitly, because the cascade does not fire.** A close here is *soft* —
+  `closed_at` is set and the row stays — so `ON DELETE CASCADE` never runs, and a grant left
+  behind would sit in the table for the life of the database and be handed straight back if that
+  session were ever adopted onto the wall again. The cascade is still worth having for the one
+  path that really removes a conversation row (forgetting a project), where nothing else would.
+- **Clearing deletes it too**, in the same lock as `clear_row`. A cleared card keeps its id and
+  takes a new session, which is a different conversation in every sense this matters for: the
+  agent that was granted the token has no memory of asking, and the person who agreed was
+  agreeing to what *that* conversation said it needed it for.
+- **There is deliberately no expiry and no revoke button.** Asked and answered: once granted,
+  taking it back is closing or clearing the card. The distinction between "until revoked" and
+  "until the card ends" turned out to be almost nothing anyway — a closed card never spawns
+  again, so a grant that outlived it would be inert — and the only real difference was the
+  ability to un-grant a card you wanted to keep working with, which is not a motion worth a
+  panel.
+- **`secret_granted` answers `false` on every failure.** A missing table, a locked database, a
+  row from a future build: none of them is evidence that the user said yes, and this is the one
+  read in the file where being wrong in the permissive direction hands out a credential on the
+  strength of an error.
+- **`reason` is stored and nothing reads it to decide anything.** It is there so that *"why does
+  this card have my Asana token"* has an answer that is not "somebody clicked yes once", which
+  is the question a grant with no expiry eventually gets asked.
 
 What is **not** a leak, stated so nobody widens the warning past what is true: another card
-cannot read it. `relay::recall` folds only `assistant` speech out of a transcript and never
-tool results (`speeches_from` rejects any line without `"assistant"` in it), so the token
-reaches a second card only if this agent quotes it in its own words — which is why the schema
-tells it not to, in as many words, four times.
+cannot read it. `relay::recall` folds only `assistant` speech out of a transcript and never tool
+results (`speeches_from` rejects any line without `"assistant"` in it) — and now there is
+nothing in the transcript to read either way.
 
-Four things decided rather than fallen into:
+Four more things decided rather than fallen into:
 
 - **`reason` is required, and a call without one is refused before anybody is asked.** It is
   shown verbatim and is the whole of what the user decides on; *"to work with Asana"* is not a
@@ -439,22 +506,15 @@ Four things decided rather than fallen into:
   somebody through the seventh. `approved` takes the label it is matching, and
   `the_token_takes_its_own_word_and_not_the_writes_one` asserts both directions — passing the
   wrong constant is a call that compiles perfectly.
-- **The vault is read inside the settle, not captured before the question.** A token cleared or
-  replaced while the question stood for ten minutes is not one to hand over from ten minutes
-  ago; same reason `creds.rs` reads per request rather than caching.
+- **A chat card is refused in two places.** `docket::permitted` denies it the tools, and
+  `spawn_now` will not put the variable in its environment either. A capability that depends on
+  one check is a capability one edit away from being ungated, and this is the card kind whose
+  whole claim is that it can reach nothing on this machine.
 
-**It asks every time, and needs no state to do it.** There is no grant to remember and no
-expiry to run, which looks like an omission and is the design: a card that has the token is
-holding it in context and will not call again, and a card that *does* call again genuinely does
-not have it — a new session, a cleared card, a fresh rouse — which is exactly when a fresh
-approval is right. A remembered grant would hand the token to a card the user approved
-*yesterday*, silently, on a turn they never saw.
-
-**And a card can use it by hand here, which is why the tool is worth having at all.** Verified
-2026-09-04: `curl`, Python and Node all reach `app.asana.com` and get a 401 rather than a TLS
-failure, because `CURL_CA_BUNDLE`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` are set in the
-environment. Unlike `az` against `dev.azure.com`, there is no certificate wall to get past — so
-the answer names the base url and the header and gets out of the way.
+**The schema tells the card to look before it asks**, because the grant now outlives the turn:
+`ASANA_ACCESS_TOKEN` is already set on every turn after the first, so an agent that re-asked
+each time would be putting a credential question in front of somebody repeatedly — which is how
+an approval stops meaning anything. That sentence is one of the four the schema test guards.
 
 ### Where it sits, and what is proven
 
@@ -476,10 +536,17 @@ over the whole account.
 because every one of them parks — a past tense would be the transcript claiming an outcome
 while the question is still up.
 
-`bun tools/lift-docket.ts` runs 15 assertions for real on a machine with no MSVC, which is the
+`bun tools/lift-docket.ts` runs 16 assertions for real on a machine with no MSVC, which is the
 rule `build.md` states: **`approved` is the whole of the gate**, and neither direction of it is
 visible to a typecheck. A version returning `true` for every answer compiles, passes
 `check-gnu`, and hands every agent on the wall the user's whole Asana account.
+
+Two of those assertions guard things a typecheck cannot see at all. `approved` takes the label
+it matches, so a write's yes and the token's yes are different strings *by convention* — passing
+the wrong constant compiles perfectly, and only the test says the token still refuses a write's
+`do it`. And `TOKEN_ENV` is asserted to be the literal `ASANA_ACCESS_TOKEN`, because a
+house-style rename there would be silent: everything still compiles, the variable is still
+exported, and every Asana client on the machine stops finding it.
 
 **No request has ever been made through these tools.** The readings reuse the wire the widgets
 exercise daily, so those are as proven as the widgets are; the six writes — `put`, `delete`,
@@ -490,7 +557,23 @@ absent). Recorded here rather than discovered later for the reason `4951f398` ex
 green on every gate and never once run is a known unknown, and saying so is the only thing that
 keeps it one. The first real call is the test.
 
-**And one thing no gate here can check at all**: whether an agent honours *do not repeat it*.
-Nothing in Volery enforces that — the schema asks four times, and the transcript is where it
-would show. Worth knowing before the first approval, and worth a glance at the card's own reply
-after one.
+**And the grant path has its own unrun half, which is the one to check first.** The three probes
+above establish that a variable set on the `claude` process reaches the shell tool — they were
+run against a bare `claude`, not against a card Volery spawned, and not once through
+`spawn_now`'s own arm. So what is proven is the *mechanism* and not this wiring of it. Nor has
+`--secret` ever been invoked: the arm is in `intercept`, it typechecks, and no shell has run it.
+When there is a PAT to try, the order is (1) grant on a card, (2) `echo $ASANA_ACCESS_TOKEN` in
+a **new** turn, (3) the `--secret` line from the approval answer in the *same* turn, (4) close
+the card and confirm the row is gone.
+
+**One thing no gate here can check at all**: whether an agent honours *never print it*. Nothing
+in Volery enforces that — the schema says it three times and the answer says it again. The
+transcript is where it would show, and it is worth a glance at the card's own reply after a
+first approval. That risk is much smaller than it was, though, and worth stating as the reason
+the redesign was worth doing: **the token is no longer in the transcript by default, only by an
+agent's mistake.** Before, it was there by design.
+
+**And a migration, which means the usual hazard applies.** Schema v31 adds `secret_grant`. Per
+CLAUDE.md, `bun run tauri dev` opens the *real* wall and `store::may_migrate` refuses to carry
+a debug build's schema forward — so this rung is the installed build's to run, and `bun run lab`
+is where one gets developed against a copy.
