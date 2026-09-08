@@ -42,13 +42,20 @@
 //!
 //! ## And it must be told a language, because the wall's verbs are English
 //!
-//! `SystemSpeechLanguage` here is `fr-FR`. Left to itself the recogniser would
-//! listen in French and hand back French — which the grammar in `voice.ts`
-//! cannot parse a word of, since its verbs are `select`, `stop`, `open`. That
-//! fails as *"it hears me and nothing happens"*, with nothing anywhere to say
-//! why. So the language is an argument with an English default rather than
-//! whatever the OS is set to, and the caller may override it the day the
-//! vocabulary grows a second language.
+//! `SystemSpeechLanguage` was `fr-FR` when this was written. Left to itself the
+//! recogniser would listen in French and hand back French — which the grammar
+//! in `voice.ts` cannot parse a word of, since its verbs are `select`, `stop`,
+//! `open`. That fails as *"it hears me and nothing happens"*, with nothing
+//! anywhere to say why. So the language is an argument with an English default
+//! rather than whatever the OS is set to, and the caller may override it the
+//! day the vocabulary grows a second language.
+//!
+//! **It read `en-US` two days later**, with nobody having touched this file —
+//! which is the argument rather than a footnote to it. A value that moves under
+//! you between one probe and the next is not a value to inherit silently, and
+//! the day it moves back is a day the wall stops answering to its own verbs
+//! with nothing in the transcript to say why. `hearing()` still reports it, so
+//! the disagreement stays visible.
 
 use serde::Serialize;
 use tauri::Emitter;
@@ -128,19 +135,51 @@ pub(crate) fn explain(code: i32, message: &str) -> String {
 
 #[cfg(windows)]
 /// A recognition that ended without an error but without words either.
-fn why_empty(status: SpeechRecognitionResultStatus) -> Option<&'static str> {
-    match status {
-        SpeechRecognitionResultStatus::Success => None,
-        SpeechRecognitionResultStatus::TimeoutExceeded => Some("nothing was said"),
-        SpeechRecognitionResultStatus::MicrophoneUnavailable => Some("no microphone"),
-        SpeechRecognitionResultStatus::AudioQualityFailure => Some("the audio was unusable"),
-        SpeechRecognitionResultStatus::UserCanceled => Some("cancelled"),
-        SpeechRecognitionResultStatus::NetworkFailure => Some("the recogniser wanted a network"),
+///
+/// **The last arm carries the number now, and that is the whole of why this was
+/// rewritten.** It used to say `"the recogniser gave no reason"` and throw the
+/// status away — which is exactly the mistake `explain` above spends three
+/// tests refusing to make, one layer down: a sentence naming nothing cannot be
+/// searched for, cannot be told apart from the three other statuses that reach
+/// the same arm, and reads as *the microphone is broken*. Reported 2026-09-08
+/// by somebody who had just opened the privacy gate and had no way to tell they
+/// were now past it.
+///
+/// `Unknown` is named because **this machine produces it**, which is the same
+/// standard `explain` holds its two named HRESULTs to. Measured 2026-09-08 with
+/// a bare WinRT script outside the app — six silent one-shot recognitions on an
+/// idle en-US machine, microphone allowed and the speech privacy policy
+/// accepted, returned `Unknown` **twice**, both after ~4s, where a healthy
+/// silent run returns `Success` with an empty string after ~5.4s (the
+/// documented initial-silence timeout). So it is intermittent, it is nothing
+/// the person did, and the only useful thing to say about it is *try again*.
+fn why_empty(status: SpeechRecognitionResultStatus) -> Option<String> {
+    let said = match status {
+        SpeechRecognitionResultStatus::Success => return None,
+        SpeechRecognitionResultStatus::TimeoutExceeded => "nothing was said",
+        SpeechRecognitionResultStatus::MicrophoneUnavailable => "no microphone",
+        SpeechRecognitionResultStatus::AudioQualityFailure => "the audio was unusable",
+        SpeechRecognitionResultStatus::UserCanceled => "cancelled",
+        SpeechRecognitionResultStatus::NetworkFailure => "the recogniser wanted a network",
         SpeechRecognitionResultStatus::TopicLanguageNotSupported => {
-            Some("dictation is not installed for that language")
+            "dictation is not installed for that language"
         }
-        _ => Some("the recogniser gave no reason"),
-    }
+        SpeechRecognitionResultStatus::Unknown => {
+            "windows ended the recognition without saying why — it does that \
+             intermittently; try again"
+        }
+        /* Not guessed at, and not silent either. The type is a newtype over an
+           i32 whose derived `Debug` prints the number rather than the name, so
+           the number is all there is to hand over — and a number can be looked
+           up, which is the property the whole file is protecting. */
+        other => {
+            return Some(format!(
+                "the recogniser stopped without words (status {})",
+                other.0
+            ))
+        }
+    };
+    Some(said.to_string())
 }
 
 #[cfg(windows)]
@@ -269,7 +308,7 @@ pub fn listen(language: &str, partial: impl Fn(&str) + Send + 'static) -> Result
 
     let status = result.Status().map_err(fail)?;
     if let Some(why) = why_empty(status) {
-        return Err(why.to_string());
+        return Err(why);
     }
 
     /* **A success can still carry no words, and the first real run did exactly
@@ -378,9 +417,10 @@ mod tests {
     #[test]
     fn the_default_language_is_not_the_system_one() {
         /* Not a tautology — it is the whole of why this constant exists. The
-           wall's verbs are English and this machine's speech language is French,
-           so a recogniser left to itself hands back words no rung can parse and
-           the failure is "it hears me and nothing happens". */
+           wall's verbs are English and the OS's speech language is whatever it
+           is this week (`fr-FR` on 2026-09-06, `en-US` on 2026-09-08, untouched
+           in between), so a recogniser left to itself can hand back words no
+           rung can parse and the failure is "it hears me and nothing happens". */
         assert_eq!(DEFAULT_LANGUAGE, "en-US");
     }
 
@@ -391,12 +431,36 @@ mod tests {
            recognition actually produced, and they must not read differently to
            whoever is listening for an answer. */
         assert_eq!(
-            why_empty(SpeechRecognitionResultStatus::TimeoutExceeded),
+            why_empty(SpeechRecognitionResultStatus::TimeoutExceeded).as_deref(),
             Some("nothing was said")
         );
         /* And a plain success says nothing here, so the empty-text guard beside
            it is the only thing standing between silence and a spent request. */
         assert_eq!(why_empty(SpeechRecognitionResultStatus::Success), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_status_nobody_has_a_sentence_for_still_hands_over_its_number() {
+        /* The bug this replaced: every unnamed status collapsed into "the
+           recogniser gave no reason", so four different endings were one
+           unsearchable sentence and the person holding it could not tell a
+           broken microphone from a session Windows dropped. Same property the
+           `explain` tests protect, one layer down. */
+        let said = why_empty(SpeechRecognitionResultStatus(9999)).expect("not a success");
+        assert!(said.contains("9999"), "{said}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_intermittent_one_this_machine_produces_says_to_try_again() {
+        /* `Unknown` is roughly one silent recognition in three here (see the
+           note on `why_empty`), so the sentence has to end in the thing that
+           actually works rather than in a diagnosis. */
+        let said = why_empty(SpeechRecognitionResultStatus::Unknown).expect("not a success");
+        assert!(said.contains("try again"), "{said}");
+        /* And it is named, so it does not go out carrying a raw number. */
+        assert!(!said.contains("status "), "{said}");
     }
 
     #[cfg(windows)]
