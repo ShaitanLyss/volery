@@ -142,7 +142,14 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
   },
   {
     file: "src-tauri/src/docket.rs",
-    items: ["const TASKS_TOOL", "const TASK_TOOL", "fn tasks_schema", "fn task_schema"],
+    items: [
+      "const TASKS_TOOL",
+      "const TASK_TOOL",
+      "const TOKEN_TOOL",
+      "fn tasks_schema",
+      "fn task_schema",
+      "fn token_schema",
+    ],
   },
   {
     file: "src-tauri/src/selector.rs",

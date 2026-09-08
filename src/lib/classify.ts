@@ -225,6 +225,16 @@ export const SKEIN_PUT_ON_TOOL = "mcp__skein__put_on";
 export const SKEIN_TASKS_TOOL = "mcp__skein__tasks";
 export const SKEIN_TASK_TOOL = "mcp__skein__task";
 
+/** And the escape hatch, which is the one tool on this server that hands a card
+ *  a **secret**.
+ *
+ *  It gets a line of its own rather than falling in beside `task`, because what
+ *  it is asking for is a different kind of thing and the card is the only place
+ *  somebody looking at the wall would see it happen. The wording names the
+ *  credential outright — *the asana token*, not "access" or "permission" — since
+ *  the whole value of the line is that it is unmistakable at a glance. */
+export const SKEIN_ASANA_TOKEN_TOOL = "mcp__skein__asana_token";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -657,6 +667,10 @@ export function describeTool(name: string, input: any): string {
           return "wants to change an asana task";
       }
     }
+    case SKEIN_ASANA_TOKEN_TOOL:
+      /* `wants` again, and here it is the whole of the honesty: at the moment
+         this is drawn the question is up and the token has not moved. */
+      return "wants to be given the asana token";
     case "ExitPlanMode":
       return "wants the plan approved";
     default:

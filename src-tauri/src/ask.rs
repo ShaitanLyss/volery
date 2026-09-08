@@ -969,6 +969,19 @@ pub(crate) fn roster() -> Vec<Value> {
              status on the board comment on a ticket tick off an asana task delete a task \
              update the description — asks the user first",
         ),
+        /* The escape hatch, and its hint is written to be found by a card that
+           has already hit the wall rather than by one shopping for a
+           capability — `attachment`, `subtask`, `webhook` and `portfolio` are
+           the words in its hand, because they are the things `task` does not
+           do. It deliberately does **not** claim the ordinary verbs: a card
+           searching "create an asana task" must land on `task`, which asks for
+           one thing, and not on the tool that hands over the whole account. */
+        found_by(
+            crate::docket::token_schema(),
+            "asana api directly personal access token PAT credential attachment subtask \
+             portfolio goal webhook custom field admin bulk asana endpoint the task tool \
+             cannot do this",
+        ),
         /* The music. Both hints are written in **the words a person says about
            music** rather than around either tool's name, because nobody thinks
            "records" — they think "put something on".
@@ -1440,9 +1453,21 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            small: `docket::task` decides once and hands back
                            what to do about it, and every refusal and argument
                            problem comes back as `Now`, so nothing reaches a
-                           person until the call is worth their attention. */
-                        if tool == crate::docket::TASK_TOOL {
-                            match crate::docket::task(&app, &conversation_id, &args) {
+                           person until the call is worth their attention.
+
+                           `asana_token` comes through the same arm and is the
+                           sharper case: it hands the card the **unscoped PAT
+                           itself**, which is the one secret anything on this
+                           server gives away. `docket::writes` is asked which
+                           tools park rather than the condition being spelled
+                           out here, because that is a fact about that module —
+                           and a tool that ought to park, left out of a list
+                           kept over here, is an unattended write with nothing
+                           anywhere to say so. */
+                        if let Some(writing) =
+                            crate::docket::writes(&app, &conversation_id, &tool, &args)
+                        {
+                            match writing {
                                 crate::docket::Writing::Now(said) => {
                                     respond(
                                         req,

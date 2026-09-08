@@ -8,13 +8,20 @@
  *
  * ### Why this file earns a lift
  *
- * `docket.rs` has six writes behind one confirmation, and **`approved` is the
- * whole of the gate.** Everything the module promises — that no card writes to
- * somebody's Asana without a person pressing a button — reduces to one string
- * comparison, and neither direction of it is visible to a typecheck. A version
- * that returned `true` for every answer compiles, passes `check-gnu`, and hands
- * every agent on the wall an unscoped Asana token; a version that returned
- * `false` for every answer compiles just as well and makes the tool inert.
+ * `docket.rs` has six writes and a credential handover behind one confirmation,
+ * and **`approved` is the whole of the gate.** Everything the module promises —
+ * that no card writes to somebody's Asana, and no card is given the unscoped
+ * token, without a person pressing a button — reduces to one string comparison,
+ * and neither direction of it is visible to a typecheck. A version that returned
+ * `true` for every answer compiles, passes `check-gnu`, and hands every agent on
+ * the wall the user's whole Asana account; a version that returned `false` for
+ * every answer compiles just as well and makes the tools inert.
+ *
+ * The two-label form is the half worth asserting hardest. `approved` takes the
+ * word it is matching against, so a write's yes and the token's yes are
+ * different strings on purpose — and nothing but a test can say that the token
+ * still refuses a write's `do it`, since passing the wrong constant is a call
+ * that compiles perfectly.
  *
  * That is the same argument `lift-ask.ts` makes for `swallowed` and
  * `lift-gates.ts` for the gate readings: a predicate that decides whether
@@ -69,6 +76,8 @@ const ITEMS = [
   "const MAX_SHOWN",
   "const DO_IT",
   "const DO_NOT",
+  "const HAND_IT_OVER",
+  "const KEEP_IT",
   "fn approved",
   "fn clip",
   "fn unanswered",
@@ -80,6 +89,8 @@ const ITEMS = [
   "fn task_schema",
   "const TASKS_TOOL",
   "const TASK_TOOL",
+  "const TOKEN_TOOL",
+  "fn token_schema",
 ];
 
 /** The assertions. Every `#[test]` in the module that does not need the wall —
@@ -97,7 +108,10 @@ const TESTS = [
   "a_task_reading_carries_notes_only_when_asked",
   "a_tasks_section_is_matched_on_this_project_and_not_the_first",
   "a_task_in_no_section_is_loose_rather_than_missing",
-  "the_two_tools_do_not_share_a_name_with_each_other",
+  "the_three_tools_do_not_share_a_name_with_each_other",
+  "the_token_takes_its_own_word_and_not_the_writes_one",
+  "asking_for_the_token_without_a_reason_is_refused_before_anybody_is_asked",
+  "the_token_schema_says_what_it_cannot_take_back",
 ];
 
 /** The per-file machinery, closed over one file's lines. */
@@ -249,3 +263,4 @@ try {
   console.error(e);
   process.exit(1);
 }
+

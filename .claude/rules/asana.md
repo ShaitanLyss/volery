@@ -296,10 +296,13 @@ about Asana.
 
 ## Asana a card can reach — `docket.rs`
 
-Two MCP tools on the skein server: `tasks`, which reads, and `task`, which is the one verb and
-has six actions. The arrangement is `smith.rs`'s one service over, and the file is a door onto
+Three MCP tools on the skein server: `tasks`, which reads; `task`, which is the one verb and
+has six actions; and `asana_token`, which is the escape hatch and hands over the credential
+itself. The arrangement is `smith.rs`'s one service over, and the file is a door onto
 `asana.rs` rather than a second client — `get`, `post`, `put` and `delete` became `pub(crate)`
 and the token and base url did not, so what crosses the seam is a request and never the secret.
+`asana_token` is the deliberate exception to that last clause, and the section on it below is
+the whole of why.
 
 ### Why it exists: a credential the app was holding and not lending
 
@@ -383,29 +386,111 @@ where in the column, so Asana's default is also the only honest answer and inven
 neighbour would be the tool deciding something nobody asked it to. The tool's reply says where
 it landed, so the card is not left guessing either.
 
+### `asana_token` — the credential itself, and the line it crosses
+
+The six actions are a fraction of Asana's API. A card that needs an attachment, a subtask, a
+portfolio, a goal, a webhook or a bulk read has no route through them at all — so `asana_token`
+parks a question and, if the user agrees, **hands the card the PAT**.
+
+**This crosses a line `creds.rs` draws on purpose**, and it is written down rather than quietly
+taken. That file states it plainly — *"the one read path out of this file, and it hands back
+the secret — which everything else here is arranged not to do"* — and `integration_held`
+answers a boolean precisely so that no command can return a token to the front end. An agent is
+further out than the front end.
+
+What licenses the exception is that the alternative is worse in a specific and checkable way:
+an Asana PAT is unscoped and cannot be narrowed, so a card facing a gap has no sanctioned move
+— and the thing an agent actually does next is go and read the vault itself, which on this
+machine it can, since Credential Manager is readable by any process running as the user.
+`processes.md` reaches the same conclusion about the WMI escape and states the rule: **the fix
+for an escape is not detection, it is removing the reason to reach for it.** A sanctioned door
+with a person standing in it beats an unsanctioned one with nobody.
+
+**Nothing is masked, and that is the decision most likely to be second-guessed.** The token
+comes back as a tool result, which is written to the session transcript on disk in plain text
+and stays there. Redacting it in `toolcall.ts` would leave the bytes exactly where they are and
+make the reading *look* safer — the direction this codebase refuses everywhere else, and the
+same argument `checkFailed` makes about a check that is wrong in the reassuring direction. So
+the question says it instead, and says the consequence that actually changes what somebody
+should do: **Volery's own *forget it* stops being enough.** Clearing the vault entry removes
+Volery's copy and not the one now on disk, so revocation moves to Asana — *my settings → apps →
+manage developer apps*. That is the one thing a person would otherwise assume they still
+controlled from here.
+
+What is **not** a leak, stated so nobody widens the warning past what is true: another card
+cannot read it. `relay::recall` folds only `assistant` speech out of a transcript and never
+tool results (`speeches_from` rejects any line without `"assistant"` in it), so the token
+reaches a second card only if this agent quotes it in its own words — which is why the schema
+tells it not to, in as many words, four times.
+
+Four things decided rather than fallen into:
+
+- **`reason` is required, and a call without one is refused before anybody is asked.** It is
+  shown verbatim and is the whole of what the user decides on; *"to work with Asana"* is not a
+  decision anybody can take. Refused ahead of the network too, so a malformed call costs no
+  request.
+- **The identity is resolved before the question.** `GET /users/me`, the same probe
+  `creds::probe_asana` makes, so the question can name **whose** account is being handed over —
+  a token minted on the wrong account is accepted and then sees nothing, which is the failure
+  that reads as an empty result rather than an error. It also catches a stored token that is
+  already dead, which is a refusal rather than a question.
+- **The buttons are `hand it over` / `keep it`, not the writes' `do it`.** Two questions that
+  are not the same act must not share a word, or a habit built on six confirmations carries
+  somebody through the seventh. `approved` takes the label it is matching, and
+  `the_token_takes_its_own_word_and_not_the_writes_one` asserts both directions — passing the
+  wrong constant is a call that compiles perfectly.
+- **The vault is read inside the settle, not captured before the question.** A token cleared or
+  replaced while the question stood for ten minutes is not one to hand over from ten minutes
+  ago; same reason `creds.rs` reads per request rather than caching.
+
+**It asks every time, and needs no state to do it.** There is no grant to remember and no
+expiry to run, which looks like an omission and is the design: a card that has the token is
+holding it in context and will not call again, and a card that *does* call again genuinely does
+not have it — a new session, a cleared card, a fresh rouse — which is exactly when a fresh
+approval is right. A remembered grant would hand the token to a card the user approved
+*yesterday*, silently, on a turn they never saw.
+
+**And a card can use it by hand here, which is why the tool is worth having at all.** Verified
+2026-09-04: `curl`, Python and Node all reach `app.asana.com` and get a 401 rather than a TLS
+failure, because `CURL_CA_BUNDLE`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` are set in the
+environment. Unlike `az` against `dev.azure.com`, there is no certificate wall to get past — so
+the answer names the base url and the header and gets out of the way.
+
 ### Where it sits, and what is proven
 
-Both tools are on the **discoverable** tier with search hints in `ask::roster`, on the argument
+All three are on the **discoverable** tier with search hints in `ask::roster`, on the argument
 that tier is for: a card knows from its prompt whether it is working on a ticket, and the
-overwhelming majority of turns on this wall touch neither. Two collisions were fixed at the
-hint rather than discovered later — **`take` and `done` are the sink's** and own the plain
+overwhelming majority of turns on this wall touch none of them. Two collisions were fixed at
+the hint rather than discovered later — **`take` and `done` are the sink's** and own the plain
 words `claim` and `tick it off`, so every hint here is qualified `asana`, `board`, `ticket` or
 `column`; and `tasks` has to out-rank Claude Code's own `Task`/`TaskOutput`, which are
 subagents, so the hint names Asana and an assignee in the first breath.
+
+**`asana_token`'s hint deliberately claims none of the ordinary verbs.** It carries
+`attachment`, `subtask`, `portfolio`, `webhook` and *"the task tool cannot do this"* — the
+words in the hand of a card that has already hit the wall — because a card searching *"create
+an asana task"* must land on `task`, which asks for one thing, and not on the tool that hands
+over the whole account.
 
 `classify.ts` says **wants to** for every action of `task`, not just the destructive ones,
 because every one of them parks — a past tense would be the transcript claiming an outcome
 while the question is still up.
 
-`bun tools/lift-docket.ts` runs 12 assertions for real on a machine with no MSVC, which is the
+`bun tools/lift-docket.ts` runs 15 assertions for real on a machine with no MSVC, which is the
 rule `build.md` states: **`approved` is the whole of the gate**, and neither direction of it is
 visible to a typecheck. A version returning `true` for every answer compiles, passes
-`check-gnu`, and hands every agent on the wall an unscoped Asana token.
+`check-gnu`, and hands every agent on the wall the user's whole Asana account.
 
 **No request has ever been made through these tools.** The readings reuse the wire the widgets
 exercise daily, so those are as proven as the widgets are; the six writes — `put`, `delete`,
 `/tasks`, `/sections/{gid}/addTask` from a card, `/tasks/{gid}/stories` — have never touched
-Asana, and at the time of writing **there is no Asana PAT in this machine's vault** (checked
-2026-09-04: `dev.skein.studio/asana-pat` is absent). Recorded here rather than discovered later
-for the reason `4951f398` exists: a feature green on every gate and never once run is a known
-unknown, and saying so is the only thing that keeps it one. The first real call is the test.
+Asana, and neither has `asana_token`'s `/users/me` probe, and at the time of writing **there is
+no Asana PAT in this machine's vault** (checked 2026-09-04: `dev.skein.studio/asana-pat` is
+absent). Recorded here rather than discovered later for the reason `4951f398` exists: a feature
+green on every gate and never once run is a known unknown, and saying so is the only thing that
+keeps it one. The first real call is the test.
+
+**And one thing no gate here can check at all**: whether an agent honours *do not repeat it*.
+Nothing in Volery enforces that — the schema asks four times, and the transcript is where it
+would show. Worth knowing before the first approval, and worth a glance at the card's own reply
+after one.
