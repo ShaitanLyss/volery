@@ -224,6 +224,9 @@ const TESTS: Array<{ file: string; names: string[] }> = [
       "the_prompt_names_only_tools_whose_schemas_are_loaded",
       "no_tool_is_named_without_its_server_prefix",
       "a_chat_card_is_told_only_about_the_question",
+      /* The paragraph that contradicts the client's own notice — the only one
+         here whose subject is something already in the prompt. */
+      "a_connector_that_needs_authorizing_is_not_the_last_word",
       /* The last-one-wins collision that made guidance inert. */
       "everything_appended_to_the_prompt_survives_being_composed",
       "either_half_of_the_prompt_can_be_missing",

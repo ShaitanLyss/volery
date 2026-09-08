@@ -322,6 +322,18 @@ network and `gh` is not; here there is no tool to compare against, and the capab
 **absent** rather than broken. Keeping those two arguments apart is what stops the next
 integration being justified by a certificate that has nothing to do with it.
 
+**And then having the route was not enough, because something else in the prompt already
+said there wasn't one.** The client lists the claude.ai Asana connector as needing
+authorization and instructs the card to report the capability unavailable — so a card asked
+about a board on 2026-09-08 opened with exactly that and stopped, with these three tools one
+`ToolSearch` away and their hints written to match the words on a ticket. **A hint reaches a
+card that is uncertain, and that card was not.** `supervisor::append_prompt` carries the one
+sentence that answers it, on the only surface charged on the same turns as the notice;
+`.claude/rules/ask.md`'s "a third case, where the hint loses to something already in the
+prompt" has why it is a sentence rather than a promotion, and the arithmetic. Worth knowing
+here because it is the failure mode of this whole file: **an unreachable capability and an
+unbelieved one look identical from the wall.**
+
 ### Every write asks, and it is one rule rather than a table
 
 `smith.rs` gates its one verb and states the floor as *a card may write only what a person

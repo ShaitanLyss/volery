@@ -428,9 +428,41 @@ description the only place the instruction is stated?
 
 **And the roster is where the weight is, which is worth knowing before optimising the
 visible half.** Measured 2026-09-05: the loaded tier is 20,751 bytes against this test's
-24,000, and `append_prompt` is 1,350 on a project card and 2,414 on a spawned one — 6% of
-what a card pays before it has read a word of its own prompt. `drop_schema` and `post_schema`
-are each larger than the whole system prompt.
+24,000, and `append_prompt` is 1,873 on a project card and 2,937 on a spawned one (re-measured
+2026-09-08) — 9% and 14% of the loaded tier standing beside it, before a card has read a word
+of its own prompt. `drop_schema` and `post_schema` are each larger than the whole system
+prompt.
+
+#### A third case, where the hint loses to something already in the prompt
+
+The tiering rests on one claim about the deferred tier: a card that *goes looking* will find
+the tool, so the only failure a hint cannot fix is not searching — sink `11365b64`, and the
+argument that promoted `servers`. There is a second kind of not-searching, it was met on
+2026-09-08, and it is worse: **the question had already been answered.**
+
+The client lists every claude.ai connector needing authorization and instructs the card to
+tell the user the capability is unavailable until it is. A card asked about an Asana board
+opened by reporting the official connector unauthenticated and stopped — on a wall holding a
+verified Asana token, three widgets drawn off it, and `docket`'s three tools, whose hints are
+written as carefully as any here and would have matched. They never ran. Nothing in
+`ToolSearch` reaches a card that is not uncertain.
+
+So the case is distinguishable and the remedy is different. Non-searching is fixed by
+*loading* a description, which is what the reflex-shaped tier is for. A **contradiction** is
+fixed only where the contradiction is, and only the system prompt is charged on the same
+turns as the notice it has to answer. `supervisor::append_prompt` carries it (521 bytes,
+project cards only) and the whole argument is in the comment above it — including why it
+names the *search* rather than the tools, which is not a way around
+`the_prompt_names_only_tools_whose_schemas_are_loaded` but the division of labour that guard
+protects: the prompt supplies the reflex, the hint supplies the match, the schema supplies
+the reasoning, and no sentence is paid for twice.
+
+**Loading `tasks` instead would not have fitted, and the arithmetic is the useful part.**
+`tasks_schema` is ~2.4KB against this tier's ~2KB of slack, so the choice was never between
+two affordable options — and the sentence is a fifth of the cost for the half of the job that
+was actually missing. The general shape, for whatever meets this next: **before promoting a
+tool, ask whether the card failed to look or was told not to bother.** A hint answers the
+first; only a paragraph answers the second.
 
 #### Several questions in one call
 

@@ -371,6 +371,65 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
              `{MCP_PREFIX}ask_user` rather than improvising credentials."
         ));
 
+        /* **This paragraph exists because the prompt already contains a
+           confident wrong answer, and no schema can rebut it.**
+
+           The client lists every claude.ai connector that needs authorizing —
+           Affinity, Asana, Atlassian, Figma, Gmail, Microsoft 365, Notion here
+           — and instructs the card to tell the user the capability is
+           unavailable until they authorize it. That is correct about the
+           connector and it is *evidence about nothing else*, and a card asked
+           about an Asana board acted on it verbatim: it opened by reporting the
+           official connector unauthenticated and stopped, on a wall that holds
+           a working Asana token and three widgets drawn off it.
+
+           **It is the `servers` failure with a competitor.** Sink `11365b64`
+           is a card that never called `servers` — the hint it had would have
+           ranked first if it had searched, and `ask::roster` promoted that one
+           tool on the argument that the failure was not searching. `docket`'s
+           three hints are written at least as carefully (they carry the words
+           on the ticket rather than the name of the service) and they lose to
+           something worse than inattention: the question was already answered,
+           authoritatively, before the card thought to ask it. Nothing in
+           `ToolSearch` reaches that, because searching is precisely what a card
+           holding an answer does not do.
+
+           **So it names the search rather than the tools**, and that is not a
+           way around `the_prompt_names_only_tools_whose_schemas_are_loaded` —
+           it is the division of labour that guard is protecting. What is
+           missing is the *reflex to look*; the hints already match, and
+           `tasks_schema` already carries the rebuttal in full ("nothing else
+           here holds an Asana credential, so this is the only route") along
+           with the two things everybody gets wrong about Asana. Naming the
+           tools would either put 2.4KB of schema in front of every card on
+           every turn — the loaded tier has ~2KB of slack, so it would not fit
+           — or leave a bare name standing in for the description, which is the
+           failure that guard is about. It also survives a rename, since it
+           names no tool at all.
+
+           **The limit leads rather than trailing.** A wall with no Asana token
+           entered is the ordinary state on a fresh install, and the browser
+           paragraph above records what happens to a card handed a fact and its
+           retraction in that order — it believes the first half. The
+           connector's notice is granted what it is right about in the first
+           clause, so this is not read as "ignore the client": for the six
+           connectors with no route here, telling the user to authorize them
+           remains the whole of the correct answer.
+
+           Off a chat card with the rest of this block, and by the same argument
+           `docket::permitted` makes from the other end — it refuses one
+           outright, so this would be an instruction to try something the card
+           will be told it may not do. See `chat.md`. */
+        prompt.push_str(
+            "\n\nA claude.ai connector the client lists as needing authorization is telling \
+             you about that connector, not about this wall. Asana is the case that bites: \
+             that connector is not authorized here, and Volery holds an Asana token of its \
+             own regardless. So before reporting the capability unavailable, search your \
+             tools for `asana` — this server reads boards and tasks and does the ordinary \
+             writes, each behind a confirmation. If no token has been entered it tells you \
+             so, which is an answer the connector's notice cannot give.",
+        );
+
         /* Project cards only, with the rest of this block. A chat card cannot
            write a file, so it has no scratch directory to name — and `do_list`
            refuses it the roster outright, so telling it which row is its own
@@ -2790,6 +2849,55 @@ mod tests {
             named_tools(&project),
             vec!["ask_user", "ask_user", "list", "list", "send"],
             "a paragraph names a tool whose own description is already loaded"
+        );
+    }
+
+    /// The one paragraph here that exists to contradict something, and the
+    /// assertion is shaped by what it is contradicting rather than by its own
+    /// wording.
+    ///
+    /// The client tells every card that the claude.ai Asana connector needs
+    /// authorizing and that the capability is unavailable until it is. A card
+    /// asked about an Asana board acted on that verbatim and stopped, on a wall
+    /// holding a working token — so this is `servers`' failure (sink
+    /// `11365b64`) with a competitor: not inattention, but a question already
+    /// answered before the card thought to search. `docket`'s hints cannot
+    /// reach it, because searching is what a card holding an answer does not
+    /// do.
+    ///
+    /// Three things are asserted and each is a way the paragraph could be
+    /// present and useless:
+    ///
+    /// - **The service is named.** The hints match on the words on a ticket
+    ///   rather than the service, so the *prompt* is the only place the name
+    ///   itself has to appear — a card is usually holding "the RISE board".
+    /// - **It says to look.** The whole content is a reflex, and a paragraph
+    ///   that establishes the premise without asking for the search leaves the
+    ///   card exactly where it was.
+    /// - **It names no tool**, which `a_chat_card_is_told_only_about_the_question`
+    ///   already holds from the other side and is repeated here as intent: this
+    ///   is a division of labour with the hints and the schemas, not a way
+    ///   around `the_prompt_names_only_tools_whose_schemas_are_loaded`. Naming
+    ///   `tasks` would mean 2.4KB in a tier with ~2KB of slack, or a bare name
+    ///   standing in for the description.
+    ///
+    /// And a chat card hears none of it, because `docket::permitted` refuses one
+    /// outright.
+    #[test]
+    fn a_connector_that_needs_authorizing_is_not_the_last_word() {
+        for me in fullest_and_none() {
+            let p = append_prompt(false, me.as_ref());
+            assert!(p.contains("Asana"), "the service the notice is about is not named: {p}");
+            assert!(
+                p.contains("search your tools"),
+                "the premise is established and no search is asked for, which leaves \
+                 the card where the notice put it: {p}"
+            );
+        }
+        let chat = append_prompt(true, Some(&fullest()));
+        assert!(
+            !chat.contains("Asana"),
+            "a chat card is told to reach a credential `docket::permitted` refuses it: {chat}"
         );
     }
 
