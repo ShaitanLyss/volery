@@ -2,6 +2,7 @@ mod actions;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
 mod applog;
+mod attach;
 mod asana;
 mod aside;
 mod ask;
@@ -494,6 +495,7 @@ pub fn run() {
             store::close_conversation_record,
             store::save_server_group,
             store::delete_server_group,
+            attach::read_attachment,
             store::classify_drop,
             store::import_image,
             store::paste_image,

@@ -57,7 +57,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, glass,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
                          # hunt,
                          # presets,
-                         # commands, copy, widgets, naming, drafts, rousing, quitting, timing,
+                         # commands, copy, widgets, naming, drafts, attach, rousing, quitting, timing,
                          # gears,
                          # sink, gates, logface, serverlog, buildlog, unreallog,
                          # applog,
@@ -85,7 +85,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # repair/text.rs, hooks.rs,
                               # control.rs,
                               # supervisor.rs,
-                              # creds.rs, asana.rs, docket.rs,
+                              # creds.rs, asana.rs, docket.rs, attach.rs,
                               # servers.rs, shell.rs, nvim.rs, find.rs, slash.rs, sessions.rs,
                               # project.rs,
                               # usage.rs,
@@ -102,6 +102,9 @@ node --experimental-strip-types tools/probe-browser.ts   # what a browser costs,
                                    # two clients can share one. NODE, not bun: playwright's
                                    # launch() never returns under bun on this machine.
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
+bun tools/probe-image.ts           # whether an image on stdin reaches the model, interleaved
+                                   # with text and in order. Generates its own two pictures,
+                                   # so a right answer cannot be a guess. One real turn
 bun tools/probe-skills.ts initialize   # the whole slash vocabulary with a description
                                    # each, off the control route, before any prompt. Bare
                                    # shows what system/init publishes; `silent` that it
@@ -152,6 +155,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `asana.md` | three readings of Asana and the first thing on this wall that *writes*: why a column is a section, the one function that decides the optimistic redraw and the request together, the two races a poll and a rollback have, why the drag is pointer events, why silence is not "on track" — and then Asana as a *card* reaches it, where every write asks because the confirmation stands in for a scope an unscoped token cannot have — and the one tool on this server that lends a card a credential, as an environment variable rather than a tool result, because an environment can only be set at spawn | `asana.ts`, `asana.svelte.ts`, `Kanban.svelte`, `Tasks.svelte`, `Health.svelte`, `asana.rs`, `docket.rs` |
 | `actions.md` | the verbs a project has all day, Unreal's shape, conflicts and the fetch clock | `actions.ts`, `project.rs`, `actions.rs` |
 | `ask.md` | the `ask_user` MCP server, parking a `tools/call`, and several questions in one call | `ask.rs`, `asking.ts`, `Ask.svelte` |
+| `attach.md` | showing an agent a picture: an image written *into* the sentence rather than bolted onto it, what the CLI was probed to accept, the echo that is a second string because the replay drops the tokens, why deleting the token is the detach gesture, and what is never written to disk | `attach.ts`, `attach.svelte.ts`, `attach.rs`, `drafts.ts` |
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
@@ -266,7 +270,7 @@ own vocabulary of class names wants its own file rather than a prefix;
 
 Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` files in
 `src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
-`transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
+`transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `attach.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
 `undo.ts`, `finding.ts`, `office.ts`, `integrations.ts`, `zoom.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,

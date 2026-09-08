@@ -44,6 +44,7 @@ import {
   sayRepair,
   type RepairReport,
 } from "./repair";
+import type { Block, Turn } from "./attach";
 import { Conversation, type ConvKind } from "./conversation.svelte";
 import { foldTranscript, trimOverlap } from "./history";
 import { LEAVE_MS, layout, type Placement } from "./layout";
@@ -2011,12 +2012,12 @@ export class Skein {
    *  that finishes has swallowed what you typed. `Conversation.echo` marks the
    *  line pending until the wire echoes it back, so the transcript still says
    *  which words the agent has and which are merely on their way. */
-  async send(conv: Conversation, text: string) {
-    conv.echo(text);
-    await this.#deliver(conv, text);
+  async send(conv: Conversation, text: string, turn?: Turn) {
+    conv.echo(text, turn && { echo: turn.echo, shots: turn.shots });
+    await this.#deliver(conv, text, turn);
   }
 
-  async #deliver(conv: Conversation, text: string) {
+  async #deliver(conv: Conversation, text: string, turn?: Turn) {
     /* Ahead of the wake, and it has to be. `#moveTo` ends the card's process to
        change the account, so settling first means the wake below spawns once,
        already on the right subscription — where settling after would spawn on
@@ -2044,7 +2045,14 @@ export class Skein {
       void invoke("update_conversation", { id: conv.id, title: conv.title });
     }
     try {
-      await invoke("send_prompt", { id: conv.id, text });
+      /* `content` is the blocks the draft composed to, and a text-only prompt
+         builds the one-block array it has always sent. Composed in the dock
+         rather than here or in Rust, because the same cut also decides what the
+         wire will replay — see `Field.turn`. */
+      await invoke("send_prompt", {
+        id: conv.id,
+        content: turn?.content ?? [{ type: "text", text }],
+      });
       /* The lost turn has been answered for — by you, or by the rousing queue's
          resume prompt, and it does not matter which. The card stops saying so
          at once; what it must *not* do is write that through, which is a change
@@ -2367,10 +2375,14 @@ export class Skein {
    *  to: what you sent went to all of them at once, and a line appearing on the
    *  fourth card two seconds after the first would read as four separate
    *  gestures. */
-  async broadcast(convs: Conversation[], text: string) {
-    for (const c of convs) c.echo(text);
+  async broadcast(convs: Conversation[], text: string, turn?: Turn) {
+    /* One composed turn for every card, not one apiece: the draft was cut once
+       and the same blocks — the same base64, the same order — go to all of
+       them. Composing per card would be the same picture encoded N times for
+       no difference in what arrives. */
+    for (const c of convs) c.echo(text, turn && { echo: turn.echo, shots: turn.shots });
     for (const c of convs) {
-      await this.#deliver(c, text);
+      await this.#deliver(c, text, turn);
     }
   }
 

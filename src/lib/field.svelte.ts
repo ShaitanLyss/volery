@@ -9,6 +9,9 @@ import {
   typingChoice,
 } from "./commands";
 import { bangOf, isBang } from "./bang";
+import { Attachments } from "./attach.svelte";
+import { compose, echoOf, stillIn, type Turn } from "./attach";
+import type { Draft } from "./drafts";
 
 /** What is being typed, and what the typing currently means.
  *
@@ -51,6 +54,19 @@ export class Field {
    *  switch, `reset` — either sets it or puts it back to null, so a position
    *  left over from a draft that is gone can never narrow the palette. */
   caret = $state<number | null>(null);
+
+  /** The pictures written into this draft.
+   *
+   *  Held here rather than beside the dock because they are part of the draft in
+   *  the strictest sense: each one lives by a token in `text`, and the two are
+   *  parked and handed back as one value when the focus moves (`drafts.ts`).
+   *  Everything that touches bytes is `Attachments`'; this only holds it. */
+  shots = new Attachments();
+
+  /** The draft as one thing, for parking and handing back. */
+  get draft(): Draft {
+    return { text: this.text, shots: this.shots.list };
+  }
 
   /** The rows the palette offers beside Volery's own: the project's own command
    *  files, then the card's skills, composed by `paletteExtras`.
@@ -193,6 +209,13 @@ export class Field {
   put(text: string) {
     this.text = text;
     this.caret = null;
+    /* An attachment lives by its token, so replacing the whole line decides the
+       fate of every picture in it — clearing after a send drops them all,
+       a command completing itself keeps whichever it did not overwrite. Doing
+       it here rather than at each caller is the same argument this function
+       already makes about the caret: they all share the property and it is easy
+       to forget one of them. */
+    this.shots.prune(text);
   }
 
   /** Put the field back to a bare prompt with the given text in it.
@@ -211,5 +234,52 @@ export class Field {
     this.commandsOff = false;
     this.at = 0;
     this.caret = null;
+    this.shots.clear();
   }
+
+  /** Take up a parked draft whole — the words, the pictures, and the dismissals
+   *  cleared as `reset` clears them.
+   *
+   *  `reset` is the text-only door and stays the one every other caller uses;
+   *  this is the one the focus moving comes through, and it is separate because
+   *  a card switch is the only thing that ever has pictures to hand *back*. */
+  take(draft: Draft) {
+    this.reset(draft.text);
+    this.shots.put(draft.shots);
+  }
+
+  /** Take up a parked draft without disturbing the dismissals — `put`'s door,
+   *  where `take` is `reset`'s.
+   *
+   *  The one caller is a card being closed, and the difference is the whole
+   *  reason there are two: closing the card you were writing at hands the line
+   *  to the wall and goes on showing it, so it is the *same* draft, and an
+   *  Escape you pressed over it a second ago is still a statement about it.
+   *  `reset` there would re-open the palette you had just dismissed. */
+  hold(draft: Draft) {
+    this.put(draft.text);
+    this.shots.put(draft.shots);
+  }
+
+  /** The turn this draft would send: the sentence cut at its tokens.
+   *
+   *  Composed once, here, and both halves of the send read the same value — what
+   *  goes on the wire, and what the wire will replay for it. A second split
+   *  would be a second thing to get wrong, and its failure is silent: the line
+   *  is never claimed, the card reads *sent, not picked up*, and the nudge
+   *  budget goes. See `attach.ts`. */
+  turn(text = this.text): Turn {
+    const content = compose(text, this.shots.list);
+    return {
+      content,
+      echo: echoOf(content),
+      /* Only the ones the sentence still mentions, and in the order they sit in
+         it — the strip under the prompt should read like the prompt. */
+      shots: stillIn(text, this.shots.list).map((a) => ({
+        name: a.name,
+        thumb: a.thumb,
+      })),
+    };
+  }
+
 }

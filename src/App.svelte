@@ -18,6 +18,7 @@
   } from "./lib/studio.svelte";
   import { Skein, type Session } from "./lib/skein.svelte";
   import { Board } from "./lib/images.svelte";
+  import { insertAt } from "./lib/attach";
   import { Widgets } from "./lib/widgets.svelte";
   import { Undo } from "./lib/undo.svelte";
   import { shifted, standsOf, type Stand } from "./lib/undo";
@@ -572,7 +573,11 @@
        for here is the one they cannot see: landing on a card whose draft looks
        like exactly the same thing the last one did — which is why this is
        `reset` rather than an assignment to the text. */
-    field.reset(drafts.switchTo(id, untrack(() => field.text)));
+    /* `take` rather than `reset`, and the draft is the words *and* the pictures
+       in them — an attachment lives by a token in the text, so parking the two
+       apart would hand a picture to whichever card you clicked next while its
+       token stayed in the other card's sentence. See `drafts.ts`. */
+    field.take(drafts.switchTo(id, untrack(() => field.draft)));
   });
   /** The dock's field, so typing on the wall can hand it the keystroke. */
   let prompt: HTMLTextAreaElement | undefined = $state();
@@ -641,28 +646,81 @@
     });
   });
 
+  /** What a drop is currently hovering, so the thing it would land on can say
+   *  so. `null` is the wall, which needs no highlight — it is the default and
+   *  the whole window. */
+  let dropOn = $state<"prompt" | null>(null);
+
+  /** Where a drop at these window coordinates would land.
+   *
+   *  Hit-tested off the DOM rather than tracked as state, because a Tauri drag
+   *  is not a DOM drag: an OS file drag fires no `dragenter` on any element (the
+   *  webview swallows them so the payload can carry real paths), so nothing
+   *  under the cursor is ever told it is being hovered. `elementFromPoint` is
+   *  the only way to ask, and it is exactly what the pointer tracking one line
+   *  up already does with `.closest`.
+   *
+   *  The dock and the panel are one target between them and not two. Both mean
+   *  "give this to the card I am talking to" — the panel *is* that card's
+   *  conversation — and splitting them would be two answers to a question with
+   *  one, plus an edge along the middle of the screen you would have to aim
+   *  either side of. */
+  function dropTargetAt(x: number, y: number): "prompt" | null {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return null;
+    return el.closest(".dock") || el.closest(".side") ? "prompt" : null;
+  }
+
   /* Throw things at the wall and it works out what you meant: a folder becomes
-     a conversation, an image gets pinned up. Tauri hands us real filesystem
-     paths, so both are imports rather than browser blobs. */
+     a conversation, an image gets pinned up, and an image dropped on the dock or
+     the open transcript is attached to the prompt instead. Tauri hands us real
+     filesystem paths, so all three are imports rather than browser blobs — which
+     is also why the attach path has to go through Rust to read the bytes
+     (`attach.rs`), where the paste already has them. */
   $effect(() => {
     const un = getCurrentWebview().onDragDropEvent(async (e) => {
-      if (e.payload.type !== "drop") return;
       /* The payload carries a PHYSICAL pixel position; getBoundingClientRect
          works in CSS pixels. On a 150% display those differ by 1.5×, so
          skipping this makes every drop land well off from where you aimed. */
       const dpr = window.devicePixelRatio || 1;
-      const at = canvas?.toCanvas(
-        e.payload.position.x / dpr,
-        e.payload.position.y / dpr,
-      );
+      const css = (p: { x: number; y: number }) => ({ x: p.x / dpr, y: p.y / dpr });
+
+      if (e.payload.type === "over") {
+        /* The only feedback there is. With no DOM drag events reaching the
+           elements, a dock that did not light up would leave you guessing
+           whether a drop was going to attach or fly past onto the wall. */
+        const p = css(e.payload.position);
+        dropOn = dropTargetAt(p.x, p.y);
+        return;
+      }
+      if (e.payload.type !== "drop") {
+        dropOn = null;
+        return;
+      }
+
+      const p = css(e.payload.position);
+      const onto = dropTargetAt(p.x, p.y);
+      dropOn = null;
 
       const sorted = await invoke<{ dirs: string[]; images: string[] }>(
         "classify_drop",
         { paths: e.payload.paths },
       );
 
+      /* A folder is a conversation wherever it lands. Dropping one on the dock
+         is not a thing anybody means as "attach a folder", and the alternative
+         — refusing it there — would be a gesture that silently did nothing on a
+         strip two hundred pixels tall. */
       for (const dir of sorted.dirs) await openIn(dir);
 
+      if (onto === "prompt" && targets.length) {
+        for (const token of await field.shots.fromPaths(sorted.images)) {
+          typeIntoDraft(token);
+        }
+        return;
+      }
+
+      const at = canvas?.toCanvas(p.x, p.y);
       if (!at) return;
       let { x, y } = at;
       for (const path of sorted.images) {
@@ -1446,23 +1504,26 @@
     };
   }
 
-  /** Paste a screenshot onto the wall, where the cursor is.
+  /** Paste a screenshot — into the prompt you are writing, or onto the wall.
    *
    *  Drag-and-drop and the file picker both need the image to already be a file,
    *  and a screen capture is not one: Windows' capture tools put a bitmap on the
    *  clipboard and write nothing to disk. So the bytes come off the clipboard
-   *  and Rust gives them a home — from there it is the same path a drop takes.
+   *  and go wherever they were aimed — Rust gives one a home on the wall, and
+   *  `Attachments` keeps one for the prompt.
    *
    *  It listens for the `paste` event rather than reading
    *  `navigator.clipboard.read()`, which wants a permission the webview may
    *  prompt for or refuse outright. A paste is already a gesture you made, and
    *  the event carries the bytes with it — nothing has to be asked for.
    *
-   *  The image goes where the *cursor* is, not where the keyboard focus is,
-   *  because ctrl+V has no position of its own and the cursor is the only thing
-   *  on screen that does. With the cursor off the wall — over the transcript, or
-   *  never moved since launch — it goes to the middle of the view, which is at
-   *  least somewhere you are looking. */
+   *  **Which of the two it is, is decided by the keyboard and not by the
+   *  cursor**, and that is the one asymmetry worth stating: a paste into the
+   *  field is aimed by the caret, which is a position you put there, where a
+   *  paste at the wall has no position of its own and falls back to the pointer.
+   *  So the field is asked first. With the cursor off the wall as well — over
+   *  the transcript, or never moved since launch — a pinned image goes to the
+   *  middle of the view, which is at least somewhere you are looking. */
   async function onPaste(e: ClipboardEvent) {
     const data = e.clipboardData;
     if (!data) return;
@@ -1472,11 +1533,29 @@
     const images = [...data.files].filter((f) => f.type.startsWith("image/"));
     if (!images.length) return;
 
-    /* Text on the clipboard beside the image wins inside a field. Copying from
-       a web page puts both there, and a paste into the draft you are writing
-       means the words — pinning a picture up instead would be an ordinary
-       ctrl+V doing something nobody asked for. Image-only in a field still
-       pins: there is nothing else it could mean. */
+    /* Into the draft, if the draft is where you were typing. This used to be
+       the case that *refused*: an image pasted into a field with text beside it
+       on the clipboard fell through to the browser, and one pasted alone got
+       pinned to the wall behind the panel — which is the whole gesture this
+       feature exists to replace. Now both attach.
+
+       The text beside it still arrives, because copying from a web page puts
+       both there and the words are usually the half you meant. Inserted here
+       rather than left to the browser: `preventDefault` is needed for the
+       image, and once it is called nothing is going to insert the text but
+       us. */
+    if (e.target === prompt) {
+      e.preventDefault();
+      const said = data.getData("text/plain");
+      if (said) typeIntoDraft(said);
+      for (const token of await field.shots.fromFiles(images)) typeIntoDraft(token);
+      return;
+    }
+
+    /* Anywhere else it is the wall's, exactly as it was. Note this deliberately
+       still pins from inside some *other* field — the sink's body, a rename —
+       where there is no draft to attach to and the wall is the only thing a
+       picture could mean. */
     if (isTyping(e.target) && data.types.includes("text/plain")) return;
 
     e.preventDefault();
@@ -1493,6 +1572,23 @@
       x += 28;
       y += 28;
     }
+  }
+
+  /** Put something into the draft where the caret is, and leave the caret after
+   *  it — the way typing it would have.
+   *
+   *  Shared by the paste and the drop, because both are "this arrived while you
+   *  were writing" and both have to leave you able to carry on writing. The
+   *  textarea's own selection is set after a tick, since the value it is being
+   *  set against has not been rendered yet. */
+  function typeIntoDraft(put: string) {
+    const { text, caret } = insertAt(field.text, field.caret, put);
+    field.text = text;
+    field.caret = caret;
+    void tick().then(() => {
+      prompt?.focus();
+      prompt?.setSelectionRange(caret, caret);
+    });
   }
 
   async function pickFolder() {
@@ -1820,10 +1916,17 @@
        the refusal flashes exactly that reading, which is the answer and is
        already on screen; anything more would be prose about a key. */
     if (targets.length > 1 && !broadcast) return field.refuse();
+
+    /* Composed *before* the field is cleared, and that ordering is the whole of
+       it: the pictures live on the field, and `put("")` prunes every one of
+       them. Cut once, here — `turn` carries the blocks that go on the wire, the
+       string the wire will replay for them, and the thumbnails the transcript
+       keeps, all three from one split of the sentence. See `attach.ts`. */
+    const turn = field.turn(text);
     field.put("");
     field.at = 0;
-    if (targets.length === 1) await skein.send(targets[0], text);
-    else await skein.broadcast(targets, text);
+    if (targets.length === 1) await skein.send(targets[0], text, turn);
+    else await skein.broadcast(targets, text, turn);
   }
 
   async function send(broadcast = false) {
@@ -2454,7 +2557,7 @@
     /* Before the focus moves, so a line still being written is handed to the
        wall rather than parked under a card that no longer exists — which is the
        same as losing it. What the card had parked goes with the card. */
-    field.put(drafts.release(conv.id, field.text));
+    field.hold(drafts.release(conv.id, field.draft));
     /* Both of these are ahead of the await for the reason `Skein.close` now puts
        the removal ahead of its own: everything the eye is owed by this gesture
        happens when the gesture happens, and none of it waits on a command that
@@ -3238,6 +3341,7 @@
     {waiting}
     {clashing}
     {bangCard}
+    dropping={dropOn === "prompt"}
     bind:prompt
     onkey={onDraftKey}
     onsendtext={sendText}

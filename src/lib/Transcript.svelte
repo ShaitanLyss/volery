@@ -1109,6 +1109,23 @@
       class:failed={line.state === "failed"}
       data-nav={line.kind === "you" ? "you" : null}
     >{line.text}</div>
+    <!-- The pictures that went with the prompt, under the words that refer to
+         them by name. Thumbnails rather than the bytes that were sent — a card
+         talking all week would otherwise hold every screenshot at full size for
+         as long as it is on the wall (`attach.ts::THUMB_SIDE`).
+
+         A restored card has none: they were never in the session file as
+         anything a panel could draw, so a transcript read back off disk shows
+         the prompt with its `[name]` tokens and nothing under it. That is the
+         honest shape rather than a gap — the sentence still says which picture
+         it meant. -->
+    {#if line.shots?.length}
+      <div class="shots">
+        {#each line.shots as s (s.name)}
+          <img src={s.thumb} alt={s.name} title={s.name} />
+        {/each}
+      </div>
+    {/if}
   {/if}
 {/snippet}
 
@@ -1768,6 +1785,30 @@
     border-top: 1px solid var(--tx-round-rule, transparent);
     padding-top: calc(var(--tx-round, 0rem) * 0.5 * var(--read, 1));
   }
+  /* The pictures a prompt carried, under it and inside its bracket — the left
+     rule continues past them, because they are part of the same thing you said.
+     A row that wraps rather than scrolls: twenty images is the cap and a
+     sideways scroller inside a column you are already scrolling is two gestures
+     fighting. */
+  .shots {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    border-left: 2px solid var(--paper-faint);
+    padding-left: calc(0.6rem * var(--read, 1));
+    margin-left: -0.05rem;
+    padding-top: 0.35rem;
+  }
+  .shots img {
+    max-width: calc(7rem * var(--read, 1));
+    max-height: calc(7rem * var(--read, 1));
+    border-radius: 2px;
+    /* Opaque, per the standing rule — a PNG with an alpha channel drawn onto
+       the panel would show whatever is behind it through the middle of the
+       picture. */
+    background: var(--surface);
+  }
+
   /* Nothing above it to be separated from, and a rule across the top of the
      panel is furniture announcing the start of a column you are already
      looking at. */

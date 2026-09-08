@@ -1203,6 +1203,49 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
     }
 }
 
+/// One block of a user turn. The webview composes these; see `attach.ts`.
+///
+/// Typed rather than passed through as a `serde_json::Value` for the ordinary
+/// reason a boundary is typed — this is the one thing on the wall that writes
+/// straight to the agent's stdin, and a shape the CLI cannot parse is a turn
+/// that never starts, silently, because NDJSON has no error channel.
+#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Block {
+    Text {
+        text: String,
+    },
+    Image {
+        source: ImageSource,
+    },
+}
+
+#[derive(serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct ImageSource {
+    pub media_type: String,
+    pub data: String,
+}
+
+impl Block {
+    fn text(text: &str) -> Self {
+        Block::Text { text: text.to_string() }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        match self {
+            Block::Text { text } => serde_json::json!({ "type": "text", "text": text }),
+            Block::Image { source } => serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": source.media_type,
+                    "data": source.data,
+                },
+            }),
+        }
+    }
+}
+
 /// One user turn, as the CLI's stdin wants it. The wire format is the same
 /// envelope the Agent SDK uses.
 ///
@@ -1211,10 +1254,21 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
 /// that did this had no test between them — which is what made them dangerous to
 /// tidy and is why they stayed byte-identical (sink `6e62c9ea`). A `String` is
 /// something a test can read.
-fn user_envelope(text: &str) -> String {
+///
+/// **`content` was always an array and for the app's whole life held exactly one
+/// text block.** It now holds whatever the draft composed: a prompt with a
+/// screenshot in the middle of it is `[text, image, text]`, in that order,
+/// because the order is what makes "look at this one, make it more like that
+/// one" mean anything. Probed before it was built — `tools/probe-image.ts` sent
+/// two generated images interleaved with three text blocks and got all seven of
+/// their colours back in the right two groups. See `.claude/rules/attach.md`.
+fn user_envelope(content: &[Block]) -> String {
     serde_json::json!({
         "type": "user",
-        "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
+        "message": {
+            "role": "user",
+            "content": content.iter().map(Block::json).collect::<Vec<_>>(),
+        }
     })
     .to_string()
 }
@@ -1226,8 +1280,8 @@ fn user_envelope(text: &str) -> String {
 /// without spawning anything. `writeln!` is what puts the newline on, and NDJSON
 /// is a line format — a prompt written without it is a prompt the CLI never
 /// finishes reading.
-fn write_prompt(w: &mut impl Write, text: &str) -> Result<(), String> {
-    writeln!(w, "{}", user_envelope(text)).map_err(|e| format!("write to claude stdin: {e}"))?;
+fn write_prompt(w: &mut impl Write, content: &[Block]) -> Result<(), String> {
+    writeln!(w, "{}", user_envelope(content)).map_err(|e| format!("write to claude stdin: {e}"))?;
     w.flush().map_err(|e| format!("flush claude stdin: {e}"))
 }
 
@@ -1257,14 +1311,25 @@ fn write_prompt(w: &mut impl Write, text: &str) -> Result<(), String> {
 /// `spawn.rs` — takes `.is_ok()` and throws the string away, writing its own
 /// receipt from the boolean. So the second message was never read by anybody,
 /// and the surviving one goes where it always went, the fault bar.
+///
+/// **Text only, and that is a property of its callers rather than a limitation.**
+/// Every one of them — `relay.rs` twice, `board.rs`, `later.rs`, `spawn.rs` —
+/// composes a message out of words in Rust, where there are no bytes off a
+/// clipboard to attach. Only a prompt *you* typed can carry an image, so
+/// `send_prompt` is the one path that takes blocks.
 pub fn deliver(app: &AppHandle, id: &str, text: &str) -> Result<(), String> {
+    deliver_blocks(app, id, &[Block::text(text)])
+}
+
+/// `deliver`, for a turn that is more than words.
+pub fn deliver_blocks(app: &AppHandle, id: &str, content: &[Block]) -> Result<(), String> {
     {
         let sup = app.state::<Supervisor>();
         let mut map = sup.0.lock().unwrap();
         let conv = map
             .get_mut(id)
             .ok_or_else(|| format!("no open conversation {id}"))?;
-        write_prompt(&mut conv.stdin, text)?;
+        write_prompt(&mut conv.stdin, content)?;
         /* Marked here rather than waiting for the echo to come back: a prompt
            that is on the wire and unanswered when the app closes is exactly a
            lost turn, and the window between the write and the first event is
@@ -1292,9 +1357,29 @@ pub fn deliver(app: &AppHandle, id: &str, text: &str) -> Result<(), String> {
 /// `deliver` needs none of it because `ask::start` gives every MCP request its
 /// own thread, so nothing it parks is anything anyone is waiting to be painted
 /// by.
+/// **The blocks are composed in the webview, not here**, and that is the one
+/// design decision in this signature. The draft holds tokens where its images
+/// sit (`[shot 1]`), so *something* has to cut the sentence at them — and the
+/// same cut decides what the wire will replay, which is what a pending line has
+/// to be matched on to stop the card reading `sent, not picked up` for ever
+/// (`attach.ts`, and `turns.md` for what that costs). Cutting it twice, once in
+/// each language, is two implementations of one rule where the failure of the
+/// second is silent. So it is cut once, in TypeScript, where it is a pure
+/// function with tests, and this takes what came out.
 #[tauri::command]
-pub async fn send_prompt(app: AppHandle, id: String, text: String) -> Result<(), String> {
-    crate::off_main(move || deliver(&app, &id, &text)).await?
+pub async fn send_prompt(
+    app: AppHandle,
+    id: String,
+    content: Vec<Block>,
+) -> Result<(), String> {
+    /* A turn with nothing in it is a 400 rather than a quiet no-op — the API
+       refuses an empty `content` — and the webview can produce one: a draft that
+       is nothing but the token of an image that is no longer attached composes
+       to zero blocks. Refused here as well as there, because this is the door. */
+    if content.is_empty() {
+        return Err("nothing to send".into());
+    }
+    crate::off_main(move || deliver_blocks(&app, &id, &content)).await?
 }
 
 /// Stop the turn a conversation is in the middle of, without ending it.
@@ -2331,13 +2416,66 @@ mod tests {
     /// shape is a second shape to keep working.
     #[test]
     fn a_prompt_becomes_one_user_message_with_one_text_block() {
-        let env = user_envelope("do the thing");
+        let env = user_envelope(&[Block::text("do the thing")]);
         let v: serde_json::Value = serde_json::from_str(&env).expect("valid JSON");
         assert_eq!(v["type"], "user");
         assert_eq!(v["message"]["role"], "user");
         assert_eq!(v["message"]["content"].as_array().expect("an array").len(), 1);
         assert_eq!(v["message"]["content"][0]["type"], "text");
         assert_eq!(v["message"]["content"][0]["text"], "do the thing");
+    }
+
+    /// A prompt with pictures in it keeps them where they were written.
+    ///
+    /// The order is the entire feature: `look at [a], make it more like [b]`
+    /// only means something if `a` arrives before the words that refer to it and
+    /// `b` after them. `tools/probe-image.ts` established that the CLI and the
+    /// model both honour it — this is the half of that which can be asserted
+    /// without spending a turn, and it is the half that would break silently,
+    /// since a reordered `content` is still perfectly valid JSON.
+    #[test]
+    fn an_image_stays_where_it_was_written_in_the_sentence() {
+        let env = user_envelope(&[
+            Block::text("look at "),
+            Block::Image {
+                source: ImageSource {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                },
+            },
+            Block::text(" and fix it"),
+        ]);
+        let v: serde_json::Value = serde_json::from_str(&env).expect("valid JSON");
+        let content = v["message"]["content"].as_array().expect("an array");
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["text"], "look at ");
+        assert_eq!(content[1]["type"], "image");
+        /* `source.type` is the API's own discriminator and is not the block's —
+           getting these two confused is a 400 that names neither. */
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "AAAA");
+        assert_eq!(content[2]["text"], " and fix it");
+    }
+
+    /// The webview's blocks arrive as JSON and are parsed into `Block` before
+    /// anything writes them, so the shape the front end sends is pinned here as
+    /// well as there. A renamed field on either side is a turn that never
+    /// starts, and the tag is the part with no second chance.
+    #[test]
+    fn the_webviews_blocks_deserialize_into_the_ones_that_get_written() {
+        let sent = r#"[
+            {"type":"text","text":"hi"},
+            {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"Zm8="}}
+        ]"#;
+        let blocks: Vec<Block> = serde_json::from_str(sent).expect("the front end's shape");
+        assert_eq!(blocks[0], Block::text("hi"));
+        assert_eq!(
+            blocks[1],
+            Block::Image {
+                source: ImageSource { media_type: "image/jpeg".into(), data: "Zm8=".into() }
+            }
+        );
     }
 
     /// NDJSON is a line format, and the line is the half a reader can be left
@@ -2365,8 +2503,8 @@ mod tests {
         }
 
         let mut w = Counting { buf: Vec::new(), flushes: 0 };
-        write_prompt(&mut w, "first").expect("wrote");
-        write_prompt(&mut w, "second").expect("wrote");
+        write_prompt(&mut w, &[Block::text("first")]).expect("wrote");
+        write_prompt(&mut w, &[Block::text("second")]).expect("wrote");
 
         let text = String::from_utf8(w.buf).expect("utf-8");
         assert!(text.ends_with('\n'), "no trailing newline: {text:?}");
@@ -2388,7 +2526,7 @@ mod tests {
     fn a_multi_line_prompt_is_still_one_line() {
         let text = "first\nsecond\n\n\"quoted\" and a \\ backslash";
         let mut w: Vec<u8> = Vec::new();
-        write_prompt(&mut w, text).expect("wrote");
+        write_prompt(&mut w, &[Block::text(text)]).expect("wrote");
         let out = String::from_utf8(w).expect("utf-8");
         assert_eq!(out.lines().count(), 1, "{out:?}");
         let v: serde_json::Value = serde_json::from_str(out.trim_end()).expect("valid JSON");
@@ -2416,9 +2554,9 @@ mod tests {
                 Err(std::io::Error::other("no"))
             }
         }
-        let e = write_prompt(&mut Broken(true), "x").expect_err("the write failed");
+        let e = write_prompt(&mut Broken(true), &[Block::text("x")]).expect_err("the write failed");
         assert!(e.contains("write to claude stdin"), "{e}");
-        let e = write_prompt(&mut Broken(false), "x").expect_err("the flush failed");
+        let e = write_prompt(&mut Broken(false), &[Block::text("x")]).expect_err("the flush failed");
         assert!(e.contains("flush claude stdin"), "{e}");
     }
 

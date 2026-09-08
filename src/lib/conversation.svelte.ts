@@ -199,6 +199,29 @@ export type Line = {
    *  Separate from `state` because the two stopped being the same question —
    *  see `#settleEchoes`. */
   awaited?: true;
+  /** What the wire will replay for this line, when that is not `text`.
+   *
+   *  A prompt carrying images is drawn with the tokens where the pictures sit —
+   *  `look at [shot 1]` — and replayed as the concatenation of its *text*
+   *  blocks alone, with the tokens gone, because an image block contributes no
+   *  text to extract. `#echoOf` matches on text, so without this the line is
+   *  never claimed: it keeps `awaited` for the life of the process, the card
+   *  reads *sent, not picked up*, and every following `result` schedules a nudge
+   *  until the budget is spent. That is the leak `/model` caused, and
+   *  `turns.md` has what it cost.
+   *
+   *  Absent on an ordinary prompt, where the two are the same string and a
+   *  second copy of it would be a second thing to keep in step. Derived from the
+   *  very blocks that go on the wire (`attach.ts::echoOf`), never re-split here.
+   *
+   *  On a `you` line only. */
+  echo?: string;
+  /** The pictures that went with this prompt — small data URLs, drawn as a strip
+   *  under it. Kept as thumbnails rather than the sent bytes, so a card that has
+   *  been talking all week is not holding every screenshot at full size; see
+   *  `attach.ts::THUMB_SIDE`. Absent on a line read back off disk, which has no
+   *  thumbnails to have kept. */
+  shots?: { name: string; thumb: string }[];
 };
 
 /* The ask vocabulary lives in ./asking.ts, which is pure and normalizes the raw
@@ -1606,8 +1629,13 @@ export class Conversation {
    * pending and a send that fails says so, rather than being distinguished by
    * not existing. */
 
-  /** Draw a prompt as sent, before anything has carried it. */
-  echo(text: string) {
+  /** Draw a prompt as sent, before anything has carried it.
+   *
+   *  `wire` is what the replay will actually say, for a prompt whose drawn text
+   *  is not what goes on the wire — which today means one carrying images. See
+   *  `Line.echo`; passing nothing is the ordinary case and keeps the two one
+   *  string. */
+  echo(text: string, wire?: { echo: string; shots?: { name: string; thumb: string }[] }) {
     /* Kept for the heal, and only ever set here — which is the whole of what
        makes a heal safe to offer. A prompt this window sent is one it can send
        again; a `user` event with no line waiting for it came from a terminal
@@ -1617,7 +1645,12 @@ export class Conversation {
        did, and only what you typed here is ever repeated. */
     this.#lastSent = text;
     this.#push("you", text, "pending");
-    this.lines[this.lines.length - 1]!.awaited = true;
+    const line = this.lines[this.lines.length - 1]!;
+    line.awaited = true;
+    /* Only when it differs, so the ordinary prompt keeps one string and
+       `#echoOf`'s fallback is never reading a copy that could drift. */
+    if (wire && wire.echo !== text) line.echo = wire.echo;
+    if (wire?.shots?.length) line.shots = wire.shots;
     this.awaiting += 1;
     /* The turn starts when you send, which is the same rule the echo used to
        apply — only now it applies from the gesture rather than from the
@@ -1632,10 +1665,21 @@ export class Conversation {
    *  twice, the echo and any failure both belong to the earlier of them. The
    *  predicate is passed in because a claim and a failure no longer ask the
    *  same question of a line — see `#settleEchoes`. */
+  /* Either string identifies the line, and it has to be both rather than
+     whichever one is newer. A prompt with an image in it is *drawn* with its
+     tokens (`look at [shot 1]`) and *replayed* without them, so the two callers
+     arrive holding different strings for the same line: the wire's replay
+     reaches `#claimEcho` with the echo, and `echoFailed` is called by `#deliver`
+     with the draft you typed. Matching on only one of them would leave the other
+     finding nothing — a failed send that never marks the line, or a line never
+     claimed. See `Line.echo`. */
   #echoOf(text: string, held: (l: Line) => boolean): Line | undefined {
     const want = text.trim();
     return this.lines.find(
-      (l) => l.kind === "you" && held(l) && l.text.trim() === want,
+      (l) =>
+        l.kind === "you" &&
+        held(l) &&
+        (l.text.trim() === want || l.echo?.trim() === want),
     );
   }
 
