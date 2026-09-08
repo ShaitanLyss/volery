@@ -39,30 +39,46 @@
 //! arbitrary obstacle rather than as the disclosure it is, is how this file came
 //! to describe a cloud service as "Windows' own on-device recogniser".
 //!
-//! **And on this network it does not work at all.** Measured 2026-09-08 with a
-//! scratch crate, same argv as `listen`, seven silent one-shot recognitions:
+//! ## And the web-service path is flaky, which took three tries to state right
+//!
+//! Measured 2026-09-08 with a scratch crate on `listen`'s exact argv, silent
+//! one-shot recognitions, over an afternoon:
 //!
 //! ```text
-//! topic constraint (what listen uses) : status 6 (Unknown), 7/7, 0.9–7.3s
-//! list constraint  (a local grammar)  : status 0 (Success), 3/3, 5.5–6.3s
+//!            topic constraint (listen)      list constraint (local)
+//! window 1   0/7  — every one Unknown       3/3  Success
+//! window 2   5/8, 3 Unknown                 4/4  Success
 //! ```
 //!
-//! The local path behaves correctly — it listens out its whole 5s initial-silence
-//! window and reports hearing nothing. The web-service path never gets that far,
-//! and one attempt gave up after 924ms, which is not long enough to have listened
-//! to anything. The endpoints resolve and accept TCP:443, but the TLS is
-//! terminated by this network's Netskope proxy (issuer
-//! `CN=ca.macquarietelecom-*.au.goskope.com`, the same interception `azdo.md`
-//! records) — which is the likeliest reason the speech client hangs up, though
-//! that last step is inference and not something measured here.
+//! A healthy run takes 5.5–6.3s: the whole 5s initial-silence window, correctly
+//! reporting that nothing was said. A failure bails at 0.9–4s, which is not long
+//! enough to have listened to anything. **The local path has never once failed
+//! across either window; the web-service path went from always to sometimes with
+//! nothing in this tree changing.**
 //!
-//! **So voice does not work on this network and cannot be made to by retrying.**
-//! What is left is a real choice rather than a bug: a `SpeechRecognitionListConstraint`
-//! or SRGS grammar runs on the machine and is proven working above, but only ever
-//! matches phrases enumerated in advance — which is the shape `listen` deliberately
-//! rejected below, because the steward rung exists so you can say anything. Whisper
-//! (16fa718) is the other end of it: local, offline, unrestricted, and a model file
-//! plus a C++ build. Nothing here picks between them.
+//! **The rate is the thing not to state confidently, and it was got wrong twice
+//! in one afternoon in opposite directions** — first *"roughly one in three, try
+//! again"* off six runs, then *"7/7, this cannot work here, retrying cannot
+//! help"* off seven. Both were real measurements and both were too small to see
+//! that the thing moves. What holds across every window is the *shape*: the local
+//! constraint works and the remote one is unreliable, so a failure here is the
+//! service and never the microphone.
+//!
+//! Two causes were proposed and both are withdrawn. It is **not** this network's
+//! TLS interception — Windows' own voice typing (Win+H), a packaged first-party
+//! client on the same wire, transcribes fine, and the endpoints answer HTTP
+//! through the Netskope proxy. It is **not** the missing MSIX package identity
+//! either, or the successes above could not have happened unpackaged. What is
+//! left is a cloud round-trip that sometimes does not complete, and nothing here
+//! can see inside it.
+//!
+//! So the honest options are a retry — which does help, since the next attempt is
+//! usually fine — or getting off the web service: a `SpeechRecognitionListConstraint`
+//! or SRGS grammar runs on the machine and has not failed yet, but only ever matches
+//! phrases enumerated in advance, which is the shape `listen` deliberately rejected
+//! below because the steward rung exists so you can say anything. Whisper (16fa718)
+//! is the other end: local, offline, unrestricted, a model file and a C++ build.
+//! Nothing here picks between them.
 //!
 //! ## The one thing it will not do, and where that leaves us
 //!
@@ -188,14 +204,11 @@ pub(crate) fn explain(code: i32, message: &str) -> String {
 /// were now past it.
 ///
 /// `Unknown` is named because **this machine produces it**, which is the same
-/// standard `explain` holds its two named HRESULTs to — and what it means was
-/// got wrong once already, in the reassuring direction. It first read *"it does
-/// that intermittently; try again"*, from six silent runs where it appeared
-/// twice. Widening the sample killed that reading: with the topic constraint
-/// actually attached it is **7 out of 7**, and a local list constraint on the
-/// same machine and microphone is 0 out of 3. It is not intermittent and
-/// retrying does not help — it is the web service `listen` depends on, not
-/// answering. See the module note above.
+/// standard `explain` holds its two named HRESULTs to. What it *means* was then
+/// got wrong twice in one afternoon, in opposite directions, each time off a
+/// sample under ten — see the module note, which has the numbers. The sentence
+/// it settled on says only what held across every window: the service rather
+/// than the microphone, and the next attempt is usually fine.
 fn why_empty(status: SpeechRecognitionResultStatus) -> Option<String> {
     let said = match status {
         SpeechRecognitionResultStatus::Success => return None,
@@ -208,9 +221,9 @@ fn why_empty(status: SpeechRecognitionResultStatus) -> Option<String> {
             "dictation is not installed for that language"
         }
         SpeechRecognitionResultStatus::Unknown => {
-            "the online dictation service did not answer — the predefined \
-             dictation grammar runs on microsoft's servers rather than on this \
-             machine, so this is the network rather than the microphone"
+            "the online dictation service did not answer — it is microsoft's \
+             servers rather than your microphone, and the next attempt is \
+             usually fine; try again"
         }
         /* Not guessed at, and not silent either. The type is a newtype over an
            i32 whose derived `Debug` prints the number rather than the name, so
@@ -497,15 +510,15 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn the_one_this_machine_produces_names_the_network_and_not_the_microphone() {
-        /* 7/7 with the topic constraint attached, against 0/3 for a local list
-           constraint on the same machine and microphone — so the one thing this
-           sentence must not do is send somebody to look at their microphone.
-           The first version of it said "try again", which was read off a sample
-           too small to see that the constraint was the variable. */
+    fn the_one_this_machine_produces_blames_the_service_and_not_the_microphone() {
+        /* The two properties that survived three rounds of measuring: it must
+           not send anybody to look at their microphone, which has never been the
+           fault, and it must say to try again, because across every window the
+           following attempt usually worked. Deliberately no rate — that is the
+           number this file got wrong twice. */
         let said = why_empty(SpeechRecognitionResultStatus::Unknown).expect("not a success");
-        assert!(said.contains("network"), "{said}");
-        assert!(!said.contains("try again"), "{said}");
+        assert!(said.contains("microphone"), "{said}");
+        assert!(said.contains("try again"), "{said}");
         /* And it is named, so it does not go out carrying a raw number. */
         assert!(!said.contains("status "), "{said}");
     }
