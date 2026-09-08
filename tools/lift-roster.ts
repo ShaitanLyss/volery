@@ -137,6 +137,14 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     ],
   },
   {
+    file: "src-tauri/src/status.rs",
+    items: ["const STATUS_TOOL", "fn status_schema"],
+  },
+  {
+    file: "src-tauri/src/docket.rs",
+    items: ["const TASKS_TOOL", "const TASK_TOOL", "fn tasks_schema", "fn task_schema"],
+  },
+  {
     file: "src-tauri/src/selector.rs",
     items: ["const RECORDS_TOOL", "const PUT_ON_TOOL", "fn records_schema", "fn put_on_schema"],
   },
@@ -157,8 +165,23 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     ],
   },
   {
+    /* `Selfhood` and the `Provenance` inside it are types rather than
+       assertions, and they are here because `append_prompt` takes one — a lift
+       that omits a parameter's type does not fail at the assertion, it fails to
+       compile, which is how this script went quiet after 664f375 added the
+       argument. Lifting them keeps the roster contract runnable on a machine
+       with no MSVC, which is the only reason any of this exists. */
+    file: "src-tauri/src/store.rs",
+    items: ["struct Provenance"],
+  },
+  {
     file: "src-tauri/src/supervisor.rs",
-    items: ["const MCP_PREFIX", "fn append_prompt", "fn system_prompt"],
+    items: [
+      "const MCP_PREFIX",
+      "struct Selfhood",
+      "fn append_prompt",
+      "fn system_prompt",
+    ],
   },
 ];
 
@@ -183,6 +206,11 @@ const TESTS: Array<{ file: string; names: string[] }> = [
   {
     file: "src-tauri/src/supervisor.rs",
     names: [
+      /* Helpers first, per the note above — these three build the `Selfhood`
+         the prompt assertions are written against. */
+      "fullest",
+      "selves",
+      "fullest_and_none",
       "named_tools",
       "advertised",
       "the_prompt_names_only_tools_the_server_advertises",
@@ -303,8 +331,11 @@ const MODULES = [
   "selector",
   "servers",
   "sink",
+  "docket",
   "smith",
   "spawn",
+  "status",
+  "store",
   "supervisor",
 ];
 
