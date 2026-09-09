@@ -1463,10 +1463,15 @@ export class Control {
       /** Run the rousing queue — the same pass `load` starts behind the painted
        *  wall, not a copy of it, so what a test drives is what a launch does.
        *
-       *  It returns when the queue has finished, which for a wall of restored
-       *  cards is `ROUSE_GAP_MS` apiece. Note this one *can* spend money: an
-       *  interrupted card is sent a resume prompt. `wall.test.ts` only ever has
-       *  `.scratch/` cards, and none of them is interrupted. */
+       *  It returns when the queue has finished, and `woken` is now usually
+       *  **zero**: the pass wakes only cards that lost a turn or lost track of a
+       *  background job (`needsRousing`), and pays `ROUSE_GAP_MS` for those
+       *  alone. A card left dormant afterwards is the ordinary case rather than
+       *  a wake that failed, which is why `dormant` is reported beside it.
+       *
+       *  Note this one *can* spend money: a card it wakes is a card it sends a
+       *  prompt to. `wall.test.ts` only ever has `.scratch/` cards, and none of
+       *  them is interrupted or holds a job row. */
       rouse: async () => {
         const woken = await h.skein.rouse();
         return {

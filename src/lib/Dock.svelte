@@ -129,6 +129,36 @@
     field.caret = prompt?.selectionStart ?? null;
   }
 
+  /** An edit to the draft, as opposed to the caret merely moving in it.
+   *
+   *  Both are `oninput`'s business here and they are two different questions,
+   *  which is why this is not folded into `caretMoved`: that one is also on
+   *  `keyup`, `click` and `focus`, and none of those is you writing anything.
+   *
+   *  What the edit buys is the card's process. A card at rest no longer gets one
+   *  at launch (`rousing.ts`), so the first send of the day would otherwise be a
+   *  spawn and a `--resume` waited out with the sentence already typed. Starting
+   *  it on the first character spends that second on the time you were using
+   *  anyway. Nothing is awaited and no answer is read — `Skein.stir` is a head
+   *  start, and `#deliver` still asks for a process and still fails honestly if
+   *  there is none.
+   *
+   *  Two things it is asked about first. A `!` line is a shell command run in
+   *  the card's directory by `bang.rs` and reaches no agent at all, so a card
+   *  you only ever run commands in stays dormant. And an empty box is a draft
+   *  you have just cleared or backspaced out of, which is the opposite of
+   *  turning towards the card.
+   *
+   *  The focused card and not `targets`: a gathering of twenty would otherwise
+   *  be twenty spawns off one keystroke, which is the thundering herd
+   *  `ROUSE_GAP_MS` exists to avoid. A broadcast wakes each of them in
+   *  `#deliver` as it reaches them. */
+  function edited() {
+    caretMoved();
+    if (field.banging || !field.text) return;
+    skein.stir(focused);
+  }
+
   /* An image lives by its token, so backspacing over one detaches it — and that
      has to be true of *typing*, not only of the writes that go through
      `Field.put`. The text is two-way bound to the textarea, so an ordinary
@@ -227,8 +257,14 @@
     {:else if focused}
       <span class="count">To</span>
       <span class="tgt"><b>{focused.project}</b> {nameBesideProject(focused.title)}</span>
+      <!-- "when you type" and not "on send", which is what this said while the
+           rousing queue woke the whole wall and a dormant card was the unusual
+           one. It is now the ordinary state of most cards, and the true answer
+           moved: `Skein.stir` starts the spawn on the first character, so this
+           line is gone by the time the sentence is. Worth being exact about,
+           because "on send" reads as a wait you are about to be made to do. -->
       {#if focused.dormant}
-        <span class="hint">dormant — will wake on send</span>
+        <span class="hint">dormant — wakes when you type</span>
       {/if}
       <!-- Said here as well as on the card, because this is the one place
            where it is about to stop being true: a prompt picks the card back
@@ -484,7 +520,7 @@
         bind:this={prompt}
         bind:value={field.text}
         onkeydown={onkey}
-        oninput={caretMoved}
+        oninput={edited}
         onkeyup={caretMoved}
         onclick={caretMoved}
         onfocus={caretMoved}

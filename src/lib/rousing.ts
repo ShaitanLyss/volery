@@ -1,15 +1,40 @@
 /* Waking the wall back up, and what to say to a card whose turn was cut off.
  *
  * Lazy restore is about *painting*: the wall comes back from SQLite with no
- * `claude` process anywhere, which is what makes the first frame instant. It is
- * not an argument for leaving the processes down — a wall of dormant cards is a
- * wall you have to click before it can do anything, and a card that was mid-turn
- * when the app closed has work half-done in a repo and nobody carrying it.
+ * `claude` process anywhere, which is what makes the first frame instant. What
+ * it does not settle is which of those cards should be handed a process again,
+ * and this queue has now answered that question twice.
  *
- * So rousing runs *behind* the painted wall, exactly as the transcript reads do:
- * nothing is awaited before the wall is on screen, and a card that has already
- * been spoken to by the time the queue reaches it is simply skipped. This module
- * is the pure half — the order, the pacing, and the words. */
+ * It first answered *all of them*, on the argument that a wall of dormant cards
+ * is a wall you have to click before it can do anything. That is true, and it
+ * is not worth what it costs, because the argument was made about *processes*
+ * being cheap and a `claude.exe` is not one process. It is a dozen — a node,
+ * a `conhost`, and a `cmd → node` per stdio MCP server — held for as long as
+ * the wall is up whether or not you ever speak to it. Measured on this machine
+ * (`processes.md`): **11 cards, 66 processes, 9181 MB private commit**, at
+ * ~1.1 GB and 12 processes for a fully equipped card. On a 15.8 GB machine
+ * eleven cards is the machine, and most of them were spawned for a keystroke
+ * that was not coming.
+ *
+ * So the queue now wakes only the cards that **lost something** — a turn cut
+ * off, or background work whose ending nobody heard — because those are the
+ * ones with a reason to run that does not depend on you arriving. Every other
+ * dormant card is left as it is drawn, and gets its process at the first moment
+ * it is genuinely wanted: `Skein.stir` on the first keystroke into its draft,
+ * or `#deliver` on the send itself, whichever reaches it first. A wake is a
+ * second or two, which a person part-way through typing a sentence does not
+ * see, and which a wall standing idle overnight was paying thirty times over.
+ *
+ * Note the two halves of that are the *same* set of cards as before: the ones
+ * this queue prompts. Prompting was already the narrow gate — `interrupted` or
+ * a row in `job` — and what changed is that the spawn no longer happens for
+ * the cards that fall outside it. `needsRousing` is that gate, named and shared
+ * so the spawn and the prompt cannot drift apart.
+ *
+ * The queue still runs *behind* the painted wall, exactly as the transcript
+ * reads do: nothing is awaited before the wall is on screen, and a card that has
+ * already been spoken to by the time it is reached is simply skipped. This
+ * module is the pure half — the gate, the order, the pacing, and the words. */
 
 /** How long to leave between spawns.
  *
@@ -23,25 +48,62 @@ export const ROUSE_GAP_MS = 400;
 /** The little of a card this module needs. */
 export type Rousable = { dormant: boolean; interrupted: boolean; aside?: boolean };
 
-/** Which cards to wake, in the order to wake them.
+/** Which cards the queue *considers*, in the order it reaches them.
  *
  *  Interrupted first, and that is the whole of the ordering: those are the ones
  *  that lost a turn, so they are the ones with something to get back to. The
  *  rest keep the wall's own order, which is the order they were opened in.
  *
- *  Two kinds of card are left out. One that already has a process is either one
- *  you are using or one this queue has already reached, and waking it again is a
- *  call that can only fail. And one set aside is a card you deliberately put by
- *  — see `Conversation.aside`, which says stop counting this as waiting; giving
- *  it a process back at every launch is the same instruction ignored. Note it is
- *  left out even when `interrupted`: setting a card aside mid-turn is exactly
- *  the gesture that says "not this, not now". */
+ *  Two kinds of card are left out here. One that already has a process is either
+ *  one you are using or one this queue has already reached, and waking it again
+ *  is a call that can only fail. And one set aside is a card you deliberately put
+ *  by — see `Conversation.aside`, which says stop counting this as waiting;
+ *  giving it a process back at every launch is the same instruction ignored. Note
+ *  it is left out even when `interrupted`: setting a card aside mid-turn is
+ *  exactly the gesture that says "not this, not now".
+ *
+ *  **This is the order and not the decision.** Whether a card in it is woken at
+ *  all is `needsRousing`, asked per card as its turn comes up — it needs the
+ *  store's background-job rows, which are an `invoke` away and so cannot be
+ *  known here. A card that keeps its place in this list and is passed over is
+ *  the ordinary case now, not the exception. */
 export function rouseOrder<T extends Rousable>(cards: T[]): T[] {
   const dormant = cards.filter((c) => c.dormant && !c.aside);
   return [
     ...dormant.filter((c) => c.interrupted),
     ...dormant.filter((c) => !c.interrupted),
   ];
+}
+
+/** Is there a reason to give this card its process back before you ask for one?
+ *
+ *  The gate the whole pass turns on, and it is deliberately the same bar the
+ *  *prompt* already had to clear. Two facts qualify, and nothing else does:
+ *
+ *  - `interrupted` — a turn that was open when the app went away. There is work
+ *    half-done in a repo and no agent carrying it.
+ *  - a row in `job` — background work that demonstrably started and was
+ *    demonstrably never reported on. The row is written when the job starts and
+ *    deleted the moment it reports in, so what survives a launch is only ever an
+ *    ending nobody heard.
+ *
+ *  A card that merely finished a turn cleanly gets nothing. It used to get a
+ *  process, on the argument that a dormant wall is one you have to click before
+ *  it can do anything — but the thing it could then do was *wait*, at the cost
+ *  of a node process, a `conhost` and an MCP fleet apiece for as long as the
+ *  wall was up. What it needs instead is to be woken when you turn to it, which
+ *  is `Skein.stir`, and that costs the one second before your sentence is
+ *  finished rather than the whole day's memory.
+ *
+ *  `aside` is not asked about, because `rouseOrder` has already dropped those
+ *  and this is asked of what it returns. Kept out of the signature rather than
+ *  defensively re-checked: two places deciding the same thing is how the two
+ *  come to disagree.
+ *
+ *  `jobs` is a count rather than the rows, so this stays a statement about the
+ *  rule and not about `LostJob`'s shape. */
+export function needsRousing(card: Rousable, jobs: number): boolean {
+  return card.interrupted || jobs > 0;
 }
 
 /** What the resumed prompt says while it is folded away.

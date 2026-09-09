@@ -10,6 +10,7 @@ import {
   ALREADY_ROUSED_NOTE,
   jobsLines,
   jobsPrompt,
+  needsRousing,
   resumePrompt,
   rouseOrder,
 } from "../src/lib/rousing";
@@ -95,6 +96,49 @@ describe("rouseOrder", () => {
     const cards = [card("a", true), card("lost", true, true)];
     rouseOrder(cards);
     expect(cards.map((c) => c.id)).toEqual(["a", "lost"]);
+  });
+});
+
+describe("needsRousing", () => {
+  /* The gate that narrowed the whole pass. It is deliberately the same bar the
+     *prompt* already had to clear, so these tests are as much a statement that
+     the spawn and the send cannot drift apart as they are about the rule. */
+
+  test("a card that merely finished a turn is left dormant", () => {
+    /* The change. This card used to be handed a dozen processes and ~1.1 GB at
+       launch so that it could wait for a keystroke; it gets them from `stir`
+       when one arrives instead. */
+    expect(needsRousing(card("quiet", true), 0)).toBe(false);
+  });
+
+  test("a card that lost a turn is woken", () => {
+    expect(needsRousing(card("lost", true, true), 0)).toBe(true);
+  });
+
+  test("background work nobody heard the end of is the second reason", () => {
+    /* Narrow in the same way `interrupted` is: the row is written when the job
+       starts and deleted the moment it reports in, so a surviving row is only
+       ever an ending nobody heard. */
+    expect(needsRousing(card("quiet", true), 1)).toBe(true);
+  });
+
+  test("both at once is still one wake", () => {
+    /* And one prompt — `resumePrompt` grows a section naming the jobs rather
+       than a second send following it. */
+    expect(needsRousing(card("both", true, true), 2)).toBe(true);
+  });
+
+  test("every card the gate lets through has a prompt waiting for it", () => {
+    /* The invariant `rouse` now leans on: it spawns only what it will speak to,
+       so the send is an if/else over `interrupted` with no third arm. A gate
+       that admitted a card neither prompt fitted would be a process handed out
+       for nothing, which is the exact waste this pass was narrowed to stop. */
+    for (const interrupted of [true, false]) {
+      for (const jobs of [0, 1, 3]) {
+        const admitted = needsRousing(card("c", true, interrupted), jobs);
+        expect(admitted).toBe(interrupted || jobs > 0);
+      }
+    }
   });
 });
 

@@ -64,18 +64,82 @@ Because of this, anything a dormant card must display has to be persisted in
 
 **Laziness is about the paint, not about the processes.** Behind the painted wall two passes
 run and neither is awaited: `#fillHistory` reads the transcripts, and `#rouse`
-(`rousing.ts`, pure: the order, the pacing, the words) gives every dormant card its process
-back and asks any card that was mid-turn when the app closed to pick that turn up. Waiting
-for a click bought nothing — a wall you have to touch card by card before it can do
-anything, and a card left half-way through editing a repo sitting there saying `interrupted`
-until somebody noticed.
+(`rousing.ts`, pure: the gate, the order, the pacing, the words) gives a process back to the
+cards that **lost something** and asks each of them to pick it up. Waiting for a click bought
+nothing where a card was left half-way through editing a repo — it sat there saying
+`interrupted` until somebody noticed.
 
-- **A card is *prompted* only where something was demonstrably lost.** Waking is cheap and
-  reversible: a `claude -p` with nothing on its stdin is a process and no tokens. A prompt is
-  neither — it spends money and starts an agent editing a repo with
-  `--dangerously-skip-permissions` — so it is reserved for the cards that can prove they need
-  one. Two things now qualify, and the second was the first addition since the rule was
-  written:
+### The pass wakes only what it will speak to
+
+This is the second answer to *which cards get a process at launch*, and the first one was
+**all of them**. That was argued from waking being cheap — a `claude -p` with nothing on its
+stdin is a process and no tokens — and the arithmetic was wrong about the noun. A
+`claude.exe` is not a process; it is about a dozen, counting the node, a `conhost`, and a
+`cmd → node` per stdio MCP server. Measured on this machine (`processes.md`):
+
+```text
+11 cards, 66 processes, 9181 MB private commit
+  fully equipped card    12 processes   ~1.1 GB      (5 of them)
+machine: 15.8 GB RAM, 2.0 GB free
+```
+
+On a 15.8 GB machine eleven cards is the machine, and what the ten you were not using were
+doing with it was waiting for a keystroke. So `needsRousing` (pure, in `rousing.ts`) is now
+the gate, and it is deliberately **the bar the prompt already had to clear** rather than a
+new rule: `interrupted`, or a row in `job`. Everything else stays dormant.
+
+That makes the pass read as a simplification rather than an addition — *the cards it spawns
+are exactly the cards it speaks to* — and `rouse` leans on that in two places. Both reasons
+to withhold a prompt are settled **before** the spawn now, because a process handed to a card
+the queue then says nothing to is the whole of the waste being removed: `pending_jobs` moved
+ahead of the wake (the thing that ordering used to protect — never telling a card about work
+it has no process to look at — is now structural, since nothing sends until `#spawn` has said
+`"spawned"`), and so did `unansweredRousePrompt`, which only ever needed a file on disk. And
+the send has no third arm, because `needsRousing` is exactly `lost || jobs.length`, so one of
+`resumePrompt` / `jobsPrompt` always applies. `ROUSE_GAP_MS` is paid only by cards that were
+actually spawned, so a wall of a hundred at rest is walked in the time the queries take.
+
+**The other half of it is `Skein.stir`, and without that half this is a regression.** A card
+at rest has to get its process before you press Enter or the first send of the day is a spawn
+and a `--resume` waited out with the sentence already written. The dock's `oninput` calls
+`stir` on the focused card: not awaited and its answer not read, because `#deliver` still asks
+for a process and still fails honestly if there is none — this only moves the second or two
+onto time you were spending anyway. Five things about where that hook is:
+
+- **`oninput`, not `caretMoved`.** They share the handler and are two questions; `caretMoved`
+  is also on `keyup`, `click` and `focus`, and none of those is you writing anything.
+- **And a second call site, because dictation shares no code with typing.** `hands.setDraft`
+  in `App.svelte` — the route `voicing.svelte.ts` and the control surface both take — stirs on
+  the same terms. A sentence spoken into a dormant card is a sentence typed into one, and
+  without this the one route where you are not looking at a keyboard would be the slow one.
+  Both call sites hold the emptiness check rather than `stir` holding it, because `field.put`
+  is *also* how a draft is cleared after a send and how a parked one is handed back on a card
+  switch — neither of which is you turning towards anything.
+- **Not on selection.** Clicking a card or landing on it with Tab reads its transcript and
+  nothing else — that is the paragraph above, and a wall you can page through without spawning
+  thirty children is most of what this change was for. Waking on focus gives all of it back.
+- **The focused card, not `targets`.** A gathering of twenty would otherwise be twenty spawns
+  off one keystroke, which is the herd `ROUSE_GAP_MS` exists to avoid. A broadcast wakes each
+  card in `#deliver` as it reaches it.
+- **A `!` line and an empty box wake nothing.** A shell line reaches `bang.rs` and no agent at
+  all, so a card you only ever run commands in stays dormant; an empty draft is one you have
+  just cleared, which is the opposite of turning towards the card.
+
+`stir` is once-per-card-per-failure rather than once per keystroke. `#spawn` is single-flight
+and returns `"already"` the moment `dormant` is false, so the second character costs a
+property read — what that does not cover is a spawn that *failed*, which would retry on every
+keypress and rewrite `fault` under your hands. `#stirred` remembers those ids and leaves the
+send to be what surfaces the failure, once, where you can act on it. `aside` is deliberately
+not consulted: the flag is about the wall acting on its own, typing at the card is you turning
+back to it, and `#deliver` takes it out of `aside` on the send regardless.
+
+### The rest of the pass
+
+- **A card is *prompted* only where something was demonstrably lost.** A prompt spends money
+  and starts an agent editing a repo with `--dangerously-skip-permissions`, so it is reserved
+  for the cards that can prove they need one. Two things qualify, and the second was the first
+  addition since the rule was written — they are now also the whole of what gets *woken*, per
+  `needsRousing` above:
   - `interrupted`, a turn that was open when the app went away.
   - a row in `job`, background work that started and was never reported on. It meets the same
     bar rather than widening it: the row is written when the job starts and deleted the moment
@@ -242,9 +306,10 @@ until somebody noticed.
   synchronously inside that — so `detach()` has set the flag before the new component's script
   body reaches `new Skein`, let alone before the effect that calls `load`.
 - **A card you set aside is left where you put it**, interrupted or not — see below. That is
-  the strongest of the things the flag means: rousing spawns a process per dormant card and
-  prompts the ones that lost a turn, and a card put by for later is precisely one you have
-  said you are not carrying on with.
+  the strongest of the things the flag means: a card put by for later is precisely one you
+  have said you are not carrying on with, so it is dropped in `rouseOrder` before
+  `needsRousing` is even asked. Note `stir` does *not* honour it, and the two are consistent:
+  this queue is the wall acting on its own, and typing at the card is not.
 - **`SKEIN_NO_WAKE=1` turns the whole pass off** (`supervisor::wake_quiet`, sharing
   `servers::quiet`'s vocabulary), leaving the wall exactly as lazy as it was before. Two
   reasons it must exist: a second Skein against the same store would otherwise resume every
@@ -372,8 +437,10 @@ forgot and false about one you parked: half-finished work you mean to return to,
 held open for the context in it, a thread waiting on somebody else. Left alone those cards
 warm on the same clock as everything else, join `waiting`, and take their turn in the Tab
 cycle — at which point the cycle has stopped being a list of things that want you, which is
-the only thing it was for. Rousing made it acute: with every card given its process back at
-launch, everything on the wall is eventually overdue.
+the only thing it was for. Rousing made it acute while it woke the whole wall: with every card
+given its process back at launch, everything on the wall was eventually overdue. Narrowing the
+queue takes the edge off that and does not settle it — a card's urgency is a clock, and a clock
+runs whether or not the card has a process.
 
 So a card can be **set aside** — right-click, `set it aside` / `pick it back up`. Nothing
 stops, nothing closes, nothing on disk moves; it keeps its process if it has one, its
@@ -393,8 +460,8 @@ transcript, its place and its context. What it stops doing is counting.
   is an agent working away on a card that has opted out of saying it has finished. The dock
   says so on the target line while it is still true.
 - **Persisted, because both of the things it protects against happen at launch** — the waiting
-  cycle is the same cycle tomorrow, and the rousing queue would otherwise hand back exactly
-  the sessions you had put down. Schema v6, one column, and it rides on `update_conversation`
+  cycle is the same cycle tomorrow, and the rousing queue would otherwise resume exactly the
+  sessions you had put down. Schema v6, one column, and it rides on `update_conversation`
   rather than getting a command of its own: it is only ever written by the gesture that sets
   or unsets it, so it always arrives carrying the value it means and the COALESCE never has to
   express "back to the default" (which is the whole reason `clear_conversation` is separate).

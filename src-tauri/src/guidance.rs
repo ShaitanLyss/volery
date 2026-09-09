@@ -47,8 +47,8 @@
 //! has the argument in full and it is the same one: `open` and `wake` both
 //! reach that line and a capability travelling as an argument is one every
 //! future call site has to remember. The failure this avoids is a card that
-//! comes back from a rouse — at launch, for every dormant card at once — with
-//! its project's instructions quietly missing.
+//! comes back from a rouse — or from `Skein.stir`, the first keystroke into a
+//! dormant card's draft — with its project's instructions quietly missing.
 //!
 //! # These are instructions, and beside them there is now a lock
 //!

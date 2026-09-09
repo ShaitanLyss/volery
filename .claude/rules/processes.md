@@ -120,8 +120,8 @@ for a leaked Chromium and it is not safe for a `node.exe` the agent still needs.
 
 ### What a card actually costs, which is the finding worth keeping
 
-The cost is not a leak. It is that a card is expensive at rest and the wall spawns one per
-dormant card at launch:
+The cost is not a leak. It is that a card is expensive at rest, and the wall used to spawn one
+per dormant card at launch:
 
 ```text
 11 cards, 66 processes, 9181 MB private commit
@@ -130,10 +130,22 @@ dormant card at launch:
 machine: 15.8 GB RAM, 2.0 GB free; commit charge 33.1 of 52.7 GB
 ```
 
-Rousing is deliberate and `restore.md` argues for it — a wall you must click before it can do
-anything is not the trade anybody wants. But the argument was made about *processes* being
+Rousing was deliberate and `restore.md` argued for it — a wall you must click before it can do
+anything is not the trade anybody wants. But that argument was made about *processes* being
 cheap, and a `claude.exe` is not one process: it is a dozen, and ~1.1 GB, per card, whether or
 not you ever speak to it. On a 15.8 GB machine eleven cards is the machine.
+
+**This measurement is what narrowed the pass**, and the way it was narrowed is the part worth
+carrying rather than the numbers. The queue was not made lazier; it was made to wake only the
+cards it was already going to *speak* to — `interrupted`, or a row in `job` — which was a gate
+that already existed one step further down. Every other card is woken by the gesture that
+wants it, and that gesture turned out to be a keystroke rather than a send: `Skein.stir` off
+the dock's `oninput`, so the spawn happens while you finish the sentence. See `restore.md`.
+
+The general shape, for the next thing that wants to do work on the wall's behalf: **the cost
+that gets away with being unbudgeted is the one paid on behalf of a person who has not
+arrived.** The fix is rarely to stop doing the thing — it is to find the event that proves
+they have.
 
 Measure **private commit**, never working set. The single largest consumer on the wall was one
 `next dev` at 6.2 GB, which is Nova's dev server and not a card at all.

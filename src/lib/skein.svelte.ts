@@ -65,6 +65,7 @@ import {
   resumePrompt,
   unansweredRousePrompt,
   ALREADY_ROUSED_NOTE,
+  needsRousing,
   rouseOrder,
 } from "./rousing";
 import { dayStart, turnRowKind } from "./usage";
@@ -1171,6 +1172,67 @@ export class Skein {
     return (await this.#spawn(conv)) !== "failed";
   }
 
+  /** Start waking a card because you have begun typing at it.
+   *
+   *  The other half of narrowing the rousing queue. A card at rest no longer
+   *  gets a process at launch, so something has to give it one before you press
+   *  Enter, or the first send of the day is a spawn and a `--resume` you sit
+   *  through with your sentence already written. `#deliver` does wake a dormant
+   *  card and always has — this only moves that second or two off the critical
+   *  path and onto the time you were spending anyway, typing.
+   *
+   *  Three things it deliberately is not:
+   *
+   *  - **Not awaited, and its answer is not read.** Nothing about the draft or
+   *    the send depends on this having finished; `#deliver` still asks for a
+   *    process and still fails honestly if there is none. This is a head start,
+   *    and a head start that can be ignored is the only kind safe to fire from
+   *    a keystroke.
+   *  - **Not on selection.** Clicking a card, or landing on it with Tab, reads
+   *    its transcript and nothing more — the panel needs no agent (see
+   *    `restore.md`: laziness is about processes, transcripts are a file read).
+   *    A wall you can look through card by card without spawning thirty
+   *    children is most of what this change was for, and waking on focus would
+   *    give it all back on a wall you page through.
+   *  - **Not once per keystroke.** `#spawn` is single-flight per id and returns
+   *    `"already"` the moment `dormant` is false, so the second character costs
+   *    a property read. What it does not guard is a spawn that *failed* — that
+   *    would retry on every keypress and rewrite `fault` under your hands — so
+   *    `#stirred` remembers the ids already tried and lets the send be what
+   *    surfaces the failure, once, where you can act on it.
+   *
+   *  Fired from the dock's `oninput`, which is a real edit rather than a caret
+   *  move or a draft being handed back: a parked draft returning to the box on
+   *  a card switch is a `Field.put`, and must not wake anything. And from
+   *  `hands.setDraft` in `App.svelte`, because dictation shares no code with
+   *  typing and a sentence spoken into a dormant card is a sentence typed into
+   *  one. Both call sites hold the "is there anything in the box" check rather
+   *  than this function holding it, since `Field.put("")` is how a draft is
+   *  *cleared* after a send.
+   *
+   *  `aside` is deliberately *not* consulted, where `rouseOrder` drops it. The
+   *  flag says stop counting this as waiting, which is a statement about the
+   *  wall acting on its own; typing at the card is you turning back to it, and
+   *  `#deliver` picks it up out of `aside` on the send anyway. Skipping here
+   *  would only make the one card you had deliberately gone back to the slowest
+   *  on the wall to speak to. */
+  stir(conv: Conversation | null) {
+    if (!conv || !conv.dormant) return;
+    if (this.#stirred.has(conv.id)) return;
+    this.#stirred.add(conv.id);
+    void this.#spawn(conv).then((how) => {
+      /* A card that came back is one worth stirring again if it goes to sleep
+         later — an account swap ends its process mid-session, and typing at it
+         afterwards is the same gesture with the same claim on a head start.
+         Only a *failure* is remembered, which is the one case the guard exists
+         for. */
+      if (how !== "failed") this.#stirred.delete(conv.id);
+    });
+  }
+
+  /** Cards a `stir` has already tried and failed to wake. See `stir`. */
+  #stirred = new Set<string>();
+
   /** The spawn itself, and **at most one at a time per card**.
    *
    *  `wake` used to be the whole of this and its guard was `conv.dormant`,
@@ -1260,17 +1322,26 @@ export class Skein {
     await this.rouse();
   }
 
-  /** Give every dormant card its process back, and ask the ones that were
-   *  mid-turn when the app closed to pick that turn up.
+  /** Give a process back to the cards that lost something, and ask them to pick
+   *  it up.
    *
    *  Lazy restore was always about the *paint* — a wall of thirty cards drawn
-   *  from SQLite with nothing spawned, so the first frame costs a query. What it
-   *  bought at the other end was a wall that could not do anything until you had
-   *  clicked each card in turn, and, worse, a card left half-way through editing
-   *  a repo when the app closed sitting there saying `interrupted` until somebody
-   *  noticed. So the processes come back on their own, behind the painted wall.
+   *  from SQLite with nothing spawned, so the first frame costs a query. This
+   *  pass is what runs behind that paint, and **what it wakes has narrowed**:
+   *  it used to hand a process back to every dormant card, on the argument that
+   *  a wall you must click card by card cannot do anything. The cost of that is
+   *  measured in `processes.md` — a card is a dozen processes and ~1.1 GB at
+   *  rest, 66 processes and 9181 MB for eleven of them — and what those
+   *  processes were doing was waiting. So the gate is now `needsRousing`: a turn
+   *  cut off, or background work whose ending nobody heard. Everything else is
+   *  left dormant and is woken when you turn to it, by `stir` on the first
+   *  keystroke or by `#deliver` on the send.
    *
-   *  Four things keep that from being reckless:
+   *  That gate is deliberately the one the *prompt* already had to clear, which
+   *  is why this reads as a simplification rather than a new rule: the cards
+   *  that are spawned are exactly the cards that are then spoken to.
+   *
+   *  Five things keep it from being reckless:
    *
    *  - **Nothing here is awaited by `load`.** The wall is on screen and correct
    *    before the first spawn, and stays interactive throughout — this is a
@@ -1281,11 +1352,13 @@ export class Skein {
    *    comes up: one you have already woken is skipped, and one that is already
    *    working is not sent anything, so speaking to a card during the launch
    *    cannot land a resume prompt on top of what you just said.
-   *  - **Only an interrupted card is prompted.** Waking is free — a `claude -p`
-   *    with nothing on its stdin costs a process and no tokens — but a prompt
-   *    spends money and starts an agent editing a repo, so it is reserved for
-   *    the cards that demonstrably lost a turn. `SKEIN_NO_WAKE=1` turns the
-   *    whole pass off.
+   *  - **Nothing is spawned for a prompt that will not be sent.** Both reasons
+   *    to withhold one — the session already holding an unanswered copy, and a
+   *    card that has since started working — are settled *before* the spawn now
+   *    that the spawn exists only to carry the prompt. A process handed to a
+   *    card the queue then says nothing to is the exact waste this pass was
+   *    narrowed to stop.
+   *  - **`SKEIN_NO_WAKE=1` turns the whole pass off.**
    *
    *  Public because the control surface drives this seam rather than a copy of
    *  it, and re-entrant only in the sense that it refuses to be: a second call
@@ -1316,29 +1389,38 @@ export class Skein {
            priority and not a list of who is still here. */
         if (!this.#byId.has(conv.id)) continue;
         const lost = conv.interrupted;
-        /* `#spawn`, not `wake`, because the answer this queue needs is *did we
-           start it* rather than *does it have a process*. They differ in one
-           case and that case is the expensive one: a second Skein against the
-           same store (the pairing `SKEIN_NO_WAKE` exists for — see the module
-           note in `rousing.ts`) has already given this card a process and
-           already sent it whatever it needed, so a resume prompt from here is a
-           second agent told to pick up a turn somebody else is picking up, in
-           the same working tree, with `--dangerously-skip-permissions`. That is
-           the shape of the wall coming back as several instances of itself, each
-           independently committing the same piece of work. */
-        const started = await this.#spawn(conv);
-        if (started === "failed") continue;
-        if (started === "already") continue;
-        woken += 1;
-        /* What this card had in flight and never heard the end of. Asked after
-           the wake rather than before, so a card whose spawn failed is not told
-           about work it has no process to go and look at. */
+        /* What this card had in flight and never heard the end of.
+           **Asked before the wake**, which is the reverse of how this read for
+           most of the feature's life. It was after, so that a card whose spawn
+           failed was not told about work it had no process to go and look at —
+           and that ordering only made sense while the spawn happened regardless.
+           It is now half of whether to spawn at all, so it has to come first,
+           and the thing it used to protect is protected by structure instead:
+           nothing below sends anything until `#spawn` has said `"spawned"`.
+
+           A query per dormant card rather than one for the wall, and this is
+           the same number of calls the pass has always made — it asked this of
+           every card it woke, which was every dormant card. `pending_jobs` is
+           not `async`, so it runs on the main thread (CLAUDE.md, on blocking
+           commands): it stays acceptable because it is one indexed `SELECT`
+           that returns nothing for almost every card, and the `fs::metadata`
+           existence check only happens for rows that exist. If it ever grows a
+           per-card cost, the fix is a bulk command and not a clock. */
         const jobs = await invoke<LostJob[]>("pending_jobs", {
           conversationId: conv.id,
         }).catch(() => [] as LostJob[]);
-        const owed = (lost || jobs.length > 0) && !conv.working;
-        /* What the session is already holding, asked only when there is a
-           prompt on the table.
+        /* The gate, and the whole of what narrowed this pass: a card that
+           merely finished a turn cleanly is left dormant. It gets its process
+           when you turn to it — `stir` on the first keystroke into its draft,
+           `#deliver` on the send — rather than at launch, where a dozen
+           processes and ~1.1 GB apiece bought nothing but the ability to wait.
+           See the module note in `rousing.ts` for the measurement. */
+        if (!needsRousing(conv, jobs.length)) continue;
+        /* What the session is already holding, asked ahead of the spawn because
+           it can be — this is a file on disk, and reading it needs no process.
+           That ordering is now load-bearing rather than incidental: a card
+           already holding an unanswered copy is one this queue will say nothing
+           to, and the spawn exists only to carry what it says.
 
            `--resume` puts the whole transcript back in front of the model, and
            a rouse prompt is *in* that transcript: it went down stdin like
@@ -1354,38 +1436,68 @@ export class Skein {
            scrollback but whether to spend money, and that cannot be answered
            off a file that has not arrived. `loadHistory` shares its in-flight
            read, so this is the same one read either way. */
-        if (owed) await this.loadHistory(conv);
-        const already = owed ? unansweredRousePrompt(conv.history) : null;
-        if (already !== null) {
+        await this.loadHistory(conv);
+        if (unansweredRousePrompt(conv.history) !== null) {
           /* Said rather than done silently, for the reason every other thing
              Skein does on its own behalf is said: a card left deliberately
              alone must not read as one the queue forgot. The jobs are still
              marked told — the row is about this card having been given the
-             news, and it has been. */
+             news, and it has been.
+
+             No `activity` write any more. There used to be one, because the
+             card had been spawned and was standing there saying `waking…` about
+             a wake nothing followed; this card is never woken now, so what it is
+             drawn as is what a dormant card is drawn as, and that is correct. */
           conv.note(ALREADY_ROUSED_NOTE);
-          conv.activity = "ready";
           await this.#toldAboutJobs(conv, jobs);
-        } else if (lost && !conv.working) {
-          /* Sent as an ordinary prompt, and the panel folds it away behind
-             `RESUME_CAP` — which is what says the line is Skein's and not one
-             you typed. It used to be a `meta` note written above the prompt
-             here, with the whole prompt drawn below; see `rousing.ts`. */
-          await this.send(conv, resumePrompt(jobs, Date.now()));
-          await this.#toldAboutJobs(conv, jobs);
-        } else if (jobs.length && !conv.working) {
-          /* A second reason to prompt a card, and the only one added since the
-             rule was "interrupted cards only". It meets that rule's bar: a row
-             in `job` is work that demonstrably started and demonstrably was
-             never reported on, which is as narrow a signal as `interrupted`
-             and is deleted the moment the card *is* told. What it is not is a
-             card that merely finished a turn — those still get nothing. */
-          await this.send(conv, jobsPrompt(jobs, Date.now()));
-          await this.#toldAboutJobs(conv, jobs);
-        } else {
-          /* `wake` left it saying "waking…", which was true for as long as the
-             call took and is now a card standing ready with nothing to do. */
-          conv.activity = "ready";
+          continue;
         }
+        /* `#spawn`, not `wake`, because the answer this queue needs is *did we
+           start it* rather than *does it have a process*. They differ in one
+           case and that case is the expensive one: a second Skein against the
+           same store (the pairing `SKEIN_NO_WAKE` exists for — see the module
+           note in `rousing.ts`) has already given this card a process and
+           already sent it whatever it needed, so a resume prompt from here is a
+           second agent told to pick up a turn somebody else is picking up, in
+           the same working tree, with `--dangerously-skip-permissions`. That is
+           the shape of the wall coming back as several instances of itself, each
+           independently committing the same piece of work. */
+        const started = await this.#spawn(conv);
+        if (started !== "spawned") continue;
+        woken += 1;
+        if (conv.working) {
+          /* You got here first, in the window between the job query and the
+             spawn — which `#spawn` reports as `"spawned"` when your send and
+             this queue shared one flight. Your words are on the wire and a
+             resume prompt would land on top of them. The jobs are deliberately
+             left unmarked: nothing has told this card about them, so the next
+             launch still should. */
+          conv.activity = "ready";
+        } else {
+          /* Sent as an ordinary prompt, and the panel folds it away behind
+             `RESUME_CAP` (or `JOBS_CAP`) — which is what says the line is
+             Skein's and not one you typed. It used to be a `meta` note written
+             above the prompt here, with the whole prompt drawn below; see
+             `rousing.ts`.
+
+             Which of the two it is, is `lost`: an interrupted turn gets
+             `resumePrompt`, growing a section that names the jobs where there
+             are any, and a card whose turn ended cleanly gets `jobsPrompt`,
+             which deliberately does not claim the turn was cut off — telling an
+             agent to go and find its half-written file when it has none sends it
+             looking for damage that was never done. There is no third arm to
+             this any more, and there cannot be: `needsRousing` is exactly
+             `lost || jobs.length`, so one of the two always applies. */
+          await this.send(
+            conv,
+            lost ? resumePrompt(jobs, Date.now()) : jobsPrompt(jobs, Date.now()),
+          );
+          await this.#toldAboutJobs(conv, jobs);
+        }
+        /* Paced only for the cards this queue actually spawned — every skip
+           above `continue`s past it, so a wall of a hundred cards at rest is
+           walked in the time the queries take rather than in `ROUSE_GAP_MS`
+           apiece. */
         await new Promise((r) => setTimeout(r, ROUSE_GAP_MS));
       }
     } finally {
@@ -2465,9 +2577,12 @@ export class Skein {
    *  `learnSlash`, so this is a handful of processes on a wall of any size.
    *
    *  Spaced by `ROUSE_GAP_MS` for exactly the reason the rouse queue is:
-   *  launch is already the busiest moment this app has, painting a wall and
-   *  giving every dormant card its process back, and a fistful of simultaneous
-   *  spawns on top of that is a thundering herd of our own making. Nothing
+   *  launch is already the busiest moment this app has, painting a wall,
+   *  starting dev servers and reviving whichever cards lost a turn, and a
+   *  fistful of simultaneous spawns on top of that is a thundering herd of our
+   *  own making. Note this pass is now the *larger* of the two on an ordinary
+   *  launch, since the rouse queue usually wakes nothing — a throwaway per
+   *  territory outnumbers a resume per lost turn. Nothing
    *  waits on it — the wall is complete and correct without a single row of
    *  this, which is what makes spacing it free.
    *

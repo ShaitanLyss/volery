@@ -2603,7 +2603,18 @@
     setFocused: (id) => (focusedId = id),
     deselect: ondeselect,
     draft: () => field.text,
-    setDraft: (t) => field.put(t),
+    /* Stirred as well as written, which is the same claim the dock's `oninput`
+       makes and has to be made twice because these are two ways of writing a
+       draft that share no code. Dictating a sentence into a dormant card is
+       typing one, so it earns the same head start on the spawn (`Skein.stir`);
+       without this, the one route where you are *not* looking at a keyboard
+       would be the slow one. `field.put` is also how a draft is *cleared* —
+       `setDraft("")` — and how a parked one is handed back on a card switch,
+       which is why the emptiness check is here rather than inside `stir`. */
+    setDraft: (t) => {
+      field.put(t);
+      if (t && !field.banging) skein.stir(focused);
+    },
     commands: () => field.commands,
     choices: () => field.choices.map((c) => c.value),
     targets: () => targets,
