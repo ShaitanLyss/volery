@@ -1400,12 +1400,14 @@ export class Skein {
 
            A query per dormant card rather than one for the wall, and this is
            the same number of calls the pass has always made — it asked this of
-           every card it woke, which was every dormant card. `pending_jobs` is
-           not `async`, so it runs on the main thread (CLAUDE.md, on blocking
-           commands): it stays acceptable because it is one indexed `SELECT`
-           that returns nothing for almost every card, and the `fs::metadata`
-           existence check only happens for rows that exist. If it ever grows a
-           per-card cost, the fix is a bulk command and not a clock. */
+           every card it woke, which was every dormant card. What did change is
+           *when*: they now all land at launch, beside the paint and the
+           transcript reads, on cards the answer is usually "nothing" for. So
+           `pending_jobs` was made `async` and runs on `off_main` (CLAUDE.md, on
+           blocking commands) — a bulk command was the other option and is the
+           wrong one, since it would put the whole wall's worth of work on the
+           main thread in one call instead of taking any of it off. The
+           reasoning is on the command. */
         const jobs = await invoke<LostJob[]>("pending_jobs", {
           conversationId: conv.id,
         }).catch(() => [] as LostJob[]);

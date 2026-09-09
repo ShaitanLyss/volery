@@ -99,6 +99,16 @@ the send has no third arm, because `needsRousing` is exactly `lost || jobs.lengt
 `resumePrompt` / `jobsPrompt` always applies. `ROUSE_GAP_MS` is paid only by cards that were
 actually spawned, so a wall of a hundred at rest is walked in the time the queries take.
 
+Those queries changed thread on the way, and the reasoning generalises past this pass.
+`pending_jobs` used to be asked once per card *woken*, which was every dormant card; it is now
+asked once per dormant card to decide, which is the same count landing at a worse moment —
+launch, beside the paint and the transcript reads. The obvious fix was a bulk command, one
+query for the wall instead of N, and it is the wrong one: batching does not take the work off
+the thread that paints, it puts all of it there in one call. So the command is `async` on
+`off_main` instead, and the queries are the queries they always were. **When N calls on the
+main thread are the problem, the count is rarely the thing to attack.** The reasoning, and
+what would actually be worth doing if `job` ever grew, is on `store::pending_jobs`.
+
 **The other half of it is `Skein.stir`, and without that half this is a regression.** A card
 at rest has to get its process before you press Enter or the first send of the day is a spawn
 and a `--resume` waited out with the sentence already written. The dock's `oninput` calls

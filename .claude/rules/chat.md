@@ -23,8 +23,12 @@ where that column is read.
   bargain `--resume` strikes with the disk one function down, and for a sharper reason:
   `open` and `wake` both reach that line, and a capability travelling as an argument is one
   every future call site has to remember. The failure mode is not a card that starts wrong,
-  it is a chat card that comes back from a **rouse** holding the machine — at launch, for
-  every chat card on the wall at once, with nobody watching.
+  it is a chat card that comes back from a **rouse** holding the machine, with nobody
+  watching. That was written when rousing woke every dormant card at launch, which made it a
+  whole wall of them at once; the queue is narrower now (`restore.md`), and the argument is
+  unchanged and if anything stronger — the call sites multiplied instead. `Skein.stir` wakes a
+  card off a *keystroke*, which is the least supervised spawn in the app and the one nobody
+  will ever think to check.
 - **So the row lands before the spawn.** `Skein.#openIn` records first and spawns second,
   which is the other way round from how it read for most of the app's life. A chat card whose
   row arrives late is a chat card spawned as a project card. The insert is local and the

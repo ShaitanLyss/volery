@@ -4115,13 +4115,51 @@ pub struct PendingJob {
 /// having vanished rather than as Skein guessing. Everything else on the row is
 /// reported either way: knowing a job was lost is worth saying even when there
 /// is nowhere to look.
+///
+/// # `async`, because the caller asks it once per card
+///
+/// This was the ordinary blocking arm, which runs on the thread that drains the
+/// event loop (CLAUDE.md, at length). One call there is two indexed `SELECT`s
+/// and is not worth a paragraph. What made it worth one is that `rouse` now asks
+/// it **before** deciding whether to wake a card, so it runs once per dormant
+/// card at launch rather than once per card woken — the same count as before,
+/// on a wall where the answer for almost all of them is now "nothing, leave it
+/// alone", and all of it on the thread that is at that moment painting the wall
+/// and folding restored transcripts.
+///
+/// The tempting fix was a bulk command: one query for the whole wall instead of
+/// N. That trades the right thing away. It would not take the work off the main
+/// thread — it would put *all* of it there in one call — and it would need a
+/// second query shape, a second row type keyed by card, and a `run_dir` per row
+/// that `session_of` currently supplies one card at a time. `off_main` costs
+/// none of that and fixes the thing actually wrong: the queries are the same
+/// queries, and the thread they run on is `spawn_blocking`'s, which is the pool
+/// built for work that parks a thread.
+///
+/// **What it does not do is make the store lock free**, and that is worth being
+/// exact about, because CLAUDE.md's rule reaches one step further than the
+/// blocking call: a main-thread command wanting the same mutex now waits on
+/// *this* one instead of on the wall. That is not the back door `release_azdo`
+/// had to be moved for — the lock here is held for two indexed reads on one
+/// card, not across a network pass — and the wall is painting throughout either
+/// way, which it was not before. If `job` ever grows to where the reads are not
+/// trivial, the fix is to drop the connection before the path checks (the
+/// `exists()` calls need no lock and are the only part that touches a disk),
+/// not to batch the queries.
 #[tauri::command]
-pub fn pending_jobs(
-    store: tauri::State<'_, Store>,
+pub async fn pending_jobs(
+    app: tauri::AppHandle,
     conversation_id: String,
 ) -> Result<Vec<PendingJob>, String> {
-    let conn = store.0.lock().unwrap();
-    jobs_of(&conn, &conversation_id, None)
+    crate::off_main(move || {
+        /* Reached through the handle rather than taken as `tauri::State`, which
+           borrows for the call and so cannot cross into a `'static` closure.
+           The pattern `aside::run` uses, for the same reason. */
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        jobs_of(&conn, &conversation_id, None)
+    })
+    .await?
 }
 
 /// The same rows, for a process that is not the app.
