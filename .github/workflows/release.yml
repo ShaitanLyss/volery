@@ -93,6 +93,24 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # sherpa-onnx's shared runtime, for `voice.rs`. A step rather than leaving it
+      # to the crate's own build-time download, for two reasons that are both about
+      # this being a *bundled* dependency rather than only a linked one:
+      #
+      #   - `tauri.conf.json` names the two DLLs in `bundle.resources`, and tauri's
+      #     build script validates those paths BEFORE cargo builds the crates that
+      #     would produce them. A normal dependency's build script is not ordered
+      #     ahead of its dependent's, so `target/release/...` is empty at that
+      #     moment and the build dies naming a resource that does not exist. This
+      #     is measured, not theoretical: it cost a full release build here.
+      #   - It pins what gets shipped to one archive fetched in the open, rather
+      #     than to whatever a build script downloads on its own.
+      #
+      # The same script provisions the dev machine, so CI and local are identical.
+      - name: sherpa-onnx runtime
+        shell: bash
+        run: echo "SHERPA_ONNX_LIB_DIR=$(bash tools/fetch-sherpa.sh)" >> "$GITHUB_ENV"
+
       # svelte-check + tsc over src/**
       - name: check
         run: bun run check

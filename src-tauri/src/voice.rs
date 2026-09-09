@@ -6,7 +6,21 @@
 //! `src/lib/steward.ts`, and none of it knows a microphone exists. A transcript
 //! is text on the ordinary event pipeline.
 //!
-//! ## Why Windows' own recogniser, and what that cost
+//! ## What runs here now
+//!
+//! Since 2026-09-09 the recogniser is **sherpa-onnx, in this process**: Silero
+//! VAD bounds the utterance, moonshine-base-en transcribes what it bounded, and
+//! no audio leaves the machine. What it replaced was Windows'
+//! `SpeechRecognitionTopicConstraint` - Microsoft's *cloud* dictation service.
+//!
+//! **The four sections below are history and are kept deliberately.** They are
+//! the record of how a cloud service came to be described here as an on-device
+//! one, and it is an easy mistake to make twice: the probe that chose that path
+//! looked entirely healthy, and every number taken off it was true. What was
+//! wrong was the inference. Deleting them leaves a file that looks as though it
+//! was right the first time. The new engine's own section follows them.
+//!
+//! ## History: why Windows' own recogniser, and what that cost
 //!
 //! Probed 2026-09-06 with a scratch crate (`build.md`'s pattern — a *library*
 //! question answered outside the app's dependency graph, so a no is free):
@@ -115,34 +129,128 @@
 //! with nothing in the transcript to say why. `hearing()` still reports it, so
 //! the disagreement stays visible.
 
+//! ## And so: a local engine, chosen by measurement rather than by preference
+//!
+//! `docs/VOICE.md` Design 3 ("the wall listens") decided on 2026-09-05 that the
+//! microphone would eventually be always-on, and its own cost section says that
+//! forces local speech-to-text outright — audio from a room leaving this
+//! machine is not a thing to ship. So the question was never *whether* but
+//! *which*, and it was answered with a scratch crate rather than a leaderboard,
+//! because a public benchmark is not a measurement of this laptop.
+//!
+//! Measured 2026-09-09 on this CPU, under normal wall load, three repeats each
+//! (sink `90130c65`):
+//!
+//! ```text
+//! model                              size   load        tail       rtf
+//! nemotron-3.5-streaming-0.6b-320ms  682MB  12.3-19.1s  0ms        1.80-2.90
+//! moonshine-base-en-int8             286MB  7.0-8.6s    391-718ms  0.15-0.28
+//! ```
+//!
+//! **`rtf` is the column that decided it.** Real-time factor above 1.0 means
+//! the engine falls behind a live microphone faster than you can speak, so the
+//! streaming model cannot do the job its streaming-ness exists for on this
+//! hardware. Moonshine at 0.15-0.28 leaves headroom for the fourteen other
+//! things this laptop is doing. There is no GPU or NPU path to reach for:
+//! sherpa-onnx 1.13.7 links a CPU-only ONNX Runtime and does not accept
+//! `openvino`, `npu` or `vitisai` as provider strings at all.
+//!
+//! **What was given up, and it is a real loss.** The Windows path emitted
+//! `HypothesisGenerated` while you were still talking, and the section above
+//! argues at length that watching your own words appear is the only honest
+//! evidence a listening bar can show. Moonshine is a *batch* engine: nothing
+//! comes back until a segment is decoded. So `voice:hypothesis` still fires,
+//! but it now carries one **completed VAD segment** at a time rather than a
+//! word — sentence-grained where it used to be word-grained. The bar is still
+//! never merely "listening…", which was the property worth keeping; it just
+//! updates in fewer, larger steps.
+//!
+//! **And the accuracy numbers above are upper bounds.** Every clip was Windows
+//! TTS: no room tone, no accent, no disfluency. This file has already produced
+//! three confident wrong claims in two days by stating a rate off a sample
+//! under ten — so there is deliberately no accuracy figure here, and anyone
+//! adding one should count their samples first. What *was* observed is
+//! qualitative and consistent: general English is fine, and the wall's own
+//! vocabulary is what breaks ("volery" comes back as "volley", "skein" as
+//! "Scain"). See sink `6b81e132`.
+//!
+//! ## Why the models are fetched rather than shipped
+//!
+//! ~286MB of weights cannot go in a git repository and would double the
+//! installer. They are downloaded once, on the first listen, into the app's own
+//! data directory, and reused forever after.
+//!
+//! That is only cheap because this tree had already solved the hard half. A
+//! *build-time* download by `sherpa-onnx-sys` fails on this network with
+//! `UnknownIssuer` — it uses rustls with its own bundled roots, and the
+//! Netskope CA that signs everything here lives in the Windows store. The
+//! **app** has no such problem: `forge::tls_config` merges the native roots
+//! with the public ones for exactly this reason, and `update.rs` already
+//! fetches from GitHub through it. So this reuses that agent rather than adding
+//! a second HTTP stack. See the `ureq` note in `Cargo.toml`.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
-use tauri::Emitter;
-
-#[cfg(windows)]
-use windows::{
-    core::{Interface, Ref, HSTRING},
-    Foundation::TypedEventHandler,
-    Globalization::Language,
-    Media::SpeechRecognition::{
-        ISpeechRecognitionConstraint, SpeechRecognitionConfidence,
-        SpeechRecognitionHypothesisGeneratedEventArgs, SpeechRecognitionResultStatus,
-        SpeechRecognitionScenario, SpeechRecognitionTopicConstraint, SpeechRecognizer,
-    },
-    Win32::System::Com::CoIncrementMTAUsage,
+use sherpa_onnx::{
+    OfflineModelConfig, OfflineMoonshineModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
+    SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
 };
+use tauri::{Emitter, Manager};
 
-/// The language the wall listens in unless told otherwise. See the note above:
-/// this is not the system's, on purpose.
+/// The language the wall listens in unless told otherwise.
+///
+/// Kept as a constant, and kept as an *argument* to `listen`, even though the
+/// engine below is English-only — the history above is the argument for it. The
+/// OS speech language moved from `fr-FR` to `en-US` between two probes with
+/// nobody touching this file, and a value that moves under you is not one to
+/// inherit silently. Now that the model rather than the OS decides, this is a
+/// claim about moonshine-base-**en**, and `english_only` enforces it.
 pub const DEFAULT_LANGUAGE: &str = "en-US";
+
+/// What Silero and moonshine both want. Not a preference — the VAD is trained
+/// at this rate, and `WINDOW` below is its frame size in samples at it.
+const RATE: u32 = 16_000;
+/// Silero's frame. Feeding it anything else works but makes the detector's own
+/// timing arithmetic wrong, so the capture loop buffers up to exactly this.
+const WINDOW: usize = 512;
+
+/// How long to wait for somebody to start talking before giving up.
+///
+/// Five seconds because that is what the Windows path used, and "nothing was
+/// said" after about five seconds is a reading people are already used to here.
+const ONSET_PATIENCE: Duration = Duration::from_secs(5);
+/// How much silence ends an utterance once it has begun.
+///
+/// Deliberately longer than Silero's own `min_silence_duration`: that one
+/// decides where a *segment* stops, this one decides whether another is coming.
+/// Set them equal and a breath in the middle of a sentence ends the whole turn.
+const TRAILING_SILENCE: Duration = Duration::from_millis(900);
+/// A ceiling, so a stuck-open microphone cannot hold a blocking thread forever.
+const MAX_UTTERANCE: Duration = Duration::from_secs(30);
+
+/* ── one utterance, heard ─────────────────────────────────────────────────── */
 
 /// One utterance, heard.
 #[derive(Debug, Serialize)]
 pub struct Heard {
     pub text: String,
-    /// The recogniser's own word for how sure it is: `high`, `medium`, `low` or
-    /// `rejected`. Carried rather than acted on — what to do about a `low` is a
-    /// question for the rung that has the wall in front of it, and thresholding
-    /// here would throw the evidence away before anybody could weigh it.
+    /// **This engine reports no confidence, and the field stays honest by
+    /// saying so rather than by inventing a number.**
+    ///
+    /// The four values are the Windows recogniser's vocabulary, and the front
+    /// end's `Transcript` type still spells all four, so the wire shape is
+    /// unchanged. What changed is that only two can now occur: `rejected` when
+    /// nothing was transcribed, `medium` when something was. `medium` rather
+    /// than `high` because a model that cannot score itself has not earned
+    /// `high` — but it is a placeholder, not a measurement, and **nothing may
+    /// threshold on it**. Nothing does today; `voicing.svelte.ts` reads only
+    /// `text`. If something ever needs to weigh how sure the recogniser was,
+    /// the honest fix is a new field, not a finer guess in this one.
     pub confidence: String,
     /// Which language it listened in, so a transcript that came back as
     /// nonsense can be told apart from one that came back in French.
@@ -151,292 +259,601 @@ pub struct Heard {
 }
 
 /// What the recogniser can do here, asked before anybody holds a key down.
+///
+/// Redefined 2026-09-09 along with the engine. It used to report Windows'
+/// system speech language and its installed dictation languages, which are
+/// facts about a service this file no longer calls. Nothing in `src/` consumes
+/// it — the command is registered and has no caller — so this was free to
+/// change today, and worth changing before something starts depending on a
+/// shape that describes the wrong recogniser.
 #[derive(Debug, Serialize)]
 pub struct Hearing {
-    /// What Windows would listen in if it were not told. Reported because it
-    /// disagreeing with `DEFAULT_LANGUAGE` is normal and not a fault.
-    pub system: String,
-    /// Every language dictation works in on this machine.
-    pub dictation: Vec<String>,
-    /// Whether `DEFAULT_LANGUAGE` is among them.
+    /// The one language the installed model transcribes. A statement about
+    /// moonshine-base-**en**, not a setting.
+    pub language: String,
+    /// Whether the weights are already on disk. `false` means the first listen
+    /// will spend a while fetching before it can hear anything, which is worth
+    /// being able to say *before* somebody holds the key down.
     pub ready: bool,
+    /// Roughly what is still to fetch, in megabytes. Zero when `ready`.
+    pub to_fetch_mb: u64,
+    /// The input device that would be used, when there is one.
+    pub device: Option<String>,
 }
 
-/* ── saying what went wrong in words somebody can act on ──────────────────── */
+/* ── the models ───────────────────────────────────────────────────────────── */
 
-/// The gate this machine is behind today, and the only HRESULT named from
-/// measurement rather than from memory.
-const PRIVACY_NOT_ACCEPTED: i32 = 0x8004_5509_u32 as i32;
-/// `E_ACCESSDENIED`. Not a speech code at all — a universal Windows one — which
-/// is the only reason it is safe to name without having produced it here.
-const ACCESS_DENIED: i32 = 0x8007_0005_u32 as i32;
+/// The moonshine release unpacks to a directory of this name; the four weights
+/// plus the token table inside it are what the recogniser is handed.
+const MOONSHINE: &str = "sherpa-onnx-moonshine-base-en-int8";
+const MOONSHINE_ARCHIVE: &str = "sherpa-onnx-moonshine-base-en-int8.tar.bz2";
+const SILERO: &str = "silero_vad.onnx";
+/// sherpa publishes models under one long-lived tag rather than per release.
+const MODEL_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
+/// What the fetch costs, so there is something to say before it is spent.
+const MOONSHINE_MB: u64 = 286;
 
-/// An HRESULT from the speech stack, in a sentence.
-///
-/// **Two codes are named and the rest are passed through verbatim**, and the
-/// asymmetry is deliberate. Naming HRESULTs out of memory is how a wrong,
-/// confident message gets in front of somebody — and a wrong explanation is
-/// worse than a raw code, because a raw code can be searched for and a
-/// plausible lie cannot. `0x80045509` is named because this machine produces it;
-/// `E_ACCESSDENIED` because it means one thing everywhere.
-pub(crate) fn explain(code: i32, message: &str) -> String {
-    match code {
-        PRIVACY_NOT_ACCEPTED => "windows has not accepted its speech privacy policy — \
-             Settings → Privacy & security → Speech, then try again"
-            .to_string(),
-        ACCESS_DENIED => "windows refused the microphone — \
-             Settings → Privacy & security → Microphone"
-            .to_string(),
-        _ => format!("the recogniser refused: {message} (0x{:08x})", code as u32),
+/// Where the weights live, and whether they are all there.
+struct Models {
+    preprocessor: PathBuf,
+    encoder: PathBuf,
+    uncached_decoder: PathBuf,
+    cached_decoder: PathBuf,
+    tokens: PathBuf,
+    silero: PathBuf,
+}
+
+impl Models {
+    /// The layout, without asking the disk anything. Pure, so the test at the
+    /// bottom can check the names against what the release actually ships.
+    fn at(dir: &Path) -> Self {
+        let m = dir.join(MOONSHINE);
+        Self {
+            preprocessor: m.join("preprocess.onnx"),
+            encoder: m.join("encode.int8.onnx"),
+            uncached_decoder: m.join("uncached_decode.int8.onnx"),
+            cached_decoder: m.join("cached_decode.int8.onnx"),
+            tokens: m.join("tokens.txt"),
+            silero: dir.join(SILERO),
+        }
+    }
+
+    fn complete(&self) -> bool {
+        [
+            &self.preprocessor,
+            &self.encoder,
+            &self.uncached_decoder,
+            &self.cached_decoder,
+            &self.tokens,
+            &self.silero,
+        ]
+        .iter()
+        .all(|p| p.is_file())
     }
 }
 
+/// An agent that gets through this network. See the module header.
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .tls_config(crate::forge::tls_config())
+        /* Per read, not per download. A 286MB body over a corporate proxy is
+           minutes of reads, and a total timeout here would abort a healthy
+           fetch part-way through. */
+        .timeout_read(Duration::from_secs(120))
+        .build()
+}
+
+fn download(url: &str, to: &Path) -> Result<(), String> {
+    let res = agent()
+        .get(url)
+        .call()
+        .map_err(|e| format!("fetch {url}: {e}"))?;
+    let mut body = res.into_reader();
+    let mut file =
+        std::fs::File::create(to).map_err(|e| format!("create {}: {e}", to.display()))?;
+    std::io::copy(&mut body, &mut file).map_err(|e| format!("write {}: {e}", to.display()))?;
+    Ok(())
+}
+
+/// No console window flashing up behind a GUI app.
 #[cfg(windows)]
-/// A recognition that ended without an error but without words either.
+fn quiet(cmd: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+#[cfg(not(windows))]
+fn quiet(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
+/// Unpack a `.tar.bz2` with the system's own tar.
 ///
-/// **The last arm carries the number now, and that is the whole of why this was
-/// rewritten.** It used to say `"the recogniser gave no reason"` and throw the
-/// status away — which is exactly the mistake `explain` above spends three
-/// tests refusing to make, one layer down: a sentence naming nothing cannot be
-/// searched for, cannot be told apart from the three other statuses that reach
-/// the same arm, and reads as *the microphone is broken*. Reported 2026-09-08
-/// by somebody who had just opened the privacy gate and had no way to tell they
-/// were now past it.
+/// **Named by absolute path on Windows, and that is not fussiness.** Cygwin's
+/// `tar` comes first on this machine's PATH and it *silently truncates a large
+/// archive and exits 0* — measured 2026-09-09, a 453MB archive that passed
+/// `bzip2 -t` extracted to 170MB with status zero, and every "corrupt download"
+/// that afternoon turned out to be this rather than the network. Sink
+/// `113d6b0e`.
 ///
-/// `Unknown` is named because **this machine produces it**, which is the same
-/// standard `explain` holds its two named HRESULTs to. What it *means* was then
-/// got wrong twice in one afternoon, in opposite directions, each time off a
-/// sample under ten — see the module note, which has the numbers. The sentence
-/// it settled on says only what held across every window: the service rather
-/// than the microphone, and the next attempt is usually fine.
-fn why_empty(status: SpeechRecognitionResultStatus) -> Option<String> {
-    let said = match status {
-        SpeechRecognitionResultStatus::Success => return None,
-        SpeechRecognitionResultStatus::TimeoutExceeded => "nothing was said",
-        SpeechRecognitionResultStatus::MicrophoneUnavailable => "no microphone",
-        SpeechRecognitionResultStatus::AudioQualityFailure => "the audio was unusable",
-        SpeechRecognitionResultStatus::UserCanceled => "cancelled",
-        SpeechRecognitionResultStatus::NetworkFailure => "the recogniser wanted a network",
-        SpeechRecognitionResultStatus::TopicLanguageNotSupported => {
-            "dictation is not installed for that language"
-        }
-        SpeechRecognitionResultStatus::Unknown => {
-            "the online dictation service did not answer — it is microsoft's \
-             servers rather than your microphone, and the next attempt is \
-             usually fine; try again"
-        }
-        /* Not guessed at, and not silent either. The type is a newtype over an
-           i32 whose derived `Debug` prints the number rather than the name, so
-           the number is all there is to hand over — and a number can be looked
-           up, which is the property the whole file is protecting. */
-        other => {
-            return Some(format!(
-                "the recogniser stopped without words (status {})",
-                other.0
-            ))
-        }
+/// Shelling out rather than linking `tar` and `bzip2`: both are already in the
+/// graph behind `sherpa-onnx-sys`, but as *build* dependencies — using them
+/// here would put two more crates in the shipped binary to unpack one archive
+/// once. bsdtar has shipped in Windows since 1809.
+fn untar(archive: &Path, into: &Path) -> Result<(), String> {
+    let tar = if cfg!(windows) {
+        "C:/Windows/System32/tar.exe"
+    } else {
+        "tar"
     };
-    Some(said.to_string())
-}
+    let mut cmd = Command::new(tar);
+    cmd.arg("-xf").arg(archive).arg("-C").arg(into);
+    quiet(&mut cmd);
 
-#[cfg(windows)]
-fn confidence_of(c: SpeechRecognitionConfidence) -> &'static str {
-    match c {
-        SpeechRecognitionConfidence::High => "high",
-        SpeechRecognitionConfidence::Medium => "medium",
-        SpeechRecognitionConfidence::Low => "low",
-        _ => "rejected",
+    let mut child = cmd.spawn().map_err(|e| format!("start {tar}: {e}"))?;
+    /* CLAUDE.md: every spawn goes in a job object. This one is short-lived and
+       starts nothing of its own, so the job buys little here — but "every" is
+       the rule precisely because the exceptions get argued one at a time until
+       there are eighty orphans under the wall. */
+    let job = crate::servers::jobs::Job::new();
+    if let Some(j) = &job {
+        j.assign(child.id());
     }
+    let status = child.wait().map_err(|e| format!("{tar}: {e}"))?;
+    if !status.success() {
+        return Err(format!("{tar} failed unpacking {}", archive.display()));
+    }
+    Ok(())
 }
 
-/* ── the apartment ────────────────────────────────────────────────────────── */
-
-#[cfg(windows)]
-/// Keep a multi-threaded apartment alive for the life of the process.
+/// Make sure the weights are on disk, fetching them once if they are not.
 ///
-/// `CoIncrementMTAUsage` rather than `RoInitialize`, and the difference matters
-/// here: the recognition runs on `spawn_blocking`'s pool, so the thread that
-/// needs an apartment is one this code does not own and cannot uninitialize.
-/// `RoInitialize` per call would take a reference on every one of them and give
-/// none back. This asks the runtime to keep an MTA existing, which is what is
-/// actually wanted, and is safe to call more than once — so the `OnceLock` is
-/// tidiness rather than correctness.
-fn apartment() {
-    use std::sync::OnceLock;
-    static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        /* The cookie is deliberately dropped on the floor: giving it back would
-           end the apartment, and nothing here ever wants that. */
-        let _ = unsafe { CoIncrementMTAUsage() };
-    });
+/// Each download lands under a temporary name and is moved into place only when
+/// it is whole, so an interrupted fetch leaves nothing that *looks* finished.
+/// That matters more than usual here: the failure it prevents is a half-written
+/// 122MB decoder, which ONNX Runtime rejects with a message about a protobuf
+/// that names nothing to do about it.
+fn ensure_models(dir: &Path) -> Result<Models, String> {
+    let models = Models::at(dir);
+    if models.complete() {
+        return Ok(models);
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
+
+    if !models.silero.is_file() {
+        let tmp = dir.join("silero_vad.onnx.part");
+        download(&format!("{MODEL_BASE}/{SILERO}"), &tmp)?;
+        std::fs::rename(&tmp, &models.silero).map_err(|e| format!("install {SILERO}: {e}"))?;
+    }
+
+    if !models.tokens.is_file() {
+        let archive = dir.join(MOONSHINE_ARCHIVE);
+        download(&format!("{MODEL_BASE}/{MOONSHINE_ARCHIVE}"), &archive)?;
+        untar(&archive, dir)?;
+        /* Best-effort: the archive is 200MB of no further use, but failing to
+           delete it is not a reason to fail the listen it was fetched for. */
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    let models = Models::at(dir);
+    if !models.complete() {
+        return Err(format!(
+            "the speech models in {} are incomplete — delete that directory and try again",
+            dir.display()
+        ));
+    }
+    Ok(models)
 }
 
-/* ── asking ───────────────────────────────────────────────────────────────── */
+/* ── the microphone ───────────────────────────────────────────────────────── */
 
-#[cfg(windows)]
-pub fn hearing() -> Result<Hearing, String> {
-    apartment();
-    let system = SpeechRecognizer::SystemSpeechLanguage()
-        .and_then(|l| l.LanguageTag())
-        .map(|t| t.to_string())
-        .map_err(|e| explain(e.code().0, &e.message()))?;
-    let mut dictation = Vec::new();
-    for lang in &SpeechRecognizer::SupportedTopicLanguages()
-        .map_err(|e| explain(e.code().0, &e.message()))?
-    {
-        if let Ok(tag) = lang.LanguageTag() {
-            dictation.push(tag.to_string());
+/// What the capture side hands back: the live stream — which must outlive the
+/// loop, since dropping it stops the microphone — and the shape it is really
+/// running at, which is not always the shape that was asked for.
+struct Capture {
+    _stream: cpal::Stream,
+    rate: u32,
+    channels: usize,
+}
+
+/// Open the default input, preferring a configuration that needs no resampling.
+///
+/// **16kHz is asked for rather than assumed.** Most microphones offer it, and
+/// then nothing below has to resample — which is the difference between feeding
+/// Silero exactly what it was trained on and feeding it something close. When
+/// the device will not do 16k the loop resamples, and `resample` says what that
+/// costs.
+fn open_microphone(tx: mpsc::Sender<Vec<f32>>) -> Result<Capture, String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .ok_or("no microphone — this machine has no default input device")?;
+
+    let mut chosen: Option<cpal::SupportedStreamConfig> = None;
+    if let Ok(ranges) = device.supported_input_configs() {
+        for r in ranges {
+            if r.min_sample_rate().0 <= RATE
+                && RATE <= r.max_sample_rate().0
+                && r.sample_format() == cpal::SampleFormat::F32
+            {
+                chosen = Some(r.with_sample_rate(cpal::SampleRate(RATE)));
+                break;
+            }
         }
     }
-    let ready = dictation.iter().any(|t| t == DEFAULT_LANGUAGE);
-    Ok(Hearing { system, dictation, ready })
+    let config = match chosen {
+        Some(c) => c,
+        None => device
+            .default_input_config()
+            .map_err(|e| format!("no usable input configuration: {e}"))?,
+    };
+
+    let rate = config.sample_rate().0;
+    let channels = config.channels() as usize;
+    let format = config.sample_format();
+    let stream_config: cpal::StreamConfig = config.into();
+
+    /* An error on the audio thread is logged and dropped rather than
+       propagated, because there is nowhere to propagate it *to*: the loop below
+       is already blocked on the channel, and a device that has stopped
+       producing arrives there as silence — which is a reading it already knows
+       how to end on. */
+    let err = |e| log::warn!("voice: input stream error: {e}");
+
+    let stream = match format {
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &stream_config,
+            move |data: &[f32], _: &_| {
+                let _ = tx.send(data.to_vec());
+            },
+            err,
+            None,
+        ),
+        cpal::SampleFormat::I16 => device.build_input_stream(
+            &stream_config,
+            move |data: &[i16], _: &_| {
+                let _ = tx.send(data.iter().map(|s| *s as f32 / 32768.0).collect());
+            },
+            err,
+            None,
+        ),
+        cpal::SampleFormat::U16 => device.build_input_stream(
+            &stream_config,
+            move |data: &[u16], _: &_| {
+                let _ = tx.send(
+                    data.iter()
+                        .map(|s| (*s as f32 - 32768.0) / 32768.0)
+                        .collect(),
+                );
+            },
+            err,
+            None,
+        ),
+        other => return Err(format!("microphone sample format {other:?} is not handled")),
+    }
+    .map_err(|e| format!("open microphone: {e}"))?;
+
+    stream
+        .play()
+        .map_err(|e| format!("start microphone: {e}"))?;
+    Ok(Capture {
+        _stream: stream,
+        rate,
+        channels,
+    })
 }
 
-/// The words so far, while somebody is still talking.
-///
-/// **This is the feature that tells you the microphone is working**, and the
-/// reason it is worth its own callback rather than being a nicety: a one-shot
-/// recognition is up to five seconds of initial silence plus however long you
-/// speak, and a bar that says only *listening…* for all of it cannot be told
-/// apart from a bar that is listening to nothing at all. Watching your own words
-/// appear is the only evidence available before the answer arrives.
-///
-/// It costs no move to continuous recognition, which is the part worth knowing:
-/// `HypothesisGenerated` fires during `RecognizeAsync`, so the one-shot gesture
-/// and the running commentary are the same call. Hold-to-release still needs
-/// `SpeechContinuousRecognitionSession`; this did not.
-///
-/// A hypothesis is a *guess in progress* and is routinely wrong until the final
-/// result replaces it — so nothing may act on one. It is drawn and discarded.
-#[cfg(windows)]
-pub fn listen(language: &str, partial: impl Fn(&str) + Send + 'static) -> Result<Heard, String> {
-    apartment();
-    let began = std::time::Instant::now();
-    let fail = |e: windows::core::Error| explain(e.code().0, &e.message());
+/// Average interleaved channels down to one.
+fn mono(block: &[f32], channels: usize) -> Vec<f32> {
+    if channels <= 1 {
+        return block.to_vec();
+    }
+    block
+        .chunks_exact(channels)
+        .map(|f| f.iter().sum::<f32>() / channels as f32)
+        .collect()
+}
 
-    let lang = Language::CreateLanguage(&HSTRING::from(language)).map_err(fail)?;
-    let rec = SpeechRecognizer::Create(&lang).map_err(fail)?;
+/// Bring a block to 16kHz.
+///
+/// **This is a box-filter decimator rather than a polyphase resampler, and the
+/// difference is worth stating rather than hiding.** Averaging every input
+/// sample that falls inside an output period suppresses most of the energy that
+/// would otherwise alias — which is why it is done at all, since plain
+/// nearest-sample decimation folds hiss straight into the speech band. It is
+/// not as good as a windowed sinc, and **its effect on recognition accuracy has
+/// not been measured**: every engine number in the header came from 16kHz
+/// files, so they say nothing about this path. It only runs when the device
+/// refuses 16kHz.
+fn resample(block: &[f32], from: u32) -> Vec<f32> {
+    if from == RATE || block.is_empty() {
+        return block.to_vec();
+    }
+    let ratio = from as f64 / RATE as f64;
+    let out_len = (block.len() as f64 / ratio).floor() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let start = (i as f64 * ratio).floor() as usize;
+        let end = (((i + 1) as f64 * ratio).ceil() as usize).min(block.len());
+        if start >= end {
+            continue;
+        }
+        let span = &block[start..end];
+        out.push(span.iter().sum::<f32>() / span.len() as f32);
+    }
+    out
+}
 
-    /* Free dictation. A list constraint would be faster and much more accurate,
-       and it is the wrong shape: the grammar rung is eight verbs but the steward
-       rung exists precisely so you can say anything, and a recogniser restricted
-       to a word list could never hand it a sentence it had not been told about. */
-    let topic = SpeechRecognitionTopicConstraint::CreateWithTag(
-        SpeechRecognitionScenario::Dictation,
-        &HSTRING::from("wall"),
-        &HSTRING::from("wall"),
-    )
-    .map_err(fail)?;
-    rec.Constraints()
-        .map_err(fail)?
-        .Append(&topic.cast::<ISpeechRecognitionConstraint>().map_err(fail)?)
-        .map_err(fail)?;
-    rec.CompileConstraintsAsync().map_err(fail)?.get().map_err(fail)?;
+/* ── listening ────────────────────────────────────────────────────────────── */
 
-    /* The running commentary. Registered after the constraints compile and
-       before anything is listened for, and torn off again below — the token is
-       kept rather than dropped on the floor, since the recogniser outlives this
-       function only if something goes wrong and a handler holding the callback
-       past that would be a leak nobody could see. */
-    let token = rec
-        .HypothesisGenerated(&TypedEventHandler::new(
-            move |_sender: Ref<'_, SpeechRecognizer>,
-                  args: Ref<'_, SpeechRecognitionHypothesisGeneratedEventArgs>| {
-                if let Some(args) = args.as_ref() {
-                    if let Ok(text) = args.Hypothesis().and_then(|h| h.Text()) {
-                        partial(&text.to_string());
-                    }
+/// The engine is English-only, so a request for anything else is refused in
+/// words rather than answered with confident nonsense.
+fn english_only(language: &str) -> Result<(), String> {
+    if language.to_ascii_lowercase().starts_with("en") {
+        return Ok(());
+    }
+    Err(format!(
+        "the installed model transcribes English only, and {language} was asked for — \
+         moonshine-base-en is what this build downloads, and a multilingual model \
+         is a different set of weights and a different decision"
+    ))
+}
+
+fn build_recognizer(m: &Models) -> Result<OfflineRecognizer, String> {
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config = OfflineModelConfig {
+        moonshine: OfflineMoonshineModelConfig {
+            preprocessor: Some(m.preprocessor.display().to_string()),
+            encoder: Some(m.encoder.display().to_string()),
+            uncached_decoder: Some(m.uncached_decoder.display().to_string()),
+            cached_decoder: Some(m.cached_decoder.display().to_string()),
+            merged_decoder: None,
+        },
+        tokens: Some(m.tokens.display().to_string()),
+        /* Four is what the measurements in the header were taken with, on a
+           machine that was already busy. More is not obviously better here —
+           the wall has a dozen other cards wanting the same cores. */
+        num_threads: 4,
+        ..Default::default()
+    };
+    OfflineRecognizer::create(&config).ok_or_else(|| {
+        "could not load the speech model — try deleting the speech directory in the app's \
+         data folder so it is fetched again"
+            .into()
+    })
+}
+
+fn build_vad(m: &Models) -> Result<VoiceActivityDetector, String> {
+    let config = VadModelConfig {
+        silero_vad: SileroVadModelConfig {
+            model: Some(m.silero.display().to_string()),
+            threshold: 0.5,
+            /* Where a *segment* ends. `TRAILING_SILENCE` above is the separate
+               question of whether another segment is coming after it. */
+            min_silence_duration: 0.35,
+            /* Short enough for "stop", which is one of the eight instant verbs
+               and is the shortest thing anybody will say to this wall. */
+            min_speech_duration: 0.15,
+            window_size: WINDOW as i32,
+            max_speech_duration: 20.0,
+        },
+        sample_rate: RATE as i32,
+        num_threads: 1,
+        ..Default::default()
+    };
+    VoiceActivityDetector::create(&config, 30.0)
+        .ok_or_else(|| "could not load the voice activity detector".into())
+}
+
+fn transcribe(rec: &OfflineRecognizer, samples: &[f32]) -> String {
+    let stream = rec.create_stream();
+    stream.accept_waveform(RATE as i32, samples);
+    rec.decode(&stream);
+    stream
+        .get_result()
+        .map(|r| r.text.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Listen for one utterance and hand back what was said.
+///
+/// The shape of the loop is the whole design: audio arrives in blocks on a
+/// channel, is brought to mono 16kHz, and is handed to the VAD in exact
+/// `WINDOW` frames. Whenever the VAD has *finished* a segment, that segment is
+/// transcribed immediately and the running text emitted as a hypothesis — so a
+/// long sentence appears in pieces while it is still being spoken, which is as
+/// close as a batch engine gets to the running commentary the Windows path had.
+///
+/// It ends on the first of: `TRAILING_SILENCE` after something was heard,
+/// `ONSET_PATIENCE` with nothing heard at all, or `MAX_UTTERANCE` regardless.
+pub fn listen(
+    models_dir: &Path,
+    language: &str,
+    partial: impl Fn(&str) + Send + 'static,
+) -> Result<Heard, String> {
+    english_only(language)?;
+
+    /* The very first listen ever made pays for ~286MB, and a bar that reads
+       "listening…" for several minutes is indistinguishable from one that is
+       broken — the same *real cause reported as silence* the comment below is
+       about, which is why it is worth a line here rather than a note in a
+       changelog.
+
+       There is exactly one channel from here to that bar, `voice:hypothesis`,
+       because the point of this whole change is that nothing in `src/` had to
+       move for it. So the notice goes down that channel, and it is **the one
+       thing ever sent that way that is not a guess at what was said**. That is
+       a real if small abuse of the field, and it is bounded: the first decoded
+       segment overwrites it, the final transcript overwrites it, and nothing
+       downstream ever acts on a hypothesis. */
+    if !Models::at(models_dir).complete() {
+        partial(&format!(
+            "fetching the speech model, about {MOONSHINE_MB}MB — first run only"
+        ));
+    }
+
+    let models = ensure_models(models_dir)?;
+    let recognizer = build_recognizer(&models)?;
+    let vad = build_vad(&models)?;
+
+    let (tx, rx) = mpsc::channel::<Vec<f32>>();
+    let capture = open_microphone(tx)?;
+
+    /* **The clock starts when the microphone does, and that is the whole of why
+       it is declared here rather than at the top.** `ensure_models` downloads
+       286MB on a first run, and `build_recognizer` is seconds more; timed from
+       the start of the call, `ONSET_PATIENCE` would already be spent by the
+       time there was anything to listen to, so the loop's very first check
+       would fire and report *nothing was said* — on a freshly installed app,
+       for the first thing anybody ever tried to say to it, without the
+       microphone having been opened at all.
+
+       That is the failure this file has now been bitten by three times in three
+       different costumes: a real cause reported as silence. It also makes `ms`
+       honest, since what a caller wants from that field is how long the
+       utterance took and not how long a one-off download did. */
+    let began = Instant::now();
+
+    let mut frame: Vec<f32> = Vec::with_capacity(WINDOW * 2);
+    let mut said: Vec<String> = Vec::new();
+    let mut heard_speech = false;
+    let mut last_voice = Instant::now();
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(block) => {
+                let block = mono(&block, capture.channels);
+                frame.extend_from_slice(&resample(&block, capture.rate));
+                while frame.len() >= WINDOW {
+                    let rest = frame.split_off(WINDOW);
+                    vad.accept_waveform(&frame);
+                    frame = rest;
                 }
-                /* Never propagates. A failure to draw a guess must not be
-                   allowed to fail the recognition it is a guess about. */
-                Ok(())
-            },
-        ))
-        .map_err(fail)?;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            /* The device went away mid-utterance. Whatever was already decoded
+               is still worth handing back, so this breaks rather than errors. */
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
 
-    /* The timeouts are left as Windows sets them — measured here as 5s of
-       initial silence and 0.5s of end silence. 0.5s is probably too eager for a
-       sentence with a pause in it, and that is a number to change once somebody
-       can hear it being wrong; setting one now would be an unmeasured guess
-       about a thing whose whole point is how it feels. */
-    let result = rec.RecognizeAsync().map_err(fail)?.get();
-    let _ = rec.RemoveHypothesisGenerated(token);
-    let result = result.map_err(fail)?;
+        if vad.detected() {
+            heard_speech = true;
+            last_voice = Instant::now();
+        }
 
-    let status = result.Status().map_err(fail)?;
-    if let Some(why) = why_empty(status) {
-        return Err(why);
+        while !vad.is_empty() {
+            /* Copied out and the borrow dropped before `pop`, because the
+               segment is a view onto memory that `pop` is entitled to free. */
+            let samples: Vec<f32> = match vad.front() {
+                Some(seg) => seg.samples().to_vec(),
+                None => break,
+            };
+            vad.pop();
+
+            let text = transcribe(&recognizer, &samples);
+            if !text.is_empty() {
+                said.push(text);
+                partial(&said.join(" "));
+            }
+            heard_speech = true;
+            last_voice = Instant::now();
+        }
+
+        if heard_speech && last_voice.elapsed() >= TRAILING_SILENCE {
+            break;
+        }
+        if !heard_speech && began.elapsed() >= ONSET_PATIENCE {
+            break;
+        }
+        if began.elapsed() >= MAX_UTTERANCE {
+            break;
+        }
     }
 
-    /* **A success can still carry no words, and the first real run did exactly
-       that.** With the privacy policy accepted and nobody speaking, this returns
-       `Status::Success` after ~7s with `Text: ""` and `Confidence: Rejected` —
-       not `TimeoutExceeded`, which is what `why_empty` was watching for. So an
-       empty transcript went downstream as a transcript, and `hear("")` would
-       escalate an utterance with nothing in it to a model, spending a request to
-       be told that silence is not a plan.
-
-       Keyed on the *text* rather than on the confidence, deliberately. An empty
-       string is the absence of a transcript, which is a fact; a `rejected`
-       confidence with words in it is the recogniser telling you it guessed, and
-       throwing that away here would be the thresholding the `confidence` field
-       exists to avoid — the rung with the wall in front of it is the one that
-       can weigh a doubtful sentence against what is actually on the wall. */
-    let text = result.Text().map_err(fail)?.to_string();
-    if text.trim().is_empty() {
-        return Err("nothing was said".into());
+    /* Anything the VAD is still holding when the loop ends — a final segment
+       whose trailing silence *is* the silence that ended the turn. Without this
+       the last few words of every utterance go missing, which reads as the
+       recogniser mishearing rather than as the loop stopping early. */
+    vad.flush();
+    while !vad.is_empty() {
+        let Some(samples) = vad.front().map(|s| s.samples().to_vec()) else {
+            break;
+        };
+        vad.pop();
+        let text = transcribe(&recognizer, &samples);
+        if !text.is_empty() {
+            said.push(text);
+        }
     }
 
+    let text = said.join(" ").trim().to_string();
     Ok(Heard {
+        confidence: if text.is_empty() { "rejected" } else { "medium" }.to_string(),
         text,
-        confidence: confidence_of(result.Confidence().map_err(fail)?).to_string(),
         language: language.to_string(),
         ms: began.elapsed().as_millis() as u64,
     })
 }
 
-#[cfg(not(windows))]
-pub fn hearing() -> Result<Hearing, String> {
-    Err("speech recognition is Windows-only here".into())
-}
-
-#[cfg(not(windows))]
-pub fn listen(_language: &str, _partial: impl Fn(&str) + Send + 'static) -> Result<Heard, String> {
-    Err("speech recognition is Windows-only here".into())
+/// What the recogniser could do, without opening the microphone.
+pub fn hearing(models_dir: &Path) -> Result<Hearing, String> {
+    let ready = Models::at(models_dir).complete();
+    let device = cpal::default_host()
+        .default_input_device()
+        .and_then(|d| d.name().ok());
+    Ok(Hearing {
+        language: DEFAULT_LANGUAGE.to_string(),
+        ready,
+        to_fetch_mb: if ready { 0 } else { MOONSHINE_MB },
+        device,
+    })
 }
 
 /* ── the commands ─────────────────────────────────────────────────────────── */
 
-/// What the recogniser can do, before anything is held down.
+/// Where the weights live: beside the database, under the durable identity.
 ///
-/// `async` and off the main thread like everything else that talks to the OS —
-/// this one is only a few milliseconds, but `CoIncrementMTAUsage` and the first
-/// touch of the speech stack are not things to do on the thread that paints
-/// every card on the wall. See the `off_main` rule in `CLAUDE.md`.
+/// Resolved from the `AppHandle` rather than spelled out, so this is not a
+/// third hard-coded copy of `dev.skein.studio` — which `CLAUDE.md` explains at
+/// length is the one string a rename must not touch, because it is the folder
+/// everything this app has ever written lives in.
+fn models_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data directory: {e}"))?
+        .join("speech"))
+}
+
+/// What the recogniser can do, before anything is held down.
 #[tauri::command]
-pub async fn voice_hearing() -> Result<Hearing, String> {
-    crate::off_main(hearing).await?
+pub async fn voice_hearing(app: tauri::AppHandle) -> Result<Hearing, String> {
+    let dir = models_dir(&app)?;
+    crate::off_main(move || hearing(&dir)).await?
 }
 
 /// Listen for one utterance and hand back what was said.
 ///
 /// **Blocks for as long as somebody is talking**, plus up to five seconds of
-/// silence before they start, so it is `off_main` for the reason the rule gives
-/// rather than as a precaution: on the main thread this would stop the whole
-/// wall being painted for the duration and then land the backlog at once.
+/// silence before they start — and, on the very first call ever made, for
+/// however long ~286MB takes to arrive. So it is `off_main` for the reason the
+/// rule gives rather than as a precaution: on the main thread this would stop
+/// every card on the wall being painted for the duration, and then land the
+/// whole backlog at once.
 #[tauri::command]
 pub async fn voice_listen(
     app: tauri::AppHandle,
     language: Option<String>,
 ) -> Result<Heard, String> {
     let language = language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
+    let dir = models_dir(&app)?;
     crate::off_main(move || {
-        listen(&language, move |words| {
-            /* One more event on the pipe that already carries `conv:event`, which
-               is the whole of why nothing downstream of here needs to know a
-               microphone exists. Failures are dropped: a guess that did not
-               reach the window is a guess, and the recognition it belongs to is
-               still running. */
+        listen(&dir, &language, move |words| {
+            /* One more event on the pipe that already carries `conv:event`,
+               which is the whole of why nothing downstream of here needs to
+               know a microphone exists. Failures are dropped: a guess that did
+               not reach the window is a guess, and the recognition it belongs
+               to is still running. */
             let _ = app.emit("voice:hypothesis", words);
         })
     })
@@ -448,90 +865,93 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_gate_this_machine_is_behind_is_named_and_actionable() {
-        let said = explain(PRIVACY_NOT_ACCEPTED, "The speech privacy policy was not accepted");
-        assert!(said.contains("Privacy & security"), "{said}");
-        assert!(said.contains("Speech"), "{said}");
-        /* And it does not put the raw code in front of somebody who now has
-           something to do instead. */
-        assert!(!said.contains("0x"), "{said}");
-    }
-
-    #[test]
-    fn a_refused_microphone_names_the_other_panel() {
-        assert!(explain(ACCESS_DENIED, "Access is denied").contains("Microphone"));
-    }
-
-    #[test]
-    fn a_code_nobody_has_measured_is_passed_through_rather_than_guessed_at() {
-        /* The property worth protecting: a raw code can be searched for, and a
-           plausible-but-wrong explanation cannot be. */
-        let said = explain(0x8004_5510_u32 as i32, "Something else went wrong");
-        assert!(said.contains("Something else went wrong"), "{said}");
-        assert!(said.contains("0x80045510"), "{said}");
-    }
-
-    #[test]
     fn the_default_language_is_not_the_system_one() {
         /* Not a tautology — it is the whole of why this constant exists. The
            wall's verbs are English and the OS's speech language is whatever it
-           is this week (`fr-FR` on 2026-09-06, `en-US` on 2026-09-08, untouched
-           in between), so a recogniser left to itself can hand back words no
-           rung can parse and the failure is "it hears me and nothing happens". */
+           is this week (`fr-FR` on 2026-09-06, `en-US` on 2026-09-08, with
+           nobody touching it in between), so a recogniser left to itself could
+           hand back words no rung can parse — and that fails as "it hears me
+           and nothing happens". The engine being English-only settles the
+           question rather than making the constant pointless. */
         assert_eq!(DEFAULT_LANGUAGE, "en-US");
+        assert!(english_only(DEFAULT_LANGUAGE).is_ok());
     }
 
     #[test]
-    fn a_timeout_and_a_silent_success_are_the_same_thing_to_say() {
-        /* The two ways silence arrives. `TimeoutExceeded` is the one that was
-           expected; `Success` with an empty string is the one the first real
-           recognition actually produced, and they must not read differently to
-           whoever is listening for an answer. */
-        assert_eq!(
-            why_empty(SpeechRecognitionResultStatus::TimeoutExceeded).as_deref(),
-            Some("nothing was said")
+    fn a_language_this_model_cannot_speak_is_refused_by_name() {
+        /* The property: it names the language that was asked for and says what
+           is installed, rather than transcribing French as though it were
+           English and handing back words nobody said. */
+        let said = english_only("fr-FR").expect_err("french is not available");
+        assert!(said.contains("fr-FR"), "{said}");
+        assert!(said.contains("English"), "{said}");
+    }
+
+    #[test]
+    fn the_files_opened_are_the_files_the_release_ships() {
+        /* The test that would catch a rename inside the archive without
+           anybody having to hold a microphone. These five names were read off
+           the extracted release directory on 2026-09-09. */
+        let m = Models::at(Path::new("/models"));
+        for p in [
+            &m.preprocessor,
+            &m.encoder,
+            &m.uncached_decoder,
+            &m.cached_decoder,
+            &m.tokens,
+        ] {
+            assert!(
+                p.to_string_lossy().contains(MOONSHINE),
+                "moonshine files live inside the extracted directory: {}",
+                p.display()
+            );
+        }
+        assert!(m.encoder.to_string_lossy().ends_with("encode.int8.onnx"));
+        /* Silero sits beside that directory rather than inside it — separate
+           download, separate model, and it survives deleting the other. */
+        assert!(!m.silero.to_string_lossy().contains(MOONSHINE));
+    }
+
+    #[test]
+    fn resampling_is_a_no_op_at_the_rate_the_models_want() {
+        let block = vec![0.1, 0.2, 0.3, 0.4];
+        assert_eq!(resample(&block, RATE), block);
+    }
+
+    #[test]
+    fn resampling_averages_rather_than_drops() {
+        /* Averaging is the entire point. Nearest-sample decimation would answer
+           [1.0, 1.0] here and fold the alternating component into the speech
+           band as hiss; the average is the DC content, which is what a real
+           low-pass would leave behind too. */
+        let block = vec![1.0, 0.0, 1.0, 0.0];
+        let out = resample(&block, RATE * 2);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|s| (*s - 0.5).abs() < 1e-6), "{out:?}");
+    }
+
+    #[test]
+    fn channels_are_averaged_not_picked() {
+        /* A microphone with a dead right channel should read as quiet rather
+           than as silence, and taking channel zero would make those two cases
+           indistinguishable. */
+        assert_eq!(mono(&[1.0, 0.0, 1.0, 0.0], 2), vec![0.5, 0.5]);
+        assert_eq!(mono(&[0.25, 0.75], 1), vec![0.25, 0.75]);
+    }
+
+    #[test]
+    fn a_model_directory_missing_a_file_is_not_complete() {
+        /* `complete` is what stands between a half-finished download and ONNX
+           Runtime failing with a message about a protobuf. It has to be an
+           every-file check rather than a directory-exists one. */
+        let dir = std::env::temp_dir().join("volery-voice-test-incomplete");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(MOONSHINE)).expect("make the test directory");
+        std::fs::write(dir.join(SILERO), b"not really a model").expect("write silero");
+        assert!(
+            !Models::at(&dir).complete(),
+            "silero alone is not the whole set"
         );
-        /* And a plain success says nothing here, so the empty-text guard beside
-           it is the only thing standing between silence and a spent request. */
-        assert_eq!(why_empty(SpeechRecognitionResultStatus::Success), None);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn the_status_nobody_has_a_sentence_for_still_hands_over_its_number() {
-        /* The bug this replaced: every unnamed status collapsed into "the
-           recogniser gave no reason", so four different endings were one
-           unsearchable sentence and the person holding it could not tell a
-           broken microphone from a session Windows dropped. Same property the
-           `explain` tests protect, one layer down. */
-        let said = why_empty(SpeechRecognitionResultStatus(9999)).expect("not a success");
-        assert!(said.contains("9999"), "{said}");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn the_one_this_machine_produces_blames_the_service_and_not_the_microphone() {
-        /* The two properties that survived three rounds of measuring: it must
-           not send anybody to look at their microphone, which has never been the
-           fault, and it must say to try again, because across every window the
-           following attempt usually worked. Deliberately no rate — that is the
-           number this file got wrong twice. */
-        let said = why_empty(SpeechRecognitionResultStatus::Unknown).expect("not a success");
-        assert!(said.contains("microphone"), "{said}");
-        assert!(said.contains("try again"), "{said}");
-        /* And it is named, so it does not go out carrying a raw number. */
-        assert!(!said.contains("status "), "{said}");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn the_engines_are_installed_and_dictation_is_reachable() {
-        /* Touches the real speech stack and asks it what it has, which needs no
-           microphone and no privacy policy — the probe established that
-           compiling is allowed where recognising is not. If this ever fails, the
-           machine has lost its language packs and everything below is moot. */
-        let h = hearing().expect("the speech stack should answer");
-        assert!(!h.system.is_empty());
-        assert!(h.ready, "en-US dictation should be installed: {h:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

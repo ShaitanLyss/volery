@@ -224,6 +224,22 @@ try {
   $env:CXX_x86_64_pc_windows_gnu = "${mingwPrefix}g++.exe"
   $env:AR_x86_64_pc_windows_gnu  = "${mingwPrefix}ar.exe"
 
+  # zstd-sys arrives as a build dependency behind sherpa-onnx and will not compile
+  # without these. cc-rs passes it only `-Izstd/lib -Izstd/lib/common`, and the sources
+  # include "hist.h" and "zstd_decompress_internal.h" from the sibling directories, so
+  # the build dies naming a missing header with nothing pointing at a toolchain. Same
+  # family as the CC pins above.
+  $env:CFLAGS_x86_64_pc_windows_gnu = '-Izstd/lib -Izstd/lib/common -Izstd/lib/compress -Izstd/lib/decompress -Izstd/lib/dictBuilder'
+
+  # sherpa-onnx's shared runtime, for voice.rs. The crate downloads this itself at build
+  # time and that fails on this network with `UnknownIssuer` — it bundles its own TLS
+  # roots and the Netskope CA is only in the Windows store. tools/fetch-sherpa.sh is
+  # idempotent and prints the directory, so this both ensures and locates it.
+  $sherpaLib = (& bash "$root/tools/fetch-sherpa.sh") | Select-Object -Last 1
+  if ($LASTEXITCODE -ne 0 -or -not $sherpaLib) { throw 'could not fetch the sherpa-onnx runtime' }
+  $env:SHERPA_ONNX_LIB_DIR = $sherpaLib
+  Note "sherpa runtime: $sherpaLib"
+
   Push-Location $root
   try {
     $tauriArgs = @('run', 'tauri', 'build', '--config', $overlayPath)

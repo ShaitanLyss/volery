@@ -335,3 +335,124 @@ The same three apply to the Bun suites, where they matter less only because thos
   is a 160 KB shim whose whole job is to `LoadLibrary` the WebView2 *runtime* installed on
   the machine.
 
+
+### Reaching a library that only ships MSVC binaries, without leaving gnu
+
+Added 2026-09-09, when `voice.rs` needed sherpa-onnx and sherpa-onnx ships **MSVC-built
+static archives**, which mingw cannot link. On the face of it that forces the whole app onto
+`x86_64-pc-windows-msvc` — a build migration rather than a dependency addition, and the end
+of everything above.
+
+It does not, and the escape is general enough to be worth stating as a rule rather than as a
+note about one crate:
+
+> **A C-shaped DLL boundary is toolchain-agnostic. A C++ one, and a static archive of either
+> kind, is not.**
+
+`sherpa-onnx` publishes two builds. The `static` one (its default feature) is MSVC `.lib`
+archives full of C++ objects: name mangling, exception tables and the object format all have
+to agree with the linker, and mingw's do not. The `shared` one is a DLL behind a **C** API —
+`sherpa-onnx-c-api.dll` — plus a small MSVC import library. Across that boundary there is no
+C++ ABI at all, and on x64 there is no stdcall name decoration either, so **GNU ld consumes
+an MSVC-produced import library directly**. No `dlltool`, no `gendef`, no hand-built
+`.dll.a`; those are x86 folklore that x64 does not need.
+
+Probed 2026-09-09 with a throwaway crate (the pattern three sections up — a library question
+answered outside the app's dependency graph, so a no is free). A mingw-linked exe printed
+`version: 1.13.7` and then constructed a real Silero VAD session from `silero_vad.onnx`,
+which is ONNX Runtime loading and building an inference session in-process rather than
+merely a symbol resolving. Sink `21361174`.
+
+```toml
+sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
+```
+
+**What it costs, and the cost is not zero.** The static build would have produced one
+self-contained exe. The shared build means `onnxruntime.dll` (17MB) and
+`sherpa-onnx-c-api.dll` (4.6MB) have to sit beside the exe wherever it is installed — and
+that is a shipping problem, not a build one. They are in `tauri.conf.json`'s
+`bundle.resources`, **not** in `build-gnu.ps1`'s `--config` overlay, and the difference is
+the trap:
+
+- `WebView2Loader.dll` is in the gnu overlay *because it does not exist under MSVC*, where
+  `webview2-com-sys` links `WebView2LoaderStatic` instead. Naming it in `tauri.conf.json`
+  would break the CI build with a missing resource.
+- The sherpa DLLs are the **opposite** case. An MSVC build links the same import libraries
+  and loads the same DLLs, so they are needed on *every* toolchain. Put them in the gnu
+  overlay only and the gnu build you are testing on works while the CI installer ships
+  without them — an app that dies at startup on a machine nobody here can reproduce it on.
+
+The rule that generalises: **the overlay is for things that genuinely do not exist under
+MSVC, and nothing else.** Anything unconditional belongs in `tauri.conf.json`.
+
+**And a bundled resource has to exist before the build starts, which is not where a build
+produces one.** The obvious source for those two DLLs is `target/release/`, since
+`sherpa-onnx-sys` copies them next to the exe itself. It does not work, and the failure is
+worth knowing because nothing about it points at ordering:
+
+```text
+resource path `target\release\sherpa-onnx-c-api.dll` doesn't exist
+```
+
+Tauri's own build script validates every `bundle.resources` path, and a build script runs
+*before* the crate is compiled — while cargo orders a `[build-dependencies]` entry ahead of
+the dependent's build script, it makes no such promise for a **normal** dependency. So
+`sherpa-onnx-sys` had not run yet, `target/release/` was empty, and the whole release build
+died in the first ten seconds having compiled 260 crates the run before. (`links = "sherpa-onnx"`
+would have fixed the ordering and let the dir arrive as `DEP_SHERPA_ONNX_*` — the crate
+declares `links` but publishes no metadata, so there is nothing to read.)
+
+The answer is that anything named in `bundle.resources` must be provisioned by something
+*outside* cargo. `tools/fetch-sherpa.sh` puts the runtime in `src-tauri/sherpa/` (gitignored),
+`SHERPA_ONNX_LIB_DIR` points there too, and both `tools/check-gnu.sh` and
+`tools/build-gnu.ps1` call it — as does a step in `release.yml`, so CI and this machine
+provision identically instead of CI relying on a download inside a build script.
+
+Two DLLs and not four, incidentally, and that was measured rather than assumed:
+`objdump -p` gives the chain `skein.exe → sherpa-onnx-c-api.dll → onnxruntime.dll`, and the
+probe still ran with `sherpa-onnx-cxx-api.dll` and `onnxruntime_providers_shared.dll` moved
+out of the directory. The C++ wrapper is for C++ callers and the providers shim is for
+execution providers this ONNX Runtime does not have.
+
+### Three things that bite on the way, all already paid for
+
+- **`zstd-sys` will not compile, and the error names a header rather than a toolchain.**
+  It arrives as a build dependency behind `sherpa-onnx-sys`, and cc-rs passes it only
+  `-Izstd/lib -Izstd/lib/common` while the sources include `"hist.h"` and
+  `"zstd_decompress_internal.h"` from sibling directories. So the fix is a `CFLAGS`
+  carrying all five include paths, and it is set in both `tools/check-gnu.sh` and
+  `tools/build-gnu.ps1`:
+
+  ```bash
+  export CFLAGS_x86_64_pc_windows_gnu="-Izstd/lib -Izstd/lib/common -Izstd/lib/compress -Izstd/lib/decompress -Izstd/lib/dictBuilder"
+  ```
+
+  It is set for the whole target rather than for one crate, because cc-rs has no per-crate
+  environment. That leaks the five `-I` paths into every other C dependency, which is
+  harmless — they name directories that do not exist relative to those crates and gcc
+  ignores them. Verified rather than assumed: sqlite, lzma and bzip2 all compile with them
+  set.
+
+- **The crate's own build-time download fails on this network.** `sherpa-onnx-sys` fetches
+  its prebuilt libraries with ureq/rustls, which bundles its own root set, and every request
+  through Netskope's interception comes back `invalid peer certificate: UnknownIssuer`. This
+  is the same wall the `ureq` comment in `Cargo.toml` documents — except the *app* solves it
+  by merging the Windows store back in (`forge::tls_config`), and a third-party build script
+  cannot be told to. `tools/fetch-sherpa.sh` fetches the archive with curl, which uses the
+  system store, and both build scripts point `SHERPA_ONNX_LIB_DIR` at the result.
+
+  **Anything that downloads at build time has this problem**, and it is worth checking for
+  before adding a `-sys` crate rather than after.
+
+- **The archive name is not guessable.** `sherpa-onnx-v1.13.7-win-x64-shared-lib.tar.bz2`
+  looks right and 404s; the real one is
+  `sherpa-onnx-v1.13.7-win-x64-shared-**MT-Release**-lib.tar.bz2`. `archive_name()` in
+  `sherpa-onnx-sys/build.rs` has all twelve; read them there.
+
+### What this does *not* settle
+
+The MSVC target still cannot be built here without the `xwin` splat, and `cargo test` still
+does not run on this machine — everything the first section of this file says is unchanged.
+Sink `113d6b0e` has a working recipe for MSVC-without-Visual-Studio if that is ever wanted on
+its own merits, and the splat it describes is at `%LOCALAPPDATA%/volery/xwin`. It is simply
+no longer *forced* by wanting local speech, which is the only reason it came up.

@@ -37,4 +37,18 @@ export SKEIN_REAL_WINDRES=C:/cygwin/bin/windres.exe
 export CC_x86_64_pc_windows_gnu=C:/cygwin/bin/x86_64-w64-mingw32-gcc.exe
 export CXX_x86_64_pc_windows_gnu=C:/cygwin/bin/x86_64-w64-mingw32-g++.exe
 export AR_x86_64_pc_windows_gnu=C:/cygwin/bin/x86_64-w64-mingw32-ar.exe
+
+# sherpa-onnx's shared runtime, for `voice.rs`. `tools/fetch-sherpa.sh` is
+# idempotent and prints the directory, so this one line both ensures and
+# locates it; the script says why the crate cannot fetch it itself here.
+SHERPA_ONNX_LIB_DIR="$(tools/fetch-sherpa.sh)"
+export SHERPA_ONNX_LIB_DIR
+
+# `zstd-sys` comes in as a build dependency behind sherpa-onnx and will not
+# compile without these. cc-rs passes it only `-Izstd/lib -Izstd/lib/common`,
+# and the sources reach for `hist.h` and `zstd_decompress_internal.h` which
+# live in the sibling directories — so the build dies naming a missing header
+# and nothing in that message points at a toolchain. Same family as the `CC_`
+# pins above; see .claude/rules/build.md.
+export CFLAGS_x86_64_pc_windows_gnu="-Izstd/lib -Izstd/lib/common -Izstd/lib/compress -Izstd/lib/decompress -Izstd/lib/dictBuilder"
 cd src-tauri && exec cargo check --lib "$@"

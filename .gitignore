@@ -24,3 +24,7 @@ vite.config.ts.timestamp-*
 .env
 .env.*
 !.env.example
+# sherpa-onnx's shared runtime, put here by tools/fetch-sherpa.sh. 22MB of
+# someone else's binaries, and it lives in the tree only because
+# tauri.conf.json's bundle.resources paths resolve relative to src-tauri.
+/src-tauri/sherpa/

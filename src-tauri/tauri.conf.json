@@ -51,6 +51,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "sherpa/onnxruntime.dll": "onnxruntime.dll",
+      "sherpa/sherpa-onnx-c-api.dll": "sherpa-onnx-c-api.dll"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -13,9 +13,30 @@ record a new sink item for volery: I noticed an issue where …
 open image.png in caravan            ← find it in caravan's folder, show it in the file viewer
 ```
 
-**Nothing here is built and nothing here is measured.** Every latency, every CPU figure and
-every claim about what WebView2 or Windows' own recogniser will do is marked as an unknown with
-the probe that would answer it — see *Unknowns* at the end. The pattern is
+> **Status, 2026-09-09.** Some of it is built now, and two of the claims below are wrong.
+> `src-tauri/src/voice.rs` runs **sherpa-onnx locally** — Silero VAD bounding the utterance,
+> moonshine-base-en transcribing it — reached by holding a key, which is the first rung of
+> Design 3 and none of the rest of it. Read that file's header before trusting anything here
+> about engines.
+>
+> The two corrections, both load-bearing and both left in place below rather than edited out,
+> because how they were arrived at is the useful part:
+>
+> - **Windows' `SpeechRecognitionTopicConstraint` is not on-device.** The probe further down
+>   is quoted correctly and the inference drawn from it was wrong: it is a cloud web service,
+>   and `SupportedTopicLanguages` answering `en-US fr-FR` says which languages a constraint is
+>   *available* in, not where the audio goes. This cost three successive corrections in two
+>   days (commits `d03f677`, `0aef200`, `2fe20bd`).
+> - **`cargo test` is still not runnable on this machine.** A line near the end assumes that
+>   limitation had been lifted; it had not. `.claude/rules/build.md` is the current position.
+>
+> The engine choice was settled by measurement rather than by the reasoning below — sink
+> `90130c65` — and the wake tier turns out to be constrained in a way nothing here predicted:
+> the KWS vocabulary **cannot spell "volery"** (sink `6b81e132`).
+
+**Nothing here was built or measured when this was written.** Every latency, every CPU figure
+and every claim about what WebView2 or Windows' own recogniser will do is marked as an unknown
+with the probe that would answer it — see *Unknowns* at the end. The pattern is
 `docs/TOOL-SURFACE.md`: three shapes, their costs, and a recommendation that is a
 recommendation and not a default.
 
