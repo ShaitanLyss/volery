@@ -51,4 +51,19 @@ export SHERPA_ONNX_LIB_DIR
 # and nothing in that message points at a toolchain. Same family as the `CC_`
 # pins above; see .claude/rules/build.md.
 export CFLAGS_x86_64_pc_windows_gnu="-Izstd/lib -Izstd/lib/common -Izstd/lib/compress -Izstd/lib/decompress -Izstd/lib/dictBuilder"
-cd src-tauri && exec cargo check --lib "$@"
+# `--all-targets`, not `--lib`, and that word is the whole of this line.
+#
+# **CI runs `cargo test`, which builds `examples/`, and `--lib` does not.** So an
+# example left behind by a change to the library it probes compiles nowhere a
+# person can see it and fails on a runner, after the tag has been pushed. That
+# has now happened twice: `bb23ca9` ("voice-probe would not compile, so cargo
+# test could not run at all"), and again on v0.27.0, where `voice-probe.rs` was
+# still calling `hearing()` with no arguments and reading `Hearing::system` after
+# the local-engine rewrite had removed both. `cargo check --lib` was green for
+# that commit, and so was `--profile test`, because neither compiles an example.
+#
+# This machine cannot run `cargo test` at all (`.claude/rules/build.md` has the
+# 0xC0000139 story), so *checking every target* is the closest it can get to the
+# gate CI actually applies — and it is the difference between finding this in a
+# second here and finding it in a red release build.
+cd src-tauri && exec cargo check --all-targets "$@"
