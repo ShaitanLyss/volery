@@ -7,6 +7,12 @@ import "./lib/tokens.css";
    frame afterwards, which is a flash on every launch. After tokens.css, since
    the properties it sets are overrides of what that file declares. */
 import "./lib/theme.svelte";
+/* The second ring, for the same reason and at the same point. This one
+   matters more than the first: `ink` only re-sets the transcript, so a late
+   apply is a flicker in the panel, where a skin owns the ground — applying it
+   after `mount` is a full window of near-black before a light wall on every
+   single launch. */
+import "./lib/palette.svelte";
 import App from "./App.svelte";
 import { fitNerdSymbols } from "./lib/nerd";
 import Peek from "./lib/Peek.svelte";

@@ -97,6 +97,37 @@
   --tx-wrap: wrap;
   --tx-head-wrap: wrap;
   --tx-hyphens: manual;
+
+  /* ── character (`palette.ts`) ─────────────────────────────────────────
+     The knobs on the *other* ring that are not a colour: how round a card is,
+     how much it moves, how far its light reaches. Every value here is exactly
+     what the wall drew before the skin ring existed, which is what makes
+     `studio` a no-op in the same way `paper` is — see the block above.
+
+     Everything above in this file is themeable too, by that ring rather than
+     this one: the ground, the ink ramp, the five status colours and the four
+     faces are all `SKIN_KNOBS`. They are not repeated down here because they
+     already have their declarations up there, and a knob wants exactly one.
+
+     `--ch-lift` is the one with a bill attached. A card that floats is a
+     window presenting at display rate, which `motion.ts` measures at ~12% of
+     the 3D engine against a still wall's 0.6% — so it is 0 here, and a skin
+     that turns it on is making that trade deliberately. `[data-motion]`
+     neutralises it either way. */
+  --ch-radius: 4px;
+  --ch-lift: 0px;
+  --ch-lift-ms: 4200ms;
+  --ch-pop: 1;
+  --ch-pop-ms: 260ms;
+  --ch-ease: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --ch-glow: 34px;
+  /* `none`, because the dark wall does not need one: against `#151210` a 1px
+     `--edge` is already a visible seam. A light skin has no such luck and
+     turns this on — see `palette.ts`. Static either way, so it is rastered
+     once and never repainted; this is not the animated `box-shadow` that cost
+     8% of the GPU per card, and the difference between the two is the whole
+     reason one is free. */
+  --ch-shadow: none;
 }
 
 *,

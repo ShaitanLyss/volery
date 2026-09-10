@@ -335,6 +335,44 @@
   .slot {
     position: relative;
     flex: 0 0 auto;
+    /* Character, from the skin ring (`palette.ts`). Both are no-ops at their
+       `tokens.css` defaults — `--ch-pop` is 1 and `--ch-lift` is 0 — so
+       `studio` draws exactly what it always drew, animation list and all.
+       A zero-amplitude animation still presents, which is why the `still` arm
+       below removes them rather than trusting the values.
+
+       `translate` and `scale` rather than two `transform`s: they are separate
+       properties in Chromium and compose, where two animations both writing
+       `transform` would have the later one win outright and the float would
+       eat the pop.
+
+       Neither takes layout, so `CARD_BOX` and the fixed pitch are untouched —
+       a card that floats does not move the row below it. And both are on
+       `.slot` rather than `.card`, so the pin, the aside mark and the focus
+       ring travel with the card instead of being left behind by it; putting
+       the scale on `.card` would also have made it the containing block for
+       its own glow pseudo, which currently resolves against `.slot`. */
+    animation:
+      land var(--ch-pop-ms, 260ms) var(--ch-ease, cubic-bezier(0.2, 0.8, 0.3, 1)) 1 both;
+  }
+  /* The float is a working card's alone. Every card breathing is every card
+     presenting, and the wall is mostly at rest — the light already says which
+     cards are alive, and this is the same statement in the same place. */
+  .slot:has(.card[data-st="work"]) {
+    animation:
+      land var(--ch-pop-ms, 260ms) var(--ch-ease, cubic-bezier(0.2, 0.8, 0.3, 1)) 1 both,
+      float var(--ch-lift-ms, 4200ms) ease-in-out infinite;
+  }
+  /* The same two levers the glow answers to, and for the same measured
+     reason — see `motion.ts`. `spare` keeps the drift and gives up the glide;
+     `still` takes the float off entirely and leaves the one-shot pop, which
+     costs a present for a quarter of a second and then stops. */
+  :global(html[data-motion="spare"]) .slot:has(.card[data-st="work"]) {
+    animation-timing-function: var(--ch-ease, cubic-bezier(0.2, 0.8, 0.3, 1)), steps(8, end);
+  }
+  :global(html[data-motion="still"]) .slot:has(.card[data-st="work"]) {
+    animation:
+      land var(--ch-pop-ms, 260ms) var(--ch-ease, cubic-bezier(0.2, 0.8, 0.3, 1)) 1 both;
   }
 
   .card {
@@ -343,12 +381,17 @@
     font: inherit;
     background: var(--surface);
     border: 1px solid var(--edge);
-    border-radius: 4px;
+    border-radius: var(--ch-radius, 4px);
     padding: 0.62rem 0.7rem;
     display: flex;
     flex-direction: column;
     gap: 0.42rem;
     cursor: pointer;
+    /* A skin's drop shadow, `none` on the dark wall that never needed one —
+       see `palette.ts`. Static, so it is rastered with the card and never
+       again; the property being `box-shadow` is not the hazard the note
+       further down describes, which is about *animating* it. */
+    box-shadow: var(--ch-shadow, none);
     transition:
       box-shadow 0.5s ease,
       border-color 0.5s ease,
@@ -781,15 +824,17 @@
     content: "";
     position: absolute;
     inset: -1px;
-    border-radius: 4px;
+    /* One more than the card's, because the pseudo sits 1px outside it — a
+       matching radius would show the card's corner cutting the ring. */
+    border-radius: calc(var(--ch-radius, 4px) + 1px);
     pointer-events: none;
   }
   .card[data-st="work"] {
     --st: var(--st-work);
   }
   .card[data-st="work"]::after {
-    box-shadow: 0 6px 34px -14px color-mix(in srgb, var(--st) 85%, transparent);
-    animation: breathe 4.2s ease-in-out infinite;
+    box-shadow: 0 6px var(--ch-glow, 34px) -14px color-mix(in srgb, var(--st) 85%, transparent);
+    animation: breathe var(--ch-lift-ms, 4200ms) ease-in-out infinite;
   }
   .card[data-st="ask"] {
     --st: var(--st-ask);
@@ -798,7 +843,7 @@
   .card[data-st="ask"]::after {
     box-shadow:
       0 0 0 3px color-mix(in srgb, var(--st) 22%, transparent),
-      0 8px 38px -10px color-mix(in srgb, var(--st) 95%, transparent);
+      0 8px calc(var(--ch-glow, 34px) + 4px) -10px color-mix(in srgb, var(--st) 95%, transparent);
     animation: bloom 2.4s ease-in-out infinite;
   }
 
@@ -921,8 +966,48 @@
     }
   }
 
+  /* The skin's character, and both are written so their default value is
+     literally no movement: `--ch-lift` is 0 and `--ch-pop` is 1, so `studio`
+     runs two animations that interpolate between identical frames. That is a
+     present the wall did not previously pay for, which is why `still` above
+     removes the declarations rather than relying on the numbers.
+
+     `land` runs once, on the element being created — a card arriving on the
+     wall, and nothing else, since the cards are keyed and survive a density
+     change. A one-shot is the cheap kind of motion: it presents for its own
+     duration and then the window goes quiet again. */
+  @keyframes float {
+    0%,
+    100% {
+      translate: 0 0;
+    }
+    50% {
+      translate: 0 calc(-1 * var(--ch-lift, 0px));
+    }
+  }
+  /* Scale alone, deliberately — no opacity. A fade would be the obvious thing
+     to pair it with and it would cost the revert guarantee: at `--ch-pop: 1`
+     the scale frames are all identical and the animation is invisible, but an
+     opacity ramp is visible at *every* value, so `studio` would have gained a
+     fade-in on every card. A knob whose off-state is not "draw nothing" is a
+     knob that cannot be turned off. `--ch-pop` under 1 undershoots and grows
+     into place; over 1 overshoots and settles back. */
+  @keyframes land {
+    from {
+      scale: calc(2 - var(--ch-pop, 1));
+    }
+    60% {
+      scale: var(--ch-pop, 1);
+    }
+    to {
+      scale: 1;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .card,
+    .slot,
+    .slot:has(.card[data-st="work"]),
     .card[data-st="work"]::after,
     .card[data-st="ask"]::after {
       animation: none !important;

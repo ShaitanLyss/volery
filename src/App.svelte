@@ -67,6 +67,7 @@
   import { Voicing } from "./lib/voicing.svelte";
   import Hearing from "./lib/Hearing.svelte";
   import { ink } from "./lib/theme.svelte";
+  import { skin } from "./lib/palette.svelte";
   import Canvas from "./lib/Canvas.svelte";
   import Dock from "./lib/Dock.svelte";
   import Dogears from "./lib/Dogears.svelte";
@@ -2366,6 +2367,14 @@
          has no tab strip for ctrl+shift+T to reopen anything into. */
       e.preventDefault();
       ink.cycle(1);
+    } else if (e.ctrlKey && e.shiftKey && (e.key === "Y" || e.key === "y")) {
+      /* Round the ring of skins — the other axis, and the same argument for a
+         cycle rather than a picker. Its own key rather than a modifier on the
+         one above, because the whole reason the two rings are separate is that
+         you compare along one while the other holds still. Y because it is
+         next to T and nothing in a webview claims it. */
+      e.preventDefault();
+      skin.cycle(1);
     } else if (e.key === "Home" && !isTyping(e.target)) {
       /* Fit the wall — but only where Home has nothing else to mean. In a field
          it is the start of the line, and this branch called `preventDefault`,
