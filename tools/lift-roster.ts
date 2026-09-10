@@ -77,7 +77,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { blockAt } from "./lift-scan.ts";
 
@@ -307,6 +307,9 @@ const TESTS: Array<{ file: string; names: string[] }> = [
       "literals",
       "no_tool_result_names_a_tool_a_card_cannot_call",
       "every_prefixed_name_in_a_result_is_a_tool_the_server_advertises",
+      /* And the one that keeps the hand-written list above honest. Needs
+         `CARGO_MANIFEST_DIR` in rustc's environment — see below. */
+      "every_module_that_declares_a_tool_is_scanned",
     ],
   },
 ];
@@ -493,6 +496,13 @@ try {
            version, so the value is arbitrary — supplying one is what lets the
            function be lifted verbatim instead of edited to compile. */
         CARGO_PKG_VERSION: process.env.CARGO_PKG_VERSION ?? "0.0.0-lift",
+        /* `every_module_that_declares_a_tool_is_scanned` reads the crate's own
+           `src` directory to derive what ought to be in `SPEAKING_SOURCES`, and
+           it resolves that from here rather than from a relative path precisely
+           so it can run under this lift — where the cwd is a temp directory and
+           a bare `"src"` would find nothing, which is a test passing by looking
+           at nothing. Absolute, since rustc is not run from the repo root. */
+        CARGO_MANIFEST_DIR: resolve("src-tauri"),
       },
     },
   );

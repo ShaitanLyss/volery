@@ -2782,10 +2782,12 @@ mod tests {
         ("ask.rs", include_str!("ask.rs")),
         ("board.rs", include_str!("board.rs")),
         ("chronicle.rs", include_str!("chronicle.rs")),
+        ("docket.rs", include_str!("docket.rs")),
         ("later.rs", include_str!("later.rs")),
         ("limits.rs", include_str!("limits.rs")),
         ("pin.rs", include_str!("pin.rs")),
         ("relay.rs", include_str!("relay.rs")),
+        ("remove.rs", include_str!("remove.rs")),
         ("selector.rs", include_str!("selector.rs")),
         ("servers.rs", include_str!("servers.rs")),
         ("sink.rs", include_str!("sink.rs")),
@@ -2794,6 +2796,59 @@ mod tests {
         ("status.rs", include_str!("status.rs")),
         ("supervisor.rs", include_str!("supervisor.rs")),
     ];
+
+    /// **The list above is hand-written, so this is what keeps it honest.**
+    ///
+    /// Every module that declares a tool answers a tool call, and a module
+    /// missing from `SPEAKING_SOURCES` is not covered by either result guard —
+    /// which fails *quietly*: the guards stay green while scanning less than
+    /// they claim to. That is how a bare `mcp__skein__ask_user` sat in
+    /// `chronicle.rs`'s `do_wisp` result unremarked, and how `remove.rs` — the
+    /// module whose tool name broke the v0.29.0 release build — was itself
+    /// unscanned the whole time.
+    ///
+    /// Derived rather than restated, which is the better half of the answer
+    /// wherever it is available: a derived expectation cannot list the wrong
+    /// files, because it does not list them.
+    ///
+    /// `CARGO_MANIFEST_DIR` rather than a relative path, so this is runnable
+    /// under `tools/lift-roster.ts` too — the lift injects it exactly as it
+    /// injects `CARGO_PKG_VERSION`, and a bare `"src"` would resolve against
+    /// the lift's temp directory and find nothing. A test that passes by
+    /// looking at an empty directory is this bug for the third time.
+    ///
+    /// The substring is deliberately loose. A `_TOOL` const named in a comment
+    /// pulls its file into the scan, which costs a few microseconds and is the
+    /// safe direction to be wrong in.
+    #[test]
+    fn every_module_that_declares_a_tool_is_scanned() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let listed: Vec<&str> = SPEAKING_SOURCES.iter().map(|(f, _)| *f).collect();
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("src-tauri/src is readable") {
+            let path = entry.expect("a directory entry").path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+                continue;
+            };
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("a source file");
+            if !src.contains("_TOOL: &str = \"") {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                listed.contains(&name.as_str()),
+                "{name} declares a tool but is not in SPEAKING_SOURCES, so nothing checks \
+                 what its tool results say — add it there. Listed: {listed:?}"
+            );
+        }
+        /* And the scan itself has to have found something, or a moved directory
+           makes this pass by checking nothing — the failure mode of every test
+           that discovers its own subjects. */
+        assert!(checked > 8, "only {checked} tool-declaring modules found — is the path right?");
+    }
 
     /// The byte ranges of the `*_schema()` functions, which are the tool
     /// *descriptions* and the one place a bare name is allowed.

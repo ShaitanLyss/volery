@@ -266,7 +266,7 @@ fn find_project(want: &str) -> Result<Found, String> {
 
     match hits.len() {
         0 => Err(format!(
-            "no project here is called {want:?}. Call `tasks` with no arguments to see the \
+            "no project here is called {want:?}. Call `mcp__skein__tasks` with no arguments to see the \
              projects your own tasks are in, or name the project exactly as Asana spells it."
         )),
         1 => Ok(Found { gid: hits[0].0.clone(), name: hits[0].1.clone() }),
@@ -744,7 +744,7 @@ fn mine(open: bool) -> Result<String, String> {
         "assigned to": "the account this wall's token belongs to",
         "showing": if open { "open tasks only" } else { "every task" },
         "workspaces": out,
-        "next": "name a `project` from the rows above to see its board, or a `task` gid to read \
+        "next": "name a `project` from the rows above to see its board, or pass `task: <gid>` to read \
                  one in full with its description.",
     })
     .to_string())
@@ -1046,8 +1046,8 @@ pub(crate) fn token(app: &AppHandle, caller: &str, args: &Value) -> Writing {
                  separate way to take it back — closing the card is how, and a card you clear \
                  has to ask again. If you want the token itself dead, that is Asana's side: my \
                  settings → apps → manage developer apps.\n\n\
-                 If you would rather it did not have this, say no: `tasks` and `task` still \
-                 work, and the card will be told to carry on without it.",
+                 If you would rather it did not have this, say no: reading and updating \
+                 tasks still works, and the card will be told to carry on without it.",
                 clip(&reason, MAX_SHOWN),
                 if who.is_empty() { "live".to_string() } else { format!("**{who}**'s") }
             ),
@@ -1198,7 +1198,8 @@ fn wants_task(args: &Value, action: &str) -> Result<String, String> {
     match named(args, "task").map(str::trim).filter(|s| !s.is_empty()) {
         Some(t) => Ok(t.to_string()),
         None => Err(format!(
-            "`{action}` needs a `task` — the gid `tasks` reported for it."
+            "`{action}` needs a task gid — the one `mcp__skein__tasks` reported for it. Pass it as \
+             `task: <gid>`."
         )),
     }
 }
@@ -1418,7 +1419,7 @@ fn shift(args: &Value) -> Writing {
     let Some(want_col) = named(args, "section").map(str::trim).filter(|s| !s.is_empty()) else {
         return Writing::Now(
             "`move` needs a `section` — the column to put it in, by name or gid. A column is an \
-             Asana section; `tasks` on the project lists them."
+             Asana section; `mcp__skein__tasks` on the project lists them."
                 .into(),
         );
     };
