@@ -1542,7 +1542,7 @@ export class Conversation {
     this.skillsKnown = true;
     /* Compared as text: the array is rebuilt on every init, so identity says
        nothing and the only question is whether the names moved. */
-    if (names.join(" ") === this.skills.join(" ")) return;
+    if (names.join("\0") === this.skills.join("\0")) return;
     this.skills = names;
   }
 
