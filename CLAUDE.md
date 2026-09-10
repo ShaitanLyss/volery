@@ -121,6 +121,8 @@ bun tools/lift-aside.ts            # same, for /btw's one-at-a-time claim and it
 bun tools/lift-selfhood.ts         # same, for what a card is told about itself and its parent
 bun tools/lift-ask.ts              # same, for the call that swallowed one of its own arguments
 bun tools/lift-docket.ts           # same, for the gate every asana write and the token pass through
+bun tools/lift-sink.ts             # same, for the scope a listing row carries and the drop
+                                   # that would otherwise have made the seventh twin
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs

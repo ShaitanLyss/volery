@@ -230,7 +230,10 @@ pub fn sink_schema() -> Value {
              **Nothing here is assigned to you.** An item marked as held is one another \
              conversation has said it is doing — leave it alone. Anything else is fair to \
              `take`, but take it because the user asked or because you are already there, \
-             not merely because it is unheld.",
+             not merely because it is unheld.\n\n\
+             Every row says which scope it is filed under, after its id: `WALL` for an \
+             item about the studio, or the project's name. A project read shows both, so \
+             that column is part of an item's address — a title alone is not one.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -272,7 +275,14 @@ pub fn drop_schema() -> Value {
              — a bug with a failing test, something already in the git log, anything a \
              comment in the code says. Write the thing that would otherwise be lost.\n\n\
              Dropping under a title that is already in the sink adds your voice to that \
-             item rather than making a second one, and the receipt says so.",
+             item rather than making a second one, and the receipt says so.\n\n\
+             **A title only addresses an item together with its scope**, and `sink`'s \
+             listing marks each row with one — `WALL`, or the project's name. To second a \
+             `WALL` row you must pass `scope: \"skein\"`; copying the title alone files a \
+             project item of the same name instead, which is a second item and not a \
+             voice. That is refused rather than done quietly, so if the scopes disagree \
+             you will be told which item holds the title and nothing will have been \
+             written.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -319,7 +329,9 @@ pub fn drop_schema() -> Value {
                     "description":
                         "`project` (the default) files it under this project. `skein` is \
                          for something about the studio itself rather than any one \
-                         repository."
+                         repository — and it is what seconding a `WALL` row in the \
+                         listing takes, since the voice has to land in the scope the item \
+                         is filed under."
                 }
             },
             "required": ["title", "body"]
@@ -455,11 +467,13 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
     }
 
     let now = crate::store::now();
+    /* One read of the roster for the whole pile rather than one per row. */
+    let scopes = Scopes::read(app, &me);
     let mut out = String::new();
     if settled {
         out.push_str("Already dealt with — do not raise these again unless they are back:\n\n");
         for i in &items {
-            out.push_str(&render(i, now, caller));
+            out.push_str(&render(i, now, caller, &scopes));
         }
         return out;
     }
@@ -476,7 +490,7 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
              back with `mcp__skein__take … release: true` if you have stopped:\n\n",
         );
         for i in &mine {
-            out.push_str(&render(i, now, caller));
+            out.push_str(&render(i, now, caller, &scopes));
         }
         out.push('\n');
     }
@@ -487,7 +501,7 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
     if !open.is_empty() {
         out.push_str("Waiting, nobody on them:\n\n");
         for i in &open {
-            out.push_str(&render(i, now, caller));
+            out.push_str(&render(i, now, caller, &scopes));
         }
     } else if mine.is_empty() {
         out.push_str("Nothing is waiting — every item is held.\n");
@@ -495,13 +509,19 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
     if !held.is_empty() {
         out.push_str("\nHeld by another conversation — leave these alone:\n\n");
         for i in &held {
-            out.push_str(&render(i, now, caller));
+            out.push_str(&render(i, now, caller, &scopes));
         }
     }
     out
 }
 
-fn render(i: &SinkItem, now: i64, caller: &str) -> String {
+/// One row of a listing.
+///
+/// The scope goes first, after the id, because that is the half of an item's
+/// address the listing used not to carry at all — and the reason the sink had
+/// six twins in it. See `scope_tag` for what the column costs and why the wall
+/// shouts.
+fn render(i: &SinkItem, now: i64, caller: &str, scopes: &Scopes) -> String {
     let voices = if i.voices > 1 {
         format!(" ×{}", i.voices)
     } else {
@@ -549,8 +569,9 @@ fn render(i: &SinkItem, now: i64, caller: &str) -> String {
         _ => String::new(),
     };
     format!(
-        "- [{}] {}{voices} — {}\n  {}{files}\n  dropped by {who}, {}{hold}{edited}{settled}\n",
+        "- [{}] {} · {}{voices} — {}\n  {}{files}\n  dropped by {who}, {}{hold}{edited}{settled}\n",
         short(&i.id),
+        scopes.tag_of(i),
         i.kind,
         i.title,
         i.body.replace('\n', "\n  "),
@@ -632,6 +653,38 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
              already there before adding more — a pile this long is one nobody reads."
         );
     }
+    /* The scope the merge uses and the scope the read uses are not the same one,
+       and this is where that stops being silent.
+
+       `sink` at project scope serves a union — this project's items and the
+       wall-wide ones — while `put_sink_item` merges within one `project_id`. So
+       an agent that reads a wall-wide item in project scope, agrees with it and
+       drops under the same title does not second it: it files a project twin and
+       is told "dropped into the project sink as […]" with exactly the confidence
+       of a fresh finding. Six of those in `skein.db` by 2026-09-10, the last one
+       made by a card copying a title byte-for-byte out of the listing (sink
+       `23f5f762`).
+
+       `title_taken`'s rule is unchanged and its argument still stands — two
+       items with one title in two *different projects* are two findings about
+       two repositories. What is asked here is narrower: only the one pair of
+       scopes the union puts in front of a reader, wall-wide against the project
+       the drop is landing in. A third project's identically-titled item is not
+       consulted and never was.
+
+       Asked only when this scope has no match of its own, so a real merge still
+       wins: the question is what to do when there is *nothing* to merge with
+       here and something to merge with one scope over. See `.claude/rules/sink.md`
+       for why that refuses rather than warns. */
+    let across = if wall { me.project_id.as_deref() } else { None };
+    if across != project_id.as_deref()
+        && crate::store::sink_titled(&conn, &title, project_id.as_deref()).is_none()
+    {
+        if let Some(other) = crate::store::sink_titled(&conn, &title, across) {
+            return twin_refusal(&other, &title, wall);
+        }
+    }
+
     let id = crate::store::uuid_v4();
     let put = crate::store::put_sink_item(
         &conn,
@@ -685,6 +738,39 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
             }
         }
     }
+}
+
+/// One title, two scopes: nothing dropped, and the item that holds the title
+/// named.
+///
+/// Pure, because the words are the whole of the fix — a refusal an agent cannot
+/// act on is the bug with better manners. So it says four things and no more:
+/// that nothing happened, which id holds the title and where, the one argument
+/// that seconds it, and the one that files it anyway. `Pick::Several`'s shape
+/// (`ambiguous`) one door along, and `title_taken`'s argument in its own words.
+fn twin_refusal(other: &SinkItem, title: &str, wall: bool) -> String {
+    let (theirs, mine, escape) = if wall {
+        (
+            "under this project",
+            "the wall-wide sink",
+            "drop the same words again without `scope`",
+        )
+    } else {
+        (
+            "wall-wide",
+            "this project's sink",
+            "drop the same words again with `scope: \"skein\"`",
+        )
+    };
+    format!(
+        "{title:?} is already in the sink as [{}], filed {theirs} — and this drop was for \
+         {mine}, which is a different scope, so it would have made a second item under \
+         that title rather than adding your voice to that one. Nothing was dropped. To \
+         second it, {escape}. If this really is a separate finding, give it a title that \
+         says how it differs and say to the user that you did — a sink where one title \
+         answers to two items is one nothing can be addressed in (sink `23f5f762`).",
+        short(&other.id)
+    )
 }
 
 /* ── taking and settling ──────────────────────────────────────────────────── */
@@ -746,26 +832,82 @@ fn resolve<'a>(items: &'a [SinkItem], want: &str) -> Pick<'a> {
     Pick::None
 }
 
+/// Where an item is filed — the three readings anything here can have of a
+/// row's scope, and the one place that decides what they are.
+///
+/// Two spellings of it exist below and they are one *register* apart rather than
+/// one vocabulary apart, which is why they both come off this match: prose for
+/// a receipt (`scope_name`), a column for a listing row (`scope_tag`). A fourth
+/// territory reading cannot be added to one and forgotten in the other, and an
+/// agent that reads a row and then reads a receipt is being told the same thing
+/// twice rather than two things that happen to agree.
+enum Filed<'a> {
+    Wall,
+    /// Under the territory the reading card is standing in.
+    Here(Option<&'a str>),
+    /// Under some other project. Reachable from a `scope: "skein"` read, and
+    /// from `take`/`done`, which resolve across the whole wall.
+    Elsewhere(Option<&'a str>),
+}
+
+fn filed<'a>(item_project: Option<&str>, mine: Option<&str>, name: Option<&'a str>) -> Filed<'a> {
+    match item_project {
+        None => Filed::Wall,
+        Some(p) if Some(p) == mine => Filed::Here(name),
+        Some(_) => Filed::Elsewhere(name),
+    }
+}
+
 /// Where an item is filed, in the words a receipt uses.
 ///
 /// Pure, so the three arms are testable; `Scopes` is the thin half that knows
 /// what the wall's territories are called. Always reads as `filed {…}`.
 fn scope_name(item_project: Option<&str>, mine: Option<&str>, name: Option<&str>) -> String {
-    match item_project {
-        None => "wall-wide".into(),
-        Some(p) if Some(p) == mine => "under this project".into(),
-        Some(_) => name.map_or_else(
-            || "under another project".into(),
-            |n| format!("under the {n} project"),
-        ),
+    match filed(item_project, mine, name) {
+        Filed::Wall => "wall-wide".into(),
+        /* No name needed — prose has "this" to lean on, where a column does
+           not. */
+        Filed::Here(_) => "under this project".into(),
+        Filed::Elsewhere(Some(n)) => format!("under the {n} project"),
+        Filed::Elsewhere(None) => "under another project".into(),
     }
 }
 
-/// What a receipt needs to say where a row lives: this card's own territory,
-/// and the wall's territories by name.
+/// The same three readings, in the width a **listing row** can afford.
 ///
-/// Read once per call rather than per row, and only by `take` and `done` —
-/// `drop` writes into a scope it chose itself and can say so without asking.
+/// This is the cause of sink `23f5f762` rather than a nicety. `sink` at project
+/// scope serves a union — this project's items and the wall-wide ones — and the
+/// merge `drop` performs is one scope only, so a title copied out of that
+/// listing is not the address the copier thinks it is. Six twins in `skein.db`
+/// by 2026-09-10, and the sixth was made by a card copying a title
+/// byte-for-byte out of this very listing in order to second an item.
+///
+/// Two things it is spending characters on, both deliberately:
+///
+/// - **The wall reads in caps.** A listing at project scope holds exactly two
+///   kinds of row and the difference between them is the whole point, so it has
+///   to survive being skimmed; `WALL` against a lowercase project name does,
+///   where `wall` against `skein` does not. This is a tool result read by a
+///   model rather than prose on the wall, so the house's lowercase register is
+///   not what is being served here — legibility is.
+/// - **Nothing longer.** Every row of every read pays for it, and a full sink
+///   already overflows a tool result. One word is the budget.
+fn scope_tag(item_project: Option<&str>, mine: Option<&str>, name: Option<&str>) -> String {
+    match filed(item_project, mine, name) {
+        Filed::Wall => "WALL".into(),
+        Filed::Here(Some(n)) | Filed::Elsewhere(Some(n)) => n.into(),
+        /* A project the roster has no name for. Says which of the two it is,
+           which is all the row is claiming. */
+        Filed::Here(None) | Filed::Elsewhere(None) => "project".into(),
+    }
+}
+
+/// What a receipt or a listing row needs to say where a row lives: this card's
+/// own territory, and the wall's territories by name.
+///
+/// Read once per call rather than per row — `do_sink` renders one of these
+/// against a whole pile — and by everything except `drop`, which writes into a
+/// scope it chose itself and can say so without asking.
 struct Scopes {
     mine: Option<String>,
     names: Vec<(String, String)>,
@@ -786,14 +928,24 @@ impl Scopes {
         Scopes { mine: me.project_id.clone(), names }
     }
 
-    fn of(&self, item: &SinkItem) -> String {
-        let name = item.project_id.as_deref().and_then(|p| {
+    /// The territory's name, if the roster has one for it.
+    fn named(&self, item: &SinkItem) -> Option<&str> {
+        item.project_id.as_deref().and_then(|p| {
             self.names
                 .iter()
                 .find(|(id, _)| id == p)
                 .map(|(_, n)| n.as_str())
-        });
-        scope_name(item.project_id.as_deref(), self.mine.as_deref(), name)
+        })
+    }
+
+    /// Prose, for a receipt: `filed under the nova project`.
+    fn of(&self, item: &SinkItem) -> String {
+        scope_name(item.project_id.as_deref(), self.mine.as_deref(), self.named(item))
+    }
+
+    /// One word, for a listing row. See `scope_tag`.
+    fn tag_of(&self, item: &SinkItem) -> String {
+        scope_tag(item.project_id.as_deref(), self.mine.as_deref(), self.named(item))
     }
 }
 
@@ -1392,6 +1544,15 @@ mod tests {
         }
     }
 
+    /// A roster with one territory on it, named — enough for a row to be
+    /// rendered by a test that is not about the scope column.
+    fn scopes() -> Scopes {
+        Scopes {
+            mine: Some("p1".into()),
+            names: vec![("p1".into(), "skein".into())],
+        }
+    }
+
     /// The id of the one item `resolve` picked, for the tests that only care
     /// that it picked one.
     fn one<'a>(items: &'a [SinkItem], want: &str) -> Option<&'a str> {
@@ -1520,6 +1681,80 @@ mod tests {
         assert_eq!(scope_name(Some("p2"), Some("p1"), None), "under another project");
     }
 
+    /* ── the scope on every row of the listing ────────────────────────────── */
+
+    /// The same three readings in a column, which is what the *cause* of sink
+    /// `23f5f762` wanted: a project read is a union of two scopes, so a row that
+    /// does not say which one it came from is a row whose title is not an
+    /// address.
+    #[test]
+    fn a_listing_row_says_which_scope_it_came_from_in_one_word() {
+        assert_eq!(scope_tag(None, Some("p1"), None), "WALL");
+        assert_eq!(scope_tag(Some("p1"), Some("p1"), Some("skein")), "skein");
+        assert_eq!(scope_tag(Some("p2"), Some("p1"), Some("nova")), "nova");
+        assert_eq!(scope_tag(Some("p2"), Some("p1"), None), "project");
+    }
+
+    /// Skimmable, which is the whole job: the two kinds of row a project read
+    /// holds have to differ by more than their spelling. Caps is what does
+    /// that, and it costs no characters.
+    #[test]
+    fn the_wall_and_a_project_do_not_look_alike() {
+        let wall = scope_tag(None, Some("p1"), Some("skein"));
+        let mine = scope_tag(Some("p1"), Some("p1"), Some("skein"));
+        assert_ne!(wall, mine);
+        assert!(wall.chars().all(|c| c.is_uppercase()), "{wall}");
+        assert!(mine.chars().all(|c| !c.is_uppercase()), "{mine}");
+        assert!(wall.len() <= 8 && mine.len() <= 32, "a column, not a sentence");
+    }
+
+    /// And it is actually on the row. `render` is where the six twins were
+    /// made — an agent read this line, copied the title out of it and dropped
+    /// under it — so the assertion is against the rendered row rather than
+    /// against `scope_tag` alone.
+    #[test]
+    fn the_rendered_row_carries_the_scope_beside_the_id() {
+        let scopes = scopes();
+        let row = render(&item(None, None), 0, "nobody", &scopes);
+        assert!(row.starts_with("- [abcd1234] WALL · bug — "), "{row}");
+
+        let mut mine = item(None, None);
+        mine.project_id = Some("p1".into());
+        let row = render(&mine, 0, "nobody", &scopes);
+        assert!(row.starts_with("- [abcd1234] skein · bug — "), "{row}");
+    }
+
+    /* ── the drop that would have made a twin ─────────────────────────────── */
+
+    /// The refusal has to be *actionable*, which is the whole difference between
+    /// it and the bug it replaces: a warning that creates the twin anyway is the
+    /// same twin with better manners. So it names the id that holds the title,
+    /// says where that item is filed, says nothing was written, and gives the
+    /// one argument that seconds it.
+    #[test]
+    fn a_cross_scope_drop_is_refused_with_the_id_that_holds_the_title() {
+        let held = item(None, None);
+        let msg = twin_refusal(&held, &held.title, false);
+        assert!(msg.contains("[abcd1234]"), "{msg}");
+        assert!(msg.contains("filed wall-wide"), "{msg}");
+        assert!(msg.contains("Nothing was dropped"), "{msg}");
+        assert!(msg.contains(r#"`scope: "skein"`"#), "{msg}");
+    }
+
+    /// And the other direction, which is the same hole read from the other end:
+    /// a wall-wide drop over an open item in this project. The escape is the
+    /// absence of the argument rather than a value of it, so it cannot be the
+    /// same sentence with a word swapped.
+    #[test]
+    fn the_refusal_names_the_other_scope_when_the_drop_is_the_wall_wide_one() {
+        let mut held = item(None, None);
+        held.project_id = Some("p1".into());
+        let msg = twin_refusal(&held, &held.title, true);
+        assert!(msg.contains("filed under this project"), "{msg}");
+        assert!(msg.contains("without `scope`"), "{msg}");
+        assert!(!msg.contains(r#"with `scope: "skein"`"#), "{msg}");
+    }
+
     #[test]
     fn a_missing_item_names_what_is_actually_there() {
         let items = vec![item(None, None)];
@@ -1551,6 +1786,25 @@ mod tests {
         let d = drop_schema()["description"].as_str().unwrap().to_string();
         assert!(d.contains("not a to-do list"));
         assert!(d.contains("already records"));
+    }
+
+    /// **A convention an agent has to infer from a listing is one that gets
+    /// inferred wrong**, which is how the sixth twin was made — a card read
+    /// `sink`'s output, saw a wall-wide item, copied its title, and dropped
+    /// without a scope. Marking the row is half the answer; the other half is
+    /// `drop` saying what the mark means and what to pass. Asserted, because a
+    /// tool description is prose and prose gets tidied.
+    #[test]
+    fn drop_says_what_seconding_a_wall_wide_item_takes() {
+        let d = drop_schema()["description"].as_str().unwrap().to_string();
+        assert!(d.contains("WALL"), "{d}");
+        assert!(d.contains(r#"`scope: "skein"`"#), "{d}");
+        assert!(d.contains("refused"), "{d}");
+        /* And the listing says the same thing from the other side, so a card
+           that reads only one of the two still hears it. */
+        let r = sink_schema()["description"].as_str().unwrap().to_string();
+        assert!(r.contains("WALL"), "{r}");
+        assert!(r.contains("a title alone is not one"), "{r}");
     }
 
     /// The hold is only worth having if an agent is told to put it back.
@@ -1653,9 +1907,9 @@ mod tests {
         let now = 10 * 60_000;
         let mut i = item(None, None);
         i.from_id = Some("c1".into());
-        assert!(!render(&i, now, "c2").contains("reworded"));
+        assert!(!render(&i, now, "c2", &scopes()).contains("reworded"));
         i.edited_at = Some(now - 60_000);
-        assert!(render(&i, now, "c2").contains("the user reworded this 1m ago"));
+        assert!(render(&i, now, "c2", &scopes()).contains("the user reworded this 1m ago"));
     }
 
     /// Your own item needs no such note — it was your words to begin with, and
@@ -1665,6 +1919,6 @@ mod tests {
     fn your_own_item_says_nothing_about_being_reworded() {
         let mut i = item(None, None);
         i.edited_at = Some(1_000);
-        assert!(!render(&i, 60_000, "c2").contains("reworded"));
+        assert!(!render(&i, 60_000, "c2", &scopes()).contains("reworded"));
     }
 }

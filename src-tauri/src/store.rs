@@ -5101,6 +5101,31 @@ pub fn sink_items(
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// The **open** item with this exact title in one exact scope, if there is one.
+///
+/// `put_sink_item`'s merge predicate asked as a question instead of acted on —
+/// the same `lower(title)`, the same null-safe `project_id` comparison, and the
+/// same `settled_at IS NULL`, because two spellings of "is this the same item"
+/// would eventually disagree and the one that disagreed would be the one that
+/// made the twin.
+///
+/// `sink::do_drop` asks it about the *other* scope before creating, which is the
+/// half `put_sink_item` cannot answer for itself: it is handed one scope and
+/// merges within it, and knows nothing about the union the agent was reading.
+/// See `.claude/rules/sink.md`.
+pub fn sink_titled(conn: &Connection, title: &str, project_id: Option<&str>) -> Option<SinkItem> {
+    let sql = format!(
+        "SELECT {SINK_COLS} FROM sink_item
+          WHERE settled_at IS NULL
+            AND lower(title) = lower(?1)
+            AND ((project_id IS NULL AND ?2 IS NULL) OR project_id = ?2)"
+    );
+    conn.query_row(&sql, params![title, project_id], |r| sink_of(r))
+        .optional()
+        .ok()
+        .flatten()
+}
+
 pub fn sink_one(conn: &Connection, id: &str) -> Option<SinkItem> {
     let sql = format!("SELECT {SINK_COLS} FROM sink_item WHERE id = ?1");
     conn.query_row(&sql, params![id], |r| sink_of(r))

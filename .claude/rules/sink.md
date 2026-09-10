@@ -96,40 +96,149 @@ again is news.
 
 ### The scope the merge uses and the scope the read uses are not the same one
 
-**They still are not, and that is an open decision rather than a settled design.** `sink` at
-`scope: project` serves "this project's items plus the wall-wide ones" — a union, and
-`sink_open` is indexed on `(project_id, settled_at)` to serve exactly that. `put_sink_item`
-merges within **one** `project_id` only, matching `title_taken`'s rule and its argument: two
-items with one title in two different projects are two findings about two repositories and
-always were.
+`sink` at `scope: project` serves "this project's items plus the wall-wide ones" — a union,
+and `sink_open` is indexed on `(project_id, settled_at)` to serve exactly that.
+`put_sink_item` merges within **one** `project_id` only, matching `title_taken`'s rule and its
+argument: two items with one title in two different projects are two findings about two
+repositories and always were.
 
-So an agent that reads a wall-wide item in project scope, agrees with it, and drops under the
-same title does not second it. It files a project twin, and is told "dropped into the project
+So an agent that read a wall-wide item in project scope, agreed with it, and dropped under the
+same title did not second it. It filed a project twin, and was told "dropped into the project
 sink as […] — nobody is assigned to it", with exactly the confidence of a fresh finding. That
 is `voices` losing the one count it exists to keep. Filed as sink `23f5f762`; measured in
 `skein.db` on 2026-09-10 as **six** title pairs split across the two scopes, not the three
 originally reported — one of them a *settled* wall-wide item whose project twin is still open,
-which is the same hole read from the other end, and the sixth (`b6bfecba` / `71a15dfd`) made
-that same afternoon by a card copying a title byte-for-byte out of `sink`'s own listing in
-order to second it. That is the reproduction in one line: **the listing an agent is shown
-does not say which scope a row it is reading came from**, so the title it copies back is not
-the address it thinks it is.
+which is the same hole read from the other end.
 
-Three shapes could close it, and they are not the same size:
+**The sixth is the cause in one line.** Card `6ff8e41c` made it that same afternoon by copying
+a title byte-for-byte out of `sink`'s own listing in order to second `b6bfecba`, and got
+`71a15dfd`. The listing did not say which scope a row came from, so the title copied out of it
+was not the address the copier thought it was — and there is no amount of care an agent can
+take that fixes that, because the information was not in front of it.
+
+Three shapes were on the table for closing the merge rule itself, and none of them is what
+was built:
 
 1. **Merge across the union**, so the merge follows the read. Cheapest at the call site and
-   the most invasive semantically: it retires `title_taken`'s argument, and it makes a
-   wall-wide item able to swallow a project finding that only happens to share a form of
-   words — which is the failure the scoped rule was written against.
-2. **Narrow the read**, so `sink` at project scope stops showing wall-wide items. Restores
-   the invariant by making the two scopes genuinely separate piles, at the cost of the thing
-   the union was for: a card working in one project can no longer see what the studio knows.
-3. **Say which scope was searched** and leave both rules alone. Does not stop the twin; makes
-   it visible in the receipt at the moment it is made, which is the only moment anything can
-   be done about it.
+   the most invasive semantically: it retires `title_taken`'s argument, and it lets a
+   wall-wide item swallow a project finding that only happens to share a form of words.
+2. **Narrow the read**, so `sink` at project scope stops showing wall-wide items. Restores the
+   invariant by making the two piles genuinely separate, at the cost of the thing the union
+   was for: a card working in one project can no longer see what the studio knows.
+3. **Say which scope was searched** and leave both rules alone. Built in `ee16945`; it does
+   not stop the twin, it makes it visible in the receipt at the moment it is made.
 
-Only the third is built. Whichever of the first two is chosen, it belongs here with its
-argument, and the loser's argument belongs here too.
+What was chosen instead is cheaper than all three and addresses the cause rather than the
+merge: **put the scope on every row of the listing, and have `drop` look across the one
+other scope before it creates.** Neither rule moves. `title_taken` keeps its argument
+verbatim, `put_sink_item` still merges within one `project_id`, and two projects may still
+hold same-titled items.
+
+**Every row of a listing says which scope it is filed under.** `scope_tag`, immediately after
+the id: `WALL` for a wall-wide item, otherwise the project's name.
+
+    - [b6bfecba] WALL · bug — Cards can't see mcp__browser__* …
+    - [d02d17ca] skein · chore — conversation.svelte.ts holds two raw NUL bytes …
+
+Three things about those eight characters, all of them arguable and all of them decided:
+
+- **It is the same vocabulary as the receipts, one register down.** `scope_name` spells a
+  territory as prose (`filed under the nova project`) and `scope_tag` as a column, and both
+  come off one `Filed` match so a fourth reading cannot be added to one and forgotten in the
+  other. An agent that reads a row and then reads a receipt is being told the same thing
+  twice, not two things that happen to agree.
+- **The wall shouts.** A project read holds exactly two kinds of row and the difference
+  between them is the entire point, so it has to survive being skimmed — `WALL` against a
+  lowercase project name does that where `wall` against `skein` does not. This is the one
+  place in the codebase where the house's lowercase register is deliberately not applied: a
+  listing is a tool result read by a model, not prose on the wall, and what it owes is
+  legibility.
+- **One word is the budget.** Every row of every read pays for it and a full sink already
+  overflows a tool result, so the column is a word and never a sentence.
+
+**And `drop` says what the mark means**, in its own description, because a convention an agent
+has to infer off a listing is one that gets inferred wrong — which is the whole of the sixth
+twin. It says that a title addresses an item only together with its scope, that seconding a
+`WALL` row takes `scope: "skein"`, and that the mismatch is refused rather than done quietly.
+Asserted in `drop_says_what_seconding_a_wall_wide_item_takes`, since a tool description is
+prose and prose gets tidied.
+
+### `drop` refuses a cross-scope twin rather than warning about one
+
+Belt and braces for the card that does not read the column. Before creating, `do_drop` asks
+`store::sink_titled` whether an **open** item with this title is sitting in the *other* scope
+— wall-wide when the drop is landing in a project, this project when the drop is wall-wide —
+and if one is, nothing is written and `twin_refusal` names its id, says where it is filed, and
+gives the one argument that seconds it.
+
+Three bounds on that question, and each of them is what keeps `title_taken`'s argument intact:
+
+- **Only the one pair of scopes the union puts in front of a reader.** A third project's
+  identically-titled item is not consulted and never was. Two repositories, two findings.
+- **Only when this scope has nothing of its own to merge with**, so a real merge still wins.
+  The question being asked is what to do when there is nothing to merge with *here* and
+  something one scope over.
+- **Only open items.** A settled item does not hold its title against a fresh drop, here for
+  the same reason it does not absorb one: it happening again is news.
+
+**Why it refuses rather than warns**, which was the live question:
+
+- **A warning cannot be acted on.** By the time an agent reads one, the twin exists. Undoing
+  it takes a `done` on the row that was just made plus a re-drop with the right scope — three
+  calls, and a `voices` count that is wrong in the meantime if the agent does not make them.
+  A warning that creates anyway is the bug this closes, with better manners.
+- **A refusal costs one gesture and loses nothing**, which is `title_taken`'s own sentence
+  applied one door along. The refusal names the id, so seconding is one call and rewording is
+  one call; nothing has to be undone first because nothing happened.
+- **The false positive is cheap and rare.** It fires only on a title specific enough to be a
+  sink title — `drop`'s own description asks for "specific enough to act on months later" —
+  colliding across exactly the wall/project pair while being a genuinely different finding.
+  When it does fire, the answer is a title that says how the two differ, which the sink wanted
+  anyway: a pile where one title answers to two items is a pile nothing can be addressed in.
+- **It is the third door in this subsystem to make the same choice**, after `title_taken` and
+  `Pick::Several`. One subsystem answering "the address is ambiguous" three different ways
+  would be worse than any one of the three answers.
+
+What it does **not** do is offer a way through. There is no `force` argument, deliberately: a
+second item under one title is the state the whole invariant exists to prevent, and an
+argument that reinstates it would be reached for exactly when an agent is in a hurry.
+
+### The six twins, and what merging them actually took
+
+Merging them was the third part of closing `23f5f762`, and five of the six needed nothing —
+worth recording, because the shape of the repair is not the shape the item was filed in.
+
+Every twin had already been reconciled *by hand* by the card that made it: each one's
+`settled_note` names its original and says where the content went (`57af2599` → "Its content
+is now on d3a1921a"; `c7c9b449` → "now on 14f2543e"; `71a15dfd` → "settled with b6bfecba").
+So the words were never lost. What was lost was `voices`, and by the time this was picked up
+that count could no longer be repaired through the tools:
+
+- **Four pairs are settled on both sides** (`28cb1c5d`/`1c92deeb`, `d0aae1a0`/`988af305`,
+  `b6bfecba`/`71a15dfd`, and `14f2543e`/`c7c9b449` where the original is open but already
+  carries the twin's correction). A settled item does not absorb a merge, so a drop under
+  either title would have created a **third** row rather than joining two — strictly worse
+  than the twin. And two of them are already at `voices: 2` from the hand reconciliation.
+- **`d3a1921a`/`57af2599`** is the same: the original is open and its body already carries the
+  twin's two findings, reworded. `put_sink_item` matches on `!old_body.contains(body)`, which
+  is true of a rewording — so a merge would have appended a near-duplicate of text already
+  there and, in the sibling pair, overflowed `MAX_SINK_BODY` by 806 characters to do it.
+- **`7b661546`/`d0b14c6b`** was the one real repair, and it is the one the item names as the
+  worst case: a *settled* wall-wide original with an *open* project twin. The twin held the
+  whole write-up of work that landed on 2026-09-03 and was never taken down, because `done`
+  was called on the wall row instead. Settled, naming `7b661546`.
+
+Two rules fall out of that, and they are why this is here rather than in a commit message:
+
+- **A merge cannot repair a twin once either side is settled.** The window for fixing one by
+  merging is while both are open, which is a window measured in the hours before somebody
+  tidies up. That is the argument for refusing at `drop` rather than reconciling afterwards:
+  afterwards does not stay available.
+- **`voices` cannot be repaired at all.** It is a count of conversations that met a thing, and
+  a card merging on their behalf a week later cannot honestly increment it — `put_sink_item`
+  would attribute the voice to the card doing the tidying, since that is whose `from_id` it
+  has. So the count the item exists to protect is the one thing a twin destroys permanently,
+  which is the whole of why the refusal is worth a round trip.
 
 ### A receipt names the row, not the title
 
@@ -164,8 +273,9 @@ Two changes, and they are the two halves of one answer:
   loses nothing. Note the same exposure on the id rung — four characters of a uuid is a
   prefix, not a name — so that rung collects too.
 
-The refusal is the reason the merge-rule decision can wait: a twin is now a thing an agent is
-*told about*, at the moment it tries to act on one, instead of a coin flip it cannot see.
+The refusal is what made the cause fixable calmly rather than urgently: a twin became a thing
+an agent is *told about*, at the moment it tries to act on one, instead of a coin flip it
+cannot see. The two sections above are the cause itself, closed a week's worth of cards later.
 
 ### `done` keeps the row
 
@@ -286,6 +396,31 @@ Three things follow, and each was wrong before:
 - **`sink.ts` mirrors the store's number** so the field in the Basin stops where the write
   does. A mirror of a cap that no longer exists stopped you a third of the way into what the
   write would have accepted.
+
+### `tools/lift-sink.ts`, and the assertion the typecheck could not check
+
+There is no MSVC toolchain here, so `sink.rs`'s `mod tests` typechecks and cannot run — and a
+green `check-gnu.sh --tests` reads exactly like a green test run. `tools/lift-sink.ts` lifts
+the pure half into a single-file `rustc --test` crate and executes it: 31 assertions, and the
+whole point is that nearly all of them are *strings*, which is the least testable-looking and
+most load-bearing thing in the file. The row an agent copies a title out of, and the sentences
+it is refused with, are the entire guard.
+
+Judged not worth writing on 2026-09-10 and then written the same day, which is worth recording
+because the reasoning changed rather than the conclusion being wrong. The objection was that
+the assertions carry `crate::` references the lift pattern could not resolve; what they
+actually carry is `crate::store::SinkItem` (derive-only, sixteen plain fields),
+`crate::relay::handle_of` (one line), and `crate::store::projects` inside `Scopes::read` — the
+impure half, whose two pure readings lift on their own and re-wrap in an `impl` without it.
+The shared string-aware brace counter in `tools/lift-scan.ts` (4dfc013) is what made the
+extraction cheap enough to bother.
+
+It earned itself on the first run. `drop_says_what_seconding_a_wall_wide_item_takes` was
+written `assert!(d.contains(r#"`scope: \"skein\"`"#))` — backslashes are literal inside a raw
+string, so it could never match, and its sibling was a *negative* assertion of the same
+malformed needle and therefore passed. A typecheck cannot see either. **An assertion nobody
+runs is not weaker than a test, it is a claim in the codebase that nothing is checking**, and
+the negative one was a false green.
 
 ### What is not built yet
 
