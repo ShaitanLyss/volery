@@ -463,6 +463,7 @@ pub fn run() {
             board::relay_post,
             board::relay_unpost,
             chronicle::read_chronicle,
+            chronicle::chronicle_note,
             chronicle::chronicle_waiting,
             chronicle::chronicle_seen,
             sink::read_sink,

@@ -845,6 +845,7 @@ pub(crate) fn roster() -> Vec<Value> {
         always(crate::later::wake_schema()),
         always(crate::limits::allowance_schema()),
         always(crate::servers::servers_schema()),
+        always(crate::chronicle::wisp_schema()),
         // ── discoverable: a card knows from its prompt whether it wants these ──
         found_by(
             crate::sink::take_schema(),
@@ -855,17 +856,6 @@ pub(crate) fn roster() -> Vec<Value> {
             crate::sink::done_schema(),
             "mark a sink item finished, settled, resolved, close it out, tick it \
              off, I fixed the bug that was filed",
-        ),
-        /* `wisp` wants to be in the tier above and does not fit it — the whole
-           measurement is on `chronicle::wisp_schema`, and the hint is therefore
-           load-bearing rather than a formality. Phrased for what an agent
-           actually types when it has just finished something and is deciding
-           whether to say so out loud. */
-        found_by(
-            crate::chronicle::wisp_schema(),
-            "tell the user what I just did or found, announce that I finished, report \
-             progress or a failure to the wall without interrupting, put a line on the \
-             feed, notify, toast, say something they will see from another card",
         ),
         found_by(
             crate::chronicle::chronicle_schema(),
@@ -1802,7 +1792,7 @@ mod tests {
     /// that nobody is charged for, and would go red over tools that are free.
     /// A budget has to be levied on the thing being spent.
     ///
-    /// 24KB is a budget and not a measurement: the loaded tier was ~18KB when
+    /// 24KB was a budget and not a measurement: the loaded tier was ~18KB when
     /// this was written, which leaves room for a tool somebody is halfway
     /// through adding and none for pretending nobody notices. Tripping it is
     /// still a conversation rather than a bump — but the conversation is now a
@@ -1810,6 +1800,22 @@ mod tests {
     /// question is no longer "do we want this at all", it is **"does a card have
     /// to know this exists without being told?"** If not, it goes in the
     /// deferred tier with a hint and costs ~25 bytes.
+    ///
+    /// **Raised to 25KB on 2026-09-10, once, deliberately, and by the user.**
+    /// `wisp` answered that question with a yes and then missed the old bound by
+    /// *one byte*: 21,924 without it, 2,077 for the smallest schema that still
+    /// says when not to reach for it, 24,001 together. The whole measurement is
+    /// on `chronicle::wisp_schema`. It was raised rather than shaved because a
+    /// tier tuned to 23,999 is a build one word from red forever, and rather
+    /// than deferred because the feature is *cards writing to the wall's
+    /// record* — deferring the write tool would have shipped the feature with
+    /// its point removed. The price was quoted before it was agreed: ~520 tokens
+    /// on every spawn and every wake, permanently.
+    ///
+    /// That this happened at all is the budget working. What it must not become
+    /// is a number that moves whenever it is inconvenient — so the bar for the
+    /// next raise is the bar this one met: somebody names the tokens it costs
+    /// per spawn, and somebody who pays them says yes.
     #[test]
     fn the_loaded_tier_is_what_every_turn_pays_for() {
         let loaded: Vec<Value> = roster()
@@ -1818,7 +1824,7 @@ mod tests {
             .collect();
         let bytes = json!(loaded).to_string().len();
         assert!(
-            bytes < 24_000,
+            bytes < 25_000,
             "the loaded tier is {bytes} bytes of schema on every spawn of every \
              card — see ask::roster, and ask whether the new tool is one a card \
              must know exists without being told"

@@ -735,6 +735,25 @@ fn exit_if_last(
         return;
     }
     say_state(app, trace, group_id, label, "exited");
+    /* And into the chronicle, which is one of the four things Volery records
+       itself. The guard above is exactly the rule that decides those four —
+       *what happened to you, never what you did* — and it was already written
+       here for its own reasons: a stop you asked for is not news, and saying it
+       anyway makes a restart look like a crash. So this needs no guard of its
+       own, and must not grow one that disagrees with that.
+
+       Wall scope with the label in the mark, because this function is handed a
+       `group_id` and not a project. Worth a row rather than nothing: a dev
+       server that fell over while you were away is a thing you find out about
+       twenty minutes later by wondering why the page is blank. */
+    crate::chronicle::note(
+        app,
+        None,
+        "volery",
+        "bad",
+        &format!("dev server '{label}' fell over"),
+        "",
+    );
 }
 
 #[tauri::command]

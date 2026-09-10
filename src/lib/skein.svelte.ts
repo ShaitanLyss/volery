@@ -57,7 +57,7 @@ import { Gates } from "./gates.svelte";
 import { cliCommand, isEffort, type SlashCommand } from "./commands";
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, type Preset } from "./presets";
-import { UNNAMED, isNamed, titleFromPrompt } from "./naming";
+import { UNNAMED, isNamed, nameBesideProject, titleFromPrompt } from "./naming";
 import {
   ROUSE_GAP_MS,
   type LostJob,
@@ -3298,10 +3298,68 @@ export class Skein {
     }
   }
 
+  /** What the chronicle calls a card — the same two facts `chronicle.rs`'s
+   *  `source_of` joins, in the same order, because a row written by Volery and a
+   *  row written by that card's own `wisp` sit next to each other and must not
+   *  look like two different sources. */
+  #sourceOf(c: Conversation): string {
+    const named = nameBesideProject(c.title);
+    return named ? `${c.project} · ${named}` : c.project;
+  }
+
+  /**
+   * Volery's own entry in the chronicle.
+   *
+   * **What goes in here is what happened *to* you, never what you did.** A
+   * worktree you merged and a card you set aside are your own gestures, and a
+   * register that tells you what you just did is noise you have to read past to
+   * find what you did not know. That rule is the whole of why this list is four
+   * things long and not ten.
+   *
+   * Deliberately *not* every turn ending. A card takes many turns and most of
+   * them ending well is the normal state of a working wall — one row per turn
+   * would bury the four kinds below under exactly the noise this feature exists
+   * to cut through. Cards announce their own accomplishments with `wisp`, which
+   * is the half that knows a unit of work has landed.
+   */
+  #record(c: Conversation | null, level: string, mark: string, detail = "") {
+    void invoke("chronicle_note", {
+      projectId: c?.projectId || null,
+      source: c ? this.#sourceOf(c) : "volery",
+      level,
+      mark,
+      detail,
+    }).catch(() => {
+      /* A chronicle that could fail somebody else's success path by failing to
+         record it would be worse than one with a gap — the same argument
+         `chronicle::note` makes for swallowing its own errors in Rust. */
+    });
+  }
+
   /** Keep the row current enough that a dormant card can show what it reached
    *  without ever spawning the session behind it. */
   #persistConv(c: Conversation, ev: any) {
     if (ev?.type === "result") {
+      /* Read *before* anything else in this branch, because `ending` is already
+         folded by the time a `result` reaches here — `ingest` computed it — and
+         this is the one place that sees every turn end exactly once.
+         `#persistConv` is therefore the honest hook: it fires per `result`, not
+         per event, so nothing here needs its own transition guard.
+
+         Two of the four endings, and the two left out are left out on purpose.
+         `ok` is the normal state of a working wall. `question` is a question
+         left in prose rather than asked — the wall draws it at half amber
+         because it is a guess, and a guess is not worth a permanent row. */
+      if (c.ending === "error") {
+        this.#record(c, "bad", "turn ended in an error", c.lastError ?? "");
+      } else if (c.ending === "asked") {
+        /* No detail: the question itself is parked in `Ask.svelte` and is not
+           a fact this method holds. The source and the mark are enough for the
+           row to be worth clicking, and clicking it goes to the card where the
+           question actually is. A paraphrase here would be a second copy of a
+           question, and the wrong one to read. */
+        this.#record(c, "ask", "is asking you");
+      }
       void this.#adoptAiTitle(c);
       void this.#adoptEffort(c);
       void this.#readHolding(c);

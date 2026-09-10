@@ -315,45 +315,42 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
 
 /* ── the schemas ─────────────────────────────────────────────────────────────*/
 
-/// **Deferred, and it should not be** — this is the one thing in this subsystem
-/// left standing on a decision that is not mine to make.
+/// **Loaded, and it cost a byte of somebody else's budget to be.**
 ///
 /// `ask::roster`'s own framing of the question is "does a card have to know this
-/// exists without being told?", and for `wisp` the answer is yes, on exactly the
+/// exists without being told?", and for `wisp` the answer is yes on exactly the
 /// argument that loads `pin` and `wake_me`: it exists to replace something an
 /// agent does wrongly **by default**. The default is finishing a long piece of
 /// work silently, so a wall of ten cards is ten transcripts to open one at a
 /// time. Nothing in a prompt tells a card that a wall-level record exists, so
 /// nothing makes it look — and a deferred tool is only found by an agent that
-/// thought to search for one.
+/// thought to search for one, which "should I announce this?" is not a question
+/// agents ask spontaneously.
 ///
-/// It is deferred anyway because the loaded tier is **full**, and that is a
-/// measurement rather than an opinion. Measured with `bun tools/lift-roster.ts`:
+/// Measured with `bun tools/lift-roster.ts` rather than guessed:
 ///
 ///   loaded tier without this          21,924 bytes
-///   budget (`the_loaded_tier_…`)      24,000
+///   the budget as it stood            24,000
 ///   this schema, first draft           3,146  → 25,070, red
-///   after cutting to the load-bearing
-///   sentences and dropping `paths`     2,077  → 24,001, red **by one byte**
+///   cut to the sentences `ask::roster`
+///   calls "not a cost to be
+///   economised on"                     2,077  → 24,001, red **by one byte**
 ///
-/// One byte is the budget doing its job: it was set at 24,000 when the tier was
-/// ~18KB, "which leaves room for a tool somebody is halfway through adding and
-/// none for pretending nobody notices". This is that tool, and the room is gone.
-/// Shaving to 23,999 would leave a build one word from red forever, which is
-/// worse than either honest answer — so nothing further was cut, and `paths` was
-/// put back once the loaded tier stopped being the constraint.
+/// So the budget went to 25,000 instead, which is a decision recorded on
+/// `the_loaded_tier_is_what_every_turn_pays_for` and was the user's to make.
+/// Two things about that are worth keeping:
 ///
-/// **Promoting it needs one of two things, and both are somebody's call rather
-/// than a bump:** the budget raised to ~25,000, or one of the twelve loaded
-/// tools demoted. Note the third path is closed —
-/// `the_prompt_names_only_tools_whose_schemas_are_loaded` means `wisp` cannot be
-/// named in `append_prompt` while it sits here, so the standing instruction
-/// cannot do the reflex's work for it.
+/// - **It was not shaved.** A tier tuned to 23,999 is a build one word from red
+///   forever, and the words left are the ones that make loading it worth
+///   anything — the sentence saying when *not* to write a wisp is what stops
+///   this becoming thirty rows of narration on somebody's wall.
+/// - **It was not deferred.** The feature is *cards writing to the wall's
+///   record*; deferring the write tool ships the feature with its point removed.
 ///
-/// Until then `every_deferred_tool_can_be_found` is what keeps this from being
-/// an oubliette: the hint in `ask::roster` is doing all the work, and it is
-/// written for the phrasing an agent reaches for when it has just finished
-/// something and wonders whether to say so.
+/// The price was quoted before it was agreed: ~520 tokens on every spawn and
+/// every wake, permanently. If this ever moves down a tier, `paths` can come off
+/// with it — it is the field that came off first when the tier was the
+/// constraint, and it went back once it stopped being.
 pub fn wisp_schema() -> Value {
     json!({
         "name": WISP_TOOL,
@@ -454,6 +451,40 @@ pub fn read_chronicle(app: AppHandle, project_id: Option<String>) -> Result<Valu
         crate::store::CHRONICLE_KEEP,
     )?;
     Ok(json!(rows.iter().map(as_json).collect::<Vec<_>>()))
+}
+
+/// Volery's own way in, from the webview.
+///
+/// The one caller that may pass any level, `ask` included — see the module note
+/// on why a *card* may not. That asymmetry is safe here for a structural reason
+/// rather than a checked one: cards reach this process through MCP `tools/call`,
+/// which lands in `handle`, and a `#[tauri::command]` is reachable only from
+/// Volery's own webview. There is no path from a card to this function.
+///
+/// The knowledge of *which* transitions are worth a row lives in the front end
+/// on purpose. Whether a turn ended in an error or in a question is
+/// `classify.ts`'s `endingFor`, and nothing in Rust classifies an ending — the
+/// column `record_turn` writes is a value the webview computed and sent. Putting
+/// the decision here would mean a second classifier, and the two would disagree
+/// about a turn the day one of them was edited.
+#[tauri::command]
+pub fn chronicle_note(
+    app: AppHandle,
+    project_id: Option<String>,
+    source: String,
+    level: String,
+    mark: String,
+    detail: Option<String>,
+) -> Result<(), String> {
+    note(
+        &app,
+        project_id.as_deref(),
+        &source,
+        &level,
+        &mark,
+        detail.as_deref().unwrap_or(""),
+    );
+    Ok(())
 }
 
 /// How many are waiting, asked on its own.

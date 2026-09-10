@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  ALLOWANCE_MARK,
   CARD_LEVELS,
   DETAIL_MAX,
   DIGEST_ORDER,
@@ -8,6 +9,7 @@ import {
   MARK_MAX,
   MAX_FLYING,
   WISP_MS,
+  allowanceCrossing,
   byNewest,
   clip,
   digest,
@@ -19,6 +21,7 @@ import {
   tally,
   unseen,
   unseenCount,
+  windowKey,
   type Entry,
   type Level,
 } from "../src/lib/chronicle";
@@ -300,5 +303,54 @@ describe("tally", () => {
     expect(tally([entry()])).toBe("1 while you were away");
     expect(tally([entry({ id: "a" }), entry({ id: "b" })])).toBe("2 while you were away");
     expect(tally([entry({ id: "a" }), entry({ id: "b", seenAt: 3 })])).toBe("1 while you were away");
+  });
+});
+
+describe("the allowance crossing", () => {
+  const win = (used: number, resetsAt: number | null = 5_000, kind = "five_hour") => ({
+    kind,
+    resetsAt,
+    used,
+  });
+
+  test("says nothing below the mark", () => {
+    expect(allowanceCrossing(win(ALLOWANCE_MARK - 1), null)).toBeNull();
+    expect(allowanceCrossing(win(0), null)).toBeNull();
+  });
+
+  test("crosses at the mark, not past it", () => {
+    expect(allowanceCrossing(win(ALLOWANCE_MARK), null)).toBe(`five_hour@5000`);
+  });
+
+  test("says it once for one window, however often it is asked", () => {
+    /* The poll runs every few minutes. Without this the register would fill
+       with the same row all afternoon. */
+    const first = allowanceCrossing(win(82), null);
+    expect(first).not.toBeNull();
+    expect(allowanceCrossing(win(84), first)).toBeNull();
+    expect(allowanceCrossing(win(99), first)).toBeNull();
+  });
+
+  test("says it again after the window resets and fills again", () => {
+    /* The case nobody would catch by hand, and the reason the key carries the
+       reset: a guard keyed on the kind alone works once and then stops. */
+    const first = allowanceCrossing(win(82, 5_000), null);
+    expect(allowanceCrossing(win(82, 23_000), first)).toBe("five_hour@23000");
+  });
+
+  test("two different windows are two rows", () => {
+    const first = allowanceCrossing(win(82, 5_000, "five_hour"), null);
+    expect(allowanceCrossing(win(90, 9_000, "weekly"), first)).toBe("weekly@9000");
+  });
+
+  test("nothing to read is nothing to say", () => {
+    expect(allowanceCrossing(null, null)).toBeNull();
+    expect(allowanceCrossing(null, "five_hour@5000")).toBeNull();
+    expect(allowanceCrossing(win(Number.NaN), null)).toBeNull();
+  });
+
+  test("a window naming no reset still has a key", () => {
+    expect(windowKey({ kind: "k", resetsAt: null })).toBe("k@0");
+    expect(allowanceCrossing(win(85, null), null)).toBe("five_hour@0");
   });
 });

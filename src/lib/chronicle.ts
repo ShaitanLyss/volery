@@ -287,6 +287,46 @@ export function digest(entries: readonly Entry[]): Group[] {
   return groups;
 }
 
+/* ── the one reading Volery records off a poll ────────────────────────────── */
+
+/** Where the allowance becomes worth a row.
+ *
+ *  Not a warning threshold — `limits.ts` has its own vocabulary for that, and
+ *  the server has one too. This is the point at which "how much is left" stops
+ *  being something you look up and starts being something you should have been
+ *  told, which is a different question and deliberately a blunter number. */
+export const ALLOWANCE_MARK = 80;
+
+/** What identifies *one* window-instance rather than one kind of window.
+ *
+ *  The kind and the reset it runs to, together. The kind alone is not enough:
+ *  the same five-hour window resets and fills again all day, and a guard keyed
+ *  on the kind would record the first crossing and then never mention it again
+ *  — which is a feature that works once and then silently stops. */
+export function windowKey(w: { kind: string; resetsAt: number | null }): string {
+  return `${w.kind}@${w.resetsAt ?? 0}`;
+}
+
+/** Whether this window's fullness is worth a row, given what was last recorded.
+ *
+ *  Returns the key to remember, or null for nothing to say. Written this way —
+ *  returning the token rather than a boolean — because the caller must not be
+ *  able to record without also remembering, which is the whole of the guard: a
+ *  poll runs every few minutes, and a boolean would put "and now update the
+ *  thing you compare against" in the caller's hands as a separate step to
+ *  forget.
+ *
+ *  Pure, so the one case nobody would test by hand is testable: the same window
+ *  resetting and filling again has to be a *second* row. */
+export function allowanceCrossing(
+  w: { kind: string; resetsAt: number | null; used: number } | null,
+  lastKey: string | null,
+): string | null {
+  if (!w || !Number.isFinite(w.used) || w.used < ALLOWANCE_MARK) return null;
+  const key = windowKey(w);
+  return key === lastKey ? null : key;
+}
+
 /** The one line the register's edge carries, or empty when there is nothing.
  *
  *  Counted rather than listed, because this is drawn on a widget's top edge in a

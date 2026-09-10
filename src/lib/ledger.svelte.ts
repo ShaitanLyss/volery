@@ -17,7 +17,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { Slice } from "./usage";
-import type { Report } from "./limits";
+import { binding, pct, resetIn, said, until, type Report } from "./limits";
+import { allowanceCrossing } from "./chronicle";
 
 /** Slow, because nothing here moves fast: a five-hour window shifts by a ninth
  *  of a percent in this long, and every pass after the first reads only the
@@ -178,6 +179,56 @@ export class Ledger {
     await Promise.all([this.#tick(), this.#askAllowance()]);
   }
 
+  /** What was last written to the chronicle about the allowance, as a window
+   *  key — see `chronicle.ts::windowKey`. Held here rather than in the table
+   *  because the question is "have I already said this", and asking the store
+   *  would be a read per poll to answer something this object already knows. */
+  #toldAllowance: string | null = null;
+
+  /**
+   * One row in the chronicle when the binding window crosses the mark.
+   *
+   * A fold over a reading that has already happened, never a reason for one to
+   * happen — which is the whole of why it is called from inside `#askAllowance`
+   * rather than from a clock of its own. CLAUDE.md's three-pollers passage is
+   * explicit, and this must not become the fourth.
+   *
+   * **The honest limitation: this only fires while a usage widget is up.**
+   * `#askAllowance` returns early unless something `#wants("allowance")`,
+   * because a request that leaves the machine may not be made by a wall nobody
+   * asked. So a wall with no usage widget records no allowance row — the
+   * chronicle is quiet about it rather than wrong about it. Fixing that
+   * properly means a reading somebody asked for, not a poll added here; the
+   * shape to copy is `release.svelte.ts`, which asks on *focus* because focus
+   * is an event that already exists.
+   */
+  #noteAllowance() {
+    const key = allowanceCrossing(binding(this.limits?.windows ?? []), this.#toldAllowance);
+    if (!key) return;
+    /* Remembered before the write, not after. The write is fire-and-forget and
+       the poll comes round again in minutes; remembering afterwards would let a
+       slow invoke put two identical rows in. */
+    this.#toldAllowance = key;
+    const w = binding(this.limits?.windows ?? []);
+    if (!w) return;
+    const rolls = resetIn(w, Date.now());
+    void invoke("chronicle_note", {
+      projectId: null,
+      source: "volery",
+      /* `note`, not `bad`. The allowance running down is the day going normally,
+         and colouring it rust would sit it beside a card that actually broke —
+         which is the one thing the level vocabulary is for. */
+      level: "note",
+      /* `pct` and `said` rather than arithmetic and a string: the usage widget
+         draws this window with exactly those two functions, and a row that
+         phrased the same fact differently would read as a second, disagreeing
+         instrument. `pct` floors rather than rounds, so nothing ever says 100%
+         while there is allowance left. */
+      mark: `${pct(w.used)} of the ${said(w)} allowance used`,
+      detail: rolls === null ? "" : `rolls in ${until(rolls)}`,
+    }).catch(() => {});
+  }
+
   /** Ask the account what is left. Obeys the watcher rule the transcript pass
    *  obeys, and for a stronger reason: this one leaves the machine, so a wall
    *  with no usage widget on it must make no request at all. */
@@ -187,6 +238,7 @@ export class Ledger {
     try {
       this.limits = await invoke<Report>("read_limits");
       this.limitsFault = null;
+      this.#noteAllowance();
     } catch (err) {
       /* The last good reading is left standing. A window's percentage does not
          become wrong because the network went away for a minute, and blanking

@@ -130,28 +130,72 @@ costs an animation and never a record.
 Anything added here animates `transform` and `opacity` only. `box-shadow` is what cost ~8% of
 the GPU per working card, and it is the first thing to reach for when a wisp needs a glow.
 
-## `wisp` is deferred and should not be
+## `wisp` is loaded, and it cost a byte of somebody else's budget
 
-The one thing in this subsystem standing on somebody else's decision. `chronicle.rs`'s doc
-comment on `wisp_schema` carries the full measurement; the short version is that the loaded
-MCP tier's 24,000-byte budget had 2,076 bytes free, the smallest honest `wisp` schema is
-2,077, and it is deferred **by one byte**.
+`chronicle.rs`'s doc comment on `wisp_schema` carries the full measurement. The short version:
+the loaded MCP tier's budget was 24,000 bytes with 2,076 free, the smallest honest `wisp`
+schema is 2,077, and it missed **by one byte**.
 
-That byte is the budget doing its job rather than an invitation to shave a word — it was set
-when the tier was ~18KB, with room "for a tool somebody is halfway through adding and none
-for pretending nobody notices". This is that tool.
+The budget went to 25,000 rather than the tool going down a tier, and both halves of that are
+deliberate:
 
-It matters because `wisp` is reflex-shaped: it replaces something an agent does wrongly by
-default (finishing silently), and nothing in a prompt tells a card that a wall-level record
-exists, so nothing makes it look. A deferred tool is only found by an agent that thought to
-search. `every_deferred_tool_can_be_found` is what keeps it from being an oubliette, and the
-hint in `ask::roster` is doing all of the work — phrased for what an agent types when it has
-just finished something and is deciding whether to say so.
+- **Not shaved.** A tier tuned to 23,999 is a build one word from red forever. The words left
+  are the ones that make loading it worth anything — in particular the sentence saying when
+  *not* to write a wisp, which is what stops this becoming thirty rows of narration.
+- **Not deferred.** The feature is *cards writing to the wall's record*. Deferring the write
+  tool ships the feature with its point removed: a deferred tool is only found by an agent
+  that thought to search, and "should I announce this?" is not a question agents ask
+  spontaneously.
 
-Promoting it needs the budget raised to ~25,000 or one of the twelve loaded tools demoted.
-The third path is closed: `the_prompt_names_only_tools_whose_schemas_are_loaded` means `wisp`
-cannot be named in `append_prompt` while it is deferred, so the standing instruction cannot
-do the reflex's work for it.
+The price was quoted before it was agreed — ~520 tokens on every spawn and every wake,
+permanently — and the user said yes. **That the raise happened at all is the budget working.**
+What it must not become is a number that moves whenever it is inconvenient, so the bar for the
+next raise is the bar this one met: somebody names the tokens per spawn, and somebody who pays
+them agrees.
+
+One residue worth knowing: `paths` came off the schema while the tier was the constraint and
+went back once it stopped being. If `wisp` ever moves down a tier, that is the field to drop
+again, and it should go in the same commit.
+
+## What Volery records itself, and the rule that decides it
+
+**What happened *to* you, never what you did.** A worktree you merged and a card you set aside
+are your own gestures, and a register that tells you what you just did is noise you read past
+to find what you did not know. That rule is the whole reason this list is five rows long
+rather than ten, and it is the test to apply to a sixth.
+
+| row | written where | why it qualifies |
+|---|---|---|
+| a turn ended in an error | `skein.svelte.ts::#persistConv` | `ending` is already folded there, once per `result` |
+| a card is asking you | same | same fold; no detail, since the question lives in `Ask.svelte` |
+| a gate went red | `store.rs::settle_gate_run` | the only place that learns it; `failed` only |
+| a dev server fell over | `servers.rs::exit_if_last` | that function *already* distinguishes a crash from a stop you asked for |
+| the allowance crossed 80% | `ledger.svelte.ts::#noteAllowance` | folded off a reading that already happened |
+
+Four things about that table are load-bearing:
+
+- **Not every turn ending.** A card takes many turns and most of them ending well is the
+  normal state of a working wall. One row per turn would bury the rest under exactly the noise
+  this exists to cut through. Cards announce their own wins with `wisp`, which is the half that
+  knows a unit of work has landed.
+- **`ending` is classified in the front end and stays there.** `classify.ts::endingFor` is the
+  only thing that knows an error from a question; the column `record_turn` writes is a value
+  the webview computed. A second classifier in Rust would disagree with it the day either was
+  edited — so `chronicle_note` is a command, and Rust does not decide which transitions matter.
+- **`exit_if_last` needed no guard of its own**, because the one it already had is this
+  section's rule in code: *a stop we asked for is not news about the server, and saying it
+  anyway makes a restart look like a crash*. Anything added there must not grow a second guard
+  that disagrees.
+- **The allowance row only fires while a usage widget is up.** `#askAllowance` returns early
+  unless something `#wants("allowance")`, because a request that leaves the machine may not be
+  made by a wall nobody asked. So a wall with no usage widget is *quiet* about the allowance
+  rather than wrong about it. Fixing that means a reading somebody asked for, not a poll added
+  here — the shape to copy is `release.svelte.ts`, which asks on **focus**, because focus is an
+  event that already exists.
+
+And one placement trap, since it will be walked into again: `note` takes the store mutex, so a
+call site holding it deadlocks. `settle_gate_run` calls after its `drop(conn)`, beside the
+comment that moved the emit out for the same reason.
 
 ## Where the pieces are
 

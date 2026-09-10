@@ -4454,13 +4454,45 @@ pub fn settle_gate_run(
        widget told the wrong tree changed would either redraw for nothing or,
        worse, not redraw at all. `None` when the row is gone, which is the
        pruned or pre-dating case the UPDATE above already tolerates. */
-    let root: Option<String> = conn
-        .query_row("SELECT root FROM gate_run WHERE tool_id = ?1", params![tool_id], |r| r.get(0))
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT root, gate FROM gate_run WHERE tool_id = ?1",
+            params![tool_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .optional()
         .ok()
         .flatten();
     drop(conn);
-    if let Some(root) = root {
+    if let Some((root, gate)) = row {
+        /* A gate going red is one of the four things Volery puts in the
+           chronicle itself, and this is the only place that learns it — see
+           `.claude/rules/chronicle.md` on the rule that decides the four:
+           *what happened to you, never what you did*. A gate result is a fact
+           about the tree rather than a gesture of yours, and a red one is
+           exactly what you want to find on coming back.
+
+           Only `failed`. A green gate is the normal state of a working tree,
+           and cards run these constantly of their own accord — a row per run
+           would be the noise this feature exists to cut through. The `detail`
+           the front end already sends is the tail of what the gate said, which
+           is the one line that makes the row worth anything.
+
+           After `drop(conn)`, and that placement is not incidental: `note`
+           takes the same mutex to write its own row, so calling it while this
+           still held the lock would deadlock on the next line. The emit below
+           was moved out for the same reason, and the comment above it says so
+           in the neighbouring case. */
+        if outcome == "failed" {
+            crate::chronicle::note(
+                &app,
+                None,
+                "volery",
+                "bad",
+                &format!("{gate} went red"),
+                detail.as_deref().unwrap_or(""),
+            );
+        }
         gates_changed(&app, &root);
     }
     Ok(())
