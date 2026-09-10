@@ -142,6 +142,18 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     items: ["const STATUS_TOOL", "fn status_schema"],
   },
   {
+    file: "src-tauri/src/remove.rs",
+    items: ["const REMOVE_TOOL", "fn remove_schema"],
+  },
+  /* Not a tool of ours at all — `mcp_config` hands Playwright's own server to a
+     card that has the shared browser, and the roster assertions reach
+     `mcp_config`, so the lift needs the function even though nothing here
+     asserts about what it returns. */
+  {
+    file: "src-tauri/src/browser.rs",
+    items: ["fn mcp_server"],
+  },
+  {
     file: "src-tauri/src/docket.rs",
     items: [
       "const TASKS_TOOL",
@@ -302,10 +314,12 @@ function serdeJsonRlib(): string {
 const MODULES = [
   "ask",
   "board",
+  "browser",
   "later",
   "limits",
   "pin",
   "relay",
+  "remove",
   "selector",
   "servers",
   "sink",
