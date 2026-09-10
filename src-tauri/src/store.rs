@@ -273,7 +273,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 31;
+const SCHEMA_VERSION: i64 = 32;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -310,6 +310,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (29, migrate_v29),
     (30, migrate_v30),
     (31, migrate_v31),
+    (32, migrate_v32),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1510,6 +1511,53 @@ fn migrate_v31(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v31: {e}"))
+}
+
+/// The chronicle: what happened on this wall, in the order it happened.
+///
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: a new table
+/// with nothing to backfill, since until now nothing recorded any of this.
+/// Deliberately **not** backfilled from `turn` either, which is the tempting
+/// move and the wrong one — a chronicle assembled after the fact would claim to
+/// have been watching, and its rows would carry marks nobody wrote.
+///
+/// `source` is stored rather than joined, and it is the one column here worth
+/// arguing about. The card id is in `from_id` already, so the name looks
+/// derivable — but a card gets closed and a project gets forgotten, and the row
+/// has to go on saying who spoke. A chronicle whose oldest rows read "unknown"
+/// has lost the thing it was for. So the name is resolved once, at write time,
+/// and `from_id` is provenance only. Same argument `sink_item.from_id` makes for
+/// not cleaning up after itself, one column further along.
+///
+/// **No foreign key on `from_id`, on purpose.** `secret_grant` above wants
+/// `ON DELETE CASCADE` because a grant that outlives its card is a credential
+/// leak; a chronicle row that outlives its card is the entire point. Forgetting
+/// a project must not erase the record of what happened in it.
+///
+/// `seen_at` is nullable and is the whole of the read/unread state — a row is
+/// waiting or it is dealt with, and there is no third value to drift. The index
+/// is on `(at DESC)` because every read is "the newest N" and every trim is "the
+/// oldest beyond N"; nothing here ever asks for a row by id except to mark it.
+fn migrate_v32(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS chronicle (
+            id         TEXT PRIMARY KEY,
+            from_id    TEXT,
+            project_id TEXT,
+            source     TEXT NOT NULL DEFAULT 'volery',
+            level      TEXT NOT NULL DEFAULT 'note',
+            mark       TEXT NOT NULL,
+            detail     TEXT NOT NULL DEFAULT '',
+            paths      TEXT NOT NULL DEFAULT '',
+            at         INTEGER NOT NULL,
+            seen_at    INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS chronicle_at ON chronicle(at DESC);
+        CREATE INDEX IF NOT EXISTS chronicle_unseen ON chronicle(seen_at) WHERE seen_at IS NULL;
+        "#,
+    )
+    .map_err(|e| format!("migrate v32: {e}"))
 }
 
 /// Record that this card may hold this service's credential.
@@ -5713,6 +5761,183 @@ pub fn inbox_counts(conn: &Connection) -> Vec<(String, i64)> {
         return Vec::new();
     };
     rows.filter_map(Result::ok).collect()
+}
+
+/* ── the chronicle ───────────────────────────────────────────────────────────
+ *
+ * `.claude/rules/chronicle.md` is the reasoning and `migrate_v32` is why the
+ * columns are these. Everything here is deliberately dull; the interesting
+ * decisions — which levels a card may write, what a wisp is — live in
+ * `chronicle.rs` beside the words an agent reads about them.
+ */
+
+/// How many rows the wall keeps.
+///
+/// The same number `chronicle.ts`'s `KEEP` holds, for `journal.svelte.ts`'s
+/// reason: this side is the source of truth for what exists, and a front end
+/// keeping more would be claiming to remember rows a fresh read could not
+/// produce — so a reload would silently shorten the history and look like data
+/// loss.
+pub const CHRONICLE_KEEP: i64 = 2000;
+
+#[derive(Debug, Clone)]
+pub struct ChronicleEntry {
+    pub id: String,
+    /// The card that wrote it, or null for one of Volery's own.
+    pub from_id: Option<String>,
+    /// Null for an entry about the wall rather than about one project.
+    pub project_id: Option<String>,
+    /// What to call the source when drawing it — see `migrate_v32`.
+    pub source: String,
+    pub level: String,
+    pub mark: String,
+    pub detail: String,
+    /// Newline-separated; empty means it concerns no file in particular. The
+    /// same encoding `sink_item.paths` uses, so nothing has to learn a second.
+    pub paths: String,
+    pub at: i64,
+    pub seen_at: Option<i64>,
+}
+
+const CHRONICLE_COLS: &str =
+    "id, from_id, project_id, source, level, mark, detail, paths, at, seen_at";
+
+fn chronicle_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChronicleEntry> {
+    Ok(ChronicleEntry {
+        id: r.get(0)?,
+        from_id: r.get(1)?,
+        project_id: r.get(2)?,
+        source: r.get(3)?,
+        level: r.get(4)?,
+        mark: r.get(5)?,
+        detail: r.get(6)?,
+        paths: r.get(7)?,
+        at: r.get(8)?,
+        seen_at: r.get(9)?,
+    })
+}
+
+/// Write one entry and return its id.
+///
+/// Trims on the way out, so the table cannot grow without bound and nothing has
+/// to remember to sweep it. See `trim_chronicle` for the half of that which is
+/// a correctness property rather than housekeeping.
+#[allow(clippy::too_many_arguments)]
+pub fn add_chronicle_entry(
+    conn: &Connection,
+    from_id: Option<&str>,
+    project_id: Option<&str>,
+    source: &str,
+    level: &str,
+    mark: &str,
+    detail: &str,
+    paths: &str,
+) -> Result<String, String> {
+    let id = uuid_v4();
+    conn.execute(
+        "INSERT INTO chronicle (id, from_id, project_id, source, level, mark, detail, paths, at, seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
+        params![id, from_id, project_id, source, level, mark, detail, paths, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    trim_chronicle(conn)?;
+    Ok(id)
+}
+
+/// Keep the table bounded, **seen rows first**.
+///
+/// The obvious cap — keep the newest `CHRONICLE_KEEP` and delete the rest — is
+/// wrong here in a way that is invisible until it costs something. This feature
+/// exists to answer "what happened while I was away"; a wall left running over a
+/// weekend with a fleet of cards on it can write past the cap, and a plain
+/// newest-N sweep would then delete the *oldest unseen* rows — exactly the ones
+/// nobody has read yet, and the only ones whose loss is unrecoverable. Silently.
+///
+/// So there are two statements and they are in this order on purpose:
+///
+/// 1. delete rows that are **seen** and outside the newest-`KEEP` window. Seen
+///    history is the part you have already had the value of.
+/// 2. a backstop at twice the cap that deletes regardless, because "never delete
+///    unseen" is unbounded for anybody who stops looking, and an unbounded table
+///    is a different failure rather than none.
+///
+/// Both are idempotent, so this is safe to call on every insert.
+pub fn trim_chronicle(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM chronicle
+          WHERE seen_at IS NOT NULL
+            AND id NOT IN (SELECT id FROM chronicle ORDER BY at DESC LIMIT ?1)",
+        params![CHRONICLE_KEEP],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM chronicle
+          WHERE id NOT IN (SELECT id FROM chronicle ORDER BY at DESC LIMIT ?1)",
+        params![CHRONICLE_KEEP * 2],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The newest entries, newest first.
+///
+/// `project_id` narrows to one territory **and** keeps the wall-wide rows, the
+/// same scope rule the billboard and the sink use: an entry with no project is
+/// by definition everybody's. `None` is every row, which is what the register
+/// asks for when it is showing the whole wall.
+pub fn chronicle_entries(
+    conn: &Connection,
+    project_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ChronicleEntry>, String> {
+    let sql = format!(
+        "SELECT {CHRONICLE_COLS} FROM chronicle
+          WHERE (?1 IS NULL OR project_id IS NULL OR project_id = ?1)
+          ORDER BY at DESC, id ASC
+          LIMIT ?2"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id, limit.max(0)], chronicle_of)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// How many are waiting to be noticed.
+///
+/// Asked separately from the page rather than counted off it, because the tally
+/// on the register's edge has to be right about rows the page did not reach.
+pub fn chronicle_unseen(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM chronicle WHERE seen_at IS NULL", [], |r| r.get(0))
+        .unwrap_or(0)
+}
+
+/// Mark these entries seen, or every one of them when `ids` is empty.
+///
+/// **Already-seen rows keep the time they were first seen.** The `AND seen_at IS
+/// NULL` guard is what makes this idempotent in the sense that matters: without
+/// it, pressing "all seen" twice would restamp the lot, and any reading of *when*
+/// you caught up would be the time you last clicked rather than the time you
+/// actually read it.
+pub fn mark_chronicle_seen(conn: &Connection, ids: &[String]) -> Result<(), String> {
+    if ids.is_empty() {
+        conn.execute(
+            "UPDATE chronicle SET seen_at = ?1 WHERE seen_at IS NULL",
+            params![now()],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    } else {
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        for id in ids {
+            tx.execute(
+                "UPDATE chronicle SET seen_at = ?1 WHERE id = ?2 AND seen_at IS NULL",
+                params![now(), id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]

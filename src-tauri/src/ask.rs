@@ -856,6 +856,23 @@ pub(crate) fn roster() -> Vec<Value> {
             "mark a sink item finished, settled, resolved, close it out, tick it \
              off, I fixed the bug that was filed",
         ),
+        /* `wisp` wants to be in the tier above and does not fit it — the whole
+           measurement is on `chronicle::wisp_schema`, and the hint is therefore
+           load-bearing rather than a formality. Phrased for what an agent
+           actually types when it has just finished something and is deciding
+           whether to say so out loud. */
+        found_by(
+            crate::chronicle::wisp_schema(),
+            "tell the user what I just did or found, announce that I finished, report \
+             progress or a failure to the wall without interrupting, put a line on the \
+             feed, notify, toast, say something they will see from another card",
+        ),
+        found_by(
+            crate::chronicle::chronicle_schema(),
+            "what has been happening on this wall, catch up on the other cards, what \
+             have they finished or broken, recent activity, what did I miss, the feed \
+             or notification history — not who is working on what, which is the board",
+        ),
         found_by(
             crate::status::status_schema(),
             "is claude down, is it me or them, api error, 500, overloaded, rate \
@@ -1582,6 +1599,9 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                         let answer = crate::relay::handle(&app, &conversation_id, &tool, &args)
                             .or_else(|| crate::board::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::sink::handle(&app, &conversation_id, &tool, &args))
+                            .or_else(|| {
+                                crate::chronicle::handle(&app, &conversation_id, &tool, &args)
+                            })
                             .or_else(|| crate::limits::handle(&app, &conversation_id, &tool, &args))
                             /* Takes neither the app nor the caller: it asks a
                                public page a question with no arguments, and the

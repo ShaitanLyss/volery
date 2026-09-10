@@ -59,7 +59,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, wheel,
                          # presets,
                          # commands, copy, widgets, naming, drafts, attach, rousing, quitting, timing,
                          # gears,
-                         # sink, gates, logface, serverlog, buildlog, unreallog,
+                         # sink, chronicle, gates, logface, serverlog, buildlog, unreallog,
                          # applog,
                          # nvim,
                          # guidance,
@@ -78,6 +78,7 @@ bun run test:live        # spawns the real `claude` binary, real API turns, minu
 bun run test:wall        # drives a RUNNING app over the control surface
 
 cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
+                              # chronicle.rs,
                               # aside.rs,
                               # remove.rs,
                               # later.rs, pin.rs, spawn.rs,
@@ -168,6 +169,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
+| `chronicle.md` | the chronicle: one record read as a wisp on the wall and as a row forever, why the geometry replaces a label, the level a card may not write, why the trim deletes seen rows first, and the one byte that left `wisp` deferred | `chronicle.ts`, `chronicle.svelte.ts`, `Register.svelte`, `chronicle.rs` |
 | `gates.md` | whether the tree builds: folding the gate runs cards already make rather than running any, why `PostToolUse` cannot see a failure, what a reading may honestly claim about a tree it only half-watched, and the two faces one record wears | `gates.ts`, `gates.svelte.ts`, `Gatehouse.svelte`, `tools/probe-gates.ts` |
 | `commands.md` | slash commands over three vocabularies — Volery's own, a project's `.claude/commands/`, and a card's skills — why Skein reads only its own names, why a skill may sit anywhere in a line, clearing a card, and a side question asked beside a conversation | `commands.ts`, `Dock.svelte`, `field.svelte.ts`, `slash.rs`, `aside.rs` |
 | `guidance.md` | standing instructions: the wall's and a territory's, why they are a system prompt rather than a `CLAUDE.md` or a hook, what a live card does not hear, and why they are instructions rather than a lock | `guidance.rs`, `guidance.ts`, `Guidance.svelte` |
@@ -283,7 +285,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `attach.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
 `undo.ts`, `finding.ts`, `office.ts`, `integrations.ts`, `zoom.ts`,
-`flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
+`flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `chronicle.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
 `hunt.ts`,
 `applog.ts`,
 `nvim.ts`,

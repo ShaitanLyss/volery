@@ -14,6 +14,7 @@ mod browser;
 pub mod claude;
 mod clip;
 mod board;
+mod chronicle;
 /// Public so `examples/azdo-probe.rs` can drive the real reading rather than a
 /// copy of it — the convention `tools/probe-context.ts` sets for questions of
 /// the form "what does this service actually do".
@@ -461,6 +462,9 @@ pub fn run() {
             board::relay_board,
             board::relay_post,
             board::relay_unpost,
+            chronicle::read_chronicle,
+            chronicle::chronicle_waiting,
+            chronicle::chronicle_seen,
             sink::read_sink,
             sink::sink_add,
             sink::sink_edit,

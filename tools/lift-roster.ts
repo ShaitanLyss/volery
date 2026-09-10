@@ -142,6 +142,10 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     items: ["const STATUS_TOOL", "fn status_schema"],
   },
   {
+    file: "src-tauri/src/chronicle.rs",
+    items: ["const WISP_TOOL", "const CHRONICLE_TOOL", "fn wisp_schema", "fn chronicle_schema"],
+  },
+  {
     file: "src-tauri/src/remove.rs",
     items: ["const REMOVE_TOOL", "fn remove_schema"],
   },
@@ -314,6 +318,7 @@ function serdeJsonRlib(): string {
 const MODULES = [
   "ask",
   "board",
+  "chronicle",
   "browser",
   "later",
   "limits",

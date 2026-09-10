@@ -129,6 +129,8 @@ export const SKEIN_TOUCHED_TOOL = "mcp__skein__touched";
 export const SKEIN_PIN_TOOL = "mcp__skein__pin";
 export const SKEIN_PINNED_TOOL = "mcp__skein__pinned";
 export const SKEIN_REPIN_TOOL = "mcp__skein__repin";
+export const SKEIN_WISP_TOOL = "mcp__skein__wisp";
+export const SKEIN_CHRONICLE_TOOL = "mcp__skein__chronicle";
 export const SKEIN_DROP_TOOL = "mcp__skein__drop";
 export const SKEIN_SINK_TOOL = "mcp__skein__sink";
 export const SKEIN_TAKE_TOOL = "mcp__skein__take";
@@ -554,6 +556,19 @@ export function describeTool(name: string, input: any): string {
       const place = arg(input?.place);
       return place ? `moved an image ${clip(place, 20)}` : "changed a pinned image";
     }
+    /* The mark rather than a verb, and clipped longer than most of these, for
+       one reason: a wisp *is* a line written to be read at a glance, so the
+       transcript's account of the call and the row it produced should be the
+       same words. Anything shorter would make the panel and the register
+       disagree about what the card said. */
+    case SKEIN_WISP_TOOL: {
+      const mark = arg(input?.mark);
+      return mark ? `said: ${clip(mark, 36)}` : "put a line on the chronicle";
+    }
+    case SKEIN_CHRONICLE_TOOL:
+      return input?.scope === "skein"
+        ? "read the whole wall's chronicle"
+        : "read the chronicle";
     case SKEIN_DROP_TOOL: {
       const title = arg(input?.title);
       return title ? `dropped: ${clip(title, 30)}` : "dropped something in the sink";

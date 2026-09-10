@@ -1,0 +1,174 @@
+---
+paths:
+  - "src/lib/chronicle.ts"
+  - "src/lib/chronicle.svelte.ts"
+  - "src/lib/Register.svelte"
+  - "src-tauri/src/chronicle.rs"
+---
+
+# The chronicle, and the wisp that says so
+
+What happened on this wall, kept — so that a wall of ten cards is not ten transcripts you
+open one at a time to find out how the afternoon went, and so that coming back after an hour
+is a thing you can *read* rather than reconstruct.
+
+One record, read two ways, and the whole design is in that sentence.
+
+- A **wisp** is an entry in its first few seconds. It is drawn at the edge of the card that
+  wrote it, in wall space, and drifts to the register.
+- A **row** in the register is the same entry afterwards, forever.
+
+Nothing here appears and then vanishes. That is not a detail — it is the reason there is no
+dismissal gesture anywhere in this subsystem, and no "did I miss one". Things scroll off; they
+are not dismissed. A toast you failed to read is gone, and every toast system then grows a
+history panel to apologise for it. This starts from the history and lets the newest rows
+briefly stand up off the wall instead.
+
+## Why the geometry rather than a label
+
+Because you never read *"card X said Y"* — you watch it leave card X.
+
+The wall is already the thing that says which conversation is which: territories, positions,
+the card you dragged over there because it is the one you care about. A notification drawn in
+that space inherits all of it for free, where a notification in a corner has to spend a line
+of text re-establishing what the wall already showed. This is the same argument
+`layout.md` makes for territories and `flow.md` makes for drawing a relay as a braided light
+between two cards: **the wall's geometry is a channel, and re-encoding it as prose is paying
+twice.**
+
+The costs are real and they are the ones to watch when changing this:
+
+- A card off the viewport cannot be flown from. `Canvas` draws an edge indicator instead,
+  coloured by status and counting what is out there.
+- A wall zoomed out to `far` has cards too small to be a source. The wisp is drawn at the
+  card's box whatever the density, which is legible because `CARD_W` is fixed at every LOD
+  (see `layout.md`) — but below a floor it is the register's own highlight that carries it.
+- Volery's own wall-level entries have no source card at all — the allowance running down
+  belongs to no position. Those do not fly; they land in the register with the same
+  highlight a settled wisp gets. A flight from nowhere would be a lie about where it came
+  from.
+
+## Two decisions that are not mechanics
+
+### A card may not write `ask`
+
+`chronicle.rs::CARD_LEVELS` is three of the store's four. Amber on this wall means *a
+structured ask is waiting* — `attention.svelte.ts` builds a whole ladder on it, and its head
+comment argues against there ever being a second answer to "how does Volery get your
+attention". So the wall may write "this card is asking you"; a card may not claim your
+attention through this channel. It already has `ask_user`, which is the honest way to want
+somebody and costs the card its own turn.
+
+A card that passes `level: "ask"` is **not refused** — it is filed as `note` and told, in the
+tool result, which level it got and why. Refusing loses the entry, which is the one failure
+this feature cannot have. Saying nothing teaches the card that `ask` works.
+
+The assertion `a_card_may_not_write_the_level_that_means_asking` exists because adding
+`"ask"` to that array is the entire change it would take to give every card on the wall a way
+to flash the taskbar, and nothing else in the tree would say so: the column takes it, the
+front end draws it amber, and it looks like a feature.
+
+### Nothing escalates
+
+No level reaches the taskbar, the peek window or the chime. The register is a record; the
+away-ladder stays Volery's own judgement about cards that are blocked, failed or overdue.
+
+Chosen for reversibility as much as taste. Adding escalation later is one optional field on
+the tool and one branch in the ladder. Removing it later means breaking a contract cards have
+already been taught — and `wisp`'s description is the only copy of the instruction, so the
+retraction would have to reach every dormant card's transcript to be believed.
+
+## The trim is a correctness property, not housekeeping
+
+`store::trim_chronicle` deletes **seen rows first**, and this is the part most likely to be
+"simplified" back into a bug.
+
+The obvious cap is *keep the newest N*. It is wrong here in a way that is invisible until it
+costs something: this feature exists to answer "what happened while I was away", and a wall
+left running over a weekend with a fleet of cards on it writes past any N. A newest-N sweep
+then deletes the oldest **unseen** rows — exactly the ones nobody has read, and the only ones
+whose loss cannot be recovered from. Silently.
+
+So there are two statements, in this order:
+
+1. delete rows that are **seen** and outside the newest-`CHRONICLE_KEEP` window. Seen history
+   is the part you have already had the value of.
+2. a backstop at twice the cap that deletes regardless — because "never delete unseen" is
+   unbounded for anybody who stops looking, and an unbounded table is a different failure
+   rather than none.
+
+Both are idempotent, so this is safe on every insert, which is where it runs.
+
+`mark_chronicle_seen` guards on `seen_at IS NULL` for the neighbouring reason: without it,
+pressing *all seen* twice restamps the lot, and any reading of *when* you caught up becomes
+the time you last clicked rather than the time you read it.
+
+## `source` is stored, not joined
+
+The card id is in `from_id` already, so the display name looks derivable. It is not: a card
+gets closed and a project gets forgotten, and the row has to go on saying who spoke. A
+chronicle whose oldest rows read *unknown* has lost the thing it was for. Resolved once at
+write time; `from_id` is provenance only, and there is deliberately **no foreign key** on it.
+
+`secret_grant` in the same file wants `ON DELETE CASCADE` because a grant outliving its card
+is a credential leak. A chronicle row outliving its card is the entire point. Two tables, one
+column shape, opposite answers — worth knowing which one you are copying from.
+
+## The cap on the flight is a GPU budget
+
+`MAX_FLYING` and `flying`'s `life` parameter come out of the measurement in `motion.md`: on
+this GPU the dominant term is the **present rate**, not the painted area, so *any*
+continuously animating element makes the whole window present at display rate and an 8px dot
+costs what a card-sized glow costs.
+
+So three wisps cost what one costs, and thirty cost the same again. The cap is therefore for
+the **eye** and the `life` is for the **GPU**, and they are two parameters because they are
+two arguments. A wall set to `still` passes `life: 0` and gets no flight at all — which is
+what "no motion" has to mean — and the entry still lands as a row, so turning motion off
+costs an animation and never a record.
+
+Anything added here animates `transform` and `opacity` only. `box-shadow` is what cost ~8% of
+the GPU per working card, and it is the first thing to reach for when a wisp needs a glow.
+
+## `wisp` is deferred and should not be
+
+The one thing in this subsystem standing on somebody else's decision. `chronicle.rs`'s doc
+comment on `wisp_schema` carries the full measurement; the short version is that the loaded
+MCP tier's 24,000-byte budget had 2,076 bytes free, the smallest honest `wisp` schema is
+2,077, and it is deferred **by one byte**.
+
+That byte is the budget doing its job rather than an invitation to shave a word — it was set
+when the tier was ~18KB, with room "for a tool somebody is halfway through adding and none
+for pretending nobody notices". This is that tool.
+
+It matters because `wisp` is reflex-shaped: it replaces something an agent does wrongly by
+default (finishing silently), and nothing in a prompt tells a card that a wall-level record
+exists, so nothing makes it look. A deferred tool is only found by an agent that thought to
+search. `every_deferred_tool_can_be_found` is what keeps it from being an oubliette, and the
+hint in `ask::roster` is doing all of the work — phrased for what an agent types when it has
+just finished something and is deciding whether to say so.
+
+Promoting it needs the budget raised to ~25,000 or one of the twelve loaded tools demoted.
+The third path is closed: `the_prompt_names_only_tools_whose_schemas_are_loaded` means `wisp`
+cannot be named in `append_prompt` while it is deferred, so the standing instruction cannot
+do the reflex's work for it.
+
+## Where the pieces are
+
+| file | holds |
+|---|---|
+| `chronicle.ts` | pure: normalizing a row, the flight, the digest, the tally. Tested directly. |
+| `chronicle.svelte.ts` | one subscription behind however many faces read it — `journal.svelte.ts`'s shape and refcount. |
+| `Register.svelte` | the widget: the rows, the away-stack on its top edge, the two readings. |
+| `Canvas.svelte` | where a wisp is drawn, and the edge indicator for a card off the viewport. |
+| `chronicle.rs` | the two MCP tools, `note()` for Volery's own entries, the three commands. |
+| `store.rs` | the table (`migrate_v32`), the trim, the read, marking seen. |
+
+### Naming
+
+`ledger` was taken — `ledger.svelte.ts` is the usage ledger — and `chronicle.svelte.ts`
+beside a `Chronicle.svelte` would be the casing collision this codebase has now paid for
+four times (`journal.svelte.ts`'s head comment is the record of the third). So the component
+is `Register.svelte`: the house pattern is a lowercase noun shared by the pure and runes
+files and a *different*, evocative noun for the component, exactly as `board`/`Billboard`,
+`sink`/`Basin` and `gates`/`Gatehouse` already do.
