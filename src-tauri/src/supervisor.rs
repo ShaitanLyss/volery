@@ -142,15 +142,25 @@ pub(crate) const MCP_PREFIX: &str = "mcp__skein__";
 /// paragraph would name tools that are not there, which is the failure
 /// `the_prompt_names_only_tools_the_server_advertises` guards from the other
 /// direction — so it is left out, and the standing instructions still go.
+///
+/// `shared_browser` is the same question about a different server, and it is
+/// asked here for the same reason: `spawn_now` puts the `browser` entry in the
+/// `--mcp-config` only when one is running and the card is not a chat card, and
+/// this is the flag that keeps the prose from claiming otherwise. It must be
+/// the *same reading* the config was built from rather than a second look at
+/// `browser::endpoint` — a browser stopped between the two would be a card told
+/// it has tools it was never given, which is sink `b6bfecba` reintroduced by a
+/// race instead of by a missing feature.
 fn system_prompt(
     chat: bool,
     ask: bool,
+    shared_browser: bool,
     standing: Option<String>,
     me: Option<&Selfhood>,
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if ask {
-        parts.push(append_prompt(chat, me));
+        parts.push(append_prompt(chat, shared_browser, me));
     }
     if let Some(text) = standing {
         let text = text.trim();
@@ -201,7 +211,7 @@ pub struct Selfhood {
     pub spawned_by: Option<crate::store::Provenance>,
 }
 
-fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
+fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> String {
     let mut prompt = format!(
         "When you need a decision that only the user can make, call \
          `{MCP_PREFIX}ask_user` rather than ending your turn with a question. It \
@@ -318,13 +328,36 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
            request", which that audit called the best instance of this shape in
            the codebase; anything written here later should copy it.
 
-           **And "may be on this wall" is not hedging.** The same audit observed
-           both server families listed to it as *deferred* at session start and
-           then *disconnecting mid-session*, while this paragraph asserted they
-           were present throughout. The names come from the user's own MCP
-           configuration, which this app does not write and `named_tools` cannot
-           check — so the three words are the paragraph telling the truth about
-           what it actually knows.
+           **It used to hedge — "two browser tool families *may* be on this
+           wall" — and the hedge was covering a hole rather than a doubt.** The
+           names came from the user's own MCP configuration, which this app did
+           not write, so the paragraph could only say what it hoped. On this
+           machine one of the two was never configured at all: `claude mcp list`
+           answered with eight claude.ai connectors and one playwright plugin,
+           and `mcp__browser__*` resolved to nothing on any card, ever, while
+           this sentence told every one of them it was there. Reported as sink
+           `b6bfecba` from a card that could not say why its UI check was
+           impossible, because it had been told the tool existed.
+
+           So the hedge is gone and the claim is now underwritten:
+           `spawn_now` puts the `browser` server in the card's own
+           `--mcp-config` (`browser::mcp_server`), and `shared_browser` is that
+           same reading. The sentence is emitted when the server was passed and
+           not otherwise — which is the honest form of what the audit in card
+           580c7a55 was asking for, one step further back than wording.
+
+           **The other family is described rather than named**, and that is the
+           residue of the same problem. Volery supplies only the shared browser;
+           whatever else a card has comes from the user's configuration, under
+           whatever prefix that configuration produces — here
+           `mcp__plugin_playwright_playwright__*`, because the customisation
+           went into the official plugin rather than a server of its own. The
+           old text said `mcp__playwright__*`, which has never resolved on this
+           machine either. A name this app does not control cannot be printed in
+           the one paragraph every card pays for on every turn, so it is not:
+           "any other browser server here is your own" can never strand, and
+           `the_prompt_names_no_browser_volery_does_not_supply` keeps it that
+           way.
 
            `ask_user` is named rather than described because it is on this
            server's loaded tier and is already the first paragraph's subject —
@@ -351,25 +384,38 @@ fn append_prompt(chat: bool, me: Option<&Selfhood>) -> String {
            it has neither browser and telling it about them would be an
            instruction to try something it will be refused. See `chat.md`.
 
-           NOTE the coupling, which is real and is recorded in
-           `.claude/rules/browser.md`: the two server *names* here come from the
-           user's own MCP configuration, which this app does not write. If they
-           are renamed this paragraph strands, and `named_tools` cannot catch it
-           because that guard is scoped to `MCP_PREFIX` by construction. The fix
-           is for Volery to supply both servers in the per-card `--mcp-config`
-           it already builds, and until it does, the test below is the only
-           thing holding the two ends together. */
-        prompt.push_str(&format!(
-            "\n\nTwo browser tool families may be on this wall. `mcp__browser__*` \
-             is the one Chrome this studio owns — a single session every card \
-             shares and the user can watch, so never sign it out or clear its \
-             cookies. `mcp__playwright__*` is your own; use it when you need a \
-             different login or to clear state as you go. **Neither promises you \
-             a signed-in session.** Both are seeded from the user's browser and \
-             usually carry its sign-ins, so a login page means the seeding did \
-             not cover that site rather than that something is broken — ask with \
-             `{MCP_PREFIX}ask_user` rather than improvising credentials."
-        ));
+           **And the absent case is said out loud, which is the other half of
+           the report.** Volery does not start the browser by itself and never
+           will — ~450 MB for a wall that may never open one (`browser.md`) —
+           and an MCP server's arguments are settled at spawn, so a card opened
+           before the start button was pressed cannot be given these tools
+           without being woken again. Saying nothing there would leave a card
+           asked for a UI check exactly where `b6bfecba` found it: unable to
+           distinguish "no shared browser on this wall" from "not wired to me",
+           and therefore unable to complain precisely — which is the whole of
+           what the standing instruction *only use the volery browser tools for
+           UI testing, if you can't, complain about it* asks of it. Twenty-odd
+           words, and on a wall with no browser running they replace eighty. */
+        prompt.push_str(&if shared_browser {
+            format!(
+                "\n\n`mcp__browser__*` is the shared Chrome this studio owns — one \
+                 session every card sees and the user can watch, so never sign it \
+                 out or clear its cookies. Any other browser server here is your \
+                 own; use that when you need a different login or to clear state \
+                 as you go. **Neither promises you a signed-in session.** Both \
+                 usually carry the user's own sign-ins, so a login page means the \
+                 seeding did not cover that site rather than that something is \
+                 broken — ask with `{MCP_PREFIX}ask_user` rather than improvising \
+                 credentials."
+            )
+        } else {
+            "\n\nThe studio's shared browser is not running, so this card has no \
+             `mcp__browser__*` tools and cannot be given them until it is woken \
+             again. If you are asked to look at a UI, say that rather than \
+             quietly driving some other browser: starting it is a button on the \
+             browser widget, and it is the session the user can watch."
+                .to_string()
+        });
 
         /* **This paragraph exists because the prompt already contains a
            confident wrong answer, and no schema can rebut it.**
@@ -946,9 +992,30 @@ fn spawn_now(
        card checking whether the variable exists, and it would connect to
        nothing. A card spawned before the browser started does not have it —
        which is honest, since at that moment there was nowhere to connect. */
-    if let Some(endpoint) = crate::browser::endpoint(app) {
+    let shared_browser = crate::browser::endpoint(app);
+    if let Some(endpoint) = &shared_browser {
         cmd.env("VOLERY_CDP_ENDPOINT", endpoint);
     }
+
+    /* And the same fact as a *tool set*, which is the half that was missing.
+       One reading, used three times — the variable above, the `browser` server
+       in the `--mcp-config` below, and whether `append_prompt` may claim the
+       family exists — so a card cannot be handed any two of the three and not
+       the third. That coherence is the actual fix for sink `b6bfecba`: the
+       endpoint said a browser was there and the tools were not, and nothing on
+       either side could say why.
+
+       Not on a chat card, which spawns `--tools WebSearch,WebFetch` and
+       `--strict-mcp-config` precisely so it can reach nothing on this machine;
+       a browser is the largest thing it could be handed. `chat.md`.
+
+       **A card spawned before the browser started still has neither**, and that
+       is not a bug that survived — an MCP server's arguments are settled at
+       spawn and cannot be renegotiated (`browser.md`), so there is no injecting
+       this into a card already running. What changed is that the card is now
+       *told*, in as many words, rather than being told the opposite. Waking it
+       is a spawn, so a rouse picks the tools up. */
+    let card_browser = shared_browser.as_deref().filter(|_| !chat);
 
     /* Which subscription this card spends. `CLAUDE_SECURESTORAGE_CONFIG_DIR`
        selects the credential store and *only* the store — `CLAUDE_CONFIG_DIR`
@@ -1025,7 +1092,7 @@ fn spawn_now(
        conversation id, so a call arrives already addressed to a card. */
     let ask_port = app.state::<crate::ask::Asks>().port();
     if ask_port != 0 {
-        let cfg = crate::ask::mcp_config(ask_port, &id);
+        let cfg = crate::ask::mcp_config(ask_port, &id, card_browser);
         cmd.args(["--mcp-config", &cfg.to_string()]);
         /* Or the CLI abandons the parked call after one minute and the click
            lands on a request nobody is reading. This moves the *hard* deadline
@@ -1053,7 +1120,8 @@ fn spawn_now(
        ask server was up, which is always, so the feature was inert rather than
        flaky. A conditional second flag is worse than an unconditional one — it
        looks like it works in the one configuration nobody runs. */
-    if let Some(text) = system_prompt(chat, ask_port != 0, standing, Some(&me)) {
+    if let Some(text) = system_prompt(chat, ask_port != 0, card_browser.is_some(), standing, Some(&me))
+    {
         cmd.args(["--append-system-prompt", &text]);
     }
 
@@ -2167,32 +2235,29 @@ mod tests {
     use super::*;
     use super::{fold_dir_name, plain};
 
-    /// Every backticked `mcp__skein__…` in the appended prompt, in order.
-    /// The two browsers are named, and named *correctly*.
+    /// The shared browser is named when it is there, and only then.
     ///
     /// `named_tools` cannot hold this end down: it is scoped to `MCP_PREFIX` by
     /// construction, so a backticked `mcp__browser__*` is invisible to every
-    /// assertion built on it. These servers come from the user's own MCP
-    /// configuration rather than from anything this app writes, which means the
-    /// prompt makes a claim the code cannot verify — the precise shape of the
-    /// bug that guard exists for, one server across.
+    /// assertion built on it. For most of this paragraph's life that was the
+    /// whole of the problem — the server came from the user's own MCP
+    /// configuration, this app wrote none of it, and the prompt therefore made
+    /// a claim nothing could check. It was false: sink `b6bfecba`, no `browser`
+    /// server anywhere on the machine, and every card told otherwise.
     ///
-    /// So this is deliberately literal. It will not notice the user renaming a
-    /// server, and nothing here can; what it *will* notice is somebody editing
-    /// this paragraph and dropping a name, or the prohibition, or the sentence
-    /// that routes an unsigned-in app to the person. Those are the edits that
-    /// have actually happened to this prompt before.
+    /// Now `spawn_now` supplies the server itself, so the claim has an owner and
+    /// this test has something real to assert about — that the sentence tracks
+    /// the flag, in **both** directions. The false arm is the one that matters:
+    /// a paragraph that names the tools unconditionally passes every assertion
+    /// below on a wall with no browser running, which is exactly how this
+    /// shipped.
     #[test]
     fn the_prompt_tells_a_card_which_browser_is_shared() {
         for me in fullest_and_none() {
-            let p = append_prompt(false, me.as_ref());
+            let p = append_prompt(false, true, me.as_ref());
             assert!(
                 p.contains("mcp__browser__"),
                 "the shared browser was not named: {p}"
-            );
-            assert!(
-                p.contains("mcp__playwright__"),
-                "the card's own browser was not named: {p}"
             );
             /* The prohibition has to survive an edit that shortens the
                paragraph, because it is the half that protects the other cards
@@ -2216,7 +2281,7 @@ mod tests {
                Asserted by position rather than presence, since a rewrite that
                moved the disclaimer back behind the claim would otherwise pass. */
             let limit = p.find("Neither promises you a signed-in session");
-            let usually = p.find("usually carry its sign-ins");
+            let usually = p.find("usually carry the user's own sign-ins");
             assert!(
                 limit.is_some() && usually.is_some() && limit < usually,
                 "the limit no longer leads the fact it qualifies: {p}"
@@ -2225,17 +2290,99 @@ mod tests {
                 p.contains(&format!("{MCP_PREFIX}ask_user")),
                 "an unsigned-in app is not routed to the user: {p}"
             );
+
+            /* And with no browser running: the family is named only to say it
+               is absent, and the card is told what to do instead. Both halves
+               are asserted, because a paragraph that merely went quiet would
+               leave the card exactly where `b6bfecba` found it — unable to tell
+               "not started" from "not wired to me", and therefore unable to
+               complain precisely. */
+            let off = append_prompt(false, false, me.as_ref());
+            assert!(
+                !off.contains("never sign it out"),
+                "a card with no shared browser was told how to treat one: {off}"
+            );
+            assert!(
+                off.contains("is not running") && off.contains("mcp__browser__"),
+                "a card with no shared browser was not told why: {off}"
+            );
+        }
+
+        /* The name Volery does not supply must not appear in either arm. It was
+           `mcp__playwright__*` for this paragraph's whole life and has never
+           resolved on this machine — the user's own server is
+           `mcp__plugin_playwright_playwright__*`, and which prefix a plugin
+           produces is not something this app can know. A described family
+           cannot strand; a named one already did. */
+        for shared in [true, false] {
+            for me in fullest_and_none() {
+                let p = append_prompt(false, shared, me.as_ref());
+                assert!(
+                    !p.contains("mcp__playwright__"),
+                    "the prompt named a browser server Volery does not supply: {p}"
+                );
+            }
         }
 
         /* A chat card has neither browser — `--tools WebSearch,WebFetch` and no
-           MCP server but this one — so telling it about them would be an
+           MCP server but this one, and `spawn_now` withholds the `browser`
+           entry from it explicitly — so telling it about them would be an
            instruction to try what it will be refused. Same gate the roster and
-           the git paragraphs sit behind. */
-        let chat = append_prompt(true, None);
+           the git paragraphs sit behind, and asserted on both arms since a chat
+           card must not be told about the absence either. */
+        for shared in [true, false] {
+            let chat = append_prompt(true, shared, None);
+            assert!(
+                !chat.contains("mcp__browser__") && !chat.contains("mcp__playwright__"),
+                "a chat card was told about browsers it cannot reach: {chat}"
+            );
+        }
+    }
+
+    /// The config carries the browser exactly when the prompt claims it does.
+    ///
+    /// The two are set from one reading in `spawn_now` and could still drift
+    /// apart in either direction, and both drifts are the reported bug: a
+    /// config without the paragraph is a capability nobody knows about, and a
+    /// paragraph without the config is `b6bfecba` itself.
+    #[test]
+    fn the_browser_server_and_the_paragraph_agree() {
+        let with = crate::ask::mcp_config(1234, "abc", Some("http://127.0.0.1:9222"));
+        let server = &with["mcpServers"]["browser"];
+        assert_eq!(server["command"], "npx", "the browser server lost its command");
+        let args = server["args"].as_array().expect("the browser server has args");
         assert!(
-            !chat.contains("mcp__browser__") && !chat.contains("mcp__playwright__"),
-            "a chat card was told about browsers it cannot reach: {chat}"
+            args.iter().any(|a| a == "--cdp-endpoint"),
+            "the browser server does not point at a CDP endpoint: {server}"
         );
+        assert!(
+            args.iter().any(|a| a == "http://127.0.0.1:9222"),
+            "the browser server was given the wrong endpoint: {server}"
+        );
+        assert!(
+            append_prompt(false, true, None).contains("mcp__browser__"),
+            "the config carries a browser the prompt does not mention"
+        );
+
+        let without = crate::ask::mcp_config(1234, "abc", None);
+        assert!(
+            without["mcpServers"].get("browser").is_none(),
+            "a browser server was passed with none running: {without}"
+        );
+        assert!(
+            !append_prompt(false, false, None).contains("never sign it out"),
+            "the prompt claims a browser the config does not carry"
+        );
+
+        /* And the ask server survives either way, which is the failure that
+           would be silent: a card with no `mcp__skein__*` at all still spawns,
+           still answers, and simply cannot reach the wall. */
+        for cfg in [&with, &without] {
+            assert!(
+                cfg["mcpServers"]["skein"]["url"].is_string(),
+                "the ask server was displaced: {cfg}"
+            );
+        }
     }
 
     /// `fullest()` and `None`, which is the pair every prompt assertion wants:
@@ -2329,7 +2476,7 @@ mod tests {
         let known = advertised();
         for chat in [false, true] {
             for me in selves() {
-                for tool in named_tools(&append_prompt(chat, me.as_ref())) {
+                for tool in named_tools(&append_prompt(chat, true, me.as_ref())) {
                     assert!(
                         known.contains(&tool),
                         "the prompt names `{MCP_PREFIX}{tool}`, which tools/list does not \
@@ -2353,7 +2500,7 @@ mod tests {
     fn everything_appended_to_the_prompt_survives_being_composed() {
         let standing = "# Standing instructions\n\nMy name is Lyss.";
         for chat in [false, true] {
-            let out = system_prompt(chat, true, Some(standing.to_string()), None)
+            let out = system_prompt(chat, true, true, Some(standing.to_string()), None)
                 .expect("something to say");
             assert!(
                 out.contains(standing),
@@ -2379,21 +2526,21 @@ mod tests {
     fn either_half_of_the_prompt_can_be_missing() {
         let standing = "do the thing".to_string();
 
-        let no_guidance = system_prompt(false, true, None, None).expect("the prompt alone");
+        let no_guidance = system_prompt(false, true, true, None, None).expect("the prompt alone");
         assert!(no_guidance.contains(&format!("{MCP_PREFIX}ask_user")));
 
         /* No ask server: naming tools that are not there is the failure
            `the_prompt_names_only_tools_the_server_advertises` guards from the
            other side, so the roster goes and the instructions still land. */
         let no_ask =
-            system_prompt(false, false, Some(standing.clone()), None).expect("the guidance alone");
+            system_prompt(false, false, true, Some(standing.clone()), None).expect("the guidance alone");
         assert_eq!(no_ask, standing);
         assert!(!no_ask.contains(MCP_PREFIX));
 
         /* Nothing to say is `None` rather than an empty argument. A bare
            `--append-system-prompt ""` is a flag the CLI still reads. */
-        assert!(system_prompt(false, false, None, None).is_none());
-        assert!(system_prompt(false, false, Some("   ".to_string()), None).is_none());
+        assert!(system_prompt(false, false, true, None, None).is_none());
+        assert!(system_prompt(false, false, true, Some("   ".to_string()), None).is_none());
     }
 
     /// Advertised is not enough, and `append_prompt`'s own doc comment leans on
@@ -2414,7 +2561,7 @@ mod tests {
                a spawned card gets are inside every loop below rather than
                only the unconditional paragraphs. */
             let me = Some(fullest());
-            let named = named_tools(&append_prompt(chat, me.as_ref()));
+            let named = named_tools(&append_prompt(chat, true, me.as_ref()));
             /* Both this and the two tests around it are `for` loops over what
                the prompt names, so all three pass on a prompt that names
                nothing — and "names nothing" is what a bad edit to the format
@@ -2445,7 +2592,7 @@ mod tests {
         let known = advertised();
         for chat in [false, true] {
             let me = Some(fullest());
-            let prompt = append_prompt(chat, me.as_ref());
+            let prompt = append_prompt(chat, true, me.as_ref());
             for tick in prompt.split('`').skip(1).step_by(2) {
                 assert!(
                     !known.iter().any(|k| k == tick),
@@ -2842,9 +2989,9 @@ mod tests {
     /// reason belongs here beside it.
     #[test]
     fn a_chat_card_is_told_only_about_the_question() {
-        let chat = append_prompt(true, Some(&fullest()));
+        let chat = append_prompt(true, true, Some(&fullest()));
         assert_eq!(named_tools(&chat), vec!["ask_user"]);
-        let project = append_prompt(false, Some(&fullest()));
+        let project = append_prompt(false, true, Some(&fullest()));
         assert_eq!(
             named_tools(&project),
             vec!["ask_user", "ask_user", "list", "list", "send"],
@@ -2886,7 +3033,7 @@ mod tests {
     #[test]
     fn a_connector_that_needs_authorizing_is_not_the_last_word() {
         for me in fullest_and_none() {
-            let p = append_prompt(false, me.as_ref());
+            let p = append_prompt(false, true, me.as_ref());
             assert!(p.contains("Asana"), "the service the notice is about is not named: {p}");
             assert!(
                 p.contains("search your tools"),
@@ -2894,7 +3041,7 @@ mod tests {
                  the card where the notice put it: {p}"
             );
         }
-        let chat = append_prompt(true, Some(&fullest()));
+        let chat = append_prompt(true, true, Some(&fullest()));
         assert!(
             !chat.contains("Asana"),
             "a chat card is told to reach a credential `docket::permitted` refuses it: {chat}"
@@ -2908,7 +3055,7 @@ mod tests {
     /// name a thing it will be told it may not look at.
     #[test]
     fn a_chat_card_is_not_told_who_it_is() {
-        let chat = append_prompt(true, Some(&fullest()));
+        let chat = append_prompt(true, true, Some(&fullest()));
         assert!(!chat.contains("f618d9b7"), "a chat card was told its own handle: {chat}");
         assert!(!chat.contains("SKEIN_CARD"), "a chat card was told about the variable");
         assert!(!chat.contains("092198b5"), "a chat card was told its parentage");
@@ -2925,14 +3072,14 @@ mod tests {
     #[test]
     fn a_card_is_told_its_own_handle() {
         for me in selves().into_iter().flatten() {
-            let p = append_prompt(false, Some(&me));
+            let p = append_prompt(false, true, Some(&me));
             assert!(p.contains(&me.handle), "the card was not told it is {}: {p}", me.handle);
             assert!(p.contains("$SKEIN_CARD"), "the variable was not named: {p}");
         }
         /* And nothing is claimed where nothing is known. A caller with no card
            gets a prompt with no sentence about one, rather than a sentence with
            a hole in it. */
-        let anon = append_prompt(false, None);
+        let anon = append_prompt(false, true, None);
         assert!(!anon.contains("SKEIN_CARD"), "a nameless card was told about the variable");
     }
 
@@ -2942,7 +3089,7 @@ mod tests {
     /// parent stood in another territory.
     #[test]
     fn a_spawned_card_is_told_who_opened_it() {
-        let p = append_prompt(false, Some(&fullest()));
+        let p = append_prompt(false, true, Some(&fullest()));
         assert!(p.contains("092198b5"), "the parent was not named: {p}");
         assert!(p.contains("spawned card"), "the card was not told it was spawned: {p}");
         assert!(p.contains("rise"), "the parent's territory was not named: {p}");
@@ -2962,7 +3109,7 @@ mod tests {
                 elsewhere: false,
             }),
         };
-        let p = append_prompt(false, Some(&beside));
+        let p = append_prompt(false, true, Some(&beside));
         assert!(p.contains("092198b5"));
         assert!(!p.contains("scope: \"skein\""), "told to widen a scope it does not need: {p}");
 
@@ -2978,7 +3125,7 @@ mod tests {
                 elsewhere: true,
             }),
         };
-        let p = append_prompt(false, Some(&orphan));
+        let p = append_prompt(false, true, Some(&orphan));
         assert!(p.contains("since been closed"), "a closed parent was not said to be: {p}");
     }
 
@@ -2988,7 +3135,7 @@ mod tests {
     #[test]
     fn a_card_the_user_opened_is_told_no_such_thing() {
         let me = Selfhood { handle: "4bd5340b".into(), spawned_by: None };
-        let p = append_prompt(false, Some(&me));
+        let p = append_prompt(false, true, Some(&me));
         assert!(!p.contains("spawned card"), "an ordinary card was told it was spawned: {p}");
         assert!(p.contains("4bd5340b"), "it should still know its own handle: {p}");
     }

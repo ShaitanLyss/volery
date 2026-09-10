@@ -267,6 +267,44 @@ pub fn endpoint(app: &AppHandle) -> Option<String> {
     Some(format!("http://{HOST}:{}", r.port))
 }
 
+/// The MCP server that turns this browser into `mcp__browser__*` on a card.
+///
+/// **This is the half of the feature that was missing for a fortnight**, and the
+/// shape of the gap is worth keeping. Everything else was built — the Chrome,
+/// the port, the widget, the vault, the `VOLERY_CDP_ENDPOINT` beside it — and
+/// `append_prompt` told every card on every turn that `mcp__browser__*` was
+/// there, while the server those tools come from was expected to arrive from the
+/// *user's own* MCP configuration, which this app does not write. On this
+/// machine it never did: `claude mcp list` answered with eight claude.ai
+/// connectors and one plugin, and nothing under that prefix has ever resolved on
+/// this wall. Reported from a nova card as sink `b6bfecba`, whose real cost was
+/// not the missing capability but the confident sentence about it — a card told
+/// it has a tool it does not have cannot say what is wrong, so a wheel-scroll
+/// bug got diagnosed by reasoning about the DOM instead of by looking, and the
+/// first fix was wrong.
+///
+/// So the server is Volery's own now, and the prompt's claim is true by
+/// construction rather than by a coincidence of global configuration. This is
+/// the fix `.claude/rules/browser.md` named and did not build.
+///
+/// Probed 2026-09-10, claude 2.1.235 against the running wall browser: spawned
+/// with exactly this entry in `--mcp-config`, `system/init` reports
+/// `{"name":"browser","status":"connected"}` and 24 tools under
+/// `mcp__browser__`. `npx` as the bare command is what connects — the CLI
+/// resolves the `.cmd` shim itself, and it is what the official plugin uses.
+///
+/// **`@latest` rather than a pin**, matching the plugin, because the thing on
+/// the other end is a Chrome this machine updates on its own schedule and a
+/// pinned client that stops speaking to it fails in the CDP handshake naming
+/// nothing. The cost is an npx registry check at spawn, which is already paid
+/// once per card by the plugin's own server.
+pub fn mcp_server(endpoint: &str) -> serde_json::Value {
+    serde_json::json!({
+        "command": "npx",
+        "args": ["@playwright/mcp@latest", "--cdp-endpoint", endpoint],
+    })
+}
+
 #[tauri::command]
 pub async fn browser_status(state: State<'_, Browser>) -> Result<Status, String> {
     let mut guard = state.inner.lock().map_err(|_| "browser state poisoned")?;

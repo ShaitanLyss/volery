@@ -174,7 +174,20 @@ pub fn client_timeout_ms() -> u64 {
     ANSWER_MAX.as_millis() as u64 + 60_000
 }
 
-/// The `--mcp-config` a card is spawned with: one server, addressed to it.
+/// The `--mcp-config` a card is spawned with: this server, addressed to it, and
+/// the wall's shared browser when there is one running.
+///
+/// **The browser entry is here rather than anywhere else because this is the
+/// only `--mcp-config` there is**, and the flag is not additive — a second one
+/// replaces the first, exactly as `--append-system-prompt` does. So the same
+/// argument that put the guidance and the roster paragraph behind one
+/// `system_prompt` seam puts both servers behind this one function.
+///
+/// `shared_browser` is `None` when no browser is running and on a chat card,
+/// which has no business reaching one (`chat.md`). Both cases must agree with
+/// what `supervisor::append_prompt` was told, or the card is handed a paragraph
+/// about tools it does not have — see `browser::mcp_server` for what that
+/// already cost once.
 ///
 /// `timeout` is not a second copy of `MCP_TOOL_TIMEOUT` above, and reading it
 /// as one is what let a question die at five minutes with the hard deadline set
@@ -245,16 +258,18 @@ pub fn client_timeout_ms() -> u64 {
 /// coincidence. Anything moved out of that tier has to be paid for in that
 /// paragraph instead, in the copy that can silently drift out of step with the
 /// schema — so the trade is only worth making for tools it does not name.
-pub fn mcp_config(port: u16, conversation_id: &str) -> Value {
-    json!({
-        "mcpServers": {
-            "skein": {
-                "type": "http",
-                "url": format!("http://127.0.0.1:{port}/mcp/{conversation_id}"),
-                "timeout": client_timeout_ms(),
-            }
+pub fn mcp_config(port: u16, conversation_id: &str, shared_browser: Option<&str>) -> Value {
+    let mut servers = json!({
+        "skein": {
+            "type": "http",
+            "url": format!("http://127.0.0.1:{port}/mcp/{conversation_id}"),
+            "timeout": client_timeout_ms(),
         }
-    })
+    });
+    if let Some(endpoint) = shared_browser {
+        servers["browser"] = crate::browser::mcp_server(endpoint);
+    }
+    json!({ "mcpServers": servers })
 }
 
 #[derive(Default)]
@@ -1761,7 +1776,7 @@ mod tests {
     /// would say so.
     #[test]
     fn the_server_claims_no_tier_of_its_own() {
-        let cfg = mcp_config(1234, "abc");
+        let cfg = mcp_config(1234, "abc", None);
         let server = &cfg["mcpServers"]["skein"];
         assert!(
             server.get("alwaysLoad").is_none(),
@@ -2296,7 +2311,7 @@ mod tests {
     /// the config has to carry the number too — see `mcp_config`.
     #[test]
     fn the_config_carries_the_timeout_the_idle_watchdog_reads() {
-        let cfg = mcp_config(51234, "abc-123");
+        let cfg = mcp_config(51234, "abc-123", None);
         let server = &cfg["mcpServers"]["skein"];
         assert_eq!(server["url"], "http://127.0.0.1:51234/mcp/abc-123");
         assert_eq!(server["timeout"], client_timeout_ms());

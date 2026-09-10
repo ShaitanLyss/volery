@@ -88,17 +88,44 @@ Playwright; it would have, the first time two cards verified a UI at once, and i
 read as "playwright is broken". `--isolated` fixes it (probed, both clients open), and so does
 pointing both at one shared browser.
 
-**What the wall's config now is**, and the shape is deliberate:
+**The shape wanted**, and the two halves are supplied by different people:
 
 - **`playwright`** → `--isolated`. The one that always works, with no dependency on Volery
   running. This is what a terminal session gets, and repointing *this* at the wall's browser
-  would have broken Playwright everywhere the wall is not up.
+  would have broken Playwright everywhere the wall is not up. **This half is the user's**, and
+  the current arrangement here is the official plugin's own `.mcp.json` hand-edited to carry
+  `--isolated --storage-state`, which is why a card sees it as
+  `mcp__plugin_playwright_playwright__*`. Note where that edit lives:
+  `~/.claude/plugins/cache/claude-plugins-official/playwright/unknown/.mcp.json`, a **cache**
+  directory with three sibling versions beside it still holding the pristine
+  `npx @playwright/mcp@latest` — so a plugin update reinstates the profile collision above,
+  silently.
 - **`browser`** → `--cdp-endpoint http://127.0.0.1:9222`. The shared browser, and the one that
-  satisfies the actual ask. Its browser tools fail while nothing is running there, which is
-  honest — the widget's own start button is the fix, and a person who wants to take the mouse
-  has the widget open anyway.
-- The official plugin is **disabled**, because its arguments are fixed and its default profile
-  is the collision.
+  satisfies the actual ask. **This half is Volery's**, since 2026-09-10 — `browser::mcp_server`
+  is the entry and `ask::mcp_config` puts it in the card's own `--mcp-config`.
+
+**It was not, for a fortnight, and that is the bug worth keeping.** This section said "what
+the wall's config now is" and listed both servers plus "the official plugin is disabled" —
+three present-tense claims, none of them true on this machine. `claude mcp list` answered with
+eight claude.ai connectors and one *enabled* plugin, and there was no `browser` server in any
+scope: not in `~/.claude.json`'s `mcpServers` (empty), not project-scoped, not in a `.mcp.json`
+in this repo. So the feature's agent half had never once worked, while
+`supervisor::append_prompt` told every card on every turn that `mcp__browser__*` was there.
+Reported from a nova card as sink `b6bfecba`; the cost recorded there is not the missing
+capability but the confident sentence — a card told it holds a tool it does not hold cannot
+say what is wrong, so a wheel-scroll bug was diagnosed by reasoning about the DOM instead of by
+looking, and the first fix was wrong.
+
+Two general things fall out, and they are why this is written at length:
+
+- **Documentation that asserts a machine's configuration is documentation nothing keeps
+  honest.** It is the `append_prompt` failure one layer up — a confident sentence about a name
+  that resolves to nothing, in the place a reader trusts most. The repair is the same one:
+  make the thing true by construction, then describe what you built.
+- **A feature can be complete everywhere except the one seam nobody owns.** The Chrome, the
+  port, the widget, the vault, the screencast, `VOLERY_CDP_ENDPOINT` and the prompt were all
+  built and all correct. What was missing was six lines of JSON that neither this repo nor the
+  user had been made responsible for, and the gap was invisible from both ends.
 
 ## The port is fixed, and that is a constraint rather than a preference
 
@@ -261,14 +288,38 @@ this file, which loads when somebody opens a file it governs and costs nothing o
 The test for anything proposed for that paragraph in future: *would an agent that learned this
 too late already have broken something for somebody else?* If not, it belongs here.
 
-**One coupling is real and unguarded.** The two server *names* in that paragraph come from the
-user's own MCP configuration, which this app does not write, so the prompt makes a claim the
-code cannot verify. `named_tools` cannot catch a drift because that guard is scoped to
-`MCP_PREFIX` by construction — it only sees `mcp__skein__*`. The proper fix is for Volery to
-supply both servers in the per-card `--mcp-config` it already builds (`supervisor.rs`:803),
-which would also remove the dependency on global config entirely; until then
-`the_prompt_tells_a_card_which_browser_is_shared` is the only thing holding the two ends
-together, and it is deliberately literal about it.
+**The coupling was real and unguarded, and it broke.** The two server *names* in that
+paragraph came from the user's own MCP configuration, which this app did not write, so the
+prompt made a claim the code could not verify — and `named_tools` cannot catch a drift, being
+scoped to `MCP_PREFIX` by construction. Both names were wrong: `mcp__browser__*` had no server
+at all, and the user's own is `mcp__plugin_playwright_playwright__*` rather than
+`mcp__playwright__*`.
+
+**So the shared half is now Volery's and the other half is no longer named.**
+`spawn_now` reads `browser::endpoint` once and uses it three times — the `VOLERY_CDP_ENDPOINT`
+variable, the `browser` entry in the `--mcp-config`, and whether `append_prompt` may claim the
+family exists — so a card cannot be handed any two of the three and not the third. The other
+family is *described* ("any other browser server here is your own") rather than named, because
+a name this app does not control cannot be printed in the one paragraph every card pays for on
+every turn; `the_prompt_names_no_browser_volery_does_not_supply` is asserted inside
+`the_prompt_tells_a_card_which_browser_is_shared`, and
+`the_browser_server_and_the_paragraph_agree` holds the config and the prose to the same flag
+in both directions. The false arm is the one that matters — a paragraph naming the tools
+unconditionally passes every other assertion on a wall with no browser running, which is
+exactly how this shipped.
+
+**And the absence is now said rather than left silent.** A card spawned with no browser
+running is told so, in one sentence, and told that starting it is a button on the widget. That
+is the direct answer to the sink item's second question: Volery cannot inject tools into an
+open card, and the honest substitute is a card that can complain precisely instead of
+reporting "no volery browser tools on this wall" with no idea why.
+
+**What is proven and what is not.** `browser::mcp_server`'s doc comment carries the probe:
+spawned with exactly that entry, `system/init` reports the server connected and 24 tools under
+`mcp__browser__`. That is the claim — *the tools reach a card* — and it was made against a
+hand-built `--mcp-config` rather than against a Volery build, because this machine has no MSVC
+toolchain and cannot compile the app. Whether a card can then *drive* the browser is untested
+by anything here.
 
 ## The vault
 
@@ -336,8 +387,22 @@ reach.
 - **Volery does not start the browser by itself.** No auto-start at launch, because that is
   ~450 MB for a wall that may never open a browser widget, and no lazy start on the agent's
   behalf, because nothing announces that a card is about to want one. The widget's start
-  button is the gesture. The cost is that `browser`'s MCP tools fail until somebody presses
-  it, which is the one rough edge in this feature.
+  button is the gesture.
+
+  **The cost is now sharper than "the tools fail", and it is the one rough edge left.** The
+  `browser` entry is supplied only when a browser is running *at spawn*, so a card opened
+  before you press start does not have the tools at all and cannot be given them — an MCP
+  server's arguments are settled when the card spawns and there is no renegotiating them.
+  Waking the card is a spawn, so a rouse picks them up; nothing short of that does.
+
+  **Conditional rather than always, and the arithmetic is why.** An idle
+  `npx @playwright/mcp --cdp-endpoint` with no browser attached is 2 node processes and
+  ~212 MB, measured 2026-09-10 and consistent with the census above — spawned per card, at
+  card start, whether or not that card ever looks at a page. Passing it unconditionally would
+  make every card on the wall pay that for a browser most of them will never touch, which is
+  the same trade auto-start was refused on one paragraph up. Ten cards is 2 GB. The
+  alternative buys one thing — a card opened before the browser gains the tools when you
+  press start — and `processes.md` is the whole argument against paying that way for it.
 - **No navigation bar.** The agent navigates, and `Page.navigate` is wired in `pane.svelte.ts`
   for whatever wants it, but there is no address field on the widget. Deliberate for now: the
   page you are testing is one the agent opened, and a URL field invites the widget to become a
