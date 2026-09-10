@@ -43,6 +43,7 @@
   import Health from "./Health.svelte";
   import Billboard from "./Billboard.svelte";
   import Basin from "./Basin.svelte";
+  import Register from "./Register.svelte";
   import Gatehouse from "./Gatehouse.svelte";
   import ServerLog from "./ServerLog.svelte";
   import AppLog from "./AppLog.svelte";
@@ -352,6 +353,12 @@
         {names}
         onreveal={(id) => onreveal?.("conversation", id)}
       />
+    {:else if widget.kind === "chronicle"}
+      <!-- No holder threaded in: `chronicle` is a module singleton, for
+           `journal`'s reason — the register and the header are the only things
+           that want it, and threading it through here would put it in a file
+           that is somebody else's. -->
+      <Register {widget} onreveal={(id) => onreveal?.("conversation", id)} />
     {:else if widget.kind === "gates"}
       <Gatehouse {widget} {gates} {names} />
     {:else if widget.kind === "serverlog"}

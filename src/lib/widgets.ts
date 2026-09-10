@@ -53,6 +53,7 @@ export type WidgetKind =
   | "asanahealth"
   | "billboard"
   | "sink"
+  | "chronicle"
   | "gates"
   | "serverlog"
   | "buildlog"
@@ -1118,6 +1119,66 @@ export const WIDGETS: WidgetSpec[] = [
           { value: "bug", label: "only what is broken" },
           { value: "idea", label: "only what should exist" },
           { value: "chore", label: "only the chores" },
+          { value: "note", label: "only the notes" },
+        ],
+        "all",
+      ),
+    ],
+  },
+  {
+    /* The chronicle, hung up. See `.claude/rules/chronicle.md`.
+       **Nothing behind this goes and looks** — `chronicle.rs::changed` emits on
+       every write, so the face is a fold over events that already arrive, and a
+       wall with no register up costs nothing at all. That is what makes it free
+       to have in the catalogue, and it is the same bargain `sink` and
+       `billboard` strike one entry up.
+
+       Sized like the sink rather than like the logs: a row is a source, a
+       headline and an age, which is prose-shaped and does not want a compiler's
+       eighty columns. Taller than the billboard, because the whole point of it
+       is that a long absence is readable in one glance rather than a scroll. */
+    kind: "chronicle",
+    label: "register",
+    family: "notes",
+    short: "the register",
+    offer: "hang up the register",
+    note: "what happened on this wall, newest first",
+    box: { w: 340, h: 280 },
+    min: { w: 220, h: 110 },
+    params: [
+      /* Two readings, and they answer different questions. `roll` is the whole
+         thing for a register hung where you plan — what has this wall been
+         doing. `since` is the unseen only, grouped by what the things did, for
+         one hung where you work — what do I have to catch up on. The second is
+         the reading that makes an absence readable, which is the whole reason
+         the feature exists, and it is a variant rather than a second widget
+         because they are two readings of one *fact* and are not wanted up at
+         once. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "roll", label: "the whole roll" },
+          { value: "since", label: "since you looked, grouped" },
+        ],
+        "roll",
+      ),
+      /* And this narrows rather than re-reads. No `scope` knob, for
+         `billboard`'s reason: a widget belongs to no project, so "this project"
+         has no referent to resolve against.
+
+         `ask` is not offered. It is the one level a card may not write
+         (`chronicle.rs::CARD_LEVELS`), so a filter for it would show only
+         Volery's own asking — which the card itself already draws in amber, and
+         which the away-ladder already fetches you for. A filter whose answer is
+         always somewhere better is a knob that teaches nothing. */
+      choice(
+        "showing",
+        "showing",
+        [
+          { value: "all", label: "everything" },
+          { value: "good", label: "only what worked" },
+          { value: "bad", label: "only what went wrong" },
           { value: "note", label: "only the notes" },
         ],
         "all",
