@@ -20,6 +20,7 @@
   import { Board } from "./lib/images.svelte";
   import { insertAt } from "./lib/attach";
   import { Widgets } from "./lib/widgets.svelte";
+  import { chronicle } from "./lib/chronicle.svelte";
   import { Undo } from "./lib/undo.svelte";
   import { shifted, standsOf, type Stand } from "./lib/undo";
   import { Meter } from "./lib/meter.svelte";
@@ -301,6 +302,19 @@
      down should not still be running the room, least of all one whose breaks
      take the whole window. Removing the last view pauses rather than ends, so
      hanging one back up picks the same phase up where it was. */
+  /* The chrome reads the chronicle for as long as the window is open.
+   *
+   * `Wisps` attaches too, and that is not a duplicate — the refcount in
+   * `chronicle.svelte.ts` makes however many readers one subscription. This one
+   * exists because the header's count has to be right on a wall `Canvas` is not
+   * drawing at all: an empty studio renders the `.empty` branch, so `Wisps`
+   * never mounts, and a `register` button reading zero on a wall with six
+   * unread rows is worse than no button. */
+  $effect(() => {
+    chronicle.attach("chrome");
+    return () => chronicle.detach("chrome");
+  });
+
   pomodoro.watched = () => widgets.has("pomodoro");
   /* The wall's own weather. Owns no subscriptions, so unlike the four below it
      needs nothing releasing on destroy. */
@@ -2693,6 +2707,7 @@
     "spend",
     "live",
     "zoom",
+    "register",
     "fit",
     "servers",
     "shell",
@@ -2735,6 +2750,7 @@
   const FOLD_ORDER = [
     "adopt",
     "read",
+    "register",
     "servers",
     "shell",
     "find",
@@ -2874,6 +2890,41 @@
   const barButtons = $derived(
     [
       { key: "fit", label: "fit", title: "Fit everything (Home)", press: () => canvas?.fitAll() },
+      /* The chronicle's way in from the chrome, and the only place the unseen
+         count is drawn on a wall with no register hung.
+         **The count is why this is in the bar at all.** Every other foldable
+         reading here — the zoom, what is live, the card count — is something you
+         can also get by looking at the wall, which is the argument `FOLD_ORDER`
+         makes for giving readings up before verbs. This one is not: a thing that
+         happened while you were away leaves no mark on the wall, so the number
+         has nowhere else to be. Hence it sits late in the fold order rather than
+         with the other readings.
+         Achromatic even when something is waiting. Colour on this wall is status
+         and this is a count, and a chrome item that went amber would be a second
+         answer to "how does Volery get your attention" — the thing
+         `attention.svelte.ts` argues against and the thing the whole chronicle
+         is built not to be. The number changing is the whole of the signal. */
+      {
+        key: "register",
+        label: chronicle.waiting > 0 ? `register ${chronicle.waiting}` : "register",
+        title:
+          chronicle.waiting > 0
+            ? `${chronicle.waiting} in the chronicle you have not read`
+            : "What has happened on this wall",
+        press: () => {
+          const up = widgets.items.find((w) => w.kind === "chronicle");
+          /* Reveal rather than toggle. Hanging one is additive and undoable;
+             *removing* one on a second press would throw away a widget you
+             placed, sized and configured — and it would do it from a button
+             whose label is a number, which is not what a number looks like it
+             does. `revealWidget` is the same verb the finder uses. */
+          if (up) canvas?.revealWidget(up.id);
+          else {
+            const at = canvas?.center() ?? { x: 0, y: 0 };
+            void widgets.add("chronicle", at.x, at.y);
+          }
+        },
+      },
       {
         key: "servers",
         label: "servers",

@@ -17,6 +17,7 @@ import {
   newest,
   normalize,
   normalizeAll,
+  place,
   statusOf,
   tally,
   unseen,
@@ -352,5 +353,62 @@ describe("the allowance crossing", () => {
   test("a window naming no reset still has a key", () => {
     expect(windowKey({ kind: "k", resetsAt: null })).toBe("k@0");
     expect(allowanceCrossing(win(85, null), null)).toBe("five_hour@0");
+  });
+});
+
+describe("placing a wisp", () => {
+  const view = { w: 1000, h: 800 };
+  const card = (x: number, y: number) => ({ x, y, w: 200, h: 100 });
+
+  test("a wall-level entry gets no flight at all", () => {
+    /* Volery's own rows belong to no position, and a flight from nowhere would
+       be a lie about where it came from. */
+    expect(place(null, card(500, 400), view)).toBeNull();
+  });
+
+  test("rises off its own card and drifts to the register", () => {
+    const p = place(card(100, 200), card(800, 100), view);
+    expect(p).toEqual({ at: "card", x: 200, y: 200, dx: 700, dy: -50 });
+  });
+
+  test("with no register on the wall it rises and fades", () => {
+    const p = place(card(100, 200), null, view);
+    expect(p?.at).toBe("card");
+    expect(p).toMatchObject({ dx: 0 });
+    /* Upward: a thing rising and fading reads as noted and filed, where a thing
+       sliding sideways to nothing reads as lost. */
+    expect((p as { dy: number }).dy).toBeLessThan(0);
+  });
+
+  test("a card fully off an edge becomes an edge marker", () => {
+    expect(place(card(-400, 300), null, view)).toEqual({
+      at: "edge",
+      side: "left",
+      along: 350,
+    });
+    expect(place(card(1400, 300), null, view)).toMatchObject({ side: "right" });
+    expect(place(card(300, -400), null, view)).toMatchObject({ side: "top" });
+    expect(place(card(300, 1400), null, view)).toMatchObject({ side: "bottom" });
+  });
+
+  test("a card merely clipped by an edge still flies from its card", () => {
+    /* Half off is still somewhere honest to draw. Only a card with no pixel on
+       screen has no position. */
+    expect(place(card(-100, 300), null, view)?.at).toBe("card");
+    expect(place(card(950, 300), null, view)?.at).toBe("card");
+  });
+
+  test("the corner case goes to the edge it is further past", () => {
+    /* Off the top-left, but much further past the left. Picking arbitrarily
+       would put the marker on an edge you are not about to scroll toward. */
+    expect(place(card(-900, -250), null, view)).toMatchObject({ side: "left" });
+    expect(place(card(-250, -900), null, view)).toMatchObject({ side: "top" });
+  });
+
+  test("an edge marker stays inside the viewport", () => {
+    const far = place(card(-900, -880), null, view);
+    expect((far as { along: number }).along).toBeGreaterThanOrEqual(0);
+    const low = place(card(-900, 2000), null, view);
+    expect((low as { along: number }).along).toBeLessThanOrEqual(view.h);
   });
 });

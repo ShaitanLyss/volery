@@ -287,6 +287,78 @@ export function digest(entries: readonly Entry[]): Group[] {
   return groups;
 }
 
+/* ── where a wisp is drawn ───────────────────────────────────────────────────
+ *
+ * Screen space throughout. `Canvas` already derives a box per card
+ * (`cardBoxes`) precisely so nothing has to measure the DOM per frame during a
+ * pan, and this is arithmetic over that — no element is consulted.
+ */
+
+export type Spot = { x: number; y: number; w: number; h: number };
+
+/** Where a wisp goes, and it is one of exactly two answers.
+ *
+ *  `at: "card"` is the design working: the wisp starts on the card's own box and
+ *  drifts by `dx, dy` toward the register, so where it came from is its position
+ *  rather than a label. `at: "edge"` is the design's cost, paid honestly — a
+ *  card scrolled off the viewport cannot be flown from, and a wisp drawn at a
+ *  clamped position would claim to come from a card that is not there. */
+export type Placed =
+  | { at: "card"; x: number; y: number; dx: number; dy: number }
+  | { at: "edge"; side: "left" | "right" | "top" | "bottom"; along: number };
+
+/** How far a wisp drifts when there is no register to drift to.
+ *
+ *  Upward, because a thing rising and fading reads as *noted and filed* where a
+ *  thing sliding sideways to nothing reads as lost. There is no register on the
+ *  wall in that case, so there is nowhere truthful to point. */
+const NO_TARGET_RISE = -44;
+
+/**
+ * Place one wisp.
+ *
+ * `from` is the writing card's box, or null for one of Volery's own wall-level
+ * entries — the allowance running down belongs to no position, so it gets no
+ * flight at all and the register's own highlight carries it. A flight from
+ * nowhere would be a lie about where it came from.
+ */
+export function place(
+  from: Spot | null,
+  target: Spot | null,
+  viewport: { w: number; h: number },
+): Placed | null {
+  if (!from) return null;
+
+  const cx = from.x + from.w / 2;
+  const cy = from.y + from.h / 2;
+
+  /* Off the viewport, so there is no honest position to draw at. Which edge is
+     decided by how far outside it is on each axis, largest wins — a card off the
+     top-left corner belongs to whichever edge it is further past, and picking
+     one arbitrarily would put the marker on an edge you are not about to
+     scroll toward. */
+  const outLeft = -from.x - from.w;
+  const outRight = from.x - viewport.w;
+  const outTop = -from.y - from.h;
+  const outBottom = from.y - viewport.h;
+  const worst = Math.max(outLeft, outRight, outTop, outBottom);
+  if (worst > 0) {
+    const clamp = (v: number, hi: number) => Math.max(0, Math.min(hi, v));
+    if (worst === outLeft) return { at: "edge", side: "left", along: clamp(cy, viewport.h) };
+    if (worst === outRight) return { at: "edge", side: "right", along: clamp(cy, viewport.h) };
+    if (worst === outTop) return { at: "edge", side: "top", along: clamp(cx, viewport.w) };
+    return { at: "edge", side: "bottom", along: clamp(cx, viewport.w) };
+  }
+
+  return {
+    at: "card",
+    x: cx,
+    y: from.y,
+    dx: target ? target.x + target.w / 2 - cx : 0,
+    dy: target ? target.y + target.h / 2 - from.y : NO_TARGET_RISE,
+  };
+}
+
 /* ── the one reading Volery records off a poll ────────────────────────────── */
 
 /** Where the allowance becomes worth a row.

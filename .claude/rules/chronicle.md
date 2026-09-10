@@ -3,6 +3,7 @@ paths:
   - "src/lib/chronicle.ts"
   - "src/lib/chronicle.svelte.ts"
   - "src/lib/Register.svelte"
+  - "src/lib/Wisps.svelte"
   - "src-tauri/src/chronicle.rs"
 ---
 
@@ -204,7 +205,8 @@ comment that moved the emit out for the same reason.
 | `chronicle.ts` | pure: normalizing a row, the flight, the digest, the tally. Tested directly. |
 | `chronicle.svelte.ts` | one subscription behind however many faces read it — `journal.svelte.ts`'s shape and refcount. |
 | `Register.svelte` | the widget: the rows, the away-stack on its top edge, the two readings. |
-| `Canvas.svelte` | where a wisp is drawn, and the edge indicator for a card off the viewport. |
+| `Wisps.svelte` | the flight: where a wisp is drawn, the motion gating, the edge tab for a card off the viewport. |
+| `Canvas.svelte` | hands it `cardBoxes` and the register's box; renders it last, over everything on the wall. |
 | `chronicle.rs` | the two MCP tools, `note()` for Volery's own entries, the three commands. |
 | `store.rs` | the table (`migrate_v32`), the trim, the read, marking seen. |
 
@@ -216,3 +218,32 @@ four times (`journal.svelte.ts`'s head comment is the record of the third). So t
 is `Register.svelte`: the house pattern is a lowercase noun shared by the pure and runes
 files and a *different*, evocative noun for the component, exactly as `board`/`Billboard`,
 `sink`/`Basin` and `gates`/`Gatehouse` already do.
+
+## The way in from the chrome
+
+A `register` item in the title bar, in all three of `App.svelte`'s header lists —
+`barButtons`, `BAR_ORDER`, `FOLD_ORDER` — which `test/chrome.test.ts` holds against each other.
+
+**The count is why it is in the bar at all**, and it is the one exception to the argument
+`FOLD_ORDER` is built on. That argument is that readings are given up before verbs, because a
+reading is something you can also get by looking at the wall: the zoom is written on the cards,
+what is live is the cards that are moving, the count is the cards themselves. A thing that
+happened while you were away leaves **no mark on the wall**, so this number has nowhere else to
+be — hence it folds late, with the verbs, rather than early with the readings.
+
+Two things it deliberately does not do:
+
+- **It never takes colour**, even with rows waiting. Colour on this wall is status and this is a
+  count; a chrome item going amber would be a second answer to "how does Volery get your
+  attention", which is what `attention.svelte.ts` argues against and what this whole subsystem
+  is built not to be. The number changing is the whole of the signal.
+- **It reveals, it does not toggle.** Hanging a register is additive and undoable; removing one
+  on a second press would throw away a widget you placed, sized and configured — from a button
+  whose label is a number, which is not what a number looks like it does. With one up it calls
+  `revealWidget`, the same verb the finder uses.
+
+The chrome attaches to `chronicle` for the window's life, and `Wisps` attaches separately. That
+is not a duplicate: the refcount makes however many readers one subscription. The chrome needs
+its own because an empty studio renders `App`'s `.empty` branch and never mounts `Canvas` at
+all — and a `register` button reading zero on a wall with six unread rows is worse than no
+button.

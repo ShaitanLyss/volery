@@ -42,6 +42,7 @@
   import type { Cycle } from "./cycle.svelte";
   import type { Profile } from "./ambience";
   import { glassAt, spotOf, stickTo, type Spot } from "./glass";
+  import Wisps from "./Wisps.svelte";
   import { overflowScrolls, wheelMeaning, type Box as Reachable } from "./wheel";
   import { adrift } from "./portage.svelte";
   import { stub } from "./outline";
@@ -439,6 +440,37 @@
       out.set(n.conv.id, { x: n.x, y: n.y, w: CARD_BOX.wall.w, h: CARD_BOX.wall.h });
     }
     return out;
+  });
+
+  /**
+   * Where the register is, for the wisps to drift to — or null when none is up.
+   *
+   * The counterpart of `cardBoxes` above and the same screen-space arithmetic,
+   * for the same reason: no element is consulted, so a pan costs no measurement.
+   *
+   * **Null is a supported answer and not a missing case.** The chronicle lives
+   * in the table and the register is only a view of it, so wisps fly on a wall
+   * with no register hung — they rise and fade instead of drifting, which
+   * `chronicle.ts::place` decides. The alternative, no widget therefore no
+   * wisps, would make the history depend on a widget being open, which is the
+   * one thing this feature cannot afford.
+   *
+   * The *first* one, if somebody has hung two. Two registers are two views of
+   * one table and both are correct; a wisp has to pick one to fly at, and
+   * splitting it or drawing two would be the wall claiming the entry happened
+   * twice.
+   */
+  const registerBox = $derived.by(() => {
+    const w = widgets.items.find((it) => it.kind === "chronicle");
+    if (!w) return null;
+    const spot = spotOf(w);
+    /* On the glass the pane is 1:1, so its own coordinates already are screen
+       coordinates — the bargain `glassCards` strikes in `cardBoxes`. */
+    if (spot) {
+      const at = glassAt(spot, { w: w.w, h: w.h }, glassBox);
+      return { x: at.x, y: at.y, w: w.w, h: w.h };
+    }
+    return screenBox({ x: w.x, y: w.y, w: w.w, h: w.h }, view);
   });
 
   /** Which cards are streaming this second, for the one thing about a root that
@@ -2023,6 +2055,12 @@
       {@render cardBody(n, "wall", 1)}
     </div>
   {/each}
+  <!-- Over everything standing on the wall, and last in the DOM for exactly
+       that reason. `Lineage` is under the cards because a root is structure;
+       this is over them because a wisp is traffic — the same layering argument
+       the note above `Lineage` makes, from the other side. Screen space, and
+       `cardBoxes` is the same map both are handed. -->
+  <Wisps boxes={cardBoxes} target={registerBox} viewport={glassBox} />
 </div>
 
 <style>
