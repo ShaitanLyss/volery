@@ -46,6 +46,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { blockAt } from "./lift-scan.ts";
 
 const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
 const FILE = "src-tauri/src/docket.rs";
@@ -121,40 +122,7 @@ const TESTS = [
 function reader(file: string) {
   const lines = readFileSync(file, "utf8").split(/\r?\n/);
 
-  /** Where a declaration starts, including the doc comments and attributes
-   *  above it — a lift that dropped `#[test]` would compile into a file with
-   *  nothing to run, and would say so by passing. */
-  const startOf = (i: number): number => {
-    let from = i;
-    while (from > 0) {
-      const prev = lines[from - 1].trim();
-      if (prev.startsWith("///") || prev.startsWith("//") || prev.startsWith("#[")) {
-        from--;
-        continue;
-      }
-      break;
-    }
-    return from;
-  };
-
-  const block = (i: number): string => {
-    const head = lines[i];
-    if (/;\s*$/.test(head) && !head.includes("{")) {
-      return lines.slice(startOf(i), i + 1).join("\n");
-    }
-    let depth = 0;
-    let seen = false;
-    for (let j = i; j < lines.length; j++) {
-      for (const ch of lines[j]) {
-        if (ch === "{") {
-          depth++;
-          seen = true;
-        } else if (ch === "}") depth--;
-      }
-      if (seen && depth === 0) return lines.slice(startOf(i), j + 1).join("\n");
-    }
-    throw new Error(`unterminated block at ${file}:${i + 1}`);
-  };
+  const block = (i: number): string => blockAt(lines, i, file);
 
   const testsAt = (): number => {
     const at = lines.findIndex((l) => /^\s*mod tests\s*\{/.test(l));

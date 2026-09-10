@@ -33,6 +33,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { blockAt } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/spawn.rs";
 
@@ -97,42 +98,7 @@ const TESTS = [
 const src = readFileSync(SRC, "utf8");
 const lines = src.split(/\r?\n/);
 
-/** Where a declaration starts, including the doc comments and attributes above
- *  it — a lift that dropped one would compile into a different thing and say so
- *  only at the call site. */
-function startOf(i: number): number {
-  let from = i;
-  while (from > 0) {
-    const prev = lines[from - 1].trim();
-    if (prev.startsWith("///") || prev.startsWith("//") || prev.startsWith("#[")) {
-      from--;
-      continue;
-    }
-    break;
-  }
-  return from;
-}
-
-/** From a declaration line to its closing brace, by depth. Handles the one-line
- *  `const` form too, which has no brace at all. */
-function block(i: number): string {
-  const head = lines[i];
-  if (/;\s*$/.test(head) && !head.includes("{")) {
-    return lines.slice(startOf(i), i + 1).join("\n");
-  }
-  let depth = 0;
-  let seen = false;
-  for (let j = i; j < lines.length; j++) {
-    for (const ch of lines[j]) {
-      if (ch === "{") {
-        depth++;
-        seen = true;
-      } else if (ch === "}") depth--;
-    }
-    if (seen && depth === 0) return lines.slice(startOf(i), j + 1).join("\n");
-  }
-  throw new Error(`unterminated block at ${SRC}:${i + 1}`);
-}
+const block = (i: number): string => blockAt(lines, i, SRC);
 
 function find(what: string): string {
   const re = new RegExp(`^\\s*(pub(\\([a-z]+\\))?\\s+)?${what.replace(/ /g, "\\s+")}\\b`);

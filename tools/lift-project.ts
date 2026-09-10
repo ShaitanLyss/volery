@@ -34,6 +34,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { blockAt } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/project.rs";
 const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
@@ -79,116 +80,7 @@ const TESTS: string[] = [
 
 const lines = readFileSync(SRC, "utf8").split(/\r?\n/);
 
-/** Where a declaration starts, including the doc comments and attributes above
- *  it — a lift that dropped `#[test]` would compile into a file with nothing to
- *  run, and report that by passing. */
-function startOf(i: number): number {
-  let from = i;
-  while (from > 0) {
-    const prev = lines[from - 1].trim();
-    if (prev.startsWith("///") || prev.startsWith("//") || prev.startsWith("#[")) {
-      from--;
-      continue;
-    }
-    break;
-  }
-  return from;
-}
-
-/** Brace depth, counting only braces that are *code*.
- *
- *  The other `lift-*.ts` scripts count every `{` and `}` in the line, which is
- *  fine until something lifted has a brace inside a string — and the assertions
- *  here are the first that do, because a `package.json` fixture is written out
- *  literally. The naive counter reads `"{\n  \"version\"…"` as opening a block
- *  that never closes, and rustc then reports `unclosed delimiter` against
- *  `mod tests {` four hundred lines above the actual cause.
- *
- *  So this walks the line: `"…"` strings with backslash escapes, `r"…"` and
- *  `r#"…"#` raw strings, `'c'` character literals, `//` to end of line, and
- *  `/* … *\/` across lines. The last of those is not hypothetical either —
- *  `json_line`'s own doc block says "the `{` of the root object", and that
- *  brace is why the first draft of this could not find the end of the function
- *  three lines below it. Not a full Rust lexer: nested block comments count as
- *  one, and lifetimes are handled only by not matching the char-literal shape.
- *  State is carried across lines because both raw strings and block comments
- *  can span them. */
-function scan(
-  line: string,
-  state: { depth: number; raw: string | null; comment: boolean },
-): void {
-  let k = 0;
-  /* Mid-raw-string from a previous line: skip to its terminator. */
-  if (state.raw !== null) {
-    const end = line.indexOf(state.raw);
-    if (end < 0) return;
-    k = end + state.raw.length;
-    state.raw = null;
-  }
-  if (state.comment) {
-    const end = line.indexOf("*/");
-    if (end < 0) return;
-    k = end + 2;
-    state.comment = false;
-  }
-  for (; k < line.length; k++) {
-    const ch = line[k];
-    if (ch === "/" && line[k + 1] === "/") return;
-    if (ch === "/" && line[k + 1] === "*") {
-      const end = line.indexOf("*/", k + 2);
-      if (end < 0) {
-        state.comment = true;
-        return;
-      }
-      k = end + 1;
-      continue;
-    }
-    if (ch === "r" && (line[k + 1] === '"' || line[k + 1] === "#")) {
-      const m = /^r(#*)"/.exec(line.slice(k));
-      if (m) {
-        const close = `"${m[1]}`;
-        const end = line.indexOf(close, k + m[0].length);
-        if (end < 0) {
-          state.raw = close;
-          return;
-        }
-        k = end + close.length - 1;
-        continue;
-      }
-    }
-    if (ch === '"') {
-      k++;
-      while (k < line.length && line[k] !== '"') k += line[k] === "\\" ? 2 : 1;
-      continue;
-    }
-    /* A char literal, but not a lifetime — `'a` has no closing quote. */
-    if (ch === "'") {
-      const m = /^'(\\.|[^'\\])'/.exec(line.slice(k));
-      if (m) {
-        k += m[0].length - 1;
-        continue;
-      }
-      continue;
-    }
-    if (ch === "{") state.depth++;
-    else if (ch === "}") state.depth--;
-  }
-}
-
-function block(i: number): string {
-  const head = lines[i];
-  if (/;\s*$/.test(head) && !head.includes("{")) {
-    return lines.slice(startOf(i), i + 1).join("\n");
-  }
-  const state = { depth: 0, raw: null as string | null, comment: false };
-  let seen = false;
-  for (let j = i; j < lines.length; j++) {
-    scan(lines[j], state);
-    if (state.depth > 0) seen = true;
-    if (seen && state.depth === 0) return lines.slice(startOf(i), j + 1).join("\n");
-  }
-  throw new Error(`unterminated block at ${SRC}:${i + 1}`);
-}
+const block = (i: number): string => blockAt(lines, i, SRC);
 
 function testsAt(): number {
   const at = lines.findIndex((l) => /^\s*mod tests\s*\{/.test(l));

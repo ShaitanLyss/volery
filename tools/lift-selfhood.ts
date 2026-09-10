@@ -28,6 +28,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { blockAt } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/supervisor.rs";
 const STORE = "src-tauri/src/store.rs";
@@ -68,114 +69,12 @@ const TESTS = [
   "the_prompt_tells_a_card_which_browser_is_shared",
 ];
 
-/** Brace depth, counting only braces that are *code*.
- *
- *  Lifted from `tools/lift-project.ts`, which is the one script that has this
- *  right — the seven older ones count every `{` and `}` on the line, strings and
- *  comments included, and sink `4b20ad50` is what that costs. It matters here
- *  rather than being defensive: `append_prompt` is nothing *but* format strings,
- *  and every `{MCP_PREFIX}` in one is a brace a naive counter would open a block
- *  on. The failure is loud and names the wrong place — rustc reports an unclosed
- *  delimiter against `mod tests {`, hundreds of lines from the cause.
- *
- *  Handles `"…"` with backslash escapes, `r"…"` / `r#"…"#`, `'c'` char literals,
- *  `//` to end of line and `/* … *\/` across lines. Not a full lexer: nested
- *  block comments count as one, and lifetimes are handled by not matching the
- *  char-literal shape. */
-function scan(
-  line: string,
-  state: { depth: number; raw: string | null; comment: boolean },
-): void {
-  let k = 0;
-  if (state.raw !== null) {
-    const end = line.indexOf(state.raw);
-    if (end < 0) return;
-    k = end + state.raw.length;
-    state.raw = null;
-  }
-  if (state.comment) {
-    const end = line.indexOf("*/");
-    if (end < 0) return;
-    k = end + 2;
-    state.comment = false;
-  }
-  for (; k < line.length; k++) {
-    const ch = line[k];
-    if (ch === "/" && line[k + 1] === "/") return;
-    if (ch === "/" && line[k + 1] === "*") {
-      const end = line.indexOf("*/", k + 2);
-      if (end < 0) {
-        state.comment = true;
-        return;
-      }
-      k = end + 1;
-      continue;
-    }
-    if (ch === "r" && (line[k + 1] === '"' || line[k + 1] === "#")) {
-      const m = /^r(#*)"/.exec(line.slice(k));
-      if (m) {
-        const close = `"${m[1]}`;
-        const end = line.indexOf(close, k + m[0].length);
-        if (end < 0) {
-          state.raw = close;
-          return;
-        }
-        k = end + close.length - 1;
-        continue;
-      }
-    }
-    if (ch === '"') {
-      k++;
-      while (k < line.length && line[k] !== '"') k += line[k] === "\\" ? 2 : 1;
-      continue;
-    }
-    if (ch === "'") {
-      const m = /^'(\\.|[^'\\])'/.exec(line.slice(k));
-      if (m) {
-        k += m[0].length - 1;
-        continue;
-      }
-      continue;
-    }
-    if (ch === "{") state.depth++;
-    else if (ch === "}") state.depth--;
-  }
-}
-
 /** One file's worth of lifting. Both sources want the same three operations, so
  *  they share one closure rather than the copy-paste `lift-spawn.ts` has. */
 function lifter(path: string) {
   const lines = readFileSync(path, "utf8").split(/\r?\n/);
 
-  /** Where a declaration starts, doc comments and attributes included — a lift
-   *  that dropped a `#[derive]` would compile into a different thing and say so
-   *  only at the call site. */
-  const startOf = (i: number): number => {
-    let from = i;
-    while (from > 0) {
-      const prev = lines[from - 1].trim();
-      if (prev.startsWith("///") || prev.startsWith("//") || prev.startsWith("#[")) {
-        from--;
-        continue;
-      }
-      break;
-    }
-    return from;
-  };
-
-  const block = (i: number): string => {
-    if (/;\s*$/.test(lines[i]) && !lines[i].includes("{")) {
-      return lines.slice(startOf(i), i + 1).join("\n");
-    }
-    const state = { depth: 0, raw: null as string | null, comment: false };
-    let seen = false;
-    for (let j = i; j < lines.length; j++) {
-      scan(lines[j], state);
-      if (state.depth > 0) seen = true;
-      if (seen && state.depth === 0) return lines.slice(startOf(i), j + 1).join("\n");
-    }
-    throw new Error(`unterminated block at ${path}:${i + 1}`);
-  };
+  const block = (i: number): string => blockAt(lines, i, path);
 
   const testsAt = (): number => {
     const at = lines.findIndex((l) => /^\s*mod tests\s*\{/.test(l));

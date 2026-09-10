@@ -218,12 +218,20 @@ script died on `cd src-tauri` instead. Three fixes, and each covers a different 
   - **A proc macro is built for the *host*, not for `--target`.** `serde_derive` is a `.dll`
     in `src-tauri/target/debug/deps`, not an `.rlib` beside the others, and needs its own
     `--extern` plus a second `-L dependency=`. `tools/lift-project.ts` does this and says so.
-  - **`block()`'s brace counting is naive in seven of the nine lift scripts.** They count
-    every `{` on the line, including ones inside string literals and comments — so lifting an
-    item whose body writes out a `package.json` fixture, or whose doc block says "the `{` of
-    the root object", swallows the rest of the file and rustc reports `unclosed delimiter`
-    hundreds of lines from the cause. `lift-project.ts`'s `scan()` is the fixed version;
-    sink 4b20ad50 is whether to copy it or extract `tools/lift.ts`.
+  - **Finding where a declaration ends is `tools/lift-scan.ts`'s job, not yours.** Every lift
+    script used to carry its own `startOf`/`block` pair, and ten of the fourteen counted
+    *every* `{` on the line — including ones inside string literals and comments. Lifting
+    an item whose body writes out a `package.json` fixture, or whose doc block says "the
+    `{` of the root object", then swallowed the rest of the file, and rustc reported `unclosed
+    delimiter` against `mod tests {` hundreds of lines from the cause. Sink 4b20ad50; now
+    one module, imported by all fourteen. A new lift calls `blockAt(lines, i, file)` and
+    writes no brace counter of its own.
+
+    Note what the scanner has to know, because the second half was missing from the version
+    that was copied around: a Rust `"…"` spans **lines**, and the schemas and prompts these
+    lifts are aimed at are one string with `\` continuations over a dozen of them. Closing
+    the string at the end of the line reads every line of prose after the first as code, and
+    is the same bug one line further down.
 
   **3. A throwaway cargo crate, when our own graph is the broken thing.** `cargo new` outside
   the repo, a `[workspace]` stanza in its `Cargo.toml` so ours does not adopt it, the one

@@ -30,6 +30,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { blockAt } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/aside.rs";
 
@@ -46,85 +47,7 @@ const TESTS: string[] = [
 
 const lines = readFileSync(SRC, "utf8").split(/\r?\n/);
 
-/** Where a declaration starts, including the doc comments and attributes above
- *  it — a lift that dropped `#[derive(Default)]` would compile into a different
- *  thing and say so only at the call site. */
-function startOf(i: number): number {
-  let from = i;
-  while (from > 0) {
-    const prev = lines[from - 1].trim();
-    if (prev.startsWith("///") || prev.startsWith("//") || prev.startsWith("#[")) {
-      from--;
-      continue;
-    }
-    break;
-  }
-  return from;
-}
-
-/** Brace depth, counting only braces that are code — the string-aware version
- *  from `lift-project.ts`. `FRAME` has no braces in it today and `Asides` has
- *  none either, so the naive counter would do; this is here because sink
- *  4b20ad50 is about seven scripts that used the naive one and bit the first
- *  person to lift something with a brace in a string. */
-function scan(line: string, state: { depth: number; comment: boolean }): void {
-  let k = 0;
-  if (state.comment) {
-    const end = line.indexOf("*/");
-    if (end < 0) return;
-    k = end + 2;
-    state.comment = false;
-  }
-  for (; k < line.length; k++) {
-    const ch = line[k];
-    if (ch === "/" && line[k + 1] === "/") return;
-    if (ch === "/" && line[k + 1] === "*") {
-      const end = line.indexOf("*/", k + 2);
-      if (end < 0) {
-        state.comment = true;
-        return;
-      }
-      k = end + 1;
-      continue;
-    }
-    if (ch === '"') {
-      k++;
-      while (k < line.length && line[k] !== '"') k += line[k] === "\\" ? 2 : 1;
-      continue;
-    }
-    if (ch === "'") {
-      const m = /^'(\\.|[^'\\])'/.exec(line.slice(k));
-      if (m) k += m[0].length - 1;
-      continue;
-    }
-    if (ch === "{") state.depth++;
-    else if (ch === "}") state.depth--;
-  }
-}
-
-function block(i: number): string {
-  const head = lines[i];
-  if (/;\s*$/.test(head) && !head.includes("{")) {
-    /* A `const` whose value runs over several lines with a `\` continuation. */
-    let j = i;
-    while (j < lines.length && !/;\s*$/.test(lines[j])) j++;
-    return lines.slice(startOf(i), j + 1).join("\n");
-  }
-  if (!head.includes("{") && !/;\s*$/.test(head)) {
-    /* A declaration whose `= "..."` continues onto the next lines. */
-    let j = i;
-    while (j < lines.length && !/;\s*$/.test(lines[j])) j++;
-    return lines.slice(startOf(i), j + 1).join("\n");
-  }
-  const state = { depth: 0, comment: false };
-  let seen = false;
-  for (let j = i; j < lines.length; j++) {
-    scan(lines[j], state);
-    if (state.depth > 0) seen = true;
-    if (seen && state.depth === 0) return lines.slice(startOf(i), j + 1).join("\n");
-  }
-  throw new Error(`unterminated block at ${SRC}:${i + 1}`);
-}
+const block = (i: number): string => blockAt(lines, i, SRC);
 
 function testsAt(): number {
   const at = lines.findIndex((l) => /^\s*mod tests\s*\{/.test(l));

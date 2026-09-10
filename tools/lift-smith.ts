@@ -36,6 +36,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { blockAt } from "./lift-scan.ts";
 
 const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
 
@@ -112,56 +113,7 @@ function linesOf(file: string): string[] {
   return got;
 }
 
-/** Where a declaration starts, including the doc comments and attributes above
- *  it — a lift that dropped `#[derive(PartialEq)]` would compile into a
- *  different thing and say so only at the call site. */
-function startOf(lines: string[], i: number): number {
-  let from = i;
-  while (from > 0) {
-    const prev = lines[from - 1].trim();
-    if (prev.startsWith("///") || prev.startsWith("//") || prev.startsWith("#[")) {
-      from--;
-      continue;
-    }
-    break;
-  }
-  return from;
-}
-
-/** From a declaration line to its closing brace, by depth. Handles the
- *  one-line `const` form too, which has no brace at all. */
-function block(file: string, i: number): string {
-  const lines = linesOf(file);
-  const head = lines[i];
-  /* A `const` runs to its semicolon, however many continuation lines that takes.
-     Handled before the brace scan and not by it, because a multi-line string
-     const has no braces at all — so the depth walk runs past it and swallows
-     whatever declarations follow until it finds somebody else's closing brace.
-     Found while measuring the schemas against `SEARCH_HINT_PIPELINES`, which is
-     four continuation lines long: the lift compiled with three items defined
-     twice and the error named the duplicates rather than the cause. */
-  if (/^\s*(pub(\([a-z]+\))?\s+)?const\b/.test(head)) {
-    for (let j = i; j < lines.length; j++) {
-      if (/;\s*$/.test(lines[j])) return lines.slice(startOf(lines, i), j + 1).join("\n");
-    }
-    throw new Error(`unterminated const at ${file}:${i + 1}`);
-  }
-  if (/;\s*$/.test(head) && !head.includes("{")) {
-    return lines.slice(startOf(lines, i), i + 1).join("\n");
-  }
-  let depth = 0;
-  let seen = false;
-  for (let j = i; j < lines.length; j++) {
-    for (const ch of lines[j]) {
-      if (ch === "{") {
-        depth++;
-        seen = true;
-      } else if (ch === "}") depth--;
-    }
-    if (seen && depth === 0) return lines.slice(startOf(lines, i), j + 1).join("\n");
-  }
-  throw new Error(`unterminated block at ${file}:${i + 1}`);
-}
+const block = (file: string, i: number): string => blockAt(linesOf(file), i, file);
 
 /** A lift is flat, so the paths that cross a module boundary in the real tree
  *  have to come off. This is the one thing the technique cannot verify — see the
