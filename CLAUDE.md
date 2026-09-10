@@ -79,6 +79,7 @@ bun run test:wall        # drives a RUNNING app over the control surface
 
 cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
                               # aside.rs,
+                              # remove.rs,
                               # later.rs, pin.rs, spawn.rs,
                               # bang.rs, update.rs, guidance.rs, browser.rs,
                               # quit.rs,
@@ -111,6 +112,9 @@ bun tools/probe-skills.ts initialize   # the whole slash vocabulary with a descr
                                    # publishes nothing until a first message lands;
                                    # `seeded` adds three .claude/commands/ files
 bun tools/probe-lock.ts            # whether permissions.deny bites through the bypass flag
+bun tools/probe-rm.ts              # what `deny: Bash(rm -rf:*)` actually stops. The answer
+                                   # is nothing a card can call — it is given PowerShell and
+                                   # no Bash tool at all. One real turn
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
 bun tools/lift-tunnel.ts           # same, for the spotify tunnel's ipv4-first sort
@@ -121,6 +125,9 @@ bun tools/lift-aside.ts            # same, for /btw's one-at-a-time claim and it
 bun tools/lift-selfhood.ts         # same, for what a card is told about itself and its parent
 bun tools/lift-ask.ts              # same, for the call that swallowed one of its own arguments
 bun tools/lift-docket.ts           # same, for the gate every asana write and the token pass through
+bun tools/lift-remove.ts          # same, for the two halves of the safe delete — the gate
+                                   # that decides it happens, and the guard that decides a
+                                   # card is stopped
 bun tools/lift-sink.ts             # same, for the scope a listing row carries and the drop
                                    # that would otherwise have made the seventh twin
 ```
@@ -181,6 +188,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `chat.md` | the card with no project, what `--tools` really does, and where a capability is decided | `supervisor.rs`, `store.rs`, `skein.svelte.ts` |
 | `gears.md` | the wall's second gear: a card that reads and thinks but cannot write, why plan mode beats the bypass flag, the document a planning turn leaves instead of a diff, and why the viewer is re-rooted rather than the sandbox widened | `gears.ts`, `Card.svelte`, `supervisor.rs` |
 | `hooks.md` | the hook Skein hands its cards: the Bash tool halving runs of backslashes, why a quoted heredoc was never the cause, the one binary that undoes it, and the one thing on that binary a *card* invokes rather than Volery | `hooks.rs`, `main.rs` |
+| `remove.md` | deleting a path from a card behind the user's own click: why a permission can refuse and only a tool can ask, the deny everybody reasoned from that governs nothing a card can call, why the delete is permanent rather than recoverable, and the two denials whose reasons name the tool | `remove.rs`, `hooks.rs`, `tools/probe-rm.ts` |
 | `accounts.md` | more than one subscription: an account as a credential store and why Skein holds none of it, signing one in without a terminal, the waterfall and its stickiness, your caps against the server's, the per-card bypass, being held, and finding Claude Code before installing it | `accounts.ts`, `accounts.rs`, `signin.ts`, `signin.rs`, `claude.rs`, `Accounts.svelte` |
 | `update.md` | getting onto the newer one: why the installer does the work rather than a plugin, offering nothing when in doubt, and why the exit handler launches it | `update.rs`, `update.ts`, `release.svelte.ts`, `release.yml` |
 | `portage.md` | carrying a wall off and setting one up again: what a layout is and what it deliberately leaves behind, why no id travels and an import only adds, furniture identified by what-and-where, and a territory that arrives pointing nowhere | `portage.ts`, `portage.svelte.ts`, `portage.rs`, `Carry.svelte` |

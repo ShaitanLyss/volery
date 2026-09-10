@@ -338,6 +338,24 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>) -> Option<String> {
         }
     }
 
+    /* The third, and it needs neither the card nor the database -- it is a
+       judgement about the command line and nothing else, so it holds on a spawn
+       that named no card, where the two above step aside. Last of the three
+       because it is the cheapest to be wrong about: a swept commit loses a
+       message, a cleaned tree loses work, and this one loses a rename. */
+    if let Some(d) = displaced(command) {
+        return Some(deny(displaced_reason(&d)));
+    }
+
+    /* The fourth, and the one with the widest reach. Last because it is the
+       most likely to be reached for legitimately and the reason it hands back
+       is the longest -- and because `displaced` above must get first refusal on
+       a `mv`, which this one does not match anyway but which reads better
+       stated than relied on. */
+    if let Some(w) = wipes(command) {
+        return Some(deny(wipe_reason(&w)));
+    }
+
     /* **The collapse is the Bash tool's, and only the Bash tool's.** Probed
        2026-08-25 against 2.1.241: the PowerShell tool hands the hook exactly
        what the API emitted — runs of 2, 4, 6 and 8 all arrive whole — so
@@ -1159,6 +1177,393 @@ fn perilous(command: &str, cwd: Option<&str>, card: &str, db: &std::path::Path) 
     Some(perilous_reason(&tw, &siblings))
 }
 
+/* -- deleting by moving instead -------------------------------------------
+ *
+ * **This is not a deny on deleting; it is a deny on deleting while calling it
+ * something else.** Sink `14f2543e` is the whole of the case: `rm -rf .next`
+ * was refused, and the card did `mv .next .next-stale-audit-backup`. Same
+ * effect at the place it mattered, less legible about intent, and five
+ * gigabytes of orphaned junk left on a disk nobody sweeps. The item concluded
+ * Volery could not close that hole because "the hole is in that one regex and
+ * the regex is not Volery's" -- which is wrong, and this is the correction:
+ * `PreToolUse` is Volery's, `deny(reason)` reaches the model even under
+ * `--dangerously-skip-permissions`, and the reason can name what to do instead.
+ *
+ * **The reason is the entire point of the guard**, which is why it names
+ * `mcp__skein__remove` rather than merely refusing. `docs/TOOL-SURFACE.md` section 1
+ * states the finding this rests on -- *a capability an agent has a habit against
+ * is indistinguishable from one that does not exist* -- and neither half is
+ * sufficient alone: the deny alone leaves the need unmet, which is precisely
+ * the complaint `14f2543e` was filed about, and the tool alone is invisible to
+ * an agent that is not searching for it. A `PreToolUse` reason is the only
+ * channel here that arrives *at the moment the reflex fires*.
+ *
+ * **What it deliberately does not do is guard deleting.** The user's own
+ * `~/.claude/settings.json` owns that decision and Volery does not duplicate
+ * it: two layers refusing the same command is two places to look when something
+ * is refused, and a guard whose author is ambiguous is one nobody can change
+ * with confidence. See `.claude/rules/remove.md` for what that leaves open,
+ * which as measured on 2026-09-10 is a great deal more than anybody expected.
+ *
+ * **Displacement is the shape, not the verb.** What is caught is a move whose
+ * destination is the source with something bolted on -- `.next` to
+ * `.next-stale-audit-backup`, `dist` to `dist.old`, `build` to `build.bak` --
+ * because that is a delete wearing a rename. An ordinary `mv a b`, a move into
+ * a different directory, a rename inside a refactor: none of them match, and
+ * that is the property that makes this affordable. A guard that fired on
+ * ordinary renames would be one every card learns to route around, and then it
+ * guards nothing at all.
+ */
+
+/// A move that is a delete with a new name on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Displaced {
+    /// What is being moved out of the way, as it was typed.
+    pub from: String,
+    /// Where to, as it was typed.
+    pub to: String,
+}
+
+/// The words that make a move a shelving rather than a rename.
+///
+/// A list rather than "any suffix at all", because `mv config config.local` is
+/// an ordinary thing to do and `mv .next .next-stale-audit-backup` is not. What
+/// separates them is that these words mean *this one is finished with* -- so the
+/// list is short, is about intent, and every entry is a word somebody reaches
+/// for when they mean to stop looking at something.
+const SHELVED: [&str; 8] = [
+    "bak", "backup", "old", "orig", "stale", "delete", "deleted", "trash",
+];
+
+/// Does this command line move a directory out of the way instead of deleting it?
+///
+/// Quote-aware through `commands`, and heredoc-stripped through `strip_heredocs`,
+/// for the reasons those two argue: prose about `mv` in a commit message is not
+/// a `mv`.
+pub fn displaced(command: &str) -> Option<Displaced> {
+    commands(&strip_heredocs(command))
+        .iter()
+        .find_map(|words| displaced_in(words))
+}
+
+fn displaced_in(words: &[String]) -> Option<Displaced> {
+    let verb = words.first()?.as_str().to_ascii_lowercase();
+    /* Both shells, because which one a card is given is not a thing this file
+       gets to assume -- measured 2026-09-10 with `tools/probe-rm.ts`, a card
+       spawned with Skein's own argv shape had **PowerShell and no Bash at
+       all**. `ren`/`rename` are the same act with a third spelling. */
+    let named = matches!(
+        verb.as_str(),
+        "mv" | "move" | "move-item" | "ren" | "rename" | "rename-item"
+    );
+    if !named {
+        return None;
+    }
+    /* A rename lands in the directory it started in, by definition. A move does
+       not, so a bare leaf destination means two different things depending on
+       which of the two this is. */
+    let renaming = matches!(verb.as_str(), "ren" | "rename" | "rename-item");
+
+    /* **A named parameter's value is an operand, not something to skip**, and
+       the first cut of this got that backwards -- `Move-Item -Path target
+       -Destination target-stale` had both of its operands eaten by the flag
+       handling and the guard fired on nothing. Found by `tools/lift-remove.ts`,
+       which is the whole argument for the lift existing: it compiles perfectly
+       either way.
+
+       Anything else beginning with `-` is dropped without looking at what
+       follows it, which is the conservative direction -- `-Force`, `-Recurse`
+       and the POSIX short flags take no value, and a flag this does not know
+       costs an operand and therefore a guard that does not fire. */
+    let mut positional: Vec<&str> = Vec::new();
+    let mut from_named: Option<&str> = None;
+    let mut to_named: Option<&str> = None;
+    let mut leaf_dest = renaming;
+    let mut take: Option<u8> = None;
+
+    for w in words.iter().skip(1) {
+        if let Some(slot) = take.take() {
+            match slot {
+                0 => from_named = Some(w),
+                _ => to_named = Some(w),
+            }
+            continue;
+        }
+        if let Some(flag) = w.strip_prefix('-') {
+            match flag.trim_start_matches('-').to_ascii_lowercase().as_str() {
+                "path" | "literalpath" => take = Some(0),
+                "destination" => take = Some(1),
+                /* `-NewName` is a *leaf*, never a path: `Rename-Item -Path
+                   a/b/dist -NewName dist.bak` renames in place. Comparing it
+                   against a source that carries directories would find two
+                   different parents and step aside on the exact case this is
+                   for. */
+                "newname" => {
+                    take = Some(1);
+                    leaf_dest = true;
+                }
+                _ => {}
+            }
+            continue;
+        }
+        positional.push(w);
+    }
+
+    let from = from_named.or_else(|| positional.first().copied())?;
+    let to = to_named.or_else(|| {
+        positional
+            .get(if from_named.is_some() { 0 } else { 1 })
+            .copied()
+    })?;
+
+    /* Re-rooted rather than compared as it stands, so a rename's leaf
+       destination is read as the sibling it actually is. */
+    let resolved = if leaf_dest && !to.contains('/') && !to.contains(MS_SEP) {
+        match from
+            .replace(MS_SEP, "/")
+            .trim_end_matches('/')
+            .rsplit_once('/')
+        {
+            Some((dir, _)) => format!("{dir}/{to}"),
+            None => to.to_string(),
+        }
+    } else {
+        to.to_string()
+    };
+
+    is_shelving(from, &resolved).then(|| Displaced {
+        from: from.to_string(),
+        to: to.to_string(),
+    })
+}
+
+/// Is `to` the same place as `from` with a shelving word bolted on?
+///
+/// Pure and separately named because it is the whole of the judgement, and
+/// because both directions of it matter: firing on an ordinary rename makes a
+/// guard that gets routed around, and not firing on `.next` to
+/// `.next-stale-audit-backup` is the exact case this exists for.
+pub fn is_shelving(from: &str, to: &str) -> bool {
+    let norm = |s: &str| {
+        s.replace(MS_SEP, "/")
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    };
+    let (f, t) = (norm(from), norm(to));
+    if f.is_empty() || t.is_empty() || f == t {
+        return false;
+    }
+    /* A move into a *different* directory is not this. Somebody tidying a file
+       into a folder is doing something else, and it is legible on its own. */
+    let dir_of = |s: &str| {
+        s.rsplit_once('/')
+            .map(|(d, _)| d.to_string())
+            .unwrap_or_default()
+    };
+    if dir_of(&f) != dir_of(&t) {
+        return false;
+    }
+    let Some(tail) = t.strip_prefix(&f) else {
+        return false;
+    };
+    /* What is left over after the original name. `.next-stale-audit-backup`
+       leaves `-stale-audit-backup`; `configuration` over `config` leaves
+       `uration`, which carries no separator and is a different word rather than
+       a suffix on the same one. */
+    let tail = tail.trim_start_matches(SEPS);
+    if tail.is_empty() {
+        return false;
+    }
+    tail.split(SEPS).any(|w| SHELVED.contains(&w))
+}
+
+/// The separators a shelving suffix is bolted on with.
+const SEPS: [char; 4] = ['-', '_', '.', ' '];
+
+/// Windows' own separator, as a `char`, so no string literal in this file has to
+/// carry an escaped one -- the Bash tool halves runs of backslashes and this
+/// module is the one that exists because of it.
+const MS_SEP: char = '\u{5c}';
+
+/// What to say when a card shelves a directory instead of deleting it.
+///
+/// `sweep_reason`'s contract -- **the escape from a wrong answer is named in the
+/// refusal** -- with one difference worth stating, because it is the difference
+/// this guard exists for: the alternative here is not a spelling of the same
+/// command, it is a *different tool*, and a card that has never heard of it
+/// cannot find it by trying harder. So the tool is named in full, with what it
+/// does, in the sentence a card reads at the moment it is stopped.
+pub fn displaced_reason(d: &Displaced) -> String {
+    format!(
+        "volery: `{from}` -> `{to}` is a delete with a rename on it.\n\n\
+         moving a directory aside has the same effect as removing it -- the tree is gone from \
+         where it mattered -- while saying less about what you meant, and it leaves the whole \
+         of it on disk for nobody to sweep up. sink `14f2543e` is the last time this happened \
+         and the reason this guard exists: 5.3 GB of `.next` under a `-stale-audit-backup` \
+         suffix that is still there.\n\n\
+         what to do instead:\n\n\
+         - **`mcp__skein__remove`** deletes it properly, behind one click from the user. it \
+         shows them the absolute path, its size and file count, whether git tracks it, \
+         whether another card on this wall has been writing in it, and whether a dev server \
+         is running out of that tree -- then they press a button. that is the sanctioned \
+         route, and it exists because deleting from a card is the user's decision rather \
+         than yours.\n\
+         - genuinely renaming something? name a destination that is not your own path with \
+         one of `{shelved}` on the end -- this guard fires on nothing else.\n\
+         - moving it somewhere else entirely is not this either, and is not denied.\n",
+        from = d.from,
+        to = d.to,
+        shelved = SHELVED.join("`/`"),
+    )
+}
+
+/* -- deleting a tree, which is the user's decision and not a card's ---------
+ *
+ * **This guard exists because the one everybody believed in was measured and
+ * was not there.** The user's `~/.claude/settings.json` denies
+ * `Bash(rm -rf:*)`, deliberately and on a stated intent -- *cards must not be
+ * able to delete without my approval* -- and `docs/TOOL-SURFACE.md` section 2
+ * reasoned from it at length, as did sink `14f2543e`, as did the brief that
+ * built `remove.rs`. All of them assumed it fired.
+ *
+ * `tools/probe-rm.ts`, 2026-09-10, claude 2.1.241, one real turn with Skein's
+ * own argv shape and that deny list verbatim:
+ *
+ *     shell tools the card was given: PowerShell
+ *     SURVIVED  rm -rf a-rm-rf        Remove-Item: no parameter matches 'rf'
+ *     SURVIVED  rm -fr b-rm-fr        Remove-Item: no parameter matches 'fr'
+ *     SURVIVED  rm -r -f c-rm-r-f     'f' is ambiguous: -Filter, -Force
+ *     SURVIVED  rm --recursive ...    no positional parameter accepts '--force'
+ *     DELETED   find e-find-delete -delete
+ *     DELETED   Remove-Item -Recurse -Force g-remove-item
+ *
+ * **Not one call was refused by a permission rule.** A card here has no `Bash`
+ * tool at all -- it asked for one by name and answered "NO BASH TOOL" -- so
+ * `Bash(rm -rf:*)` matches nothing it can call. The four that survived did so
+ * because PowerShell's `rm` is an alias for `Remove-Item`, which rejects POSIX
+ * flags before any deletion is contemplated. That is a shell incompatibility
+ * wearing a guard's clothes, and it holds for exactly as long as nobody types
+ * the spelling that works.
+ *
+ * So this is Volery's, added 2026-09-10 with the user's explicit approval,
+ * because a new denial every card on the wall is subject to is not a thing to
+ * add and mention afterwards. It covers the **family** rather than the two
+ * spellings that got through the probe: a guard catching two of five spellings
+ * is the precise failure it is being added to fix.
+ *
+ * **The reason is the point, not the refusal.** It names `mcp__skein__remove`,
+ * which asks the user and then deletes properly -- so the card is not stopped,
+ * it is redirected, and `14f2543e`'s complaint (*"a guard that is both
+ * obstructive and bypassable is the worst of the three options"*) does not
+ * apply to a guard that hands over a working route. `docs/TOOL-SURFACE.md`
+ * section 1 is the argument for why the reason has to arrive here rather than
+ * in a schema: a `PreToolUse` deny is the only channel that speaks at the
+ * moment the reflex fires.
+ *
+ * **The user's own rule is untouched and still comes first.** It is the Bash
+ * tool's, this is every shell's, and the two are told apart by the one word
+ * every reason in this file opens with.
+ */
+
+/// A command that removes a directory tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wipe {
+    /// The command as it was typed, for a refusal that quotes it back.
+    pub verb: String,
+}
+
+/// Every spelling of `Remove-Item` a card might reach for.
+///
+/// PowerShell aliases `rm`, `del`, `erase`, `rd`, `rmdir` and `ri` all to the
+/// same cmdlet, so the *name* separates none of them and only the switch does.
+const REMOVERS: [&str; 7] = ["remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"];
+
+/// The switches that make a delete reach a whole tree.
+///
+/// `rf`/`fr` are in here as whole tokens because POSIX bundles its short flags,
+/// and a card that does get a Bash tool writes them that way.
+const RECURSIVE: [&str; 8] = ["r", "recurse", "recursive", "rf", "fr", "rfv", "s", "force"];
+
+/// Does this command line delete a tree?
+///
+/// Quote-aware through `commands` and heredoc-stripped through `strip_heredocs`,
+/// for the reason those two argue: prose about `rm -rf` in a commit message is
+/// not an `rm -rf`, and this file's own documentation is now full of it.
+pub fn wipes(command: &str) -> Option<Wipe> {
+    commands(&strip_heredocs(command))
+        .iter()
+        .find_map(|words| wipes_in(words))
+}
+
+fn wipes_in(words: &[String]) -> Option<Wipe> {
+    let verb = words.first()?.as_str().to_ascii_lowercase();
+    let verb = verb.rsplit(['/', MS_SEP]).next().unwrap_or(&verb).to_string();
+
+    /* `find … -delete` and `find … -exec rm`, which is the one that has actually
+       happened here: it contains no `rm` at all in the first form, deletes a
+       tree, and is what got past the deny in the probe above. */
+    if verb == "find" {
+        let deletes = words.iter().skip(1).any(|w| {
+            let w = w.to_ascii_lowercase();
+            w == "-delete" || w == "-exec" || w == "-execdir" || w == "-ok"
+        });
+        return deletes.then(|| Wipe { verb: "find".into() });
+    }
+
+    if !REMOVERS.contains(&verb.as_str()) {
+        return None;
+    }
+
+    /* A switch rather than a name, since every remover above is the same cmdlet
+       and only this tells a file delete from a tree delete. `/s` is cmd.exe's
+       spelling of the same thing and reaches this file through the same shell. */
+    let recursive = words.iter().skip(1).any(|w| {
+        let bare = w
+            .trim_start_matches('/')
+            .trim_start_matches('-')
+            .trim_start_matches('-')
+            .to_ascii_lowercase();
+        (w.starts_with('-') || w.starts_with('/')) && RECURSIVE.contains(&bare.as_str())
+    });
+    /* An operand is required: a bare `rm -rf` with nothing after it deletes
+       nothing and is almost always a half-written line. */
+    let names_something = words
+        .iter()
+        .skip(1)
+        .any(|w| !w.starts_with('-') && !w.starts_with('/'));
+
+    (recursive && names_something).then(|| Wipe { verb })
+}
+
+/// What to say when a card deletes a tree from the shell.
+///
+/// `sweep_reason`'s contract, and the one place in this file where the escape is
+/// a *different tool* rather than a different spelling: a card that has never
+/// heard of `mcp__skein__remove` cannot find it by trying harder, so the tool is
+/// named in full, with what it does, in the sentence the card reads at the
+/// moment it is stopped.
+pub fn wipe_reason(w: &Wipe) -> String {
+    format!(
+        "volery: `{verb}` deletes a tree, and on this wall that is the user's decision \
+         rather than yours.\n\n\
+         this is not a refusal to delete -- it is a refusal to delete *without asking*. there \
+         is a tool for it and it does the whole job:\n\n\
+         - **`mcp__skein__remove`** takes the path and a reason, puts it in front of the user \
+         with everything they cannot see from a path -- the absolute path, its size and file \
+         count, whether git tracks it, whether another card on this wall has been writing in \
+         it, whether a dev server is running out of that tree -- and deletes it when they \
+         press the button. one call from you, one click from them.\n\
+         - it refuses on its own, with or without a click, anything holding uncommitted \
+         tracked changes, anything under `.git`, a work-tree root, a territory root, and the \
+         directory you are standing in. so it is safe to reach for without checking first.\n\
+         - **do not look for a spelling that gets past this.** `mv`-ing the directory aside \
+         is denied too and for the same reason; the last card that did it left 5.3 GB on \
+         disk under a `-stale-audit-backup` suffix (sink `14f2543e`). deleting one file, \
+         non-recursively, is not denied at all.\n",
+        verb = w.verb,
+    )
+}
+
 /// Ask git something, quietly, and never let it ask anything back.
 ///
 /// `GIT_TERMINAL_PROMPT=0` is the house rule for anything that shells out to git
@@ -1713,6 +2118,194 @@ mod tests {
 
     /// Every one of these leaves the command alone, which is the whole of the
     /// fail-open promise.
+    #[test]
+    fn a_directory_moved_out_of_its_own_way_is_a_delete() {
+        /* The command sink `14f2543e` actually ran, verbatim. */
+        let d = displaced("mv .next .next-stale-audit-backup").expect("not caught");
+        assert_eq!(d.from, ".next");
+        assert_eq!(d.to, ".next-stale-audit-backup");
+
+        /* The ordinary spellings of the same act, including the two a card with
+           only a PowerShell tool would reach for. */
+        assert!(displaced("mv dist dist.old").is_some());
+        assert!(displaced("Move-Item build build.bak").is_some());
+        assert!(displaced("move-item -Path target -Destination target-stale").is_some());
+        assert!(displaced("ren node_modules node_modules.orig").is_some());
+        assert!(displaced("Rename-Item .turbo .turbo-delete-me").is_some());
+
+        /* The named-parameter form, which is what an agent writing PowerShell
+           actually types — and which the first cut of `displaced_in` missed
+           entirely, because it skipped a flag's value as though every flag were
+           `-Force`. `tools/lift-remove.ts` found it; a typecheck cannot. */
+        let d = displaced("Move-Item -Path target -Destination target-stale").expect("named form");
+        assert_eq!(d.from, "target");
+        assert_eq!(d.to, "target-stale");
+
+        /* `-NewName` is a leaf rather than a path, so a source carrying
+           directories has to be re-rooted before the two are compared or the
+           parents differ and the guard steps aside on its own case. */
+        let d = displaced("Rename-Item -Path apps/web/.next -NewName .next.bak").expect("newname");
+        assert_eq!(d.from, "apps/web/.next");
+        assert_eq!(d.to, ".next.bak");
+
+        /* A flag with no value, between the operands. */
+        assert!(displaced("Move-Item -Force dist dist.old").is_some());
+    }
+
+    #[test]
+    fn every_spelling_that_deletes_a_tree_is_caught() {
+        /* The two the probe watched delete a directory with no refusal
+           whatsoever, 2026-09-10. */
+        assert!(wipes("Remove-Item -Recurse -Force .next").is_some());
+        assert!(wipes("find .next -delete").is_some());
+
+        /* And the rest of the family, because a guard catching two of five
+           spellings is the failure this was added to fix. */
+        assert!(wipes("rm -rf node_modules").is_some());
+        assert!(wipes("rm -fr dist").is_some());
+        assert!(wipes("rm -r -f build").is_some());
+        assert!(wipes("rm --recursive --force target").is_some());
+        assert!(wipes("rm -Recurse -Force .turbo").is_some());
+        assert!(wipes("del -Recurse coverage").is_some());
+        assert!(wipes("rd /s /q dist").is_some());
+        assert!(wipes("rmdir /s dist").is_some());
+        assert!(wipes("find . -name '*.log' -exec rm {} ;").is_some());
+
+        /* On a chained line, which is how it usually arrives. */
+        assert!(wipes("cd apps/web && rm -rf .next && pnpm dev").is_some());
+        /* And through a path, since `C:\\tools\\rm.exe` is the same act. */
+        assert!(wipes("/usr/bin/rm -rf dist").is_some());
+    }
+
+    #[test]
+    fn deleting_one_file_is_not_this() {
+        /* The line the guard has to keep, or it is a guard on `rm` and every
+           card learns to route around it. A non-recursive delete of a named
+           file is ordinary work. */
+        assert!(wipes("rm notes.txt").is_none());
+        assert!(wipes("rm -f notes.txt").is_none());
+        assert!(wipes("Remove-Item stale.log").is_none());
+        assert!(wipes("del package-lock.json").is_none());
+        /* A `find` that only reads. */
+        assert!(wipes("find . -name '*.ts'").is_none());
+        /* A remover naming nothing is a half-written line, not a delete. */
+        assert!(wipes("rm -rf").is_none());
+        /* And prose about it is prose. */
+        assert!(wipes("echo 'rm -rf is denied'").is_none());
+        assert!(wipes("grep -r rm src/").is_none());
+    }
+
+    #[test]
+    fn the_wipe_refusal_hands_over_a_working_route() {
+        let why = wipe_reason(&wipes("Remove-Item -Recurse -Force .next").unwrap());
+        /* Sink `14f2543e`: *a guard that is both obstructive and bypassable is
+           the worst of the three options*. This one is neither, and the reason
+           is what makes that true — it names the tool that does the job. */
+        assert!(why.contains("mcp__skein__remove"), "{why}");
+        assert!(why.contains("not a refusal to delete"), "{why}");
+        /* It says the tool refuses on its own, so a card does not go and check
+           the tree by hand before daring to call it. */
+        assert!(why.contains("uncommitted"), "{why}");
+        /* And it closes the door the last card went through. */
+        assert!(why.contains("spelling that gets past"), "{why}");
+        assert!(why.contains("`mv`"), "{why}");
+        /* Every reason in this file opens with the one word that says which
+           layer refused — the user's own deny rule is untouched and says
+           nothing of the kind. */
+        assert!(why.starts_with("volery:"), "{why}");
+    }
+
+    #[test]
+    fn a_wipe_written_into_a_commit_message_is_prose() {
+        /* `strip_heredocs`' reason, and it bites hardest here: this repository's
+           documentation is now full of `rm -rf`, and the house style writes a
+           commit message on stdin from a heredoc. */
+        let command = "git commit -F - -- src/x.rs <<'EOF'\n\
+                       skein: a guard for rm -rf and Remove-Item -Recurse -Force dist\n\
+                       EOF";
+        assert!(wipes(command).is_none());
+    }
+
+    #[test]
+    fn an_ordinary_rename_is_left_alone() {
+        /* The property that makes the guard affordable. A guard that fired on
+           these is one every card learns to route around, and then it guards
+           nothing at all. */
+        assert!(displaced("mv a b").is_none());
+        assert!(displaced("mv config config.local").is_none());
+        assert!(displaced("mv src/lib/theme.ts src/lib/palette.ts").is_none());
+        assert!(displaced("mv notes.md docs/notes.md").is_none());
+        /* A move to somewhere else entirely, even under a shelving name: that is
+           legible on its own and leaves nothing where it was. */
+        assert!(displaced("mv .next /tmp/next-old").is_none());
+        /* A longer word that merely starts with the source name. */
+        assert!(!is_shelving("config", "configuration"));
+        assert!(!is_shelving("dist", "distribution"));
+        /* And the degenerate ones. */
+        assert!(!is_shelving("dist", "dist"));
+        assert!(!is_shelving("", "dist.bak"));
+    }
+
+    #[test]
+    fn shelving_is_read_the_way_the_filesystem_reads_a_path() {
+        assert!(is_shelving(".next", ".NEXT-BACKUP"));
+        assert!(is_shelving("a/b/dist", "a/b/dist.old"));
+        assert!(is_shelving("dist/", "dist-stale"));
+        /* A different directory is a different act, whatever the suffix says. */
+        assert!(!is_shelving("a/dist", "b/dist.old"));
+    }
+
+    #[test]
+    fn the_move_guard_is_not_a_delete_guard() {
+        /* Volery's guards are Volery's and the user's are the user's. A second
+           copy of `rm -rf` over here would be two places to look when something
+           is refused, and a refusal whose author is ambiguous is one nobody can
+           change with confidence. */
+        assert!(displaced("rm -rf .next").is_none());
+        assert!(displaced("Remove-Item -Recurse -Force .next").is_none());
+        assert!(displaced("find . -delete").is_none());
+    }
+
+    #[test]
+    fn the_refusal_names_the_tool_and_the_way_back() {
+        let d = displaced("mv .next .next-stale-audit-backup").unwrap();
+        let why = displaced_reason(&d);
+        /* The whole point of the guard rather than a nicety: `TOOL-SURFACE` §1
+           is that a capability an agent has a habit against is indistinguishable
+           from one that does not exist, and a `PreToolUse` reason is the only
+           channel that arrives when the habit fires. */
+        assert!(why.contains("mcp__skein__remove"), "{why}");
+        assert!(why.contains(".next-stale-audit-backup"), "{why}");
+        /* `sweep_reason`'s contract: the escape is in the refusal, so there is
+           nothing for the next agent to go looking for a spelling around. */
+        assert!(why.contains("moving it somewhere else"), "{why}");
+        assert!(why.contains("renaming"), "{why}");
+    }
+
+    #[test]
+    fn the_move_guard_holds_where_the_other_two_step_aside() {
+        /* `perilous` and `sweep` both need a card and a database. This one is a
+           judgement about the command line alone, so it must still fire on a
+           payload that names neither -- which is what a spawn with no card
+           gives it. */
+        let payload = r#"{"tool_name":"Bash","tool_input":{"command":"mv dist dist.bak"}}"#;
+        let said = reply(payload, None, None).expect("said nothing");
+        assert!(said.contains("mcp__skein__remove"), "{said}");
+        assert!(said.contains("\"permissionDecision\":\"deny\""), "{said}");
+    }
+
+    #[test]
+    fn a_shelving_written_into_a_commit_message_is_prose() {
+        /* `strip_heredocs`' reason, arriving for the third guard: this
+           repository's own prose talks about `mv .next .next-stale-audit-backup`
+           constantly now, and a commit message carrying that sentence must not
+           deny the commit it is attached to. */
+        let command = "git commit -F - -- src/x.rs <<'EOF'\n\
+                       skein: a guard for mv .next .next-stale-audit-backup\n\
+                       EOF";
+        assert!(displaced(command).is_none());
+    }
+
     #[test]
     fn nothing_is_said_when_there_is_nothing_to_say() {
         for raw in [
