@@ -18,7 +18,12 @@
 #   schedule          at most one build a day, and only if something landed (see `gate`)
 #   workflow_dispatch on demand, from the Actions tab
 #
-name: release
+# The name carries the repo because it is what the pipelines widget draws, verbatim
+# (`github.rs` maps a run's `name` to `Run.pipeline`, and `Pipelines.svelte` prints
+# that alone). A wall showing runs from several repos had one row saying only
+# "release" next to "RISE - Build & Release", which reads as a pipeline belonging to
+# nothing.
+name: volery - release
 
 on:
   push:
