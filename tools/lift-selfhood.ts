@@ -42,14 +42,30 @@ const ITEMS = ["const MCP_PREFIX", "struct Selfhood", "fn append_prompt"];
 const FROM_STORE = ["struct Provenance"];
 
 /** The tests. The four that ask the MCP server what it advertises are absent on
- *  purpose — see the note at the top. */
+ *  purpose — see the note at the top.
+ *
+ *  **The browser paragraph is in here despite not being about selfhood**, and
+ *  the reason is that the *harness* is the thing being reused rather than the
+ *  subject: it lifts `append_prompt` and runs prose assertions against it with
+ *  no crate, and that is exactly what the browser test needs. It earned its
+ *  place the hard way — the sentence it guards told every card on this wall for
+ *  a fortnight that `mcp__browser__*` existed when no such server was
+ *  configured anywhere (sink `b6bfecba`), which is the failure mode this whole
+ *  file is about: a prose claim nothing executes.
+ *
+ *  Its sibling `the_browser_server_and_the_paragraph_agree` is **not** here and
+ *  cannot be: it reads `ask::mcp_config`, which is `serde_json`, and this lift
+ *  is a single `rustc --test` with no externs. That one is held up by
+ *  `check-gnu.sh --all-targets` alone, which typechecks it and cannot run it. */
 const TESTS = [
   "selves",
   "fullest",
+  "fullest_and_none",
   "a_chat_card_is_not_told_who_it_is",
   "a_card_is_told_its_own_handle",
   "a_spawned_card_is_told_who_opened_it",
   "a_card_the_user_opened_is_told_no_such_thing",
+  "the_prompt_tells_a_card_which_browser_is_shared",
 ];
 
 /** Brace depth, counting only braces that are *code*.
