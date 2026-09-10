@@ -442,6 +442,40 @@ scroller that follows its own tail, so a log wheeled back off its bottom lets go
 with no arrangement here — and the mark was harmless before the fix, since a prevented wheel
 produces no scroll event for `stillFollowing` to be asked about.
 
+## The glass hands pointer events back, and one rider has to refuse them
+
+`.glass` is inert — `pointer-events: none` — and `.glass > :global(*)` gives them back to
+every direct child. That bargain is right and is the same one `.rails` strikes: an empty pane
+that swallowed every pan on the wall and every scroll in the transcript would be worse than no
+pane. But it reaches **across a component boundary**, and that is the part with a bug in it.
+
+`Wisps.svelte` is rendered inside the glass and declares its own layer inert, with the reason
+written above the rule: a wisp drifts across the wall and must not eat a click meant for a
+card underneath it. That was correct and it lost anyway. Both selectors carry the same
+specificity — one class plus Svelte's scope class each — so the tie is decided by source
+order, and a dependency's stylesheet is emitted *before* its importer's. Measured in `dist/`
+rather than reasoned: `.wisps` at byte 6,668, `.glass > *` at byte 92,206. The later one won.
+
+What that produced is worth stating plainly, because it is the largest possible version of
+this failure: the layer is `inset: 0` at `z-index: 60`, so the wall gained a transparent
+rectangle over the whole of itself that took every press. No click, no card drag, no marquee —
+and **Tab still working**, because keyboard focus never hit-tests, which is exactly the shape
+that makes it read as "the mouse is broken" rather than as a stylesheet. Shipped in 0.29.0.
+
+Two things follow, and the second is the general one:
+
+- **The exception is stated beside the rule that causes it**, in `Canvas.svelte`, rather than
+  by raising Wisps' own specificity. The cause is this file reaching into another component's
+  layer; the component was already right. `.glass > :global(.wisps)` also outranks
+  `.glass > *` on specificity, so it no longer depends on which way the bundler happens to
+  emit two stylesheets.
+- **A component cannot defend itself against an ancestor's descendant selector**, so anything
+  new mounted on the glass whose layer is inert owes an entry here. `test/styles.test.ts`
+  holds the pair together: it takes the components rendered inside `.glass` from Canvas's own
+  markup, finds the classes each one declares `pointer-events: none` on, and requires Canvas
+  to name that same class in an exception. Proved to bite by removing the rule and watching it
+  go red — a test that discovers its own subjects is a test that can pass by checking nothing.
+
 Placements live in SQLite next to the conversations they key on; only the *viewport* (pan,
 zoom) goes to localStorage — see the note in `studio.svelte.ts` about not having two sources
 of truth. Semantic zoom has three densities via `lodFor`: `field`, `wall`, `open`.

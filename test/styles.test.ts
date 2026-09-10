@@ -350,3 +350,66 @@ describe("an element positioned by a transition", () => {
     expect(/\btransition:\w+=\{\{[^}]*\bd[xy]\b/.test(el)).toBe(false);
   });
 });
+
+describe("what stands on the glass, and what only drifts over it", () => {
+  const canvas = readFileSync(join(SRC, "lib", "Canvas.svelte"), "utf8");
+  const glassCss = stylesheet(canvas).replace(/\s+/g, " ");
+
+  /** The components rendered inside the `.glass` pane.
+   *
+   *  `class="glass"` opens the last element in Canvas's markup and the markup
+   *  ends with it, so everything after that attribute rides on the glass. */
+  function riders(): string[] {
+    const markup = canvas.split("<style")[0];
+    const at = markup.indexOf('class="glass"');
+    if (at < 0) return [];
+    const tags = [...markup.slice(at).matchAll(/<([A-Z][A-Za-z0-9_]*)\b/g)].map((m) => m[1]);
+    return [...new Set(tags)].sort();
+  }
+
+  const onGlass = riders();
+
+  test("the riders are found at all", () => {
+    /* Renaming `.glass` or moving the pane would otherwise make every
+       assertion below pass by checking nothing — the same failure mode the
+       widget-face discovery above guards against. */
+    expect(onGlass).toContain("Wisps");
+  });
+
+  /* `.glass > :global(*)` hands pointer events back to every direct child,
+     which is right for a thing you press and wrong for a thing that drifts
+     across the wall. A component whose own layer is inert declares that in its
+     own stylesheet — and loses: the two selectors tie on specificity (one class
+     plus Svelte's scope class each) and a dependency's CSS is emitted before
+     its importer's, so `.glass > *` wins on source order. Measured in `dist/`
+     at the time of writing: byte 6,668 against byte 92,206.
+
+     Shipped once. 0.29.0's wisps layer is `inset: 0` at `z-index: 60`, so it
+     became a transparent rectangle over the whole wall that took every press —
+     no click, no card drag, no marquee, and Tab still working because keyboard
+     focus never hit-tests. So the exception has to be restated in Canvas, and
+     this is what holds the two files together. */
+  for (const name of onGlass) {
+    let source: string;
+    try {
+      source = readFileSync(join(SRC, "lib", `${name}.svelte`), "utf8");
+    } catch {
+      continue;
+    }
+    const css = stylesheet(source).replace(/\s+/g, " ");
+    /* The class names that component declares inert, so the assertion names
+       the same layer the component does rather than any exception at all. */
+    const inert = [...css.matchAll(/\.([A-Za-z][\w-]*)[^{}]*\{[^{}]*pointer-events: ?none/g)].map(
+      (m) => m[1],
+    );
+    if (!inert.length) continue;
+    test(`${name} keeps its own pointer-events while it rides the glass`, () => {
+      const named = inert.some((cls) =>
+        new RegExp(`\\.glass > :global\\(\\.${cls}\\)[^{}]*\\{[^{}]*pointer-events: ?none`).test(
+          glassCss,
+        ),
+      );
+      expect(named).toBe(true);
+    });
+  }
+});

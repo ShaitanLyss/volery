@@ -2172,6 +2172,28 @@
   .glass > :global(*) {
     pointer-events: auto;
   }
+  /* Except the wisps, which are traffic and not a target.
+   *
+   * `Wisps.svelte` already says `pointer-events: none` on its own layer and
+   * says why — a wisp crossing the wall must not eat a click meant for a card
+   * underneath it. That was correct and it lost anyway: the layer is a *direct
+   * child* of the glass, so the rule above claims it, and the two selectors
+   * carry the same specificity — one class plus Svelte's scope class each. A
+   * tie is decided by source order, and a dependency's stylesheet is emitted
+   * before its importer's, so `.glass > *` sat 85KB later in the bundle and
+   * won. Measured in `dist/`, not reasoned: byte 6,668 against byte 92,206.
+   *
+   * The layer is `inset: 0` at `z-index: 60`, so what that produced was a
+   * transparent rectangle over the whole wall taking every press: no click, no
+   * card drag, no marquee, and Tab still working because keyboard focus never
+   * hit-tests. Shipped in 0.29.0 and it made the wall unusable.
+   *
+   * Stated here rather than by raising Wisps' own specificity, because the
+   * cause is this rule reaching across a component boundary and the exception
+   * belongs beside it. `test/styles.test.ts` holds the pair together. */
+  .glass > :global(.wisps) {
+    pointer-events: none;
+  }
   /* Except a territory's own boundary, which is mostly empty space. On the wall
      that area is bare ground (`handleOf` decides by what a press is *not* on),
      so a press there pans or draws a band; on
