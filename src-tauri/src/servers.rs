@@ -952,6 +952,21 @@ pub fn group_running(servers: State<'_, Servers>, group_id: String) -> bool {
     servers.running.lock().unwrap().contains_key(&group_id)
 }
 
+/// Which groups are up, for a caller that has an `AppHandle` and no `State`.
+///
+/// `running` is private and stays private: what is exported is the *answer*
+/// rather than the map, so nothing outside this file can hold the lock across
+/// work of its own. That matters more than it looks — `do_servers` argues at
+/// length about the order `running` and `trace` are taken in, and an outside
+/// caller holding one of them is exactly how that invariant would stop being
+/// one. `remove::servers_over` is the caller: it asks whether a dev server is
+/// running in a tree somebody is about to delete a build cache out of.
+pub(crate) fn running_ids(app: &AppHandle) -> std::collections::HashSet<String> {
+    app.try_state::<Servers>()
+        .and_then(|s| s.running.lock().ok().map(|m| m.keys().cloned().collect()))
+        .unwrap_or_default()
+}
+
 /// Should the wall skip starting its `autostart` groups on load?
 ///
 /// Set `SKEIN_NO_SERVERS=1` and the groups still appear as chips, still say what

@@ -304,6 +304,29 @@ describe("describeTool degrades before arguments arrive", () => {
     );
   });
 
+  test("a delete it wants is not a delete it has done", () => {
+    /* The same tense argument as `pull_request` above, and this is the one
+       place it is unrecoverable if believed: `remove` parks on a question every
+       single time, so at the moment the call lands nothing has been deleted and
+       the user may still be reading. A card drawn as "deleted .next" over a
+       question that is still up would be the transcript reporting a loss that
+       has not happened — and the reader's next move, on believing it, is to
+       stop looking. */
+    expect(describeTool("mcp__skein__remove", { paths: "C:\\a\\nova\\.next" })).toBe(
+      "wants to delete .next",
+    );
+    expect(describeTool("mcp__skein__remove", { paths: ["a/dist", "a/.turbo"] })).toBe(
+      "wants to delete 2 paths",
+    );
+    expect(describeTool("mcp__skein__remove", { paths: ["a/dist"] })).toBe(
+      "wants to delete dist",
+    );
+    /* Arguments stream in as `input_json_delta`, so it has to draw something
+       before `paths` lands — and it must not come out blank or as the wire
+       name. */
+    expect(describeTool("mcp__skein__remove", {})).toBe("wants to delete something");
+  });
+
   test("the vocabulary is the whole vocabulary, held against the rust that serves it", () => {
     /* The thirteen were not a judgement about which calls matter — they were
        simply never added, one server at a time, and nothing said so. Each MCP

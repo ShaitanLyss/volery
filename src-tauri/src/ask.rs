@@ -997,6 +997,26 @@ pub(crate) fn roster() -> Vec<Value> {
              portfolio goal webhook custom field admin bulk asana endpoint the task tool \
              cannot do this",
         ),
+        /* The delete, and its hint is written for a card that has already
+           been stopped rather than one shopping for a capability. What is in
+           its hand at that moment is a *failure* — "permission denied",
+           "operation not permitted" — or the words of the thing it wanted:
+           clear the build cache, blow away `.next`, get rid of this directory.
+           Nobody thinks "remove"; they think *"how do I delete this"*.
+
+           **The shell spellings are in the hint on purpose**, and they are the
+           part carrying the load. Sink `14f2543e` is a card that hit a denied
+           `rm -rf` and reached for `mv` — so the words most likely to be in
+           front of an agent at the moment this tool would help are the ones it
+           just typed, and a hint that names only the noun would not have
+           matched any of them. */
+        found_by(
+            crate::remove::remove_schema(),
+            "delete a directory or file, remove a folder, rm -rf denied permission, clear the \
+             build cache, blow away .next dist target node_modules .turbo, get rid of this \
+             directory, how do I delete this, operation not permitted deleting, \
+             Remove-Item -Recurse -Force, find -delete, mv it out of the way",
+        ),
         /* The music. Both hints are written in **the words a person says about
            music** rather than around either tool's name, because nobody thinks
            "records" — they think "put something on".
@@ -1479,6 +1499,54 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            and a tool that ought to park, left out of a list
                            kept over here, is an unattended write with nothing
                            anywhere to say so. */
+                        /* `remove` is the fifth, and always — the only one
+                           of these whose effect is **on this machine and
+                           irreversible**. The forge and Asana write outside and
+                           can at least be edited afterwards by a person; a
+                           deleted directory is gone, and `.claude/rules/undo.md`
+                           is explicit that the stack cannot reach a file.
+
+                           It parks unconditionally, and the tiering that would
+                           have let a build cache through on the card's own word
+                           is deliberately not built — see `remove.rs`'s header.
+                           `remove::writes` decides once and hands back what to
+                           do about it; every refusal and every argument problem
+                           comes back as `Now`, so nothing reaches a person
+                           until the call is worth their attention, and the
+                           refusals that make this safe to offer at all are
+                           re-checked again on the way out. */
+                        if let Some(writing) =
+                            crate::remove::writes(&app, &conversation_id, &tool, &args)
+                        {
+                            match writing {
+                                crate::remove::Writing::Now(said) => {
+                                    respond(
+                                        req,
+                                        json!({
+                                            "jsonrpc": "2.0", "id": id,
+                                            "result": { "content": [
+                                                { "type": "text", "text": said }
+                                            ] }
+                                        }),
+                                    );
+                                }
+                                crate::remove::Writing::Ask { question, settle } => {
+                                    let asks = app.state::<Asks>();
+                                    park_and_stream(
+                                        &app,
+                                        &asks,
+                                        &conversation_id,
+                                        &id,
+                                        &question,
+                                        progress,
+                                        req,
+                                        Some(settle),
+                                    );
+                                }
+                            }
+                            return;
+                        }
+
                         if let Some(writing) =
                             crate::docket::writes(&app, &conversation_id, &tool, &args)
                         {

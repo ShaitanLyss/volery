@@ -235,6 +235,25 @@ export const SKEIN_TASK_TOOL = "mcp__skein__task";
  *  the whole value of the line is that it is unmistakable at a glance. */
 export const SKEIN_ASANA_TOKEN_TOOL = "mcp__skein__asana_token";
 
+/** And the delete, which is the first tool on this server whose effect is on
+ *  **this machine** and cannot be taken back.
+ *
+ *  The forge and Asana write outside this machine, under the user's name, and
+ *  what they write can at least be edited afterwards by a person. A deleted
+ *  directory is gone: `.claude/rules/undo.md` is explicit that the stack cannot
+ *  reach a file, and the tool goes out of its way to say so in the confirmation
+ *  rather than letting anybody believe the recycle bin is holding it.
+ *
+ *  So the line below reads *wants to* for the reason `SKEIN_PULL_REQUEST_TOOL`'s
+ *  does — every call parks on a question, so at the moment it lands nothing has
+ *  happened and the question may still be up. A past tense here would be the
+ *  transcript claiming a directory is gone while the user is still deciding, and
+ *  this is the one tool where that claim is unrecoverable if believed.
+ *
+ *  Volery names it `remove` in `remove.rs`'s `pub const REMOVE_TOOL`, and
+ *  `.claude/rules/remove.md` has the reasoning. */
+export const SKEIN_REMOVE_TOOL = "mcp__skein__remove";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -511,6 +530,23 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_PINNED_TOOL:
       return "checked what it has pinned";
+    /* Named as specifically as `spawn` is, and for a sharper reason: a delete
+       is the one thing on this card you would want an account of *without*
+       opening the call, because by the time you have opened it the question
+       under it is the thing you should have been reading. */
+    case SKEIN_REMOVE_TOOL: {
+      const paths = input?.paths;
+      const one =
+        typeof paths === "string"
+          ? paths
+          : Array.isArray(paths) && paths.length === 1
+            ? String(paths[0])
+            : null;
+      if (one) return `wants to delete ${basename(one)}`;
+      return Array.isArray(paths) && paths.length > 1
+        ? `wants to delete ${paths.length} paths`
+        : "wants to delete something";
+    }
     case SKEIN_REPIN_TOOL: {
       if (input?.remove === true) return "took an image down";
       const img = arg(input?.path);

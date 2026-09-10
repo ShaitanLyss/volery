@@ -44,6 +44,10 @@ mod portage;
 mod project;
 mod quit;
 mod relay;
+/// Deleting a path from a card, behind the user's own click. See
+/// `.claude/rules/remove.md` — and note the deny it complements is the *user's*
+/// own, in `~/.claude/settings.json`, rather than anything Volery owns.
+mod remove;
 mod repair;
 mod selector;
 mod servers;
