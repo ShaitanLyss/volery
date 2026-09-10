@@ -189,6 +189,7 @@
 //! fetches from GitHub through it. So this reuses that agent rather than adding
 //! a second HTTP stack. See the `ureq` note in `Cargo.toml`.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -333,6 +334,71 @@ impl Models {
 }
 
 /// An agent that gets through this network. See the module header.
+/* ── saying where a long first run has got to ────────────────────── */
+
+/// How often a fetch or an unpack may say where it is.
+///
+/// This is a number about *reading*, not about cost. The line lands on the same
+/// bar a transcript does, so too fast and the digits blur into noise, too slow
+/// and it reads as stuck. A quarter-second is about the quickest a changing
+/// number stays legible.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+/// How often the unpack looks at the directory it is filling. Coarser than
+/// `PROGRESS_EVERY` because each look walks the tree, and the answer only moves
+/// as fast as bzip2 does.
+const UNPACK_POLL: Duration = Duration::from_millis(400);
+
+/// A throttle that still guarantees the last word.
+///
+/// **The final call must always land.** A progress line frozen at 97% because
+/// the throttle happened to swallow the last update is precisely the *is this
+/// stuck?* question the whole section exists to answer, so `now` exists
+/// alongside `throttled` and every phase ends with one.
+struct Say<'a> {
+    to: &'a dyn Fn(&str),
+    last: Option<Instant>,
+}
+
+impl<'a> Say<'a> {
+    fn new(to: &'a dyn Fn(&str)) -> Self {
+        Self { to, last: None }
+    }
+
+    fn now(&mut self, line: &str) {
+        self.last = Some(Instant::now());
+        (self.to)(line);
+    }
+
+    fn throttled(&mut self, line: &str) {
+        if self.last.map_or(true, |t| t.elapsed() >= PROGRESS_EVERY) {
+            self.now(line);
+        }
+    }
+}
+
+/// Megabytes, decimal, because that is the unit the download is advertised in
+/// and a progress line that disagrees with the notice above it invites the
+/// wrong question.
+fn mb(bytes: u64) -> u64 {
+    bytes / 1_000_000
+}
+
+/// Bytes on disk under a directory, walked. Used only to watch an unpack move.
+fn tree_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|e| match e.metadata() {
+            Ok(m) if m.is_file() => m.len(),
+            Ok(m) if m.is_dir() => tree_bytes(&e.path()),
+            _ => 0,
+        })
+        .sum()
+}
+
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
         .tls_config(crate::forge::tls_config())
@@ -343,15 +409,41 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
-fn download(url: &str, to: &Path) -> Result<(), String> {
+fn download(url: &str, to: &Path, what: &str, say: &mut Say) -> Result<(), String> {
     let res = agent()
         .get(url)
         .call()
         .map_err(|e| format!("fetch {url}: {e}"))?;
+    /* Advisory. A proxy that re-encodes may not send one, and the fallback is a
+       count rather than a percentage — which still answers the only question
+       being asked, namely whether the number is moving. */
+    let total: Option<u64> = res.header("Content-Length").and_then(|h| h.parse().ok());
     let mut body = res.into_reader();
     let mut file =
         std::fs::File::create(to).map_err(|e| format!("create {}: {e}", to.display()))?;
-    std::io::copy(&mut body, &mut file).map_err(|e| format!("write {}: {e}", to.display()))?;
+
+    /* This was `std::io::copy`, which is the right call everywhere except here:
+       it reports one number, at the end, and the end is several minutes away on
+       this link. The loop below is that same copy with somewhere to stand in
+       the middle of it. */
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut got: u64 = 0;
+    loop {
+        let n = body.read(&mut buf).map_err(|e| format!("read {url}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| format!("write {}: {e}", to.display()))?;
+        got += n as u64;
+        let line = match total {
+            Some(t) if t > 0 => {
+                format!("fetching {what} \u{2014} {}% of {}MB", got * 100 / t, mb(t))
+            }
+            _ => format!("fetching {what} \u{2014} {}MB so far", mb(got)),
+        };
+        say.throttled(&line);
+    }
+    say.now(&format!("fetched {what} \u{2014} {}MB", mb(got)));
     Ok(())
 }
 
@@ -380,7 +472,7 @@ fn quiet(cmd: &mut Command) -> &mut Command {
 /// graph behind `sherpa-onnx-sys`, but as *build* dependencies — using them
 /// here would put two more crates in the shipped binary to unpack one archive
 /// once. bsdtar has shipped in Windows since 1809.
-fn untar(archive: &Path, into: &Path) -> Result<(), String> {
+fn untar(archive: &Path, into: &Path, what: &str, say: &mut Say) -> Result<(), String> {
     let tar = if cfg!(windows) {
         "C:/Windows/System32/tar.exe"
     } else {
@@ -399,10 +491,27 @@ fn untar(archive: &Path, into: &Path) -> Result<(), String> {
     if let Some(j) = &job {
         j.assign(child.id());
     }
-    let status = child.wait().map_err(|e| format!("{tar}: {e}"))?;
+    /* **Polling the directory is the only progress this phase can have, and it
+       is worth having.** bzip2 is single-threaded and the speech archive is
+       minutes of it; `tar` is somebody else's process with nothing to report.
+       So what gets measured is the thing it produces \u{2014} bytes arriving on disk.
+       Deliberately not a percentage: the uncompressed size is not known until
+       it is finished, and inventing a denominator would be worse than not
+       having one. A number that only goes up is already the whole difference
+       between *working* and *hung*. */
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("{tar}: {e}"))? {
+            Some(status) => break status,
+            None => {
+                say.throttled(&format!("unpacking {what} \u{2014} {}MB", mb(tree_bytes(into))));
+                std::thread::sleep(UNPACK_POLL);
+            }
+        }
+    };
     if !status.success() {
         return Err(format!("{tar} failed unpacking {}", archive.display()));
     }
+    say.now(&format!("unpacked {what} \u{2014} {}MB", mb(tree_bytes(into))));
     Ok(())
 }
 
@@ -413,23 +522,29 @@ fn untar(archive: &Path, into: &Path) -> Result<(), String> {
 /// That matters more than usual here: the failure it prevents is a half-written
 /// 122MB decoder, which ONNX Runtime rejects with a message about a protobuf
 /// that names nothing to do about it.
-fn ensure_models(dir: &Path) -> Result<Models, String> {
+fn ensure_models(dir: &Path, report: &dyn Fn(&str)) -> Result<Models, String> {
     let models = Models::at(dir);
     if models.complete() {
         return Ok(models);
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
+    let mut say = Say::new(report);
 
     if !models.silero.is_file() {
         let tmp = dir.join("silero_vad.onnx.part");
-        download(&format!("{MODEL_BASE}/{SILERO}"), &tmp)?;
+        download(&format!("{MODEL_BASE}/{SILERO}"), &tmp, "the endpointer", &mut say)?;
         std::fs::rename(&tmp, &models.silero).map_err(|e| format!("install {SILERO}: {e}"))?;
     }
 
     if !models.tokens.is_file() {
         let archive = dir.join(MOONSHINE_ARCHIVE);
-        download(&format!("{MODEL_BASE}/{MOONSHINE_ARCHIVE}"), &archive)?;
-        untar(&archive, dir)?;
+        download(
+            &format!("{MODEL_BASE}/{MOONSHINE_ARCHIVE}"),
+            &archive,
+            "the speech model",
+            &mut say,
+        )?;
+        untar(&archive, dir, "the speech model", &mut say)?;
         /* Best-effort: the archive is 200MB of no further use, but failing to
            delete it is not a reason to fail the listen it was fetched for. */
         let _ = std::fs::remove_file(&archive);
@@ -692,7 +807,7 @@ pub fn listen(
         ));
     }
 
-    let models = ensure_models(models_dir)?;
+    let models = ensure_models(models_dir, &partial)?;
     let recognizer = build_recognizer(&models)?;
     let vad = build_vad(&models)?;
 
