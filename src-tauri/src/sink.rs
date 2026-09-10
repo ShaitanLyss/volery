@@ -550,7 +550,7 @@ fn render(i: &SinkItem, now: i64, caller: &str) -> String {
     };
     format!(
         "- [{}] {}{voices} — {}\n  {}{files}\n  dropped by {who}, {}{hold}{edited}{settled}\n",
-        i.id.chars().take(8).collect::<String>(),
+        short(&i.id),
         i.kind,
         i.title,
         i.body.replace('\n', "\n  "),
@@ -661,12 +661,18 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
                 } else {
                     String::new()
                 };
+                /* Which scope was searched, because the merge is scoped and the
+                   read is not: an item with this title can be sitting wall-wide
+                   while this drop lands on a project one, or the other way
+                   round. Saying which was matched is what lets an agent notice
+                   that. See sink `23f5f762`. */
                 format!(
-                    "{title:?} was already in the sink, so this went onto that item \
+                    "{title:?} was already in the {} sink, so this went onto that item \
                      rather than making a second one — anything your words added is on \
                      it now.{voices} It is [{}]. Tell the user you seconded an existing \
                      item rather than raising a new one.{cuts}",
-                    p.id.chars().take(8).collect::<String>()
+                    if wall { "wall-wide" } else { "project" },
+                    short(&p.id)
                 )
             } else {
                 format!(
@@ -674,7 +680,7 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
                      conversation. Nobody is assigned to it — if you are about to deal \
                      with it yourself, `mcp__skein__take` it first.{cuts}",
                     if wall { "wall-wide" } else { "project" },
-                    p.id.chars().take(8).collect::<String>()
+                    short(&p.id)
                 )
             }
         }
@@ -683,16 +689,132 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
 
 /* ── taking and settling ──────────────────────────────────────────────────── */
 
+/// The eight characters an item is spoken of by — the head `render` prints, and
+/// the head `resolve` takes back.
+fn short(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
+/// What a written address turned out to mean.
+///
+/// `Several` is the arm this grew for, and it is not a theoretical one: `take`
+/// and `done` read across the whole wall and resolve by title as well as by id,
+/// and a title is only unique *within a scope* — so two open items can and do
+/// answer to one string (sink `23f5f762`). Guessing between them is the worst
+/// available answer, because both spellings of the guess read identically in
+/// the receipt: settling the twin and settling the original produce the same
+/// sentence. `title_taken` already refuses rather than guesses, on the argument
+/// that "being told which item holds the title costs you one gesture and loses
+/// nothing", and that argument is unchanged here.
+enum Pick<'a> {
+    One(&'a SinkItem),
+    Several(Vec<&'a SinkItem>),
+    None,
+}
+
 /// Find the item an agent means. Full id, then its short head, then the exact
 /// title — the same ladder `relay::resolve` and `do_unpost` walk, because the
 /// agent was shown both spellings and either is a fair thing to type back.
-fn resolve<'a>(items: &'a [SinkItem], want: &str) -> Option<&'a SinkItem> {
+///
+/// Each rung past the first can match more than one row: a four-character
+/// fragment is a prefix rather than a name, and a title is unique only within a
+/// scope. So each rung collects, and a rung that finds two says so rather than
+/// handing back whichever the query reached first. Kept pure — the caller names
+/// the scopes, because that is the half that needs the store.
+fn resolve<'a>(items: &'a [SinkItem], want: &str) -> Pick<'a> {
     let want = want.trim();
-    items
-        .iter()
-        .find(|i| i.id == want)
-        .or_else(|| items.iter().find(|i| i.id.starts_with(want) && want.len() >= 4))
-        .or_else(|| items.iter().find(|i| i.title.eq_ignore_ascii_case(want)))
+    if let Some(i) = items.iter().find(|i| i.id == want) {
+        return Pick::One(i);
+    }
+    let rungs = [
+        items
+            .iter()
+            .filter(|i| want.len() >= 4 && i.id.starts_with(want))
+            .collect::<Vec<_>>(),
+        items
+            .iter()
+            .filter(|i| i.title.eq_ignore_ascii_case(want))
+            .collect::<Vec<_>>(),
+    ];
+    for hits in rungs {
+        match hits.len() {
+            0 => continue,
+            1 => return Pick::One(hits[0]),
+            _ => return Pick::Several(hits),
+        }
+    }
+    Pick::None
+}
+
+/// Where an item is filed, in the words a receipt uses.
+///
+/// Pure, so the three arms are testable; `Scopes` is the thin half that knows
+/// what the wall's territories are called. Always reads as `filed {…}`.
+fn scope_name(item_project: Option<&str>, mine: Option<&str>, name: Option<&str>) -> String {
+    match item_project {
+        None => "wall-wide".into(),
+        Some(p) if Some(p) == mine => "under this project".into(),
+        Some(_) => name.map_or_else(
+            || "under another project".into(),
+            |n| format!("under the {n} project"),
+        ),
+    }
+}
+
+/// What a receipt needs to say where a row lives: this card's own territory,
+/// and the wall's territories by name.
+///
+/// Read once per call rather than per row, and only by `take` and `done` —
+/// `drop` writes into a scope it chose itself and can say so without asking.
+struct Scopes {
+    mine: Option<String>,
+    names: Vec<(String, String)>,
+}
+
+impl Scopes {
+    fn read(app: &AppHandle, me: &Reader) -> Scopes {
+        let names = app
+            .try_state::<Store>()
+            .and_then(|store| {
+                let conn = store.0.lock().ok()?;
+                crate::store::projects(&conn).ok()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .collect();
+        Scopes { mine: me.project_id.clone(), names }
+    }
+
+    fn of(&self, item: &SinkItem) -> String {
+        let name = item.project_id.as_deref().and_then(|p| {
+            self.names
+                .iter()
+                .find(|(id, _)| id == p)
+                .map(|(_, n)| n.as_str())
+        });
+        scope_name(item.project_id.as_deref(), self.mine.as_deref(), name)
+    }
+}
+
+/// Two items answer to one string, so neither is touched.
+///
+/// It names both, with the scope each is filed under, because the scope is
+/// usually the whole of the difference — a wall-wide original and the project
+/// twin a re-drop made of it — and because an agent that can see which is which
+/// can pick without a second read of the sink.
+fn ambiguous(hits: &[&SinkItem], want: &str, scopes: &Scopes) -> String {
+    format!(
+        "{} items answer to {want:?}, so nothing was touched — name the one you mean by \
+         its id: {}. Two open items under one title is a scope mismatch rather than \
+         something you did (sink `23f5f762`); if you did not expect a second one, say so \
+         to the user.",
+        hits.len(),
+        hits.iter()
+            .map(|i| format!("[{}] filed {}, {:?}", short(&i.id), scopes.of(i), i.title))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
 }
 
 fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
@@ -710,20 +832,29 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
         Ok(i) => i,
         Err(e) => return format!("could not read the sink: {e}"),
     };
-    let Some(item) = resolve(&items, want) else {
-        return not_found(&items, want);
+    let scopes = Scopes::read(app, &me);
+    let item = match resolve(&items, want) {
+        Pick::One(i) => i,
+        Pick::Several(hits) => return ambiguous(&hits, want, &scopes),
+        Pick::None => return not_found(&items, want),
     };
+    let id = short(&item.id);
+    let scope = scopes.of(item);
     let now = crate::store::now();
 
     if release {
         if item.held_by.as_deref() != Some(caller) {
             return match &item.held_by {
                 Some(h) => format!(
-                    "{:?} is held by {}, not by you — nothing to put back.",
+                    "[{id}] {:?}, filed {scope}, is held by {} — not by you, so there is \
+                     nothing to put back.",
                     item.title,
                     crate::relay::handle_of(h)
                 ),
-                None => format!("{:?} was not held by anyone.", item.title),
+                None => format!(
+                    "[{id}] {:?}, filed {scope}, was not held by anyone.",
+                    item.title
+                ),
             };
         }
         let store = app.state::<Store>();
@@ -735,13 +866,13 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
         if ok {
             changed(app, item.project_id.clone());
             return format!(
-                "put {:?} back. It is waiting for whoever picks it up next — if you got \
-                 part of the way, `mcp__skein__drop` what you learned so that is not lost \
-                 too.",
+                "put [{id}] back — {:?}, filed {scope}. It is waiting for whoever picks it \
+                 up next; if you got part of the way, `mcp__skein__drop` what you learned \
+                 so that is not lost too.",
                 item.title
             );
         }
-        return format!("{:?} had already moved on.", item.title);
+        return format!("[{id}] {:?} had already moved on.", item.title);
     }
 
     if item.held_by.as_deref() == Some(caller) {
@@ -752,7 +883,10 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
         crate::store::touch_sink_hold(&conn, &item.id, caller);
         drop(conn);
         changed(app, item.project_id.clone());
-        return format!("you already hold {:?} — the hold is fresh again.", item.title);
+        return format!(
+            "you already hold [{id}] — {:?}, filed {scope}. The hold is fresh again.",
+            item.title
+        );
     }
 
     if !free(item, now) {
@@ -762,9 +896,9 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
             .map(crate::relay::handle_of)
             .unwrap_or_default();
         return format!(
-            "{:?} is held by {who}, who said so {}. Leave it to them and tell the user \
-             that is why you did not start it — if it genuinely needs two of you, \
-             message {who} rather than working over them.",
+            "[{id}] {:?}, filed {scope}, is held by {who}, who said so {}. Leave it to \
+             them and tell the user that is why you did not start it — if it genuinely \
+             needs two of you, message {who} rather than working over them.",
             item.title,
             item.held_at.map(|at| ago(now - at)).unwrap_or_else(|| "recently".into())
         );
@@ -788,8 +922,8 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
     drop(conn);
     if !ok {
         return format!(
-            "{:?} was taken by another conversation a moment before you — leave it to \
-             them.",
+            "[{id}] {:?} was taken by another conversation a moment before you — leave it \
+             to them.",
             item.title
         );
     }
@@ -803,9 +937,9 @@ fn do_take(app: &AppHandle, caller: &str, args: &Value) -> String {
         None => String::new(),
     };
     format!(
-        "you are holding {:?}.{was} No other conversation will start it while you have \
-         it. `mcp__skein__done` when it is fully addressed, or `mcp__skein__take … \
-         release: true` the moment you stop.",
+        "you are holding [{id}] — {:?}, filed {scope}.{was} No other conversation will \
+         start it while you have it. `mcp__skein__done` when it is fully addressed, or \
+         `mcp__skein__take … release: true` the moment you stop.",
         item.title
     )
 }
@@ -830,9 +964,14 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
         Ok(i) => i,
         Err(e) => return format!("could not read the sink: {e}"),
     };
-    let Some(item) = resolve(&items, want) else {
-        return not_found(&items, want);
+    let scopes = Scopes::read(app, &me);
+    let item = match resolve(&items, want) {
+        Pick::One(i) => i,
+        Pick::Several(hits) => return ambiguous(&hits, want, &scopes),
+        Pick::None => return not_found(&items, want),
     };
+    let id = short(&item.id);
+    let scope = scopes.of(item);
     let now = crate::store::now();
 
     /* Somebody else's live hold is a refusal rather than a warning. `done` on an
@@ -843,9 +982,9 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
     if let Some(h) = &item.held_by {
         if h != caller && !hold_stale(item, now) {
             return format!(
-                "{:?} is held by {} — they are dealing with it, so this is not yours to \
-                 take down. If you have just done the same work, say so to the user and \
-                 message {} rather than settling it over them.",
+                "[{id}] {:?}, filed {scope}, is held by {} — they are dealing with it, so \
+                 this is not yours to take down. If you have just done the same work, say \
+                 so to the user and message {} rather than settling it over them.",
                 item.title,
                 crate::relay::handle_of(h),
                 crate::relay::handle_of(h)
@@ -860,7 +999,7 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
     let ok = crate::store::settle_sink_item(&conn, &item.id, note.as_deref());
     drop(conn);
     if !ok {
-        return format!("{:?} was already settled.", item.title);
+        return format!("[{id}] {:?} was already settled.", item.title);
     }
     changed(app, item.project_id.clone());
     let asked = if note.is_none() {
@@ -869,9 +1008,14 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
     } else {
         ""
     };
+    /* The id and the scope, not the title, are what makes this checkable. This
+       receipt named only the title until 2026-09-10, and settling one of two
+       identically-titled items produced a sentence indistinguishable from
+       settling the other — so the outcome had to be verified against `skein.db`
+       by hand. See sink `23f5f762` and the note on `Pick`. */
     format!(
-        "took {:?} out of the sink.{asked} It is kept rather than deleted, so the user \
-         can put it back if it turns out not to be finished.",
+        "took [{id}] out of the sink — {:?}, filed {scope}.{asked} It is kept rather than \
+         deleted, so the user can put it back if it turns out not to be finished.",
         item.title
     )
 }
@@ -886,7 +1030,7 @@ fn not_found(items: &[SinkItem], want: &str) -> String {
         items
             .iter()
             .take(8)
-            .map(|i| format!("[{}] {:?}", i.id.chars().take(8).collect::<String>(), i.title))
+            .map(|i| format!("[{}] {:?}", short(&i.id), i.title))
             .collect::<Vec<_>>()
             .join(", ")
     )
@@ -1097,7 +1241,7 @@ pub async fn sink_edit(
                 "another item is already called that — [{}] — and two items with one title \
                  is what merging on the title exists to prevent. settle one of them, or \
                  pick different words.",
-                crate::relay::handle_of(&other.id)
+                short(&other.id)
             ));
         }
 
@@ -1248,6 +1392,15 @@ mod tests {
         }
     }
 
+    /// The id of the one item `resolve` picked, for the tests that only care
+    /// that it picked one.
+    fn one<'a>(items: &'a [SinkItem], want: &str) -> Option<&'a str> {
+        match resolve(items, want) {
+            Pick::One(i) => Some(&i.id),
+            _ => None,
+        }
+    }
+
     #[test]
     fn an_unheld_item_is_free() {
         assert!(free(&item(None, None), 0));
@@ -1279,10 +1432,10 @@ mod tests {
     #[test]
     fn an_item_resolves_by_id_by_its_head_and_by_title() {
         let items = vec![item(None, None)];
-        assert!(resolve(&items, "abcd1234-0000").is_some());
-        assert!(resolve(&items, "abcd").is_some());
-        assert!(resolve(&items, "ASK_USER TIMES OUT IN A NON-INTERACTIVE SESSION").is_some());
-        assert!(resolve(&items, "nothing like it").is_none());
+        assert!(one(&items, "abcd1234-0000").is_some());
+        assert!(one(&items, "abcd").is_some());
+        assert!(one(&items, "ASK_USER TIMES OUT IN A NON-INTERACTIVE SESSION").is_some());
+        assert!(matches!(resolve(&items, "nothing like it"), Pick::None));
     }
 
     /// Three characters is not enough of an id to act on. An agent that typed a
@@ -1291,7 +1444,80 @@ mod tests {
     #[test]
     fn too_short_a_fragment_matches_nothing() {
         let items = vec![item(None, None)];
-        assert!(resolve(&items, "abc").is_none());
+        assert!(matches!(resolve(&items, "abc"), Pick::None));
+    }
+
+    /* ── two items answering to one string ────────────────────────────────── */
+
+    /// The whole of sink `23f5f762`'s second face. `drop` merges within a scope
+    /// and `sink` reads across the union, so a wall-wide item and a project one
+    /// can carry the same title — and then `done` resolving that title picked
+    /// whichever the query reached first and said only the title back, so the
+    /// two outcomes were indistinguishable from the receipt. Refused now, the
+    /// way `title_taken` refuses rather than guessing.
+    #[test]
+    fn two_items_under_one_title_are_refused_rather_than_guessed_between() {
+        let wall = item(None, None);
+        let mut mine = item(None, None);
+        mine.id = "ffff0000-1111".into();
+        mine.project_id = Some("p1".into());
+        let items = vec![wall, mine];
+
+        let Pick::Several(hits) = resolve(&items, &items[0].title.clone()) else {
+            panic!("one title over two scopes has to refuse");
+        };
+        assert_eq!(hits.len(), 2);
+
+        let scopes = Scopes {
+            mine: Some("p1".into()),
+            names: vec![("p1".into(), "skein".into())],
+        };
+        let msg = ambiguous(&hits, "ask_user times out", &scopes);
+        assert!(msg.contains("abcd1234"), "{msg}");
+        assert!(msg.contains("ffff0000"), "{msg}");
+        assert!(msg.contains("wall-wide"), "{msg}");
+        assert!(msg.contains("this project"), "{msg}");
+        assert!(msg.contains("nothing was touched"), "{msg}");
+    }
+
+    /// An id is unique, so a full one is answerable even where the title is not.
+    /// This is the escape the refusal above tells the agent to take.
+    #[test]
+    fn a_full_id_still_answers_where_the_title_is_ambiguous() {
+        let wall = item(None, None);
+        let mut mine = item(None, None);
+        mine.id = "ffff0000-1111".into();
+        mine.project_id = Some("p1".into());
+        let items = vec![wall, mine];
+        assert_eq!(one(&items, "ffff0000-1111"), Some("ffff0000-1111"));
+        assert_eq!(one(&items, "ffff"), Some("ffff0000-1111"));
+    }
+
+    /// A fragment is a prefix rather than a name, so it has the same exposure —
+    /// four characters of a uuid are not a promise of uniqueness.
+    #[test]
+    fn an_ambiguous_fragment_is_refused_too() {
+        let mut a = item(None, None);
+        a.id = "abcd0000-1111".into();
+        let mut b = item(None, None);
+        b.id = "abcd9999-2222".into();
+        b.title = "something else".into();
+        let items = vec![a, b];
+        assert!(matches!(resolve(&items, "abcd"), Pick::Several(_)));
+        assert_eq!(one(&items, "abcd0"), Some("abcd0000-1111"));
+    }
+
+    /// The three readings a receipt has of where a row lives. The third is the
+    /// one that matters: `take` and `done` read the whole wall, so the row they
+    /// touched can be filed under a territory this card is not standing in, and
+    /// saying "this project" there would be a lie in the direction that hides
+    /// the mistake.
+    #[test]
+    fn a_receipt_says_which_scope_the_row_it_touched_is_filed_under() {
+        assert_eq!(scope_name(None, Some("p1"), None), "wall-wide");
+        assert_eq!(scope_name(Some("p1"), Some("p1"), Some("skein")), "under this project");
+        assert_eq!(scope_name(Some("p2"), Some("p1"), Some("nova")), "under the nova project");
+        assert_eq!(scope_name(Some("p2"), Some("p1"), None), "under another project");
     }
 
     #[test]

@@ -94,6 +94,75 @@ second one entirely, where the cost of missing a match is merely the duplicate t
 avoiding. A **settled** item does not absorb the thing happening again, because it happening
 again is news.
 
+### The scope the merge uses and the scope the read uses are not the same one
+
+**They still are not, and that is an open decision rather than a settled design.** `sink` at
+`scope: project` serves "this project's items plus the wall-wide ones" — a union, and
+`sink_open` is indexed on `(project_id, settled_at)` to serve exactly that. `put_sink_item`
+merges within **one** `project_id` only, matching `title_taken`'s rule and its argument: two
+items with one title in two different projects are two findings about two repositories and
+always were.
+
+So an agent that reads a wall-wide item in project scope, agrees with it, and drops under the
+same title does not second it. It files a project twin, and is told "dropped into the project
+sink as […] — nobody is assigned to it", with exactly the confidence of a fresh finding. That
+is `voices` losing the one count it exists to keep. Filed as sink `23f5f762`; measured in
+`skein.db` on 2026-09-10 as **five** title pairs split across the two scopes, not the three
+originally reported — and one of those five is a *settled* wall-wide item whose project twin
+is still open, which is the same hole read from the other end.
+
+Three shapes could close it, and they are not the same size:
+
+1. **Merge across the union**, so the merge follows the read. Cheapest at the call site and
+   the most invasive semantically: it retires `title_taken`'s argument, and it makes a
+   wall-wide item able to swallow a project finding that only happens to share a form of
+   words — which is the failure the scoped rule was written against.
+2. **Narrow the read**, so `sink` at project scope stops showing wall-wide items. Restores
+   the invariant by making the two scopes genuinely separate piles, at the cost of the thing
+   the union was for: a card working in one project can no longer see what the studio knows.
+3. **Say which scope was searched** and leave both rules alone. Does not stop the twin; makes
+   it visible in the receipt at the moment it is made, which is the only moment anything can
+   be done about it.
+
+Only the third is built. Whichever of the first two is chosen, it belongs here with its
+argument, and the loser's argument belongs here too.
+
+### A receipt names the row, not the title
+
+The half of `23f5f762` that had to be fixed whatever happens to the merge rule, and the more
+dangerous half.
+
+`take` and `done` resolve across the whole wall and accept a **title** as well as an id — and
+a title is unique only within a scope, so once a twin exists two open items answer to one
+string. Settling the two twins from the session that found this, `done` was passed the eight
+character ids, did the right thing, and its receipt named only the title. From the tool result
+alone there was no way to tell which of two identically-titled items had been taken out of the
+pile; it had to be checked against `skein.db` afterwards. **Had it resolved the other way it
+would have settled the originals — both wall-wide, both carrying the whole design write-up —
+and reported success in words indistinguishable from the correct outcome.**
+
+That is the shape worth carrying past this subsystem: **an operation addressed by an
+ambiguous key, whose receipt echoes the key rather than the row, is unverifiable from its own
+output.** Not merely untidy — unverifiable, and in the direction that reads as success.
+
+Two changes, and they are the two halves of one answer:
+
+- **Every receipt echoes the id and the scope of the row it actually touched.** `[57af2599]
+  … filed wall-wide` rather than the title alone, on the successes and on the refusals both,
+  since a refusal that does not say *which* row it refused has the same hole. `scope_name` is
+  the pure half — wall-wide, under this project, under the *named* project — and it names a
+  third territory rather than saying "this project", because `take` and `done` read the whole
+  wall and the row they touched may well be filed somewhere this card is not standing.
+- **`resolve` refuses an ambiguous address rather than guessing.** `Pick::Several` names both
+  ids with their scopes and touches nothing. This is `relay::resolve`'s shape, which has
+  refused two cards under one title since it was written, and it is `title_taken`'s argument
+  applied one door along: being told which item holds the title costs you one gesture and
+  loses nothing. Note the same exposure on the id rung — four characters of a uuid is a
+  prefix, not a name — so that rung collects too.
+
+The refusal is the reason the merge-rule decision can wait: a twin is now a thing an agent is
+*told about*, at the moment it tries to act on one, instead of a coin flip it cannot see.
+
 ### `done` keeps the row
 
 Settling is `settled_at`, not a `DELETE`. An agent that decides a thing is handled and is
