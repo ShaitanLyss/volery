@@ -53,7 +53,7 @@ bun run check            # svelte-check + tsc over src/**
 bun run build            # vite build → dist/
 bun run tauri build      # bundle
 
-bun run test             # the pure suites: ansi, classify, layout, pick, glass, specs, history, menu,
+bun run test             # the pure suites: ansi, classify, layout, pick, wheel, glass, specs, history, menu,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
                          # hunt,
                          # presets,
@@ -269,7 +269,7 @@ own vocabulary of class names wants its own file rather than a prefix;
 ### Purity boundary
 
 Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` files in
-`src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
+`src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `wheel.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
 `transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `attach.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
 `undo.ts`, `finding.ts`, `office.ts`, `integrations.ts`, `zoom.ts`,

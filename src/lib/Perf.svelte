@@ -128,7 +128,7 @@
       </p>
     {/if}
   {:else}
-    <ul class="rows" class:bars={variant === "bars"}>
+    <ul class="rows" class:bars={variant === "bars"} data-scroll>
       {#each cut.shown as r (r.key)}
         <li>
           <span class="line">

@@ -227,7 +227,7 @@
           <p class="say" class:fault={deck.searching === "failed"}>{note}</p>
         {/if}
         {#if deck.hits.length > 0}
-          <ul class="hits">
+          <ul class="hits" data-scroll>
             {#each deck.hits as hit (hit.uri)}
               <li>
                 <button onclick={() => pick(hit.uri)} title={hit.uri}>

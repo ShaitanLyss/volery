@@ -325,7 +325,7 @@
             placeholder="which project?"
             bind:value={sieve}
           />
-          <ul class="pick" data-text>
+          <ul class="pick" data-text data-scroll>
             {#each choices as p (p.gid)}
               <li>
                 <button class="verb" onclick={() => onconfig?.("project", p.gid)}>
@@ -355,7 +355,7 @@
          the shape that still says something at the size of a card, where a
          board says nothing at all. Deliberately not draggable: it is a gauge,
          and a column with no cards drawn in it has nothing to drop *between*. -->
-    <ul class="counts" data-text>
+    <ul class="counts" data-text data-scroll>
       {#each board.columns as col (col.gid || col.name)}
         {@const n = col.cards.length}
         {@const most = Math.max(1, ...board.columns.map((k: Column) => k.cards.length))}
@@ -367,7 +367,7 @@
       {/each}
     </ul>
   {:else if board}
-    <div class="lanes">
+    <div class="lanes" data-scroll>
       {#each board.columns as col (col.gid || col.name)}
         <!-- `data-col` is what the drag hit-tests against. The unsectioned pile
              carries an empty one, which is honest: it is a real place a card
@@ -382,7 +382,7 @@
           <!-- `data-text`: a drag inside a column means moving a card or
                selecting a word, never carrying the wall away. Same marker a
                log's lines carry, and the same reason. -->
-          <ul class="cards" data-text>
+          <ul class="cards" data-text data-scroll>
             {#each col.cards as card, i (card.gid)}
               {#if lineAbove(col, card)}
                 <li class="line" aria-hidden="true"></li>

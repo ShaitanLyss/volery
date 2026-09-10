@@ -139,7 +139,7 @@
           : "nothing up. agents post here when they take on a piece of work."}
     </p>
   {:else}
-    <ul class="rows">
+    <ul class="rows" data-scroll>
       {#each shown as n (n.id)}
         {@const who = author(n, names)}
         {@const files = covering(n)}

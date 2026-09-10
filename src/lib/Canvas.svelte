@@ -42,6 +42,7 @@
   import type { Cycle } from "./cycle.svelte";
   import type { Profile } from "./ambience";
   import { glassAt, spotOf, stickTo, type Spot } from "./glass";
+  import { overflowScrolls, wheelMeaning, type Box as Reachable } from "./wheel";
   import { adrift } from "./portage.svelte";
   import { stub } from "./outline";
   import { displayName } from "./naming";
@@ -1386,6 +1387,44 @@
     }
   }
 
+  /** The scrollers between what a wheel landed on and the wall, nearest first —
+   *  the order the browser would chain in.
+   *
+   *  Gated on `[data-scroll]` rather than measured up the whole ancestor path,
+   *  and that is a cost decision rather than a taste one: a wheel fires at
+   *  trackpad rate, `getComputedStyle` and `scrollHeight` both read layout, and
+   *  the layer they would read has just been re-laid-out by the previous
+   *  event's zoom (`zoom` is not a transform — see `.claude/rules/layout.md`).
+   *  So a forced synchronous layout per wheel event during a flick is exactly
+   *  the shape `motion.md` is a list of. One `closest()` that finds nothing
+   *  costs nothing, which is what a wheel over the ground and over a card does.
+   *
+   *  The marker declares intent; the measurement is still taken, because the
+   *  two things a marker cannot say are whether the CSS on that element
+   *  actually scrolls and whether there is anything there to scroll. See
+   *  `wheel.ts` for both halves and `test/styles.test.ts` for the pairing. */
+  function reachOf(target: EventTarget | null, stop: HTMLElement): Reachable[] {
+    const out: Reachable[] = [];
+    let from = target instanceof Element ? (target as HTMLElement) : null;
+    while (from && from !== stop) {
+      const el = from.closest<HTMLElement>("[data-scroll]");
+      if (!el || el === stop || !stop.contains(el)) break;
+      const css = getComputedStyle(el);
+      out.push({
+        x: {
+          container: overflowScrolls(css.overflowX),
+          beyond: el.scrollWidth - el.clientWidth,
+        },
+        y: {
+          container: overflowScrolls(css.overflowY),
+          beyond: el.scrollHeight - el.clientHeight,
+        },
+      });
+      from = el.parentElement;
+    }
+    return out;
+  }
+
   /* ── zoom ───────────────────────────────────────────────── *
    * The wheel zooms at the cursor; shift+wheel pans. This is deliberately not
    * Figma's convention (wheel pans, ctrl+wheel zooms), which is what this was
@@ -1394,11 +1433,30 @@
    * ctrl+wheel still zooms, so the older habit costs nothing.
    *
    * Registered by hand because the listener must be non-passive to
-   * preventDefault. */
+   * preventDefault — which is still true, and is why `{ passive: false }` stays
+   * even though the call is now conditional.
+   *
+   * **`preventDefault` used to be unconditional, and `.surface` is an ancestor
+   * of everything standing on the wall.** This listener is on the bubble phase,
+   * so it saw every wheel inside every widget and consumed it, and nothing on
+   * this wall could be scrolled with the wheel — `overflow-y: auto` set, the
+   * scrollbar working, the reflex gesture doing nothing (sink `813c8196`;
+   * `LogTail` gave up scrollback over it and said so). The gesture is not the
+   * bug and is unchanged: `wheelMeaning` asks where the wheel *landed*, and only
+   * the bare wheel asks anything at all — both modifiers stay the wall's
+   * wherever the cursor is, so no widget is a dead zone for a wall gesture. The
+   * argument for each rule is in `wheel.ts`. */
   $effect(() => {
     const el = surface;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      /* Left alone entirely: not prevented, so the browser scrolls it the way
+         it would have anyway, and not `moved()` either, since the wall is not
+         the thing that moved. `follow.ts` already hears this event in the
+         capture phase on the scrollers that follow their own tail, so a log
+         wheeled back off its bottom lets go of the tail with nothing here to
+         arrange. */
+      if (wheelMeaning(e, reachOf(e.target, el)) === "scroll") return;
       e.preventDefault();
       moved();
       const r = el.getBoundingClientRect();

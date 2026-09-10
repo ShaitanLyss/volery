@@ -8,10 +8,16 @@
    * the gutter mark says, whether a tone means anything — arrives as `Row[]`
    * already decided.
    *
-   * No scrollback, and that is the wheel's fault rather than a choice about
-   * logs: `Canvas` preventDefaults every wheel on the surface to zoom, so
-   * nothing standing on the wall can be scrolled. Reaching further back is a
-   * panel's job, and panels scroll. */
+   * No scrollback. That used to be the wheel's fault rather than a choice about
+   * logs — `Canvas` preventDefaulted every wheel on the surface to zoom, so
+   * nothing standing on the wall could be scrolled at all — and since sink
+   * `813c8196` it is a choice: a bare wheel now reaches a scroller under it, and
+   * a log that wanted scrollback could have it by keeping more lines than fit,
+   * saying `overflow-y: auto`, and carrying `data-scroll` and `stickToTail` the
+   * way the panels do. Nothing here does that yet, and it is not free — the
+   * `justify-content: flex-end` anchoring below and `linesFor`'s whole arithmetic
+   * are about a box that draws exactly what fits. Reaching further back is still
+   * a panel's job, and panels scroll. */
 
   import { ANSI_PALETTE, parseAnsi } from "./ansi";
   import type { Row } from "./logface";
@@ -65,8 +71,10 @@
     font-size: 0.62rem;
     line-height: 1.5;
     color: var(--paper-mute);
-    /* Never scrolls — the wheel belongs to the wall's zoom, so what is drawn is
-       what fits, and `linesFor` is what decides how much that is.
+    /* Never scrolls — `overflow: hidden` and no `data-scroll`, so the wheel over
+       a log is still the wall's zoom, and what is drawn is what fits with
+       `linesFor` deciding how much that is. See the header comment for what
+       changed about *why*.
        `justify-content: flex-end` is what makes being wrong about it survivable:
        the column is anchored to its bottom, so a line more than there is room
        for spills off the *top*, where it is merely old. Without it the overflow

@@ -312,7 +312,7 @@
          size, with the count of what is behind it — a sink that showed one item
          and did not say there were nine more would be an instrument quietly
          understating the wall. -->
-    <div class="one">
+    <div class="one" data-scroll>
       {#if editing === next.id}
         {@render editor(next)}
       {:else}
@@ -345,7 +345,7 @@
       {/if}
     </div>
   {:else}
-    <ul class="rows">
+    <ul class="rows" data-scroll>
       {#each shown as i (i.id)}
         {@const state = stateOf(i)}
         {@const who = finder(i, names)}

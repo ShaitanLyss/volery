@@ -2,7 +2,9 @@
 paths:
   - "src/lib/layout.ts"
   - "src/lib/pick.ts"
+  - "src/lib/wheel.ts"
   - "test/pick.test.ts"
+  - "test/wheel.test.ts"
   - "src-tauri/src/pin.rs"
   - "src/lib/Canvas.svelte"
   - "src/lib/studio.svelte.ts"
@@ -368,9 +370,77 @@ Selection itself is still not on the undo stack, for the reason `undo.md` gives,
 three more kinds does not change it: gathering things up is how you are looking at the wall,
 not something you made.
 
+## The wheel, and the fourth marker
+
 The wheel zooms at the cursor and shift+wheel pans — deliberately not Figma's convention
 (which this was first), because the densities are the navigation here and panning has the
 whole ground to drag. ctrl+wheel still zooms.
+
+**That listener is on `.surface`, which is an ancestor of everything standing on the wall,
+and it used to open with an unconditional `preventDefault()`.** It is on the bubble phase, so
+it saw every wheel event inside every widget and consumed it: nothing on this wall could be
+scrolled with the wheel. An Asana column with twenty cards, the sink's rows, a pipeline list
+— content overflowing, `overflow-y: auto` set, the scrollbar working, and the reflex gesture
+doing nothing at all. Nothing was unreachable, which is why it stood for months as a rough
+edge rather than a hole; what makes it worth a section is that it was *invisible from inside
+a widget*. `LogTail` gave up scrollback over it and wrote the cause down in a comment, which
+is the shape of a bug that has stopped being read as one. Sink `813c8196`.
+
+The gesture is not the bug and is unchanged. The fix is a test on where the wheel *landed*,
+in `wheel.ts`, and there are four decisions in it worth keeping:
+
+- **The modifiers are the wall's, unconditionally.** ctrl+wheel zooms and shift+wheel pans
+  wherever the cursor is, including over a list that is scrolling, so only the *bare* wheel
+  has to ask anything. That is what keeps a widget from being a dead zone for a wall gesture
+  — the trap that would have made this worse than the bug — and it costs nothing, since both
+  modifiers were already documented above. A Kanban covering half the wall still zooms.
+- **A bare wheel goes to the nearest thing under it that can actually move on the axis of the
+  delta.** Two halves, both required: the box is a scroll container on that axis (computed
+  overflow `auto`/`scroll`/`overlay` — `hidden` overflows plenty and does not scroll, which
+  is exactly what `LogTail` is), *and* it has content beyond itself there. The second half is
+  what keeps zoom-over-a-widget: three rows in a box that holds six is `overflow-y: auto` and
+  is not a scroller, so the wheel zooms as the frame around it does.
+- **The axis is per gesture, not per element.** `deltaX` and `deltaY` are already asymmetric
+  here — Windows reports shift+wheel on `deltaX`, a trackpad on `deltaY` — so "can this
+  scroll" is meaningless without a direction. The dominant delta decides, ties to `y`.
+- **A scroller keeps the wheel at its ends**, rather than chaining out to the zoom. Chosen,
+  and the argument is the tail of a flick: chaining means the wall lurches under your hand at
+  the end of a gesture you aimed at a list, and it makes the same wheel in the same place mean
+  two things depending on where that list happens to be parked. The cost is that zooming with
+  the cursor over an overflowing list wants a few pixels onto the frame, or the ctrl that
+  already works. Note this cannot be bought with `overscroll-behavior: contain`, which looks
+  like the cheap half and is not: that governs the *browser's* chaining and does nothing about
+  an ancestor's JS listener, which is the entire mechanism.
+
+**`data-scroll` is the fourth marker, and it joins `data-grip`/`data-text`/`data-live` for a
+different reason than they did.** Those three are `handleOf` asking what a press is *not*
+aimed at, because the press is read in the capture phase and nothing inside can stop it. This
+one is a *cost* gate: `Canvas.reachOf` could walk every ancestor and measure it, but a wheel
+fires at trackpad rate, `getComputedStyle` and `scrollHeight` both read layout, and the layer
+they would read has just been re-laid-out by the previous event's zoom — `zoom` is not a
+transform, per the sharpness note above. A forced synchronous layout per wheel event during a
+flick is the shape `motion.md` is a list of. So the marker is what makes a wheel over the
+ground and over a card cost one `closest()` that finds nothing, and the measurement is still
+taken behind it, because a marker cannot say whether the CSS on that element actually scrolls
+or whether there is anything there to scroll.
+
+Forgetting it is silent — `overflow-y: auto`, a working scrollbar, and a wheel that does
+nothing, which is this bug arriving again through the front door — so it is asserted rather
+than remembered. `test/styles.test.ts` takes the widget faces from what `WidgetNode.svelte`
+imports, transitively, and requires any of them whose stylesheet has an auto or scroll
+overflow to carry the marker in its markup. The same pairing shape `data-text` already has
+there, for the same reason.
+
+**The transcript panel is the counter-example that gave this its shape**, and it is worth
+knowing why it always worked: it is not on the wall. It is a sibling surface with its own
+wheel listener that preventDefaults *only* on ctrl/meta — everything else is left to the
+browser. Anything hung on `.surface` that wants the same has to ask for it; anything outside
+already has it.
+
+Nothing was needed in `follow.ts`. It already hears `wheel` in the capture phase on every
+scroller that follows its own tail, so a log wheeled back off its bottom lets go of the tail
+with no arrangement here — and the mark was harmless before the fix, since a prevented wheel
+produces no scroll event for `stillFollowing` to be asked about.
 
 Placements live in SQLite next to the conversations they key on; only the *viewport* (pan,
 zoom) goes to localStorage — see the note in `studio.svelte.ts` about not having two sources

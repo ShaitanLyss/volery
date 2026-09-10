@@ -164,6 +164,88 @@ describe("text you are meant to be able to select", () => {
   }
 });
 
+/* The third invariant, and the same shape a third time: a fact about the CSS
+   that is true across two files, one of which is `Canvas.svelte`.
+
+ * `data-scroll` marks a box on the wall that the bare wheel should reach instead
+ * of the wall's zoom. `Canvas.reachOf` gates on the attribute — it must, because
+ * measuring every ancestor of every wheel event forces a layout of a subtree the
+ * zoom has just re-laid-out, and a wheel fires at trackpad rate. So a scroller
+ * without the marker is invisible to it, and the failure is exactly the bug this
+ * was written for (sink `813c8196`): `overflow-y: auto` set, the scrollbar
+ * working, and the wheel doing nothing at all.
+ *
+ * That is silent in every other way. It is not a type error, `bun run check`
+ * cannot see it, and the widget looks finished — so the *next* scroller hung on
+ * the wall is one careless omission away from reintroducing it, and the omission
+ * is the easy half to make. Asserted per file rather than per element, because
+ * that is what a regex over a `.svelte` file can honestly claim: a widget with an
+ * auto-overflow rule and no marker anywhere in its markup is the shape that
+ * ships the bug.
+ *
+ * The set of files is taken from what `WidgetNode.svelte` reaches, transitively,
+ * rather than listed here — the widget faces *are* the things standing on the
+ * wall, and a hand-kept list is a second place for the answer to be stale. A
+ * panel is outside `.surface` and needs none of this, which is why the transcript
+ * has always scrolled and is the counter-example that gave this its shape. */
+describe("boxes on the wall the wheel should reach", () => {
+  /** Every `src/lib/*.svelte` a widget face reaches, `WidgetNode` excluded.
+   *
+   *  PascalCase only, and that is not cosmetic: a rune module is `asana.svelte.ts`
+   *  and is imported as `"./asana.svelte"` — the same specifier a component has —
+   *  so the extension cannot tell them apart and the initial is the only thing
+   *  that can. Every component under `src` is PascalCase and every
+   *  `*.svelte.ts` is lowercase, which is the purity boundary CLAUDE.md
+   *  describes wearing a second hat. */
+  function widgetFaces(): string[] {
+    const seen = new Set<string>();
+    const queue = ["WidgetNode.svelte"];
+    while (queue.length) {
+      const name = queue.shift()!;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      let source: string;
+      try {
+        source = readFileSync(join(SRC, "lib", name), "utf8");
+      } catch {
+        continue;
+      }
+      for (const m of source.matchAll(/from\s+"\.\/([A-Z][A-Za-z0-9_]*)\.svelte"/g)) {
+        queue.push(`${m[1]}.svelte`);
+      }
+    }
+    seen.delete("WidgetNode.svelte");
+    return [...seen].sort();
+  }
+
+  const faces = widgetFaces();
+
+  test("the widget faces are found at all", () => {
+    /* A rename of `WidgetNode` or of the import shape would otherwise make
+       every assertion below pass by checking nothing — the failure mode of
+       every test that discovers its own subjects. */
+    expect(faces.length).toBeGreaterThan(15);
+    expect(faces).toContain("Kanban.svelte");
+  });
+
+  test("the wall's wheel handler knows the marker", () => {
+    const canvas = readFileSync(join(SRC, "lib", "Canvas.svelte"), "utf8");
+    expect(canvas).toContain("[data-scroll]");
+  });
+
+  for (const name of faces) {
+    const source = readFileSync(join(SRC, "lib", name), "utf8");
+    const css = stylesheet(source).replace(/\s+/g, " ");
+    if (!/overflow(-[xy])?: (auto|scroll)/.test(css)) continue;
+    test(`${name} marks what it lets scroll`, () => {
+      /* Markup only. This codebase names an attribute in prose constantly, and
+         the `<style>` block is where the overflow was found rather than where a
+         marker could go. */
+      expect(source.split("<style")[0]).toContain("data-scroll");
+    });
+  }
+});
+
 describe("the parser this leans on", () => {
   test("reads a rule's selector list", () => {
     expect(topLevelSelectors(".a { color: red }")).toEqual([".a"]);

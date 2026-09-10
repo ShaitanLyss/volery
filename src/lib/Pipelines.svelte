@@ -201,7 +201,7 @@
       {/each}
     </ul>
   {:else}
-    <ul class="rows">
+    <ul class="rows" data-scroll>
       {#each rows as r (r.id)}
         <!-- The row and the link are siblings rather than nested, because a
              button inside a button is invalid and the browser resolves it by

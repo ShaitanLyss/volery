@@ -140,7 +140,7 @@
       {/each}
     </ul>
   {:else}
-    <ul class="rows">
+    <ul class="rows" data-scroll>
       {#each rows as r (r.id)}
         <li>
           <button
