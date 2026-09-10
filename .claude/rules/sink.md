@@ -107,9 +107,13 @@ So an agent that reads a wall-wide item in project scope, agrees with it, and dr
 same title does not second it. It files a project twin, and is told "dropped into the project
 sink as […] — nobody is assigned to it", with exactly the confidence of a fresh finding. That
 is `voices` losing the one count it exists to keep. Filed as sink `23f5f762`; measured in
-`skein.db` on 2026-09-10 as **five** title pairs split across the two scopes, not the three
-originally reported — and one of those five is a *settled* wall-wide item whose project twin
-is still open, which is the same hole read from the other end.
+`skein.db` on 2026-09-10 as **six** title pairs split across the two scopes, not the three
+originally reported — one of them a *settled* wall-wide item whose project twin is still open,
+which is the same hole read from the other end, and the sixth (`b6bfecba` / `71a15dfd`) made
+that same afternoon by a card copying a title byte-for-byte out of `sink`'s own listing in
+order to second it. That is the reproduction in one line: **the listing an agent is shown
+does not say which scope a row it is reading came from**, so the title it copies back is not
+the address it thinks it is.
 
 Three shapes could close it, and they are not the same size:
 
