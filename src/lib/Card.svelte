@@ -883,9 +883,23 @@
      conversation is not something the weather gets to cross. Filling it with the
      wall reads identically — the wall is what you would have seen — and it is
      the only thing standing between the backdrop and the card, since the card is
-     what has to occlude it. Same reasoning as `.pin`'s `--ink` halo. */
+     what has to occlude it. Same reasoning as `.pin`'s `--ink` halo.
+
+     `--hollow` rather than `--ink` directly, and it defaults to exactly
+     `var(--ink)` so nothing above changes on the wall this was written for.
+     What it buys is that a skin can say what *spent* looks like on its own
+     ground, because the paragraph above is a dark-wall argument: a card filled
+     with the wall reads as unlit only where the wall is an absence of light.
+     On a light ground it reads as nothing at all — 1.06 against `sugar`'s
+     wall — and the dashed border that carries the shape on the dark wall
+     (1.36) was down at 1.18 there. See `palette.ts`.
+
+     `box-shadow: none` stays, and now means something it did not have to
+     before: a skin may give live cards a shadow, and a dormant one must not
+     have it. A spent card lies flat on the surface — the lift is the other
+     half of "the light is what's missing". */
   .card[data-dormant] {
-    background: var(--ink);
+    background: var(--hollow, var(--ink));
     border-style: dashed;
     animation: none;
     box-shadow: none;

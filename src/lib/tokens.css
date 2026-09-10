@@ -18,6 +18,23 @@
   --paper-mute: #8a7e74;
   --paper-faint: #615850;
 
+  /* What a dormant card is filled with — the wall itself, so a spent card
+     reads as a hole in it. `var(--ink)` and not a literal, because it is a
+     *relationship* rather than a colour: whatever the ground becomes, hollow
+     follows it, and a skin that only moved `--ink` would otherwise leave every
+     dormant card painted the old ground.
+
+     It is a knob (`palette.ts`) because the relationship is not universal, and
+     that is the whole reason it exists. On a dark wall the ground is the
+     absence of light, so filling a card with it genuinely reads as unlit. On a
+     light wall the ground is not an absence of anything and a card filled with
+     it simply disappears — measured at 1.06 against `sugar`'s wall, against
+     1.08 on the dark one, with the difference being that the dark wall's
+     dashed `--edge` still read at 1.36 and the light one's did not. So the
+     light skins state a different relationship here rather than inheriting a
+     dark-wall idiom that does not carry. */
+  --hollow: var(--ink);
+
   /* semantic status — the only colour in the product */
   --st-work: #7fb8a4; /* celadon — streaming, alive           */
   --st-ask: #e9a13b;  /* amber   — structured ask, full bloom  */

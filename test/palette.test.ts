@@ -65,12 +65,47 @@ function tokenDefaults(): Record<string, string> {
 
 const DEFAULTS = tokenDefaults();
 
+/** One `var(--x)` indirection followed, repeatedly, against the same map.
+ *
+ *  Needed because a token may be declared as *a reference to another token*
+ *  rather than as a literal — `--hollow: var(--ink)` is the case that matters
+ *  here, and it is written that way on purpose so that whatever the ground
+ *  becomes, a dormant card follows it.
+ *
+ *  Without this the checks below do not fail on such a token, they **skip**
+ *  it: `parseHex("var(--ink)")` is null, every measurement returns null, and
+ *  every assertion guarded by `if (c === null) return` quietly passes. That is
+ *  the worse failure of the two, and it had already happened — the dormant
+ *  check was not running for `studio` at all, which is the one skin whose
+ *  hollow is a reference. A skipped invariant looks exactly like a satisfied
+ *  one from the outside.
+ *
+ *  Bounded, so a `--a: var(--b); --b: var(--a)` in the stylesheet costs a few
+ *  iterations rather than the suite. A reference that resolves to nothing is
+ *  left as it was and skips as before, which is right: that is a value only
+ *  the browser can settle. */
+function deref(value: string, map: Record<string, string>): string {
+  let v = value;
+  for (let i = 0; i < 8; i++) {
+    const m = /^var\(\s*(--[a-z0-9-]+)\s*(?:,[^)]*)?\)$/i.exec(v.trim());
+    if (!m) return v;
+    const next = map[m[1]];
+    if (next === undefined || next === v) return v;
+    v = next;
+  }
+  return v;
+}
+
 /** The values a skin actually draws with: the stylesheet's defaults, with the
- *  skin's resolved chain written over them. This is what the browser computes,
- *  and checking anything less would let `studio` — whose map is empty on
- *  purpose — escape every invariant below. */
+ *  skin's resolved chain written over them, and every plain `var()` reference
+ *  followed to the literal underneath. This is what the browser computes, and
+ *  checking anything less would let `studio` — whose map is empty on purpose —
+ *  escape every invariant below. */
 function drawn(id: string): Record<string, string> {
-  return { ...DEFAULTS, ...resolveSkin(id) };
+  const merged: Record<string, string> = { ...DEFAULTS, ...resolveSkin(id) };
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(merged)) out[k] = deref(v, merged);
+  return out;
 }
 
 describe("the revert guarantee", () => {
@@ -141,6 +176,28 @@ describe("a knob reaches a rule", () => {
     for (const k of SKIN_KNOBS) {
       if (!k.startsWith("--ch-")) continue;
       expect(all.includes(`var(${k})`), `${k} is read with no fallback`).toBe(false);
+    }
+  });
+});
+
+describe("a token declared as a reference is still measured", () => {
+  /* The hole this closes: `--hollow` is `var(--ink)` in `tokens.css`, so
+     before `deref` every measurement of it was null and every check on it
+     *skipped*. The dormant-card invariant was not running for `studio` — the
+     one skin the floor was derived from — and it passed for exactly that
+     reason. A skipped assertion is indistinguishable from a satisfied one
+     unless something asserts it ran. */
+  test("studio's hollow resolves to the wall rather than to the word var", () => {
+    const v = drawn(STUDIO);
+    expect(v["--hollow"]).toBe(v["--ink"]);
+    expect(parseHex(v["--hollow"])).not.toBeNull();
+  });
+
+  test("and every skin's dormant pair is measurable, not skipped", () => {
+    for (const s of SKINS) {
+      const v = drawn(s.id);
+      expect(contrast(v["--edge"], v["--ink"]), `${s.id} outline`).not.toBeNull();
+      expect(contrast(v["--hollow"], v["--ink"]), `${s.id} fill`).not.toBeNull();
     }
   });
 });
@@ -268,9 +325,63 @@ describe.each(SKINS.map((s) => [s.label, s.id] as const))("%s keeps status meani
     const c = contrast(v["--surface"], v["--ink"]);
     if (c === null) return;
     /* Small on purpose — this is a *seam*, not a contrast pair, and the dark
-       wall ships at 1.06. The check is that it is not exactly zero, which is a
-       skin whose cards have vanished into the floor. */
-    expect(c).toBeGreaterThan(1.01);
+       wall itself only ships at 1.08. */
+    expect(c).toBeGreaterThanOrEqual(1.06);
+  });
+
+  /* The one that was missing, and it let a real bug through: on the light
+     skins as first shipped, **dormant cards were invisible**.
+
+     A dormant card is filled with `--hollow` (which defaults to the wall
+     itself), carries no shadow, and is outlined in a 1px *dashed* `--edge`.
+     So on the dark wall the fill contributes exactly nothing — 1.0, by
+     construction — and the entire card is its outline. That works there
+     because the outline reads at 1.36. On `sugar` it was 1.18 and on `meadow`
+     1.19, and a dashed hairline at 1.18 against the ground it is drawn on is
+     not there.
+
+     The check that shipped asked whether a *live* card was distinguishable
+     from the wall, which was the wrong pair: it passed at 1.13 while the thing
+     actually being complained about was three tokens away. A floor set below
+     everything that ships tests nothing — the number has to come from the
+     case that works, which is the dark wall, not from the cases in front of
+     you. */
+  test("and a dormant one is too, which is the outline and maybe the fill", () => {
+    const outline = contrast(v["--edge"], v["--ink"]);
+    const fill = contrast(v["--hollow"], v["--ink"]);
+    if (outline === null || fill === null) return;
+    /* Either may carry it, and on a dark ground only the outline does — so
+       this is honestly a disjunction rather than two floors. The light skins
+       clear it twice over, which is why they read better than the dark one
+       here rather than merely as well. */
+    const best = Math.max(outline, fill);
+    expect(
+      best,
+      `a dormant card is outline ${outline.toFixed(2)} / fill ${fill.toFixed(2)} against its wall`,
+    ).toBeGreaterThanOrEqual(FLOORS.dormant);
+  });
+
+  /* `--edge` is not only the dormant outline — it is every card border, every
+     seam, the meta-bar rule and `column`'s round rule. If it is too weak the
+     dormant card is just where you notice first. */
+  test("the hairline reads against the wall and against a card", () => {
+    const onWall = contrast(v["--edge"], v["--ink"]);
+    const onCard = contrast(v["--edge"], v["--surface"]);
+    if (onWall === null || onCard === null) return;
+    expect(onWall, `--edge is ${onWall.toFixed(2)} on the wall`).toBeGreaterThanOrEqual(
+      FLOORS.dormant,
+    );
+    expect(onCard, `--edge is ${onCard.toFixed(2)} on a card`).toBeGreaterThanOrEqual(1.2);
+  });
+
+  /* `--rule` is the *stronger* line — a prompt's left rule, a hover border. If
+     a skin ever inverted the two, every "this one matters more" on the wall
+     would be saying the opposite. */
+  test("the strong line is stronger than the hairline", () => {
+    const edge = contrast(v["--edge"], v["--ink"]);
+    const rule = contrast(v["--rule"], v["--ink"]);
+    if (edge === null || rule === null) return;
+    expect(rule).toBeGreaterThan(edge);
   });
 });
 

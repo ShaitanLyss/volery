@@ -131,6 +131,59 @@ front end reaches for them by position — brightest, prose, muted, a mark), and
 shipped skins actually reach, so a skin materially worse than what ships fails and one that
 is merely different does not.
 
+## A dormant card, and the idiom that did not survive the ground moving
+
+**This shipped broken and it is the most useful thing in this file.** On both light skins,
+dormant cards were invisible.
+
+A dormant card is drawn *hollow* — filled with the wall itself, no shadow, outlined in a 1px
+**dashed** `--edge`. The argument for that is in `Card.svelte` and it is a good one: the
+light is what's missing, and the wall is what you would have seen. But it is a **dark-wall**
+argument. Where the ground is the absence of light, filling a card with it genuinely reads
+as unlit. Where the ground is paper, it reads as nothing at all.
+
+So the fill contributes **exactly 1.00** by construction, on every skin, and the entire card
+is its outline:
+
+| | outline vs wall | live card vs wall |
+| :--- | ---: | ---: |
+| `studio` | **1.36** | 1.08 |
+| `twilight` | **1.52** | 1.11 |
+| `sugar` — as shipped | **1.18** | 1.13 |
+| `meadow` — as shipped | **1.19** | 1.16 |
+
+A dashed hairline at 1.18 against the ground it is drawn on is not there.
+
+Two fixes, and the first is the one that generalises:
+
+- **`--hollow` is a knob**, defaulting to `var(--ink)` — so `studio` and `twilight` are
+  byte-identical and the light skins state a *different relationship* rather than inheriting
+  one that does not carry. On paper, spent means greyed, not absent. It is declared as a
+  reference and not a literal on purpose: whatever the ground becomes, hollow follows it.
+- **The light skins' `--edge` went to studio's own 1.36.** That token is every card border,
+  every seam, the meta-bar rule and `column`'s round rule — the dormant card is just where
+  you notice first. **A hairline needs more contrast on a light ground than a dark one**,
+  which is the opposite of the instinct that produced the first draft.
+
+### Two ways the test suite was complicit, and both are general
+
+**The floor was set from the cases in front of me, not from the case that works.** The check
+that shipped asked whether a *live* card was distinguishable from the wall, floored at 1.01,
+and passed at 1.13 — while the thing actually broken was three tokens away and the number
+that would have caught it (1.36, on the dark wall) was sitting right there. A floor derived
+from the values you are currently looking at cannot fail; it can only ratify. **Derive it
+from the known-good case and let the new ones meet it.**
+
+**A skipped assertion is indistinguishable from a satisfied one.** Every colour check is
+guarded by `if (contrast(…) === null) return`, which is correct — a skin may legally use
+`color-mix(…)` and that cannot be measured from a test. But `--hollow` defaults to the
+*string* `var(--ink)`, so `parseHex` returned null, so the dormant invariant **never ran for
+`studio`** — the one skin the floor was derived from. It reported green by not looking.
+`deref` in `test/palette.test.ts` follows a `var()` chain against the same map, and two
+assertions now prove the measurement lands rather than trusting that it did. Any guard of
+the form "skip what I cannot measure" owes a companion that asserts something *was*
+measured.
+
 ## The character group, where motion is a knob
 
 `--ch-*` are the skin knobs that are not a colour: `--ch-radius`, `--ch-shadow`, `--ch-glow`,
@@ -178,7 +231,8 @@ cheapest — corner radius and a drop shadow — do more for that than any singl
   serif with the manners of a printed page, and Candara is a humanist sans with flared stems
   and rounded terminals drawn for screens. `--mono` is left alone on purpose — a fence is
   somebody's literal output and is the one place on the wall that should not have a mood.
-  Floats, pops, and is very awake.
+  Floats, pops, and is very awake. Its `--edge` is at studio's 1.36 rather than the 1.18 it
+  first shipped with — see the dormant-card section above.
 - **`twilight`** — pastel dark. The complaint was that the wall is dark *every day*, and half
   of that is monotony rather than luminance; a wall you look at at eleven at night should not
   have to become a light one to stop being the same brown. So the ramp stays within a tenth

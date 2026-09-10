@@ -88,6 +88,7 @@ export const SKIN_KNOBS = [
   "--ink",
   "--well",
   "--surface",
+  "--hollow",
   "--raised",
   "--edge",
   "--rule",
@@ -128,6 +129,7 @@ export const SKIN_KNOB_INFO: Record<SkinKnob, { label: string; takes: string; no
   "--ink": { label: "the wall", takes: "#151210", note: "what the studio floor is, behind everything" },
   "--well": { label: "the panel", takes: "#0f0d0c", note: "the transcript's ground, and what contrast is measured against" },
   "--surface": { label: "a card", takes: "#1e1a18", note: "what a conversation is drawn on" },
+  "--hollow": { label: "a dormant card", takes: "var(--ink)", note: "what a spent card is filled with. On a dark wall, the wall" },
   "--raised": { label: "raised", takes: "#272220", note: "a fence, a chip, a control that sits above a card" },
   "--edge": { label: "edges", takes: "#332c29", note: "the hairline round a card, a seam, the meta-bar rule" },
   "--rule": { label: "rules", takes: "#3d3532", note: "the stronger line — a prompt's left rule, a hover border" },
@@ -157,7 +159,10 @@ export const SKIN_KNOB_INFO: Record<SkinKnob, { label: string; takes: string; no
 /** The knobs in the order the editor shows them, under the headings this file
  *  already argues in. */
 export const SKIN_GROUPS: { title: string; knobs: SkinKnob[] }[] = [
-  { title: "ground", knobs: ["--ink", "--well", "--surface", "--raised", "--edge", "--rule"] },
+  {
+    title: "ground",
+    knobs: ["--ink", "--well", "--surface", "--hollow", "--raised", "--edge", "--rule"],
+  },
   { title: "ink", knobs: ["--paper", "--paper-dim", "--paper-mute", "--paper-faint"] },
   {
     title: "status",
@@ -230,8 +235,20 @@ export const SKINS: Skin[] = [
       "--ink": "#f7eff3",
       "--well": "#fffbfd",
       "--surface": "#ffffff",
+      /* A spent card is a *greyed* card here, not a hole in the wall. The
+         dark-wall idiom does not carry — see `--hollow` in `tokens.css`. This
+         is 1.20 against the wall and 1.35 against a live card, so it is
+         distinct from both rather than merely from one, and it is duller than
+         either: a dormant card should look like the colour has gone out of
+         it, which on paper is what "unlit" means. */
+      "--hollow": "#e8dae2",
       "--raised": "#fdf3f7",
-      "--edge": "#ecdae4",
+      /* 1.36 against the wall, which is exactly the relationship the dark wall
+         has — and it was 1.18 in the first draft, which is the whole of why a
+         dormant card was invisible here. A hairline needs *more* contrast on a
+         light ground than a dark one, not less, and every card outline, seam
+         and meta-bar rule on the wall is this token. */
+      "--edge": "#e2cad7",
       "--rule": "#d9bfcf",
       /* The ramp, tuned to the default's shape: 14.3 / 7.9 / 4.8 / 2.8 against
          this well, versus 15.4 / 8.3 / 4.9 / 2.8 in the dark. `--paper-mute`
@@ -372,8 +389,12 @@ export const SKINS: Skin[] = [
       "--ink": "#eeece2",
       "--well": "#faf8f1",
       "--surface": "#fffdf7",
+      /* 1.17 against the wall, 1.37 against a live card — `sugar`'s reasoning
+         on cream. */
+      "--hollow": "#dedbcd",
       "--raised": "#f4f1e7",
-      "--edge": "#ddd9cb",
+      /* 1.35, up from 1.19. See `sugar`'s note. */
+      "--edge": "#d2cdba",
       "--rule": "#c6c1b0",
       /* 14.1 / 8.0 / 4.6 / 2.6 — the default ladder again, on cream. */
       "--paper": "#262820",
@@ -566,4 +587,15 @@ export const FLOORS = {
   restSat: 0.25,
   /** `--st-soft` is amber held back, so it must stay *near* ask. */
   softNear: 0.28,
+  /** How visible a dormant card has to be against the wall it sits on —
+   *  whichever of its outline or its fill carries it.
+   *
+   *  1.30, and the number comes from the dark wall rather than from the light
+   *  ones: `studio`'s dashed `--edge` reads at 1.36 and that is the case known
+   *  to work. The light skins first shipped at 1.18 and 1.19 and their dormant
+   *  cards were **invisible** — the fill is the wall by default, there is no
+   *  shadow, and the outline was all there was. Setting a floor from the cases
+   *  in front of you rather than from the one that works is how that got
+   *  through the first time. */
+  dormant: 1.3,
 } as const;
