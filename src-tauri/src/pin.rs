@@ -404,8 +404,24 @@ fn do_repin(app: &AppHandle, caller: &str, args: &Value) -> String {
         }
     }
     if !remove && asked_path.map_or(true, str::is_empty) && place.is_none() {
+        /* `remove: true` rather than a bare `remove`, and that is not a style
+           preference — it is the whole of what
+           `no_tool_result_names_a_tool_a_card_cannot_call` caught here, which
+           broke the v0.29.0 release build.
+
+           These three are `repin`'s *arguments*, and for two of them that reads
+           fine because nothing is called `path` or `place`. Then `remove.rs`
+           landed a tool named exactly `remove` — one that deletes a path from
+           this machine — and this sentence became a result telling a card that
+           `remove` takes an image down. The nearest thing it can actually call
+           by that name deletes the file. That is not a lint; it is the one
+           confusion the safe-delete tool's own description spends a paragraph
+           warning against, arriving from the opposite direction.
+
+           Spelling the value is also simply clearer about what it is: an
+           argument on this call, not a verb of its own. */
         return "nothing to change — give `path` for a newer file, `place` to move it, or \
-                `remove` to take it down."
+                `remove: true` to take it down."
             .into();
     }
 

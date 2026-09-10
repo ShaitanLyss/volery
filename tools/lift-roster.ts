@@ -27,6 +27,31 @@
  * there is no second list of hints to check against — and the loaded tier's
  * byte budget is a number that means nothing until something computes it.
  *
+ * ### The result guards, and why they were added late
+ *
+ * `no_tool_result_names_a_tool_a_card_cannot_call` and its pair read the prose
+ * of *thirteen* source files looking for a backticked tool name in a tool
+ * **result**, where a bare name cannot be resolved because a result arrives on
+ * its own. They were not lifted at first, and that omission cost the v0.29.0
+ * release build.
+ *
+ * The failure is worth knowing because neither commit involved was wrong.
+ * `pin.rs` had said "`remove` to take it down" about its own boolean argument
+ * for months. Then `remove.rs` landed a *tool* called `remove` — one that
+ * deletes a path from this machine — and that sentence became a result telling
+ * a card to call something that would delete the image file. **An interaction
+ * between two changes, each fine alone**, which is the class of bug an
+ * exhaustive assertion exists for and the class no reviewer catches.
+ *
+ * Lifting them needed one thing beyond the usual: `SPEAKING_SOURCES` is a list
+ * of `include_str!("ask.rs")`, resolved against the including file, so the
+ * thirteen sources are **copied into the temp directory beside `lifted.rs`**.
+ * That is not editing the lifted text — it is giving it the environment its text
+ * expects, the same move `MODULES` makes for `crate::x::y`. The file list is
+ * parsed out of the const rather than written here, or it would go stale the
+ * first time somebody added a source and the assertion would then pass while
+ * covering less than it claims.
+ *
  * ### The technique
  *
  * Variant 2 of build.md's ladder: the schemas are `serde_json::json!`, so this
@@ -43,7 +68,14 @@
  * **It regenerates from the source files on every run and keeps nothing.**
  */
 
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
+import {
+  copyFileSync,
+  readFileSync,
+  writeFileSync,
+  mkdtempSync,
+  rmSync,
+  readdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -211,6 +243,14 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
 
 /** The assertions, per file. Helpers first — they are declared inside the test
  *  module and are found the same way. */
+/** Declarations inside a test module that the assertions are written against.
+ *
+ *  `SPEAKING_SOURCES` is the only one so far, and it is why the two result
+ *  guards below can be run here at all. */
+const TEST_ITEMS: Array<{ file: string; items: string[] }> = [
+  { file: "src-tauri/src/supervisor.rs", items: ["const SPEAKING_SOURCES"] },
+];
+
 const TESTS: Array<{ file: string; names: string[] }> = [
   {
     file: "src-tauri/src/ask.rs",
@@ -247,6 +287,26 @@ const TESTS: Array<{ file: string; names: string[] }> = [
       /* The last-one-wins collision that made guidance inert. */
       "everything_appended_to_the_prompt_survives_being_composed",
       "either_half_of_the_prompt_can_be_missing",
+      /* The two that read tool *results* rather than the prompt, and the pair
+         that made this worth extending.
+
+         `no_tool_result_names_a_tool_a_card_cannot_call` broke the v0.29.0
+         release build, and it broke it on an interaction rather than on either
+         change alone: `pin.rs` had said "`remove` to take it down" about its own
+         boolean argument for months, and then `remove.rs` landed a *tool* named
+         `remove` that deletes a path from this machine. Neither commit is wrong
+         by itself. Nothing before `cargo test` could say so, and `cargo test`
+         does not run here — so the first thing that could was the release. That
+         is the exact failure this whole script exists to stop, arriving in a
+         test the script did not cover.
+
+         Both are exhaustive over thirteen source files, which is the other half
+         of the argument in the head comment: an exhaustive assertion in a suite
+         nobody can run is documentation. */
+      "schema_spans",
+      "literals",
+      "no_tool_result_names_a_tool_a_card_cannot_call",
+      "every_prefixed_name_in_a_result_is_a_tool_the_server_advertises",
     ],
   },
 ];
@@ -271,6 +331,18 @@ function reader(file: string) {
     throw new Error(`could not find "${what}" in ${file} — has it been renamed?`);
   };
 
+  /** A declaration inside the test module, by name.
+   *
+   *  `find` searches only *above* `mod tests` and `findTest` matches `fn` only,
+   *  so a `const` that the assertions are written against — `SPEAKING_SOURCES`
+   *  is the one — is reachable by neither. `blockAt` already delimits a const by
+   *  its semicolon, so this is only about where to start looking. */
+  const findTestItem = (decl: string): string => {
+    const re = new RegExp(`^\\s*(pub\\s+)?${decl.replace(/ /g, "\\s+")}\\b`);
+    for (let i = testsAt(); i < lines.length; i++) if (re.test(lines[i])) return block(i);
+    throw new Error(`could not find "${decl}" in the tests of ${file} — has it been renamed?`);
+  };
+
   const findTest = (name: string): string => {
     for (let i = testsAt(); i < lines.length; i++) {
       if (new RegExp(`^\\s*fn ${name}\\s*[(<]`).test(lines[i])) return block(i);
@@ -278,7 +350,7 @@ function reader(file: string) {
     throw new Error(`could not find test "${name}" in ${file} — has it been renamed?`);
   };
 
-  return { find, findTest };
+  return { find, findTest, findTestItem };
 }
 
 /** The `serde_json` rlib cargo already built, found by hash rather than named.
@@ -348,6 +420,11 @@ for (const { file, items } of SOURCES) {
   for (const it of items) body.push(find(it));
 }
 body.push("#[cfg(test)]", "mod tests {", "    use super::*;");
+for (const { file, items } of TEST_ITEMS) {
+  const { findTestItem } = reader(file);
+  body.push(`    // ---- ${file} (test-module items) ----`);
+  for (const it of items) body.push(findTestItem(it));
+}
 for (const { file, names } of TESTS) {
   const { findTest } = reader(file);
   body.push(`    // ---- ${file} ----`);
@@ -359,6 +436,32 @@ const dir = mkdtempSync(join(tmpdir(), "lift-roster-"));
 const file = join(dir, "lifted.rs");
 const exe = join(dir, "lifted.exe");
 writeFileSync(file, body.join("\n\n"));
+
+/* `SPEAKING_SOURCES` is a list of `include_str!("ask.rs")`, resolved relative to
+   the file doing the including — so the lifted file needs those thirteen sources
+   sitting beside it or it does not compile.
+ *
+ * **The list is read out of the const rather than written here**, which is not
+ * tidiness: a hard-coded copy would go stale the first time somebody added a
+ * file to `SPEAKING_SOURCES`, and the assertion would then still pass while
+ * silently not covering the new one. That is precisely the bug this lift was
+ * extended to catch — a guard that goes quiet instead of red — so writing it
+ * down twice here would be reintroducing it one layer up.
+ *
+ * They are copied verbatim, which is the whole point: the assertion reads the
+ * real prose out of the real files. */
+const speaking = [...body.join("\n").matchAll(/include_str!\("([A-Za-z0-9_]+\.rs)"\)/g)].map(
+  (m) => m[1],
+);
+if (speaking.length === 0) {
+  throw new Error(
+    "no include_str! sources found in the lift — has SPEAKING_SOURCES changed shape? " +
+      "Without them the result guards compile against nothing and pass by covering no files.",
+  );
+}
+for (const name of new Set(speaking)) {
+  copyFileSync(join("src-tauri", "src", name), join(dir, name));
+}
 
 try {
   const build = spawnSync(

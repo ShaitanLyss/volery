@@ -246,7 +246,7 @@ fn do_wisp(app: &AppHandle, caller: &str, args: &Value) -> String {
              `{level}`. The levels here are `note`, `good` and `bad` — a record of what \
              happened. `ask` is the wall's own, because amber on this wall means a \
              structured ask is waiting and the way to actually want the user is \
-             `ask_user`, which costs you a turn and is meant to."
+             `mcp__skein__ask_user`, which costs you a turn and is meant to."
         ));
     }
     if mark_cut.omitted > 0 || detail_cut.omitted > 0 {
