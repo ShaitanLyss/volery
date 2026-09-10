@@ -33,7 +33,24 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 const HERE = path.resolve(".scratch/browserprobe");
-const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
+/** Where Chrome is, resolved the way `browser.rs`'s `find_chrome` resolves it.
+ *
+ * It was a hardcoded `C:/Program Files/...`, and that path does not exist on
+ * every machine — Chrome installs per-user under `LOCALAPPDATA` where there is
+ * no local administrator, which is exactly the situation
+ * `.claude/rules/build.md` documents for this one. The probe then died with an
+ * `ENOENT` naming a path, which reads as a broken probe rather than as a
+ * browser somewhere else. */
+const CHROME = (() => {
+  const roots = [
+    process.env.PROGRAMFILES,
+    process.env["PROGRAMFILES(X86)"],
+    process.env.LOCALAPPDATA,
+  ]
+    .filter(Boolean)
+    .map((r) => path.join(r!, "Google/Chrome/Application/chrome.exe"));
+  return roots.find((r) => existsSync(r)) ?? roots[0] ?? "chrome.exe";
+})();
 const TARGET = process.env.TARGET ?? "http://localhost:3000/";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -403,20 +420,311 @@ async function vault(chromium: any) {
   await fresh.close();
 }
 
+/* ── a browser you cannot see ──────────────────────────────────────────── */
+
+/** Can the shared browser be kept off the desktop and still be a picture?
+ *
+ * The measurement behind `browser::Mode`, and it chose the implementation
+ * rather than merely confirming it. Three questions, in the order of how much
+ * each changed the design:
+ *
+ * 1. **Does an unseen window still produce frames?** A window Windows believes
+ *    is invisible is one Chrome stops painting, and `Page.startScreencast`
+ *    then delivers nothing at all — a widget frozen on its first picture with
+ *    the browser, the socket and the page all demonstrably fine.
+ * 2. **What brings a hidden window back?** `ShowWindow(SW_HIDE)` is the
+ *    obvious implementation and it loses to Chrome: opening a *tab* re-shows
+ *    the window. Parking it off-screen survives that, which is why the mode
+ *    that shipped is called `parked`.
+ * 3. **Is headless visible to a server?** It is, in the `User-Agent` header —
+ *    and nowhere else, which is what makes an override a complete fix rather
+ *    than a more distinctive fingerprint than the honest one.
+ *
+ * Raw CDP rather than Playwright, so this branch needs no Playwright at all:
+ * the questions are about windows and headers, and a driver in between would
+ * add a launcher with opinions of its own about exactly the flags under test.
+ */
+async function hidden() {
+  const port = 9231;
+  /* How long to hold the screencast open. Three seconds answers "does it paint
+     at all"; a longer hold answers "does it *keep* painting", which is the
+     question Chrome's occlusion calculation makes different — it is throttled,
+     so a window it will eventually give up on still paints for the first few
+     seconds. `HOLD=30000` is what decided whether the occlusion flags are
+     load-bearing for a parked window. */
+  const HOLD = Number(process.env.HOLD ?? 3000);
+  const page = `<!doctype html><meta charset=utf-8>
+<body style="margin:0;background:#101014;color:#e8e4dc;font:40px monospace">
+<div id=t>tick 0</div><button id=b style="width:420px;height:160px">click me</button>
+<script>let n=0,k=0;setInterval(()=>{t.textContent='tick '+(++n)},50);
+b.onclick=()=>{window.__k=++k};window.__k=0;</script>`;
+  const file = path.join(HERE, "hidden.html");
+  writeFileSync(file, page);
+
+  /* One PowerShell preamble for every window question below. Note `R r;` is
+     declared before the `out` rather than inside it: Windows PowerShell 5.1
+     compiles this with a C# that predates inline out-declarations, and what it
+     says when you forget is that a `)` is missing. */
+  const PS = `
+Add-Type @"
+  using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+  [StructLayout(LayoutKind.Sequential)] public struct R { public int L, T, Rt, B; }
+  public class W {
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int m);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int t, uint f);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
+    [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+    public delegate bool EnumProc(IntPtr h, IntPtr l);
+    public static List<IntPtr> Of(uint want) {
+      var f = new List<IntPtr>();
+      EnumWindows((h,l) => { uint p; GetWindowThreadProcessId(h, out p);
+        if (p != want) return true;
+        var sb = new StringBuilder(256); GetClassName(h, sb, 256);
+        R r; GetWindowRect(h, out r);
+        if (sb.ToString().StartsWith("Chrome_WidgetWin") && (r.Rt-r.L) > 100) f.Add(h);
+        return true; }, IntPtr.Zero);
+      return f; }
+    public static string Snap(uint pid) {
+      var o = "";
+      foreach (var h in Of(pid)) { R r; GetWindowRect(h, out r);
+        o += "vis=" + IsWindowVisible(h) + " at=" + r.L + "," + r.T + "  "; }
+      return o == "" ? "(no windows)" : o; }
+    public static string Hide(uint pid) {
+      foreach (var h in Of(pid)) ShowWindow(h, 0);
+      return "hidden"; }
+    public static string Park(uint pid) {
+      foreach (var h in Of(pid)) {
+        ShowWindow(h, 0);
+        SetWindowLong(h, -20, GetWindowLong(h, -20) | 0x80);        // WS_EX_TOOLWINDOW
+        SetWindowPos(h, IntPtr.Zero, -32000, -32000, 0, 0, 0x0015); // NOSIZE|NOZORDER|NOACTIVATE
+        ShowWindow(h, 8);                                           // SW_SHOWNA
+      }
+      return "parked"; }
+  }
+"@
+`;
+  const ps = (body: string) => {
+    try {
+      return execFileSync("powershell", ["-NoProfile", "-Command", PS + body], {
+        encoding: "utf8",
+      }).trim();
+    } catch (e: any) {
+      return `ERR ${(e.message ?? "").split("\n")[0]}`;
+    }
+  };
+
+  const ready = async () => {
+    for (let i = 0; i < 60; i++) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${port}/json/version`);
+        if (r.ok) return await r.json();
+      } catch {}
+      await sleep(250);
+    }
+    throw new Error("the port never answered");
+  };
+
+  /* The three flags that keep an unseen window painting. Their absence is the
+     whole of question 1, and it is measured rather than assumed. */
+  const AWAKE = [
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+  ];
+
+  let seq = 0;
+  async function run(label: string, extra: string[], after: (pid: number) => void = () => {}) {
+    const profile = path.join(HERE, `hidden${seq++}`);
+    mkdirSync(profile, { recursive: true });
+    const child = spawn(
+      CHROME,
+      [
+        `--remote-debugging-port=${port}`,
+        "--remote-allow-origins=*",
+        `--user-data-dir=${profile}`,
+        "--no-first-run",
+        "--no-default-browser-check",
+        ...extra,
+      ],
+      { stdio: "ignore" },
+    );
+    const out: Record<string, unknown> = {};
+    try {
+      const v = await ready();
+      await sleep(1500);
+      after(child.pid!);
+      await sleep(700);
+
+      const ws = new WebSocket(v.webSocketDebuggerUrl);
+      await new Promise((res, rej) => {
+        ws.addEventListener("open", res, { once: true });
+        ws.addEventListener("error", rej, { once: true });
+      });
+      let id = 0;
+      let frames = 0;
+      const got = new Map<number, any>();
+      ws.addEventListener("message", (e: any) => {
+        const m = JSON.parse(String(e.data));
+        if (m.id) got.set(m.id, m);
+        else if (m.method === "Page.screencastFrame") {
+          frames++;
+          /* Chrome sends nothing more until the last frame is acknowledged, so
+             a missing ack is not a slow probe — it is a frame count of 1. */
+          ws.send(
+            JSON.stringify({
+              id: ++id,
+              method: "Page.screencastFrameAck",
+              params: { sessionId: m.params.sessionId },
+              sessionId: m.sessionId,
+            }),
+          );
+        }
+      });
+      const call = async (method: string, params: any, sessionId?: string) => {
+        const n = ++id;
+        ws.send(JSON.stringify({ id: n, method, params, sessionId }));
+        for (let i = 0; i < 80 && !got.has(n); i++) await sleep(100);
+        return got.get(n);
+      };
+
+      const t = await call("Target.createTarget", {
+        url: `file:///${file.replace(/\\/g, "/")}`,
+      });
+      const a = await call("Target.attachToTarget", {
+        targetId: t.result.targetId,
+        flatten: true,
+      });
+      const sid = a.result.sessionId;
+      await call("Page.enable", {}, sid);
+
+      /* **Applied a second time, and the first version of this probe was
+         wrong for want of it.** Creating that page created a *tab*, and a tab
+         puts a hidden window back on the desktop — so the frame count below
+         was measuring a perfectly visible window and reported 44 frames for a
+         mode whose whole question is what happens when there are none. The
+         hook is idempotent, so parking twice costs nothing; hiding twice is
+         what a hide-based implementation would genuinely have to do, since
+         Volery re-parks on `Target.targetCreated` for exactly this reason. */
+      after(child.pid!);
+      await sleep(700);
+      /* Snapshotted *here*, immediately before the measurement, so the row
+         says what the window was actually doing while the frames were being
+         counted rather than what it was doing a second earlier. */
+      out.whileMeasuring = ps(`[W]::Snap(${child.pid})`);
+
+      await call(
+        "Page.startScreencast",
+        { format: "jpeg", quality: 60, maxWidth: 900, maxHeight: 700 },
+        sid,
+      );
+      await sleep(HOLD);
+      out[`framesIn${HOLD / 1000}s`] = frames;
+
+      /* A click, in the page's own CSS pixels. The other half of "is this
+         browser usable at all", since a picture you cannot click is a
+         screenshot. */
+      const rect = await call(
+        "Runtime.evaluate",
+        {
+          expression: `(() => { const r = document.getElementById('b').getBoundingClientRect();
+                       return {x: r.x + r.width / 2, y: r.y + r.height / 2} })()`,
+          returnByValue: true,
+        },
+        sid,
+      );
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await call(
+          "Input.dispatchMouseEvent",
+          { type, ...rect.result.result.value, button: "left", clickCount: 1 },
+          sid,
+        );
+      }
+      await sleep(300);
+      out.clicks = (
+        await call("Runtime.evaluate", { expression: "window.__k", returnByValue: true }, sid)
+      ).result.result.value;
+      out.userAgent = (
+        await call(
+          "Runtime.evaluate",
+          { expression: "navigator.userAgent", returnByValue: true },
+          sid,
+        )
+      ).result.result.value;
+
+      /* What a *tab* and then a *window* do to where the window sits. This is
+         the question that chose parking over hiding, and the two answers
+         differ — so read `afterATab` against `whileMeasuring`, which is the
+         same window a moment before anything was opened. */
+      await call("Target.createTarget", { url: "about:blank" });
+      await sleep(1200);
+      out.afterATab = ps(`[W]::Snap(${child.pid})`);
+      await call("Target.createTarget", { url: "about:blank", newWindow: true });
+      await sleep(1500);
+      out.afterAWindow = ps(`[W]::Snap(${child.pid})`);
+      ws.close();
+    } catch (e: any) {
+      out.error = e.message;
+    } finally {
+      try {
+        execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      } catch {}
+    }
+    console.log(`\n── ${label}`);
+    for (const [k, v] of Object.entries(out)) console.log(`   ${k.padEnd(13)}: ${v}`);
+  }
+
+  console.log("\n=== a browser you cannot see ===");
+  await run("a window, the way it was before any of this", []);
+  await run("SW_HIDE, no extra flags — the obvious implementation", [], (pid) =>
+    console.log(`   ${ps(`[W]::Hide(${pid})`)}`),
+  );
+  await run("SW_HIDE, with the three flags", AWAKE, (pid) =>
+    console.log(`   ${ps(`[W]::Hide(${pid})`)}`),
+  );
+  await run("parked off-screen, with the three flags — what shipped", AWAKE, (pid) =>
+    console.log(`   ${ps(`[W]::Park(${pid})`)}`),
+  );
+  /* The control for the row above, and the one the first draft of this probe
+     forgot to run: it measured hiding with and without the flags, and then the
+     code claimed the flags on behalf of *parking*, which is a different thing
+     being done to the window. This is the pair that decides whether those
+     three arguments earn their place. */
+  await run("parked off-screen, no extra flags — the control", [], (pid) =>
+    console.log(`   ${ps(`[W]::Park(${pid})`)}`),
+  );
+  await run("headless", ["--headless=new", "--window-size=1280,800"]);
+  console.log(
+    "\n  Read the frame counts against `whileMeasuring`: 0 frames on a window that\n" +
+      "  was not visible means Chrome stopped painting one it believed nobody could\n" +
+      "  see, which is a widget frozen on its first picture with everything else\n" +
+      "  about the browser demonstrably fine. Then read `afterATab` against\n" +
+      "  `whileMeasuring`: a hidden window comes back on a new tab, a parked one\n" +
+      "  does not, and that is the whole reason the mode that shipped is a park.",
+  );
+}
+
 /* ── main ──────────────────────────────────────────────────────────────── */
 
 const which = process.argv[2] ?? "all";
-const pw = findPlaywright();
-if (!pw) {
+/* `hidden` is raw CDP and needs no driver, so it must not be gated behind
+   finding one — a machine with no Playwright can still answer the question
+   this app's own launch arguments turn on. */
+const pw = which === "hidden" ? null : findPlaywright();
+if (which !== "hidden" && !pw) {
   console.error(
     "no playwright found. Tried ~/codes/rise, ~/codes/nova and ./node_modules.\n" +
       "Pass PLAYWRIGHT=<path to playwright/index.js>.",
   );
   process.exit(1);
 }
-const { chromium } = await import(`file:///${pw.replace(/\\/g, "/")}`).then(
-  (m: any) => m.default ?? m,
-);
+const { chromium } = pw
+  ? await import(`file:///${pw.replace(/\\/g, "/")}`).then((m: any) => m.default ?? m)
+  : { chromium: null };
 
 rmSync(HERE, { recursive: true, force: true });
 mkdirSync(HERE, { recursive: true });
@@ -426,6 +734,10 @@ try {
   if (which === "collide" || which === "all") await collide(chromium);
   if (which === "share" || which === "all") await share(chromium);
   if (which === "vault" || which === "all") await vault(chromium);
+  /* Deliberately **not** in `all`: it launches five browsers in a row and
+     moves real windows around your desktop, which is not a thing to do to
+     somebody who asked for the memory figures. */
+  if (which === "hidden") await hidden();
 } finally {
   /* Only our own subdirectory. `.scratch/` is shared by every card on this
      wall and sweeping it has already cost somebody a measurement harness.

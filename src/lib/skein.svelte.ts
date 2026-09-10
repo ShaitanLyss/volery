@@ -1368,6 +1368,16 @@ export class Skein {
     this.rousing = true;
     let woken = 0;
     try {
+      /* Before the first spawn, not before the paint: a browser restored at
+         launch is still coming up while the wall is already on screen, and a
+         card spawned in that gap gets no `mcp__browser__*` at all — an MCP
+         server's arguments are settled at spawn and cannot be renegotiated
+         afterwards. Waiting costs this queue a second or two of background
+         time it has plenty of, and buys every roused card the same tools the
+         next one to be woken would have had. Returns at once when there is no
+         browser to wait for, which is most launches. */
+      await invoke<boolean>("browser_await_start").catch(() => false);
+
       for (const conv of rouseOrder(this.convs)) {
         /* Editing a front-end file rebuilds App.svelte and constructs a second
            Skein while this loop is still walking the wall — and unlike a

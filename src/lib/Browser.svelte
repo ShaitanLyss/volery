@@ -32,6 +32,10 @@
     modifiersOf,
     normalizeConfig,
     toPage,
+    canPark,
+    canShowWindow,
+    MODES,
+    MODE_NOTE,
     type FrameMeta,
   } from "./browser";
   import type { Pane, Target } from "./pane.svelte";
@@ -218,15 +222,30 @@
     pane.starting ? "pending" : !pane.status.running ? "idle" : subject ? "live" : "rest",
   );
 
+  /* `pane.starting` is this window's own press; `status.starting` is the launch
+     auto-start, which may have been in flight before this widget existed. Both
+     mean the same thing to a person and neither should offer a start button —
+     a second Chrome on the same port is the failure that reads as "the browser
+     is broken". */
+  const coming = $derived(pane.starting || pane.status.starting);
+
   const down = $derived(
     pane.status.running
       ? null
       : {
-          word: pane.starting ? "starting the browser…" : "the browser is not running",
-          verb: pane.starting ? null : "start",
+          word: coming ? "starting the browser…" : "the browser is not running",
+          verb: coming ? null : "start",
           press: () => void pane.start(),
         },
   );
+
+  /* The mode buttons are drawn while nothing is running, because that is when
+     the choice can still take effect — `--headless` is a launch argument, so
+     this is a decision about the *next* browser, and saying so by only offering
+     it then is cheaper than a sentence explaining it. A browser already up is
+     moved with `show window` / `park it` instead, which is the same question
+     asked about the window rather than about the next launch. */
+  const choosing = $derived(!pane.status.running && !coming);
 
   /* A page-less browser is not a fault and not an empty filter — it is a
      browser with nothing open, and the honest thing is to say so and offer the
@@ -234,6 +253,11 @@
   const note = $derived(
     pane.fault
       ? pane.fault
+      /* A parking that did not take is the one failure here that is invisible
+         otherwise: you asked for a browser off your desktop and got one on it,
+         and without a line saying so the knob reads as having done nothing. */
+      : pane.status.warning
+        ? pane.status.warning
       : pane.saved && cfg.variant === "page" && !frame
         ? pane.saved
       : !pane.status.running
@@ -258,6 +282,41 @@
   {note}
 >
   {#snippet chips()}
+    {#if choosing}
+      {#each MODES as m (m)}
+        <button
+          class="act"
+          class:on={pane.status.mode === m}
+          title={MODE_NOTE[m]}
+          onclick={() => void pane.mode(m)}
+        >
+          {m === "window" ? "window" : m === "parked" ? "off-screen" : "headless"}
+        </button>
+      {/each}
+    {/if}
+    {#if canShowWindow(pane.status)}
+      <!-- The escape hatch, and the reason off-screen beats headless as a
+           default: a sign-in that wants a real window — a native SSO prompt, a
+           password manager, a captcha — is one press away, and one press back.
+           It moves the window, not the setting, so the next start is still
+           what you chose. -->
+      <button
+        class="act"
+        title="put the window back on your desktop, for a sign-in that needs it"
+        onclick={() => void pane.show()}
+      >
+        show window
+      </button>
+    {/if}
+    {#if canPark(pane.status)}
+      <button
+        class="act"
+        title="put the window back off your desktop"
+        onclick={() => void pane.park()}
+      >
+        park it
+      </button>
+    {/if}
     {#if pane.status.running && subject}
       <button
         class="act"
@@ -375,6 +434,15 @@
 
   .act:hover {
     color: var(--paper);
+  }
+
+  /* The mode that is set. Not colour — colour is reserved for status, and how
+     a browser stands on your desktop is not one. Inverting the chip is the
+     same "this is the one" the rest of the chrome makes achromatically. */
+  .act.on {
+    color: var(--ink);
+    background: var(--paper-dim);
+    border-color: var(--paper-dim);
   }
 
   .ro {

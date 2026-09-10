@@ -17,7 +17,13 @@ import {
   shortUrl,
   toPage,
   toneOfConsole,
+  canPark,
+  canShowWindow,
+  normalizeMode,
+  MODES,
+  MODE_NOTE,
   type FrameMeta,
+  type Mode,
 } from "../src/lib/browser";
 import { FOLLOW } from "../src/lib/logface";
 
@@ -396,5 +402,72 @@ describe("the session vault", () => {
       [{ origin: "https://a", entries: [["k", "v"]] }],
     );
     expect(savedWhat(two)).toBe("saved 2 cookies and 1 origin's stored items");
+  });
+});
+
+describe("how the browser stands on the desktop", () => {
+  test("an unknown mode is the default rather than an error", () => {
+    expect(normalizeMode("window")).toBe("window");
+    expect(normalizeMode("parked")).toBe("parked");
+    expect(normalizeMode("headless")).toBe("headless");
+    /* A mode written by a newer build, and the two shapes a missing one
+       arrives in. None may leave the knob undrawable. */
+    expect(normalizeMode("holographic")).toBe("parked");
+    expect(normalizeMode(undefined)).toBe("parked");
+    expect(normalizeMode(null)).toBe("parked");
+    expect(normalizeMode(3)).toBe("parked");
+  });
+
+  /* The default has to be the same on both sides of the wire. Rust's
+     `Mode::default` is `Parked`, and a disagreement here would show up as the
+     knob moving on its own after a launch — the front end drawing one thing
+     and the next status saying another. */
+  test("the default matches the one Rust starts from", () => {
+    expect(normalizeMode(undefined)).toBe("parked");
+  });
+
+  test("every mode is offered and every mode is described", () => {
+    expect([...MODES]).toEqual(["window", "parked", "headless"]);
+    for (const m of MODES) {
+      expect(MODE_NOTE[m]).toBeTruthy();
+      /* The house voice: lowercase and sentence-shaped. */
+      expect(MODE_NOTE[m]).toBe(MODE_NOTE[m].toLowerCase());
+    }
+  });
+
+  /* The two buttons are exclusive and both are off unless there is a parked
+     browser to move. The case that matters most is headless: it has no window,
+     so a "show window" there would be a button that fails when pressed. */
+  test("only a parked browser offers to move its window", () => {
+    const stand = (o: Partial<{ running: boolean; mode: Mode; onDesktop: boolean }> = {}) => ({
+      running: true,
+      mode: "parked" as Mode,
+      onDesktop: false,
+      ...o,
+    });
+
+    expect(canShowWindow(stand())).toBe(true);
+    expect(canPark(stand())).toBe(false);
+
+    /* Shown for a sign-in: now the other one is the offer. */
+    expect(canShowWindow(stand({ onDesktop: true }))).toBe(false);
+    expect(canPark(stand({ onDesktop: true }))).toBe(true);
+
+    /* Headless has no window at all, in either direction. */
+    expect(canShowWindow(stand({ mode: "headless" }))).toBe(false);
+    expect(canPark(stand({ mode: "headless" }))).toBe(false);
+
+    /* A browser started in a window parks like any other, and this assertion
+       is here because it once asserted the opposite. The restriction existed
+       for three occlusion flags that were supposed to be what kept Chrome
+       painting an unseen window; the control run measured parked-with-flags at
+       602 frames in 30s against parked-without at 601, so the two windowed
+       modes were never different and the rule was guarding nothing. */
+    expect(canPark(stand({ mode: "window", onDesktop: true }))).toBe(true);
+    expect(canShowWindow(stand({ mode: "window" }))).toBe(true);
+
+    /* And nothing at all is offered for a browser that is not running. */
+    expect(canShowWindow(stand({ running: false }))).toBe(false);
+    expect(canPark(stand({ running: false, onDesktop: true }))).toBe(false);
   });
 });

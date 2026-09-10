@@ -337,6 +337,12 @@ pub fn run() {
             let frame = store.0.lock().ok().and_then(|c| store::read_window_frame(&c));
             app.manage(store);
             window::settle(app.handle(), frame);
+            /* After the store, because it reads how the browser stood last
+               time, and after `settle`, because it must not delay the window:
+               it loads the mode synchronously and does the launch itself in the
+               background. A wall closed with a browser up comes back with one.
+               See `browser::resume_at_launch`. */
+            browser::resume_at_launch(app.handle());
             /* Bind the ask endpoint before any conversation can be spawned,
                so every one of them gets a working --mcp-config. */
             let port = ask::start(app.handle().clone())?;
@@ -426,6 +432,10 @@ pub fn run() {
             browser::browser_save_session,
             browser::browser_start,
             browser::browser_stop,
+            browser::browser_park,
+            browser::browser_show,
+            browser::browser_set_mode,
+            browser::browser_await_start,
             browser::browser_targets,
             browser::browser_open,
             claude::find_claude,

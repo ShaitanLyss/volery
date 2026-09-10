@@ -44,6 +44,7 @@ import {
   storageStateFrom,
   type FrameMeta,
   type KeyMsg,
+  type Mode,
 } from "./browser";
 import type { Row } from "./logface";
 
@@ -53,6 +54,22 @@ export type Status = {
   endpoint: string;
   version: string;
   procs: number;
+  /** The browser-level CDP socket, which is not any page's. What
+   *  `#watchTargets` listens on. Empty when nothing is running. */
+  browserWs: string;
+  /** How the browser stands on the desktop. Reported whether or not one is
+   *  running — with nothing up it is the mode a start would use, which is what
+   *  the knob has to draw. */
+  mode: Mode;
+  /** Whether its window is somewhere you can see it right now. Distinct from
+   *  `mode`, which is how it was launched and cannot change. */
+  onDesktop: boolean;
+  /** Whether the launch auto-start is still in flight, so nothing offers a
+   *  start button for a browser that is already coming up. */
+  starting: boolean;
+  /** Something that went not-quite-right and is not worth refusing a browser
+   *  over — parking failing is the case. Empty when there is nothing to say. */
+  warning: string;
 };
 
 export type Target = {
@@ -97,6 +114,11 @@ export class Pane {
     endpoint: "",
     version: "",
     procs: 0,
+    browserWs: "",
+    mode: "parked",
+    onDesktop: false,
+    starting: false,
+    warning: "",
   });
   targets = $state<Target[]>([]);
   /** What went wrong, drawn on the face rather than swallowed — the same call
@@ -116,6 +138,22 @@ export class Pane {
   rows = $state<Record<string, Row[]>>({});
 
   #live = new Map<string, Live>();
+  /** The browser-level socket, held for as long as a browser is running.
+   *
+   *  One socket for the whole browser, not one per page — it is attached to
+   *  nothing and hears only about targets coming and going. Two things fall
+   *  out of it, and the second is why it exists:
+   *
+   *  - the target list stops being something a caller has to remember to
+   *    refresh, so a page the agent opens appears in the knob by itself;
+   *  - a window that arrives somewhere visible gets parked again.
+   *
+   *  Folding `Target.targetCreated` rather than sweeping on a timer is the
+   *  house rule (`CLAUDE.md`: when the thing you care about emits nothing,
+   *  find an event that already exists near it). Here it emits something —
+   *  Chrome announces every target — and a new window cannot arrive without
+   *  one. */
+  #watcher: WebSocket | null = null;
 
   /* ── the browser itself ──────────────────────────────────────────────── */
 
@@ -125,6 +163,11 @@ export class Pane {
       this.targets = this.status.running
         ? (await invoke<Target[]>("browser_targets")).filter((t) => t.kind === "page")
         : [];
+      /* A browser this window never pressed start for — the launch auto-start
+         is the ordinary case now — still needs watching. Idempotent, so the
+         cost of asking on every refresh is a null check. */
+      if (this.status.running) this.#watchTargets();
+      else this.#unwatch();
       this.fault = null;
     } catch (e) {
       this.fault = String(e);
@@ -136,8 +179,12 @@ export class Pane {
     this.starting = true;
     this.fault = null;
     try {
+      /* No mode here on purpose: a start uses the mode that is *set*, and
+         setting it is `mode()` below. Two gestures, two calls — see
+         `browser_set_mode`. */
       this.status = await invoke<Status>("browser_start", {});
       await this.refresh();
+      this.#watchTargets();
     } catch (e) {
       this.fault = String(e);
     } finally {
@@ -145,11 +192,94 @@ export class Pane {
     }
   }
 
+  /** Choose how the browser should stand. Takes effect at the next start,
+   *  because `--headless` is a launch argument and a running Chrome cannot be
+   *  made headless. The window itself is moved live by `show()` and `park()`. */
+  async mode(mode: Mode) {
+    try {
+      this.status = await invoke<Status>("browser_set_mode", { mode });
+    } catch (e) {
+      this.fault = String(e);
+    }
+  }
+
+  /** Put the browser back on your desktop, for a sign-in that wants a real
+   *  window. The escape hatch parked mode has and headless does not. */
+  async show() {
+    try {
+      this.status = await invoke<Status>("browser_show");
+    } catch (e) {
+      this.fault = String(e);
+    }
+  }
+
+  /** Park it again after `show`, or after a popup opened a window somewhere
+   *  visible. Idempotent, and cheap enough to call on every new target. */
+  async park() {
+    try {
+      await invoke<number>("browser_park");
+      this.status = await invoke<Status>("browser_status");
+    } catch (e) {
+      this.fault = String(e);
+    }
+  }
+
+  /** Listen to the browser itself, so a target appearing is something this
+   *  file *hears* rather than something a caller has to remember to ask about.
+   *
+   *  Idempotent: called from `start`, from `refresh` when a browser turns out
+   *  to be running that this window did not start (the launch auto-start is
+   *  the case), and never opens a second socket.
+   */
+  #watchTargets() {
+    if (this.#watcher || !this.status.browserWs) return;
+    const socket = new WebSocket(this.status.browserWs);
+    this.#watcher = socket;
+    socket.onopen = () => {
+      /* `discover` is what turns targetCreated on. Without it this socket is
+         open and silent, which is the failure that looks like nothing at all
+         going wrong. */
+      socket.send(JSON.stringify({ id: 1, method: "Target.setDiscoverTargets", params: { discover: true } }));
+    };
+    socket.onmessage = (e) => {
+      let m: { method?: string; params?: { targetInfo?: { type?: string } } };
+      try {
+        m = JSON.parse(String(e.data));
+      } catch {
+        return;
+      }
+      if (m.method !== "Target.targetCreated" && m.method !== "Target.targetDestroyed") return;
+      /* Every new page is worth a list refresh; only a page can have brought a
+         window with it, so only a page is worth a park. `targetCreated` also
+         fires for workers and for the browser's own internal targets, and
+         parking on those would be an EnumWindows pass per service worker. */
+      void this.refresh();
+      if (m.method === "Target.targetCreated" && m.params?.targetInfo?.type === "page") {
+        /* `onDesktop` is the half that matters: a browser you deliberately
+           showed for a sign-in must not be snatched back off the desktop the
+           moment the login flow opens its next page. */
+        if (this.status.mode === "parked" && !this.status.onDesktop) void this.park();
+      }
+    };
+    socket.onclose = () => {
+      if (this.#watcher === socket) this.#watcher = null;
+    };
+    /* No `onerror` handler that writes a fault: this socket is a convenience,
+       and a browser that went away is already reported by everything else on
+       the face. A second message saying so would be noise on top of news. */
+  }
+
+  #unwatch() {
+    this.#watcher?.close();
+    this.#watcher = null;
+  }
+
   async stop() {
     /* Every socket first. Chrome going away closes them anyway, but a close
        we did not ask for arrives as an error on the face — and "the browser you
        just stopped has stopped" is not news. */
     for (const id of [...this.#live.keys()]) this.#drop(id);
+    this.#unwatch();
     try {
       this.status = await invoke<Status>("browser_stop");
       this.targets = [];

@@ -382,27 +382,128 @@ reach.
 `storageState` covers cookies and local storage and nothing else. An app keeping its token in
 `sessionStorage` is one where only the shared `browser` will do.
 
+## Where it stands on your desktop
+
+Asked on 2026-09-11, and the whole of it: *"when I start volery browser, it literally opens a
+chrome window. Is there any way to see it visually in volery but not see it as a chrome window
+outside volery?"*
+
+There are two honest answers rather than one, so `browser::Mode` is a setting with three
+values — `window`, `parked`, `headless` — and the default is `parked`, because that is what
+was asked for. All of it was measured before any of it was built, and **the measurement
+overturned the design twice**, which is why the numbers are here rather than a summary of
+them.
+
+`probe-browser.ts hidden`, Chrome 152.0.7977.83, screencast held 30s against a page
+repainting every 50ms. Two shorter runs agreed with the long one on every row:
+
+```text                                       frames/30s   a new tab does what
+a window, as it was before any of this            599      nothing
+SW_HIDE, no extra flags                           597      PUTS IT BACK ON THE DESKTOP
+SW_HIDE, + the three occlusion flags                1      PUTS IT BACK ON THE DESKTOP
+parked off-screen, + the three flags              602      nothing
+parked off-screen, no extra flags                 601      nothing
+headless                                          597      there is no window
+```
+
+**Hiding loses to Chrome, and that is the finding the design rests on.**
+`ShowWindow(SW_HIDE)` is the obvious implementation. Opening a *tab* re-shows the window — the
+same `HWND` flips visible again, on every run — so every page the agent opened would flash
+Chrome onto your desktop and need chasing back down. Parking it at (-32000, -32000) with
+`WS_EX_TOOLWINDOW` survives a new tab untouched, because Chrome calls `ShowWindow` and never
+repositions. Only a genuinely new *window* — an OAuth popup — lands somewhere visible, and
+that is what `browser_park` re-parks.
+
+**The three occlusion flags were shipped for a day on a justification the control run
+disproved.** `--disable-features=CalculateNativeWinOcclusion`,
+`--disable-backgrounding-occluded-windows` and `--disable-renderer-backgrounding` went in on
+the reasoning that a window nobody can see is one Chrome stops painting. Read the last two
+rows: parked with them is 602 frames and without them 601. They buy *nothing* for a parked
+window, because such a window is not occluded in Windows' sense — `IsWindowVisible` is true
+and nothing overlaps it; it is simply outside every monitor. They came out rather than being
+left in as insurance, and the row above them is why: in the one configuration where those
+flags change anything, they make it **worse** — `SW_HIDE` with them delivers 1 frame in 30s,
+reproducibly, against 597 without. Flags with an interaction that surprising do not belong on
+a path that measures fine without them.
+
+Two general things, and they are the reason this reads as a confession:
+
+- **The first probe measured the wrong thing and agreed with me.** It applied the hide at
+  launch, then created a page — and creating a page creates a *tab*, which puts the window
+  back. So the frame count was of a perfectly visible window, and it read as confirmation.
+  What caught it was the row being *inconsistent between runs* (0, then 58, then 1), which is
+  the tell: a number that will not reproduce is not a measurement, however much it agrees
+  with you.
+- **The control was missing.** Hiding was measured with and without the flags, and then the
+  flags were claimed on behalf of *parking* — a different thing being done to the window.
+  Nobody had run the pair that shipped. `parked, no extra flags` is that row, and it is in
+  the probe now so the next person cannot skip it either.
+
+**So `window` and `parked` put identical arguments on the command line**, and the only
+difference is where `park_windows` puts the window once it exists. That makes both live: a
+browser started in a window can be parked, and one started parked can be shown, which is
+`browser_show` / `browser_park` and the two buttons on the widget. Headless is the only mode
+that cannot be moved, having no window at all.
+
+**Headless is visible on the wire, and only there.** `--headless=new` sends
+`HeadlessChrome/152.0.0.0` in the `User-Agent` header — real, not folklore — while the
+`Sec-CH-UA` client-hint brands are byte-identical to a headed browser's. That second half is
+what makes an override worth doing: one that fixed the string while leaving the hints
+contradicting it would be a *more* distinctive fingerprint than the honest one, and there is
+nothing here to contradict. So `spawn_browser` launches headless once, asks `/json/version`
+what it just sent, deletes the word `Headless`, and relaunches with `--user-agent`. Derived
+rather than composed from a template, deliberately: the alternative is this app holding an
+opinion about Chrome's user-agent format, which Google has changed twice in living memory, and
+about Edge's, which differs. The cost is one extra launch, paid only in headless mode and in
+practice by the launch restore, which runs behind the painted wall.
+
+**Whether Microsoft's sign-in actually objects to `HeadlessChrome` is untested** and was
+asserted in conversation before it was checked. It is moot for the shipped default — parked is
+a headed Chrome — and neutralised for headless by the override, but nothing here has driven a
+real corporate sign-in and this file should not imply otherwise.
+
+## Coming back up the way you left it
+
+**Volery now restores the browser that was running when the wall closed**, and this section
+used to say the opposite, at length.
+
+The old refusal was right about what it was refusing: no *unconditional* auto-start, because
+that is ~450 MB for a wall that may never open a browser widget, and no lazy start on the
+agent's behalf, because nothing announces that a card is about to want one. What it did not
+consider is the third thing — a browser that was demonstrably in use when the wall closed.
+That is not a guess about what you might want, it is a record of what you had, and it costs
+nothing on the walls the arithmetic was protecting.
+
+`browser_state` (schema v33) is one row beside `window_frame`, for the same reason: a fact
+about the app rather than about anything on the wall, and there is only ever one of it.
+**`was_running` is written at both ends of the browser's life rather than at exit**, which is
+`set_mid_turn`'s lesson restated — code that runs at exit is exactly the code a crash skips,
+so a wall that was *killed* holding a browser comes back holding one. Stopping it on purpose
+is what stops the next launch bringing it back, and that is the only thing distinguishing the
+two.
+
+**And it closes the rough edge this section used to name as the one left.** The `browser`
+entry is supplied only when a browser is running *at spawn* — an MCP server's arguments are
+settled there and cannot be renegotiated — so a card opened before you pressed start never had
+`mcp__browser__*` at all. With the browser coming up at launch, the cards roused at launch do
+have it. That needs the two halves to be ordered, and they are: `resume_at_launch` publishes a
+`starting` flag *before* its background thread begins, and `Skein.rouse` awaits
+`browser_await_start` before its first spawn. A card spawned into that gap would be silently
+less capable than the one beside it for the rest of its life, which is not a thing you would
+ever notice as a bug.
+
+Nothing about it delays the window. `setup` loads the mode synchronously and returns; the wall
+paints while Chrome is still starting.
+
+**Conditional rather than always, and the arithmetic is why.** An idle
+`npx @playwright/mcp --cdp-endpoint` with no browser attached is 2 node processes and
+~212 MB, measured 2026-09-10 and consistent with the census above — spawned per card, at
+card start, whether or not that card ever looks at a page. Passing it unconditionally would
+make every card on the wall pay that for a browser most of them will never touch. Ten cards
+is 2 GB, and `processes.md` is the whole argument against paying that way.
+
 ## What is not built
 
-- **Volery does not start the browser by itself.** No auto-start at launch, because that is
-  ~450 MB for a wall that may never open a browser widget, and no lazy start on the agent's
-  behalf, because nothing announces that a card is about to want one. The widget's start
-  button is the gesture.
-
-  **The cost is now sharper than "the tools fail", and it is the one rough edge left.** The
-  `browser` entry is supplied only when a browser is running *at spawn*, so a card opened
-  before you press start does not have the tools at all and cannot be given them — an MCP
-  server's arguments are settled when the card spawns and there is no renegotiating them.
-  Waking the card is a spawn, so a rouse picks them up; nothing short of that does.
-
-  **Conditional rather than always, and the arithmetic is why.** An idle
-  `npx @playwright/mcp --cdp-endpoint` with no browser attached is 2 node processes and
-  ~212 MB, measured 2026-09-10 and consistent with the census above — spawned per card, at
-  card start, whether or not that card ever looks at a page. Passing it unconditionally would
-  make every card on the wall pay that for a browser most of them will never touch, which is
-  the same trade auto-start was refused on one paragraph up. Ten cards is 2 GB. The
-  alternative buys one thing — a card opened before the browser gains the tools when you
-  press start — and `processes.md` is the whole argument against paying that way for it.
 - **No navigation bar.** The agent navigates, and `Page.navigate` is wired in `pane.svelte.ts`
   for whatever wants it, but there is no address field on the widget. Deliberate for now: the
   page you are testing is one the agent opened, and a URL field invites the widget to become a
@@ -420,7 +521,21 @@ node --experimental-strip-types tools/probe-browser.ts cost      # per-browser v
 node --experimental-strip-types tools/probe-browser.ts collide   # two clients, one profile
 node --experimental-strip-types tools/probe-browser.ts share     # agent + widget on one page
 node --experimental-strip-types tools/probe-browser.ts vault     # sign in once, seed an isolated browser
+node --experimental-strip-types tools/probe-browser.ts hidden    # a browser you cannot see
+HOLD=30000 node --experimental-strip-types tools/probe-browser.ts hidden   # ...for half a minute
 ```
+
+`hidden` is **not** in `all`, deliberately: it launches five browsers in a row and moves real
+windows around your desktop, which is not a thing to do to somebody who asked for the memory
+figures. It is also the one branch that needs no Playwright — the questions are about windows
+and headers, and a driver in between would bring opinions about exactly the flags under test.
+
+`HOLD` is the screencast's duration and defaults to 3000. Three seconds answers *does it paint
+at all*; thirty answers *does it keep painting*, which is a different question because Chrome's
+occlusion calculation is throttled — a window it will eventually give up on still paints for
+the first few seconds. If a parked browser's picture ever goes stale after minutes rather than
+seconds, `HOLD=300000` is the run that would show it, and the three occlusion flags removed
+from `raw_spawn` are the first thing to try putting back.
 
 Playwright's `launch()` **never returns under Bun** on this machine — the import resolves and
 `chromium` is there, and the launch hangs indefinitely rather than failing. Every other probe

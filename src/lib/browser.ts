@@ -365,6 +365,78 @@ export function caption(t: { title?: string; url?: string } | null): string {
 export type Reading = "page" | "log";
 export type Showing = "all" | "console" | "problems";
 
+/* ── how the browser stands on the desktop ─────────────────────────────── */
+
+/** Whether the shared browser is a window on your desktop, and if not, how it
+ *  is kept off it. The wire spelling of `browser::Mode`.
+ *
+ *  Not a widget knob, and that is the one thing about it worth stating here:
+ *  there is exactly **one** browser on the wall — one Chrome, one fixed port —
+ *  so how it stands is a property of the browser rather than of any widget
+ *  looking at it. Two browser widgets showing two different modes would be two
+ *  readings of one fact that cannot disagree. The control is *drawn* on the
+ *  widget, because that is where the start button is and this is the same
+ *  decision, but what it sets lives in Rust and in the database beside it. */
+export type Mode = "window" | "parked" | "headless";
+
+export const MODES: readonly Mode[] = ["window", "parked", "headless"] as const;
+
+/** What each mode is, in the dock's voice — lowercase, quiet, sentence-shaped.
+ *
+ *  The trade each one makes is in the second half, because it is not obvious
+ *  from the name and it is the whole basis on which somebody would pick: what
+ *  you give up for parked is nothing much, and what you give up for headless is
+ *  the window you would want back the first time a sign-in goes sideways. */
+export const MODE_NOTE: Record<Mode, string> = {
+  window: "a normal chrome window, on your desktop",
+  parked: "off-screen — the widget is the only way to see it",
+  headless: "no window at all, and none to take back",
+};
+
+/** A mode off the wire, clamped.
+ *
+ *  The same bargain every other read-back in this file strikes: an unknown
+ *  value is the default rather than an error, so a mode written by a newer
+ *  build cannot leave the knob undrawable. `parked` rather than `window`,
+ *  matching Rust's `Mode::default` — a disagreement between the two defaults
+ *  would show as the knob moving on its own after a launch. */
+export function normalizeMode(m: unknown): Mode {
+  return m === "window" || m === "headless" ? m : "parked";
+}
+
+/** What a browser is, for the two buttons that move its window.
+ *
+ *  `mode` here is how it was *launched* and never changes; `onDesktop` is
+ *  where its window is right now. Keeping them apart is what lets a browser be
+ *  shown for a sign-in and parked again afterwards. */
+export type Standing = { running: boolean; mode: Mode; onDesktop: boolean };
+
+/** Whether the widget may offer to put the browser back on the desktop.
+ *
+ *  Only when there is a window to give and it is not already there: headless
+ *  has none, and a button that fails when pressed — or that visibly does
+ *  nothing — is worse than one that is not offered.
+ *
+ *  Note this asks nothing about *which* of the two windowed modes it is. They
+ *  put identical arguments on Chrome's command line; the only difference is
+ *  where `park_windows` puts the window once it exists, and that is a thing
+ *  these two buttons move. A browser you started in a window can be parked,
+ *  and one you started parked can be shown. */
+export function canShowWindow(s: Standing): boolean {
+  return s.running && s.mode !== "headless" && !s.onDesktop;
+}
+
+/** Whether the widget may offer to put it back off the desktop.
+ *
+ *  The mirror of `canShowWindow`. It was once also gated on having been
+ *  *launched* parked, on the reasoning that three occlusion flags were what
+ *  kept Chrome painting an unseen window and a windowed browser lacked them.
+ *  The control run killed that: parked with the flags is 602 frames in 30s and
+ *  without them 601, so there were never two kinds of windowed browser here. */
+export function canPark(s: Standing): boolean {
+  return s.running && s.mode !== "headless" && s.onDesktop;
+}
+
 export type Config = {
   variant: Reading;
   /** The target id the knob names, or `FOLLOW` for whichever page there is. */

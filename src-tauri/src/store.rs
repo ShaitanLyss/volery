@@ -273,7 +273,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 32;
+const SCHEMA_VERSION: i64 = 33;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -311,6 +311,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (30, migrate_v30),
     (31, migrate_v31),
     (32, migrate_v32),
+    (33, migrate_v33),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1558,6 +1559,72 @@ fn migrate_v32(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v32: {e}"))
+}
+
+/// Whether the shared browser was running when the wall last closed, and how it
+/// stood on the desktop.
+///
+/// One row, like `window_frame`, and for the same reason: this is a fact about
+/// the app rather than about anything on the wall, and there is only ever one
+/// of it. The browser is a singleton — one Chrome, one fixed port — so a table
+/// keyed by anything would be inventing a dimension the feature does not have.
+///
+/// **`was_running` is written at both ends of the browser's life rather than at
+/// exit**, which is the lesson `set_mid_turn` learned the hard way and is
+/// restated in `CLAUDE.md`: a flag recording that something *was* true must be
+/// written when it becomes true, because the code that runs at exit is exactly
+/// the code a crash skips. A wall that was killed with a browser up comes back
+/// with the browser up, which is the behaviour asked for.
+///
+/// `mode` is deliberately a free string here and is clamped on the way out by
+/// `browser::Mode::from_stored`. It is the same bargain the opaque JSON columns
+/// strike — a mode this build has never heard of costs no migration and cannot
+/// reach a launch argument.
+fn migrate_v33(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS browser_state (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            mode        TEXT NOT NULL DEFAULT 'parked',
+            was_running INTEGER NOT NULL DEFAULT 0,
+            updated_at  INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v33: {e}"))
+}
+
+/// How the browser stood when this wall was last looked at: `(mode,
+/// was_running)`, or `None` if nothing has ever been recorded.
+///
+/// Every failure is `None`, exactly as `read_window_frame`'s is: the fallback
+/// is "no browser, and the default mode", which is the state the app shipped
+/// with for its whole life, and nothing about a browser is worth failing a
+/// launch for.
+pub(crate) fn read_browser_state(conn: &Connection) -> Option<(String, bool)> {
+    conn.query_row(
+        "SELECT mode, was_running FROM browser_state WHERE id = 1",
+        [],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+pub(crate) fn save_browser_state(
+    conn: &Connection,
+    mode: &str,
+    was_running: bool,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO browser_state (id, mode, was_running, updated_at)
+         VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET mode = ?1, was_running = ?2, updated_at = ?3",
+        params![mode, was_running as i64, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Record that this card may hold this service's credential.
@@ -7972,6 +8039,49 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 1);
         assert!(!read_window_frame(&conn).unwrap().maximized);
+    }
+
+    /// A wall closed with a browser up comes back with one, and a wall you
+    /// closed the browser on does not.
+    ///
+    /// That difference is the whole feature, so it is asserted rather than
+    /// assumed: `was_running` is written at both ends of the browser's life,
+    /// and the only thing distinguishing "I stopped it" from "the app was
+    /// killed holding it" is which of the two wrote last.
+    #[test]
+    fn an_existing_database_gains_the_browser_state_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate_v1(&conn).unwrap();
+
+        migrate(&conn).unwrap();
+
+        /* A wall that has never had a browser has no row, and that is not the
+           same as one that had a browser and stopped it — the first should
+           adopt the default mode rather than any remembered one. */
+        assert!(read_browser_state(&conn).is_none());
+
+        save_browser_state(&conn, "headless", true).unwrap();
+        assert_eq!(
+            read_browser_state(&conn),
+            Some(("headless".to_string(), true))
+        );
+
+        /* Stopping it on purpose is what stops the next launch bringing it
+           back. */
+        save_browser_state(&conn, "headless", false).unwrap();
+        assert_eq!(
+            read_browser_state(&conn),
+            Some(("headless".to_string(), false))
+        );
+
+        /* One row, like `window_frame`: this is a state, not a log. */
+        save_browser_state(&conn, "parked", true).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM browser_state", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(read_browser_state(&conn), Some(("parked".to_string(), true)));
     }
 
     /// Nothing about where a window sat is worth failing a launch for, so the
