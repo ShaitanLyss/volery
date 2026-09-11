@@ -2111,11 +2111,21 @@ pub fn standing_work(jobs: &[crate::store::PendingJob], folded: bool, now: i64) 
         }
     }
 
+    /* **The last sentence used to name the wrong case, and a careful reader
+       acted on it.** It said the case this exists for is a completion
+       notification that never came — which is one reason a row can be stale, not
+       what the reading is for, and nothing here can detect it. A card reading
+       that reasonably concluded the trigger was broken and opened a bug against
+       Volery (nova `17f25bae`, 2026-09-11). The real trigger was the repetition
+       it was noticing, and that is fixed above. So the stale case is still said
+       out loud, because a list that reads as fact is the failure this paragraph
+       exists to prevent — it is just no longer described as the occasion. */
     s.push_str(
         "\nCheck before telling anyone whether it is still running — read the output file, or \
-         use the task id. A job that finished without its completion notification arriving is \
-         still listed here; the row is deleted when that notification lands, and the case this \
-         exists for is the one where it never came.\n</volery-background-work>",
+         use the task id. A row here says the work started and Volery never heard it end: it \
+         may be going still, or it may have finished without its completion notification ever \
+         arriving, which leaves the row standing over work that is long over. Only looking \
+         tells those apart.\n</volery-background-work>",
     );
     Some(s)
 }
