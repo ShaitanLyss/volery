@@ -88,7 +88,7 @@ const TESTS: string[] = [
   "a_flapping_gate_says_so_and_names_the_reason_it_usually_is",
   "one_change_is_not_flapping",
   /* And the one that keeps this from becoming the retracted broadcast. */
-  "the_reading_states_its_own_limits_and_names_the_banned_escape",
+  "the_reading_states_its_own_limits_and_leaves_the_deny_to_the_deny",
 ];
 
 const cache = new Map<string, string[]>();
