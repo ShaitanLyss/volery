@@ -118,6 +118,8 @@ bun tools/probe-rm.ts              # what `deny: Bash(rm -rf:*)` actually stops.
                                    # no Bash tool at all. One real turn
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
+bun tools/lift-jobs.ts             # same, for the background-work reading and the bound
+                                   # that stops it repeating while the work merely runs
 bun tools/lift-tunnel.ts           # same, for the spotify tunnel's ipv4-first sort
 bun tools/lift-later.ts            # same, for the wake envelope relay.ts parses
 bun tools/lift-roster.ts           # same, for the whole MCP roster contract (needs check-gnu once)

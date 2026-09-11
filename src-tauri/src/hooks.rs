@@ -1690,7 +1690,38 @@ fn standing(payload: &serde_json::Value, card: Option<&str>, db: Option<&str>) -
     let jobs_wanted = event != "SessionStart" || source == Some("compact");
     if jobs_wanted {
         if let Some(session) = payload.get("session_id").and_then(serde_json::Value::as_str) {
-            let jobs = crate::store::outstanding_jobs(path, card, session);
+            let mut jobs = crate::store::outstanding_jobs(path, card, session);
+            /* **And on a prompt, only what the card cannot already see.**
+               `UserPromptSubmit` fires on every prompt, so an unconditional
+               reading repeats itself for as long as the work runs — a card with
+               a 30-minute poller was handed the same three lines at every turn
+               boundary for half an hour (reported from nova `17f25bae`,
+               2026-09-11). That is the exact fault `standing_gates` names one
+               screen down and bounds, and this is the same bound: **nothing is
+               said about work this card can read for itself.** A job whose task
+               id, output path or label is still in the transcript below the last
+               fold is one the agent has in front of it, and the moment a
+               compaction carries that away this speaks again. Self-limiting,
+               derived from rows and a file that already exist, and above all a
+               *read* — `hooks.md` is explicit that this process stays a reader,
+               so `notice_served`'s shape was not available even though it is
+               what a served-mark would otherwise want.
+
+               Deliberately **not** applied to the compaction firing. That is the
+               one occasion that must never be second-guessed: the summary record
+               may not be on disk yet when `SessionStart` fires, and a tail read
+               a moment too early is the pre-fold tail — which still holds the
+               launch, and would silence the reading at precisely the moment it
+               is the only account left. */
+            if event != "SessionStart" {
+                if let Some(seen) = payload
+                    .get("transcript_path")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|p| live_context(std::path::Path::new(p)))
+                {
+                    jobs.retain(|j| !already_visible(&seen, j));
+                }
+            }
             if let Some(text) = standing_work(&jobs, event == "SessionStart", now) {
                 parts.push(text);
             }
@@ -1910,6 +1941,126 @@ fn who(r: &crate::store::GateRun) -> String {
         Some(t) if !t.is_empty() && t != "untitled" => format!("\"{t}\""),
         _ => format!("card {}", r.card.chars().take(8).collect::<String>()),
     }
+}
+
+/// How much of a session transcript is read to answer "can the card still see
+/// this?".
+///
+/// The file grows without bound and this runs on every prompt of every card that
+/// has work outstanding, so it is read from the end. Four mebibytes is a long
+/// stretch of heavy tool use — the transcript this was written from ran 4.1 MB
+/// for 960 records and a full working day — and the cap fails in the safe
+/// direction twice over: anything older than it is treated as *not* visible, so
+/// the reading speaks rather than going quiet, and that is also the right answer
+/// for a context the CLI truncated instead of folding.
+const CONTEXT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
+/// What the card can still read of its own session, or `None` if that cannot be
+/// established.
+///
+/// `None` is the fall-back-to-speaking answer and every failure returns it: no
+/// file at the path, an unreadable one, a session that has not written a
+/// transcript yet. Being wrong in the other direction would silence the only
+/// account a folded context has of its own background work, and the whole
+/// feature is the one direction.
+///
+/// Not pure — it is the one line of this that touches a disk, which is why the
+/// judgement is next door in `already_visible` where a test can reach it.
+fn live_context(path: &std::path::Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let from = len.saturating_sub(CONTEXT_TAIL_BYTES);
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    /* Lossy rather than `ok()?`: a transcript is JSONL and a seek into the
+       middle of one lands mid-character about as often as it lands mid-line, and
+       a replacement character in a line this only ever substring-searches costs
+       nothing. Refusing the whole read over it would make the reading noisy
+       again, at random. */
+    let whole = String::from_utf8_lossy(&buf);
+    let text: &str = if from > 0 {
+        /* The first line is a fragment of a record. Dropped, because a partial
+           JSON line can hold half a path and half a path matches nothing — and
+           because `since_fold` reads lines as records. */
+        match whole.find('\n') {
+            Some(i) => &whole[i + 1..],
+            None => "",
+        }
+    } else {
+        &whole
+    };
+    Some(since_fold(text).to_string())
+}
+
+/// Everything after the last compaction in a transcript tail, which is as much
+/// of it as the card still has.
+///
+/// Both markers are looked for because the CLI writes both and they are two
+/// records, not one: `system`/`compact_boundary` carries the numbers and the
+/// `user` record with `isCompactSummary` carries the summary itself. `history.ts`
+/// reads the same pair to draw the fold, and the two must agree about where a
+/// context begins or the wall and this hook are describing different
+/// conversations.
+///
+/// The summary record is cut away *with* the boundary rather than kept, so work
+/// named only inside the summary reads as invisible and gets said again. That is
+/// the direction to be wrong in: a summary that mentions a job in passing is not
+/// the same as the card knowing what it is holding.
+fn since_fold(tail: &str) -> &str {
+    let mut start = 0usize;
+    let mut at = 0usize;
+    for line in tail.split_inclusive('\n') {
+        if line.contains("\"subtype\":\"compact_boundary\"")
+            || line.contains("\"isCompactSummary\":true")
+        {
+            start = at + line.len();
+        }
+        at += line.len();
+    }
+    &tail[start..]
+}
+
+/// The shortest label that identifies a job by its words alone.
+///
+/// A label is whatever the tool call was called, so it can be `go` or `test` —
+/// two characters that appear in any transcript at all, and a job silenced by
+/// one is a job silenced always. Long enough to be about this work, short enough
+/// that a real command still qualifies: `pnpm dev --port 3000` is twenty.
+const LABEL_ENOUGH: usize = 12;
+
+/// Can the card read this job for itself in what is left of its context?
+///
+/// Three keys, in order of how much they prove. The **task id** is the CLI's
+/// own handle for a background call and appears in the receipt the agent was
+/// handed, so finding it is finding the launch. The **output path** is unique to
+/// one job and is the thing the reading would have told it to go and read
+/// anyway. The **label** is the weakest and is bounded by `LABEL_ENOUGH`.
+///
+/// Note this asks whether the *job* is visible, not whether Volery has already
+/// said so — which is the stronger question and the cheaper one. A card whose
+/// own `pnpm dev` is still in its scrollback needs nothing from this hook, and a
+/// card that was told an hour ago and has since had its context folded needs it
+/// again. Both fall out of the one predicate.
+///
+/// The path is matched in its **JSON escaping**, since that is the form it takes
+/// in the file it is being looked for in: `C:\dir` is written `C:\\dir`. Getting
+/// that wrong is silent — the match simply never fires, and the reading goes
+/// back to repeating itself with nothing to say why.
+fn already_visible(seen: &str, job: &crate::store::PendingJob) -> bool {
+    if let Some(id) = job.task_id.as_deref() {
+        if !id.is_empty() && seen.contains(id) {
+            return true;
+        }
+    }
+    if let Some(p) = job.output_path.as_deref() {
+        if !p.is_empty() && (seen.contains(&p.replace('\\', "\\\\")) || seen.contains(p)) {
+            return true;
+        }
+    }
+    let label = job.label.trim();
+    label.chars().count() >= LABEL_ENOUGH && seen.contains(label)
 }
 
 /// The words themselves. Pure, so `cargo test` can read them.
@@ -2745,6 +2896,90 @@ mod tests {
         .unwrap();
         assert!(out.contains("1. one"));
         assert!(out.contains("2. two"));
+    }
+
+    /* ── what the card can already see ──────────────────────────────────── */
+
+    /// A transcript line as the CLI writes one — compact JSON, no spaces, which
+    /// is what `since_fold` matches on.
+    fn rec(body: &str) -> String {
+        format!("{{{body}}}\n")
+    }
+
+    /// The fault this bound exists for, reported from nova `17f25bae` on
+    /// 2026-09-11: a 28-minute poller, healthy and still running, and the same
+    /// three lines handed back at every turn boundary for as long as it ran.
+    /// The launch is in the card's own scrollback — it needs nothing from us.
+    #[test]
+    fn work_the_card_can_still_read_is_not_named_again() {
+        let seen = rec(r#""type":"user","content":"task bnjihy1qz started""#);
+        assert!(already_visible(&seen, &job("poll the preview slot", "command", Some("bnjihy1qz"), None, 0)));
+    }
+
+    /// And the case the whole feature is for. The same job, the same transcript,
+    /// with a fold across it: everything above the boundary has gone out of the
+    /// card's context, so this is the only account left and it speaks.
+    #[test]
+    fn a_fold_puts_the_work_back_out_of_reach() {
+        let mut seen = rec(r#""type":"user","content":"task bnjihy1qz started""#);
+        seen.push_str(&rec(r#""type":"system","subtype":"compact_boundary""#));
+        seen.push_str(&rec(r#""type":"assistant","content":"carrying on""#));
+        assert!(!already_visible(
+            since_fold(&seen),
+            &job("poll the preview slot", "command", Some("bnjihy1qz"), None, 0)
+        ));
+    }
+
+    /// The summary record is cut away with its boundary, and both spellings are
+    /// found — the CLI writes the pair and `history.ts` reads the same two to
+    /// draw the fold.
+    #[test]
+    fn both_halves_of_a_fold_are_a_boundary() {
+        let before = rec(r#""type":"user","content":"bnjihy1qz""#);
+        let mut a = before.clone();
+        a.push_str(&rec(r#""type":"user","isCompactSummary":true,"content":"what happened""#));
+        assert_eq!(since_fold(&a), "");
+
+        let mut b = before;
+        b.push_str(&rec(r#""type":"system","subtype":"compact_boundary""#));
+        assert_eq!(since_fold(&b), "");
+    }
+
+    /// The last fold wins, not the first — a session folded twice has only the
+    /// tail of the second one still in front of it.
+    #[test]
+    fn only_the_newest_fold_bounds_the_reading() {
+        let mut seen = rec(r#""type":"system","subtype":"compact_boundary""#);
+        seen.push_str(&rec(r#""type":"user","content":"bnjihy1qz""#));
+        seen.push_str(&rec(r#""type":"system","subtype":"compact_boundary""#));
+        assert!(!already_visible(since_fold(&seen), &job("x", "command", Some("bnjihy1qz"), None, 0)));
+    }
+
+    /// The path is looked for in the escaping the file it is in actually uses.
+    /// Getting this wrong is silent: the match never fires and the reading goes
+    /// back to repeating itself with nothing to say why.
+    #[test]
+    fn a_windows_path_is_matched_as_json_writes_it() {
+        let seen = rec(r#""output":"C:\\t\\bnjihy1qz.output""#);
+        assert!(already_visible(&seen, &job("x", "command", None, Some(r"C:\t\bnjihy1qz.output"), 0)));
+    }
+
+    /// A label is whatever the call was called, so it can be two characters —
+    /// and a job silenced by a word that appears in every transcript is a job
+    /// silenced always.
+    #[test]
+    fn a_label_too_short_to_mean_anything_silences_nothing() {
+        let seen = rec(r#""type":"assistant","content":"go on then""#);
+        assert!(!already_visible(&seen, &job("go", "command", None, None, 0)));
+        let long = rec(r#""command":"pnpm dev --port 3000""#);
+        assert!(already_visible(&long, &job("pnpm dev --port 3000", "command", None, None, 0)));
+    }
+
+    /// Nothing to see is the answer that speaks, which is the direction every
+    /// failure in this path falls in.
+    #[test]
+    fn an_empty_context_hides_nothing() {
+        assert!(!already_visible("", &job("a watcher that ran for hours", "watch", Some("bx1"), Some("/t/o"), 0)));
     }
 
     /// Milliseconds in. Reporting a four-hour dev server as four seconds old is

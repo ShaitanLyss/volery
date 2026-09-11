@@ -409,6 +409,51 @@ becoming true.
 `pending_jobs` deliberately keeps the wider scope: its caller is `rouse`, whose whole question
 is what the *previous* process left behind. Two callers, two questions, one body — `jobs_of`.
 
+#### And nothing about work the card can already read, which is what made it bearable
+
+`UserPromptSubmit` fires on **every** prompt, and "started and never reported finished" is true
+of perfectly healthy work for the whole of its life. So the first version of this said the same
+thing at every turn boundary for as long as a job ran — reported from nova `17f25bae` on
+2026-09-11, where a 28-minute poll loop had its three lines handed back at each of three
+consecutive turns, every one of them about a job the card had reported on in the turn before.
+The agent's own reading of it is the argument for fixing it rather than living with it: *a
+notice that cries wolf every turn trains every agent on the wall to skim past it, which is
+precisely the case it was built to catch.*
+
+The bound is the one `standing_gates` uses two sections up, and it is the same sentence:
+**nothing is said about work this card can read for itself.** `already_visible` asks whether the
+job's task id, output path or label is still in the transcript below the last fold; if it is,
+the launch is in front of the agent and there is nothing to hand back. The moment a compaction
+carries that away, this speaks again — which is exactly the occasion the whole feature exists
+for, arrived at without a single stored flag.
+
+Three things about it are deliberate and easy to undo by accident:
+
+- **It is a read**, which is what this file says twice already and what a served-mark would have
+  broken. `notice_served`'s shape is the obvious answer and is not available here: a hook is a
+  short-lived second process, and a second writer is the one path `store.rs` records as having
+  locked the app out of its own database. `since_fold` and `already_visible` are pure and the
+  only thing that touches a disk is `live_context`, one `File::open` on a path the payload
+  already carries (`transcript_path`, on both events — `tools/probe-jobs.ts`).
+- **Every failure falls back to speaking.** No transcript, an unreadable one, a path that is not
+  there: `live_context` answers `None` and the reading says everything. Being wrong the other way
+  silences the only account a folded context has of its own background work, and that is the
+  whole feature.
+- **The compaction firing is never filtered.** The summary record may not be on disk yet when
+  `SessionStart` fires, and a tail read a moment too early is the *pre*-fold tail — which still
+  holds the launch, and would go quiet at precisely the moment it must not. The filter is on
+  `UserPromptSubmit` alone.
+
+The tail is read from the end and capped at 4 MiB, which fails safe in the same direction: work
+older than that reads as invisible and gets said again, and that is also the right answer for a
+context the CLI truncated rather than folded.
+
+`tools/lift-jobs.ts` runs these assertions on a machine with no MSVC, the way `lift-gates.ts`
+does for the other reading on this hook. Every way of getting the bound wrong compiles — a fold
+marker spelled slightly wrong silences nothing, a path matched in the wrong escaping silences
+nothing, a label bound of two characters silences everything — so `--profile test` going green
+proves none of it.
+
 #### What it costs, which is nearly nothing
 
 A `~5ms` process per prompt, against the per-tool-call one the compensator already pays, and
