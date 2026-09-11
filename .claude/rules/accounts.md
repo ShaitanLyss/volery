@@ -386,6 +386,19 @@ gesture and the same meaning it already has on a card waiting to heal
 (`skein.svelte.ts::stop`). A card waiting on your account's clock is a card
 about to act on its own, and Escape aimed at one means don't.
 
+**And dropping the prompt means closing the books on it**, which that gesture did
+not do until 2026-09-11. The held line keeps `awaited` on purpose — `releaseHeld`
+sends that text and the replay has to have a line to claim — so cancelling the
+hold left a line nothing would ever send and nothing would ever claim, with
+`Conversation.awaiting` stuck at one for the life of the process. The card then
+read `sent, not picked up` over a prompt you had cancelled, and its next turn to
+end spent the whole prompt-nudge budget on it: two turns and two allowances
+asking an agent to answer a message queued behind nothing (nova `17f25bae`, where
+the hold came from a session limit six hours earlier). `#dropHold` calls
+`echoFailed`, the same correction `#settleAccount`'s no-account arm took — **a
+prompt abandoned has to be marked as one**, and the two paths that abandon one
+must not disagree about it. `turns.md` has the count's side of it.
+
 **A held card is not a working one**, and for most of this feature's life the
 wall said it was. `Conversation.echo` opens a turn from the *gesture* — a prompt
 you sent is a turn beginning, which is the whole of why the transcript no longer

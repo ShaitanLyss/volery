@@ -2079,12 +2079,34 @@ export class Skein {
     }
   }
 
-  /** Drop a hold and the prompt with it. */
+  /** Drop a hold and the prompt with it.
+   *
+   *  **And close the books on the prompt, which is the half this was missing.**
+   *  `echo` drew the line, counted it in `awaiting` and marked it `awaited`; a
+   *  held line keeps both on purpose, because `releaseHeld` sends that very text
+   *  and the replay needs a line to claim. Cancel the hold and nothing ever
+   *  sends it — so the count stood at one forever, `unacknowledged` went true
+   *  the moment `held` came off, and the card read `sent, not picked up` over a
+   *  prompt it had been told to forget. Worse than a wrong face: the next turn
+   *  to end spent the card's whole `NUDGE_BUDGET` asking an agent to look for a
+   *  message queued behind nothing, twice, at a real turn and a real allowance
+   *  each. Reported from nova `17f25bae` on 2026-09-11, where the hold came from
+   *  a session limit at 08:06 and the two nudges landed six hours later against
+   *  a card that had long since been answered.
+   *
+   *  `echoFailed` rather than a clear of `awaited` here, because that is what
+   *  this always meant and it is already the one place that says so: the line
+   *  stays where it was written with your words still in it to copy out, and the
+   *  count comes down in the same breath. It is the same correction
+   *  `#settleAccount`'s no-account arm took — **a prompt abandoned has to be
+   *  marked as one**, and the two paths that abandon one must not disagree. */
   #dropHold(conv: Conversation) {
     const t = this.#holds.get(conv.id);
     if (t !== undefined) clearTimeout(t);
     this.#holds.delete(conv.id);
+    const abandoned = conv.held?.text;
     conv.held = null;
+    if (abandoned !== undefined) conv.echoFailed(abandoned, "left it");
     this.#writeHold(conv);
   }
 

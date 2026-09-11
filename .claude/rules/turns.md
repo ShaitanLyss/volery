@@ -434,6 +434,23 @@ What was wrong was what the wall drew while it waited, and it was worse than say
   bug `#settleEchoes` was rewritten to avoid. Skein cannot know which commands *this* build
   answers locally — a custom `/commit` is a real prompt — and does not have to, since every
   locally-answered one is slash-shaped and no ordinary prompt is.
+- **And the same leak had a second way in: a prompt cancelled while it was held.** Same shape,
+  opposite end. `echo` counts a line into `awaiting` and marks it `awaited`; a *held* line keeps
+  both deliberately, since `releaseHeld` sends that very text later and the replay needs a line
+  to claim (`accounts.md`). Escape on a held card drops the hold **and the prompt** — so nothing
+  would ever send it, nothing would ever claim it, and the count stood at one for the life of
+  the process. `unacknowledged` went true the moment `held` came off, the card read `sent, not
+  picked up` over a prompt it had been told to forget, and the next `result` spent the whole
+  prompt budget: two real turns, two real allowances, asking an agent to answer a message queued
+  behind nothing. Reported from nova `17f25bae` on 2026-09-11 — a session limit at 08:06 put the
+  prompt on hold, the nudges landed at 13:03, and the card answered both of them correctly that
+  there was nothing there. `#dropHold` now calls `echoFailed`, which is the one place that both
+  marks the line and brings the count down, and which `#settleAccount`'s no-account arm was
+  already using for the identical reason. The general shape, and it is the third time this file
+  has written it down: **`awaiting` only ever comes down by an exact-text claim, so every path
+  that abandons a prompt owes one — a path that merely stops sending it leaves a card
+  permanently owed a turn nobody can give it.**
+
 - **The face says *sent*, not *delivered*.** Skein knows the prompt reached the child's stdin
   and knows the wire never echoed it back. Whether the CLI is holding it or lost it is not a
   question this side can answer, and both are "you are owed a turn nobody is taking".
