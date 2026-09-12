@@ -48,8 +48,6 @@ import {
   type Hit,
   type MediaKind,
   type Row,
-  LAPSE_MS,
-  chord,
   drawnAs,
   fileRows,
   grepRows,
@@ -342,15 +340,6 @@ export class Finder {
     this.fuse = k.fuse;
   }
 
-  /* ── the leader ───────────────────────────────────────────────────────── */
-
-  /** The letters typed since the leader, or null when no sequence is open.
-   *  Drawn as a hint — a chord is the one gesture on this wall with no
-   *  affordance at all, so the panel offers what it is waiting for. */
-  pending = $state<string | null>(null);
-
-  #pressedAt = 0;
-  #lapse: ReturnType<typeof setTimeout> | null = null;
   #grepTimer: ReturnType<typeof setTimeout> | null = null;
   #previewTimer: ReturnType<typeof setTimeout> | null = null;
   /** Answers can land out of the order they were asked in — a grep for `f` may
@@ -376,46 +365,6 @@ export class Finder {
   /** Whether anything is in flight, for the one word the header spends on it. */
   get busy(): boolean {
     return this.listing || this.searching || this.reading;
-  }
-
-  /* ── the leader machine ───────────────────────────────────────────────── */
-
-  /** Feed a keydown to the leader, and say whether the key was ours.
-   *
-   *  `false` means the key belongs to whoever would have had it — which is the
-   *  case that makes this worth a return value rather than a side effect. A
-   *  second key that completes no chord abandons the sequence and *falls
-   *  through*, the way `<space>q` in nvim leaves you with a `q`; a finder that
-   *  ate it would be a wall where a letter occasionally vanished.
-   *
-   *  Time is read here rather than in `finding.ts` so the rule itself stays
-   *  pure and testable. */
-  press(key: string): boolean {
-    const since = this.pending === null ? 0 : Date.now() - this.#pressedAt;
-    const step = chord(this.pending, key, since);
-    /* A modifier on its own changed nothing, and must not be allowed to change
-       anything here either — including the stopwatch. A held Shift repeats its
-       keydown, so restarting the clock on it would keep a forgotten sequence
-       alive for as long as a finger rested on the key. */
-    if (step.kind === "held") return false;
-    this.pending = step.open;
-    this.#pressedAt = Date.now();
-
-    /* The hint has to go away on its own, or a sequence you thought better of
-       sits under the wall until the next thing you type. It is the same lapse
-       the machine applies to the *next* key; this one is only about the
-       drawing, which is why it is a timer here and not a rule there. */
-    if (this.#lapse !== null) clearTimeout(this.#lapse);
-    this.#lapse = null;
-    if (step.open !== null && !this.#gone) {
-      this.#lapse = setTimeout(() => {
-        this.#lapse = null;
-        this.pending = null;
-      }, LAPSE_MS + 50);
-    }
-
-    if (step.kind === "fire") void this.show(step.mode, this.where());
-    return step.swallow;
   }
 
   /* ── opening and closing ──────────────────────────────────────────────── */
@@ -471,9 +420,6 @@ export class Finder {
        viewer may well be a search, and a stale `alone` would make its Escape
        close the whole panel instead of stepping back to the list. */
     this.alone = false;
-    this.pending = null;
-    if (this.#lapse !== null) clearTimeout(this.#lapse);
-    this.#lapse = null;
   }
 
   /** The other mode, same query.
@@ -1004,10 +950,9 @@ export class Finder {
        a `bind:this` from a superseded generation would answer with the scroll
        offset of a node nothing is drawing. */
     this.reader = null;
-    for (const t of [this.#lapse, this.#grepTimer, this.#previewTimer]) {
+    for (const t of [this.#grepTimer, this.#previewTimer]) {
       if (t !== null) clearTimeout(t);
     }
-    this.#lapse = null;
     this.#grepTimer = null;
     this.#previewTimer = null;
   }

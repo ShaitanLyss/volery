@@ -1,12 +1,8 @@
 /* The finder's own reasoning, with no runes and no Tauri in it.
  *
- * Three separable things live here, and each of them is the sort of thing that
+ * Two separable things live here, and each of them is the sort of thing that
  * is obvious until you write it down:
  *
- *  - **The leader.** Space, then a sequence, the way nvim has done it for
- *    twenty years. It is a state machine over two keys and a stopwatch, and
- *    every interesting case is about what happens to the key that does *not*
- *    complete a chord.
  *  - **The score.** Which of forty thousand paths you meant by `clssfy`. A
  *    subsequence match is the easy half; the half that decides whether the
  *    panel feels like telescope or like a `grep` is what it prefers when two
@@ -14,137 +10,30 @@
  *  - **The merge.** Grep mode was asked to search names *and* contents, which
  *    is two answers arriving from two places and one list to put them in.
  *
+ * The third used to be the space leader, which is now `leader.ts`: a machine
+ * that answers with a `FindMode` is one that can only ever reach this panel,
+ * and the wall grew a second thing to open.
+ *
  * Pure, so it is tested directly (`test/finding.test.ts`). Nothing here knows
  * that ripgrep exists.
  */
 
 import { DOCUMENTS, TABLES, extOf } from "./office";
 
-/* ── the leader ───────────────────────────────────────────────────────────── */
-
-/** The leader key, and it is the space bar because that is where these hands
- *  learned it (nvchad). It is free on this wall for one reason worth stating:
- *  the wall routes a bare printable key into the focused card's draft, and a
- *  prompt never *begins* with a space — by the time a space is a space you are
- *  already typing, focus is in the field, and that branch no longer fires. */
-export const LEADER = " ";
-
-/** How long a half-typed chord stands before it is forgotten. nvim's
- *  `timeoutlen` default, and it is a real bound rather than a nicety: a leader
- *  that never lapsed would make the *next* letter you typed on the wall an
- *  hour later part of a sequence you had forgotten opening. */
-export const LAPSE_MS = 1000;
+/* ── what the panel is doing ─────────────────────────────────── */
 
 /** Which of the two things the panel is doing.
  *
  *  `files` is a list fetched once and filtered here. `grep` is a question put
  *  to ripgrep per keystroke. They are one panel because they are one gesture
  *  with two settings, and ctrl+F swaps between them without losing the query —
- *  which is the whole reason they share a type rather than being two panels. */
+ *  which is the whole reason they share a type rather than being two panels.
+ *
+ *  The space leader that opens them used to live here too, and is now
+ *  `leader.ts` — it stopped being the finder's the moment a second thing
+ *  wanted a chord.
+ */
 export type FindMode = "files" | "grep";
-
-/** Every sequence the leader opens onto, keyed by the letters after it.
- *
- *  Two, deliberately, and they are nvchad's two: `ff` finds a file by name,
- *  `fw` searches for a word. Adding a third is one line here plus one branch
- *  in the panel — the machine below never learns any of these names. */
-export const CHORDS: Record<string, FindMode> = {
-  ff: "files",
-  fw: "grep",
-};
-
-/** What a keypress did to the leader sequence.
- *
- *  `swallow` is the field the caller actually acts on, and it is separate from
- *  the kind because the two questions are separate: *what happened* and *whose
- *  key was that*. A `lapse` is the case that makes it worth having — the key
- *  that ends a sequence without completing one is **not** ours, and has to go
- *  on to whatever would have had it. That is what nvim does with `<space>q`:
- *  the space did nothing and the `q` is still a `q`. A finder that ate it
- *  instead would be a wall where a letter occasionally vanished. */
-export type Chord =
-  /** No sequence was open and this was not the leader. Nothing to do. */
-  | { kind: "idle"; open: null; swallow: false }
-  /** A modifier pressed on its own. Nothing changed, in either direction. */
-  | { kind: "held"; open: string | null; swallow: false }
-  /** The leader itself. A sequence is now open. */
-  | { kind: "leader"; open: string; swallow: true }
-  /** A prefix of something. Keep waiting. */
-  | { kind: "pending"; open: string; swallow: true }
-  /** A sequence completed. */
-  | { kind: "fire"; open: null; swallow: true; mode: FindMode }
-  /** A sequence was open and this key is not in any of them. The sequence is
-   *  abandoned and the key belongs to somebody else — except for Escape, which
-   *  is the one key that means "forget it" and is therefore swallowed. */
-  | { kind: "lapse"; open: null; swallow: boolean };
-
-/** Step the leader machine.
- *
- *  `open` is the letters typed since the leader, or null when no sequence is
- *  open. `sinceMs` is how long ago the last of them was pressed — passed in
- *  rather than read from a clock, so the lapse is part of the rule tested here
- *  rather than a `setTimeout` somewhere that nothing can see.
- *
- *  Note the lapse is checked *before* the key is read, and then the key is
- *  reconsidered from scratch. That matters for one case: pressing the leader,
- *  waiting, and pressing the leader again has to open a fresh sequence rather
- *  than be read as `<space><space>`. */
-/** Keys that are somebody pressing a modifier and nothing else.
- *
- *  They have to leave a sequence exactly as it was, which is not obvious until
- *  it bites: every one of them fires its own keydown, so without this a hand
- *  brushing Shift between the leader and the letter would abandon the chord —
- *  and, worse, `<space>` then `Shift+F` (which is how a Caps-Locked keyboard
- *  types it) would never fire at all. */
-const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "AltGraph"]);
-
-export function chord(open: string | null, key: string, sinceMs = 0): Chord {
-  if (MODIFIERS.has(key)) return { kind: "held", open, swallow: false };
-  if (open !== null && sinceMs > LAPSE_MS) open = null;
-
-  if (open === null) {
-    if (key === LEADER) return { kind: "leader", open: "", swallow: true };
-    return { kind: "idle", open: null, swallow: false };
-  }
-
-  /* The one key that closes a sequence and is still ours. Everything else that
-     fails to match falls through to the wall, but Escape means "I did not mean
-     to start this" and letting it also deselect a card would be one press
-     doing two things. */
-  if (key === "Escape") return { kind: "lapse", open: null, swallow: true };
-
-  /* Modifiers and named keys are not letters in a chord. They abandon the
-     sequence rather than extending it with the word "Shift". */
-  if (key.length !== 1) return { kind: "lapse", open: null, swallow: false };
-
-  /* Pressing the leader again inside a sequence restarts it, which is what the
-     hand means: you have lost your place and are starting over. */
-  if (key === LEADER) return { kind: "leader", open: "", swallow: true };
-
-  const next = open + key.toLowerCase();
-  const mode = CHORDS[next];
-  if (mode) return { kind: "fire", open: null, swallow: true, mode };
-  if (Object.keys(CHORDS).some((c) => c.startsWith(next))) {
-    return { kind: "pending", open: next, swallow: true };
-  }
-  return { kind: "lapse", open: null, swallow: false };
-}
-
-/** What the hint under a half-typed chord offers.
- *
- *  Which-key, in one line and without a plugin. It exists because a leader
- *  sequence is the one gesture on this wall with *no* affordance at all —
- *  every other binding is either on a button or in a tooltip, and a chord you
- *  have half-forgotten is otherwise something you have to read the source for.
- *
- *  Returns the completions of `open`, as the remaining letters and what they
- *  do, in a stable order so the hint does not reshuffle under your hand. */
-export function offers(open: string): { keys: string; mode: FindMode }[] {
-  return Object.entries(CHORDS)
-    .filter(([seq]) => seq.startsWith(open) && seq.length > open.length)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([seq, mode]) => ({ keys: seq.slice(open.length), mode }));
-}
 
 /* ── scoring a path against what you typed ────────────────────────────────── */
 

@@ -71,7 +71,7 @@ bun run test             # the pure suites: ansi, classify, layout, pick, wheel,
                          # bang,
                          # browser,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
-                         # shell, finding, voice, steward, office, styles, zoom
+                         # shell, finding, leader, synth, voice, steward, office, styles, zoom
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -186,6 +186,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `shell.md` | the shell Alt+I floats over the wall, the marker that draws its prompt, and why this one is pipes | `shell.rs`, `shell.ts`, `shell.svelte.ts`, `Console.svelte` |
 | `editing.md` | editing a file in your own nvim: attaching to one as a UI over pipes rather than a PTY, the panel's third reading, what the wire format gets wrong, the one key kept back, and colour against the house rule | `nvim.rs`, `nvim.ts`, `nvim.svelte.ts`, `Quill.svelte` |
 | `finding.md` | the finder and the file viewer: why space is free as a leader, a file list fetched once and scored here, what the fuzzy scorer prefers, a markdown file that opens as a document, and a path in a tool call that opens it | `find.rs`, `finding.ts`, `finder.svelte.ts`, `Spyglass.svelte`, `ToolCall.svelte` |
+| `toys.md` | the toy shelf at `<space>t` and the synthesiser on it: why it is an overlay rather than the wall's weather, the one place hue is allowed and what confines it, the five things that make it fun and why none are taste, which threads are already threads, and the leader hoisted off the finder so a chord can open something that is not a panel | `synth.ts`, `synth.svelte.ts`, `synth.worker.ts`, `Plume.svelte`, `leader.ts`, `leader.svelte.ts`, `Which.svelte` |
 | `bang.md` | `!` in the dock: a shell line where a prompt goes, the two things Enter and Ctrl+Enter mean, and completion out of the shell's own `TabExpansion2` | `bang.ts`, `bang.svelte.ts`, `bang.rs`, `Dock.svelte`, `field.svelte.ts` |
 | `naming.md` | what a card is called, and the draft it wears before it is named | `naming.ts` |
 | `menu.md` | the right-click, and why offering nothing is a real answer | `menu.ts` |
@@ -288,7 +289,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `src/lib` (`classify.ts`, `layout.ts`, `pick.ts`, `wheel.ts`, `ansi.ts`, `specs.ts`, `markdown.ts`, `ambience.ts`,
 `transcript.ts`, `commands.ts`, `naming.ts`, `drafts.ts`, `attach.ts`, `rousing.ts`, `timing.ts`, `asking.ts`,
 `usage.ts`, `azdo.ts`, `glass.ts`, `shell.ts`, `bang.ts`, `theme.ts`, `relay.ts`, `signin.ts`,
-`undo.ts`, `finding.ts`, `office.ts`, `integrations.ts`, `zoom.ts`,
+`undo.ts`, `finding.ts`, `leader.ts`, `synth.ts`, `office.ts`, `integrations.ts`, `zoom.ts`,
 `flow.ts`, `lineage.ts`, `board.ts`, `sink.ts`, `chronicle.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`,
 `hunt.ts`,
 `applog.ts`,

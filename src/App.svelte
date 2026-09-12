@@ -144,6 +144,14 @@
      `.claude/rules/finding.md`. */
   import Spyglass from "./lib/Spyglass.svelte";
   import { Finder } from "./lib/finder.svelte";
+  /* The space leader itself, which is the wall's rather than the finder's —
+     `<space>ff` opens a panel and `<space>ts` opens a toy, and a machine that
+     answered with a `FindMode` could only ever do the first. `Which.svelte` is
+     its hint, moved out of `Spyglass.svelte` with it. */
+  import Which from "./lib/Which.svelte";
+  import { Leader } from "./lib/leader.svelte";
+  import Plume from "./lib/Plume.svelte";
+  import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
   import WindowControls from "./lib/WindowControls.svelte";
 
@@ -338,6 +346,27 @@
   const editor = new Editor();
   finder.where = () => shellCwd();
 
+  /* The toy behind `<space>ts`. Something to do with your hands while an agent
+     is working — see `.claude/rules/toys.md`. It owns an `AudioContext`, a
+     worker and a frame loop, so it is released on destroy with everything else
+     that holds one. */
+  const synth = new Synth();
+
+  /* The wall's weather, hushed while the toy is up. Not a nicety: the ambience
+     is a full-screen canvas on a frame loop and the toy occludes it outright,
+     so those frames are paid for and cannot be seen — which is the one thing
+     `motion.ts` says costs the most and shows the least. Null rather than a new
+     flag, because `Backdrop` already means "nothing to draw" by it. */
+  const wallAmbience = $derived(synth.on ? null : ambience.active);
+
+  /* One leader for the wall, and the only place a chord becomes an action. A
+     verb rather than a mode is what lets this reach two unrelated subsystems
+     without either of them knowing the other exists. */
+  const leader = new Leader((verb) => {
+    if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
+    else if (verb.toy === "synth") synth.show();
+  });
+
   /* The `!` line. Given a way to find a card and a way to say something to one,
      rather than the whole of `Skein` — the same injection `devops.roots` and
      `widgets.others` use, and it keeps `bang.svelte.ts` unable to reach the
@@ -421,6 +450,8 @@
     control.detach();
     shell.detach();
     finder.detach();
+    leader.detach();
+    synth.release();
     editor.detach();
     bang.detach();
     /* Not a subscription but the same hazard: a superseded generation's sampler
@@ -2242,6 +2273,23 @@
   }
 
   async function onGlobalKey(e: KeyboardEvent) {
+    /* The toy owns the whole keyboard while it is up, and that is the point
+       rather than an inconvenience — thirty keys are an instrument and the rest
+       are its controls, so there is nothing left for the wall to be given.
+       First in the ladder, above even Alt+I, because it is also the only way
+       out: `press` closes on Escape.
+
+       **Escape is the key this branch exists for.** Further down this ladder it
+       stops a turn, which is a gesture worth a great deal and exactly the one
+       you would rather not make by reaching for the way out of a toy. Swallowed
+       unconditionally here, along with everything else — a capture that worked
+       for letters and let one key through to the wall behind is worse than no
+       capture at all. */
+    if (synth.on) {
+      e.preventDefault();
+      synth.press(e);
+      return;
+    }
     /* Alt+I, from anywhere at all — the wall, the draft, the shell's own field.
        It is the one binding here that fires while you are typing, and it can
        afford to be: Alt+letter is not a text gesture Chromium binds, and this
@@ -2341,9 +2389,10 @@
     if (finder.open) return;
 
     /* The space-leader chords: `<space>ff` for a file by name, `<space>fw` for
-       a word in one. Ahead of everything below because it has to beat the bare
-       printable key at the bottom of this ladder, which would otherwise take
-       the space into the focused card's draft.
+       a word in one, `<space>ts` for the toy shelf. Ahead of everything below
+       because it has to beat the bare printable key at the bottom of this
+       ladder, which would otherwise take the space into the focused card's
+       draft.
      *
      * That branch is also the whole argument for space being free here. The
      * wall routes any printable key into the draft — but a prompt never
@@ -2362,7 +2411,7 @@
       !e.altKey &&
       !menu &&
       !isTyping(e.target) &&
-      finder.press(e.key)
+      leader.press(e.key)
     ) {
       e.preventDefault();
       return;
@@ -2619,6 +2668,7 @@
     actions,
     shell,
     finder,
+    leader,
     bang,
     editor,
     canvas: () => canvas,
@@ -3012,8 +3062,14 @@
 
 </script>
 
+<!-- `onkeyup` is the toy's and nothing else's; `onblur` is the case it cannot
+     see from the keyboard at all — Alt+Tab away mid-chord and a held note never
+     gets its keyup, so it would sustain forever with nothing left able to stop
+     it. -->
 <svelte:window
   onkeydown={onGlobalKey}
+  onkeyup={(e) => synth.on && synth.lift(e)}
+  onblur={() => synth.allOff()}
   onpaste={onPaste}
   onpointermove={trackPointer}
   bind:innerWidth={winW}
@@ -3250,13 +3306,18 @@
     <Console {shell} />
   {/if}
 
-  <!-- Drawn for a *pending chord* as well as for an open panel, and that is why
-       the hint lives in `Spyglass.svelte` rather than here: a leader sequence is
-       the one gesture on this wall with no affordance at all, and a component is
-       the only CSS scope this codebase has. Putting a `.hint` in App's 565-line
-       stylesheet is how `.ghost` came to mean two things. -->
-  {#if finder.open || finder.pending !== null}
+  {#if finder.open}
     <Spyglass {finder} {editor} />
+  {/if}
+
+  {#if leader.pending !== null && !finder.open}
+    <Which open={leader.pending} />
+  {/if}
+
+  <!-- Last of the overlays and above all of them, because it covers the wall
+       outright rather than sitting over it. -->
+  {#if synth.on}
+    <Plume {synth} />
   {/if}
 
   <main class="wall" class:sizing={!!grip}>
@@ -3291,7 +3352,7 @@
           focusedId = conv.id;
           void finder.lookAt(planRoot(path), planFile(path));
         }}
-        ambience={ambience.active}
+        ambience={wallAmbience}
         flights={skein.flights}
         lineage={skein.kin}
         billboard={skein.board}

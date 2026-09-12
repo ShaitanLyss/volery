@@ -59,6 +59,7 @@ import {
 import type { DevOps } from "./devops.svelte";
 import type { Shell } from "./shell.svelte";
 import type { Finder } from "./finder.svelte";
+import type { Leader } from "./leader.svelte";
 import type { Editor } from "./nvim.svelte";
 import { fuses, keyOf } from "./dogears";
 import type { Bang } from "./bang.svelte";
@@ -114,12 +115,14 @@ export type ControlHost = {
    *  separate facts — which is exactly the sort of thing only a test from
    *  outside can hold both halves of at once. */
   shell: Shell;
-  /** The finder behind the space-leader chords. Here for the leader above all:
-   *  a chord is a *sequence* of keypresses with a stopwatch in it, and the only
-   *  thing that can hold both halves of that at once — that the second key
-   *  fires and that the wrong second key falls through to the draft — is a test
-   *  pressing real keys from outside. */
+  /** The panel `<space>ff` and `<space>fw` open. */
   finder: Finder;
+  /** The space leader itself, which is the wall's rather than the finder's. Here
+   *  above all else on this surface: a chord is a *sequence* of keypresses with
+   *  a stopwatch in it, and the only thing that can hold both halves of that at
+   *  once — that the second key fires and that the wrong second key falls
+   *  through to the draft — is a test pressing real keys from outside. */
+  leader: Leader;
   /** The `!` line's session. Here for the leak count above all: it holds two
    *  subscriptions and a batch timer, and a superseded generation of it would go
    *  on writing another card's output into a transcript. */
@@ -1063,16 +1066,17 @@ export class Control {
           lines: session.lines.length,
         })),
       },
-      /* The panel and the chord in progress are reported apart, the way the
-         shell's panel and session are: a half-typed leader is a state the app
-         is in with nothing on screen but a caption, and from outside it is
-         otherwise invisible. */
+      /* The chord in progress is reported apart from the panel it may open, the
+         way the shell's session is from its panel: a half-typed leader is a
+         state the app is in with nothing on screen but a caption, and from
+         outside it is otherwise invisible. Its own key rather than the
+         finder's, since `<space>ts` opens no finder at all. */
+      leader: { pending: h.leader.pending },
       finder: {
         open: h.finder.open,
         mode: h.finder.mode,
         root: h.finder.root,
         query: h.finder.query,
-        pending: h.finder.pending,
         at: h.finder.at,
         rows: h.finder.rows.length,
         files: h.finder.files.length,

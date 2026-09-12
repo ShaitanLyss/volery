@@ -2,16 +2,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 
 import {
-  CHORDS,
-  LAPSE_MS,
-  LEADER,
-  chord,
   fileRows,
   grepRows,
   insideRoot,
   isMarkdown,
   moveIn,
-  offers,
   pieces,
   placesIn,
   rank,
@@ -30,147 +25,6 @@ import {
   READINGS,
 } from "../src/lib/finding";
 import { DOCUMENTS, TABLES } from "../src/lib/office";
-
-/* ── the leader ───────────────────────────────────────────────────────────── */
-
-describe("the space leader", () => {
-  test("a bare key with nothing open is not ours", () => {
-    const step = chord(null, "q");
-    expect(step.kind).toBe("idle");
-    expect(step.swallow).toBe(false);
-  });
-
-  test("the leader opens a sequence and is swallowed", () => {
-    const step = chord(null, LEADER);
-    expect(step.kind).toBe("leader");
-    expect(step.open).toBe("");
-    expect(step.swallow).toBe(true);
-  });
-
-  test("space then f then f finds a file", () => {
-    /* The whole gesture, pressed one key at a time the way a hand does it. */
-    let open = chord(null, " ").open;
-    let step = chord(open, "f");
-    expect(step.kind).toBe("pending");
-    expect(step.open).toBe("f");
-    open = step.open;
-    step = chord(open, "f");
-    expect(step.kind).toBe("fire");
-    expect(step).toMatchObject({ mode: "files" });
-    expect(step.open).toBeNull();
-  });
-
-  test("space then f then w greps", () => {
-    const step = chord(chord(chord(null, " ").open, "f").open, "w");
-    expect(step).toMatchObject({ kind: "fire", mode: "grep" });
-  });
-
-  test("a key that completes no chord falls through rather than being eaten", () => {
-    /* The one that matters. `<space>q` in nvim leaves you with a `q`; a finder
-       that swallowed it would be a wall where a letter occasionally vanished
-       into a gesture nobody made. */
-    const step = chord("", "q");
-    expect(step.kind).toBe("lapse");
-    expect(step.swallow).toBe(false);
-    expect(step.open).toBeNull();
-  });
-
-  test("a second letter that completes no chord also falls through", () => {
-    const step = chord("f", "z");
-    expect(step.kind).toBe("lapse");
-    expect(step.swallow).toBe(false);
-  });
-
-  test("escape abandons the sequence and is the one key that is still ours", () => {
-    /* Swallowed, so a press meant as "forget it" does not also deselect the
-       card — that would be one key doing two things. */
-    const step = chord("f", "Escape");
-    expect(step.kind).toBe("lapse");
-    expect(step.swallow).toBe(true);
-  });
-
-  test("a sequence lapses, and the key is reconsidered from scratch", () => {
-    /* Not merely dropped: the leader pressed again after a long wait has to
-       open a *fresh* sequence rather than be read as the second key of the
-       stale one. */
-    const step = chord("f", " ", LAPSE_MS + 1);
-    expect(step.kind).toBe("leader");
-    expect(step.open).toBe("");
-  });
-
-  test("a letter after the lapse belongs to the wall again", () => {
-    const step = chord("f", "f", LAPSE_MS + 1);
-    expect(step.kind).toBe("idle");
-    expect(step.swallow).toBe(false);
-  });
-
-  test("inside the timeout the same letter still completes the chord", () => {
-    const step = chord("f", "f", LAPSE_MS - 1);
-    expect(step).toMatchObject({ kind: "fire", mode: "files" });
-  });
-
-  test("the leader pressed inside a sequence restarts it", () => {
-    const step = chord("f", " ");
-    expect(step.kind).toBe("leader");
-    expect(step.open).toBe("");
-  });
-
-  test("a modifier on its own leaves the sequence exactly as it was", () => {
-    /* Every modifier fires its own keydown, so without this a hand brushing
-       Shift between the leader and the letter would abandon the chord. */
-    for (const key of ["Shift", "Control", "Alt", "Meta", "CapsLock"]) {
-      const step = chord("f", key);
-      expect(step.kind).toBe("held");
-      expect(step.open).toBe("f");
-      expect(step.swallow).toBe(false);
-    }
-  });
-
-  test("a modifier with nothing open changes nothing either", () => {
-    const step = chord(null, "Shift");
-    expect(step).toMatchObject({ kind: "held", open: null, swallow: false });
-  });
-
-  test("a named key is not a letter in a chord", () => {
-    for (const key of ["Tab", "Enter", "ArrowDown", "F11", "Home"]) {
-      expect(chord("f", key).kind).toBe("lapse");
-    }
-  });
-
-  test("shift+F still types the chord", () => {
-    /* Which is how a caps-locked keyboard types it, and how a hand that holds
-       shift a beat too long does. */
-    expect(chord(chord(null, " ").open, "F")).toMatchObject({ kind: "pending", open: "f" });
-    expect(chord("f", "F")).toMatchObject({ kind: "fire", mode: "files" });
-  });
-});
-
-describe("the which-key hint", () => {
-  test("the leader alone offers both chords, by their whole letters", () => {
-    expect(offers("")).toEqual([
-      { keys: "ff", mode: "files" },
-      { keys: "fw", mode: "grep" },
-    ]);
-  });
-
-  test("one letter in, it offers only what is left to press", () => {
-    expect(offers("f")).toEqual([
-      { keys: "f", mode: "files" },
-      { keys: "w", mode: "grep" },
-    ]);
-  });
-
-  test("a completed chord offers nothing — there is nothing left to press", () => {
-    expect(offers("ff")).toEqual([]);
-  });
-
-  test("every chord in the catalogue is reachable from the leader", () => {
-    /* Guards against a chord being added whose first letter nothing offers,
-       which would be a binding with no affordance at all. */
-    const heads = new Set(offers("").map((o) => o.keys));
-    for (const seq of Object.keys(CHORDS)) expect(heads.has(seq)).toBe(true);
-  });
-});
 
 /* ── scoring ──────────────────────────────────────────────────────────────── */
 

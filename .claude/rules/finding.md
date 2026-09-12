@@ -30,6 +30,13 @@ already have.
 
 ### Space is the leader, and it costs nothing
 
+**The machine moved out on 2026-09-12** and is now `leader.ts` / `leader.svelte.ts`, with the
+which-key hint in `Which.svelte` — a chord that opened a toy (`<space>ts`) could not be
+answered by a machine whose table's value was a `FindMode`. `.claude/rules/toys.md` has the
+shape of the move. Everything below is unchanged and is still the argument for the gesture;
+it is kept here because this is where the reasoning was won, and because `ff`/`fw` are still
+the chords it was won for.
+
 This is the part that looks like it should not work. `onGlobalKey` ends with a branch that
 takes any bare printable key into the focused card's draft — "the wall has no single-letter
 shortcuts, so a printable key means only one thing" — and a space is a printable key.
@@ -62,14 +69,15 @@ hand expects:
   finger.
 - **Time is passed in, not read.** `chord(open, key, sinceMs)` is pure, so the lapse is part
   of the rule the tests can see rather than a `setTimeout` somewhere nothing can reach. The
-  timer in `finder.svelte.ts` is only about *the hint*, which has to go away on its own.
+  timer in `leader.svelte.ts` is only about *the hint*, which has to go away on its own.
 
-**The which-key hint lives in `Spyglass.svelte`**, and `App.svelte` renders the component for
-a pending chord as well as for an open panel. Two reasons, and the second is the load-bearing
-one: a half-typed leader is the only gesture on this wall with no affordance at all — every
-other binding is on a button or in a `title` — and **a component is the only CSS scope this
-codebase has**, so a `.hint` in App's 565-line stylesheet is exactly how `.ghost` came to
-mean two things (see `test/styles.test.ts`).
+**The which-key hint is `Which.svelte`**, its own component rather than markup in
+`App.svelte`, because a half-typed leader is the only gesture on this wall with no affordance
+at all — every other binding is on a button or in a `title` — and **a component is the only
+CSS scope this codebase has**, so a `.hint` in App's 565-line stylesheet is exactly how
+`.ghost` came to mean two things (see `test/styles.test.ts`). It lived in `Spyglass.svelte`
+until the leader stopped being the finder's, which had made the hint for the toy shelf a
+caption drawn by the file finder.
 
 ### Two modes, one panel
 
