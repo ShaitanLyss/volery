@@ -397,16 +397,26 @@
     x0: number;
     y0: number;
     w0: number;
-    /** Where the dragged edge is *now* — unsnapped, in canvas units. This is
-     *  the only thing in here that moves every frame. */
-    raw: number;
-    /** What that width settles at, and what the layout is therefore drawn
-     *  with. Changes only at a level. */
+    /** What the width settles at, and what the layout is therefore drawn with.
+     *  Changes only at a level. */
     cols: number;
     /** Has the press travelled? Below the slop it is still a click, and a
      *  click on the edge of a territory must write nothing. */
     moved: boolean;
   } | null>(null);
+
+  /** Where the dragged edge is *now* — unsnapped, in canvas units.
+   *
+   *  Its own rune rather than a field of `sizing`, and that is not tidiness.
+   *  `sizing` feeds `territories`, which feeds the whole layout pass; a field
+   *  on it that moved every frame made the laid-out array a fresh one sixty
+   *  times a second, which re-ran the packing for the entire wall and — worse —
+   *  reconciled the `animate:walk` block every frame, so each column crossing
+   *  restarted its own walk from mid-flight and never arrived. That is the trap
+   *  `layout.md` records about a territory's cards trailing a carry, reached by
+   *  a different road. This is the one number the layout does not read, so it
+   *  is the one number allowed to move continuously. */
+  let sizeRaw = $state(0);
 
   /** Where the drag's own edge sits, and where the far one is anchored. */
   const sizingAt = $derived.by(() => {
@@ -414,7 +424,7 @@
     if (!z) return null;
     const w = regionWidth(z.cols);
     const x = z.edge === "left" ? z.x0 + z.w0 - w : z.x0;
-    return { cwd: z.cwd, x, y: z.y0, raw: z.raw, w };
+    return { cwd: z.cwd, x, y: z.y0, w };
   });
 
   const territories = $derived.by(() => {
@@ -1288,6 +1298,13 @@
   function sizeDown(e: PointerEvent, r: Region, edge: "left" | "right") {
     if (e.button !== 0) return;
     e.stopPropagation();
+    /* Never beside a wall gesture. `groundDown` is on an ancestor in the
+       capture phase and runs for the two panning buttons whatever `handleOf`
+       said, so a right-drag begun during a resize pans the wall — and `toCanvas`
+       reads the very origin the pan is moving, so the width would measure the
+       pan as well as the pointer and run away. Guarded at both ends, since
+       either can start first. */
+    if (ground) return;
     const p = toCanvas(e.clientX, e.clientY);
     sizing = {
       cwd: r.cwd,
@@ -1296,10 +1313,10 @@
       x0: r.x,
       y0: r.y,
       w0: r.w,
-      raw: edge === "left" ? r.x : r.x + r.w,
       cols: r.cols,
       moved: false,
     };
+    sizeRaw = edge === "left" ? r.x : r.x + r.w;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
 
@@ -1307,6 +1324,9 @@
     const z = sizing;
     if (!z) return;
     e.stopPropagation();
+    /* The other end of the guard in `sizeDown`: while the wall is being panned
+       under it, this measures a moving origin. */
+    if (pan) return;
     const p = toCanvas(e.clientX, e.clientY);
     if (!z.moved && Math.abs(p.x - z.px) * studio.scale < DRAG_SLOP) return;
     /* The width the pointer is asking for, held between the two counts that
@@ -1320,12 +1340,19 @@
       z.edge === "left"
         ? clamp(right - (z.x0 + (p.x - z.px)), lo, hi)
         : clamp(z.w0 + (p.x - z.px), lo, hi);
-    sizing = {
-      ...z,
-      moved: true,
-      raw: z.edge === "left" ? right - want : z.x0 + want,
-      cols: colsForWidth(want),
-    };
+    sizeRaw = z.edge === "left" ? right - want : z.x0 + want;
+    /* Only at a level, so the layout pass and the walk it drives run once per
+       column rather than once per frame — see `sizeRaw`. */
+    const cols = colsForWidth(want);
+    if (!z.moved || cols !== z.cols) sizing = { ...z, moved: true, cols };
+  }
+
+  /** A gesture the system took away is a gesture that did not happen. Its own
+   *  arm rather than `sizeUp`, which commits: a `pointercancel` that wrote a
+   *  width and pushed an act would be the wall finishing a drag on your
+   *  behalf. */
+  function sizeCancel() {
+    sizing = null;
   }
 
   function sizeUp(e: PointerEvent) {
@@ -1822,7 +1849,19 @@
          part of the boundary you now point at would be the one part with no
          menu. Deliberately not `data-region`, which is the *carry* handle — a
          territory is moved by its name, and an edge that both resized and moved
-         it would be two gestures on one pixel. -->
+         it would be two gestures on one pixel.
+
+         **Under the cards, at `Z_CARD - 1`.** Its own territory keeps no card
+         within `REGION_PAD` of the border, so nothing of its own is in the way
+         — but a widened territory reaches into its neighbour, which this wall
+         allows, and at `Z_CHIP` the strip then ran the full height of the
+         *neighbour's* cards: a 14-unit dead band where a left press did
+         nothing at all (`data-grip` sends `handleOf` away), a right-click
+         reached the wrong project's menu through this `data-cwd`, and the
+         resize on offer belonged to an edge nowhere near the pointer. A grip on
+         a boundary has no business outranking the work standing on the wall.
+         The measure line below stays above everything, because it is what you
+         are looking at and it catches no presses. -->
     {#if !glass}
       {#each ["left", "right"] as const as edge (edge)}
         <div
@@ -1834,13 +1873,13 @@
           style:top="{r.y}px"
           style:width="{GRIP_W}px"
           style:height="{r.h}px"
-          style:z-index={Z_CHIP}
+          style:z-index={Z_CARD - 1}
           title="drag to change how many cards stand across {r.project}"
           role="presentation"
           onpointerdown={(e) => sizeDown(e, r, edge)}
           onpointermove={sizeMove}
           onpointerup={sizeUp}
-          onpointercancel={sizeUp}
+          onpointercancel={sizeCancel}
         ></div>
       {/each}
 
@@ -1852,7 +1891,7 @@
       {#if sizingAt?.cwd === r.cwd}
         <div
           class="edging"
-          style:left="{sizingAt.raw - 1}px"
+          style:left="{sizeRaw - 1}px"
           style:top="{r.y - 6}px"
           style:height="{r.h + 12}px"
           style:z-index={Z_CHIP}

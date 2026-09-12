@@ -68,8 +68,15 @@ re-saved on release, or the territory would tear in two the moment it moved.
 
 The gesture is deliberately two-speed, and that split is the whole feature:
 
-- **The grip follows the pointer to the unit** — `.edging`, a line drawn at `sizing.raw`,
-  outside the grip so it keeps up while the rectangle waits.
+- **The grip follows the pointer to the unit** — `.edging`, a line drawn at `sizeRaw`,
+  outside the grip so it keeps up while the rectangle waits. `sizeRaw` is a rune of its own
+  rather than a field of `sizing`, and that is not tidiness: `sizing` feeds `territories`,
+  which feeds the whole layout pass, so a field on it moving every frame re-packed the wall
+  sixty times a second *and* reconciled the `animate:walk` block every frame — which
+  restarts each column's walk from mid-flight and never lets it arrive. That is the trap
+  this file already records about a carried territory's cards, reached by a second road, and
+  the rule it gives is the general one: **the number that moves continuously must be the one
+  the layout does not read.**
 - **The territory, its cards, and everything packed under it move a column at a time**, at
   the midpoint between two counts (`colsForWidth` is a `Math.round`, so past halfway is the
   next column). A rectangle that resized continuously would be describing a width it was
@@ -96,8 +103,46 @@ Three things about it are load-bearing:
   four-column territory in the first column pushes what flows into the second one down past
   it rather than under it.
 
+  **And a territory that has just flowed goes into `blocked` too**, which it did not at
+  first and which shipped a wall drawn through itself. A column's own high-water mark
+  (`columns[col]`) is enough to stack a column, and at `REGION_W` nothing ever reaches the
+  column beside it — so leaving flowing territories out of `blocked` was invisible for as
+  long as every territory was the same width. `tidy the territories` is the one pass in
+  which *every* territory flows at once, so `blocked` was empty exactly when the widths
+  mattered: two territories on top of each other, cards over cards, and `#settlePlaces`
+  wrote the coordinates to SQLite afterwards, so it survived a restart and reproduced on
+  every tidy. For default widths the line changes nothing, `touches` being strict — which is
+  why the packing's own tests did not catch it, and why the test that does asks about a
+  territory that is *flowing* rather than one that has been placed.
+
+Three things the gesture is deliberately *not* allowed to do, each of which it did once:
+
+- **The grips sit at `Z_CARD - 1`, under the cards.** A territory keeps no card within
+  `REGION_PAD` of its own border, so nothing of its own is in the way — but a widened one
+  reaches into its neighbour, and at `Z_CHIP` the strip then ran the full height of the
+  *neighbour's* cards: a dead band where a left press did nothing (`data-grip` sends
+  `handleOf` away), a right-click reached the wrong project's menu through the grip's
+  `data-cwd`, and the resize on offer belonged to an edge nowhere near the pointer. A grip
+  on a boundary has no business outranking the work standing on the wall. The measure line
+  stays above everything, because it is what you are looking at and it catches no presses.
+- **It never runs beside a wall gesture.** `groundDown` is on an ancestor in the capture
+  phase and answers the two panning buttons whatever `handleOf` said, so a right-drag begun
+  during a resize pans the wall — and `toCanvas` reads the very origin the pan is moving, so
+  the width measures the pan as well as the pointer and runs away. Guarded at both ends
+  (`if (ground) return` on the press, `if (pan) return` on the move), since either can start
+  first, and `stopPropagation` cannot help against a capture-phase listener on `window`.
+- **A `pointercancel` discards.** `sizeCancel` rather than `sizeUp`, because a gesture the
+  system took away is a gesture that did not happen, and one that wrote a width and pushed
+  an act would be the wall finishing a drag on your behalf.
+
+Undoing one puts the **width back before the position**, and that order is load-bearing:
+`placeProject(cwd, null, null)` is a request to re-pack, the packing reads the width, so the
+other order re-packs a narrow territory as though it were still wide and writes that down.
+
 `back to its usual width` on the territory's menu is the counterpart to `settle it back in`,
-withheld on the same test — a territory at the wall's own width has nothing to give back.
+withheld on a test one notch stricter than "has a width stored" — an imported layout can
+carry a count that equals the default, and so can a later change of default, and both would
+be a menu item that visibly does nothing.
 The width travels in a carried layout (`portage.ts`) where the *glass* position does not: a
 count of cards means the same thing on any machine, and a place in screen pixels does not.
 

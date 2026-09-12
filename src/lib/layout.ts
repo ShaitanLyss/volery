@@ -555,6 +555,18 @@ export function layout<T extends Placeable>(
       x = col * TERRITORY_W;
       y = settleY(x, columns[col], w, h, blocked);
       columns[col] = y + h + REGION_GAP;
+      /* A territory that has just flowed blocks the next one exactly as a
+         placed one does, and leaving it out of `blocked` was invisible for as
+         long as every territory was the same width: a column's own high-water
+         mark is enough to stack a column, and at `REGION_W` nothing ever
+         reaches the column beside it. A widened one does. `tidy the
+         territories` hands *every* territory back to the grid at once, so it is
+         the one pass in which `blocked` was empty — and it wrote a wall with two
+         territories drawn through each other, cards over cards, straight to
+         SQLite. For default widths this line changes nothing (`touches` is
+         strict, so adjacent columns never register), which is why the bug
+         survived the packing's own tests. */
+      blocked.push({ x, y, w, h });
     }
 
     /* Reserve first, place second — a pinned card holds its slot against every

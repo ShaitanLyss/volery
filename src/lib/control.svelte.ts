@@ -727,6 +727,10 @@ export class Control {
            beside `x`/`y` rather than instead of them, because the claim worth
            seeing from outside is that sticking a territory changed neither. */
         glass: spotOf(p),
+        /* How wide it is. The stored count, null and all, rather than what
+           `colsOf` would draw — the whole thing worth asserting from outside is
+           that "never sized" and "sized to the default" stay different facts. */
+        cols: p.cols,
       })),
       /* What is crossing the wall right now, and what a cap has cut short.
          `cut` is reported because `MAX_STRANDS` silently dropping strands
@@ -2396,6 +2400,35 @@ export class Control {
         h.skein.placeProject(cwd, x, y);
         h.undo.did(
           x === null || y === null ? "settling a territory back in" : "moving a territory",
+          shifted(before, standsOf(h.skein.projects)),
+        );
+        await settle();
+        return {
+          cwd,
+          project: this.#snapshot().projects.find((p) => p.root === cwd) ?? null,
+        };
+      },
+
+      /** Make a territory wider or narrower, in columns of cards — the same
+       *  call the edge drag makes when it lets go. Omitting `cols` gives it back
+       *  the wall's own width, as the territory menu's "back to its usual width"
+       *  does.
+       *
+       *  Only the settled half of the gesture, deliberately: the line that
+       *  follows the pointer is a thing to look at and not a thing to assert,
+       *  and an op that took pixels would be inventing a second way to decide a
+       *  column count beside `colsForWidth`. What a test can check through here
+       *  is what the wall *kept* — the count, the reflow, and the one act on the
+       *  stack. */
+      size: async (op) => {
+        const cwd = String(op.cwd ?? op.root ?? "");
+        if (!cwd) throw new Error("size needs a cwd");
+        const cols =
+          op.cols === undefined || op.cols === null ? null : Number(op.cols);
+        const before = standsOf(h.skein.projects);
+        h.skein.sizeProject(cwd, cols);
+        h.undo.did(
+          "resizing a territory",
           shifted(before, standsOf(h.skein.projects)),
         );
         await settle();

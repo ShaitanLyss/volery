@@ -11,7 +11,9 @@
   import type { Tier } from "./lib/classify";
   import {
     READ_REST,
+    REGION_COLS,
     Studio,
+    colsOf,
     layout,
     panelWidth,
     readingScale,
@@ -211,10 +213,17 @@
       if (!at) return;
       const p = skein.projects.find((q) => q.root_path === cwd);
       if (!p) return;
-      /* Each half only if it differs, and that is not tidiness:
-         `placeProject(cwd, null, null)` is not a write but a request to re-pack
-         (`#settlePlaces`), and asking for one that nobody's gesture asked for
-         can move a territory this step was never about. */
+      /* The width goes back **first**, and the order is load-bearing rather
+         than arbitrary. `placeProject(cwd, null, null)` is not a write but a
+         request to re-pack (`#settlePlaces`), and the packing reads the width —
+         so putting the position back before the width re-packs a narrow
+         territory as though it were still the wide one, and writes that down.
+         Undoing a left-edge resize of a territory that had been flowing was
+         exactly that case: it came back at the right width in the wrong place. */
+      if ((p.cols ?? null) !== at.cols) skein.sizeProject(cwd, at.cols);
+      /* And each half only if it differs, which is not tidiness either: asking
+         for a re-pack nobody's gesture asked for can move a territory this step
+         was never about. */
       if ((p.x ?? null) !== at.x || (p.y ?? null) !== at.y) {
         skein.placeProject(cwd, at.x, at.y);
       }
@@ -225,10 +234,6 @@
       if ((p.glassX ?? null) !== (spot?.x ?? null) || (p.glassY ?? null) !== (spot?.y ?? null)) {
         skein.stickProject(cwd, spot);
       }
-      /* And its width, by the same "only if it differs" rule — a `size_project`
-         written for a step that only moved the territory is a row touched for
-         nothing, and on this one it would also reflow every card inside it. */
-      if ((p.cols ?? null) !== at.cols) skein.sizeProject(cwd, at.cols);
     },
   };
   /* The process sampler. Idle — and holding nothing — until a performance
@@ -1231,7 +1236,11 @@
         kind: "region",
         empty: !skein.convs.some((c) => c.cwd === cwd),
         moved: territoryMoved(cwd),
-        sized: (skein.projects.find((p) => p.root_path === cwd)?.cols ?? null) !== null,
+        /* Offered when it would *do* something, which is stricter than "has a
+           width stored": an imported layout can carry a count that happens to
+           equal the default, and so can a future change of default. Both would
+           be a menu item that visibly does nothing. */
+        sized: colsOf(skein.projects.find((p) => p.root_path === cwd)) !== REGION_COLS,
         glass: !!spotOf(skein.projects.find((p) => p.root_path === cwd)),
         chat: skein.isChatHome(cwd),
         nowhere: adrift.has(cwd),

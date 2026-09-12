@@ -146,6 +146,30 @@ describe("how wide a territory is", () => {
     expect(at.x + CARD_W).toBeLessThanOrEqual(regions[0].x + regions[0].w);
   });
 
+  test("a widened territory that is still flowing blocks its neighbour too", () => {
+    /* The case `tidy the territories` makes, and the one that shipped broken:
+       it hands *every* territory back to the grid at once, so `blocked` — which
+       held only placed ones — was empty, and a wide territory in the first
+       column was drawn straight through the second. Cards over cards, and
+       written to disk by `#settlePlaces` afterwards. */
+    const convs = [
+      ...["a1", "a2", "a3", "a4"].map((id) => conv(id, "C:/wide")),
+      ...["b1", "b2", "b3", "b4"].map((id) => conv(id, "C:/next")),
+    ];
+    for (const cols of [2, 3, 4, MAX_COLS]) {
+      const { regions } = layout(convs, {}, [
+        proj("wide", "C:/wide", null, null, cols),
+        proj("next", "C:/next"),
+      ]);
+      const [wide, next] = regions;
+      expect(next.x).toBe(TERRITORY_W);
+      expect(touches(wide, next)).toBe(false);
+      /* And at the default width nothing has moved: the fix must be a no-op for
+         every territory that has never been dragged. */
+      if (cols === REGION_COLS) expect(next.y).toBe(0);
+    }
+  });
+
   test("a widened territory blocks what settles under it across its real width", () => {
     /* The grid's pitch is a *default* width, so a four-column territory in the
        first column reaches across the second. What flows into the second column

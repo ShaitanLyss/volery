@@ -134,6 +134,19 @@ describe("cleaners", () => {
     );
   });
 
+  test("a carried width is rounded and held to what the wall can draw", () => {
+    const cols = (v: unknown) => cleanProject({ wasRoot: "C:/x", cols: v })?.cols;
+    expect(cols(undefined)).toBeNull();
+    expect(cols("three")).toBeNull();
+    expect(cols(3)).toBe(3);
+    /* A fraction is the one that bit without a word: it would be written into
+       the wall's hands, drawn rounded, and then refused at the command boundary
+       by an `Option<i64>` — with the error swallowed by the optimistic write. */
+    expect(cols(2.5)).toBe(3);
+    expect(cols(-4)).toBe(1);
+    expect(cols(1e15)).toBe(8);
+  });
+
   test("a project with no root is dropped, and takes its name from the root when it has none", () => {
     expect(cleanProject({ name: "orphan" })).toBeNull();
     expect(cleanProject({ wasRoot: "C:\\work\\caravan" })?.name).toBe("caravan");

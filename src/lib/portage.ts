@@ -56,6 +56,7 @@
  */
 
 import { tidy } from "./guidance";
+import { MAX_COLS, MIN_COLS } from "./layout";
 import { cleanThemes, type Theme } from "./theme";
 
 /** Bumped when a document written by this build could be misread by an older
@@ -447,6 +448,15 @@ function maybeNum(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+/** A territory's width, or null. Anything outside what the wall can draw is
+ *  brought inside it rather than dropped: a count that is merely too big is
+ *  still a person saying "wide", and the widest there is says that too. */
+function maybeCols(v: unknown): number | null {
+  const n = maybeNum(v);
+  if (n === null) return null;
+  return Math.min(MAX_COLS, Math.max(MIN_COLS, Math.round(n)));
+}
+
 function bool(v: unknown, fallback: boolean): boolean {
   return typeof v === "boolean" ? v : fallback;
 }
@@ -464,7 +474,15 @@ export function cleanProject(raw: unknown): CarriedProject | null {
     wasRoot,
     x: maybeNum(o.x),
     y: maybeNum(o.y),
-    cols: maybeNum(o.cols),
+    /* Rounded and held between the bounds here rather than trusted, because
+       this file's whole job is that a document written somewhere else cannot
+       put something impossible on the wall. A fraction is the case that bites
+       without a word: `sizeProject` would write it into the wall's hands, where
+       `colsOf` rounds it and draws it — and then fail at the command boundary,
+       since `Option<i64>` will not take a 2.5, with the error swallowed by the
+       optimistic write's own `catch`. A territory three columns wide until the
+       next launch and two after it, and nothing anywhere to say so. */
+    cols: maybeCols(o.cols),
     groups: list(o.groups).map(cleanGroup).filter(isThere),
     instructions: tidy(str(o.instructions) ?? ""),
   };
