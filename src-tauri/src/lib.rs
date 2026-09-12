@@ -12,6 +12,7 @@ mod browser;
 /// Where the `claude` binary is. Public so `examples/slash-probe.rs` can find
 /// the same one the app spawns rather than assuming it is on PATH.
 pub mod claude;
+mod clean;
 mod clip;
 mod board;
 mod chronicle;

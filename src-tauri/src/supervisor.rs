@@ -2001,7 +2001,11 @@ fn ai_title_of(app: &AppHandle, id: String) -> Result<Option<String>, String> {
             if v.get("type").and_then(|t| t.as_str()) == Some("ai-title") {
                 if let Some(t) = v.get("aiTitle").and_then(|t| t.as_str()) {
                     if !t.trim().is_empty() {
-                        found = Some(t.to_string());
+                        /* Another program's file, so it gets the same guard
+                           the tool surfaces get: a card's name is stored, drawn
+                           and searched, and nothing downstream of here expects
+                           a control character in one. `crate::clean` has why. */
+                        found = Some(crate::clean::scrub(t).into_owned());
                     }
                 }
             }

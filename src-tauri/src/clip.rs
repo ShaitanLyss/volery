@@ -110,7 +110,17 @@ impl Cut {
 }
 
 /// Cut `s` to at most `max` characters, at the strongest boundary that does not
-/// cost more than it saves.
+/// cost more than it saves — and take out the characters that cannot be
+/// recorded at all.
+///
+/// The second half is `crate::clean::scrub`, and it is silent where the cut is
+/// announced. The argument for the asymmetry is in that module: a cut loses
+/// meaning the reader needs and the writer still holds, so both are owed a
+/// marker; a control character carried meaning for neither.
+///
+/// It happens *before* the count, so `total` and `omitted` describe the text as
+/// stored. A caller comparing them against what it sent is comparing against
+/// what actually landed, which is the number it wanted.
 ///
 /// `max` is in **characters**, not bytes, and so is every number that comes
 /// back. That is not a stylistic choice: the panel counts characters, the caps
@@ -119,6 +129,16 @@ impl Cut {
 /// where an em dash or an accented name shows up (`guidance.rs` learned this
 /// one first).
 pub fn keep(s: &str, max: usize) -> Cut {
+    /* Before anything is counted, and here rather than at the seven call sites
+       for the reason the cap itself is here: this is the one thing every capped
+       text field on every surface already passes through, the *user's* writes
+       included. A guard on the agent side alone would miss a build log pasted
+       into the Basin or into the guidance box, which is the same accident from
+       the other end. `crate::clean` has what an impossible character is and why
+       taking one out is silent. */
+    let s = crate::clean::scrub(s);
+    let s = s.as_ref();
+
     let chars: Vec<char> = s.chars().collect();
     let total = chars.len();
     if total <= max {
@@ -312,5 +332,28 @@ mod tests {
         let s = format!("{}   tail", "w".repeat(37));
         let c = keep(&s, 40);
         assert!(!c.kept.ends_with(' '), "{:?}", c.kept);
+    }
+
+    /// A text that fits still gets cleaned, and says nothing about it. The
+    /// early return for `total <= max` is the path nearly every write takes,
+    /// so a scrub placed only on the cutting branch would guard almost
+    /// nothing — which is what it would look like from the outside, since the
+    /// item that started this was 1,200 characters against a cap that no
+    /// longer bites.
+    #[test]
+    fn a_text_under_the_cap_is_still_cleaned() {
+        let c = keep("before\u{0}after", 40);
+        assert_eq!(c.kept, "beforeafter");
+        assert!(!c.happened());
+    }
+
+    /// And the counts describe the text as stored rather than as sent, which
+    /// is what a caller checking whether its write survived intact wants.
+    #[test]
+    fn the_counts_are_of_the_cleaned_text() {
+        let s = format!("{}\u{0}{}", "w".repeat(50), "x".repeat(50));
+        let c = keep(&s, 40);
+        assert_eq!(c.total, 100);
+        assert_eq!(c.omitted, 60);
     }
 }

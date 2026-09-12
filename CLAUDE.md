@@ -133,6 +133,8 @@ bun tools/lift-remove.ts          # same, for the two halves of the safe delete 
                                    # card is stopped
 bun tools/lift-sink.ts             # same, for the scope a listing row carries and the drop
                                    # that would otherwise have made the seventh twin
+bun tools/lift-clip.ts             # same, for the one cap and the one scrub every text
+                                   # field on every surface passes through
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs
@@ -468,6 +470,19 @@ these apply when you open almost anything.
   there is nothing for a component to forget. The judgement — `stillFollowing`, which turns on
   the position the follow last wrote, because a write's scroll event arrives a beat *after* the
   bottom has moved — is pure and tested. See `panel.md`.
+- **A text an agent will read may not carry a character it cannot send.** `crate::clean` is
+  what an impossible character is — the C0 controls and DEL, less tab, newline and carriage
+  return — and `clip::keep`, `ask::dispatch` and `ask::respond` are the three places it is
+  taken out. The cost is not cosmetic: a NUL in a stored text goes back out in a `tools/call`
+  result, into the reading card's conversation, and from there into that card's next request,
+  which the API refuses. `repair.rs` mends that conversation; this stops the wall being one of
+  the places it comes from. One sink item with four control characters pasted out of a build
+  error made `sink --kind bug` unreadable for **every** card on the wall (sink `3937d33d`), and
+  that ratio is the thing to remember: a box any card may write to is a box where one card's
+  accident is everybody's outage. **Anything new that stores a text somebody else will read
+  owes the same scrub**, and the cheapest way to owe it is to go through `clip::keep`, which is
+  already on every capped field. It is silent on purpose — see `.claude/rules/clipping.md` for
+  why the marker rule next door does not reach it.
 - **Nothing standing on the wall may be transparent.** The backdrop draws behind everything,
   so whatever stands on the wall is the only thing occluding it — a dormant card was
   `background: transparent` and a leaf drifted through the middle of one. The deliberate

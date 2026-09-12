@@ -1,6 +1,8 @@
 ---
 paths:
   - "src-tauri/src/clip.rs"
+  - "src-tauri/src/clean.rs"
+  - "src-tauri/src/ask.rs"
   - "src-tauri/src/sink.rs"
   - "src-tauri/src/board.rs"
   - "src-tauri/src/relay.rs"
@@ -76,6 +78,40 @@ remainder as its own item. A marker that names a loss and no way to make it good
 agent knowing it is missing something and unable to act — which is exactly the state
 `relay.rs`'s original marker left every reader in.
 
+## And the characters that cannot be there at all
+
+`clip::keep` gained a second job on 2026-09-12, and it gained it here rather than at a
+seventh call site for the same reason the cap is here: this is the one thing every capped
+text field on every surface already passes through — **including the ones the user types
+into**, which an agent-side guard would have missed.
+
+`crate::clean` is the whole argument and it is worth reading before touching either file; the
+short version is that on nearly every path through this app the reader of a text is an agent,
+so a NUL in a sink item is not a rendering curiosity. It goes back out in a `tools/call`
+result, into the reading card's conversation, and from there into that card's next request,
+which the API refuses — `repair.rs` exists to mend exactly that. Sink item `31504316` carried
+four control characters pasted out of a lightningcss error, and **one item made `sink --kind
+bug` unreadable for every card on the wall** (sink `3937d33d`).
+
+The guard is in three places and they cover different things:
+
+| | what it catches |
+|---|---|
+| `clip::keep` | every capped field, agent-written and user-written alike |
+| `ask::dispatch` | the MCP arguments no cap applies to — a glob, an id, a task name |
+| `ask::respond` | text that passed no write of ours: a git error, a log line, a stored row |
+
+**It is silent, and that is not this file's rule being forgotten.** The marker rule above
+holds because a clip removes meaning the reader needs and the writer still holds, so telling
+either of them is something they can act on. A scrub removes a character that carried meaning
+for neither — the marker would be noise in the body and a line about nothing in the receipt.
+The asymmetry is stated in `clean.rs` so the next reader does not have to wonder whether it
+was noticed.
+
+`store::migrate_v34` cleans what was already in the store. It is a tidy-up rather than the
+fix: `ask::respond` is what makes a poisoned row readable, and the rung is what stops one
+being carried around forever.
+
 ## A budget is not a preview, and conflating them writes a lie
 
 `clip::keep` is for a **budget**: text is lost, the reader cannot get it back unaided, and so
@@ -120,14 +156,15 @@ question-shortener were both previews and both already right; they are left alon
 
 ## Verifying it, on a machine that cannot run `cargo test`
 
-`bun tools/lift-clip.ts` — 13 assertions, and it is the cheapest lift in the repository
-because it does **no brace scanning at all**.
+`bun tools/lift-clip.ts` — 23 assertions over `clip.rs` and `clean.rs` together, and it is
+the cheapest lift in the repository because it does **no brace scanning at all**.
 
-It can avoid it because `clip.rs` has no `crate::` reference in it: nothing but `std`. So
-`rustc --test` compiles the file whole and what runs is the real code with its real
-assertions, rather than a transcription of them. That is worth protecting — the script checks
-for `crate::` first and fails with a clear message if someone reaches into the crate later,
-because the cheap verification is worth more than the convenience that would break it.
+It can avoid it because neither file reaches anything above itself: nothing but `std` and each
+other. So `rustc --test` compiles a two-module root and what runs is the real code with its
+real assertions, rather than a transcription of them. That is worth protecting — the script
+checks every `crate::` reference against the modules in that root first, and fails with a
+clear message if someone reaches further, because the cheap verification is worth more than
+the convenience that would break it.
 
 This deliberately does not join the seven older lifts in sink `4b20ad50`, each of which
 carries its own copy of a brace counter that counts braces inside string literals and

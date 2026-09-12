@@ -273,7 +273,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 33;
+const SCHEMA_VERSION: i64 = 34;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -312,6 +312,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (31, migrate_v31),
     (32, migrate_v32),
     (33, migrate_v33),
+    (34, migrate_v34),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1592,6 +1593,109 @@ fn migrate_v33(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v33: {e}"))
+}
+
+/// Which prose columns a card or the user can write, and which this rung
+/// therefore has to clean.
+///
+/// Enumerated rather than taken from `sqlite_master`, and that is the decision
+/// worth arguing. Walking every `TEXT` column would also walk the opaque JSON
+/// ones — `widget.config_json`, `ambience_profile.layers_json`,
+/// `server_group.spec_json`, `pomodoro.state_json` — which are somebody else's
+/// documents that this file has a standing rule never to read. It would also
+/// walk ids and paths, where a change is a broken join rather than a tidier
+/// string. A list is longer to maintain and it is the only version of this that
+/// cannot quietly rewrite something it did not understand.
+///
+/// `paths` columns are in, despite being a JSON array in a text column, because
+/// removing a character that cannot appear in valid JSON cannot make it invalid.
+const PROSE_COLUMNS: &[(&str, &[&str])] = &[
+    ("sink_item", &["title", "body", "paths", "settled_note"]),
+    ("notice", &["subject", "body", "paths"]),
+    ("chronicle", &["mark", "detail", "paths"]),
+    ("relay", &["body"]),
+    ("wake", &["note"]),
+    ("project", &["instructions"]),
+    ("wall_guidance", &["instructions"]),
+    ("conversation", &["title", "held_text", "held_why"]),
+    ("gate_run", &["command", "narrowed", "detail"]),
+    ("job", &["label"]),
+    ("account", &["label"]),
+];
+
+/// Take the impossible characters out of what is already stored.
+///
+/// No schema change — the columns are right and four bytes in one of them are
+/// not, which is v10's shape one table over. `crate::clean` is what an
+/// impossible character is and why one cannot be meant; `ask::respond` is why
+/// this is a tidy-up rather than the fix. The fix went in on both ends of the
+/// MCP surface and into `clip::keep`, so from this build nothing can record one
+/// again; this is the pile that was already there.
+///
+/// Measured against `skein.db` on 2026-09-12, on a wall of 178 sink items:
+/// **one** row, `sink_item.body` of `31504316`, carrying `U+0003`, `U+0013` and
+/// two NULs pasted out of a lightningcss error. That is the whole of the damage
+/// and it was enough to make `sink --kind bug` unreadable for every card on the
+/// wall, which is the ratio worth remembering about this class of bug.
+///
+/// The scan is in Rust rather than in SQL because it cannot honestly be done in
+/// SQL here: SQLite's string functions are not dependable across an embedded
+/// NUL, so `replace(col, char(0), '')` is exactly the kind of guard that
+/// appears to work. Reading each value and comparing costs one pass over a few
+/// thousand short strings, once, at a launch.
+///
+/// **This rung cannot fail, and that is deliberate.** Every error here is
+/// skipped rather than returned: a missing table, a value that is not text, a
+/// write that will not land. A rung that returns `Err` aborts `migrate`, and
+/// `Store::open` then fails on this launch and every launch after it — the
+/// lockout in the `SCHEMA_VERSION` notes, whose only exit was editing the file
+/// by hand. That is a price worth paying for a rung that makes the schema
+/// usable. It is not a price worth paying for a **cosmetic tidy-up**: the fix
+/// is in `clip::keep` and `ask::respond`, so the worst outcome of doing nothing
+/// here is a row that carries four bytes nobody ever sees again. Bricking a
+/// wall to remove them would be the cure killing the patient.
+fn migrate_v34(conn: &Connection) -> Result<(), String> {
+    for (table, columns) in PROSE_COLUMNS {
+        for column in *columns {
+            /* A table or column that never existed on this database is not an
+               error: every rung below this one is optional history, and a wall
+               that predates `chronicle` has no chronicle to clean. */
+            let Ok(mut stmt) = conn.prepare(&format!(
+                "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL"
+            )) else {
+                continue;
+            };
+            /* `get_ref` and `as_str`, not `get::<String>`. SQLite's typing is
+               per *value*, not per column, so a number bound into one of these
+               at any point in this app's life is a row that reads back as an
+               integer — and `get::<String>` answers `InvalidColumnType` to
+               that, not an empty string. Taking only what is genuinely text
+               leaves such a row alone, which is the right outcome: it cannot be
+               carrying a control character. */
+            let Ok(rows) = stmt.query_map([], |r| {
+                let text = r.get_ref(1).ok().and_then(|v| v.as_str().ok());
+                Ok((r.get::<_, i64>(0)?, text.map(str::to_owned)))
+            }) else {
+                continue;
+            };
+
+            let mut dirty: Vec<(i64, String)> = Vec::new();
+            for row in rows.flatten() {
+                let (rowid, Some(text)) = row else { continue };
+                if let std::borrow::Cow::Owned(clean) = crate::clean::scrub(&text) {
+                    dirty.push((rowid, clean));
+                }
+            }
+
+            for (rowid, clean) in dirty {
+                let _ = conn.execute(
+                    &format!("UPDATE {table} SET {column} = ?1 WHERE rowid = ?2"),
+                    params![clean, rowid],
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,

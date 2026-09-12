@@ -1116,11 +1116,22 @@ pub(crate) fn dispatch(rpc: &Value) -> Dispatch {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            args: rpc
-                .get("params")
-                .and_then(|p| p.get("arguments"))
-                .cloned()
-                .unwrap_or_else(|| json!({})),
+            /* Cleaned here, before anything reads a field out of it, because
+               this is the one place arguments are lifted out of the wire and
+               the caps downstream do not cover all of them — a glob, an id, an
+               Asana task's name and a question parked for the user all reach
+               their surface without passing `clip::keep`. `crate::clean` has
+               what an impossible character is, and why taking one out is
+               silent rather than refused or announced. */
+            args: {
+                let mut args = rpc
+                    .get("params")
+                    .and_then(|p| p.get("arguments"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                scrub_json(&mut args);
+                args
+            },
             progress: rpc
                 .get("params")
                 .and_then(|p| p.get("_meta"))
@@ -1283,7 +1294,36 @@ pub(crate) fn swallowed_note(tool: &str, m: &Swallowed) -> String {
     )
 }
 
-fn respond(req: tiny_http::Request, body: Value) {
+/// Take the impossible characters out of every string in a JSON value, in
+/// place.
+///
+/// Object *keys* are left alone on purpose. On the way in, a key carrying a
+/// control character is a key that matches no field of any schema and is
+/// therefore already inert; on the way out every key in this file is a literal
+/// written here. Rebuilding the map to clean something that cannot be dirty
+/// would cost an allocation on every response for nothing.
+fn scrub_json(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if let std::borrow::Cow::Owned(clean) = crate::clean::scrub(s) {
+                *s = clean;
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(scrub_json),
+        Value::Object(map) => map.values_mut().for_each(scrub_json),
+        _ => {}
+    }
+}
+
+/// The one place a body leaves this server, which is why the read-side guard is
+/// here rather than in each of the fifteen `handle` arms above.
+///
+/// It is not redundant with the guard on the way in. What it catches is text
+/// that never passed a write at all — a git error, a server log, a file's
+/// contents quoted into a receipt — and the rows that were already in the store
+/// when this shipped. See `crate::clean`.
+fn respond(req: tiny_http::Request, mut body: Value) {
+    scrub_json(&mut body);
     let data = body.to_string();
     let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
         .expect("static header");
@@ -1778,6 +1818,43 @@ mod tests {
         let Dispatch::Call { tool, args, .. } = r else { panic!("expected a call") };
         assert_eq!(tool, crate::relay::SEND_TOOL);
         assert_eq!(args["to"], "aaaaaaaa");
+    }
+
+    /// Nothing a card writes reaches a surface carrying a control character,
+    /// and the guard is here because this is where arguments stop being wire
+    /// and start being a value something will store. Sink `3937d33d`: one item
+    /// whose body carried four of them made `sink` answer 178 KB that ripgrep
+    /// refused as binary — and, worse, that no reading card could then send.
+    ///
+    /// Nested, because `paths` is an array and the whole point is that this
+    /// does not depend on which field an agent happened to paste into.
+    #[test]
+    fn a_call_cannot_carry_a_control_character_in_any_of_its_arguments() {
+        let r = dispatch(&json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": "drop", "arguments": {
+                "title": "tailwind\u{0} fails",
+                "body": "&[data-\u{3}\u{13}=\"\u{0}\u{0}\"]",
+                "paths": ["src/app\u{0}/page.tsx"],
+            } }
+        }));
+        let Dispatch::Call { args, .. } = r else { panic!("expected a call") };
+        assert_eq!(args["title"], "tailwind fails");
+        assert_eq!(args["body"], "&[data-=\"\"]");
+        assert_eq!(args["paths"][0], "src/app/page.tsx");
+    }
+
+    /// And the same on the way back, which is the half that catches text no
+    /// write of ours ever saw — a git error or a log line quoted into a
+    /// receipt — and the rows that were already in the store.
+    #[test]
+    fn an_answer_cannot_carry_one_either() {
+        let mut body = json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "content": [{ "type": "text", "text": "one\u{0}item\nkept" }] }
+        });
+        scrub_json(&mut body);
+        assert_eq!(body["result"]["content"][0]["text"], "oneitem\nkept");
     }
 
     /// What a turn actually pays for, which is no longer the whole roster.
