@@ -100,6 +100,13 @@ export class Synth {
   said = $state<string | null>(null);
   #saidFor: ReturnType<typeof setTimeout> | null = null;
 
+  /** Something went wrong that the toy can survive but you should be told
+   *  about. Unlike `said` this does not clear itself — it is describing a state
+   *  the toy is *in* rather than a gesture you just made, and a black screen
+   *  that explained itself for one second and then went back to being a black
+   *  screen would be worse than one that never explained itself at all. */
+  fault = $state<string | null>(null);
+
   #ac: AudioContext | null = null;
   #bus: GainNode | null = null;
   #master: GainNode | null = null;
@@ -168,15 +175,44 @@ export class Synth {
     if (this.#saidFor !== null) clearTimeout(this.#saidFor);
     this.#saidFor = null;
     this.said = null;
+    this.fault = null;
   }
 
   /* ── the canvas ───────────────────────────────────────────────────────── */
 
-  /** Hand the canvas to the renderer. Called once, from the component's
-   *  `{@attach}`, and the returned function is the detach. */
+  /** Hand the canvas to the renderer. Called from the component's `{@attach}`,
+   *  and the returned function is the detach.
+   *
+   *  **Guarded against running twice over one element**, which is the one thing
+   *  here that would throw rather than degrade: `transferControlToOffscreen`
+   *  may be called once per canvas and raises on the second, and a second
+   *  `#loop` would leave a `requestAnimationFrame` nothing holds the handle to.
+   *  Svelte runs an attachment's cleanup before re-running it, so this should
+   *  not happen — but "should not" is doing the work in that sentence, and the
+   *  cost of being wrong is an exception inside an effect, which takes the wall
+   *  down with the toy. */
   attach(el: HTMLCanvasElement): () => void {
-    const off = el.transferControlToOffscreen();
+    if (this.#worker) return () => this.#teardown();
+
+    let off: OffscreenCanvas;
+    try {
+      off = el.transferControlToOffscreen();
+    } catch {
+      /* Already handed away — this canvas has a renderer and it is not this
+         call's. Nothing to clean up, because nothing was started. */
+      return () => {};
+    }
+
     const w = new Worker(new URL("./synth.worker.ts", import.meta.url), { type: "module" });
+    /* The one failure that would otherwise be a black rectangle and no
+       explanation. A module worker that cannot be fetched fires `error` on the
+       Worker rather than throwing here, so without this the picture simply
+       never arrives and the toy looks broken rather than degraded. The audio is
+       on this thread and goes on working, which is why this reports rather than
+       closing: half a toy you understand beats a whole one you do not. */
+    w.onerror = () => {
+      this.fault = "the renderer did not start — sound only";
+    };
     w.postMessage({ type: "init", canvas: off } satisfies ToWorker, [off]);
     this.#worker = w;
 

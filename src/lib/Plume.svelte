@@ -43,6 +43,10 @@
     {/key}
   {/if}
 
+  {#if synth.fault}
+    <div class="fault">{synth.fault}</div>
+  {/if}
+
   <div class="legend">
     <span class="what">{synth.mode}</span>
     <span class="note">{note}</span>
@@ -97,6 +101,17 @@
     100% {
       opacity: 0;
     }
+  }
+
+  .fault {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    font-size: 0.9rem;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.45);
   }
 
   .legend {
