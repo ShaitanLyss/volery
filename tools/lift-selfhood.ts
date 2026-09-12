@@ -67,6 +67,7 @@ const TESTS = [
   "a_spawned_card_is_told_who_opened_it",
   "a_card_the_user_opened_is_told_no_such_thing",
   "the_prompt_tells_a_card_which_browser_is_shared",
+  "the_prompt_says_how_git_reaches_past_the_card_that_ran_it",
 ];
 
 /** One file's worth of lifting. Both sources want the same three operations, so

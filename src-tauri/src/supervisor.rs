@@ -272,6 +272,83 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
              clean tree, and if you think you genuinely need one of those \
              commands, ask the user rather than running it.",
         );
+        /* **Three things the paragraph above did not say, each of which cost a
+           card real work before it was written down.** They are here rather than
+           in a rule file because a rule loads when you open the file it governs
+           and this one has to arrive before the first commit; and they are here
+           rather than in a tool description because no tool of ours is being
+           called — `git` is.
+
+           What makes all three the same bug is that the original paragraph is
+           about the *index*, and a card generalises from it that its git
+           operations are scoped to itself. They are not, and each of the three
+           fails silently in the direction of looking fine.
+
+           1. **An explicit path protects you from another card's files, not from
+              its hunks.** Sink `8404a6ca`: a card committed a two-block toolbar
+              swap in nova's `FloorPlanCanvas.tsx` by explicit path, exactly as
+              instructed, and `833f09f2` also carried another card's in-flight
+              grab-gesture work in the same file. HEAD stopped typechecking,
+              because the swept hunks imported a module that was still untracked
+              — the explicit path named the file and could not name what the file
+              had come to depend on. Three cards were in that one file that week,
+              which is the normal state of a popular file here rather than an
+              unlucky day.
+
+           2. **That form commits the working tree and ignores the index
+              entirely.** Sink `43af651f`: a card split two unrelated changes with
+              `git apply --cached` (the only way to split hunks in this
+              environment, since `git add -p` needs a terminal), verified the
+              staged diff at 17 insertions, committed by path, and landed 174 —
+              both changes, under a subject describing one. And the same
+              second-order damage as (1), reached by a completely different
+              route: the half that went along uninvited imported a module the
+              named path did not carry, so `84a95342` does not build. The trap
+              has a smell worth knowing — `git commit` reporting a far larger
+              insertion count than `git diff --cached --stat` did a moment
+              earlier — and nothing else flags it.
+
+           3. **A push publishes the branch, not your commits.** Sink `73ea1979`,
+              and this is the one a card cannot learn from experience, because
+              the failure is invisible from the pushing side: you push, it
+              succeeds, and you never see what rode along. Measured on
+              2026-09-11: a card held three commits back at the user's explicit
+              request and told her so; another card pushed its own work and
+              carried two of them to origin; thirty seconds later the first
+              card's push of the third carried *that* card's held fix and a third
+              card's out with it. Three cards, nobody careless, and a promise to
+              the user broken by neither of them. So the sentence forbids the
+              *promise* rather than the command — a hold is not a thing one card
+              can keep, and saying so is the only fix available at this layer.
+
+           The corollary is stated because it outlives the incident: a commit
+           reaching origin does not mean its author judged it ready, so anything
+           reading history to infer intent is wrong about this by default.
+
+           **What is deliberately NOT here**, from the same cluster of items: the
+           one-line "read the board before your first edit" reminder sink
+           `a016997e` asks for. `board_schema` already carries "read it before
+           starting anything substantial in a shared repository" and is in
+           `ask::roster`'s loaded tier, so it is in front of every agent on every
+           turn already. Restating it is the same words paid for twice in the
+           copy that can drift — which is the argument that removed the roster
+           paragraph at the top of this function, and it applies unchanged here.
+           That item's real half is a mechanism (fire the path relay on Read
+           rather than on Edit) and lives in `board.rs`, not in prose. */
+        prompt.push_str(
+            " An explicit path protects you from another card's *files*, not \
+             from its *hunks*: read `git diff -- <file>` before committing one, \
+             because a file dirty with somebody else's work is the normal state \
+             of a popular file here, and a hunk you did not write may import a \
+             module your path does not carry. That form also commits the \
+             working tree rather than the index, so a staged hunk-split is \
+             discarded without a word — you cannot split hunks within one file \
+             under this rule. And a push publishes the *branch*, not the commits \
+             you authored: whoever pushes first carries every other card's \
+             unpushed work along, silently and invisibly from their side. So a \
+             hold on a push is not yours to keep — do not promise the user one; \
+             post it to the billboard, or work in a worktree.",
+        );
         /* **There is no `drop` sentence here either, and the argument that put
            it here failed for its own case.** It read: "a description is only
            read by an agent that has thought to look for a tool, and the reflex
@@ -2341,6 +2418,76 @@ mod tests {
                 "a chat card was told about browsers it cannot reach: {chat}"
             );
         }
+    }
+
+    /// The shared-tree paragraph names the three ways git is not scoped to you.
+    ///
+    /// Every one of these is a prose claim nothing else executes, which is the
+    /// failure mode `tools/lift-selfhood.ts` exists for. They are asserted
+    /// separately rather than as one string because they were learned
+    /// separately — sink `8404a6ca`, `43af651f` and `73ea1979`, three incidents
+    /// over ten days — and a rewrite that shortens the paragraph will drop one
+    /// of them rather than all three.
+    ///
+    /// The push half is the one to defend hardest. The other two announce
+    /// themselves eventually: a commit that does not build gets found, and an
+    /// insertion count four times what you staged is visible in the output. A
+    /// push that carried somebody else's held work is invisible from the
+    /// pushing card's side forever — so it is the half whose loss the card
+    /// reading this prompt would never notice, which is exactly the argument
+    /// the browser test above makes for its own prohibition.
+    #[test]
+    fn the_prompt_says_how_git_reaches_past_the_card_that_ran_it() {
+        for me in fullest_and_none() {
+            let p = append_prompt(false, true, me.as_ref());
+
+            /* Hunks, not files (`8404a6ca`). The remedy is asserted alongside
+               the fact, because a card told its explicit path is insufficient
+               and not told what to do instead has been given a worry rather
+               than an instruction. */
+            assert!(
+                p.contains("git diff -- <file>"),
+                "the paragraph no longer says to read the diff first: {p}"
+            );
+            /* The second-order half, which is what actually broke two builds:
+               the sweep carries an import, and the path does not carry the
+               module it names. */
+            assert!(
+                p.contains("import a module"),
+                "the untracked-module consequence is gone: {p}"
+            );
+
+            /* The index is ignored (`43af651f`). */
+            assert!(
+                p.contains("working tree rather than the index"),
+                "the paragraph no longer says the index is ignored: {p}"
+            );
+
+            /* A push publishes the branch (`73ea1979`), and the operative half
+               is the prohibition on promising a hold — the mechanism alone
+               reads as a caution, and a caution is what the filing card had
+               already given the user before it broke its word. */
+            assert!(
+                p.contains("publishes the *branch*"),
+                "the paragraph no longer says what a push publishes: {p}"
+            );
+            assert!(
+                p.contains("do not promise the user one"),
+                "the unkeepable promise is no longer forbidden: {p}"
+            );
+        }
+
+        /* Behind the same gate as the rest of the git block, for the same
+           reason: a chat card cannot touch a file, so none of this can reach
+           it — see `chat.md`. Asserted because the three sentences were
+           appended in a second `push_str` and an append outside the `if !chat`
+           arm would compile, pass every assertion above, and quietly cost every
+           chat card the words. */
+        let chat = append_prompt(true, true, None);
+        assert!(
+            !chat.contains("publishes the *branch*") && !chat.contains("git diff -- <file>"),
+            "a chat card was told about a tree it cannot touch: {chat}"
+        );
     }
 
     /// The config carries the browser exactly when the prompt claims it does.
