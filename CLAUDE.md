@@ -619,5 +619,15 @@ already said to keep it.
   saying what changed and why, the body carrying the reasoning the way the log already does.
   `git add -A` is wrong when the tree holds something you did not write — stage what the work
   actually touched.
+- **A message written to a file goes in `.scratch-$SKEIN_CARD/`, never `/tmp`.** `-F <file>`
+  is the right way to write a body of any length here — `-m "…"` has to come *before* the
+  `--`, and it goes through the hook that halves runs of backslashes. But `/tmp/msg.txt` is
+  the obvious name and every card on this machine reaches for it independently. On
+  2026-09-12 a card wrote its message there and committed one line later; another card had
+  overwritten the file in between, and the commit landed carrying a message about a nova
+  gondola preview. It was caught by reading the commit back, which is not a thing to rely on.
+  Same class as the shared `.scratch/` and the shared git index, one level further out, and
+  the fix is the same: the per-card directory, whose name is an environment variable and
+  cannot be got wrong. Filed as sink `a851df91`.
 - **Pushing is still asked for.** A commit is local and cheap to amend or drop; a push is
   outward-facing and is not covered by this. Same for anything else that leaves the machine.
