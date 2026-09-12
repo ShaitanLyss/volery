@@ -52,6 +52,16 @@ pub struct Project {
     pub glass_x: Option<f64>,
     #[serde(rename = "glassY")]
     pub glass_y: Option<f64>,
+    /// How many columns of cards the territory holds, or `None` for one that has
+    /// never been sized and therefore draws at the wall's default.
+    ///
+    /// The one number here that is a *width* rather than a position, and the
+    /// only one that changes how the cards inside flow. `#[serde(default)]` for
+    /// the reason every other addition here carries it: a snapshot written by a
+    /// build that predates the column is a wall of default-width territories,
+    /// which is exactly what `None` already means.
+    #[serde(default)]
+    pub cols: Option<i64>,
     /// What every card standing in this territory is told, on top of what the
     /// wall tells all of them. Empty is the ordinary case and means "nothing
     /// beyond the wall's". See `crate::guidance`.
@@ -273,7 +283,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 34;
+const SCHEMA_VERSION: i64 = 35;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -313,6 +323,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (32, migrate_v32),
     (33, migrate_v33),
     (34, migrate_v34),
+    (35, migrate_v35),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1698,6 +1709,25 @@ fn migrate_v34(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// How wide a territory is, in columns of cards.
+///
+/// An ALTER, per the note on `SCHEMA_VERSION`, and **nullable rather than
+/// defaulted to 2**, which is what it draws at. The two are not the same fact:
+/// null is "never sized, so whatever the wall's default happens to be", and a
+/// stored 2 is "sized to two, deliberately". Only the first should follow a
+/// later change of default, and only the second should survive one — a backfill
+/// would freeze every territory on the wall at today's number and there would be
+/// nothing left to tell them apart by.
+///
+/// A count and not a width. A territory's width does exactly one thing — decide
+/// how many cards stand across it — so the pixels are derived (`layout.ts`'s
+/// `regionWidth`) and the column count is the fact. Storing the width instead
+/// would mean a stored number that no longer means anything the moment `SLOT_W`
+/// changes, and a wall whose territories all sat half a card out.
+fn migrate_v35(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "project", "cols", "INTEGER")
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -1975,11 +2005,20 @@ fn dir_name(path: &str) -> String {
 #[tauri::command]
 pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Result<Project, String> {
     let conn = store.0.lock().unwrap();
-    type Row =
-        (String, String, Option<f64>, Option<f64>, Option<f64>, Option<f64>, String, bool);
+    type Row = (
+        String,
+        String,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<i64>,
+        String,
+        bool,
+    );
     let existing: Option<Row> = conn
         .query_row(
-            "SELECT id, name, x, y, glass_x, glass_y, instructions, read_only
+            "SELECT id, name, x, y, glass_x, glass_y, cols, instructions, read_only
                FROM project WHERE root_path = ?1",
             params![root_path],
             |r| {
@@ -1992,13 +2031,14 @@ pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Resu
                     r.get(5)?,
                     r.get(6)?,
                     r.get(7)?,
+                    r.get(8)?,
                 ))
             },
         )
         .optional()
         .map_err(|e| e.to_string())?;
 
-    if let Some((id, name, x, y, glass_x, glass_y, instructions, read_only)) = existing {
+    if let Some((id, name, x, y, glass_x, glass_y, cols, instructions, read_only)) = existing {
         return Ok(Project {
             id,
             name,
@@ -2007,6 +2047,7 @@ pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Resu
             y,
             glass_x,
             glass_y,
+            cols,
             instructions,
             read_only,
         });
@@ -2031,6 +2072,9 @@ pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Resu
         y: None,
         glass_x: None,
         glass_y: None,
+        /* And no width of its own: a territory arrives the width every other one
+           is, and widening it is a gesture on the wall. */
+        cols: None,
         /* A new territory says nothing of its own. The wall's instructions still
            reach every card in it — see `crate::guidance::compose`. */
         instructions: String::new(),
@@ -2071,6 +2115,39 @@ fn place_row(
     conn.execute(
         "UPDATE project SET x = ?2, y = ?3 WHERE root_path = ?1",
         params![root_path, x, y],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// How wide a territory is, in columns of cards. `None` gives it back the
+/// wall's default width.
+///
+/// Its own command rather than more arguments on `place_project`, for the same
+/// reason `stick_project` is one: that call's pair of nulls already means "hand
+/// it back to the grid", and a width has nothing to do with a position. A
+/// left-edge drag writes both, and writes them as the two calls they are —
+/// which is honest about what happened, since dragging the left edge really
+/// does move the territory as well as resize it.
+///
+/// The count is stored as it arrives. Clamping lives in `layout.ts::colsOf`,
+/// beside the arithmetic that turns a count into a width, so there is one
+/// answer to "how wide is that" rather than a floor here and a ceiling there.
+#[tauri::command]
+pub fn size_project(
+    store: tauri::State<'_, Store>,
+    root_path: String,
+    cols: Option<i64>,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    size_row(&conn, &root_path, cols)
+}
+
+/// The write itself, so the round trip can be tested without an app around it.
+fn size_row(conn: &Connection, root_path: &str, cols: Option<i64>) -> Result<(), String> {
+    conn.execute(
+        "UPDATE project SET cols = ?2 WHERE root_path = ?1",
+        params![root_path, cols],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -3367,7 +3444,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
 
     let mut ps = conn
         .prepare(
-            "SELECT id, name, root_path, x, y, glass_x, glass_y, instructions, read_only
+            "SELECT id, name, root_path, x, y, glass_x, glass_y, cols, instructions, read_only
                FROM project ORDER BY created_at",
         )
         .map_err(|e| e.to_string())?;
@@ -3381,8 +3458,9 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 y: r.get(4)?,
                 glass_x: r.get(5)?,
                 glass_y: r.get(6)?,
-                instructions: r.get(7)?,
-                read_only: r.get(8)?,
+                cols: r.get(7)?,
+                instructions: r.get(8)?,
+                read_only: r.get(9)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -7726,6 +7804,44 @@ mod tests {
         // "tidy it back onto the grid" is the same command with nothing in it.
         place_row(&conn, "C:/x", None, None).unwrap();
         assert_eq!(at(), (None, None));
+    }
+
+    /// A width is a count of columns, and "never sized" is a different fact from
+    /// "sized to what the default happens to be" — which is the whole reason the
+    /// column is nullable rather than backfilled. See `migrate_v35`.
+    #[test]
+    fn a_territory_remembers_how_wide_it_was_made_and_can_be_given_the_default_back() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+
+        let cols = || -> Option<i64> {
+            conn.query_row("SELECT cols FROM project WHERE root_path='C:/x'", [], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(cols(), None, "a new territory is whatever width the wall is");
+
+        size_row(&conn, "C:/x", Some(4)).unwrap();
+        assert_eq!(cols(), Some(4));
+
+        // Widened again — one row, not two widths.
+        size_row(&conn, "C:/x", Some(1)).unwrap();
+        assert_eq!(cols(), Some(1));
+
+        // And the position is untouched by any of it: they are two facts.
+        place_row(&conn, "C:/x", Some(12.0), Some(34.0)).unwrap();
+        size_row(&conn, "C:/x", Some(3)).unwrap();
+        let at: (Option<f64>, Option<f64>) = conn
+            .query_row("SELECT x, y FROM project WHERE root_path='C:/x'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(at, (Some(12.0), Some(34.0)));
+
+        // "back to its usual width" is the same command with nothing in it.
+        size_row(&conn, "C:/x", None).unwrap();
+        assert_eq!(cols(), None);
     }
 
     /// The v3 columns have to land on databases that already exist, which is the

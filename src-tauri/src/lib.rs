@@ -512,6 +512,7 @@ pub fn run() {
             store::save_placement,
             store::place_project,
             store::stick_project,
+            store::size_project,
             store::close_conversation_record,
             store::save_server_group,
             store::delete_server_group,

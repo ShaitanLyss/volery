@@ -83,6 +83,11 @@ export type Project = {
    *  pair above, which stays whatever the wall says — see `glass.ts`. */
   glassX: number | null;
   glassY: number | null;
+  /** How many columns of cards its territory is wide, or null for one that has
+   *  never been sized. A width rather than a position, and the only number here
+   *  that changes how the cards inside it flow — see `layout.ts::colsOf`, which
+   *  owns both the default and the bounds. */
+  cols: number | null;
   /** What every card standing in this territory is told, on top of what the
    *  wall tells all of them. `""` is the ordinary case. See `guidance.ts`, and
    *  `src-tauri/src/guidance.rs` for why it reaches the agent the way it does. */
@@ -2803,6 +2808,20 @@ export class Skein {
    * the row in hand *and* on disk: a drag asks for the new position on the very
    * next frame, and waiting for SQLite to answer would drop the territory back
    * where it started for one of them. */
+
+  /** How wide a territory is, in columns of cards. `null` gives it back the
+   *  wall's default width.
+   *
+   *  Its own call rather than more arguments on `placeProject`, whose nulls
+   *  already mean "settle it back in" — see `size_project` in `store.rs`. Same
+   *  write-through as the two beside it, and for the same reason: the sizing
+   *  gesture asks for the new width on the very next frame. */
+  sizeProject(cwd: string, cols: number | null) {
+    this.projects = this.projects.map((p) =>
+      p.root_path === cwd ? { ...p, cols } : p,
+    );
+    void invoke("size_project", { rootPath: cwd, cols }).catch(() => {});
+  }
 
   /** Put a territory somewhere. Nulls settle it back in among the others. */
   placeProject(cwd: string, x: number | null, y: number | null) {

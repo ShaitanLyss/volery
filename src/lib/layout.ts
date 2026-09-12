@@ -49,6 +49,10 @@ export type Territory = {
   y?: number | null;
   glassX?: number | null;
   glassY?: number | null;
+  /** How many columns of cards it holds, or null for the default. A width
+   *  rather than a position, and the only one of a territory's four numbers
+   *  that changes how its cards flow. */
+  cols?: number | null;
 };
 
 /** Canvas-space geometry. Slots stay a constant size across zoom levels so
@@ -56,11 +60,57 @@ export type Territory = {
 export const CARD_W = 208;
 export const SLOT_W = 248;
 export const SLOT_H = 116;
+/** How many columns of cards a territory holds until somebody widens it. */
 export const REGION_COLS = 2;
 export const REGION_PAD = 18;
 export const REGION_HEAD = 30;
 export const REGION_GAP = 52;
-export const REGION_W = REGION_COLS * SLOT_W + REGION_PAD * 2 - (SLOT_W - CARD_W);
+
+/* ── how wide a territory is ───────────────────────────────────────────────
+ *
+ * A territory's width is a whole number of card columns and nothing in
+ * between, because the only thing its width does is decide how its cards
+ * flow. Half a column is width that draws no card, so the wall is dragged in
+ * pixels and *settled* in columns — see `colsForWidth`, and `Canvas`'s sizing
+ * gesture for the half of it you can see.
+ *
+ * The trim is what the region adds on top of its columns, and it is negative:
+ * `REGION_PAD` on each side, less the gutter the last slot carries and the
+ * card inside it does not. Stated once here so a width and a column count can
+ * be converted in both directions without the arithmetic drifting apart. */
+const REGION_TRIM = REGION_PAD * 2 - (SLOT_W - CARD_W);
+
+/** The narrowest and widest a territory may be dragged. One column is a
+ *  column of cards; past eight a territory is wider than most windows and
+ *  reaches across the whole grid of them. */
+export const MIN_COLS = 1;
+export const MAX_COLS = 8;
+
+/** How wide a territory of `cols` columns draws, in canvas units. */
+export function regionWidth(cols: number): number {
+  return cols * SLOT_W + REGION_TRIM;
+}
+
+/** What a territory is wide by default — and the pitch the territory grid
+ *  keeps, whatever any one of them has since been dragged to. */
+export const REGION_W = regionWidth(REGION_COLS);
+
+/** How many columns a territory holds, given its row. `null` — never sized —
+ *  is the default, and anything outside the bounds is clamped rather than
+ *  refused: the column count is opaque data from this file's point of view,
+ *  the same bargain the JSON columns strike, and a newer build's wider
+ *  territory should draw narrow here rather than break the wall. */
+export function colsOf(t?: { cols?: number | null } | null): number {
+  const n = t?.cols;
+  if (typeof n !== "number" || !Number.isFinite(n)) return REGION_COLS;
+  return clamp(Math.round(n), MIN_COLS, MAX_COLS);
+}
+
+/** The column count a dragged width settles at: the nearer of the two, so the
+ *  midpoint between them is where the next column appears. */
+export function colsForWidth(w: number): number {
+  return clamp(Math.round((w - REGION_TRIM) / SLOT_W), MIN_COLS, MAX_COLS);
+}
 
 /* ── where the territories themselves go ───────────────────────────────────
  *
@@ -87,6 +137,15 @@ export const REGION_W = REGION_COLS * SLOT_W + REGION_PAD * 2 - (SLOT_W - CARD_W
  * The column count is a constant. Deriving it from how many projects there are
  * (√n, say) would move every territory the moment a folder was opened. */
 export const TERRITORY_COLS = 3;
+/** The grid's own pitch, at a territory's *default* width.
+ *
+ * Deliberately not the widest territory on the wall. The pitch is what decides
+ * where a column of them starts, so deriving it from what anything has been
+ * dragged to would move every other territory the moment one was widened —
+ * which is the same argument the column count itself is a constant for. A
+ * territory dragged wider than its pitch reaches into its neighbour, exactly
+ * as one that has grown taller than the space packed for it does; `tidy the
+ * territories` is the way back. */
 export const TERRITORY_W = REGION_W + REGION_GAP;
 
 /** Which column the `n`th flowing territory drops into.
@@ -285,6 +344,10 @@ export type Region = {
   y: number;
   w: number;
   h: number;
+  /** How many columns of cards it was laid out on. `w` is derived from it and
+   *  is what gets drawn; the count is carried too because the resize gesture
+   *  needs to know which level it is starting from. */
+  cols: number;
   /** Where it is drawn, if it has been stuck to the glass — screen pixels, and
    *  never a substitute for `x`/`y`, which stay what the wall says. */
   glass: Spot | null;
@@ -311,8 +374,8 @@ export function clamp(v: number, lo: number, hi: number): number {
  * been pinned deeper than the flow reaches. Counted off the cards rather than
  * measured off the region, because the region's own height depends on where its
  * pinned cards sit, which depends on where the territory ended up. */
-function territoryHeight(cards: number): number {
-  const rows = Math.max(1, Math.ceil(cards / REGION_COLS));
+function territoryHeight(cards: number, cols: number): number {
+  const rows = Math.max(1, Math.ceil(cards / cols));
   return REGION_HEAD + rows * SLOT_H + REGION_PAD;
 }
 
@@ -346,20 +409,31 @@ export function contains(a: Box, b: Box): boolean {
  * off the columns entirely, since the only question that matters is whether the
  * boxes touch. y only ever moves down, and only to the underside of something it
  * hit, so this settles in at most one step per obstacle. */
-function settleY(x: number, from: number, h: number, blocked: Box[]): number {
+function settleY(
+  x: number,
+  from: number,
+  w: number,
+  h: number,
+  blocked: Box[],
+): number {
   let y = from;
   for (;;) {
-    const under = blocked.filter((b) => touches({ x, y, w: REGION_W, h }, b));
+    const under = blocked.filter((b) => touches({ x, y, w, h }, b));
     if (!under.length) return y;
     y = Math.max(...under.map((b) => b.y + b.h)) + REGION_GAP;
   }
 }
 
 /** Where slot `i` of a territory sits, in canvas units. */
-function slotAt(x: number, y: number, i: number): { x: number; y: number } {
+function slotAt(
+  x: number,
+  y: number,
+  i: number,
+  cols: number,
+): { x: number; y: number } {
   return {
-    x: x + REGION_PAD + (i % REGION_COLS) * SLOT_W,
-    y: y + REGION_HEAD + Math.floor(i / REGION_COLS) * SLOT_H,
+    x: x + REGION_PAD + (i % cols) * SLOT_W,
+    y: y + REGION_HEAD + Math.floor(i / cols) * SLOT_H,
   };
 }
 
@@ -373,15 +447,16 @@ function slotUnder(
   p: Placement,
   x: number,
   y: number,
+  cols: number,
 ): number | null {
   const col = Math.round((p.x - x - REGION_PAD) / SLOT_W);
   const row = Math.round((p.y - y - REGION_HEAD) / SLOT_H);
-  if (col < 0 || col >= REGION_COLS || row < 0) return null;
-  const at = slotAt(x, y, row * REGION_COLS + col);
+  if (col < 0 || col >= cols || row < 0) return null;
+  const at = slotAt(x, y, row * cols + col, cols);
   if (Math.abs(p.x - at.x) > SLOT_W / 2 || Math.abs(p.y - at.y) > SLOT_H / 2) {
     return null;
   }
-  return row * REGION_COLS + col;
+  return row * cols + col;
 }
 
 /** Assign every territory and every card a canvas position.
@@ -429,6 +504,7 @@ export function layout<T extends Placeable>(
     x?: number | null;
     y?: number | null;
     glass?: Spot | null;
+    cols: number;
   };
   const order: Entry[] = projects.map((p) => ({
     cwd: p.root_path,
@@ -436,10 +512,11 @@ export function layout<T extends Placeable>(
     x: p.x,
     y: p.y,
     glass: spotOf(p),
+    cols: colsOf(p),
   }));
   const known = new Set(order.map((o) => o.cwd));
   for (const cwd of groups.keys()) {
-    if (!known.has(cwd)) order.push({ cwd });
+    if (!known.has(cwd)) order.push({ cwd, cols: REGION_COLS });
   }
 
   /* Where the placed territories stand, before anything is settled around them:
@@ -450,8 +527,8 @@ export function layout<T extends Placeable>(
     .map((o) => ({
       x: o.x!,
       y: o.y!,
-      w: REGION_W,
-      h: territoryHeight((groups.get(o.cwd) ?? []).length),
+      w: regionWidth(o.cols),
+      h: territoryHeight((groups.get(o.cwd) ?? []).length, o.cols),
     }));
 
   /* How far down each column has been filled, and how many territories have
@@ -463,19 +540,20 @@ export function layout<T extends Placeable>(
   const regions: Region[] = [];
   const laid: Laid<T>[] = [];
 
-  for (const { cwd, name, x: px, y: py, glass: rg } of order) {
+  for (const { cwd, name, x: px, y: py, glass: rg, cols } of order) {
     const members = groups.get(cwd) ?? [];
+    const w = regionWidth(cols);
     let x: number;
     let y: number;
     if (px != null && py != null) {
       x = px;
       y = py;
     } else {
-      const h = territoryHeight(members.length);
+      const h = territoryHeight(members.length, cols);
       const col = territoryColumn(flowed);
       flowed += 1;
       x = col * TERRITORY_W;
-      y = settleY(x, columns[col], h, blocked);
+      y = settleY(x, columns[col], w, h, blocked);
       columns[col] = y + h + REGION_GAP;
     }
 
@@ -485,7 +563,7 @@ export function layout<T extends Placeable>(
     for (const c of members) {
       const p = placements[c.id];
       if (!p?.pinned) continue;
-      const s = slotUnder(p, x, y);
+      const s = slotUnder(p, x, y, cols);
       if (s !== null) taken.add(s);
     }
 
@@ -516,15 +594,15 @@ export function layout<T extends Placeable>(
       }
       while (taken.has(next)) next += 1;
       taken.add(next);
-      const at = slotAt(x, y, next);
-      deepest = Math.max(deepest, Math.floor(next / REGION_COLS) + 1);
+      const at = slotAt(x, y, next, cols);
+      deepest = Math.max(deepest, Math.floor(next / cols) + 1);
       next += 1;
       laid.push({ conv, x: at.x, y: at.y, pinned: false, glass: drawnAt(p, at) });
     }
     /* The territory has to reach whatever it holds, including a card pinned
        further down its own columns than anything flowing. */
     for (const s of taken) {
-      deepest = Math.max(deepest, Math.floor(s / REGION_COLS) + 1);
+      deepest = Math.max(deepest, Math.floor(s / cols) + 1);
     }
 
     regions.push({
@@ -535,7 +613,8 @@ export function layout<T extends Placeable>(
       cwd,
       x,
       y,
-      w: REGION_W,
+      w,
+      cols,
       h: REGION_HEAD + Math.max(1, deepest) * SLOT_H + REGION_PAD,
       glass: rg ?? null,
     });
@@ -647,7 +726,7 @@ export function wallOrder<T extends Placeable>(laid: Laid<T>[]): T[] {
 
 /** Frame everything with a comfortable margin. */
 export function fitViewport(
-  regions: Region[],
+  regions: Box[],
   viewW: number,
   viewH: number,
 ): { x: number; y: number; scale: number } {

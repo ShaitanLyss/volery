@@ -328,12 +328,14 @@ describe("standsOf and shifted", () => {
       y: 20,
       glassX: null,
       glassY: null,
+      cols: null,
     });
     expect(standsOf(projects).get("C:/b")).toEqual({
       x: null,
       y: null,
       glassX: 5,
       glassY: 6,
+      cols: null,
     });
   });
 

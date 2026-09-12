@@ -10,6 +10,12 @@
     LEAVE_MS,
     Z_CARD,
     Z_CHIP,
+    clamp,
+    colsOf,
+    colsForWidth,
+    regionWidth,
+    MIN_COLS,
+    MAX_COLS,
     type Laid,
     type Lod,
     type Placement,
@@ -107,6 +113,7 @@
     onplan,
     onpin,
     onplace,
+    onsize,
     onstick,
     onstickproject,
     onserver,
@@ -232,6 +239,9 @@
     onpin?: (id: string, x: number, y: number) => void;
     /** A territory was carried somewhere. `null` gives it back to the grid. */
     onplace?: (cwd: string, x: number | null, y: number | null) => void;
+    /** A territory was made wider or narrower, in columns of cards. `null`
+     *  gives it back the wall's default width. */
+    onsize?: (cwd: string, cols: number | null) => void;
     /** A card's place on the glass changed — stuck, dragged there, or `null`
      *  for put back on the wall. Its wall placement is untouched either way, so
      *  this is a write of its own rather than another `onpin`. */
@@ -361,15 +371,77 @@
     glass: boolean;
     at: Record<string, { x: number; y: number }>;
   } | null>(null);
+  /* ── widening a territory ──────────────────────────────────────────────
+   *
+   * A territory is as wide as a whole number of card columns and nothing in
+   * between, because its width does exactly one thing: decide how its cards
+   * flow. So the gesture is dragged in pixels and read in columns — the grip
+   * follows the pointer to the unit, and the territory, its cards and the row
+   * of things below it move only when the drag crosses the midpoint between
+   * two counts (`colsForWidth`). That split is the whole feature: a rectangle
+   * that resized continuously would be lying about what it was going to do,
+   * and one that only ever jumped would feel like it was refusing the drag.
+   *
+   * Either edge. The right one is a width alone; the left one anchors the
+   * right edge and therefore moves the territory as well, which is two writes
+   * on release and one gesture to undo.
+   *
+   * Its own gesture rather than a branch of the carry, for the reason
+   * `WidgetNode`'s resize is: it is a `data-grip`, so `handleOf` hands the
+   * press straight back and the wall's drag never sees it. */
+  let sizing = $state<{
+    cwd: string;
+    edge: "left" | "right";
+    /** Where the press landed, in canvas units, and the box it landed on. */
+    px: number;
+    x0: number;
+    y0: number;
+    w0: number;
+    /** Where the dragged edge is *now* — unsnapped, in canvas units. This is
+     *  the only thing in here that moves every frame. */
+    raw: number;
+    /** What that width settles at, and what the layout is therefore drawn
+     *  with. Changes only at a level. */
+    cols: number;
+    /** Has the press travelled? Below the slop it is still a click, and a
+     *  click on the edge of a territory must write nothing. */
+    moved: boolean;
+  } | null>(null);
+
+  /** Where the drag's own edge sits, and where the far one is anchored. */
+  const sizingAt = $derived.by(() => {
+    const z = sizing;
+    if (!z) return null;
+    const w = regionWidth(z.cols);
+    const x = z.edge === "left" ? z.x0 + z.w0 - w : z.x0;
+    return { cwd: z.cwd, x, y: z.y0, raw: z.raw, w };
+  });
+
   const territories = $derived.by(() => {
     const c = carried;
-    if (!c) return projects;
+    const z = sizingAt;
+    if (!c && !z) return projects;
     return projects.map((p) => {
-      const at = c.at[p.root_path];
-      if (!at) return p;
-      return c.glass
-        ? { ...p, glassX: at.x, glassY: at.y }
-        : { ...p, x: at.x, y: at.y };
+      const at = c?.at[p.root_path];
+      const grown = z && z.cwd === p.root_path && sizing ? sizing.cols : null;
+      let out = p;
+      if (at) {
+        out = c!.glass
+          ? { ...out, glassX: at.x, glassY: at.y }
+          : { ...out, x: at.x, y: at.y };
+      }
+      if (grown !== null) {
+        /* A left-edge drag holds the right edge still, so the origin moves with
+           the width. `y` comes along because `layout` treats a territory as
+           placed only when it has both — and one that was still flowing has to
+           be placed for its new origin to mean anything, which is what the
+           release writes down too. */
+        out =
+          sizing!.edge === "left"
+            ? { ...out, cols: grown, x: z!.x, y: z!.y }
+            : { ...out, cols: grown };
+      }
+      return out;
     });
   });
 
@@ -531,6 +603,7 @@
       y: p.y ?? null,
       glassX: p.glassX ?? null,
       glassY: p.glassY ?? null,
+      cols: p.cols ?? null,
     };
   }
 
@@ -1059,6 +1132,11 @@
    * `haulOf` excludes it — see the note there.) */
   const DRAG_SLOP = 4;
 
+  /** How wide a territory's edge is to take hold of, in canvas units. Centred
+   *  on the border, so half of it is the pad inside — which is 18 units of
+   *  nothing, well clear of the cards. */
+  const GRIP_W = 14;
+
   let haul: {
     /** What the press landed on, for the label the undo menu says. */
     on: Pick;
@@ -1198,6 +1276,89 @@
         carried = { glass: h.glass, at };
       }
     });
+  }
+
+  /* ── the sizing gesture ────────────────────────────────────────────────
+   *
+   * Three handlers on the grip itself, `WidgetNode`'s shape one level up. The
+   * pointer is captured on the press rather than after the slop, because
+   * nothing else is under a 14-unit strip on a territory's border and a grip
+   * that needed convincing would feel stuck; the slop is still kept, as the
+   * test for whether anything gets *written*. */
+  function sizeDown(e: PointerEvent, r: Region, edge: "left" | "right") {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const p = toCanvas(e.clientX, e.clientY);
+    sizing = {
+      cwd: r.cwd,
+      edge,
+      px: p.x,
+      x0: r.x,
+      y0: r.y,
+      w0: r.w,
+      raw: edge === "left" ? r.x : r.x + r.w,
+      cols: r.cols,
+      moved: false,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function sizeMove(e: PointerEvent) {
+    const z = sizing;
+    if (!z) return;
+    e.stopPropagation();
+    const p = toCanvas(e.clientX, e.clientY);
+    if (!z.moved && Math.abs(p.x - z.px) * studio.scale < DRAG_SLOP) return;
+    /* The width the pointer is asking for, held between the two counts that
+       exist. Clamping the *width* rather than the column count is what makes
+       the bounds legible: at one column the grip stops dead on the edge it
+       cannot pass, instead of running on while the territory ignores it. */
+    const lo = regionWidth(MIN_COLS);
+    const hi = regionWidth(MAX_COLS);
+    const right = z.x0 + z.w0;
+    const want =
+      z.edge === "left"
+        ? clamp(right - (z.x0 + (p.x - z.px)), lo, hi)
+        : clamp(z.w0 + (p.x - z.px), lo, hi);
+    sizing = {
+      ...z,
+      moved: true,
+      raw: z.edge === "left" ? right - want : z.x0 + want,
+      cols: colsForWidth(want),
+    };
+  }
+
+  function sizeUp(e: PointerEvent) {
+    const z = sizing;
+    sizing = null;
+    if (!z) return;
+    e.stopPropagation();
+    if (!z.moved) return;
+    const p = projects.find((q) => q.root_path === z.cwd);
+    if (!p) return;
+    const was = standOf(z.cwd);
+    if (!was) return;
+    /* Null rather than the number when it lands back on the default, so a
+       territory nobody has deliberately sized goes on following the wall's own
+       width — see `migrate_v35` for why the two are different facts. */
+    const cols = z.cols === colsOf(null) ? null : z.cols;
+    const now: Stand = { ...was, cols };
+    if ((was.cols ?? null) !== cols) onsize?.(z.cwd, cols);
+    if (z.edge === "left") {
+      /* The right edge was the anchor, so the origin moved — and a territory
+         that was still flowing is placed by that, which is the honest record
+         of what the gesture did to it. */
+      const x = z.x0 + z.w0 - regionWidth(z.cols);
+      if (x !== was.x || was.y === null) {
+        now.x = x;
+        now.y = z.y0;
+        onplace?.(z.cwd, x, z.y0);
+      }
+    }
+    if (was.cols === now.cols && was.x === now.x && was.y === now.y) return;
+    undo.did(nameEdit("territory", ["cols"]), [
+      { at: "territory", id: z.cwd, was, now },
+    ]);
   }
 
   /** Called from `groundUp`, and only for a press that travelled — a click is
@@ -1641,6 +1802,63 @@
       style:width="{r.w}px"
       style:height="{r.h}px"
     ></div>
+
+    <!-- ── the two edges you can take hold of ───────────────────────────────
+         A territory's width is a whole number of card columns, so this drags in
+         pixels and settles in columns: the line below follows the pointer, the
+         rectangle above and the cards inside it move a column at a time. Either
+         edge, because which side of a project you have room on is not something
+         the wall gets to decide — the right edge is a width, the left one is a
+         width and a move at once.
+
+         `data-grip` is what tells `handleOf` to leave the press alone; without
+         it the wall's own drag, which sits on an ancestor in the capture phase,
+         would start a marquee under the resize. Wall only: a stuck territory is
+         drawn at 1:1 on a pane with nothing to reflow into, and `.glass .region`
+         is already `pointer-events: none` for the same reason.
+
+         `data-cwd` because the strip covers the border, and the border is a
+         perfectly ordinary place to right-click a territory: without it the one
+         part of the boundary you now point at would be the one part with no
+         menu. Deliberately not `data-region`, which is the *carry* handle — a
+         territory is moved by its name, and an edge that both resized and moved
+         it would be two gestures on one pixel. -->
+    {#if !glass}
+      {#each ["left", "right"] as const as edge (edge)}
+        <div
+          class="ledge"
+          class:sizing={sizing?.cwd === r.cwd && sizing.edge === edge}
+          data-grip
+          data-cwd={r.cwd}
+          style:left="{(edge === 'left' ? r.x : r.x + r.w) - GRIP_W / 2}px"
+          style:top="{r.y}px"
+          style:width="{GRIP_W}px"
+          style:height="{r.h}px"
+          style:z-index={Z_CHIP}
+          title="drag to change how many cards stand across {r.project}"
+          role="presentation"
+          onpointerdown={(e) => sizeDown(e, r, edge)}
+          onpointermove={sizeMove}
+          onpointerup={sizeUp}
+          onpointercancel={sizeUp}
+        ></div>
+      {/each}
+
+      <!-- Where the pointer actually is, which is the half of this gesture that
+           is allowed to be continuous. It is drawn *outside* the grip so it
+           keeps up with the cursor while the rectangle waits for the next
+           level: two lines a slot apart is the wall saying what it is about to
+           do, and one line would be the wall either lying or stuttering. -->
+      {#if sizingAt?.cwd === r.cwd}
+        <div
+          class="edging"
+          style:left="{sizingAt.raw - 1}px"
+          style:top="{r.y - 6}px"
+          style:height="{r.h + 12}px"
+          style:z-index={Z_CHIP}
+        ></div>
+      {/if}
+    {/if}
 
     <!-- The name is also the handle. A project is a place on the wall, and
          where that place is should be yours to decide — so it is grabbed by
@@ -2240,6 +2458,41 @@
      a solid line — a solid one would say the territory had become a panel.
      Before `.region.torn`, so a half-merged repo still shows rust while it is
      held: the fault is the more important of the two things to know. */
+  /* ── a territory's two edges ─────────────────────────────────────────────
+   *
+   * Invisible until the pointer is on one, like a window's border: the wall is
+   * read far more often than it is arranged, and a project drawn with two
+   * permanent handles on it would be furniture announcing its own hinges.
+   * `--edge` on hover is the same ink the boundary is already in, one weight up
+   * and solid, so what you see is the line you are about to take hold of. */
+  .ledge {
+    position: absolute;
+    cursor: ew-resize;
+  }
+  .ledge::before {
+    content: "";
+    position: absolute;
+    inset: 0 calc(50% - 1px);
+    background: var(--paper-faint);
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .ledge:hover::before,
+  .ledge.sizing::before {
+    opacity: 1;
+  }
+  /* Where the pointer is, against where the territory has settled. Brighter
+     than the edge it is being dragged from, and reaching a little past the
+     territory top and bottom so it reads as a measure laid over the wall
+     rather than as a second border. */
+  .edging {
+    position: absolute;
+    width: 2px;
+    background: var(--paper);
+    opacity: 0.55;
+    pointer-events: none;
+  }
+
   .region.picked {
     border-color: var(--paper-faint);
     border-style: dashed;

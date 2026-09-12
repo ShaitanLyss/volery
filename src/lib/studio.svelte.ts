@@ -10,7 +10,7 @@ import {
   readingScale,
   type Lod,
   type Placement,
-  type Region,
+  type Box,
 } from "./layout";
 import { spotOf } from "./glass";
 import {
@@ -271,7 +271,7 @@ export class Studio {
     this.y = screenY - worldY * next;
   }
 
-  fit(regions: Region[], viewW: number, viewH: number) {
+  fit(regions: Box[], viewW: number, viewH: number) {
     const v = fitViewport(regions, viewW, viewH);
     this.x = v.x;
     this.y = v.y;

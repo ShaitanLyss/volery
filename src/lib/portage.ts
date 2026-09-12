@@ -91,6 +91,11 @@ export type CarriedProject = {
   wasRoot: string;
   x: number | null;
   y: number | null;
+  /** How many columns of cards wide the territory was, or null for one at the
+   *  wall's own width. Furniture by this file's test — it is how the room is
+   *  arranged — and unlike `x`/`y` it means the same thing on any machine,
+   *  since it is a count of cards rather than a place on a wall. */
+  cols: number | null;
   groups: CarriedGroup[];
   /** What this territory tells the cards standing in it. Furniture by this
    *  file's own test — it is how the room is arranged, not what has been said in
@@ -459,6 +464,7 @@ export function cleanProject(raw: unknown): CarriedProject | null {
     wasRoot,
     x: maybeNum(o.x),
     y: maybeNum(o.y),
+    cols: maybeNum(o.cols),
     groups: list(o.groups).map(cleanGroup).filter(isThere),
     instructions: tidy(str(o.instructions) ?? ""),
   };

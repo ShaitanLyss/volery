@@ -46,6 +46,7 @@ const full: Carried = {
       wasRoot: "C:\\atelier\\skein",
       x: 100,
       y: 200,
+      cols: 3,
       instructions: "read only, no commits",
       groups: [
         {

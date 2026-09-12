@@ -65,6 +65,10 @@ export type Stand = {
   y: number | null;
   glassX: number | null;
   glassY: number | null;
+  /** How wide it is, in columns of cards — a resize is a gesture on the wall
+   *  like the other three, and one that reflows every card standing in it, so
+   *  it is exactly the kind of thing a single Ctrl+Z should take back whole. */
+  cols: number | null;
 };
 
 /** One gesture. Several edits, because one gesture genuinely changes several
@@ -289,6 +293,7 @@ export function standsOf(
     y?: number | null;
     glassX?: number | null;
     glassY?: number | null;
+    cols?: number | null;
   }[],
 ): Map<string, Stand> {
   return new Map(
@@ -299,6 +304,7 @@ export function standsOf(
         y: p.y ?? null,
         glassX: p.glassX ?? null,
         glassY: p.glassY ?? null,
+        cols: p.cols ?? null,
       },
     ]),
   );
@@ -356,8 +362,10 @@ export function nameEdit(
   if (has("config")) return `adjusting ${thing}`;
   if (has("rotation")) return `turning ${thing}`;
   /* Before position: a corner drag writes the box and the origin together, and
-     what you did was resize it. */
-  if (has("w", "h")) return `resizing ${thing}`;
+     what you did was resize it. A territory's left edge is the same shape one
+     level up — the width and the origin move in one gesture — which is why
+     `cols` is in this test and not beside `x`/`y`. */
+  if (has("w", "h", "cols")) return `resizing ${thing}`;
   if (has("x", "y")) return `moving ${thing}`;
   if (has("z")) return `bringing ${thing} to the front`;
   return `changing ${thing}`;

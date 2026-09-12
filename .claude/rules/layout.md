@@ -62,6 +62,45 @@ Carrying a territory carries its cards. Flowing ones follow by arithmetic, since
 are measured off the region's origin; pinned ones are translated by the same delta by hand and
 re-saved on release, or the territory would tear in two the moment it moved.
 
+**And a territory is as wide as you drag it, in whole columns of cards.** `project.cols`
+(schema v35, nullable), `layout.ts`'s `regionWidth` / `colsForWidth` / `colsOf`, and the
+`.ledge` grips on either edge of the region in `Canvas.svelte`.
+
+The gesture is deliberately two-speed, and that split is the whole feature:
+
+- **The grip follows the pointer to the unit** — `.edging`, a line drawn at `sizing.raw`,
+  outside the grip so it keeps up while the rectangle waits.
+- **The territory, its cards, and everything packed under it move a column at a time**, at
+  the midpoint between two counts (`colsForWidth` is a `Math.round`, so past halfway is the
+  next column). A rectangle that resized continuously would be describing a width it was
+  never going to keep; one that only jumped would read as the wall refusing the drag.
+
+Three things about it are load-bearing:
+
+- **The stored fact is a count, not a width.** A territory's width does exactly one thing —
+  decide how many cards stand across it — so the pixels are derived and `SLOT_W` stays free
+  to change. And the column is **nullable rather than defaulted to 2**: null is "never
+  sized, so follow the wall", a stored 2 is "sized to two, on purpose", and only the first
+  should follow a later change of default. `migrate_v35` argues it at length.
+- **Either edge, and the left one moves the territory too.** The right edge is a width
+  alone; the left anchors the right edge, so the origin travels with it — two writes
+  (`size_project` and `place_project`) and one act on the undo stack. A territory that was
+  still flowing is *placed* by a left-edge drag, which is the honest record of what the
+  gesture did to it.
+- **The territory grid's pitch stays `REGION_W`**, the default width, rather than tracking
+  the widest territory on the wall — deriving it would move every other territory the moment
+  one was widened, which is the same argument `TERRITORY_COLS` is a constant for. So a
+  territory dragged wider than its pitch reaches into its neighbour, exactly as one that has
+  grown taller than the space packed for it does, and `tidy the territories` is the way back.
+  What the packing *does* ask about is the real width: `settleY` takes a `w`, so a
+  four-column territory in the first column pushes what flows into the second one down past
+  it rather than under it.
+
+`back to its usual width` on the territory's menu is the counterpart to `settle it back in`,
+withheld on the same test — a territory at the wall's own width has nothing to give back.
+The width travels in a carried layout (`portage.ts`) where the *glass* position does not: a
+count of cards means the same thing on any machine, and a place in screen pixels does not.
+
 **Territories come from the projects, not from the cards standing in them.** Deriving them
 from grouped `cwd`s meant closing the last conversation in a project took the project off the
 wall — and with it the `+` that starts the next one, though finishing everything and starting

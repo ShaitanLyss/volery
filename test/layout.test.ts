@@ -9,6 +9,8 @@ import {
   PIN_COLS,
   PIN_GAP,
   pinSpot,
+  MAX_COLS,
+  MIN_COLS,
   REGION_COLS,
   REGION_GAP,
   REGION_HEAD,
@@ -38,6 +40,9 @@ import {
   readingScale,
   settle,
   territoryColumn,
+  colsOf,
+  colsForWidth,
+  regionWidth,
   wallOrder,
   touches,
   contains,
@@ -58,7 +63,112 @@ const proj = (
   root_path: string,
   x: number | null = null,
   y: number | null = null,
-) => ({ name, root_path, x, y });
+  cols: number | null = null,
+) => ({ name, root_path, x, y, cols });
+
+describe("how wide a territory is", () => {
+  test("a width is a whole number of columns, both ways round", () => {
+    expect(regionWidth(REGION_COLS)).toBe(REGION_W);
+    for (let c = MIN_COLS; c <= MAX_COLS; c += 1) {
+      expect(colsForWidth(regionWidth(c))).toBe(c);
+    }
+  });
+
+  test("it settles at whichever count is nearer, so the midpoint adds one", () => {
+    const two = regionWidth(2);
+    /* A hair under half a slot wider is still two; a hair over is three. */
+    expect(colsForWidth(two + SLOT_W / 2 - 1)).toBe(2);
+    expect(colsForWidth(two + SLOT_W / 2 + 1)).toBe(3);
+    /* And the same coming back down. */
+    expect(colsForWidth(two - SLOT_W / 2 + 1)).toBe(2);
+    expect(colsForWidth(two - SLOT_W / 2 - 1)).toBe(1);
+  });
+
+  test("it is held between one column and the widest, however far you drag", () => {
+    expect(colsForWidth(-10_000)).toBe(MIN_COLS);
+    expect(colsForWidth(10_000)).toBe(MAX_COLS);
+  });
+
+  test("never sized is the default, and a nonsense count is clamped not obeyed", () => {
+    expect(colsOf(null)).toBe(REGION_COLS);
+    expect(colsOf({ cols: null })).toBe(REGION_COLS);
+    expect(colsOf({ cols: 4 })).toBe(4);
+    expect(colsOf({ cols: 0 })).toBe(MIN_COLS);
+    expect(colsOf({ cols: 99 })).toBe(MAX_COLS);
+    expect(colsOf({ cols: Number.NaN })).toBe(REGION_COLS);
+  });
+
+  test("the cards flow across whatever width the territory has", () => {
+    const convs = ["a", "b", "c", "d"].map((id) => conv(id, "C:/wide"));
+    const { regions, laid } = layout(convs, {}, [proj("wide", "C:/wide", 0, 0, 4)]);
+    expect(regions[0].cols).toBe(4);
+    expect(regions[0].w).toBe(regionWidth(4));
+    /* One row of four rather than two of two, so the region is a row shorter. */
+    expect(regions[0].h).toBe(REGION_HEAD + SLOT_H + REGION_PAD);
+    expect(laid.map((n) => n.y)).toEqual([REGION_HEAD, REGION_HEAD, REGION_HEAD, REGION_HEAD]);
+    expect(laid.map((n) => n.x)).toEqual([
+      REGION_PAD,
+      REGION_PAD + SLOT_W,
+      REGION_PAD + SLOT_W * 2,
+      REGION_PAD + SLOT_W * 3,
+    ]);
+  });
+
+  test("a narrowed territory stacks them, and grows taller for it", () => {
+    const convs = ["a", "b", "c"].map((id) => conv(id, "C:/thin"));
+    const { regions, laid } = layout(convs, {}, [proj("thin", "C:/thin", 0, 0, 1)]);
+    expect(regions[0].w).toBe(regionWidth(1));
+    expect(regions[0].h).toBe(REGION_HEAD + SLOT_H * 3 + REGION_PAD);
+    expect(laid.map((n) => n.y)).toEqual([
+      REGION_HEAD,
+      REGION_HEAD + SLOT_H,
+      REGION_HEAD + SLOT_H * 2,
+    ]);
+  });
+
+  test("a pinned card still reserves the slot it is sitting on at the new width", () => {
+    const convs = ["pinned", "flows"].map((id) => conv(id, "C:/wide"));
+    /* Slot 2 of a four-wide territory — a slot that does not exist at the
+       default width, which is the whole point of asking. */
+    const at = { x: REGION_PAD + SLOT_W * 2, y: REGION_HEAD };
+    const { laid } = layout(
+      convs,
+      { pinned: { ...at, pinned: true } },
+      [proj("wide", "C:/wide", 0, 0, 4)],
+    );
+    const flows = laid.find((n) => n.conv.id === "flows")!;
+    expect(flows.x).toBe(REGION_PAD);
+    /* And the territory reaches it: a card pinned on the third column of a
+       four-wide one is inside, not hanging off the end. */
+    const { regions } = layout(convs, { pinned: { ...at, pinned: true } }, [
+      proj("wide", "C:/wide", 0, 0, 4),
+    ]);
+    expect(at.x + CARD_W).toBeLessThanOrEqual(regions[0].x + regions[0].w);
+  });
+
+  test("a widened territory blocks what settles under it across its real width", () => {
+    /* The grid's pitch is a *default* width, so a four-column territory in the
+       first column reaches across the second. What flows into the second column
+       has to come down past it — which is only true if the packing is asked
+       about the territory's real width rather than about `REGION_W`. */
+    const under = (cols: number) => {
+      const { regions } = layout([conv("a", "C:/wide")], {}, [
+        proj("wide", "C:/wide", 0, 0, cols),
+        proj("first", "C:/first"),
+        proj("second", "C:/second"),
+      ]);
+      const wide = regions.find((r) => r.cwd === "C:/wide")!;
+      const second = regions.find((r) => r.cwd === "C:/second")!;
+      expect(second.x).toBe(TERRITORY_W);
+      return { clear: wide.y + wide.h + REGION_GAP, at: second.y };
+    };
+    const wide = under(4);
+    expect(wide.at).toBe(wide.clear);
+    /* And at the default width it reaches nothing, so the same territory sits
+       at the top of its column. */
+    expect(under(REGION_COLS).at).toBe(0);
+  });
+});
 
 describe("territories", () => {
   test("each project gets its own region, laid out left to right", () => {

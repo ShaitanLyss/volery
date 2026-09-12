@@ -54,6 +54,8 @@ export type MenuTarget = {
   /* region */
   empty?: boolean;
   moved?: boolean;
+  /** Whether it has been made wider or narrower than the wall's own width. */
+  sized?: boolean;
   /** This territory is where chat cards stand, so the two things a territory
    *  normally offers to start are both things a card here cannot have: it has
    *  no project to open a conversation in and no git tree to branch. It offers
@@ -391,6 +393,10 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            flow again", one level up. Offered only when it would move something:
            a territory still standing where it was packed has nothing to tidy. */
         t.moved ? item("reflow", "settle it back in") : null,
+        /* And the way back from widening one, which is the same offer about the
+           territory's other two numbers. Withheld on the same test: a territory
+           standing at the width every other one is has nothing to give back. */
+        t.sized ? item("rewidth", "back to its usual width") : null,
         /* Only once it is standing empty. A territory outlives its last card so
            you can start again in it; forgetting is how you say you won't, and
            it is not something to offer next to live work. */

@@ -136,6 +136,10 @@ export class Portage {
          where it also is. */
       x: p.x,
       y: p.y,
+      /* The width travels where the glass position does not, because it is a
+         count of cards rather than a place on this window: a territory three
+         cards across is three cards across anywhere. */
+      cols: p.cols,
       /* Furniture by this file's own test — how the room is arranged, not what
          has been said in it. See `.claude/rules/guidance.md`. */
       instructions: p.instructions,
@@ -390,6 +394,7 @@ export class Portage {
           if (!here) {
             out.projects++;
             if (p.x !== null && p.y !== null) skein.placeProject(p.wasRoot, p.x, p.y);
+            if (p.cols !== null) skein.sizeProject(p.wasRoot, p.cols);
           }
           out.groups += await this.#groupsFor(project, p.wasRoot, p.groups);
           /* And what it tells its cards, by the same top-up rule the wall's took

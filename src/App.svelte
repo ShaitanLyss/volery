@@ -225,6 +225,10 @@
       if ((p.glassX ?? null) !== (spot?.x ?? null) || (p.glassY ?? null) !== (spot?.y ?? null)) {
         skein.stickProject(cwd, spot);
       }
+      /* And its width, by the same "only if it differs" rule — a `size_project`
+         written for a step that only moved the territory is a row touched for
+         nothing, and on this one it would also reflow every card inside it. */
+      if ((p.cols ?? null) !== at.cols) skein.sizeProject(cwd, at.cols);
     },
   };
   /* The process sampler. Idle — and holding nothing — until a performance
@@ -1227,6 +1231,7 @@
         kind: "region",
         empty: !skein.convs.some((c) => c.cwd === cwd),
         moved: territoryMoved(cwd),
+        sized: (skein.projects.find((p) => p.root_path === cwd)?.cols ?? null) !== null,
         glass: !!spotOf(skein.projects.find((p) => p.root_path === cwd)),
         chat: skein.isChatHome(cwd),
         nowhere: adrift.has(cwd),
@@ -1245,6 +1250,10 @@
           const before = stands();
           skein.placeProject(cwd, null, null);
           undo.did("settling a territory back in", moved(before));
+        } else if (id === "rewidth") {
+          const before = stands();
+          skein.sizeProject(cwd, null);
+          undo.did("resizing a territory", moved(before));
         } else if (id === "guidance") {
           /* Opened on this territory, by id — the panel speaks the store's
              vocabulary and the wall speaks paths. A territory with no row is
@@ -3408,6 +3417,7 @@
         onclose={closeConv}
         onpin={(id) => savePlacement(id)}
         onplace={(cwd, x, y) => skein.placeProject(cwd, x, y)}
+        onsize={(cwd, cols) => skein.sizeProject(cwd, cols)}
         onstick={(id) => savePlacement(id)}
         onstickproject={(cwd, at) => skein.stickProject(cwd, at)}
       />
