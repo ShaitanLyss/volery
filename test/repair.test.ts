@@ -6,6 +6,7 @@ import {
   sayCommand,
   sayNothingToRepair,
   sayRepair,
+  poisonedPath,
   type RepairReport,
 } from "../src/lib/repair";
 
@@ -15,9 +16,17 @@ const real: RepairReport = {
   chars_removed: 4383,
   nuls: 1222,
   undecodable: 100,
-  commands: [
-    'Bash cd /c/Users/lyss.delprat/.local/bin && echo "=== oauth prompt strings ==="; ' +
-      'grep -aoE "(Paste|paste)[^\\"]{0,70}" claude.exe | sort -u | head -12',
+  culprits: [
+    {
+      tool: "Bash",
+      command:
+        'Bash cd /c/Users/lyss.delprat/.local/bin && echo "=== oauth prompt strings ==="; ' +
+        'grep -aoE "(Paste|paste)[^\\"]{0,70}" claude.exe | sort -u | head -12',
+      /* `claude.exe` is a binary and not a source file, so the repair named
+         none — which is the honest answer for this one. */
+      path: null,
+      declared: false,
+    },
   ],
   backup: "C:/Users/x/.claude/projects/p/s.jsonl.skein-bak",
 };
@@ -52,7 +61,7 @@ describe("what the card says about one", () => {
   });
 
   test("a report with no command still reads as a sentence", () => {
-    const said = sayRepair({ ...real, commands: [] });
+    const said = sayRepair({ ...real, culprits: [] });
     expect(said).toContain("repaired —");
     expect(said).not.toContain("undefined");
     expect(said).not.toContain("``");
@@ -77,6 +86,88 @@ describe("what the card says about one", () => {
   test("a clean conversation is a finding, and says so without naming a cause it did not check", () => {
     expect(sayNothingToRepair()).toContain("nothing corrupt");
     expect(sayNothingToRepair()).not.toContain("too large");
+  });
+});
+
+describe("where the characters still are", () => {
+  /** The loop from sink 08de8ed3: a poisoned source file in a shared tree. */
+  const poisoned: RepairReport = {
+    ...real,
+    nuls: 2,
+    undecodable: 0,
+    culprits: [
+      {
+        tool: "Read",
+        command: "Read preview-router/lib/routing.test.ts",
+        path: "preview-router/lib/routing.test.ts",
+        declared: true,
+      },
+    ],
+  };
+
+  test("the file is named, because a 400 names only a column offset in a request body", () => {
+    /* Without this the card that died cannot learn from the repair, so it
+       reads the same file next turn and dies identically. Two cards burned
+       five turns on that. */
+    expect(sayRepair(poisoned)).toContain("preview-router/lib/routing.test.ts");
+  });
+
+  test("and the card says it did not touch it, because it did not", () => {
+    /* A repair mends the conversation only. Saying so is what turns "repaired"
+       from an all-clear into an instruction. */
+    expect(sayRepair(poisoned)).toContain("did not touch");
+    expect(sayRepair(poisoned)).toContain("still in");
+  });
+
+  test("a path read out of a shell line is offered as a guess", () => {
+    const guessed: RepairReport = {
+      ...poisoned,
+      culprits: [
+        {
+          tool: "Bash",
+          command: "Bash cat preview-router/lib/routing.test.ts",
+          path: "preview-router/lib/routing.test.ts",
+          declared: false,
+        },
+      ],
+    };
+    expect(sayRepair(guessed)).toContain("probably");
+    expect(sayRepair(guessed)).toContain("check it");
+  });
+
+  test("and when no file could be named, the old sentence still stands", () => {
+    /* `real` is the `grep -a claude.exe` case: a binary, deliberately read as
+       text, with no source file to blame. */
+    expect(sayRepair(real)).toContain("could not be sent while they were in it");
+    expect(sayRepair(real)).not.toContain("null");
+  });
+});
+
+describe("the file skein would put its name to", () => {
+  test("a declared path, which is the one the tool was handed", () => {
+    expect(
+      poisonedPath({
+        ...real,
+        culprits: [{ tool: "Read", command: "Read a.ts", path: "a.ts", declared: true }],
+      }),
+    ).toBe("a.ts");
+  });
+
+  test("never a guess, because a wall-level notice is acted on without checking", () => {
+    /* The certain tier and nothing else. A notice naming the wrong file sends
+       the next card to clean something that was never dirty — worse than a
+       notice that names none. */
+    expect(
+      poisonedPath({
+        ...real,
+        culprits: [{ tool: "Bash", command: "Bash cat a.ts", path: "a.ts", declared: false }],
+      }),
+    ).toBe(null);
+  });
+
+  test("and nothing at all when the repair named nothing", () => {
+    expect(poisonedPath(real)).toBe(null);
+    expect(poisonedPath({ ...real, culprits: [] })).toBe(null);
   });
 });
 

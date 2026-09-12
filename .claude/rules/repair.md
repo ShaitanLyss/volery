@@ -4,6 +4,7 @@ paths:
   - "src-tauri/src/repair/mod.rs"
   - "src-tauri/src/repair/text.rs"
   - "test/repair.test.ts"
+  - "tools/lift-repair.ts"
 ---
 
 # Mending a conversation a tool call made unsendable
@@ -57,12 +58,83 @@ The bad characters come out and **a note goes in where they were**, in the sessi
 the agent's own history:
 
 > *[skein removed 11,340 characters of binary output from this tool result — 1,112 NUL
-> characters and 100 bytes that would not decode… The command was: … Re-run it in a way that
-> cannot emit binary…]*
+> characters and 100 bytes that would not decode… The command was: … The characters came from
+> preview-router/lib/routing.test.ts, and skein did NOT touch that file — this repair mends the
+> conversation only, so reading it again in any way will break this conversation again…]*
 
 That placement is the whole design. An agent that finds its `grep` output silently missing
 runs it again the same way; one that reads why does not. Telling the *user* and leaving the
 agent to discover a hole would have been half a feature.
+
+### Naming the file, and why a repair that does not is an infinite loop
+
+**This is the half that was missing until 2026-09-13, and it is worse than a gap — it is a
+gap shaped like a fix.** The repair heals the conversation and does not go near the file,
+which is correct. What was wrong is that it did not *say* so, and the note it left named a
+command rather than a path. So the card got a turn back, a line saying the trouble had been
+dealt with, and no way to connect either to anything on disk. The 400 it died on says
+
+```
+API Error: 400 … unexpected end of data: line 1 column NNNNNN
+```
+
+— a column offset in a **serialised request body**, which is not a thing an agent can map to
+a path. So it read the same file next turn and died the same way.
+
+Observed end to end in nova on 2026-09-11 (sink `08de8ed3`). One NUL in
+`preview-router/lib/routing.test.ts`, written there by an `Edit` that put a control byte where
+the source said a space (sink `74a03943` — that half is Claude Code's). Any card that `cat`,
+`sed`, `git diff` or `grep -C`'d the file put the byte in a tool result and lost its turn.
+Card `85071001` burned three, lost its working context, never recovered, and was still holding
+a ~660 MB process twelve hours later. The filing card burned two and found the file by
+scanning the tree byte by byte after the third death. **Every iteration was a card being
+repaired and learning nothing.**
+
+So `Culprit` carries the path, and the note says three things the old one did not: which file,
+that the file still has the bytes, and how to check —
+
+```
+od -An -tx1 -v FILE | tr ' ' '\n' | grep -c '^00$'
+```
+
+Zero is clean. That detector is quoted from the sink item **verbatim and on purpose**: it
+contains no escape sequence, so nothing between the note and a shell can mangle it. It is also
+the only check worth giving, because `grep` and ripgrep report a file with a NUL in it as
+*clean* — they refuse to search it as binary, which reads as a negative result.
+
+**Two tiers of certainty, and the hedge is load-bearing.** `Read`, `Edit`, `Write` and
+`NotebookEdit` hand Skein a `file_path`; that is the file, full stop, and `declared` is true.
+A `Bash` command is a shell line and `path_in_command` reads a path out of it — `cat foo`,
+`sed -n 3p bar`, `git diff -- baz` all spell one out, and the loop this exists to break was
+made entirely of those. But it is a guess and is said to be one, because **a notice that names
+the wrong file is worse than a notice that names none**: it sends the next card to clean
+something that was never dirty, and it spends the credibility that makes the next true notice
+worth reading. `looks_like_a_path` is strict for that reason — a glob is a set and therefore
+names no file, a URL is not on this disk, a flag is not a path however many dots are in it,
+the first token is the program rather than what it read, and a redirection target is where
+output was going rather than where the bytes came from.
+
+`Grep` and `Glob` take a `path` too and it is deliberately **not** read: it is the directory
+they searched under, and a repair answering *"the poison is in `src/`"* would be naming a tree.
+
+**Only a replaced record accuses anything.** `strip_everything_else` fires on prose — an
+assistant message that quoted a byte, a prompt pasted out of a terminal — and the tool call
+sitting beside it in the same record did not put it there. Blaming it would be the wrong-file
+failure arriving through the back door, so `repair_record` records the culprit only when
+`replace_contaminated` actually fired.
+
+**What is deliberately not built: Skein does not fix the file.** Rewriting another program's
+*transcript* is already the most invasive thing in this app that is not a spawn; rewriting
+somebody's source on top of it would be worse, and a repair that silently edited a test file
+would be indistinguishable from the bug that poisoned it. The agent is told, precisely, and
+does it.
+
+`poisonedPath` in `repair.ts` is the gate for anything that goes further than *reporting* —
+and there is one obvious candidate, left unbuilt on purpose. A poisoned file in a shared tree
+is exactly what the billboard is for, and the card that finds it is by construction the card
+that just died, so Skein is the only thing left that can post. If that is ever built it takes
+`poisonedPath` and nothing else: a wall-level notice is read by every card in the tree and
+acted on without checking, so it gets the certain tier only. See sink `08de8ed3`.
 
 Two rules inside the repair, and they pull in opposite directions on purpose:
 
@@ -158,9 +230,21 @@ nothing said still beats "unknown error".
 `repair/text.rs` is pure — what counts as unsendable and what stands in its place — and
 `repair/mod.rs` owns the file, the backup and the commands. That split is not tidiness. On a
 machine with no MSVC toolchain `cargo test` cannot run at all (`build.md`, the `0xC0000139`
-note), and a scratch crate that pulls in `text.rs` with `#[path]` is the only way those
-assertions get run there. `include!` does not work for it: inner doc comments cannot come from
-a macro expansion.
+note), and a scratch crate built from `text.rs` is the only way those assertions get run there.
+
+**`bun tools/lift-repair.ts` is that crate**, and for three weeks the paragraph above described
+one nobody had written. It needs no `ITEMS` list, unlike every other `lift-*.ts` here:
+`text.rs` reaches nothing in the crate *by construction* — that is the entire reason it is a
+separate file — so the lift takes the whole file and a function added to it is tested rather
+than quietly skipped. Two rewrites on the way in, each asserted before it is made so a rename
+fails the lift instead of silently testing something else: the `serde::Serialize` derive comes
+off, and `pub(crate)` becomes `pub`. `#[path]` and `include!` are both worse here —
+`include!` cannot carry the inner doc comments at all.
+
+What is worth *executing* rather than compiling: `path_in_command` is a heuristic over a shell
+line, which is the shape that compiles under every one of its own mistakes, and the note is a
+wire format with an agent at the other end. A typecheck cannot see whether the sentence that
+breaks the loop is still in the string.
 
 `src/lib/repair.ts` is the front end's half — when to reach for a repair, what the card says,
 how long the original is kept — and is pure and directly tested like the rest of `src/lib`.

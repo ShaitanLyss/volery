@@ -24,10 +24,23 @@ export type RepairReport = {
   nuls: number;
   /** Characters the CLI had already stood in for when it captured them. */
   undecodable: number;
-  /** The commands whose output carried it. */
-  commands: string[];
+  /** The tool calls whose output carried it, and the file each names. */
+  culprits: Culprit[];
   /** Where the untouched original is kept. */
   backup: string;
+};
+
+/** One tool call that put the characters there. Mirrors `Culprit` in
+ *  `repair/text.rs`. */
+export type Culprit = {
+  /** The tool — `Bash`, `Read`, `Grep`. */
+  tool: string;
+  /** What it was asked to do, short enough to say on a card. */
+  command: string;
+  /** The file it names, where one could be had. */
+  path: string | null;
+  /** Whether `path` was handed to Skein or read out of a shell line. */
+  declared: boolean;
 };
 
 /** How many turns must go well before the kept original is thrown away.
@@ -90,9 +103,47 @@ export function sayRepair(report: RepairReport): string {
   const what = bits.length ? bits.join(" and ") : `${count(report.chars_removed)} characters`;
   const where =
     report.records === 1 ? "one tool result" : `${count(report.records)} tool results`;
-  const cmd = report.commands[0];
-  const from = cmd ? ` from \`${sayCommand(cmd)}\`` : "";
-  return `repaired — took ${what} out of ${where}${from}; the conversation could not be sent while they were in it`;
+  const first = report.culprits[0];
+  const from = first ? ` from \`${sayCommand(first.command)}\`` : "";
+  return `repaired — took ${what} out of ${where}${from}; ${sayWhereTheyStillAre(report)}`;
+}
+
+/** The clause that stops this happening again tomorrow.
+ *
+ *  The old line ended *"the conversation could not be sent while they were in
+ *  it"*, which is true and is the less useful half. A repair takes the
+ *  characters out of the **conversation** and deliberately does not go near the
+ *  file — rewriting another program's transcript is already the most invasive
+ *  thing in this app that is not a spawn — so when the bytes came from a source
+ *  file, the file still has them and the next read is the same death. Two cards
+ *  burned five turns on that loop on 2026-09-11 and neither was ever told which
+ *  file to stop reading (sink `08de8ed3`).
+ *
+ *  So the card says where they still are when it can, and what it did when it
+ *  cannot. The hedge on an undeclared path is not politeness: a notice that
+ *  names the wrong file sends the next card to clean something that was never
+ *  dirty, which is worse than naming none. */
+export function sayWhereTheyStillAre(report: RepairReport): string {
+  const first = report.culprits[0];
+  const path = first?.path;
+  if (!path) return "the conversation could not be sent while they were in it";
+  return first.declared
+    ? `they are still in ${path}, which this did not touch`
+    : `they are probably still in ${path} — that is read out of the command, so check it — and this did not touch it`;
+}
+
+/** The file Skein would put its name to, or nothing.
+ *
+ *  Only a path the tool was *handed* — `Read`'s `file_path`, not a word picked
+ *  out of a shell line. This is the gate for anything that acts on a repair
+ *  rather than merely reporting one: warning the wall about a poisoned file in
+ *  a shared tree is exactly what the billboard is for, and the card that finds
+ *  it is by construction the card that just died, so Skein is the only thing
+ *  left that can post. But a wall-level notice is read by every card in the
+ *  tree and acted on without checking, so it gets the certain tier and nothing
+ *  else. See `.claude/rules/repair.md`. */
+export function poisonedPath(report: RepairReport): string | null {
+  return report.culprits.find((c) => c.declared && c.path)?.path ?? null;
 }
 
 /** And what it says when Skein looked and the conversation was clean.
