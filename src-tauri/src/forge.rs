@@ -208,6 +208,10 @@ pub struct Step {
     pub(crate) result: String,
     pub(crate) started_at: i64,
     pub(crate) finished_at: i64,
+    /// How to ask this forge for what the step printed, or `None` where there
+    /// is nothing to ask for. See `Stage::log` for the whole of it.
+    #[serde(skip)]
+    pub(crate) log: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -219,6 +223,26 @@ pub struct Stage {
     pub(crate) started_at: i64,
     pub(crate) finished_at: i64,
     pub(crate) steps: Vec<Step>,
+    /// An opaque handle to this row's output, in whatever the forge's own terms
+    /// are — an Azure DevOps log id, a GitHub job id — or `None` where the forge
+    /// has no log for it.
+    ///
+    /// **`#[serde(skip)]`, and that is the decision rather than an oversight.**
+    /// The panel deliberately does not draw log text (`.claude/rules/azdo.md`,
+    /// *What is deliberately left out*), so putting this on the wire would add a
+    /// field to every row of every run detail that nothing on the front end
+    /// reads. What wants it is `smith.rs`, which resolves a step *by the name
+    /// the listing printed* and then needs something to fetch with — and that
+    /// happens in Rust, on a `Detail` it already has in hand.
+    ///
+    /// **The two forges do not hold it at the same level, and nothing here
+    /// pretends otherwise.** Azure DevOps attaches a log to each Task record, so
+    /// a `Step` usually has its own; GitHub serves one log per *job* and none
+    /// per step, so on that forge every `Step.log` is `None` and only the
+    /// `Stage` carries one. That asymmetry is answered by saying which log was
+    /// read, never by folding one into the other — see `smith::pick_step`.
+    #[serde(skip)]
+    pub(crate) log: Option<String>,
 }
 
 /// One run's insides, as far as this app goes.
@@ -350,6 +374,136 @@ pub(crate) fn agent() -> ureq::Agent {
 /// one — it talks to GitHub on a different clock and must not inherit a forge's.
 pub(crate) fn tls_config() -> std::sync::Arc<ureq::rustls::ClientConfig> {
     tls()
+}
+
+/* ── what a step printed ───────────────────────────────────────────────────
+ *
+ * Shared by both forges for the reason `agent` is: the awkward part is not the
+ * service, it is that a build log is an arbitrarily large stream and what
+ * anybody wants out of it is the last twenty lines. Both halves therefore
+ * *stream* rather than fetching a `String` — `ureq`'s own `into_string` caps at
+ * 10 MB and would refuse a long test run's log outright, and a `Vec<String>` of
+ * a 500 MB log is a card's process, not a tail.
+ *
+ * See `.claude/rules/azdo.md`, *Reading what a step printed*. */
+
+/// The most lines either forge's log reading will answer with, however many are
+/// asked for. `server_log`'s number, deliberately: this is the same gesture on a
+/// different subject and two caps would be two things to remember.
+pub(crate) const LOG_MAX: usize = 400;
+
+/// What the reading answers with when nobody said. Higher than `server_log`'s
+/// 60 because a build log's tail is padded with teardown steps and artifact
+/// uploads where a dev server's tail is the thing that just happened.
+pub(crate) const LOG_DEFAULT: usize = 80;
+
+/// How much of a log will be pulled off the wire before the reading gives up.
+///
+/// **Hitting this loses the *end* of the log, which is the half worth having**,
+/// so the budget is set where no honest CI log reaches it rather than where it
+/// would be tidy — and `Tail::cut` says plainly that what came back is not the
+/// end, because a middle presented as a tail is exactly the absence-encoded-as-
+/// emptiness this whole reading exists to stop being.
+const LOG_BUDGET: u64 = 64 * 1024 * 1024;
+
+/// A single line longer than this is clipped, with the `…` as its marker.
+///
+/// Not a courtesy: a webpack bundle, a base64 artifact or a minified stylesheet
+/// echoed into a log arrives as one line of several megabytes, and the kept
+/// window is what bounds this reading's memory. Four thousand characters is past
+/// any assertion message worth reading and well short of a document.
+const LINE_MAX: usize = 4000;
+
+/// The tail of a log, and what it took to get there.
+pub(crate) struct Tail {
+    /// The kept window, oldest last-but-one — i.e. in the order it was printed,
+    /// newest at the end, which is how a log is read.
+    pub(crate) lines: Vec<String>,
+    /// Every line that came off the wire, kept or not. The denominator a `match`
+    /// is a fraction of.
+    pub(crate) scanned: usize,
+    /// How many of those the needle kept. Equal to `scanned` when there was no
+    /// needle, which makes "nothing matched" and "it printed nothing" two
+    /// different arithmetic facts rather than one empty array.
+    pub(crate) matched: usize,
+    /// Why the reading stopped early, if it did. `None` means it reached the end
+    /// of the log and the tail really is the tail.
+    pub(crate) cut: Option<String>,
+}
+
+/// Fold a log stream into its tail, filtering as it goes.
+///
+/// **Filtered over the whole stream and *then* tailed**, which is the order that
+/// makes `match` worth having and is `do_server_log`'s reasoning exactly:
+/// narrowing the tail would only ever search the eighty lines already being
+/// answered with, and the line worth finding is by definition one that scrolled
+/// past.
+///
+/// Pure over its reader, so `tools/lift-smith.ts` can run it against a
+/// `Cursor` on a machine that cannot run `cargo test`.
+pub(crate) fn tail_of(src: impl std::io::Read, want: usize, needle: Option<&str>) -> Tail {
+    use std::collections::VecDeque;
+    use std::io::BufRead;
+
+    let want = want.clamp(1, LOG_MAX);
+    let needle = needle.map(str::to_lowercase).filter(|n| !n.is_empty());
+    let mut keep: VecDeque<String> = VecDeque::with_capacity(want);
+    let (mut scanned, mut matched, mut read) = (0usize, 0usize, 0u64);
+    let mut cut = None;
+    let mut src = std::io::BufReader::new(src);
+    let mut buf: Vec<u8> = Vec::new();
+
+    loop {
+        buf.clear();
+        /* `read_until` rather than `read_line`, because a build log is not
+           promised to be UTF-8 — a compiler echoing a byte out of a source file
+           in another encoding is ordinary — and `read_line` fails the *whole*
+           read on one bad byte. Lossy decoding costs a replacement character
+           where the strict version costs the log. */
+        let n = match src.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                cut = Some(format!("the connection broke partway through: {e}"));
+                break;
+            }
+        };
+        read += n as u64;
+        scanned += 1;
+
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim_end_matches('\n').trim_end_matches('\r');
+        /* The byte-order mark GitHub puts in front of the first line of a job
+           log. Left in, it becomes an invisible character on the front of the
+           first thing the agent reads. */
+        let line = line.trim_start_matches('\u{feff}');
+        let line = crate::servers::strip_ansi(line);
+
+        if needle.as_ref().is_some_and(|n| !line.to_lowercase().contains(n)) {
+            continue;
+        }
+        matched += 1;
+        if keep.len() == want {
+            keep.pop_front();
+        }
+        keep.push_back(if line.chars().count() > LINE_MAX {
+            let head: String = line.chars().take(LINE_MAX).collect();
+            format!("{head}…")
+        } else {
+            line
+        });
+
+        if read >= LOG_BUDGET {
+            cut = Some(format!(
+                "stopped after {} MB — this log is larger than this reading will pull down, \
+                 so what is above is the *middle* of it and not the end. Narrow with `match`",
+                LOG_BUDGET / (1024 * 1024)
+            ));
+            break;
+        }
+    }
+
+    Tail { lines: keep.into(), scanned, matched, cut }
 }
 
 /* ── small shared readers ──────────────────────────────────────────────────*/

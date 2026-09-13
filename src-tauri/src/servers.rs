@@ -1104,7 +1104,14 @@ const LOG_MAX: usize = 400;
 /// two characters of a line rather than swallowing the rest of it, which is the
 /// failure worth choosing — a log with a stray `[?25l` in it is legible, and a
 /// log truncated at the first unrecognised byte is not.
-fn strip_ansi(s: &str) -> String {
+///
+/// **`pub(crate)` because a build log is the same problem one service over.**
+/// `forge::tail_of` reads Azure DevOps and GitHub step logs for the `pipelines`
+/// tool, and a CI runner colours its output for the same reason a dev server
+/// does — pnpm, vitest and cargo all emit SGR on a pipe when the runner sets
+/// `FORCE_COLOR`. One place to be right about escapes, for the same reason
+/// `forge::agent` is one place to be right about this network's certificates.
+pub(crate) fn strip_ansi(s: &str) -> String {
     const ESC: char = '\u{1b}';
     let mut out = String::with_capacity(s.len());
     let mut cs = s.chars();

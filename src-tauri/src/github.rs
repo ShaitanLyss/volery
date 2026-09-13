@@ -771,6 +771,10 @@ pub(crate) fn read_detail(cache: &mut Cache, id: &str) -> Result<Detail, String>
             result: text(j, "conclusion"),
             started_at: stamp(j, "started_at"),
             finished_at: stamp(j, "completed_at"),
+            /* The job id, which is the whole of what the log endpoint needs.
+               `None` before the job has been assigned one — a queued job in a
+               run somebody has only just pushed. */
+            log: j.get("id").and_then(|i| i.as_i64()).map(|n| n.to_string()),
             steps: j
                 .get("steps")
                 .and_then(|s| s.as_array())
@@ -782,6 +786,15 @@ pub(crate) fn read_detail(cache: &mut Cache, id: &str) -> Result<Detail, String>
                             result: text(s, "conclusion"),
                             started_at: stamp(s, "started_at"),
                             finished_at: stamp(s, "completed_at"),
+                            /* **Always `None`, and that is GitHub rather than a
+                               gap here.** Actions serves one log per *job*;
+                               there is no per-step endpoint at all. The nearest
+                               thing is the whole run's logs as a zip, one file
+                               per step, which is a much larger download for a
+                               format the API does not document as a contract.
+                               So a step resolves to its job's log and the answer
+                               says so — see `smith::pick_step`. */
+                            log: None,
                         })
                         .collect()
                 })
@@ -804,6 +817,86 @@ pub(crate) fn read_detail(cache: &mut Cache, id: &str) -> Result<Detail, String>
         live,
         fault: None,
     })
+}
+
+/// What one job printed, tailed as it arrives.
+///
+/// **The redirect is the whole of the difficulty, and it was measured rather
+/// than assumed.** `GET /repos/{o}/{r}/actions/jobs/{id}/logs` does not answer
+/// the log: it answers **302** to a signed blob url on
+/// `productionresultssa*.blob.core.windows.net`, where the credential is the SAS
+/// in the query string. Probed 2026-09-13 against `ShaitanLyss/volery` job
+/// 102906830383, with `curl`:
+///
+/// ```text
+/// follow, Authorization dropped   → 200, 548,793 bytes of plain text
+/// follow, Authorization preserved → 401, 397 bytes
+/// ```
+///
+/// So carrying the bearer across the hop does not merely waste a header, it
+/// **breaks the request** — Azure blob storage refuses a call that presents an
+/// `Authorization` it cannot read. `ureq` 2.12's default is
+/// `RedirectAuthHeaders::Never`, which is why `forge::agent()` gets this right
+/// with no configuration; it is written down because it is the sort of default
+/// a major-version bump changes, and the failure would be a 401 on a signed url
+/// that looks for all the world like a token problem. Anything that ever builds
+/// its own agent for this call owes the same check.
+///
+/// Two things this deliberately does *not* do. It does not send the
+/// `application/vnd.github+json` Accept — the far end is a text blob and
+/// `ask`'s headers are for the API. And it does not unzip: the per-step logs
+/// exist only inside `runs/{id}/logs`, a zip of the whole run, which is a much
+/// larger download for a filename format GitHub does not document as a contract.
+pub(crate) fn read_log(
+    cache: &mut Cache,
+    id: &str,
+    job: &str,
+    want: usize,
+    needle: Option<&str>,
+) -> Result<crate::forge::Tail, Denied> {
+    let (owner, name, _) = split_id(id).map_err(Denied::Said)?;
+    let Some(secret) = token(cache) else {
+        return Err(Denied::Said(
+            "no github credential on this machine — run `gh auth login`".into(),
+        ));
+    };
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/actions/jobs/{}/logs",
+        encode(&owner),
+        encode(&name),
+        encode(job),
+    );
+    match agent()
+        .get(&url)
+        .set("Authorization", &format!("Bearer {secret}"))
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .set("User-Agent", "volery")
+        .call()
+    {
+        Ok(res) => Ok(crate::forge::tail_of(res.into_reader(), want, needle)),
+        /* GitHub answers 410 for a job whose logs have aged out of retention —
+           90 days by default — which is a different sentence from "you cannot
+           see this" and from "there is no such job", and is the one an agent
+           reading an old run will actually hit. */
+        Err(ureq::Error::Status(410, _)) => Err(Denied::Said(
+            "github has expired this job's log — Actions keeps them for a limited time \
+             and this run is past it"
+                .into(),
+        )),
+        Err(ureq::Error::Status(404, _)) => Err(Denied::Unseen),
+        Err(ureq::Error::Status(403, res)) => Err(match limited(&res) {
+            Some(said) => Denied::Said(said),
+            None => Denied::Unseen,
+        }),
+        Err(ureq::Error::Status(401, _)) => Err(Denied::Said(
+            "the github credential was refused (401) — try `gh auth login`".into(),
+        )),
+        Err(ureq::Error::Status(code, res)) => {
+            let body = res.into_string().unwrap_or_default();
+            Err(Denied::Said(format!("github answered {code}: {}", first_line(&body))))
+        }
+        Err(e) => Err(Denied::Said(format!("could not reach github: {e}"))),
+    }
 }
 
 /// `github/{owner}/{repo}/{run}` back into its three parts.

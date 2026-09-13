@@ -242,6 +242,22 @@ pub fn pipelines_schema() -> Value {
              what you actually want nine times in ten. The steps carry each service's own \
              vocabulary verbatim, so `inProgress` from Azure DevOps and `in_progress` from \
              GitHub are both themselves and neither is folded into the other.\n\n\
+             **Then name a `step` beside the `run` to read what it printed** — the failing \
+             assertion, the compile error, the stack. That is the tenth time, and it is the \
+             one where knowing the step is called \"Run tests\" tells you nothing at all. \
+             There is no other way to a pipeline log from here: `az` cannot reach the host, \
+             git's own credential is code-scoped and answers 401 on builds, and the build \
+             page redirects to a sign-in.\n\n\
+             `step` takes a name this tool has already printed — a step's, a job's, or \
+             `\"<job> / <step>\"` where a bare one is ambiguous, which `Set up job` and \
+             `Checkout` always are. A name that matches nothing comes back with the ones \
+             that do, failures first. A step with no log says why rather than answering \
+             empty.\n\n\
+             Tail-first with a line cap, so a forty-minute test run costs you its last \
+             eighty lines and not its whole install log. **`match` is the cheap way to \
+             reach further back than `lines` would**: it filters the whole log rather than \
+             the tail, so `match: \"FAIL\"` finds the assertion that scrolled past twenty \
+             minutes ago. Prefer narrowing to asking for more lines.\n\n\
              `branch` is the cheap narrowing and usually the right one — asking whether the \
              branch you just pushed built, rather than reading the project's whole recent \
              history.",
@@ -252,8 +268,34 @@ pub fn pipelines_schema() -> Value {
                     "type": "string",
                     "description":
                         "A run's id exactly as this tool reported it, to get that run's \
-                         stages and steps instead of the list. Everything else is ignored \
-                         when this is given."
+                         stages and steps instead of the list. `branch` and `failed` are \
+                         ignored when this is given."
+                },
+                "step": {
+                    "type": "string",
+                    "description":
+                        "A step's name, to read what that step printed instead of the \
+                         stage/step tree. Needs `run` beside it. Takes a name this tool \
+                         printed — a step's, a job's (which reads the whole job's log), or \
+                         `\"<job> / <step>\"` to settle a name that appears in more than \
+                         one job. Where a bare name is ambiguous and exactly one of the \
+                         matches failed, that is the one, and the answer says so."
+                },
+                "lines": {
+                    "type": "integer",
+                    "description":
+                        "How many lines of the log to answer with, newest last. Default 80, \
+                         capped at 400 — if that is not enough, narrow with `match` rather \
+                         than asking for more."
+                },
+                "match": {
+                    "type": "string",
+                    "description":
+                        "Keep only log lines containing this, case-insensitively, searched \
+                         across the whole log rather than across the tail. This is how you \
+                         reach the failure that scrolled past — `FAIL`, `error[E0`, \
+                         `AssertionError` — without pouring an install log into your \
+                         context."
                 },
                 "branch": {
                     "type": "string",
@@ -456,27 +498,341 @@ fn went_wrong(status: &str, result: &str) -> bool {
     ) || status == "waiting"
 }
 
+/* ── which log a card meant ────────────────────────────────────────────────
+ *
+ * The sink items asked for `pipelines({run, step})` and left the naming open.
+ * The whole of the difficulty is in the naming, so it is settled here, in pure
+ * code with assertions, rather than at the call site.
+ *
+ * **Whatever `step` takes has to be a name the listing gave.** A card calls this
+ * with `run` first and reads back stages and steps; anything it can pass is
+ * something it has just read. So the vocabulary is exactly `Stage.name` and
+ * `Step.name`, plus `"<stage> / <step>"` for the case a bare step name is
+ * ambiguous — and that qualified form is *printed in the refusal that needs it*,
+ * so it never has to be guessed at either.
+ *
+ * See `.claude/rules/azdo.md`, *Reading what a step printed*.
+ */
+
+/// One resolved log: what to fetch, and what has to be said about the fetching.
+struct Picked<'a> {
+    stage: &'a crate::forge::Stage,
+    /// The step, when a step was named. `None` when the caller named a stage.
+    step: Option<&'a crate::forge::Step>,
+    /// The forge's own handle, ready for `azdo::run_log`.
+    log: String,
+    /// Whether `log` is the whole stage's rather than this step's alone.
+    whole_stage: bool,
+    /// How the ambiguity was settled, where there was one. Empty otherwise, and
+    /// an empty vec is the honest "this was an exact hit and nothing was
+    /// decided for you".
+    said: Vec<String>,
+}
+
+/// One name, compared the way a model will have retyped it.
+///
+/// Case and surrounding space, because a step name on this wall is frequently a
+/// shell fragment — `Run if [ "push" != "schedule" ]; then` — and a run of
+/// internal whitespace, because Azure DevOps wraps long task names and GitHub
+/// composes step names out of multi-line `run:` blocks.
+fn tidy(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Every (stage, step) pair on a run, paired with the qualified name that
+/// identifies it uniquely.
+fn qualified(stage: &crate::forge::Stage, step: &crate::forge::Step) -> String {
+    format!("{} / {}", stage.name, step.name)
+}
+
+/// Resolve what a card typed into one log to fetch, or into a refusal that says
+/// what it could have typed instead.
+///
+/// The ladder is four rungs and the order is the order of confidence:
+///
+/// 1. the **qualified** `"<stage> / <step>"`, which is the form a previous
+///    refusal from this function will have printed;
+/// 2. an exact **step** name, anywhere in the run;
+/// 3. an exact **stage** name, which is a legitimate ask — a whole job's log —
+///    and on GitHub is the only granularity there is;
+/// 4. a **substring** of either, last and only when nothing exact matched,
+///    because a model that has read `Run dtolnay/rust-toolchain@stable` off a
+///    listing and typed `rust-toolchain` has been perfectly clear.
+///
+/// **Collisions are settled towards the red step and never silently.** `Set up
+/// job` is a step in every GitHub job there has ever been, so a bare step name
+/// matching twice is the ordinary case rather than the edge one. A caller naming
+/// a step is nine times in ten chasing a failure, so if exactly one of the
+/// matches went wrong that is the one — and the answer says which stage it came
+/// from. If that does not narrow it to one, this refuses and prints the
+/// qualified names, because picking for them there would be a guess between two
+/// equally good readings.
+fn pick_step<'a>(detail: &'a crate::forge::Detail, want: &str) -> Result<Picked<'a>, String> {
+    let want = tidy(want);
+    if want.is_empty() {
+        return Err(refuse_step(detail, "`step` was empty"));
+    }
+
+    let pairs: Vec<(&crate::forge::Stage, &crate::forge::Step)> = detail
+        .stages
+        .iter()
+        .flat_map(|st| st.steps.iter().map(move |sp| (st, sp)))
+        .collect();
+
+    let mut hits: Vec<(&crate::forge::Stage, Option<&crate::forge::Step>)> = pairs
+        .iter()
+        .filter(|(st, sp)| tidy(&qualified(st, sp)) == want)
+        .map(|(st, sp)| (*st, Some(*sp)))
+        .collect();
+    if hits.is_empty() {
+        hits = pairs
+            .iter()
+            .filter(|(_, sp)| tidy(&sp.name) == want)
+            .map(|(st, sp)| (*st, Some(*sp)))
+            .collect();
+    }
+    if hits.is_empty() {
+        hits = detail
+            .stages
+            .iter()
+            .filter(|st| tidy(&st.name) == want)
+            .map(|st| (st, None))
+            .collect();
+    }
+    let mut loose = false;
+    if hits.is_empty() {
+        loose = true;
+        hits = pairs
+            .iter()
+            .filter(|(_, sp)| tidy(&sp.name).contains(&want))
+            .map(|(st, sp)| (*st, Some(*sp)))
+            .collect();
+    }
+    if hits.is_empty() {
+        hits = detail
+            .stages
+            .iter()
+            .filter(|st| tidy(&st.name).contains(&want))
+            .map(|st| (st, None))
+            .collect();
+    }
+    if hits.is_empty() {
+        return Err(refuse_step(detail, &format!("nothing on this run is called {want:?}")));
+    }
+
+    let mut said: Vec<String> = Vec::new();
+    if hits.len() > 1 {
+        let red: Vec<_> = hits
+            .iter()
+            .copied()
+            .filter(|(st, sp)| match sp {
+                Some(s) => went_wrong(&s.status, &s.result),
+                None => went_wrong(&st.status, &st.result),
+            })
+            .collect();
+        if red.len() == 1 {
+            said.push(format!(
+                "{} rows on this run answer to that name; this is the one that did not \
+                 succeed.",
+                hits.len()
+            ));
+            hits = red;
+        } else {
+            let names: Vec<String> = hits
+                .iter()
+                .map(|(st, sp)| match sp {
+                    Some(s) => format!("`{}`", qualified(st, s)),
+                    None => format!("`{}`", st.name),
+                })
+                .take(MAX_SHOWN)
+                .collect();
+            return Err(format!(
+                "{} rows on this run answer to {want:?} and {} of them went wrong, so there \
+                 is no one of them you obviously meant. Name one of these instead:\n\n{}",
+                hits.len(),
+                red.len(),
+                names.join("\n"),
+            ));
+        }
+    }
+    if loose {
+        let (st, sp) = hits[0];
+        said.push(format!(
+            "Nothing is called exactly {want:?}; this is `{}`, the one row whose name \
+             contains it.",
+            match sp {
+                Some(s) => qualified(st, s),
+                None => st.name.clone(),
+            }
+        ));
+    }
+
+    let (stage, step) = hits[0];
+
+    /* The step's own log where the forge has one. Azure DevOps attaches one per
+       task, so this is the ordinary path there and never the path on GitHub. */
+    if let Some(sp) = step {
+        if let Some(log) = &sp.log {
+            return Ok(Picked { stage, step, log: log.clone(), whole_stage: false, said });
+        }
+    }
+
+    /* And the job's, where it does not. **This is the answer the sink items are
+       most at risk from**, so it is the one that has to say what it did: a job's
+       log read as though it were one step's would put a passing step's output
+       under a failing step's name, which is the same class of lie as an empty
+       tail standing in for "it printed nothing". */
+    let Some(log) = &stage.log else {
+        return Err(no_log_because(stage, step));
+    };
+    if let Some(sp) = step {
+        said.push(if detail.forge == "github" {
+            format!(
+                "GitHub serves one log per **job**, not per step, so this is the whole of \
+                 `{}` rather than `{}` alone — the tail is the end of the job. `match` is \
+                 how to reach one step's lines inside it.",
+                stage.name, sp.name
+            )
+        } else {
+            format!(
+                "Azure DevOps attached no log to `{}` itself, so this is the whole of the \
+                 job `{}`, which contains it. The tail is the end of the job.",
+                sp.name, stage.name
+            )
+        });
+    }
+    Ok(Picked { stage, step, log: log.clone(), whole_stage: true, said })
+}
+
+/// Why there is no log to read, in the subject's own terms.
+///
+/// **The three absences are three different sentences**, and collapsing them is
+/// exactly the failure sink `ff3f6452` is about: an empty tail reads as "the
+/// step printed nothing", which is a claim about the build rather than about
+/// this reading. A step still running has a log coming; a skipped step never
+/// will; a completed step with no log is a task that genuinely produced none.
+fn no_log_because(
+    stage: &crate::forge::Stage,
+    step: Option<&crate::forge::Step>,
+) -> String {
+    let (name, status, result) = match step {
+        Some(s) => (&s.name, &s.status, &s.result),
+        None => (&stage.name, &stage.status, &stage.result),
+    };
+    let why = if result == "skipped" {
+        "it was skipped, so it never ran and printed nothing"
+    } else if status != "completed" {
+        "it has not finished — the log is attached when the step completes, so ask again \
+         once the run is done"
+    } else {
+        "the forge attached no log to it. Some rows are bookkeeping rather than work — an \
+         Azure DevOps stage that produced no job, a checkpoint — and those genuinely have \
+         no output"
+    };
+    format!(
+        "`{name}` has no log to read: {why}.\n\nIts state is `{status}` / `{result}`. \
+         Naming the job it sits in — `{}` — reads the whole of that instead, where there \
+         is one.",
+        stage.name
+    )
+}
+
+/// What a card could have typed, when what it typed matched nothing.
+///
+/// Failed rows first and named as such, because a card that has come here has
+/// nearly always come to read a failure, and a flat alphabet of forty step names
+/// is a list it has to re-derive the answer out of.
+fn refuse_step(detail: &crate::forge::Detail, why: &str) -> String {
+    let mut red: Vec<String> = Vec::new();
+    let mut all: Vec<String> = Vec::new();
+    for st in &detail.stages {
+        if st.steps.is_empty() {
+            all.push(format!("`{}`", st.name));
+            if went_wrong(&st.status, &st.result) {
+                red.push(format!("`{}`", st.name));
+            }
+            continue;
+        }
+        for sp in &st.steps {
+            all.push(format!("`{}`", qualified(st, sp)));
+            if went_wrong(&sp.status, &sp.result) {
+                red.push(format!("`{}`", qualified(st, sp)));
+            }
+        }
+    }
+    if all.is_empty() {
+        return format!(
+            "{why}, and this run has no stages or steps yet — Azure DevOps and GitHub both \
+             create them as an agent picks the work up. Ask again in a moment."
+        );
+    }
+    let mut out = format!("{why}.\n\n");
+    if !red.is_empty() {
+        out.push_str(&format!(
+            "What went wrong on this run:\n{}\n\n",
+            red.iter().take(MAX_SHOWN).cloned().collect::<Vec<_>>().join("\n")
+        ));
+    }
+    out.push_str(&format!(
+        "Everything on it, as `<job> / <step>` — a bare step name works too where it is \
+         not ambiguous:\n{}",
+        all.iter().take(MAX_SHOWN).cloned().collect::<Vec<_>>().join("\n")
+    ));
+    if all.len() > MAX_SHOWN {
+        out.push_str(&format!(
+            "\n\n…and {} more; `mcp__skein__pipelines` with `run` alone lists the lot.",
+            all.len() - MAX_SHOWN
+        ));
+    }
+    out
+}
+
 fn do_pipelines(app: &AppHandle, caller: &str, args: &Value) -> String {
     let stand = match standing(app, caller) {
         Ok(s) => s,
         Err(why) => return why,
     };
 
+    let want_step = args.get("step").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+
     /* One run, opened. Answered first and on its own, because a caller that has
        named a run has stopped asking about a list and every filter below would
        be noise. */
     if let Some(id) = args.get("run").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-        return match crate::azdo::one_run(app, id) {
-            Ok(detail) => match serde_json::to_value(&detail) {
+        let detail = match crate::azdo::one_run(app, id) {
+            Ok(d) => d,
+            Err(why) => {
+                return format!(
+                    "{why}\n\nA run's id is the string this tool reports on each row — \
+                     `azdo/<org>/<project>/<build>` or `github/<owner>/<repo>/<run>`. It is \
+                     not the build number."
+                )
+            }
+        };
+        /* The stage/step tree, unchanged, when no step was named. This is still
+           the right first answer nine times in ten and the log is the *second*
+           call on purpose: a card that reads the tree first has the names this
+           one takes, and one that guessed a step name without reading would
+           have to be refused anyway. */
+        let Some(want_step) = want_step else {
+            return match serde_json::to_value(&detail) {
                 Ok(v) => v.to_string(),
                 Err(e) => format!("could not read that run: {e}"),
-            },
-            Err(why) => format!(
-                "{why}\n\nA run's id is the string this tool reports on each row — \
-                 `azdo/<org>/<project>/<build>` or `github/<owner>/<repo>/<run>`. It is not \
-                 the build number."
-            ),
+            };
         };
+        return one_log(app, &detail, want_step, args);
+    }
+
+    /* A step with no run is the one argument pairing that cannot be answered,
+       and saying so beats quietly listing runs instead — which is what ignoring
+       it would do, and would read as the tool not having the capability. */
+    if let Some(step) = want_step {
+        return format!(
+            "`step` needs a `run` beside it — a step name only means anything inside one \
+             run. Call `mcp__skein__pipelines` with no arguments (or `failed: true`) for \
+             the list, then again with that row's `run` id to see its steps, then this \
+             call again with `run` and `step: {step:?}`."
+        );
     }
 
     let got = crate::azdo::both_runs(app, &[stand.root.clone()]);
@@ -546,6 +902,100 @@ fn do_pipelines(app: &AppHandle, caller: &str, args: &Value) -> String {
                  which step went red. Each service's own vocabulary, verbatim.",
     })
     .to_string()
+}
+
+/// One step's output, tail-first — the answer the two sink items asked for.
+///
+/// Prose rather than JSON, which is the one place this tool's two answers
+/// disagree about their shape and is deliberate: a run's stages are a *structure*
+/// a model walks, and a log is *text* a model reads. `do_server_log` next door
+/// settled the same question the same way, and the sink items both asked for
+/// this reading by pointing at it, so agreeing with it is worth more than
+/// agreeing with the line above.
+fn one_log(app: &AppHandle, detail: &crate::forge::Detail, want: &str, args: &Value) -> String {
+    let picked = match pick_step(detail, want) {
+        Ok(p) => p,
+        Err(why) => return why,
+    };
+
+    /* Clamped rather than refused, `do_server_log`'s reasoning: a model writing
+       5000 here has said "as much as I can get", which is a reasonable thing to
+       mean and an unreasonable thing to be handed. What it was cut to is in the
+       answer. */
+    let want_lines = args
+        .get("lines")
+        .and_then(Value::as_u64)
+        .map(|n| (n as usize).clamp(1, crate::forge::LOG_MAX))
+        .unwrap_or(crate::forge::LOG_DEFAULT);
+    let needle = args.get("match").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+
+    let tail = match crate::azdo::run_log(app, &detail.id, &picked.log, want_lines, needle) {
+        Ok(t) => t,
+        Err(why) => {
+            return format!(
+                "{why}\n\nThat is the forge refusing the log, not this run having none — \
+                 the stages and steps came back fine. On Azure DevOps a log read wants a \
+                 token with **Build (read)**, which is the same scope the pipelines widget \
+                 asks for; the credential panel is in the header menu."
+            )
+        }
+    };
+
+    let named = match picked.step {
+        Some(s) => format!("`{}` in `{}`", s.name, picked.stage.name),
+        None => format!("job `{}`", picked.stage.name),
+    };
+    let state = match picked.step {
+        Some(s) => format!("{} / {}", s.status, s.result),
+        None => format!("{} / {}", picked.stage.status, picked.stage.result),
+    };
+
+    let mut head = format!("{named} on `{}` — {state}", detail.id);
+    if picked.whole_stage && picked.step.is_some() {
+        head.push_str(", reading the job's log");
+    }
+    if let Some(n) = needle {
+        head.push_str(&format!(", lines matching {n:?}"));
+    }
+    head.push_str(&format!(
+        "\n\n{} line{} read; ",
+        tail.scanned,
+        if tail.scanned == 1 { "" } else { "s" }
+    ));
+    head.push_str(&match (needle, tail.lines.len()) {
+        (Some(_), n) => format!("{} matched, last {n} shown", tail.matched),
+        (None, n) if n < tail.scanned => format!("last {n} shown"),
+        (None, n) => format!("all {n} shown"),
+    });
+    for s in &picked.said {
+        head.push_str(&format!("\n\n{s}"));
+    }
+    if let Some(cut) = &tail.cut {
+        head.push_str(&format!("\n\n**{cut}.**"));
+    }
+
+    if tail.lines.is_empty() {
+        /* Which absence it is, in the forge's own terms. A filter that emptied
+           the window and a step that genuinely printed nothing are different
+           facts, and an agent told the wrong one draws the wrong conclusion
+           about the build — the whole reason both sink items were filed. */
+        return format!(
+            "{head}\n\n{}",
+            if needle.is_some() {
+                format!(
+                    "Nothing matched, out of {} lines. The log is there and was read — this \
+                     is the filter, not the step.",
+                    tail.scanned
+                )
+            } else {
+                "The log is empty: the forge had one for this step and there is nothing in \
+                 it. It ran and printed nothing."
+                    .to_string()
+            }
+        );
+    }
+
+    format!("{head}\n\n```\n{}\n```", tail.lines.join("\n"))
 }
 
 fn do_reviews(app: &AppHandle, caller: &str, args: &Value) -> String {

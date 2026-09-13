@@ -583,6 +583,25 @@ fn get(
     walk(cache, org, family, Verb::Get, url, None)
 }
 
+/// One GET whose answer is read as a **stream** rather than parsed.
+///
+/// The same ladder, the same rotation, the same refusals — only the last step
+/// differs, so it is the last step that is a parameter rather than the walk
+/// being written twice. A build log is the one thing this module fetches that is
+/// not a JSON document and not bounded: `ureq`'s `into_string` caps at 10 MB and
+/// would refuse a long test run's log outright, and the whole point of the
+/// reading is the last twenty lines, so it is folded as it arrives. See
+/// `forge::tail_of`.
+fn get_stream<T>(
+    cache: &mut Cache,
+    org: &str,
+    family: &'static str,
+    url: &str,
+    take: impl FnMut(ureq::Response) -> Result<T, Denied>,
+) -> Result<T, Denied> {
+    walk_with(cache, org, family, Verb::Get, url, "text/plain", None, take)
+}
+
 /// One request, signed with whichever rung is accepted, starting from the one
 /// that worked last time for this family.
 ///
@@ -599,6 +618,39 @@ fn walk(
     url: &str,
     body: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, Denied> {
+    walk_with(cache, org, family, verb, url, "application/json", body, |res| {
+        res.into_json::<serde_json::Value>()
+            .map_err(|e| Denied::Said(format!("unreadable answer from Azure DevOps: {e}")))
+    })
+}
+
+/// The walk itself, with what to do with a 2xx left to the caller.
+///
+/// Split out from `walk` for exactly one caller — `get_stream`, which reads a
+/// build log as a stream rather than parsing it — and split rather than
+/// duplicated because everything above the last line is the part that took three
+/// bugs to get right: which statuses fall through, which 400 is really a 404,
+/// which rung is remembered, and when the ladder is re-resolved. A second copy
+/// of that would be a second place for a credential rotation to be subtly
+/// different.
+///
+/// `take` is `FnMut` rather than `FnOnce` only because it sits inside the
+/// rotation loop; it is called at most once, on the first rung that answers 2xx.
+fn walk_with<T>(
+    cache: &mut Cache,
+    org: &str,
+    family: &'static str,
+    verb: Verb,
+    url: &str,
+    /* Which representation to ask for, because the one endpoint here that is not
+       a JSON document is the build log — and Azure DevOps answers that one in
+       *either* shape depending on this header. `read_log` copes with both
+       regardless, since this could not be probed from a machine with no build
+       credential, but asking for the cheap one is free. */
+    accept: &str,
+    body: Option<&serde_json::Value>,
+    mut take: impl FnMut(ureq::Response) -> Result<T, Denied>,
+) -> Result<T, Denied> {
     /* The ladder is resolved once per organisation and held, because each rung
        costs a process spawn — and it was held *forever*, which is the bug this
        re-resolution answers. Three of the four rungs genuinely do not expire, so
@@ -655,7 +707,7 @@ fn walk(
             Verb::Patch => agent.request("PATCH", url),
         }
         .set("Authorization", &cred.header())
-        .set("Accept", "application/json");
+        .set("Accept", accept);
         let sent = match body {
             Some(b) => call.send_json(b.clone()),
             None => call.call(),
@@ -663,9 +715,7 @@ fn walk(
         match sent {
             Ok(res) => {
                 cache.rung.insert((org.to_string(), family), at);
-                return res
-                    .into_json::<serde_json::Value>()
-                    .map_err(|e| Denied::Said(format!("unreadable answer from Azure DevOps: {e}")));
+                return take(res);
             }
             /* 401 is "this credential is not enough", 403 is "this identity is
                not allowed" — both are answered by trying another identity, and
@@ -1409,6 +1459,25 @@ fn read_timeline(cache: &mut Cache, org: &str, project: &str, build: &str) -> Re
     Ok(flatten_timeline(records))
 }
 
+/// The log Azure DevOps attached to one timeline record, if it attached one.
+///
+/// A record carries `"log": { "id": 12, "type": "Container", "url": … }` once
+/// the agent has uploaded it, and carries the key not at all before that. So the
+/// absence is real and means one of three different things — the step is still
+/// running, the step was skipped, or it genuinely produced nothing — which is
+/// why this answers `Option` and `smith::pick_step` says *which* rather than
+/// coming back with an empty tail.
+///
+/// The id is a small integer and is kept as a string, because that is what a
+/// url wants and nothing here does arithmetic on it.
+fn log_id(record: &serde_json::Value) -> Option<String> {
+    record
+        .get("log")?
+        .get("id")
+        .and_then(|i| i.as_i64())
+        .map(|n| n.to_string())
+}
+
 /// The flattening itself, apart from the request that fetched it.
 ///
 /// Split out for the reason `runs_with` is split from `azdo_runs`: it is the
@@ -1479,6 +1548,7 @@ fn flatten_timeline(records: &[serde_json::Value]) -> Vec<Stage> {
                 result: text(r, "result"),
                 started_at: stamp(r, "startTime"),
                 finished_at: stamp(r, "finishTime"),
+                log: log_id(r),
             },
         ));
     }
@@ -1535,6 +1605,10 @@ fn flatten_timeline(records: &[serde_json::Value]) -> Vec<Stage> {
                 started_at: started,
                 finished_at: stamp(r, "finishTime"),
                 steps: steps.into_iter().map(|(_, s)| s).collect(),
+                /* The Job record has a log of its own — every task in it, in
+                   order — which is what a step with no log of its own falls
+                   back to. */
+                log: log_id(r),
             },
         ));
     }
@@ -1571,12 +1645,97 @@ fn flatten_timeline(records: &[serde_json::Value]) -> Vec<Stage> {
                 started_at: started,
                 finished_at: stamp(r, "finishTime"),
                 steps: Vec::new(),
+                /* A `Stage` record is bookkeeping and runs on no agent, so it
+                   owns no log — and a skipped stage, which is most of these,
+                   never printed one. `None` rather than the empty string for
+                   the reason the sink item asks for: an absence encoded as an
+                   emptiness reads as "it said nothing". */
+                log: None,
             },
         ));
     }
 
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out.into_iter().map(|(_, s)| s).collect()
+}
+
+/// What one step printed, tailed as it arrives.
+///
+/// **Two shapes, because this one could not be probed from here.** Azure DevOps
+/// answers `builds/{id}/logs/{logId}` with the raw text under `Accept:
+/// text/plain` and with `{ "count": n, "value": [ …lines… ] }` under
+/// `Accept: application/json`, and which it does has been observed to depend on
+/// the api-version and on what is in front of it. This asks for the cheap one
+/// and copes with the other rather than trusting a header it cannot verify on
+/// this machine — the whole of the Azure DevOps half of this feature was written
+/// on a wall whose only build credential lives in `pull_request`'s vault, and no
+/// request on this path has ever been made from a test. Recorded here for the
+/// reason `.claude/rules/azdo.md` records it about the write path: a feature
+/// green on every gate and never once run is a known unknown, and saying so is
+/// the only thing that keeps it one.
+///
+/// The JSON arm buffers, which is exactly what the streaming arm exists to avoid
+/// — but it is the arm that should never run, and `into_json` failing on a
+/// 10 MB body is a legible refusal where a silently truncated log is not.
+fn read_log(
+    cache: &mut Cache,
+    org: &str,
+    project: &str,
+    build: &str,
+    log: &str,
+    want: usize,
+    needle: Option<&str>,
+) -> Result<crate::forge::Tail, Denied> {
+    let url = format!(
+        "https://dev.azure.com/{}/{}/_apis/build/builds/{}/logs/{}?api-version=7.1",
+        encode(org),
+        encode(project),
+        encode(build),
+        encode(log),
+    );
+    get_stream(cache, org, "build", &url, |res| {
+        if !res.content_type().contains("json") {
+            return Ok(crate::forge::tail_of(res.into_reader(), want, needle));
+        }
+        let v = res
+            .into_json::<serde_json::Value>()
+            .map_err(|e| Denied::Said(format!("unreadable log from Azure DevOps: {e}")))?;
+        let joined = v
+            .get("value")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter().filter_map(|l| l.as_str()).collect::<Vec<_>>().join("\n")
+            })
+            .unwrap_or_default();
+        Ok(crate::forge::tail_of(std::io::Cursor::new(joined), want, needle))
+    })
+}
+
+/// One run's one log, on whichever forge the id names.
+///
+/// The routing `one_run` does, one level in — and it takes the lock exactly the
+/// same way, once, for one pass. **Never called while `one_run`'s lock is
+/// held**: `smith::do_pipelines` reads the detail, drops it, resolves the step
+/// in pure code, and then asks for this. Nesting the two would be one mutex
+/// taken twice by one thread, which for a `std::sync::Mutex` is a deadlock
+/// rather than an error.
+pub(crate) fn run_log(
+    app: &AppHandle,
+    id: &str,
+    log: &str,
+    want: usize,
+    needle: Option<&str>,
+) -> Result<crate::forge::Tail, String> {
+    if id.starts_with("github/") {
+        let state = app.state::<github::Github>();
+        let mut cache = state.0.lock().unwrap();
+        github::read_log(&mut cache, id, log, want, needle).map_err(String::from)
+    } else {
+        let (org, project, build) = split_id(id)?;
+        let state = app.state::<Azdo>();
+        let mut cache = state.0.lock().unwrap();
+        read_log(&mut cache, &org, &project, &build, log, want, needle).map_err(String::from)
+    }
 }
 
 /// `azdo/{org}/{project}/{build}` back into its three parts.
