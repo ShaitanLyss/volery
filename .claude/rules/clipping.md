@@ -78,6 +78,16 @@ remainder as its own item. A marker that names a loss and no way to make it good
 agent knowing it is missing something and unable to act — which is exactly the state
 `relay.rs`'s original marker left every reader in.
 
+**And where no remedy exists, the cap refuses instead of cutting.** `sink::MAX_NOTE` is the
+one site so far: a settling note is clipped by the very call that closes the item, so every
+move a marker could name — `drop` onto it, reword it — is already refused by the time the
+marker is read. Its old remedy was the *body's*, copied across without noticing that the door
+it points at is the one this call shuts. Rule 2 has no honest way to be satisfied there, and
+the answer is not a marker that cannot be obeyed but leaving the door open, since the caller
+still holds the whole text (sink `78b3d002`, and `.claude/rules/sink.md` for the three shapes
+that were not taken). The test below — *who reads this, and can they get the rest?* — gains a
+third answer: **if the write itself is what puts the rest out of reach, do not do the write.**
+
 ## And the characters that cannot be there at all
 
 `clip::keep` gained a second job on 2026-09-12, and it gained it here rather than at a

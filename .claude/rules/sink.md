@@ -301,6 +301,50 @@ through.
 Both refuse rather than rotate, for `board::MAX_PER_CARD`'s reason: an agent whose oldest item
 was silently dropped would go on believing it had been written down.
 
+### A settling note is refused rather than clipped, because settling shuts the door
+
+`MAX_NOTE` (400) is the one cap on this wall that does not cut and mark. That is not an
+exemption from `.claude/rules/clipping.md` — it is that rule's own requirement taken
+seriously. A marker has to name **a next move**, and at settle time there is none: the item
+is being closed by the very call that produced the marker, `put_sink_item` matches
+`settled_at IS NULL` so a settled item does not absorb a `drop`, and `may_edit` refuses
+history. So an agent that read the old marker and did as it said got a refusal from `drop`, or
+filed a *new* open item about work that was finished.
+
+**The difference from the body's marker is timing, not wording**, which is worth holding on
+to because the two sentences were near-identical. A body is clipped at `drop` time, when the
+item is still open, so "file the remainder as its own item and name this one in it" is
+something the caller can do next — `f45b1b5a` is an item that exists because somebody did.
+The note's was copied from it without noticing that the door it points at is the one this
+call is closing. Measured cost: `b6bfecba`'s stored note is 642 characters and lost 558 of
+957, and what went was the root-cause paragraph of a browser-tools investigation, ending
+mid-word (sink `78b3d002`).
+
+Four shapes were on the table — reword the marker, refuse, overflow the excess into the body
+as a final voice, or raise the number — and `MAX_NOTE`'s own comment carries all four, because
+the next person to stand here will meet them too. What was taken:
+
+- **It refuses**, which is this subsystem's fourth door to make that choice after
+  `title_taken`, `Pick::Several` and `twin_refusal`. Same argument each time: a refusal is
+  read where a warning is skimmed, it costs one gesture, and it loses nothing — the caller
+  still holds the whole text, because it was written inside that agent's own output budget.
+- **The refusal names the door still open.** `long_note_refusal` says to `drop` under this
+  item's *exact title*, which merges as a further voice on the open item, and then settle with
+  a line. It gives the title back verbatim because that is what the merge matches on, and adds
+  `scope: "skein"` only for a wall-wide item — the same asymmetry `twin_refusal` has, since a
+  wall-wide item re-dropped without the argument lands as a project twin.
+- **And the advice is also in the schema**, which is the half a marker could never be. The
+  `note` property's description states the cap and the way round it, and an agent reads that
+  *before* composing the call — the one moment this costs nothing. The number is interpolated
+  from `MAX_NOTE` rather than written out, because a description naming a stale cap is worse
+  than one naming none: the caller would compose to fit it and be refused anyway.
+
+**Overflowing into the body was the tempting one**, and it is the one to argue with rather
+than dismiss: it keeps everything and needs no second call. What it costs is that `done`
+becomes a write to two fields, and a settled item stops being purely history — which is a
+larger decision about what this subsystem *is* than a truncation bug earns. If it is ever
+wanted, that is the change to reason about on its own.
+
 ### Nothing here is assigned
 
 `sink` says so, twice. An agent reads the pile because you asked it to, or because it is

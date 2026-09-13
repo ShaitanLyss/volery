@@ -60,6 +60,12 @@ const ITEMS: string[] = [
   "const DEFAULT_TYPES",
   "const KINDS",
   "fn encode",
+  /* `normalize_uri` returns one of these, so the lift does not compile without
+     it — and it went missing rather than arriving late: the struct replaced a
+     `(String, String)` tuple and the return type changed with it, which is a
+     change that compiles everywhere except here. The `#[derive(Debug)]` above
+     it comes along, and has to: `unwrap_err` in the assertions needs it. */
+  "struct Selection",
   "fn normalize_uri",
   "fn is_context",
   "fn search_url",

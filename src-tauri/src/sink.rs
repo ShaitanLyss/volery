@@ -96,6 +96,42 @@ const MAX_TITLE: usize = 120;
 
 /// How long a settling note may be. A sentence or two on what happened to an
 /// item, not a second body.
+///
+/// **This one refuses rather than clipping, and it is the only cap on the wall
+/// that does.** Every other capped field here is cut and marked, per
+/// `.claude/rules/clipping.md` — but that rule's marker is required to name *a
+/// next move*, and at settle time there is no move left to name. The item is
+/// being closed by the very call that produced the marker: `put_sink_item`
+/// matches `settled_at IS NULL` so a settled item does not absorb a `drop`, and
+/// `may_edit` refuses history, so an agent doing as the marker said got a
+/// refusal or filed a *new* open item about finished work. `b6bfecba`'s note is
+/// 642 stored characters and lost 558 of 957 — the root-cause paragraph of a
+/// browser-tools investigation, ending mid-word (sink `78b3d002`).
+///
+/// The body's marker works and this was copied from it. The difference is not
+/// the wording: a body is clipped at **drop** time, while the item is still
+/// open, so "file the remainder as its own item" is a thing the caller can do
+/// next. Timing relative to the door closing is the whole of it.
+///
+/// Four shapes were on the table and the next reader will meet them too:
+///
+/// 1. **Reword the marker** — tell the caller to `drop` the long version *then*
+///    `done`. Correct advice, zero code, and still one call too late to take.
+/// 2. **Refuse.** Nothing is lost, the caller still holds the whole text, and
+///    the refusal's own sentence is followable *at the moment it is read*.
+/// 3. **Overflow the excess into the body** as a final voice, then settle.
+///    Keeps everything in one call, and quietly makes `done` a write to two
+///    fields — which changes what a settled item *is*, a larger decision than
+///    this bug warrants.
+/// 4. **Raise the number.** Moves it rather than fixing it.
+///
+/// Taken: **(2), with (1) in the schema rather than in a marker.** Refusing is
+/// what this subsystem already chose for the cross-scope twin (`twin_refusal`,
+/// f24e6a1), for the reason that holds here too — a refusal is read where a
+/// warning is skimmed, and it costs one gesture and loses nothing. And (1) is
+/// worth having as well, but a marker is the wrong place to put it: the note
+/// property's own description is in front of the agent *before* it composes the
+/// call, which is the one moment the advice can still be acted on cheaply.
 const MAX_NOTE: usize = 400;
 
 /* A body has no cap here on purpose. It used to have one — 1,200 characters,
@@ -394,10 +430,22 @@ pub fn done_schema() -> Value {
                 },
                 "note": {
                     "type": "string",
-                    "description":
+                    /* The number is interpolated rather than written out, because
+                       this sentence is the *only* place the cap is stated before
+                       the call rather than after it — see `MAX_NOTE` — and a
+                       description that named a stale number would be worse than
+                       one that named none. */
+                    "description": format!(
                         "What was actually done about it, in a line — the commit, the \
                          fix, or why it turned out not to be a problem. This is all \
-                         anybody reading the settled list later will have."
+                         anybody reading the settled list later will have.\n\n\
+                         A sentence or two, not a second body: over {MAX_NOTE} characters \
+                         this is **refused** rather than clipped, because settling closes \
+                         the item and nothing could add the tail back afterwards. If the \
+                         finding is long, `drop` it under this item's exact title first — \
+                         that adds it to the item as a further voice — and settle with a \
+                         line."
+                    )
                 }
             },
             "required": ["item"]
@@ -1101,16 +1149,18 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Some(want) = args.get("item").and_then(Value::as_str) else {
         return "name the item by its id or its exact title".into();
     };
+    /* Measured, not clipped — the argument is beside `MAX_NOTE` and the short
+       version is that a clip here has no remedy to name. `clip::keep` is still
+       what does the measuring, because it is also what takes the impossible
+       characters out (`.claude/rules/clipping.md`), and its `total` is the
+       length *after* that scrub, which is the number every other cap on this
+       wall compares against. Nothing is refused here, only counted: the refusal
+       waits until the item is resolved, so it can name what to `drop` under. */
     let note = args
         .get("note")
         .and_then(Value::as_str)
-        .map(|n| {
-            crate::clip::keep(n.trim(), MAX_NOTE).marked(
-                "A note is a sentence or two on what happened, not a second body — if \
-                 there is more to say, it belongs in the item's own words.",
-            )
-        })
-        .filter(|n| !n.is_empty());
+        .map(|n| crate::clip::keep(n.trim(), MAX_NOTE))
+        .filter(|c| !c.kept.is_empty());
 
     let items = match visible(app, &me, true, false) {
         Ok(i) => i,
@@ -1144,11 +1194,20 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
         }
     }
 
+    /* After the hold, before the write. After, because an item somebody else is
+       holding is not yours to settle however long your note is, and the
+       collision is the more urgent news. Before, because this is the last
+       moment the door is still open — which is the entire bug. */
+    if let Some(cut) = note.as_ref().filter(|c| c.happened()) {
+        return long_note_refusal(item, &id, &scope, cut.total);
+    }
+
     let store = app.state::<Store>();
     let Ok(conn) = store.0.lock() else {
         return "the store is unavailable".into();
     };
-    let ok = crate::store::settle_sink_item(&conn, &item.id, note.as_deref());
+    let kept = note.as_ref().map(|c| c.kept.as_str());
+    let ok = crate::store::settle_sink_item(&conn, &item.id, kept);
     drop(conn);
     if !ok {
         return format!("[{id}] {:?} was already settled.", item.title);
@@ -1169,6 +1228,38 @@ fn do_done(app: &AppHandle, caller: &str, args: &Value) -> String {
         "took [{id}] out of the sink — {:?}, filed {scope}.{asked} It is kept rather than \
          deleted, so the user can put it back if it turns out not to be finished.",
         item.title
+    )
+}
+
+/// A note too long to be a note, refused with the door still open.
+///
+/// The whole of the design is beside `MAX_NOTE`. What this has to get right is
+/// that the next move it names is one the caller can make *now* — so it names
+/// the door that is open rather than the two that are not: the item has not
+/// been settled, so `drop` under this exact title still merges, and a merge on
+/// an open item appends the words as a further voice (`store::put_sink_item`).
+/// It gives the title back verbatim because that is what the merge matches on,
+/// and the scope word because the merge is scoped where the read is not — a
+/// wall-wide item re-dropped without `scope` lands as a project twin, which is
+/// the accident `twin_refusal` exists for and would be a rude way to meet it.
+fn long_note_refusal(item: &SinkItem, id: &str, scope: &str, total: usize) -> String {
+    let escape = if item.project_id.is_none() {
+        " with `scope: \"skein\"`, since it is filed wall-wide"
+    } else {
+        ""
+    };
+    format!(
+        "[{id}] {:?}, filed {scope}, was **not** settled and nothing was written — the note \
+         is {total} characters and a note may be {MAX_NOTE}. You still have the whole of it, \
+         which is why this refuses rather than storing three quarters: settling is the one \
+         write that closes the door behind itself, so a clipped note's tail could not be \
+         made good afterwards by anything.\n\n\
+         A note is a sentence or two on what happened. The long version belongs in the \
+         item's own words, and the item is still open, so that is still possible: call \
+         `mcp__skein__drop` with this exact title{escape} and the long text as the body — it \
+         will be added to this item as a further voice rather than making a second one — and \
+         then call `mcp__skein__done` again with a line.",
+        item.title,
     )
 }
 
@@ -1753,6 +1844,64 @@ mod tests {
         assert!(msg.contains("filed under this project"), "{msg}");
         assert!(msg.contains("without `scope`"), "{msg}");
         assert!(!msg.contains(r#"with `scope: "skein"`"#), "{msg}");
+    }
+
+    /// The refusal a clipped note replaced, and the only thing that says it is
+    /// a refusal rather than a cut. Every needle here is load-bearing: the
+    /// count, so the caller knows how far over it went; "not settled", so it
+    /// cannot be read as a warning after the fact; and the `drop` under this
+    /// **exact title**, which is the one door still open at this moment and the
+    /// whole of why the old marker's advice could not be taken (sink
+    /// `78b3d002`).
+    #[test]
+    fn an_over_long_note_is_refused_with_a_door_still_open() {
+        let it = item(None, None);
+        let msg = long_note_refusal(&it, "abcd1234", "wall-wide", 1_500);
+        assert!(msg.contains("[abcd1234]"), "{msg}");
+        assert!(msg.contains("not** settled"), "{msg}");
+        assert!(msg.contains("1500 characters"), "{msg}");
+        assert!(msg.contains("400"), "{msg}");
+        assert!(msg.contains("`mcp__skein__drop`"), "{msg}");
+        assert!(msg.contains("exact title"), "{msg}");
+        assert!(msg.contains(&it.title), "{msg}");
+    }
+
+    /// A wall-wide item needs `scope: "skein"` on the re-drop or the merge
+    /// lands in the caller's project as a twin, and a project item must **not**
+    /// be told to pass it. Same asymmetry `twin_refusal` has, for the same
+    /// reason, and stated separately because one message with a word swapped is
+    /// exactly how that one would have gone wrong.
+    #[test]
+    fn the_re_drop_names_the_scope_only_when_the_item_is_wall_wide() {
+        let wall = item(None, None);
+        assert!(
+            long_note_refusal(&wall, "abcd1234", "wall-wide", 900)
+                .contains(r#"`scope: "skein"`"#),
+            "a wall-wide item must say so"
+        );
+        let mut mine = item(None, None);
+        mine.project_id = Some("p1".into());
+        assert!(
+            !long_note_refusal(&mine, "abcd1234", "under this project", 900)
+                .contains(r#"`scope: "skein"`"#),
+            "a project item must not be told to file wall-wide"
+        );
+    }
+
+    /// The cap has to be said *before* the call as well as in the refusal,
+    /// since that is the one reading of it an agent can still act on cheaply —
+    /// and it has to be the real number. A description naming a stale cap is
+    /// worse than one naming none: the agent would compose to fit it and be
+    /// refused anyway, with no idea why.
+    #[test]
+    fn the_note_property_states_the_cap_and_the_way_round_it() {
+        let d = done_schema();
+        let note = d["inputSchema"]["properties"]["note"]["description"]
+            .as_str()
+            .expect("note has a description");
+        assert!(note.contains(&MAX_NOTE.to_string()), "{note}");
+        assert!(note.contains("refused"), "{note}");
+        assert!(note.contains("exact title"), "{note}");
     }
 
     #[test]

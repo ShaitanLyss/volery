@@ -117,6 +117,13 @@ bun tools/probe-rm.ts              # what `deny: Bash(rm -rf:*)` actually stops.
                                    # is nothing a card can call — it is given PowerShell and
                                    # no Bash tool at all. One real turn
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
+bun run lifts                      # every lift below, and a *pass count* asserted for each —
+                                   # a lift that finds nothing to assert exits 0 and is how
+                                   # four of these rotted red unnoticed (sink ce72b16b). This
+                                   # is the only thing that runs them; there is no CI gate.
+                                   # ~90s. The list below is a sample, not the set — the
+                                   # script globs `tools/lift-*.ts` so a new one is covered
+                                   # without being added to anything
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
 bun tools/lift-jobs.ts             # same, for the background-work reading and the bound
                                    # that stops it repeating while the work merely runs
@@ -135,6 +142,10 @@ bun tools/lift-sink.ts             # same, for the scope a listing row carries a
                                    # that would otherwise have made the seventh twin
 bun tools/lift-clip.ts             # same, for the one cap and the one scrub every text
                                    # field on every surface passes through
+bun tools/lift-repair.ts           # same, for the file a repair names — the heuristic that
+                                   # reads a path out of a shell line without inventing one,
+                                   # and the note that tells the agent the file still has
+                                   # the bytes. Lifts the whole file, so it needs no list
 ```
 
 `bun run test` deliberately excludes `test/live.test.ts` and `test/wall.test.ts` — one costs

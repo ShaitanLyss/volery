@@ -91,6 +91,7 @@ const ITEMS: [string, string][] = [
   [SINK, "fn render"],
   [SINK, "fn ambiguous"],
   [SINK, "fn twin_refusal"],
+  [SINK, "fn long_note_refusal"],
   [SINK, "fn not_found"],
 ];
 
@@ -119,6 +120,12 @@ const TESTS: string[] = [
   "the_rendered_row_carries_the_scope_beside_the_id",
   "a_cross_scope_drop_is_refused_with_the_id_that_holds_the_title",
   "the_refusal_names_the_other_scope_when_the_drop_is_the_wall_wide_one",
+  /* Sink 78b3d002: settling is the one write that closes the door behind
+     itself, so the note cap refuses where every other cap on the wall clips.
+     These are the sentences that carry it. */
+  "an_over_long_note_is_refused_with_a_door_still_open",
+  "the_re_drop_names_the_scope_only_when_the_item_is_wall_wide",
+  "the_note_property_states_the_cap_and_the_way_round_it",
   /* The words the tools are advertised in, including the convention an agent
      would otherwise have to infer off a listing. */
   "the_four_tools_are_advertised_with_usable_schemas",
