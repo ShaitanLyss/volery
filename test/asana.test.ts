@@ -14,8 +14,10 @@ import {
   healthTier,
   mineSaid,
   orderAssigned,
+  onTheWall,
   orderHealth,
   plan,
+  scratchProject,
   todayIso,
   type Assigned,
   type Board,
@@ -594,5 +596,59 @@ describe("the custom fields on a card", () => {
   test("a limit of nothing is not a negative remainder", () => {
     const c = card("k", { fields: [{ name: "Priority", value: "High" }] });
     expect(chipsOf(c, 0)).toEqual({ shown: [], rest: 1 });
+  });
+});
+
+describe("the scratch projects the wall does not draw", () => {
+  /* Lyss's rule, verbatim: projects that start with `asana` or contain
+     `throwaway` are not offered as a board and their items show in no widget.
+     Sink `37d912a7`.
+
+     The two clauses are matched differently on purpose and that asymmetry is
+     the thing worth a test: `asana` only where the name *opens* with it, which
+     is the shape of the sandbox Asana makes for a new account, and `throwaway`
+     anywhere at all. */
+
+  test("a name that opens with the tool is scratch; one that merely mentions it is not", () => {
+    expect(scratchProject("Asana Onboarding – Lyss Delprat")).toBe(true);
+    expect(scratchProject("asana onboarding")).toBe(true);
+    expect(scratchProject("  ASANA test board ")).toBe(true);
+    /* The prefix is the whole of the first clause, so a project genuinely
+       called `Asana migration` goes too. Stated rather than worked around:
+       widening it to `includes` would take the next two off the wall as well,
+       and narrowing it is a rule Lyss has to write, not one to guess at. */
+    expect(scratchProject("Asana migration")).toBe(true);
+    expect(scratchProject("Sync tickets to Asana")).toBe(false);
+    expect(scratchProject("The asana board")).toBe(false);
+    expect(scratchProject("RISE")).toBe(false);
+  });
+
+  test("throwaway anywhere in a name is somebody saying so on purpose", () => {
+    expect(scratchProject("throwaway")).toBe(true);
+    expect(scratchProject("TX throwaway board")).toBe(true);
+    expect(scratchProject("scratch — Throwaway")).toBe(true);
+    expect(scratchProject("thrown away")).toBe(false);
+  });
+
+  test("the list filter reads whatever field the reading calls a project", () => {
+    /* Two readings, two shapes: a project list has `name`, and a task on you
+       carries the name of the project it came from. One function over both,
+       because four copies of a rule is four places for it to drift. */
+    const projects = [{ name: "RISE" }, { name: "Asana Onboarding" }, { name: "T&D Team" }];
+    expect(onTheWall(projects, (p) => p.name).map((p) => p.name)).toEqual(["RISE", "T&D Team"]);
+
+    const tasks = [
+      { name: "fix the thing", project: "RISE" },
+      { name: "try a thing", project: "asana onboarding" },
+      { name: "old spike", project: "throwaway spike" },
+    ];
+    expect(onTheWall(tasks, (t) => t.project).map((t) => t.name)).toEqual(["fix the thing"]);
+  });
+
+  test("an unnamed project is not silently taken off the wall", () => {
+    /* A row with no name is a reading that went wrong, not a scratch board, and
+       hiding it would hide the evidence. */
+    expect(scratchProject("")).toBe(false);
+    expect(scratchProject("   ")).toBe(false);
   });
 });

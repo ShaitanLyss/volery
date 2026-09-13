@@ -188,6 +188,53 @@ export function columnOf(board: Board, task: string): string | null {
   return board.columns.find((c) => c.cards.some((k) => k.gid === task))?.gid ?? null;
 }
 
+/* ── what the wall does not want to see ────────────────────────────────────*/
+
+/** A project whose name says it is scratch, not work.
+ *
+ *  Lyss's own rule, verbatim: *projects that start with `asana` or contain
+ *  `throwaway` should not be available as a board, and their items shouldn't
+ *  show in any widget*. On this tenant the first clause is `Asana Onboarding –
+ *  …`, the sandbox Asana creates for a new account and one of the three
+ *  projects this token is actually a member of — so it sits at the top of the
+ *  picker's short list, which is the only place a name that says "ignore me"
+ *  can do real harm.
+ *
+ *  **`startsWith` for the first and `includes` for the second, and the
+ *  asymmetry is the instruction rather than a shortcut.** A name that merely
+ *  mentions the tool — "sync tickets to asana" — is real work somebody may
+ *  want a board of; a `throwaway` anywhere in a name is somebody saying so on
+ *  purpose.
+ *
+ *  The prefix is taken literally, which means a project genuinely called
+ *  `Asana migration` goes too. Left that way on purpose: the rule as given is
+ *  a prefix, every project it hits on this tenant is a sandbox, and inventing
+ *  a narrower one — an exact `asana onboarding`, say — would be this file
+ *  deciding something nobody asked it to. Worth knowing before adding a real
+ *  project whose name opens with the word.
+ *
+ *  Case-insensitive, since a project name is a phrase somebody typed.
+ *
+ *  **This is the wall's filter and not the tools'.** `docket.rs` answers a card
+ *  that named a project, by name, and a card asking for `Asana Onboarding` has
+ *  said which board it wants — the filter is about what clutters a wall Lyss
+ *  glances at, not about what exists. Hiding a project from an agent that asked
+ *  for it by name would be the tool arguing with the request, and it would
+ *  arrive as "no such project", which is a lie. */
+export function scratchProject(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return n.startsWith("asana") || n.includes("throwaway");
+}
+
+/** The same judgement over a list, for the one place each reading applies it.
+ *
+ *  One function rather than a predicate copied into the picker, the knob, the
+ *  health grid and the assigned list: four copies of a rule is four places for
+ *  it to drift, and the one that drifts is the one nobody is looking at. */
+export function onTheWall<T>(rows: T[], nameOf: (row: T) => string): T[] {
+  return rows.filter((r) => !scratchProject(nameOf(r)));
+}
+
 /* ── a project's health ────────────────────────────────────────────────────*/
 
 /** A project, with what its owner last said about it. */

@@ -42,7 +42,14 @@
  * card does not sit in the wrong column for a network round trip. */
 
 import { invoke } from "@tauri-apps/api/core";
-import { plan, type Assigned, type Board, type Move, type Project } from "./asana";
+import {
+  onTheWall,
+  plan,
+  type Assigned,
+  type Board,
+  type Move,
+  type Project,
+} from "./asana";
 
 /** How often a board is re-read while a widget is watching it.
  *
@@ -390,7 +397,11 @@ export class Asana {
           invoke<Assigned[]>("asana_mine", { workspace: w.gid, open: key === "open" }),
         ),
       );
-      feed.rows = lists.flat();
+      /* And out of what is on you, since a task carries the name of the
+         project it came from — "their items shouldn't show in any widget" is
+         the other half of the same instruction, and the assigned list is the
+         one reading that does not go through `projects`. */
+      feed.rows = onTheWall(lists.flat(), (t) => t.project);
       feed.fault = null;
       feed.at = Date.now();
     } catch (err) {
@@ -432,7 +443,16 @@ export class Asana {
          the same rule the widget-knob sources follow: on one workspace the
          prefix is the same word on every row and is therefore noise. */
       this.projects = lists.flatMap((rows, i) =>
-        rows.map((p) => ({
+        /* The scratch boards taken out here and nowhere else. This is the one
+           list every widget reads — the picker, the `boards` knob through
+           `mine`, and the health grid — so a rule applied once is applied to
+           all of them, and a fourth reading gets it for free.
+
+           Before the prefix, deliberately: `scratchProject` matches on what the
+           project is called, and a workspace name in front of it would put
+           `Asana Onboarding` past the `startsWith` on every tenant with two
+           workspaces. */
+        onTheWall(rows, (p) => p.name).map((p) => ({
           ...p,
           name: spaces.length > 1 ? `${spaces[i].name} · ${p.name}` : p.name,
         })),

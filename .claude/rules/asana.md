@@ -252,6 +252,43 @@ than only what is shown, because somebody typing a name has already said they ar
 the default. Substring and case-insensitive: a project name is a phrase somebody typed rather
 than a path, so there is nothing here for a fuzzy score to prefer.
 
+**And a project can say it is not work.** Lyss's rule, verbatim: *projects that start with
+`asana` or contain `throwaway` should not be available as a board, and their items shouldn't
+show in any widget* (sink `37d912a7`). On this tenant the first clause is `Asana Onboarding –
+…`, the sandbox Asana makes for a new account — and it is one of the *three* the token is a
+member of, so it sits at the top of the picker's short list, which is the one place a name
+saying "ignore me" can do real harm.
+
+`scratchProject` is in `asana.ts` with the rest of the pure judgements, and `onTheWall` applies
+it to a list. **It is applied in exactly two places**, both in `asana.svelte.ts`, and that is
+the whole design: `askProjects` filters `this.projects`, which is the single list the picker,
+the `boards` knob (through `mine`) and the health grid all read — so a fourth reading gets the
+rule for free — and `#pollMine` filters the assigned feed, which is the one reading that does
+not go through `projects`, since a task carries the name of the project it came from. A
+predicate copied into three components is three places for it to drift, and the one that drifts
+is the one nobody is looking at.
+
+Three decisions inside it:
+
+- **Filtered before the workspace prefix.** `askProjects` puts `workspace · ` in front of a name
+  on a multi-workspace tenant, and a prefix would put `Asana Onboarding` past the `startsWith`
+  on every one of them.
+- **`startsWith` for the first clause and `includes` for the second**, which is the instruction
+  rather than a shortcut — and the prefix is taken *literally*, so a project genuinely called
+  `Asana migration` goes too. Left that way on purpose: every name it hits here is a sandbox,
+  and inventing a narrower rule would be the code deciding something nobody asked it to. Worth
+  knowing before naming a real project after the tool.
+- **The MCP `tasks` and `task` tools do not honour it.** A card that named a project by name has
+  said which board it wants; this filter is about what clutters a wall Lyss glances at, not
+  about what exists. Hiding a project from an agent that asked for it would arrive as *no such
+  project*, which is a lie, and the tool would be arguing with the request.
+
+**A board widget already pinned to one keeps drawing it**, and that is a deliberate line rather
+than an oversight: the widget's `project` knob holds a gid Lyss chose, and blanking a widget
+that has been on the wall for a week reads as the app losing your configuration. It is gone
+from the picker and the knob, so taking it down is two clicks — and if a pinned scratch board
+should vanish by itself, that is a rule to add here rather than one to guess at.
+
 ### What was probed, 2026-09-03
 
 Read off `app.asana.com` with a real token on the `lagardere-tr.com` workspace. The full list is
@@ -371,6 +408,73 @@ it goes and for how long, because that is the fact that makes the decision.
 
 A **chat card is refused outright**, the same rule `smith.rs` states: a credential-carrying
 tool is exactly the reach that card kind exists to deny.
+
+### An absence must not be encoded as an emptiness
+
+The sharpest thing in this file, and it shipped wrong for eight days. `board_of` walked the
+columns in order spending one budget of sixty cards as it went, and emitted `"tasks": []` for
+every section the budget never reached. Read against the real RISE board — 84 open cards over
+six columns, measured 2026-09-11 and reproduced 2026-09-13 — it answered:
+
+```
+{"column":"testing","gid":"1218133521518653","tasks":[]},
+{"column":"validated","gid":"1218088745803186","tasks":[]},
+```
+
+with eighteen and three cards in them respectively. **A truncated list at least looks short; an
+explicit empty array under a named column is a positive assertion that the column is empty, and
+that is the assertion a reader acts on.** *Nothing is in testing* and *eighteen things are in
+testing* are different project states and it is the exact question a delivery rundown turns on.
+The card that filed it (sink `ff3f6452`) says it would have reported the wrong answer to Lyss
+had it trusted the payload.
+
+The `"more": 24` at the top was present and correct and could not repair it, which is the part
+worth carrying past Asana: **a count of what was dropped does not undo a claim about where it
+was not.** One number at the root cannot contradict six statements in the body, and a careful
+reader who sees both has no way to tell which column the twenty-four came out of.
+
+So three things, in the order they matter:
+
+- **A column the budget did not reach carries no `tasks` key at all**, and says `unread: true`.
+  `"tasks": []` now means, and only means, that the column is empty — `columns_json` is
+  separated out of `board_of` precisely so that claim is asserted on the JSON rather than on
+  the arithmetic behind it, since the JSON is the whole of what the card reads.
+- **Every column carries its own `count`, always, and it is the truth.** The rows are all in
+  hand by the time the grouping runs, so a real size costs nothing, and it is the one number
+  that makes a partial reading safe to act on: a column drawn short says how short.
+- **The budget is shared rather than spent in order.** `shares` fills every column evenly and
+  hands back what a small one cannot use, so the last column of a board is as visible as the
+  first. Positional truncation is what made the emptiness plausible in the first place — the
+  columns that lost were the ones nobody had walked yet, which is exactly the set a reader has
+  no way to identify.
+
+### A remedy the tool does not expose is worse than no remedy
+
+The same item's other half, and it is a lesson about *text* rather than about paging. The
+truncation notice said **"name a column's tasks by asking again, or narrow with `open`"**, and
+neither was an operation: there was no `section` parameter, and `open` was already true. A
+caller does not read that as a broken tool — they read it as an instruction, try it, get a
+schema error or an unchanged answer, and only then work out that the door was painted on. It
+costs them a round trip and their confidence in everything else the tool says.
+
+So `section` and `limit` exist now and the notice names them. `section` reads one column in
+full, resolved **against the section list already in hand** rather than by a second request —
+which is also what lets `no column` be nameable, since the unsectioned pile is not a section and
+no endpoint could offer it. `limit` raises the budget as far as `MOST`, which is what answers
+the argument-less reading's own version of this: it reported `"more": 40` on a workspace with
+nothing a caller could pass to see the forty.
+
+**And the fetch pages, which it did not.** One `limit=100` request, treated as the whole of the
+board: fine on a small project and silently wrong on a real one, because a per-column `count`
+computed off page one is not a count. `all_pages` is shared by both readings and bounded at
+`MAX_FETCH` for `asana::MAX_TASKS`' reason, and a reading that hits the bound says its counts
+are floors — the one honest thing available, since Asana does not say how many are left.
+
+One quieter fix rode along: a task in a section the section list did not have used to vanish
+entirely. It was neither in a column nor in the unsectioned pile, so it was absent from a board
+whose counts nothing contradicted — the same class of bug one notch smaller. It happens when
+somebody adds a column between the two requests, and `asana::board`'s loop had already reached
+the right answer: it goes in the pile.
 
 ### Three things the reading had to get right
 
@@ -548,7 +652,7 @@ over the whole account.
 because every one of them parks — a past tense would be the transcript claiming an outcome
 while the question is still up.
 
-`bun tools/lift-docket.ts` runs 16 assertions for real on a machine with no MSVC, which is the
+`bun tools/lift-docket.ts` runs 20 assertions for real on a machine with no MSVC, which is the
 rule `build.md` states: **`approved` is the whole of the gate**, and neither direction of it is
 visible to a typecheck. A version returning `true` for every answer compiles, passes
 `check-gnu`, and hands every agent on the wall the user's whole Asana account.
@@ -560,12 +664,12 @@ the wrong constant compiles perfectly, and only the test says the token still re
 house-style rename there would be silent: everything still compiles, the variable is still
 exported, and every Asana client on the machine stops finding it.
 
-**No request has ever been made through these tools.** The readings reuse the wire the widgets
-exercise daily, so those are as proven as the widgets are; the six writes — `put`, `delete`,
-`/tasks`, `/sections/{gid}/addTask` from a card, `/tasks/{gid}/stories` — have never touched
-Asana, and neither has `asana_token`'s `/users/me` probe, and at the time of writing **there is
-no Asana PAT in this machine's vault** (checked 2026-09-04: `dev.skein.studio/asana-pat` is
-absent). Recorded here rather than discovered later for the reason `4951f398` exists: a feature
+**The board reading has now been made for real; nothing else here has.** A PAT went into the
+vault between 2026-09-04 and 2026-09-11, and `tasks` has been called against the live RISE board
+from two cards — which is how sink `ff3f6452` was found, and it is worth noting that the first
+real call *was* the test and the test failed. The six writes — `put`, `delete`, `/tasks`,
+`/sections/{gid}/addTask` from a card, `/tasks/{gid}/stories` — have still never touched Asana,
+and neither has `asana_token`'s `/users/me` probe. Recorded here rather than discovered later for the reason `4951f398` exists: a feature
 green on every gate and never once run is a known unknown, and saying so is the only thing that
 keeps it one. The first real call is the test.
 

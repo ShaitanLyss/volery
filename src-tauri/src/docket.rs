@@ -131,14 +131,41 @@ pub(crate) const SERVICE: &str = "asana";
 /// remember to thread through by hand.
 pub(crate) const TOKEN_ENV: &str = "ASANA_ACCESS_TOKEN";
 
-/// How many tasks one board or list answers with.
+/// How many tasks one board or list answers with, unless a caller says
+/// otherwise.
 ///
 /// A board on a real workspace runs to a few hundred, and the whole of one is
 /// not what a card asked for — it asked what is in a column, or what is on
 /// somebody. What was cut is reported, because a bound that can hide the row
 /// you wanted has to say so out loud: the same rule `Board::more`,
 /// `Runs::unseen` and `server_log`'s clamp all follow.
+///
+/// **And it is a default rather than a ceiling now**, which is the other half
+/// of sink `ff3f6452`: reporting what was cut is only honest if there is
+/// something the caller can do about it. `limit` raises this as far as `MOST`,
+/// and `section` sidesteps it by asking a smaller question.
 const SHOWN: usize = 60;
+
+/// The most rows `limit` will hand back.
+///
+/// Every task here costs the reading card context it does not get back, so a
+/// caller who wants three hundred of them wants `section` or `open` instead.
+/// This is the point past which the tool stops believing the number was meant:
+/// two hundred is a whole real board, and a card that needs more than a whole
+/// board needs a different question.
+const MOST: usize = 200;
+
+/// How many tasks one reading will *fetch*, across however many pages.
+///
+/// `asana::MAX_TASKS`' number and its argument, restated because this file
+/// pages for its own reasons: four requests against somebody else's host is
+/// polite and forty is not. Distinct from `SHOWN` — this bounds what is
+/// counted, that bounds what is drawn, and conflating them is how a per-column
+/// `count` computed off one page became a number nothing contradicted.
+const MAX_FETCH: usize = 400;
+
+/// What Asana caps a page at. Not a choice.
+const PAGE: usize = 100;
 
 /// The most of a description that reaches a confirmation question.
 ///
@@ -310,6 +337,11 @@ pub fn tasks_schema() -> Value {
              before editing one with the `task` tool: an update replaces the whole field, so \
              amending a description you have not read is how one gets silently thrown \
              away.\n\n\
+             **A board reading is bounded and says exactly where.** Every column carries a \
+             `count`, which is the real number of tasks in it, and a `more` for whatever is not \
+             drawn. A column the bound did not reach carries **no `tasks` key at all** and says \
+             `unread: true` — so `\"tasks\": []` means the column is empty and nothing else \
+             does. Ask again with `section` for that column in full, or raise `limit`.\n\n\
              Two things everybody gets wrong about Asana, so they are worth having in front of \
              you: **a column is a `section`**, not a custom field — `custom_fields` is a \
              different feature and arrives separately, as name/value chips. And **`completed` is \
@@ -329,6 +361,21 @@ pub fn tasks_schema() -> Value {
                     "description":
                         "One task's gid, for that task in full with its description. \
                          Everything else is ignored when this is given."
+                },
+                "section": {
+                    "type": "string",
+                    "description":
+                        "One column of that project, by name or gid, for all of it rather than \
+                         a board's share. Needs `project`. A column is an Asana *section*; the \
+                         board reading lists them, and `no column` names the tasks in the \
+                         project that are in no section at all."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description":
+                        "How many tasks to draw. 60 by default, 200 at most — every one of them \
+                         costs you context, so prefer `section` where you can. On a board this \
+                         is shared out over the columns rather than spent on the first ones."
                 },
                 "open": {
                     "type": "boolean",
@@ -577,6 +624,16 @@ fn do_tasks(app: &AppHandle, caller: &str, args: &Value) -> String {
         return why;
     }
     let open = args.get("open").and_then(Value::as_bool).unwrap_or(true);
+    /* Clamped rather than refused: a caller asking for a thousand has said
+       "everything", and answering two hundred and saying so is a better reply
+       than a schema error. Zero and negatives fall back to the default, since
+       neither is an instruction anybody meant. */
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| (n as usize).clamp(1, MOST))
+        .unwrap_or(SHOWN);
+    let section = args.get("section").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
 
     /* One task, in full. Answered first and on its own, because a caller that
        has named a task has stopped asking about a list and every filter below
@@ -595,13 +652,23 @@ fn do_tasks(app: &AppHandle, caller: &str, args: &Value) -> String {
     }
 
     if let Some(want) = args.get("project").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-        return match board_of(want, open) {
+        return match board_of(want, section, open, limit) {
             Ok(s) => s,
             Err(why) => why,
         };
     }
 
-    match mine(open) {
+    /* A `section` with no project is a column of nothing in particular — said
+       rather than ignored, because silently answering a different question is
+       how a caller concludes the parameter does not work. */
+    if section.is_some() {
+        return "`section` names a column of one project, so it needs `project` too. Call this \
+                with the project alone first: the reply lists its columns, and each carries the \
+                `count` of what is in it."
+            .to_string();
+    }
+
+    match mine(open, limit) {
         Ok(s) => s,
         Err(why) => why,
     }
@@ -609,11 +676,50 @@ fn do_tasks(app: &AppHandle, caller: &str, args: &Value) -> String {
 
 /// One project's board — its sections as columns, with the tasks in each.
 ///
-/// Three requests, and the tasks come in **one** query with `memberships`
-/// rather than one per section. That is `asana_board`'s arrangement and the
-/// reason is the same: a nine-column board would otherwise be eleven round
-/// trips against somebody else's server.
-fn board_of(want: &str, open: bool) -> Result<String, String> {
+/// The tasks come in **one** paged query carrying `memberships` rather than one
+/// request per section. That is `asana_board`'s arrangement and the reason is
+/// the same: a nine-column board would otherwise be eleven round trips against
+/// somebody else's server.
+///
+/// ### An absence must not be encoded as an emptiness
+///
+/// This used to walk the columns in order spending a single budget of `SHOWN`
+/// cards as it went, and then emit `"tasks": []` for every section the budget
+/// never reached. On the RISE board (84 open cards over six columns, measured
+/// 2026-09-11 and again 2026-09-13) that answered `testing` with three of its
+/// eighteen and `validated` and `WEEK 1` with **empty arrays** — a positive
+/// assertion that two populated columns held nothing, which is the assertion a
+/// reader acts on. *Nothing is in testing* and *eighteen things are in testing*
+/// are different project states and it is the exact question a delivery rundown
+/// turns on. The `more` count at the top of the payload was right and could not
+/// repair it, because one number says nothing about **where** the missing cards
+/// went. Sink `ff3f6452`, and the card that filed it would have reported the
+/// wrong answer had it trusted what it was handed.
+///
+/// Three things follow, and the first matters more than the others:
+///
+/// - **A column the budget did not reach carries no `tasks` key at all**, and
+///   says `unread: true` instead. `"tasks": []` now means, and only means, that
+///   the column is empty. Every column also carries its own `count`, always and
+///   truthfully: the rows are all in hand by the time the grouping runs, so the
+///   real size of a column costs nothing and is the one number that makes a
+///   partial reading safe to act on.
+/// - **The budget is shared rather than spent in order.** `shares` fills the
+///   columns evenly and hands back whatever a small one does not use, so a
+///   board's last column is as visible as its first. Positional truncation is
+///   what made the emptiness plausible in the first place.
+/// - **The remedy the note names is a parameter that exists.** It used to say
+///   *"name a column's tasks by asking again, or narrow with `open`"*, and there
+///   was no `section` parameter and `open` was already true — a door painted on
+///   the wall, which is worse than no door because a caller goes round the loop
+///   before working out it is not one. `section` now reads one column in full
+///   and `limit` raises the budget.
+///
+/// And the fetch pages, which it did not: a single `limit=100` made every
+/// `count` above a lie on any project with more than a hundred open tasks.
+/// `MAX_FETCH` bounds it for `asana::MAX_TASKS`' reason, and a reading that hit
+/// that bound says its counts are floors rather than totals.
+fn board_of(want: &str, section: Option<&str>, open: bool, limit: usize) -> Result<String, String> {
     let found = find_project(want)?;
     let gid = &found.gid;
 
@@ -628,52 +734,70 @@ fn board_of(want: &str, open: bool) -> Result<String, String> {
         })
         .unwrap_or_default();
 
-    let mut url = format!("/tasks?project={gid}&limit=100&opt_fields={TASK_FIELDS}");
+    let mut base = format!("/tasks?project={gid}&opt_fields={TASK_FIELDS}");
     if open {
-        url.push_str("&completed_since=now");
+        base.push_str("&completed_since=now");
     }
-    let v = crate::asana::get(&url)?;
-    let rows = v
-        .get("data")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let total = rows.len();
+    let (rows, unfetched) = all_pages(&base)?;
 
     /* Grouped by the section *of this project*, which has to be matched on the
        project gid rather than taken from the first membership — a task in
        several projects would otherwise be filed under whichever column it
        happens to occupy on somebody else's board. `asana::section_of` makes the
        same point one layer over. */
-    let mut drawn = 0usize;
-    let mut cols: Vec<Value> = Vec::new();
-    for (sec_gid, sec_name) in &columns {
-        let mut cards: Vec<Value> = Vec::new();
-        for r in &rows {
-            if section_gid_of(r, gid).as_deref() == Some(sec_gid.as_str()) {
-                if drawn >= SHOWN {
-                    break;
-                }
-                cards.push(task_json(r, false));
-                drawn += 1;
-            }
-        }
-        cols.push(json!({ "column": sec_name, "gid": sec_gid, "tasks": cards }));
-    }
+    let mut piles: Vec<(String, String, Vec<&Value>)> =
+        columns.iter().map(|(g, n)| (g.clone(), n.clone(), Vec::new())).collect();
     /* Asana lets a task be in a project without being in any section, and
        dropping those would make this quietly disagree with the count in Asana's
        own header. Named as the widget names it, and only when something is in
-       it. */
-    let loose: Vec<Value> = rows
-        .iter()
-        .filter(|r| section_gid_of(r, gid).is_none())
-        .take(SHOWN.saturating_sub(drawn))
-        .map(|r| task_json(r, false))
-        .collect();
-    if !loose.is_empty() {
-        drawn += loose.len();
-        cols.push(json!({ "column": "no column", "gid": "", "tasks": loose }));
+       it.
+
+       A task in a section the section list did not have goes here too, rather
+       than nowhere: that happens when somebody adds a column between the two
+       requests, and the old grouping dropped such a task on the floor — it was
+       neither in a column nor loose, so it was simply absent from a board whose
+       counts nothing contradicted. `asana::board`'s loop reaches the same
+       conclusion for the same reason. */
+    let mut loose: Vec<&Value> = Vec::new();
+    for r in &rows {
+        match section_gid_of(r, gid) {
+            Some(sec) => match piles.iter_mut().find(|(g, _, _)| *g == sec) {
+                Some(p) => p.2.push(r),
+                None => loose.push(r),
+            },
+            None => loose.push(r),
+        }
     }
+    if !loose.is_empty() {
+        piles.push((String::new(), LOOSE.to_string(), loose));
+    }
+
+    /* One column, resolved against the list already in hand rather than by a
+       second request — `find_section` asks Asana the same question and the
+       answer is sitting here, and this way `no column` is nameable too, which
+       an endpoint could not offer since the pile is not a section. */
+    if let Some(w) = section {
+        let named: Vec<(String, String)> =
+            piles.iter().map(|(g, n, _)| (g.clone(), n.clone())).collect();
+        match pick_column(&named, w) {
+            Some(i) => piles = vec![piles.remove(i)],
+            None if named.is_empty() => {
+                return Err(format!(
+                    "{} has no columns at all — nothing in it is in a section, and nothing is                      in it. Ask for the project without a `section`.",
+                    found.name
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "no column matching `{w}` in {}. Its columns are: {}. Two of them matching                      what you typed is the same answer as none — name one exactly, or ask for                      the project without a `section` to see them with their counts.",
+                    found.name,
+                    named.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", ")
+                ))
+            }
+        }
+    }
+
+    let (cols, skipped) = columns_json(&piles, limit);
 
     let mut out = json!({
         "project": found.name,
@@ -681,15 +805,199 @@ fn board_of(want: &str, open: bool) -> Result<String, String> {
         "showing": if open { "open tasks only" } else { "every task" },
         "columns": cols,
     });
-    if total > drawn {
-        out["more"] = json!(total - drawn);
+    if skipped > 0 {
+        out["more"] = json!(skipped);
         out["note"] = json!(format!(
-            "{} more tasks in this project were not shown — name a column's tasks by asking \
-             again, or narrow with `open`.",
-            total - drawn
+            "{skipped} tasks are not drawn above, spread over the columns. Every column's \
+             `count` is its real size and its `more` is what it is missing, so no column here \
+             is claiming to be empty when it is not. Pass `section: \"<column name>\"` for one \
+             column in full, or raise `limit` (up to {MOST})."
+        ));
+    }
+    if unfetched {
+        out["counts"] = json!(format!(
+            "at least — this project holds more than {MAX_FETCH} tasks and the rest were not \
+             fetched, so every `count` above is a floor rather than a total. Narrow with \
+             `section`, or with `open` if it was false."
         ));
     }
     Ok(out.to_string())
+}
+
+/// The columns as the tool reports them, and how many tasks were left out.
+///
+/// Pure, and separated from `board_of` for exactly one reason: **the promise
+/// this file now makes is a property of this function's output**, and the
+/// request around it is not liftable on a machine with no MSVC. The claim —
+/// that a populated column is never drawn as an empty one — is a string of JSON
+/// or it is nothing, so it is asserted on the JSON.
+///
+/// Three shapes come out of here and they are deliberately distinguishable:
+///
+/// - `count: 0, tasks: []` — the column is empty. The only emptiness there is.
+/// - `count: n, tasks: [...], more: m` — drawn, and short by `m`.
+/// - `count: n, unread: true` and **no `tasks` key** — the budget never reached
+///   it. A reader looking for `tasks` finds nothing rather than finding a claim.
+fn columns_json(piles: &[(String, String, Vec<&Value>)], limit: usize) -> (Vec<Value>, usize) {
+    let counts: Vec<usize> = piles.iter().map(|(_, _, cards)| cards.len()).collect();
+    let show = shares(&counts, limit);
+
+    let mut skipped = 0usize;
+    let mut cols: Vec<Value> = Vec::new();
+    for (i, (col_gid, name, cards)) in piles.iter().enumerate() {
+        let take = show[i];
+        skipped += cards.len() - take;
+        let mut col = json!({ "column": name, "gid": col_gid, "count": cards.len() });
+        if take == 0 && !cards.is_empty() {
+            /* Deliberately no `tasks` key. See the header: an empty array here
+               is a claim about the column, and this is a claim about the walk. */
+            col["unread"] = json!(true);
+            col["why"] = json!("not shown — raise `limit` or ask for this `section`");
+        } else {
+            col["tasks"] = json!(cards
+                .iter()
+                .take(take)
+                .map(|r| task_json(r, false))
+                .collect::<Vec<_>>());
+            if take < cards.len() {
+                col["more"] = json!(cards.len() - take);
+            }
+        }
+        cols.push(col);
+    }
+    (cols, skipped)
+}
+
+/// What the unsectioned pile is called, on the board and in the picker.
+///
+/// One constant because a caller can now *name* it — `section: "no column"` is
+/// a thing to type, so the word the reading prints and the word the picker
+/// matches have to be the same one.
+const LOOSE: &str = "no column";
+
+/// Which of these columns a card meant, by gid or by name.
+///
+/// `find_project`'s ladder, one scale down: exact gid, then an exact name, then
+/// a unique substring — and **ambiguity is not resolved by picking**. Two
+/// columns matching `test` is a question the caller can settle by typing more,
+/// and guessing between them would answer a different question confidently.
+///
+/// Case-insensitive because a column is a phrase somebody typed into Asana, and
+/// a card holding the word off a ticket has no reason to know its capitals.
+fn pick_column(columns: &[(String, String)], want: &str) -> Option<usize> {
+    let w = want.trim().to_lowercase();
+    if w.is_empty() {
+        return None;
+    }
+    if let Some(i) = columns.iter().position(|(g, _)| g.to_lowercase() == w) {
+        return Some(i);
+    }
+    let exact: Vec<usize> = (0..columns.len())
+        .filter(|&i| columns[i].1.trim().to_lowercase() == w)
+        .collect();
+    if exact.len() == 1 {
+        return Some(exact[0]);
+    }
+    let part: Vec<usize> = (0..columns.len())
+        .filter(|&i| columns[i].1.to_lowercase().contains(&w))
+        .collect();
+    (part.len() == 1).then(|| part[0])
+}
+
+/// How a budget of rows is spread over the columns.
+///
+/// Evenly, and **what a small column cannot use is handed back** to the ones
+/// still short — the whole point being that a column's visibility must not
+/// depend on where it sits in the board. A budget spent in reading order is
+/// what let the old walk reach the last two columns with nothing left, and the
+/// answer it gave there was not "no room" but "empty".
+///
+/// Two properties this has to keep, and the tests are on both:
+///
+/// - **Every non-empty column gets at least one row** whenever the budget is at
+///   least the number of columns. That is what makes the reading safe at a
+///   glance: a column drawn with cards in it is never a column the caller has
+///   to check the `count` of before believing.
+/// - **Nothing over-allocates.** `share[i] <= counts[i]` always, so the caller
+///   can `take(share)` without checking, and the leftovers reach a column that
+///   can use them rather than being lost to one that cannot.
+///
+/// Below that — more columns than budget — somebody gets nothing, and that is
+/// the case the `unread` marker exists for. They are handed out in order there,
+/// which is the one place order still decides anything and is honest because
+/// the columns that miss out say so in as many words.
+fn shares(counts: &[usize], budget: usize) -> Vec<usize> {
+    let mut out = vec![0usize; counts.len()];
+    let mut left = budget;
+    loop {
+        let want: Vec<usize> = (0..counts.len()).filter(|&i| out[i] < counts[i]).collect();
+        if want.is_empty() || left == 0 {
+            return out;
+        }
+        let each = left / want.len();
+        if each == 0 {
+            /* Fewer rows left than columns wanting one. One apiece until it is
+               spent; the rest carry `unread`. */
+            for &i in &want {
+                if left == 0 {
+                    return out;
+                }
+                out[i] += 1;
+                left -= 1;
+            }
+            return out;
+        }
+        for &i in &want {
+            let take = each.min(counts[i] - out[i]);
+            out[i] += take;
+            left -= take;
+        }
+    }
+}
+
+/// Every row a task query answers, across however many pages, and whether there
+/// were more.
+///
+/// Asana caps a page at 100 and hands back `next_page.offset`, and until this
+/// existed both readings here asked for one page and treated what came back as
+/// the whole of it. That is fine on a small board and silently wrong on a real
+/// one: a per-column `count` computed off page one is not a count.
+///
+/// `MAX_FETCH` is `asana::MAX_TASKS`' number and its argument — four pages
+/// against somebody else's host is polite, forty is not — and the boolean is
+/// there because **a bound that can hide the row you wanted has to say so out
+/// loud.** The caller turns it into a sentence; nothing here decides silently
+/// that the answer was complete.
+fn all_pages(base: &str) -> Result<(Vec<Value>, bool), String> {
+    let mut rows: Vec<Value> = Vec::new();
+    let mut offset: Option<String> = None;
+    loop {
+        let page = PAGE.min(MAX_FETCH - rows.len());
+        let mut url = format!("{base}&limit={page}");
+        if let Some(o) = &offset {
+            url.push_str(&format!("&offset={o}"));
+        }
+        let v = crate::asana::get(&url)?;
+        let got = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+        /* A page that answered nothing ends it, whatever it says about a next
+           one. `MAX_FETCH` is the only other thing stopping this loop and it is
+           counted in *rows*, so a server handing back an offset and no data
+           would spin here forever — a bound that can only be reached by making
+           progress is not a bound on a loop that has stopped making any. */
+        let none_left = got.is_empty();
+        rows.extend(got);
+        offset = v
+            .get("next_page")
+            .and_then(|p| p.get("offset"))
+            .and_then(|o| o.as_str())
+            .map(|s| s.to_string());
+        if offset.is_none() || none_left {
+            return Ok((rows, false));
+        }
+        if rows.len() >= MAX_FETCH {
+            return Ok((rows, true));
+        }
+    }
 }
 
 /// Which section of *this* project a task is in.
@@ -711,7 +1019,12 @@ fn section_gid_of(row: &Value, project: &str) -> Option<String> {
 /// `assignee=me` **requires** `workspace` — Asana refuses the pair otherwise,
 /// which is the fact that makes this a request per workspace rather than one.
 /// Nearly every tenant has exactly one.
-fn mine(open: bool) -> Result<String, String> {
+///
+/// It carries the board's lesson in its own shape: `count` is the workspace's
+/// real total, `more` is what was left out, and the `next` line names `limit`,
+/// which is a parameter that exists. Sink `ff3f6452` reported this side too —
+/// `"more": 40` with nothing a caller could pass to get the forty.
+fn mine(open: bool, limit: usize) -> Result<String, String> {
     let spaces = workspaces()?;
     if spaces.is_empty() {
         return Err("this token can see no workspaces at all, which usually means it was \
@@ -720,34 +1033,39 @@ fn mine(open: bool) -> Result<String, String> {
             .into());
     }
     let mut out: Vec<Value> = Vec::new();
+    let mut cut = false;
     for (ws, ws_name) in &spaces {
-        let mut url = format!(
-            "/tasks?assignee=me&workspace={ws}&limit=100&opt_fields={TASK_FIELDS}"
-        );
+        let mut base = format!("/tasks?assignee=me&workspace={ws}&opt_fields={TASK_FIELDS}");
         if open {
-            url.push_str("&completed_since=now");
+            base.push_str("&completed_since=now");
         }
-        let v = crate::asana::get(&url)?;
-        let rows = v
-            .get("data")
-            .and_then(|d| d.as_array())
-            .cloned()
-            .unwrap_or_default();
+        let (rows, unfetched) = all_pages(&base)?;
+        cut |= unfetched;
         out.push(json!({
             "workspace": ws_name,
             "gid": ws,
-            "tasks": rows.iter().take(SHOWN).map(|r| task_json(r, false)).collect::<Vec<_>>(),
-            "more": rows.len().saturating_sub(SHOWN),
+            "count": rows.len(),
+            "tasks": rows.iter().take(limit).map(|r| task_json(r, false)).collect::<Vec<_>>(),
+            "more": rows.len().saturating_sub(limit),
         }));
     }
-    Ok(json!({
+    let mut said = json!({
         "assigned to": "the account this wall's token belongs to",
         "showing": if open { "open tasks only" } else { "every task" },
         "workspaces": out,
-        "next": "name a `project` from the rows above to see its board, or pass `task: <gid>` to read \
-                 one in full with its description.",
-    })
-    .to_string())
+        "next": format!(
+            "name a `project` from the rows above to see its board, pass `task: <gid>` to read \
+             one in full with its description, or raise `limit` (up to {MOST}) to see the rest \
+             of a workspace whose `more` is not zero."
+        ),
+    });
+    if cut {
+        said["counts"] = json!(format!(
+            "at least — more than {MAX_FETCH} tasks are assigned to this account in one \
+             workspace and the rest were not fetched, so its `count` is a floor."
+        ));
+    }
+    Ok(said.to_string())
 }
 
 /* ── the write, and the person it is asked of ──────────────────────────────
@@ -1886,6 +2204,135 @@ mod tests {
             "memberships": [ { "project": { "gid": "ours" } } ]
         });
         assert_eq!(section_gid_of(&row, "ours"), None);
+    }
+
+    #[test]
+    fn a_column_the_budget_did_not_reach_is_not_drawn_as_empty() {
+        /* The bug this file was reopened for, stated as the assertion that
+           would have caught it. Six columns holding 84 cards against a budget
+           of 60: the old walk spent the budget in reading order and answered
+           the last two with `"tasks": []`, which is a positive claim that two
+           populated columns held nothing — and it is that claim, not the
+           shortfall, that a delivery rundown gets wrong. Sink `ff3f6452`. */
+        let rows: Vec<Value> = (0..84).map(|i| json!({ "gid": i.to_string() })).collect();
+        let mut at = 0usize;
+        let mut piles: Vec<(String, String, Vec<&Value>)> = Vec::new();
+        for (name, n) in [
+            ("Backlog", 18),
+            ("sprint 1", 7),
+            ("In progress", 33),
+            ("testing", 18),
+            ("validated", 3),
+            ("WEEK 1", 5),
+        ] {
+            piles.push((name.into(), name.into(), rows[at..at + n].iter().collect()));
+            at += n;
+        }
+
+        let (cols, skipped) = columns_json(&piles, 60);
+        assert_eq!(skipped, 24, "84 cards against a budget of 60");
+
+        for (i, col) in cols.iter().enumerate() {
+            let name = crate::forge::text(col, "column");
+            let count = col["count"].as_u64().unwrap() as usize;
+            assert_eq!(count, piles[i].2.len(), "{name} must report its real size");
+            /* The whole of it: nothing drawn as empty unless it is empty. */
+            if let Some(drawn) = col.get("tasks").and_then(|t| t.as_array()) {
+                assert!(
+                    !drawn.is_empty() || count == 0,
+                    "{name} holds {count} and came back as an empty array"
+                );
+                assert_eq!(
+                    drawn.len() + col.get("more").and_then(Value::as_u64).unwrap_or(0) as usize,
+                    count,
+                    "{name}'s drawn + more must account for all of it"
+                );
+            } else {
+                assert_eq!(col["unread"], json!(true), "{name} has no tasks key and no marker");
+            }
+        }
+        /* And at this budget every one of them was reached, which is what the
+           sharing buys over the walk that spent it in order. */
+        assert!(cols.iter().all(|c| c.get("tasks").is_some()), "{cols:?}");
+    }
+
+    #[test]
+    fn an_empty_array_means_the_column_is_empty_and_nothing_else() {
+        /* The other direction, and the reason `unread` exists rather than a
+           smaller budget: below one row per column somebody genuinely gets
+           nothing, and what they must not get is `[]`. */
+        let rows: Vec<Value> = (0..9).map(|i| json!({ "gid": i.to_string() })).collect();
+        let piles: Vec<(String, String, Vec<&Value>)> = vec![
+            ("a".into(), "a".into(), rows[0..4].iter().collect()),
+            ("b".into(), "b".into(), Vec::new()),
+            ("c".into(), "c".into(), rows[4..9].iter().collect()),
+        ];
+        let (cols, skipped) = columns_json(&piles, 1);
+        assert_eq!(skipped, 8);
+
+        let empty: Vec<&Value> = cols
+            .iter()
+            .filter(|c| c.get("tasks").and_then(|t| t.as_array()).is_some_and(|t| t.is_empty()))
+            .collect();
+        assert_eq!(empty.len(), 1, "only the empty column may draw as empty: {cols:?}");
+        assert_eq!(crate::forge::text(empty[0], "column"), "b");
+        assert_eq!(empty[0]["count"], json!(0));
+    }
+
+    #[test]
+    fn a_shared_budget_reaches_every_column_and_over_allocates_none() {
+        /* Two properties `columns_json` leans on. Over-allocation would make
+           the caller's `take(share)` quietly draw fewer than it claimed, and a
+           column reaching zero with budget to spare is the old walk again. */
+        for budget in [1usize, 3, 7, 20, 60, 400] {
+            for counts in [
+                vec![18usize, 7, 40, 23, 3, 5],
+                vec![100, 1, 1],
+                vec![0, 0, 9],
+                vec![2, 2],
+                vec![],
+            ] {
+                let got = shares(&counts, budget);
+                assert_eq!(got.len(), counts.len());
+                for (i, &g) in got.iter().enumerate() {
+                    assert!(g <= counts[i], "{counts:?} @{budget} over-allocated column {i}");
+                }
+                let total: usize = got.iter().sum();
+                let want: usize = counts.iter().sum();
+                assert!(total <= budget && total <= want, "{counts:?} @{budget} → {got:?}");
+                /* Nothing left on the table: either the budget is spent or
+                   every column has all of its rows. */
+                assert!(total == budget || total == want, "{counts:?} @{budget} → {got:?}");
+                if budget >= counts.len() {
+                    for (i, &g) in got.iter().enumerate() {
+                        assert!(g > 0 || counts[i] == 0, "{counts:?} @{budget} starved column {i}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_column_nobody_named_unambiguously_is_not_guessed_at() {
+        /* `find_project`'s rule one scale down. Two columns matching `test` is
+           a question the caller settles by typing more; picking between them
+           would answer a different question confidently, which is the failure
+           this whole file is arranged to make impossible. */
+        let cols: Vec<(String, String)> = vec![
+            ("111".into(), "Backlog".into()),
+            ("222".into(), "testing".into()),
+            ("333".into(), "test rig".into()),
+            ("444".into(), LOOSE.into()),
+        ];
+        assert_eq!(pick_column(&cols, "222"), Some(1), "a gid is exact");
+        assert_eq!(pick_column(&cols, "  TESTING "), Some(1), "an exact name, any capitals");
+        assert_eq!(pick_column(&cols, "back"), Some(0), "a unique substring");
+        assert_eq!(pick_column(&cols, "test"), None, "two match — do not guess");
+        assert_eq!(pick_column(&cols, "shipped"), None);
+        assert_eq!(pick_column(&cols, "  "), None);
+        /* The unsectioned pile is nameable, which is why its label is a
+           constant rather than a literal in the one place that prints it. */
+        assert_eq!(pick_column(&cols, LOOSE), Some(3));
     }
 
     #[test]
