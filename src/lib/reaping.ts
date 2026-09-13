@@ -180,11 +180,13 @@ export const REST_KEY = "skein.rest";
 
 /** What `reap_survey` answers — see `src-tauri/src/reap.rs`. */
 export type Survey = {
-  /** Bytes the machine could still hand out. */
-  available: number;
+  /** Bytes the machine could still hand out, or null where nothing would say. */
+  available: number | null;
   total: number;
   /** Of the ids asked about, those holding an armed `wake_me`. */
   awaiting_wake: string[];
+  /** Of the ids asked about, those the supervisor has a turn open for. */
+  mid_turn: string[];
 };
 
 /** A stored or menu-supplied value, made into one of the four.
@@ -295,6 +297,15 @@ export type Around = {
   wake: boolean;
   /** This card has a child on the wall that still has a process. */
   children: boolean;
+  /** The supervisor has a turn open for this card that the front end cannot see
+   *  yet — a prompt written into its stdin whose echo has not come back.
+   *
+   *  `card.working` is not this question. It turns true on the CLI's replayed
+   *  `user` event, which is the far end of stdin → parse → stdout → reader
+   *  thread → `emit` → `ingest`; `Supervisor::liveness(id).1` turns true at the
+   *  write. Every reap in between takes a prompt nobody kept a copy of — see
+   *  `reap::Survey::mid_turn` for which of the four senders loses what. */
+  midTurn: boolean;
 };
 
 /** Why a card is being left alone — or `null`, meaning nothing is.
@@ -306,6 +317,7 @@ export type Kept =
   | "dormant"
   | "retiring"
   | "working"
+  | "sending"
   | "asking"
   | "jobs"
   | "unheard"
@@ -321,6 +333,13 @@ export function keptFrom(card: Restable, around: Around, wait: number): Kept | n
   if (card.retiring) return "retiring";
 
   if (card.working) return "working";
+  /* Above `asking` and below `working` because it is the same fact one beat
+     earlier: a turn the supervisor has opened and this side has not heard about
+     yet. It is its own arm rather than folded into `working` for the reason the
+     whole of `Kept` is a reason and not a boolean — an arm that fires here means
+     a prompt was in flight, which is a different thing to have learned than a
+     card that was busy. */
+  if (around.midTurn) return "sending";
   if (card.pendingAsk) return "asking";
   if (card.busy) return "jobs";
   if (card.unwoken) return "unheard";

@@ -1629,11 +1629,13 @@ export class Skein {
 
       const wait = waitFor(baseline, survey.available);
       const wakes = new Set(survey.awaiting_wake);
-      const going = toRest(
-        here,
-        (c) => ({ wake: wakes.has(c.id), children: this.#hasLiveChild(c) }),
-        wait,
-      );
+      const sending = new Set(survey.mid_turn);
+      const around = (c: Conversation) => ({
+        wake: wakes.has(c.id),
+        children: this.#hasLiveChild(c),
+        midTurn: sending.has(c.id),
+      });
+      const going = toRest(here, around, wait);
       if (!going.length) return;
 
       const rested: { name: string; quiet: number }[] = [];
@@ -1642,22 +1644,37 @@ export class Skein {
            `rouse`'s reason one gesture over: closing several cards takes
            seconds, which is long enough for one of them to have been spoken to,
            woken, set aside or closed since the list was taken. */
-        if (keptFrom(conv, { wake: wakes.has(conv.id), children: this.#hasLiveChild(conv) }, wait))
-          continue;
+        /* Superseded instance, same guard every other multi-await loop in this
+           file carries (`releaseHeld`, `#awaitDormant`, `#heal`, `#nudge`). A
+           pass in flight across a `detach` — every HMR save — would otherwise go
+           on killing processes on behalf of a `Skein` nobody is listening to. */
+        if (this.#gone) return;
+        if (keptFrom(conv, around(conv), wait)) continue;
         if (!this.#byId.has(conv.id)) continue;
         const quiet = quietFor(conv);
-        /* Said before the kill, and it has to be: `markExited` clears the turn
-           and the streaming buffer, and a note pushed after that would be a line
-           arriving on a card the wall has already redrawn as dormant. Same
-           ordering `#moveTo` uses, and the same reason it says anything at all —
-           an app that spawns `--dangerously-skip-permissions` children owes you
-           that nothing it did on its own is invisible afterwards. */
-        conv.note(restNote(quiet, wait, baseline));
         try {
           /* `retiring` before the kill, or our own exit code lands on the card
              as a crash — the same ordering `#recycle` and `#moveTo` need. */
           conv.retiring = true;
-          await invoke("close_conversation", { id: conv.id });
+          /* `rest_conversation`, not `close_conversation`, and the difference is
+             the whole guard: it refuses under the supervisor's own lock if a
+             turn is open. Everything above only narrows the window — a prompt
+             written into this card's stdin by `serve_due`, `do_send`,
+             `drain_inbox` or `sweep` needs no JS and no IPC hop, and each of
+             those has already thrown away its only copy by the time it writes.
+             `false` means one landed in the instant we asked, and the card keeps
+             its process. */
+          const rest = await invoke<boolean>("rest_conversation", { id: conv.id });
+          if (!rest) {
+            conv.retiring = false;
+            continue;
+          }
+          /* Only now, and only on a card that really was stood down. This used
+             to be said before the kill so it could not land after `markExited`
+             redrew the card dormant — which is a real but cosmetic ordering,
+             where a note claiming a card was rested when it was not is a lie in
+             the transcript. The ordering lost, the truthfulness kept. */
+          conv.note(restNote(quiet, wait, baseline));
           await this.#awaitDormant(conv);
           /* The backstop for the timeout, exactly as `#moveTo` has it. A card
              that would not die inside four seconds is not a reason to leave the

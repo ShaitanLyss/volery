@@ -40,7 +40,7 @@ const card = (over: Partial<Restable> = {}): Restable => ({
   ...over,
 });
 
-const FREE: Around = { wake: false, children: false };
+const FREE: Around = { wake: false, children: false, midTurn: false };
 
 describe("the choices", () => {
   test("the default is one of them", () => {
@@ -191,15 +191,41 @@ describe("keptFrom — what must not be reaped", () => {
        a card with no process, and the wake then waits in the inbox until somebody
        next speaks to the card — which is not what "wake me in eight minutes"
        means. See the module note. */
-    expect(keptFrom(card(), { wake: true, children: false }, 3 * HOUR)).toBe("wake");
+    expect(keptFrom(card(), { ...FREE, wake: true }, 3 * HOUR)).toBe("wake");
   });
 
   test("a card with a live child on the wall is left alone", () => {
     /* A parent waiting to be reported to is holding background work one level
        out, and the report is a relay — which queues for a dormant card. */
-    expect(keptFrom(card(), { wake: false, children: true }, 3 * HOUR)).toBe(
+    expect(keptFrom(card(), { ...FREE, children: true }, 3 * HOUR)).toBe(
       "children",
     );
+  });
+
+  test("a card with a prompt on the wire is left alone, though it reads idle", () => {
+    /* The window this closes is the one every other arm is blind to. Four paths
+       hand a prompt to a LIVE card by writing its stdin — `later::serve_due`,
+       `relay::do_send`, `relay::drain_inbox`, `spawn::sweep` — all through
+       `supervisor::deliver_blocks`, which marks the turn in Rust and emits
+       nothing this side folds. `working` only turns true when the CLI's replayed
+       `user` event completes the round trip, so for that interval the card reads
+       idle on every field the other arms can see.
+
+       The card built here is the exact shape: not working, not busy, nothing
+       unheard, no ask parked, quiet for hours. Everything says reap it. */
+    const quiet = card({ working: false, busy: false, unwoken: null });
+    expect(keptFrom(quiet, FREE, 3 * HOUR)).toBe(null);
+    expect(keptFrom(quiet, { ...FREE, midTurn: true }, 3 * HOUR)).toBe("sending");
+  });
+
+  test("a prompt on the wire outranks everything a stale reading could say", () => {
+    /* Ordered above `asking`/`jobs`/`unheard` and below `working` because it IS
+       `working`, one beat earlier. Asserted by position rather than presence: a
+       reordering that put it after the `recent` check would let a card quiet for
+       less than the wait fall through to "recent" and read as merely too young,
+       which is the same answer for a different reason and would hide this. */
+    const fresh = card({ idleSeconds: 0, awakeSeconds: 0 });
+    expect(keptFrom(fresh, { ...FREE, midTurn: true }, 3 * HOUR)).toBe("sending");
   });
 
   test("a card set aside is left alone", () => {
@@ -305,7 +331,7 @@ describe("toRest", () => {
   test("the surroundings are asked per card", () => {
     const going = toRest(
       [named("timer"), named("plain")],
-      (c) => ({ wake: c.id === "timer", children: false }),
+      (c) => ({ ...FREE, wake: c.id === "timer" }),
       3 * HOUR,
     );
     expect(going.map((c) => c.id)).toEqual(["plain"]);

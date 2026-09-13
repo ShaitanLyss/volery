@@ -41,13 +41,45 @@ use crate::store::Store;
 #[derive(Debug, Serialize)]
 pub struct Survey {
     /// Bytes the machine could still hand out. The number `waitFor` reads.
-    pub available: u64,
+    ///
+    /// `None` where the platform would not say. `waitFor` already has an arm for
+    /// that meaning "no reading, shorten nothing", which is the safe direction;
+    /// a bare `0` would instead take its tightest arm and collapse every card on
+    /// the wall to the floor.
+    pub available: Option<u64>,
     /// And what that is out of, so a reading can be drawn as a fraction without
     /// a second call. Nothing uses it yet; it costs nothing and a memory figure
     /// with no denominator is one nobody can check.
     pub total: u64,
     /// Of the ids asked about, those holding at least one armed wake.
     pub awaiting_wake: Vec<String>,
+    /// Of the ids asked about, those the supervisor has a turn open for.
+    ///
+    /// **This is not the same question as `Conversation.working`, and the gap
+    /// between them is a data-loss window.** Four paths hand a prompt to a live
+    /// card by writing its stdin — `later::serve_due`, `relay::do_send`,
+    /// `relay::drain_inbox` and `spawn::sweep` — and every one of them goes
+    /// through `supervisor::deliver_blocks`, which marks the turn in Rust and
+    /// emits nothing the webview folds. The front end only learns of it when
+    /// the CLI's `--replay-user-messages` echo completes the round trip, which
+    /// is stdin → parse → stdout → reader thread → `emit` → `ingest`. For that
+    /// interval the card reads idle on every field `keptFrom` can see.
+    ///
+    /// Reap inside it and what is lost depends on who was talking, and all
+    /// three are lossy: `serve_due` has already deleted the wake row and only
+    /// falls back to the inbox when delivery *failed*, so the note is gone with
+    /// nothing naming it and `record_wake_served` has charged the card for it;
+    /// `do_send` has already written `record_relay(awake: true)`, so
+    /// `drain_inbox` will never re-deliver it and the sender was told it landed;
+    /// `sweep` takes its entries out of `brood.pending` before delivering and
+    /// keeps nothing. The wake case is the sharpest, because the `wake` arm lifts
+    /// at the exact instant `take_wake` runs and a card that armed a timer and
+    /// went quiet waiting for it is the most reapable card on the wall.
+    ///
+    /// `Supervisor::liveness(id).1` is the authoritative reading: set by
+    /// `deliver_blocks` at the write, cleared by the reader thread's `turn_mark`
+    /// on `result`.
+    pub mid_turn: Vec<String>,
 }
 
 #[tauri::command]
@@ -59,6 +91,17 @@ pub async fn reap_survey(app: AppHandle, ids: Vec<String>) -> Result<Survey, Str
             ));
         sys.refresh_memory();
 
+        /* Before the store's lock is taken, and that ordering is the one rule
+           the two mutexes have — `deliver_blocks` states it: nothing takes the
+           store's lock and then the supervisor's, so nothing here can be half
+           of a cycle. */
+        let sup = app.state::<crate::supervisor::Supervisor>();
+        let mid_turn: Vec<String> = ids
+            .iter()
+            .filter(|id| sup.liveness(id).1)
+            .cloned()
+            .collect();
+
         let store = app.state::<Store>();
         let awaiting_wake = {
             let conn = store.0.lock().map_err(|_| "the store is unavailable")?;
@@ -68,9 +111,16 @@ pub async fn reap_survey(app: AppHandle, ids: Vec<String>) -> Result<Survey, Str
         };
 
         Ok(Survey {
-            available: sys.available_memory(),
+            /* `None` rather than a zero, because `waitFor`'s no-reading arm
+               shortens nothing and its tightest arm collapses every card to the
+               floor — so a `sysinfo` that answers 0 on some machine would read
+               as maximum pressure and reap the wall. The module note above
+               argues this cannot happen here; a unit test on this machine says
+               nothing about one where it does. */
+            available: (sys.available_memory() > 0).then(|| sys.available_memory()),
             total: sys.total_memory(),
             awaiting_wake,
+            mid_turn,
         })
     })
     /* `off_main` is `Result<R, String>` and `R` is itself the closure's

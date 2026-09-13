@@ -2227,6 +2227,51 @@ pub async fn close_conversation(app: AppHandle, id: String) -> Result<(), String
     .await
 }
 
+/// `close_conversation`, but never on a card with a turn open. Answers whether
+/// it happened.
+///
+/// **The refusal and the removal have to be one step, and this is the only place
+/// they can be.** The reaper decides from a survey and then kills in a loop, so
+/// between its reading and its kill there is JS, an IPC hop and however long the
+/// cards ahead of this one took — and `deliver_blocks` needs none of that. Four
+/// paths write a prompt into a live card's stdin (`later::serve_due`,
+/// `relay::do_send`, `relay::drain_inbox`, `spawn::sweep`), and each one loses
+/// something different and keeps no copy: the wake row is already deleted, the
+/// relay is already recorded delivered and its sender already told, the brood
+/// entry is already taken out of `pending`.
+///
+/// A check on the front end can only ever narrow that window. This closes it,
+/// because `deliver_blocks` sets `turn` while holding *this* lock across the
+/// `write_prompt` — so either the prompt is on the wire and the flag is up when
+/// we look, or neither is, and there is no instant where one is true without the
+/// other. `reap::Survey::mid_turn` is still worth having: it stops the wall
+/// *deciding* to rest a card that is being spoken to, which is a better answer
+/// than deciding and then being refused.
+///
+/// Not folded into `close_conversation` as a flag. Closing a card is the user's
+/// gesture and must not fail silently because a relay landed in the same
+/// instant — `close`'s own refusal for a mid-turn card is a *question put to
+/// them*, which is a different act from a housekeeping pass standing down.
+#[tauri::command]
+pub async fn rest_conversation(app: AppHandle, id: String) -> Result<bool, String> {
+    crate::off_main(move || {
+        let sup = app.state::<Supervisor>();
+        let mut map = sup.0.lock().unwrap();
+        match map.get(&id) {
+            None => false,
+            Some(conv) if conv.turn.load(Ordering::Relaxed) => false,
+            Some(_) => {
+                let mut conv = map.remove(&id).expect("just matched");
+                drop(conv.job.take());
+                let _ = conv.child.kill();
+                let _ = conv.child.wait();
+                true
+            }
+        }
+    })
+    .await
+}
+
 /// Should the wall skip rousing its restored cards on load?
 ///
 /// Set `SKEIN_NO_WAKE=1` and every card is painted and read for exactly as
