@@ -268,6 +268,25 @@ pub fn board_envelope(from: Option<&RosterRow>, notice: &crate::store::Notice, p
     )
 }
 
+/// The envelope the billboard's own housekeeping arrives in.
+///
+/// A third use of `RELAY_MARK`, for the third thing that is not the user
+/// talking: the wall telling a card what happened to *its* notices while it was
+/// away (`board::sweep`). It carries no sender, because there is not one — the
+/// clock came round.
+///
+/// It is written here rather than in `board.rs` for the reason `board_envelope`
+/// is: every recogniser in `relay.ts` and `history.ts` anchors on this mark and
+/// the shape of the line under it, so the three forms belong in one place where
+/// a fourth cannot quietly diverge.
+pub fn board_expiry_envelope(body: &str) -> String {
+    format!(
+        "{RELAY_MARK} from the billboard —\n\n{body}\n\n\
+         (This is the wall's own housekeeping, not a message from the user and not \
+         from another card. Nobody is waiting on a reply.)"
+    )
+}
+
 /// Draw a notice reaching a card, when there is somewhere to draw it from.
 ///
 /// The same strand a message gets: it is the same event on the wall — something
@@ -734,16 +753,30 @@ pub fn drain_inbox(app: &AppHandle, id: &str) {
             let Ok(conn) = store.0.lock() else { return };
             crate::store::roster_one(&conn, &q.from_id)
         };
-        /* The sender has been closed since. The message still stands — it was
-           true when it was written — so it is delivered under the handle it
-           was sent from rather than dropped. */
-        let text = match &from {
-            Some(row) => envelope(row, &q.body),
-            None => format!(
-                "{RELAY_MARK} from a card that has since been closed ({}) —\n\n{}",
-                handle_of(&q.from_id),
-                q.body
-            ),
+        /* A row whose sender is its recipient is not a message at all — it is
+           the wall handing the card something of its own, and both producers
+           (`later::serve_due`, `board::sweep`) store a text that is *already*
+           in its own envelope. Wrapping it again puts a second header on it
+           naming the card's own title as the sender, over a trailer saying it
+           came from another agent on the wall — which is the one thing it did
+           not. So a self-row is handed over as written; everything else about
+           the delivery is the same, since `arm` and the strand are about the
+           row rather than about its wording. `do_send` refuses a live
+           self-send, so nothing but those two can make one of these. */
+        let text = if q.from_id == id {
+            q.body.clone()
+        } else {
+            /* The sender has been closed since. The message still stands — it
+               was true when it was written — so it is delivered under the
+               handle it was sent from rather than dropped. */
+            match &from {
+                Some(row) => envelope(row, &q.body),
+                None => format!(
+                    "{RELAY_MARK} from a card that has since been closed ({}) —\n\n{}",
+                    handle_of(&q.from_id),
+                    q.body
+                ),
+            }
         };
         if crate::supervisor::deliver(app, id, &text).is_ok() {
             if let Ok(conn) = store.0.lock() {

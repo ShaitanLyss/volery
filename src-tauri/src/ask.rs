@@ -1466,7 +1466,47 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             return;
                         }
 
-                        /* `pull_request` is the third, and always. It opens or
+                        /* `unpost` is the third, and sometimes, for exactly
+                           `close`'s reason one tool over: taking down one of
+                           your own answers at once as it always has, and only
+                           naming a *dead* card's notice puts a question up. The
+                           poster-only rule is right about a live card — its
+                           notice is a claim it is still making — and had no
+                           answer at all for a card killed mid-turn, whose hold
+                           therefore stood for ever. `board::unpost` decides
+                           once, because two readings of the same wall are two
+                           things to keep in step. */
+                        if tool == crate::board::UNPOST_TOOL {
+                            match crate::board::unpost(&app, &conversation_id, &args) {
+                                crate::board::Unposting::Now(said) => {
+                                    respond(
+                                        req,
+                                        json!({
+                                            "jsonrpc": "2.0", "id": id,
+                                            "result": { "content": [
+                                                { "type": "text", "text": said }
+                                            ] }
+                                        }),
+                                    );
+                                }
+                                crate::board::Unposting::Ask { question, settle } => {
+                                    let asks = app.state::<Asks>();
+                                    park_and_stream(
+                                        &app,
+                                        &asks,
+                                        &conversation_id,
+                                        &id,
+                                        &question,
+                                        progress,
+                                        req,
+                                        Some(settle),
+                                    );
+                                }
+                            }
+                            return;
+                        }
+
+                        /* `pull_request` is the fourth, and always. It opens or
                            edits a pull request on somebody's Azure DevOps
                            organisation, under the user's own name, on a server
                            this app does not own — **the first effect on this
@@ -1516,7 +1556,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             return;
                         }
 
-                        /* `task` is the fourth, and always — the same block as
+                        /* `task` is the fifth, and always — the same block as
                            `pull_request` for the same reason, one service over.
                            It creates, edits, moves, comments on, ticks or
                            deletes a task in somebody's Asana workspace, under
@@ -1546,7 +1586,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            and a tool that ought to park, left out of a list
                            kept over here, is an unattended write with nothing
                            anywhere to say so. */
-                        /* `remove` is the fifth, and always — the only one
+                        /* `remove` is the sixth, and always — the only one
                            of these whose effect is **on this machine and
                            irreversible**. The forge and Asana write outside and
                            can at least be edited afterwards by a person; a

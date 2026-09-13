@@ -405,6 +405,14 @@ pub fn close_schema() -> Value {
              attention, which is the thing worth tidying: a card left standing after it has \
              reported is one the user has to read past on a wall where everything is \
              supposed to be live work.\n\n\
+             **Closing a card also retires every billboard notice it had up**, which is \
+             worth knowing because nothing else reaches those: `unpost` is the poster's \
+             tool, and a card that died mid-turn will never wake to use it. So a dead \
+             card holding a claim over files somebody needs is a `close`, and it is the \
+             one-step answer where messaging that card is not. (`unpost` will also offer \
+             to retire a single dormant card's notice, and the wall takes down anything \
+             nobody has been behind for three days — so close the *card* when the card \
+             is finished, not merely to tidy one notice.)\n\n\
              Say what you closed and why, in the reply where you closed it — and say so too \
              when you asked and they said no. A card disappearing from the wall with nothing \
              said about it is the user losing track of their own studio.\n\n\
