@@ -68,6 +68,23 @@ import {
   needsRousing,
   rouseOrder,
 } from "./rousing";
+import {
+  ASK_FLOOR_MS,
+  REST_DEFAULT,
+  REST_KEY,
+  keptFrom,
+  quietFor,
+  restDetail,
+  restFor,
+  restMark,
+  restNote,
+  toRest,
+  waitFor,
+  waitOf,
+  worthAsking,
+  type RestId,
+  type Survey,
+} from "./reaping";
 import { dayStart, turnRowKind } from "./usage";
 import type { Studio } from "./studio.svelte";
 
@@ -319,6 +336,16 @@ export class Skein {
 
   constructor(studio: Studio) {
     this.#studio = studio;
+    /* Ahead of anything that could reap: `letRest` is only ever reached off the
+       wall's tick, but a default of `never` read a beat late would be a wall
+       that quietly stopped resting its cards for one tick, and a default of
+       three hours read late on a machine set to `never` would be worse. */
+    try {
+      this.resting = restFor(localStorage.getItem(REST_KEY));
+    } catch {
+      /* A browser refusing storage leaves the default standing, which is the
+         same answer a machine that has never been asked gives. */
+    }
     this.#wire();
     /* The wall is itself a watcher, not only the accounts panel: the waterfall
        has to be readable at the moment somebody sends, and a registry first
@@ -1521,6 +1548,158 @@ export class Skein {
       this.rousing = false;
     }
     return woken;
+  }
+
+  /** How long a card may sit idle before it puts its process down.
+   *
+   *  Read from `localStorage` here rather than held in a class of its own:
+   *  there is one reader that matters (`letRest` below) and one writer (the
+   *  ground menu), and a `Motion`-shaped wrapper would be a file to hold a
+   *  four-value enum. Per-machine and disposable, which is what `localStorage`
+   *  is for on this wall — see `theme.svelte.ts` and `motion.svelte.ts`, and
+   *  note the argument is *stronger* here: this is a judgement about how much
+   *  memory this particular machine has. */
+  resting = $state<RestId>(REST_DEFAULT);
+
+  /** When the machine was last asked how much of itself is left.
+   *
+   *  The whole of the residue this feature leaves behind. See `reaping.ts` on
+   *  why the pass is a fold of the existing one-second tick rather than a fourth
+   *  poller, and on the three bounds on what is left over. */
+  #askedAt = 0;
+
+  /** A pass in flight, so the one-second tick cannot start a second one.
+   *
+   *  Each reaping awaits `#awaitDormant` per card, which is up to four seconds
+   *  apiece — several ticks. Without this the next tick would walk the same
+   *  still-unreaped cards and close them again, and `close_conversation` on a
+   *  card already being closed is at best wasted and at worst a second kill
+   *  landing on the process the *next* wake spawned. */
+  #resting = false;
+
+  setResting(id: unknown) {
+    this.resting = restFor(id);
+    try {
+      localStorage.setItem(REST_KEY, this.resting);
+    } catch {
+      /* A browser refusing storage is not a reason to have no policy; it is a
+         reason for this machine to forget the one you chose. */
+    }
+  }
+
+  /** Let the cards nobody has been near put their processes down.
+   *
+   *  Called from `App.svelte` off the wall's one-second tick and nothing else.
+   *  `reaping.ts` is the policy, the arithmetic and the words; this is the doing
+   *  of it, because standing a card down is a Rust call and the pure half cannot
+   *  make one.
+   *
+   *  Returns nothing and is never awaited — a pass that fails costs the wall the
+   *  memory it would have freed, which is the state it was already in. */
+  async letRest() {
+    if (this.#resting) return;
+    const baseline = waitOf(this.resting);
+    if (baseline === null) return;
+
+    /* The order of these three is the bound. Cheapest question first: nothing
+       on the wall can be reaped below `REST_FLOOR_S` whatever the pressure, so
+       a wall whose longest quiet is under a quarter of an hour asks the machine
+       nothing at all — which is every wall for its first fifteen minutes and
+       most walls most of the time. */
+    const here = this.convs;
+    if (!worthAsking(here)) return;
+    if (Date.now() - this.#askedAt < ASK_FLOOR_MS) return;
+
+    this.#resting = true;
+    try {
+      this.#askedAt = Date.now();
+      /* Asked only about the cards that could actually go. The survey costs a
+         `wakes_armed_by` per id, so handing it the whole wall would be forty
+         queries to answer a question about three cards. */
+      const asking = here.filter((c) => !c.dormant && !c.retiring && !c.working);
+      const survey = await invoke<Survey>("reap_survey", {
+        ids: asking.map((c) => c.id),
+      }).catch(() => null);
+      /* A survey that failed is not a reason to reap blind. `waitFor` takes a
+         null reading as "no pressure known" and leaves the baseline alone, but
+         the armed-wake list would be *empty* rather than unknown — which is the
+         one direction this must never guess in, since it is the difference
+         between keeping a card and dropping somebody's timer. */
+      if (!survey) return;
+
+      const wait = waitFor(baseline, survey.available);
+      const wakes = new Set(survey.awaiting_wake);
+      const going = toRest(
+        here,
+        (c) => ({ wake: wakes.has(c.id), children: this.#hasLiveChild(c) }),
+        wait,
+      );
+      if (!going.length) return;
+
+      const rested: { name: string; quiet: number }[] = [];
+      for (const conv of going) {
+        /* Re-asked at the card rather than trusted from the list above, for
+           `rouse`'s reason one gesture over: closing several cards takes
+           seconds, which is long enough for one of them to have been spoken to,
+           woken, set aside or closed since the list was taken. */
+        if (keptFrom(conv, { wake: wakes.has(conv.id), children: this.#hasLiveChild(conv) }, wait))
+          continue;
+        if (!this.#byId.has(conv.id)) continue;
+        const quiet = quietFor(conv);
+        /* Said before the kill, and it has to be: `markExited` clears the turn
+           and the streaming buffer, and a note pushed after that would be a line
+           arriving on a card the wall has already redrawn as dormant. Same
+           ordering `#moveTo` uses, and the same reason it says anything at all —
+           an app that spawns `--dangerously-skip-permissions` children owes you
+           that nothing it did on its own is invisible afterwards. */
+        conv.note(restNote(quiet, wait, baseline));
+        try {
+          /* `retiring` before the kill, or our own exit code lands on the card
+             as a crash — the same ordering `#recycle` and `#moveTo` need. */
+          conv.retiring = true;
+          await invoke("close_conversation", { id: conv.id });
+          await this.#awaitDormant(conv);
+          /* The backstop for the timeout, exactly as `#moveTo` has it. A card
+             that would not die inside four seconds is not a reason to leave the
+             wall believing it still has a process. */
+          conv.dormant = true;
+          rested.push({ name: conv.title || conv.project || "a card", quiet });
+        } catch (e) {
+          conv.retiring = false;
+          conv.note(`skein could not stand this card down to rest — ${e}`);
+        }
+      }
+
+      if (rested.length) {
+        this.#record(
+          null,
+          "note",
+          restMark(rested.map((r) => r.name)),
+          restDetail(rested, wait, baseline),
+        );
+      }
+    } finally {
+      this.#resting = false;
+    }
+  }
+
+  /** Has this card a child on the wall that still has a process?
+   *
+   *  A parent waiting to be reported to is holding background work one level
+   *  out, and the report is a relay — which *queues* for a dormant card rather
+   *  than waking it, so a reaped parent would pick its children's answers up
+   *  whenever you next happened to type into it. `kin` is already in memory for
+   *  the roots the wall draws, so this costs a walk of a short list.
+   *
+   *  The lineage table is never swept, so a card that spawned something months
+   *  ago still has rows: the question asked is about the child being *live*, not
+   *  about there having been one. That also makes it converge the right way
+   *  round — the leaves go dormant first, and the parent becomes reapable once
+   *  they have. */
+  #hasLiveChild(conv: Conversation): boolean {
+    return this.kin.some(
+      (k) => k.parent === conv.id && this.#byId.get(k.child)?.dormant === false,
+    );
   }
 
   /** Try a turn again that broke before it reached a model.

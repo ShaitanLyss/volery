@@ -467,6 +467,16 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            anything, and how much of that you are willing to pay for. */
         ...(t.picks ?? []).map((p) => chosen(p.id, p.label, p.on)),
         t.picks?.length ? sep : null,
+        /* And the second knob about what the wall does while nobody is asking
+           it anything: how long a card may hold its `claude` process after the
+           last word said to it. Through `options` rather than appended to
+           `picks` for the reason the widget case gives one scope in — a knob is
+           a group, and two knobs run together read as one list of seven
+           unrelated choices. `tidy` drops the rule if the group is empty. */
+        ...(t.options ?? []).flatMap((group) => [
+          ...group.map((p) => chosen(p.id, p.label, p.on)),
+          sep,
+        ]),
         /* The ground is what the ambience is drawn on, so this is where asking
            about it belongs — the chrome button is for reaching it without
            finding bare wall first. */

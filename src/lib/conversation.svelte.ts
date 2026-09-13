@@ -525,7 +525,52 @@ export class Conversation {
    *  the title it was protecting. */
   namedByHand = $state(false);
   /** No process behind this card yet. Drawn hollow — an absence, not a status. */
-  dormant = $state(true);
+  #dormant = $state(true);
+  get dormant(): boolean {
+    return this.#dormant;
+  }
+  /** A pair rather than a field, and the setter exists for exactly one reason:
+   *  `awakeSince` below must be written by *every* transition, and there are
+   *  five places that assign this across two files (the spawn's two arms, a
+   *  restored row, an account swap's backstop, and the ingest that learns a card
+   *  is alive because it just spoke). A convention that five call sites must
+   *  remember is one that the sixth will not — the same argument `crate::clean`
+   *  makes for going through `clip::keep`, and the same shape as the guard in
+   *  `#adoptModel` that could not be trusted to a value its own subject writes.
+   *
+   *  Guarded on the transition, so a repeated write of the same value does not
+   *  restart the clock — `#spawnNow` sets `dormant = false` and the ingest sets
+   *  it again on the first event of the very same process. */
+  set dormant(v: boolean) {
+    if (v === this.#dormant) return;
+    this.#dormant = v;
+    this.awakeSince = v ? null : Date.now();
+  }
+
+  /** When this card's *current* process started, or null when it has none.
+   *
+   *  The second clock the reaper needs, and it is load-bearing rather than
+   *  belt-and-braces. `restingSince` answers "how long has nobody said anything
+   *  to this card", which is the neglect clock the wall's amber decays on — and
+   *  `stir` deliberately does not reset it, because typing at a card is not
+   *  attending to it. So a card idle twelve hours that you stir by typing gets a
+   *  process back carrying a twelve-hour idle reading, and a reaper reading that
+   *  alone would stand the process down a second after spawning it, while you
+   *  were still writing the sentence.
+   *
+   *  A process thirty seconds old has not been idle for three hours, whatever
+   *  any other clock says. `reaping.ts::quietFor` takes the `min` of the two.
+   *  Not persisted, and could not be: a restored card has no process, so the
+   *  honest value is null. */
+  awakeSince = $state<number | null>(null);
+
+  /** How long this card's process has been up, in seconds. Zero when it has
+   *  none. Off the same one-second tick everything else here reads. */
+  awakeSeconds = $derived(
+    this.awakeSince === null
+      ? 0
+      : Math.floor((clock.t - this.awakeSince) / 1000),
+  );
   /** The process behind this card went away on its own, in this session.
    *
    *  This is what separates a crash from a card restored off disk. Both are

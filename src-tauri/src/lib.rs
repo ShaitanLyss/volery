@@ -44,6 +44,7 @@ mod perf;
 mod pin;
 mod portage;
 mod project;
+mod reap;
 mod quit;
 mod relay;
 /// Deleting a path from a card, behind the user's own click. See
@@ -543,6 +544,7 @@ pub fn run() {
             perf::sample_performance,
             perf::release_performance,
             perf::kill_process,
+            reap::reap_survey,
             workflow::workflow_progress,
             usage::read_usage,
             limits::read_limits,

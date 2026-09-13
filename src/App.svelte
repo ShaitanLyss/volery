@@ -64,6 +64,7 @@
   import { editorOptions } from "./lib/unreallog";
   import { Ambience } from "./lib/ambience.svelte";
   import { MOTIONS } from "./lib/motion";
+  import { RESTS } from "./lib/reaping";
   import { Motion } from "./lib/motion.svelte";
   import { Actions, conflictBadge, conflictPrompt, NO_STATUS } from "./lib/actions.svelte";
   import { Control, type ControlHost } from "./lib/control.svelte";
@@ -524,6 +525,28 @@
     void attention.items.length;
     void attention.focused;
     void attention.sync();
+  });
+
+  /* And the same tick lets the wall's long-idle cards put their processes down.
+     Deliberately folded onto the clock rather than given a timer: CLAUDE.md
+     names exactly three places in this app that go and look and says a fourth
+     owes their shape and their argument — and this owes neither, because the
+     number the decision is a function of (`idleSeconds`) is already derived from
+     this very tick on every card on the wall. What *is* left over is the memory
+     reading, and `reaping.ts` holds the three bounds on it: nothing asked while
+     the setting is off, nothing asked while no card could go under any pressure,
+     and never twice inside a minute. Not awaited — a pass that fails costs the
+     wall the memory it would have freed, which is where it already was.
+
+     `untrack`, and it is not tidiness: the synchronous half of the pass reads
+     every card's `dormant`, `working` and idle clock and then *writes*
+     `retiring`, `dormant` and a transcript line to some of them. Tracked, the
+     effect would answer to the very state it changes — the shape `crowds`
+     guards against a few lines up — and a reaping would re-enter the pass from
+     inside itself. The tick is the only dependency this wants. */
+  $effect(() => {
+    void clock.t;
+    untrack(() => void skein.letRest());
   });
 
   /* Whether there is a newer Volery, asked when you are looking at the window
@@ -1288,6 +1311,18 @@
           label: m.label,
           on: motion.id === m.id,
         })),
+        /* And beside it, the other thing the wall does with nobody watching:
+           let a card that has not been spoken to for hours put its process
+           down. Its own group rather than run in with the motion picks — see
+           `menu.ts`. Per-machine, like motion and for a stronger version of the
+           same reason, so it is read off `Skein` rather than out of the store. */
+        options: [
+          RESTS.map((r) => ({
+            id: `rest:${r.id}`,
+            label: r.label,
+            on: skein.resting === r.id,
+          })),
+        ],
         undoing: undo.goingBack,
         redoing: undo.goingForward,
       };
@@ -1312,6 +1347,7 @@
            asking about them belongs. */
         else if (id === "ambience") showEffects = true;
         else if (id.startsWith("motion:")) motion.set(id.slice(7));
+        else if (id.startsWith("rest:")) skein.setResting(id.slice(5));
         /* And what the wall tells every card standing on it, one scope out from
            the territory menu's own. */
         else if (id === "guidance") guiding = { focus: null };
