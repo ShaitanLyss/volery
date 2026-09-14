@@ -596,3 +596,132 @@ bytes read: 167 MB → 39 MB with a 64 KB head and a 256 KB tail
 - **`walk` takes a root** so it can be pointed at a fixture directory — what is worth testing
   is the reading, and the reading has nothing to do with where the CLI keeps its files.
 
+#### And the panel was still empty, because that symptom had two causes
+
+The read cost above was real and fixing it did not fix the panel. On a wall with 492
+adoptable sessions on it the list was still blank until you typed, and the second cause was
+four characters of CSS.
+
+`.panel` is a flex column with a `max-height`; `.rows` declared `overflow-y: auto` and no
+`flex`, which resolves to `flex: 0 1 auto` — **a flex-basis equal to its own content
+height**, about 20,000px at 450 rows against some 750px of room. Shrinkage is distributed in
+proportion to `shrink × basis`, so `.rows` absorbed essentially the whole overflow and
+collapsed to nothing while the header, the note, the filter and the footer kept their tiny
+bases. The panel drew as a search box with a void under it, and typing appeared to fix it
+because a shorter list fits. `flex: 1 1 0` moves the box from fighting for what is left to
+*being* what is left; short lists are unaffected, since an item with `flex-grow: 1`
+contributes its content height to an auto-height container's intrinsic size.
+
+Worth keeping for the shape rather than the property: **a scroller inside a flex column
+needs an explicit basis, and the failure is silent and total.** `min-height: 0` was already
+there, which is the half of this everybody knows, and on its own it does nothing here.
+
+And one from the same sitting that belongs to no subsystem: `adopt.ts`'s `haystack` joined
+its fields on a **NUL**, which was a defensible separator and an indefensible byte. CLAUDE.md
+already has the rule for texts an agent will read (`crate::clean`, and `haystack` is
+exported); what is worth adding is that a control character written into a *source file* is
+worse again — git marks the file binary, and `diff`, `blame` and textual merge go silent on
+it permanently, which in a tree several cards share means a conflicting edit there cannot be
+merged at all. It is a newline now, which a query term can never contain because `narrow`
+splits on whitespace. **`git diff --numstat` answering `-` `-` is the check**, and it is
+worth running once on any new file whose content was generated rather than typed.
+
+#### Most sessions have no name of their own, and the wall already knew three of them
+
+Measured 2026-09-14 over the 503 transcripts here: **184 of the 492 adoptable ones carry an
+`ai-title` anywhere in the file.** The head+tail window is not the reason — it misses one of
+the 184 — Claude Code simply does not write a title for most sessions. So 308 rows read
+`untitled`, and since the filter matched the title, the folder and the branch, and 216 of
+these sessions sit on one branch, no query narrowed the list to anything readable and no word
+out of the conversation matched at all. That is a picker you cannot find a conversation in,
+and it is how a card closed by accident became unrecoverable through the UI.
+
+`settle_titles` puts three sources in order:
+
+- **The transcript's `ai-title`**, best when it is there.
+- **The wall's own name for that session** — `store::session_titles`, keyed on
+  `agent_session_id` because that is what a transcript's filename is. This is the sharp one:
+  the card she lost had `title = 'the shader representing flow on the 2d pl…'` in the
+  `conversation` table while the panel was re-deriving a name from disk and coming up blank.
+  381 sessions on this wall have one; 350 of those are transcripts the panel lists. It costs
+  no lock of its own, since `wall_facts` was already taking the store lock for the roots.
+  Closed cards are included deliberately — a closed card is what somebody is in this panel
+  to get back — and `untitled` rows are excluded, or the placeholder would shadow the rung
+  below.
+- **The first thing said in it**, which is the only rung that covers a session this wall has
+  never met. It is in the head window already, so it costs no IO: 491 of the 492 have one,
+  and after all three rungs exactly **one** row on this machine still reads `untitled`.
+
+`prompt_of` is the care that rung needs, and it is nearly all rejection: `queue-operation`
+and `summary` records, `isMeta` / `isSidechain` / `isCompactSummary`, `<command-name>` (every
+`/clear` on the wall would otherwise have produced a row called "clear"), the local-command
+caveat and its stdout, task notifications, the stop note, tool results — which are `user`
+records carrying no text block — and `<system-reminder>`, which is appended *inside* a
+genuine prompt and so is cut out of it rather than disqualifying it. It knows most of the
+family `history.ts` does, by the same words and for the same reason — the flag that would
+settle it is on one side of a restart only — but the overlap is deliberately not total, and
+claiming it was is the kind of comment worth not writing: `skillBody` is injected and is the
+one injected thing worth *reading*, so it has no business here.
+
+**Two ways of asking cost this the very brief that commissioned it, and both are the same
+mistake.** The rejection was written as `said.contains(marker)`, and an injected record
+*opens* with its marker where a prompt merely mentions one. The 5,141-character brief that
+asked for this panel to be fixed says `<local-command-caveat>` at offset 3,688 — 3,568
+characters past the end of the 120-character clip it would have produced — and was thrown
+away whole, so that row was named after the next message in the conversation instead. The
+same shape one level down: the flags were tested against the raw text of the line, where a
+`"isMeta":true` nested inside some *other* object on the record reads identically to the
+field. Both are now asked precisely: the markers are anchored with `starts_with`, the flags
+are read off the parsed record. The base rate was two transcripts in 502 and that is not the
+argument — **prompts about Claude Code's transcript format are exactly what gets typed in
+this repository**, so the failure is concentrated on the sessions most worth finding.
+
+The measured cost of all of this is nothing: 470ms over 492 transcripts against 500ms before
+it, because the parse only runs on `user` records and only until one answers. And the first
+record it accepts is never far in — p50 278 B, p99 3.9 KB, max 25.3 KB over all 502 files,
+so it is inside the head window that was already being read.
+
+That last figure is what lets the field be **head-only**, which is how `Scan`'s head/tail
+equivalence survives gaining a seventh field. The other six are first-wins over things
+written near the top by construction, or last-wins over things a later line can only improve.
+This one is neither — it sits wherever the first thing anybody said happens to sit — so a
+tail read reaching it would offer a message from the *end* of the conversation as "the first
+thing said". `feed` takes it only from a read that began at byte 0, and where the head has
+none the field is absent and the row falls through to `untitled`. The general shape:
+**where a fold cannot answer exactly, prefer the answer that is missing to the one that is
+wrong** — a name nobody recognises is worse than no name, because only one of the two
+tells you to keep looking.
+
+#### A row may not say it is on the wall before it is
+
+`pick` pushed the id into `taken` and *then* called `onpick`. `importSession` swallows its
+error into `skein.fault`, which is a red bar under the header — and this panel is a fixed
+scrim **over** the header. So a failed adopt left the row permanently grey, reading "on the
+wall", with the reason drawn underneath something opaque and no way to retry but closing the
+panel. `taken` is written on success now, `working` holds the round trip so a second click
+cannot start a second adopt, and `adopt` in `App.svelte` hands the reason back for the panel
+to say where the person who clicked is looking. Same shape as `set_mid_turn` one realm over:
+**a record of what happened may not be written before the thing has happened.**
+
+Three things about how the reason travels, each of which was got wrong on the way:
+
+- **It is returned, not read back off `skein.fault`.** That field is written from some forty
+  call sites, several of them background polls, and `adopt` reads it after an `await` — so
+  a rejection settling in that microtask puts an unrelated error in the panel. `importSession`
+  answers `Conversation | string` and sets the bar as well, which is the right place for it
+  once the panel has gone.
+- **The reason is kept per row.** A single `why` cleared on every attempt meant adopting A
+  unsuccessfully and then B successfully left A red, marked "did not take", with its
+  explanation gone. A mark and its reason are one fact; `missed` is a map.
+- **A card already on the wall is refused in words.** `importable()` goes on offering the
+  session a card was *cleared* of, which its own comment called "exactly how a clear is
+  undone" — an intention rather than a description. Adopting one writes `import_row`
+  against the live card's id, whose conflict arm restores its title and occupancy and never
+  touches `agent_session_id`, so the card still resumes the new session; and the front end
+  then pushes a second `Conversation` under an id the canvas already keys a node by. That
+  last part was harmless only by accident before this change, because `s.title` was usually
+  NULL and the `COALESCE` no-op'd; with a title on every row it stops being. `importSession`
+  guards on `#byId`, which holds **open** cards only — so a card closed by accident, which
+  is what this panel is mostly opened for, is unaffected. Undoing a clear wants the session
+  pointed back, which is a different statement than an import; filed in the sink.
+

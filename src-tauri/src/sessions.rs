@@ -13,11 +13,19 @@
 //! same place and no decoding can tell them apart. Every record carries its own
 //! `cwd` — 97 of 97 transcripts here — so the catalogue reads that instead.
 //!
-//! **At most three lines per file are parsed as JSON.** The 278 transcripts on
-//! this machine are 167 MB and the largest is 11 MB, nearly all of it tool
-//! results nobody is listing. Only the last `ai-title` and the last `assistant`
-//! record say anything a picker shows, so the scan carries those two lines
-//! forward as text and parses them once the file is done.
+//! **Almost no line is parsed as JSON.** The 503 transcripts on this machine
+//! are 870 MB and the largest is tens of megabytes, nearly all of it tool
+//! results nobody is listing. The last `ai-title` and the last `assistant`
+//! record are carried forward as text and parsed once the file is done; the
+//! only other parse is `prompt_of`, asked of `user` records until one answers
+//! and then not again.
+//!
+//! **And a name comes from three places, in order.** Most transcripts have no
+//! `ai-title` in them at all — 316 of the 503 here — so a panel that read only
+//! that offered most of the wall's own history back as `untitled`, including a
+//! card closed by accident whose name was in the `conversation` table the whole
+//! time. `settle_titles` is where the three sources are put in order, and it is
+//! the one thing in this module that reads the database twice over.
 //!
 //! **And a session is reported in the wall's own spelling of where it was.**
 //! That is `settle_roots`, and it is the one thing here that looks at the
@@ -52,7 +60,15 @@ pub struct Session {
     /// between adopting a session into its territory and beside it.
     cwd: String,
     branch: Option<String>,
+    /// What the row is called: the transcript's own `ai-title`, or — resolved
+    /// by `settle_titles`, which is the only place the three sources are put in
+    /// order — the wall's name for this session, or its first prompt.
     title: Option<String>,
+    /// The first thing anybody said, clipped. Kept beside the title rather than
+    /// folded into it because the two answer different questions: the title is
+    /// what the row *reads*, and this is text the filter can find it by even
+    /// when the row is reading something else.
+    prompt: Option<String>,
     /// The bare API name from the last answered message. It carries no window
     /// tier — see the note in `list_sessions`.
     model: Option<String>,
@@ -90,6 +106,157 @@ fn field(line: &str, key: &str) -> Option<String> {
     None
 }
 
+/// How much of a first prompt is kept, when it is standing in for a name.
+///
+/// A row is one line on a grid, so anything past about this reads as an
+/// ellipsis either way — and the whole point of the fallback is a phrase you
+/// recognise, which is at the front. The filter searches the clipped text, so
+/// this also bounds what a query can match; a longer clip would find more and
+/// say less, and the sessions worth finding are found by their opening words.
+const PROMPT_CLIP: usize = 120;
+
+/// Everything between `<tag>` and `</tag>`, taken out — including an unclosed
+/// opener, which takes the rest of the text with it.
+///
+/// For `<system-reminder>`, which the CLI appends *inside* a genuine prompt
+/// rather than as a record of its own. Left in, it is what a row would be named
+/// after: the reminders run to hundreds of characters and every one of them
+/// starts the same way, so every such row would read alike and the filter would
+/// match all of them at once.
+fn without_tag(text: &str, tag: &str) -> String {
+    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(&open) {
+        out.push_str(&rest[..at]);
+        match rest[at..].find(&close) {
+            Some(end) => rest = &rest[at + end + close.len()..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Text Claude Code injected that is not anybody speaking.
+///
+/// Each of these is a record shaped exactly like a prompt — a `user` type
+/// carrying a string — and each would otherwise be what a conversation is named
+/// after.
+///
+/// **The test is anchored, and getting that wrong threw away this change's own
+/// commissioning brief.** An injected record *opens* with its marker; a prompt
+/// that merely mentions one is a prompt. Written as a bare `contains`, the
+/// 5,141-character brief that asked for this panel to be fixed was rejected
+/// because it says `<local-command-caveat>` at offset 3,688 — 3,568 characters
+/// past the end of the clip it would have produced — and the row was then named
+/// after the *next* message in the conversation instead. Two of the 502
+/// transcripts here were wrong that way, and the base rate is not the point:
+/// prompts about Claude Code's transcript format are exactly what gets typed in
+/// this repository.
+///
+/// `history.ts` and `classify.ts` know most of this family too, by the same
+/// words and for the same reason — on disk the `isMeta` flag that would settle
+/// it is not always there, and live there is no such flag at all. The overlap
+/// is not total and should not be claimed as such: `skillBody` is injected and
+/// is the one injected thing worth *reading*, so it has no place here, and the
+/// stop note below is the member `history.ts` handles in its non-meta arm.
+/// Anything added to that family is worth considering here.
+const INJECTED: [&str; 8] = [
+    "<local-command-caveat>",
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+    "<local-command-stdout>",
+    "<task-notification>",
+    "Caveat: The messages below were generated by the user while running local commands",
+    /* `isStopNote`'s wording. It demonstrably reaches disk without `isMeta`,
+       which is why it is here rather than left to the flag. */
+    "[Request interrupted by user",
+];
+
+/// The first thing said on this line, if the line is somebody saying something.
+///
+/// Only ever asked of a line until one answers, so the JSON parse this does —
+/// the one in this module that is not avoided — happens a handful of times per
+/// transcript at most. `field` cannot serve here: a prompt is a *value* rather
+/// than a token, it arrives in two shapes (a bare string from the TUI, a block
+/// array from the SDK), and it is the one field where the escaping matters.
+fn prompt_of(line: &str) -> Option<String> {
+    /* The one cheap gate, and it only ever *skips*: `queue-operation`,
+       `summary`, `file-history-snapshot` and every assistant record fail it
+       outright, which is nearly all of the head. Nothing is rejected on the raw
+       text of the line — a `"isMeta":true` written inside a prompt *about* this
+       code reads identically to the field, and that is finding two's failure
+       class one level down. The flags are read off the parsed record below. */
+    if !line.contains("\"type\":\"user\"") {
+        return None;
+    }
+    /* A tool result is a `user` record too, and the big ones are megabytes.
+       Nothing worth naming a conversation after is this long, and the parse is
+       the only unbounded cost in the walk. */
+    if line.len() > 256 * 1024 {
+        return None;
+    }
+
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return None;
+    }
+    /* Context Claude Code injected, a subagent's own turn, and the summary a
+       compaction leaves — none of them anybody speaking. */
+    for flag in ["isMeta", "isSidechain", "isCompactSummary"] {
+        if v.get(flag).and_then(|b| b.as_bool()) == Some(true) {
+            return None;
+        }
+    }
+    let content = v.get("message").and_then(|m| m.get("content"))?;
+    let said = match content {
+        serde_json::Value::String(s) => s.clone(),
+        /* The SDK's shape — and the one that is usually a tool result, which
+           carries no `text` block and so falls out here as empty. */
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+
+    let said = without_tag(&said, "system-reminder");
+    /* Anchored — see `INJECTED`. `trim_start` because a reminder taken out of
+       the front of a record leaves the whitespace that was around it. */
+    let opening = said.trim_start();
+    if INJECTED.iter().any(|m| opening.starts_with(m)) {
+        return None;
+    }
+    /* One line, whatever it was written as: a row is a single line on a grid
+       and a prompt with a fenced block in it would otherwise arrive with its
+       newlines intact and be clipped inside the first of them. */
+    let flat = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return None;
+    }
+    Some(clip(&flat, PROMPT_CLIP))
+}
+
+/// `text`, cut to at most `max` characters, on a word boundary where there is
+/// one near enough to the end to be worth preferring.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(max).collect();
+    /* Only a break in the last quarter counts. Further back than that and the
+       word boundary costs more of the phrase than the ragged edge did. */
+    let cut = head
+        .rfind(' ')
+        .filter(|at| *at >= head.len() * 3 / 4)
+        .unwrap_or(head.len());
+    format!("{}…", head[..cut].trim_end())
+}
+
 /// Every transcript Claude Code has written, newest activity first.
 ///
 /// Deliberately says nothing about which of these Skein already knows: the
@@ -106,28 +273,75 @@ fn field(line: &str, key: &str) -> Option<String> {
 pub async fn list_sessions(app: AppHandle) -> Result<Vec<Session>, String> {
     crate::off_main(move || {
         let mut out = sessions_of(&app)?;
-        settle_roots(&mut out, &wall_roots(&app));
+        let wall = wall_facts(&app);
+        settle_roots(&mut out, &wall.roots);
+        settle_titles(&mut out, &wall.titles);
         Ok(out)
     })
     .await?
 }
 
-/// Every territory's root as the `project` table spells it.
+/// The two things this walk asks the database, read under one lock.
+struct Wall {
+    /// Every territory's root as the `project` table spells it.
+    roots: Vec<String>,
+    /// What the wall calls each session it knows, keyed by session id.
+    titles: HashMap<String, String>,
+}
+
+/// What the wall itself knows about these sessions: where its territories are,
+/// and what it calls the ones it has met.
 ///
 /// Read inside `off_main` with everything else, so the store lock is never
-/// taken on the main thread. An empty answer — no store yet, a wedged mutex —
-/// leaves every session reported exactly as its transcript recorded it, which
-/// is what this command did for its whole life before `settle_roots`.
-fn wall_roots(app: &AppHandle) -> Vec<String> {
+/// taken on the main thread — and both questions in one hold of it, since the
+/// second is a single indexed scan of a table the first has already paid the
+/// lock for. An empty answer — no store yet, a wedged mutex — leaves every
+/// session reported exactly as its transcript recorded it, which is what this
+/// command did for its whole life before `settle_roots`.
+fn wall_facts(app: &AppHandle) -> Wall {
+    let empty = Wall { roots: Vec::new(), titles: HashMap::new() };
     let Some(store) = app.try_state::<crate::store::Store>() else {
-        return Vec::new();
+        return empty;
     };
     let Ok(conn) = store.0.lock() else {
-        return Vec::new();
+        return empty;
     };
-    crate::store::projects(&conn)
-        .map(|ps| ps.into_iter().map(|p| p.root_path).collect())
-        .unwrap_or_default()
+    Wall {
+        roots: crate::store::projects(&conn)
+            .map(|ps| ps.into_iter().map(|p| p.root_path).collect())
+            .unwrap_or_default(),
+        titles: crate::store::session_titles(&conn).unwrap_or_default(),
+    }
+}
+
+/// Put a name on every row that has not got one of its own.
+///
+/// Three sources, in this order, and the order is the whole of the design:
+///
+/// - **The transcript's `ai-title`**, already read by `read_session`. It is the
+///   best of the three and it is usually not there: 187 of the 503 transcripts
+///   on this machine have one anywhere in the file, and the head+tail window
+///   misses it in exactly one of those 187. So the gap is not a reading
+///   problem and no wider read closes it — Claude Code does not write an
+///   ai-title for most sessions.
+/// - **The wall's own name for the session.** Nearly free, and the sharp one:
+///   a card Volery opened has a title in the `conversation` table keyed on the
+///   same id this panel is listing. A card closed by accident was therefore
+///   offered back as `untitled`, with its real name one table over — which is
+///   how somebody loses a conversation they can see the file for.
+/// - **The first thing said in it**, which is the only source that covers a
+///   session this wall has never met: one a terminal started, or one from
+///   before Volery was on this machine.
+///
+/// A row that ends with none of the three keeps `None` and the panel says
+/// `untitled`, which by then is the truth rather than a failure to look.
+fn settle_titles(sessions: &mut [Session], titles: &HashMap<String, String>) {
+    for s in sessions.iter_mut() {
+        if s.title.is_some() {
+            continue;
+        }
+        s.title = titles.get(&s.id).cloned().or_else(|| s.prompt.clone());
+    }
 }
 
 /// Report each session under the spelling the wall already uses for the
@@ -226,11 +440,30 @@ const TAIL: u64 = 256 * 1024;
 /// The fields a picker shows, folded out of whatever lines it is fed.
 ///
 /// Fed a file's head and then its tail — in that order — this answers exactly
-/// what feeding it every line would, for every field it holds. Three are
-/// first-wins and no later line can beat them; three are last-wins and a later
-/// line only ever improves them. That equivalence is the whole reason the walk
-/// is allowed to skip the middle, and it is why overlapping reads on a small
-/// file are harmless: feeding the same line twice, in order, changes nothing.
+/// what feeding it every line would, for all but one of the fields it holds.
+/// Three are first-wins and no later line can beat them; three are last-wins
+/// and a later line only ever improves them. That equivalence is the whole
+/// reason the walk is allowed to skip the middle, and it is why overlapping
+/// reads on a small file are harmless: feeding the same line twice, in order,
+/// changes nothing.
+///
+/// **`prompt` is the one field the tail may not write**, and that restriction
+/// is what keeps the sentence above true of it. The other six are first-wins
+/// over fields written near the top by construction, or last-wins over fields a
+/// later line can only improve. This one is neither: it is written wherever the
+/// first thing anybody said happens to be, so a tail read reaching it would
+/// supply a message from the *end* of the conversation as "the first thing
+/// said" — a name that is wrong rather than missing, which is the worse of the
+/// two failures. `feed` therefore takes it only from a read that began at byte
+/// 0. Where the head has none, the field is absent and `settle_titles` falls to
+/// its next rung, which is `untitled` and is honest.
+///
+/// It does not bite on this machine in any case. Measured 2026-09-14 over all
+/// 502 transcripts: the first record `prompt_of` accepts sat 278 bytes in at the
+/// median, 3.9 KB at p99 and **25.3 KB at worst** — not one of them past `HEAD`,
+/// for the same reason the first `cwd` is never far in, which is that the
+/// preamble before it is a summary or a file-history snapshot and neither is
+/// large.
 #[derive(Default)]
 struct Scan {
     cwd: Option<String>,
@@ -239,10 +472,17 @@ struct Scan {
     last_at: Option<String>,
     title_line: Option<String>,
     assistant_line: Option<String>,
+    /// First-wins, like `cwd` and `born_at` above — the *first* thing said is
+    /// the one that says what a conversation was about. It is in the head
+    /// window by construction, so it costs no read that was not happening.
+    prompt: Option<String>,
 }
 
 impl Scan {
-    fn feed(&mut self, line: &str) {
+    /// `from_head` is whether this line came from a read that started at byte 0
+    /// — the head window, or a whole small file, or the `whole` re-read. It
+    /// gates exactly one field; see the note on `prompt` below.
+    fn feed(&mut self, line: &str, from_head: bool) {
         if line.trim().is_empty() {
             return;
         }
@@ -258,6 +498,15 @@ impl Scan {
         }
         if line.contains("\"ai-title\"") {
             self.title_line = Some(line.to_string());
+        }
+        /* Head only, and that is what keeps this fold honest. A record 256 KB
+           from the end of a file is not "the first thing said" under any
+           reading, and naming a row after one would be worse than saying
+           nothing: it would be a name that is wrong rather than missing. So the
+           tail cannot supply this, and where the head has none the row falls
+           through to `settle_titles`' next rung. */
+        if from_head && self.prompt.is_none() {
+            self.prompt = prompt_of(line);
         }
         /* The usage test is what makes this the last *answered* message: a
            refusal or an interrupted stream carries none. */
@@ -303,7 +552,7 @@ fn feed_range(scan: &mut Scan, file: &mut File, from: u64, len: u64, size: u64) 
         slice = &slice[..slice.len() - 1];
     }
     for line in slice {
-        scan.feed(line);
+        scan.feed(line, from == 0);
     }
 }
 
@@ -381,6 +630,7 @@ fn read_session(path: &Path, id: String) -> Option<Session> {
         cwd,
         branch: scan.branch,
         title,
+        prompt: scan.prompt,
         model,
         ctx_tokens,
         born_at: scan.born_at,
@@ -441,7 +691,8 @@ fn walk(root: &Path) -> Result<Vec<Session>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{field, settle_roots, walk, Session};
+    use super::{clip, field, prompt_of, settle_roots, settle_titles, walk, Session};
+    use std::collections::HashMap;
 
     /// A session that says only where it was. Every other field is beside the
     /// point for `settle_roots`, which reads and writes exactly one.
@@ -451,6 +702,7 @@ mod tests {
             cwd: cwd.into(),
             branch: None,
             title: None,
+            prompt: None,
             model: None,
             ctx_tokens: 0,
             born_at: None,
@@ -602,6 +854,290 @@ mod tests {
 
         assert!(walk(&dir).unwrap().is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The fallback ladder, which is the whole of why a closed card was offered
+    /// back as `untitled` while its name sat in the `conversation` table.
+    ///
+    /// Four rows, one for each rung and one for the bottom: a transcript that
+    /// named itself keeps its own name and the wall's is not allowed to beat
+    /// it; a transcript with no name of its own takes the wall's; one the wall
+    /// has never met takes its first prompt; and one with none of the three
+    /// stays `None`, which is the panel saying `untitled` truthfully.
+    #[test]
+    fn a_row_takes_the_best_name_there_is_and_the_order_is_the_point() {
+        let mut sessions = vec![at("c"), at("c"), at("c"), at("c")];
+        sessions[0].id = "has-own".into();
+        sessions[0].title = Some("its own ai-title".into());
+        sessions[0].prompt = Some("the first thing said".into());
+        sessions[1].id = "on-the-wall".into();
+        sessions[1].prompt = Some("the first thing said".into());
+        sessions[2].id = "a-stranger".into();
+        sessions[2].prompt = Some("the first thing said".into());
+        sessions[3].id = "nothing-at-all".into();
+
+        let titles: HashMap<String, String> = [
+            ("has-own".to_string(), "what the wall calls it".to_string()),
+            (
+                "on-the-wall".to_string(),
+                "the shader representing flow on the 2d pl…".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        settle_titles(&mut sessions, &titles);
+
+        assert_eq!(sessions[0].title.as_deref(), Some("its own ai-title"));
+        assert_eq!(
+            sessions[1].title.as_deref(),
+            Some("the shader representing flow on the 2d pl…")
+        );
+        assert_eq!(sessions[2].title.as_deref(), Some("the first thing said"));
+        assert_eq!(sessions[3].title, None);
+    }
+
+    /// And the reading half of that ladder: a transcript with no `ai-title`
+    /// anywhere in it — which is 316 of the 503 on this machine — still comes
+    /// back knowing what was said first.
+    ///
+    /// Both shapes, in one file each: the TUI writes a bare string and the SDK
+    /// writes a block array, and a picker that could only read one of them
+    /// would be blank for every session the other front end started.
+    #[test]
+    fn a_transcript_that_never_named_itself_still_says_what_was_asked_of_it() {
+        let dir = std::env::temp_dir().join(format!("skein-sessions-{}", crate::store::uuid_v4()));
+        let proj = dir.join("C--atelier-skein");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let answered = r#"{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":1}},"timestamp":"2026-08-01T10:05:00.000Z"}"#;
+
+        let mut tui = String::new();
+        /* Everything before the prompt that looks like one and is not. Each of
+           these was a real row's name before `prompt_of` knew them. */
+        tui.push_str("{\"type\":\"summary\",\"summary\":\"an older thread\"}\n");
+        tui.push_str(concat!(
+            r#"{"type":"queue-operation","operation":"enqueue","cwd":"C:\\atelier\\skein"}"#,
+            "\n"
+        ));
+        tui.push_str(concat!(
+            r#"{"type":"user","isMeta":true,"message":{"content":"Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these"},"timestamp":"2026-08-01T10:00:00.000Z"}"#,
+            "\n"
+        ));
+        tui.push_str(concat!(
+            r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"},"timestamp":"2026-08-01T10:00:01.000Z"}"#,
+            "\n"
+        ));
+        tui.push_str(concat!(
+            r#"{"cwd":"C:\\atelier\\skein","gitBranch":"main","type":"user","message":{"content":"the shader representing flow on the 2d plane\nis drawing the wrong way round<system-reminder>this is not what anybody said</system-reminder>"},"timestamp":"2026-08-01T10:01:00.000Z"}"#,
+            "\n"
+        ));
+        tui.push_str(concat!(
+            r#"{"type":"user","message":{"content":"and a second thing, which is not the name"},"timestamp":"2026-08-01T10:02:00.000Z"}"#,
+            "\n"
+        ));
+        tui.push_str(answered);
+        tui.push('\n');
+        std::fs::write(proj.join("tui.jsonl"), &tui).unwrap();
+
+        let mut sdk = String::new();
+        sdk.push_str(concat!(
+            r#"{"cwd":"C:\\atelier\\skein","type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","content":"a result, which nobody said"}]},"timestamp":"2026-08-01T10:00:00.000Z"}"#,
+            "\n"
+        ));
+        sdk.push_str(concat!(
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"what the sdk writes"}]},"timestamp":"2026-08-01T10:01:00.000Z"}"#,
+            "\n"
+        ));
+        sdk.push_str(answered);
+        sdk.push('\n');
+        std::fs::write(proj.join("sdk.jsonl"), &sdk).unwrap();
+
+        let mut out = walk(&dir).unwrap();
+        assert_eq!(out.len(), 2);
+        {
+            let by = |id: &str| out.iter().find(|s| s.id == id).unwrap();
+            assert_eq!(
+                by("tui").prompt.as_deref(),
+                Some("the shader representing flow on the 2d plane is drawing the wrong way round")
+            );
+            assert_eq!(by("sdk").prompt.as_deref(), Some("what the sdk writes"));
+            /* Neither file has an ai-title, so both are nameless until the
+               ladder runs. */
+            assert_eq!(by("tui").title, None);
+        }
+
+        settle_titles(&mut out, &HashMap::new());
+        let by = |id: &str| out.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(
+            by("tui").title.as_deref(),
+            Some("the shader representing flow on the 2d plane is drawing the wrong way round")
+        );
+        assert_eq!(by("sdk").title.as_deref(), Some("what the sdk writes"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The records that are shaped exactly like a prompt and are not one. Each
+    /// is a row that would otherwise be named after machinery — and the
+    /// `<command-name>` one is the case where every `/clear` on the wall would
+    /// have produced a row called "clear".
+    #[test]
+    fn injected_context_is_not_something_anybody_said() {
+        let said = |c: &str| format!(r#"{{"type":"user","message":{{"content":"{c}"}}}}"#);
+        assert_eq!(
+            prompt_of(&said("a real question")).as_deref(),
+            Some("a real question")
+        );
+
+        assert_eq!(prompt_of(&said("<command-name>/clear</command-name>")), None);
+        assert_eq!(
+            prompt_of(&said("<local-command-caveat>not yours</local-command-caveat>")),
+            None
+        );
+        assert_eq!(
+            prompt_of(&said("<local-command-stdout>output</local-command-stdout>")),
+            None
+        );
+        assert_eq!(
+            prompt_of(&said("<task-notification>a job finished</task-notification>")),
+            None
+        );
+        assert_eq!(
+            prompt_of(r#"{"type":"queue-operation","operation":"enqueue"}"#),
+            None
+        );
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","isMeta":true,"message":{"content":"Continue from where you left off."}}"#
+            ),
+            None
+        );
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","isSidechain":true,"message":{"content":"a subagent's brief"}}"#
+            ),
+            None
+        );
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","isCompactSummary":true,"message":{"content":"what this card used to know"}}"#
+            ),
+            None
+        );
+        /* A prompt that is nothing but an injected reminder is not a prompt —
+           and one with a reminder stuck to the end of it keeps its own words. */
+        assert_eq!(
+            prompt_of(&said("<system-reminder>only this</system-reminder>")),
+            None
+        );
+        assert_eq!(
+            prompt_of(&said(
+                "what I typed<system-reminder>and what I did not</system-reminder>"
+            ))
+            .as_deref(),
+            Some("what I typed")
+        );
+        /* Anchored, not `contains`. Each of these mentions a marker well past
+           the end of the clip it produces, and each is somebody talking. The
+           first is the shape of the brief that commissioned this change, which
+           a bare `contains` threw away. */
+        assert_eq!(
+            prompt_of(&said("fix the adopt panel. be careful to skip <local-command-caveat> records"))
+                .as_deref(),
+            Some("fix the adopt panel. be careful to skip <local-command-caveat> records")
+        );
+        assert_eq!(
+            prompt_of(&said("why does the transcript say <command-name> on those lines?")).as_deref(),
+            Some("why does the transcript say <command-name> on those lines?")
+        );
+        /* And the flags, for the same reason one level down. They are fields on
+           the record, so they are read off the parsed value: a raw scan of the
+           line finds one nested inside some *other* object and rejects a prompt
+           for a flag that is not on it. */
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","toolUseResult":{"isMeta":true},"message":{"content":"a real question"}}"#
+            )
+            .as_deref(),
+            Some("a real question")
+        );
+        /* The stop note, which reaches disk with no flag on it at all. */
+        assert_eq!(prompt_of(&said("[Request interrupted by user]")), None);
+        assert_eq!(prompt_of(&said("[Request interrupted by user for tool use]")), None);
+
+        /* A tool result carries no text block, so it reads as nothing said —
+           which is what keeps a picker from naming a session after the first
+           thing a tool printed into it. */
+        assert_eq!(
+            prompt_of(
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"a result"}]}}"#
+            ),
+            None
+        );
+    }
+
+    /// The tail may not name a conversation.
+    ///
+    /// A transcript whose only thing-anybody-said sits past `HEAD` """ + EM + """ and whose
+    /// head and tail therefore cannot meet """ + EM + """ comes back with no prompt at all,
+    /// rather than with a sentence from the far end of the conversation
+    /// presented as the first thing in it. `settle_titles` then says `untitled`,
+    /// which is the truth. See the note on `Scan`.
+    #[test]
+    fn a_message_from_the_end_of_a_file_is_not_the_first_thing_said() {
+        let dir = std::env::temp_dir().join(format!("skein-sessions-{}", crate::store::uuid_v4()));
+        let proj = dir.join("C--atelier-skein");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let mut body = String::new();
+        /* Addressable, and nothing said: the head carries a cwd and then only
+           records `prompt_of` refuses. */
+        body.push_str(concat!(
+            r#"{"cwd":"C:\\atelier\\skein","type":"user","isMeta":true,"message":{"content":"Continue from where you left off."},"timestamp":"2026-08-01T10:00:00.000Z"}"#,
+            "\n"
+        ));
+        /* Bulk enough that the head window ends here and the tail cannot reach
+           back this far. */
+        let pad = "y".repeat(1024);
+        for _ in 0..700 {
+            body.push_str(r#"{"type":"assistant","message":{"content":""#);
+            body.push_str(&pad);
+            body.push_str(concat!(r#""}}"#, "\n"));
+        }
+        body.push_str(concat!(
+            r#"{"type":"user","message":{"content":"something said a long way in"},"timestamp":"2026-08-01T11:00:00.000Z"}"#,
+            "\n"
+        ));
+        body.push_str(concat!(
+            r#"{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":1}},"timestamp":"2026-08-01T11:01:00.000Z"}"#,
+            "\n"
+        ));
+        std::fs::write(proj.join("late.jsonl"), &body).unwrap();
+
+        let mut out = walk(&dir).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].prompt, None, "the tail may not supply a first prompt");
+        settle_titles(&mut out, &HashMap::new());
+        assert_eq!(out[0].title, None, "and the row says untitled, honestly");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A clip is a phrase you recognise, so it ends on a word where there is one
+    /// close enough to the end to be worth the characters — and never throws
+    /// away most of the phrase to find one where there is not.
+    #[test]
+    fn a_name_cut_out_of_a_prompt_ends_somewhere_readable() {
+        assert_eq!(clip("short enough", 40), "short enough");
+        /* A break in the last quarter of the budget: the word wins. */
+        assert_eq!(clip("abcdefghij klm nop", 12), "abcdefghij…");
+        /* One further back than that: the budget wins, because finding the
+           boundary would cost more of the phrase than the ragged edge does. */
+        assert_eq!(clip("one two three four five", 12), "one two thre…");
+        assert_eq!(clip("aaaa bbbbbbbbbbbbbbbbbbbbbbbb", 16), "aaaa bbbbbbbbbbb…");
+        /* Counted in characters and cut on a character, so a multi-byte one on
+           the boundary is neither split nor a panic. */
+        assert_eq!(clip("ééééé", 3), "ééé…");
     }
 
     /// Newest activity first, because that order *is* the panel's answer to

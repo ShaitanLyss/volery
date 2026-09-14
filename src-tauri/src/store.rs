@@ -20,6 +20,7 @@
 //!    those is the one the table was written for — see sink 8d3dab75, and
 //!    `hooks.rs` for the guard that reads it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -797,6 +798,25 @@ fn migrate_v12(conn: &Connection) -> Result<(), String> {
 
 /// You said what this card is called, so nothing else gets to say otherwise.
 ///
+/// The name a card has before anything has named it.
+///
+/// Added for `session_titles`, which is the one place where *not* knowing the
+/// sentinel is silently wrong rather than loudly wrong: that function exists to
+/// keep the placeholder out of the adoption panel's title ladder, and a renamed
+/// sentinel it did not recognise would hand `untitled` back as a name and
+/// shadow the first-prompt rung below it — which is the bug it was written to
+/// close, restored without a word.
+///
+/// **It does not yet bind the other spellings, and the honest thing is to list
+/// them rather than claim it does**: the column default (`conversation.title`
+/// in the schema batch), `import_row`'s `COALESCE`, `clear_row`'s reset, and
+/// `hooks.rs`. They are string literals inside SQL that is otherwise static,
+/// and folding them in means a `format!` per statement — worth doing, not worth
+/// doing inside a change about something else. The front end's own `UNNAMED`
+/// (`naming.ts`) is a fifth, and nothing can bind that one short of generating
+/// a file.
+pub const UNTITLED: &str = "untitled";
+
 /// A title has always been something that happened *to* a card — the sentinel,
 /// then the cut of the first prompt, then Claude Code's generated title, which
 /// the front end adopts at every settling turn. `/rename` is the first name that
@@ -4948,6 +4968,42 @@ pub fn projects(conn: &Connection) -> Result<Vec<ProjectRow>, String> {
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// What every card on this wall is called, keyed by the agent session it holds.
+///
+/// For the adoption panel, which lists *transcripts* and has to put a name on
+/// each. Most of them have none of their own: 316 of the 503 on this machine
+/// carry no `ai-title` record anywhere in the file, because Claude Code simply
+/// does not write one for most sessions. But a session Volery started has a
+/// name in this table already — the card's — and re-deriving one from disk and
+/// coming up blank for a conversation whose title is one table over is the bug
+/// this exists to close. See `sessions::settle_titles`.
+///
+/// Keyed on `agent_session_id` rather than `id`, because that is the id a
+/// transcript's filename is. The two are the same for an adopted row and differ
+/// for every card Skein spawned — and after a `/clear` the card's row names its
+/// *new* session, so the cleared one is correctly absent and the panel falls
+/// back to reading the transcript, which is what makes a clear undoable.
+///
+/// Rows with the placeholder title are left out rather than returned: `untitled`
+/// is not a name and offering it would shadow the first-prompt fallback below
+/// it. Closed cards are included on purpose — a card that was closed is exactly
+/// what somebody is in this panel to get back.
+pub fn session_titles(conn: &Connection) -> Result<HashMap<String, String>, String> {
+    let sql = format!(
+        "SELECT agent_session_id, title
+           FROM conversation
+          WHERE agent_session_id IS NOT NULL
+            AND title IS NOT NULL
+            AND trim(title) <> ''
+            AND title <> '{UNTITLED}'"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(Result::ok).collect())
 }
 
 /// One territory by its id, for a caller that already knows which.

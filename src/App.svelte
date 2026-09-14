@@ -946,11 +946,22 @@
     importing = false;
   }
 
-  async function adopt(s: Session) {
+  /** Put a recorded session on the wall, and say why if it did not go.
+   *
+   *  `importSession` swallows its own error into `skein.fault`, which is a red
+   *  bar under the header — and the adoption panel is a fixed scrim *over* the
+   *  header, so that bar is behind it. Handing the reason back is what lets the
+   *  panel say it where the person who clicked is looking; the bar still gets
+   *  it, for after they close. */
+  async function adopt(s: Session): Promise<string | null> {
     const conv = await skein.importSession(s);
-    if (!conv) return;
+    /* A string is the reason it did not go. Read off the return rather than off
+       `skein.fault`, which is shared mutable state that a background poll can
+       have rewritten in the microtask between the failure and this line. */
+    if (typeof conv === "string") return conv;
     focusedId = conv.id;
     studio.selectOnly(conv.id);
+    return null;
   }
 
   /* ── how wide the reading panel is ────────────────────────────────────

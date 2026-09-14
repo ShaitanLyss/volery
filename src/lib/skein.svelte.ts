@@ -135,7 +135,15 @@ export type Session = {
   id: string;
   cwd: string;
   branch: string | null;
+  /** What the row reads. Resolved in `sessions::settle_titles` from three
+   *  sources in order — the transcript's own `ai-title`, the wall's name for
+   *  that session, its first prompt — because most transcripts have none of
+   *  their own and the panel used to offer them all back as `untitled`. */
   title: string | null;
+  /** The first thing said in the session, clipped. Beside the title rather than
+   *  folded into it: the filter searches this even when the row is reading
+   *  something else. */
+  prompt: string | null;
   model: string | null;
   ctx_tokens: number;
   born_at: string | null;
@@ -1098,8 +1106,18 @@ export class Skein {
     /* By session, not by card: what `list_sessions` returns are sessions, and
        after a card has been cleared its own fresh session is not its id. Keyed
        on `id` the wall would offer to adopt a session that is already standing
-       on it — and, correctly, would go on offering the one that was cleared,
-       which is exactly how a clear is undone. */
+       on it.
+
+       It also goes on offering the session a card was *cleared* of, which this
+       comment used to call "exactly how a clear is undone". That was an
+       intention rather than a description and it is worth saying so: adopting
+       one writes `import_row` against the live card's own id, which restores
+       its title and its occupancy and never touches `agent_session_id` — so
+       the card still resumes the new session, and the front end pushes a second
+       `Conversation` with an id already on the wall, which the canvas's keyed
+       `{#each}` will not have. `importSession` refuses it below, in as many
+       words. Filed as a sink item; undoing a clear wants the session pointed
+       back, which is a different statement than an import. */
     const known = new Set(this.convs.map((c) => c.sessionId));
     try {
       const all = await invoke<Session[]>("list_sessions");
@@ -1116,7 +1134,22 @@ export class Skein {
    *  where the CLI wrote it, and waking the card resumes that same session in
    *  place. The card arrives dormant, which is the honest state — it has a
    *  history and no process — and lazy restore already knows how to draw that. */
-  async importSession(s: Session): Promise<Conversation | null> {
+  async importSession(s: Session): Promise<Conversation | string> {
+    /* A card standing on the wall already *is* this conversation — which
+       happens when its session was cleared, since the transcript it was cleared
+       of keeps being offered. Going on would write over that card's title and
+       occupancy through `import_row`'s conflict arm and then push a second
+       `Conversation` under an id the canvas already keys a node by. Refused in
+       words the panel can draw, rather than half-done.
+
+       `#byId` holds open cards only — `close` takes a card out of it — so a
+       card closed by accident, which is what this panel is mostly opened for,
+       is not caught here and is adopted back exactly as before. */
+    const standing = this.#byId.get(s.id);
+    if (standing) {
+      const name = standing.title && standing.title !== UNNAMED ? ` “${standing.title}”` : "";
+      return `a card on this wall${name} is already that conversation`;
+    }
     try {
       const project = await invoke<Project>("ensure_project", {
         rootPath: s.cwd,
@@ -1165,8 +1198,14 @@ export class Skein {
       void this.loadHistory(conv);
       return conv;
     } catch (err) {
+      /* Handed back *and* put on the fault bar. The bar is the right place for
+         it once the panel has gone; it is the wrong place while the panel is
+         up, since the scrim is drawn over it. And the reason is returned rather
+         than read back off `this.fault` by the caller, because that field is
+         written from forty call sites — several of them background polls — so
+         a read of it after an await can name something else entirely. */
       this.fault = String(err);
-      return null;
+      return String(err);
     }
   }
 
