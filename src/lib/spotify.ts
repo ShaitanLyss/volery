@@ -432,6 +432,32 @@ export function worthRetrying(fault: string): boolean {
   return !FATAL.some((f) => fault.includes(f))
 }
 
+/**
+ * Whether the deck should bring the receiver up without being asked.
+ *
+ * Three conditions and every one of them is a way this gets annoying rather
+ * than helpful:
+ *
+ * - **`linked`**, or there is nothing to connect *with* and the unasked act is
+ *   opening a browser, which is not something a widget may do to you.
+ * - **`phase === "off"`**, so it never lands on a session that is already up,
+ *   coming up, or waiting on a person in a browser tab.
+ * - **`!tried`**, which is what makes this *once per launch* rather than once
+ *   per mount. Scrolling the widget off the wall and back re-wires the deck,
+ *   and without this the wall would reconnect a player you had deliberately
+ *   stopped — the one thing `detach` already refuses to do, arrived at from
+ *   the other side. A failure is also a try: three attempts inside `#bringUp`
+ *   is a bound, and a widget that re-mounts is not permission to spend it
+ *   again.
+ *
+ * Pure and here rather than inline in the deck, because "should something
+ * happen that nobody asked for" is exactly the judgement worth being able to
+ * read as a table.
+ */
+export function shouldAutoConnect(linked: boolean, phase: SpotifyPhase, tried: boolean): boolean {
+  return linked && phase === "off" && !tried
+}
+
 /* ── the widget's knobs ────────────────────────────────────────────────────*/
 
 /** What the face shows. `full` wants room; `bar` is a strip you can sit on a shelf. */

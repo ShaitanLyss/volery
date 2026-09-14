@@ -27,6 +27,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   applyEvent,
   emptyState,
+  shouldAutoConnect,
   volumeToWire,
   worthRetrying,
   worthSearching,
@@ -51,6 +52,11 @@ export class Deck {
   linked = $state(false);
   /** Set while a verb is in flight, so a face can stop offering it twice. */
   busy = $state(false);
+
+  /** Whether this launch has already had its one unprompted attempt at
+   *  connecting. Per *deck*, and the deck is a module singleton made once, so
+   *  this is per launch rather than per face. See `#autoConnect`. */
+  #autoTried = false;
 
   #readers = new Set<string>();
   #unlisten: UnlistenFn | null = null;
@@ -85,12 +91,44 @@ export class Deck {
         this.state = applyEvent(this.state, e.payload, Date.now());
       });
       await this.refresh();
+      /* Deliberately not awaited. `#bringUp` can hold a minute and a half of
+         retries, and `#wiring` is a lock on *wiring* — holding it across a
+         network wait would make the flag mean something it does not say. The
+         face has everything it needs to draw the moment `refresh` lands; the
+         session arriving later is what the event stream is for. */
+      void this.#autoConnect();
     } catch {
       /* Nothing to say: a face with no session draws "not signed in", which is
          what an app that cannot reach its own backend should look like. */
     } finally {
       this.#wiring = false;
     }
+  }
+
+  /**
+   * Bring the receiver up on the stored credential, once, without being asked.
+   *
+   * The whole point of keeping a credential is not having to present it again,
+   * and a button you must press every launch to spend a token you already gave
+   * is the same chore the browser sign-in was — one click cheaper. So the wall
+   * connects itself.
+   *
+   * `shouldAutoConnect` is the judgement and it is pure; this is only the flag
+   * it cannot hold. The flag is set **before** the conditions are checked, not
+   * after the attempt: "this launch has had its unprompted go" is true whether
+   * the answer was to connect, or that there was nothing to connect with. What
+   * must never happen is a widget re-mounting into a fresh attempt.
+   *
+   * Failure is left to speak for itself. `start` routes through `#guard`, which
+   * writes `phase: "fault"`, and the face draws librespot's own words with `try
+   * again` and `sign in again` under them. An unasked attempt that fails
+   * silently would be worse than not trying: the widget would sit on "signed in
+   * — not connected" with no account of why.
+   */
+  async #autoConnect() {
+    const go = shouldAutoConnect(this.linked, this.state.phase, this.#autoTried);
+    this.#autoTried = true;
+    if (go) await this.start();
   }
 
   /**

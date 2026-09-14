@@ -12,6 +12,7 @@ import {
   progressAt,
   sayHit,
   sayResults,
+  shouldAutoConnect,
   worthRetrying,
   worthSearching,
   RETRY_DELAYS,
@@ -485,5 +486,39 @@ describe("trying again at bringing the receiver up", () => {
     const worst = attempts * 30_000 + RETRY_DELAYS.reduce((a, b) => a + b, 0);
     expect(attempts).toBe(3);
     expect(worst).toBeLessThanOrEqual(97_000);
+  });
+});
+
+describe("connecting without being asked", () => {
+  /* The wall brings the receiver up itself, so every one of these is a way an
+     unprompted act becomes an annoying one. */
+
+  test("a stored credential and no session is the whole of the case", () => {
+    expect(shouldAutoConnect(true, "off", false)).toBe(true);
+  });
+
+  test("nothing to connect with means nothing happens", () => {
+    /* The unasked act would be *opening a browser*, which a widget may not do
+       to you. This is the difference between connecting and signing in. */
+    expect(shouldAutoConnect(false, "off", false)).toBe(false);
+  });
+
+  test("it never lands on a session that is already up or on its way", () => {
+    for (const phase of ["idle", "playing", "paused", "opening", "linking"] as const) {
+      expect(shouldAutoConnect(true, phase, false)).toBe(false);
+    }
+  });
+
+  test("a fault is not retried from here", () => {
+    /* `#bringUp` has already spent its three attempts by the time a fault is
+       drawn. The buttons under it are the way back, and they are a person's. */
+    expect(shouldAutoConnect(true, "fault", false)).toBe(false);
+  });
+
+  test("once per launch, not once per mount", () => {
+    /* The bug this forbids: scrolling the widget off the wall and back
+       re-wires the deck, and a second unprompted connect would restart a
+       player that had been deliberately stopped. */
+    expect(shouldAutoConnect(true, "off", true)).toBe(false);
   });
 });
