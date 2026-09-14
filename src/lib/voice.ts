@@ -908,10 +908,23 @@ export function territoriesIn(utterance: string, wall: Wall): VoiceTerritory[] {
 export const WALL_NAMES = ["volery", "skein", "wall", "studio"];
 
 /** What people put in front of a name without meaning anything by it. */
-const HAILS = ["hey", "hi", "hello", "ok", "okay", "yo", "um", "uh"];
+const HAILS = [
+  "hey", "hi", "hello", "ok", "okay", "yo", "um", "uh",
+  /* fr — "eh" and "euh" are the two a French mouth puts in front of a name
+     without meaning anything by them, and "dis" is how you get somebody's
+     attention before saying theirs. */
+  "eh", "euh", "bon", "dis", "salut",
+];
 
 /** What people put after one, before getting to the point. */
-const AFTER_ADDRESS = ["please", "could you", "can you", "would you"];
+const AFTER_ADDRESS = [
+  "please", "could you", "can you", "would you",
+  /* fr. `wordAt` bounds every one of these, so "peux-tu" cannot eat the front of
+     "peux-tu me dire" — which is the bug the English half of this list shipped
+     with for one commit. */
+  "s'il te plaît", "s'il vous plaît", "stp", "svp", "peux-tu", "peux tu",
+  "pourrais-tu", "pourrais tu", "tu peux",
+];
 
 /** Who an utterance was addressed to. */
 export type Addressee =
@@ -1102,13 +1115,31 @@ export function messageTo(cards: VoiceCard[], text: string, wall: Wall): Plan | 
  * address gate like any other.
  */
 
+/* **Both languages at once, in one list, rather than a list per language.**
+ * The recogniser is told which language to listen in and the answer comes back
+ * in that one — so a list chosen by the setting would be *correct* and would
+ * also be the thing that goes wrong when the setting and the mouth disagree,
+ * which on a bilingual wall is most of the time. These are exact, whole-utterance
+ * matches on short words, and no word below is a whole utterance in the other
+ * language by accident: none of them collide, and a French "non" said into an
+ * English recogniser comes back as something else entirely anyway.
+ *
+ * The cost of being wrong is asymmetric and the lists are built for it. A missed
+ * yes costs you saying it again; a missed *no* leaves a plan armed. So the no
+ * list is the more generous of the two and always has been. */
 const YES = [
   "yes", "yeah", "yep", "yup", "aye", "ok", "okay", "go ahead", "do it", "go on",
   "please do", "confirm", "sure",
+  /* fr */
+  "oui", "ouais", "ouaip", "vas-y", "vas y", "allez", "allez-y", "allez y",
+  "d'accord", "daccord", "confirme", "fais-le", "fais le", "c'est bon", "ça marche",
 ];
 const NO = [
   "no", "nope", "nah", "cancel", "never mind", "nevermind", "forget it", "stop",
   "dont", "don't", "do not", "dismiss", "no thanks",
+  /* fr */
+  "non", "annule", "annuler", "laisse tomber", "oublie", "oublie ça", "arrête",
+  "arrete", "arrêt", "surtout pas", "non merci", "pas ça",
 ];
 
 /** A spoken yes or no, or null for anything that is neither. */

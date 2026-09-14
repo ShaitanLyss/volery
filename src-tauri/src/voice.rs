@@ -200,8 +200,8 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
 use sherpa_onnx::{
-    OfflineModelConfig, OfflineMoonshineModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
-    SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
+    OfflineCanaryModelConfig, OfflineModelConfig, OfflineMoonshineModelConfig, OfflineRecognizer,
+    OfflineRecognizerConfig, SileroVadModelConfig, VadModelConfig, VoiceActivityDetector,
 };
 use tauri::{Emitter, Manager};
 
@@ -274,67 +274,192 @@ pub struct Heard {
 /// shape that describes the wrong recogniser.
 #[derive(Debug, Serialize)]
 pub struct Hearing {
-    /// The one language the installed model transcribes. A statement about
-    /// moonshine-base-**en**, not a setting.
+    /// The language this answer is about — the one that was asked after, or the
+    /// default. No longer a statement about what the build can do: that is
+    /// `languages`, and the difference is the whole of what a picker needs.
     pub language: String,
-    /// Whether the weights are already on disk. `false` means the first listen
-    /// will spend a while fetching before it can hear anything, which is worth
-    /// being able to say *before* somebody holds the key down.
+    /// Whether *that language's* weights are already on disk. `false` means the
+    /// first listen in it will spend a while fetching before it can hear
+    /// anything, which is worth being able to say before somebody speaks.
     pub ready: bool,
-    /// Roughly what is still to fetch, in megabytes. Zero when `ready`.
+    /// Roughly what is still to fetch for it, in megabytes. Zero when `ready`.
     pub to_fetch_mb: u64,
     /// The input device that would be used, when there is one.
     pub device: Option<String>,
+    /// Every language any installable engine transcribes, lowercase two-letter,
+    /// in the order a picker should offer them. This is the list the front end
+    /// draws; nothing here decides which of them a person wants.
+    pub languages: Vec<String>,
 }
 
-/* ── the models ───────────────────────────────────────────────────────────── */
+/* ── which recogniser, and what it speaks ─────────────────────────────────────
+ *
+ * **One table, because "listen in French" is a *setting* and not a fork.** The
+ * first version of this file had one model and a function called `english_only`
+ * that refused everything else by name, which was honest about a build that
+ * could do one thing. A second language is not a second code path: it is a
+ * second row here, a different set of weights on disk, and the same loop.
+ *
+ * The row that answers is chosen by language, and a **specialist wins over a
+ * generalist** — the engine that speaks only your language was trained for it
+ * and is what the numbers in the header were taken against. That rule is the
+ * whole of `engine_for`, and it is the rule rather than a list of preferences
+ * so that adding a row cannot quietly re-point a language somebody measured.
+ */
 
-/// The moonshine release unpacks to a directory of this name; the four weights
-/// plus the token table inside it are what the recogniser is handed.
-const MOONSHINE: &str = "sherpa-onnx-moonshine-base-en-int8";
-const MOONSHINE_ARCHIVE: &str = "sherpa-onnx-moonshine-base-en-int8.tar.bz2";
 const SILERO: &str = "silero_vad.onnx";
 /// sherpa publishes models under one long-lived tag rather than per release.
 const MODEL_BASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models";
-/// What the fetch costs, so there is something to say before it is spent.
-const MOONSHINE_MB: u64 = 286;
 
-/// Where the weights live, and whether they are all there.
-struct Models {
-    preprocessor: PathBuf,
-    encoder: PathBuf,
-    uncached_decoder: PathBuf,
-    cached_decoder: PathBuf,
+/// How a family of weights is put together, which decides which config the
+/// recogniser is built with and which files have to be on disk.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shape {
+    /// preprocess + encode + two decoders. English only, and the decoders are
+    /// why it is 287MB for a 62M-parameter model.
+    Moonshine,
+    /// encoder + decoder, with the language as a runtime argument.
+    Canary,
+}
+
+/// One installable recogniser, as data.
+#[derive(Debug)]
+pub struct Engine {
+    /// What a setting stores and a probe names on the command line.
+    pub id: &'static str,
+    /// The release archive, less `.tar.bz2` — which is also the directory it
+    /// unpacks to, because that is how sherpa names them.
+    pub archive: &'static str,
+    /// What the fetch costs, so there is something to say before spending it.
+    pub mb: u64,
+    /// The languages it transcribes, lowercase two-letter. **The first is what
+    /// it is best at**, and that is what makes a specialist beat a generalist
+    /// in `engine_for` rather than a separate ranking nobody would maintain.
+    pub speaks: &'static [&'static str],
+    pub shape: Shape,
+}
+
+/// Every recogniser this build knows how to install.
+///
+/// Two rows, and the second one is why this is a table:
+///
+/// - **moonshine-base-en** — English only, 287MB on disk, and the engine every
+///   number in the header was measured against (RTF 0.15–0.28 on this CPU).
+/// - **canary-180m-flash** — en, fr, de, es in one 207MB model, with the
+///   language as a runtime argument rather than a download. Three times the
+///   parameters of moonshine in fewer bytes, because moonshine ships its decoder
+///   twice (`cached_decode` 100MB + `uncached_decode` 122MB) and this ships one.
+///   **Which says nothing about how fast it is here**, and that is the column
+///   that decides: the header's table already rejected a *larger* model for an
+///   RTF of 1.8–2.9. See the measurement beside it.
+pub const ENGINES: &[Engine] = &[
+    Engine {
+        id: "moonshine-base-en",
+        archive: "sherpa-onnx-moonshine-base-en-int8",
+        mb: 286,
+        speaks: &["en"],
+        shape: Shape::Moonshine,
+    },
+    Engine {
+        id: "canary-180m-flash",
+        archive: "sherpa-onnx-nemo-canary-180m-flash-en-es-de-fr-int8",
+        mb: 154,
+        speaks: &["en", "fr", "de", "es"],
+        shape: Shape::Canary,
+    },
+];
+
+/// The two-letter code inside whatever a caller asked for: `fr-FR` → `fr`.
+///
+/// Lenient about the shape because a language tag arrives from three places
+/// that spell it differently — a settings row, the OS, and whatever somebody
+/// typed — and every one of them means the same first two letters.
+pub fn tongue(language: &str) -> String {
+    language
+        .trim()
+        .to_ascii_lowercase()
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Which engine answers for a language, or a refusal naming what is available.
+///
+/// **A specialist beats a generalist**, by the first entry of `speaks`. So
+/// English stays on moonshine — which is what the header's numbers describe and
+/// what a wall that never asked for a second language keeps using — and French
+/// goes to canary without either decision being written down twice.
+pub fn engine_for(language: &str) -> Result<&'static Engine, String> {
+    let want = tongue(language);
+    if let Some(e) = ENGINES.iter().find(|e| e.speaks.first() == Some(&want.as_str())) {
+        return Ok(e);
+    }
+    if let Some(e) = ENGINES.iter().find(|e| e.speaks.contains(&want.as_str())) {
+        return Ok(e);
+    }
+    Err(format!(
+        "nothing here transcribes {language} — this build can listen in {}",
+        languages().join(", ")
+    ))
+}
+
+/// Every language any row speaks, in the order a picker should offer them.
+///
+/// Deduplicated by first appearance, so the specialists lead and the order is a
+/// property of the table rather than of a sort nobody can predict.
+pub fn languages() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in ENGINES {
+        for l in e.speaks {
+            if !out.iter().any(|k| k == l) {
+                out.push((*l).to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Where one engine's weights live, and whether they are all there.
+pub struct Weights {
+    engine: &'static Engine,
+    /// The files the recogniser is handed, in the order its config wants them.
+    /// Named positionally rather than by field because the two shapes disagree
+    /// about how many there are, and a struct with four `Option`s would make
+    /// every reader check which two were `None`.
+    parts: Vec<PathBuf>,
     tokens: PathBuf,
     silero: PathBuf,
 }
 
-impl Models {
+impl Weights {
     /// The layout, without asking the disk anything. Pure, so the test at the
     /// bottom can check the names against what the release actually ships.
-    fn at(dir: &Path) -> Self {
-        let m = dir.join(MOONSHINE);
+    fn of(dir: &Path, engine: &'static Engine) -> Self {
+        let m = dir.join(engine.archive);
+        let parts = match engine.shape {
+            Shape::Moonshine => vec![
+                m.join("preprocess.onnx"),
+                m.join("encode.int8.onnx"),
+                m.join("uncached_decode.int8.onnx"),
+                m.join("cached_decode.int8.onnx"),
+            ],
+            Shape::Canary => vec![m.join("encoder.int8.onnx"), m.join("decoder.int8.onnx")],
+        };
         Self {
-            preprocessor: m.join("preprocess.onnx"),
-            encoder: m.join("encode.int8.onnx"),
-            uncached_decoder: m.join("uncached_decode.int8.onnx"),
-            cached_decoder: m.join("cached_decode.int8.onnx"),
+            engine,
+            parts,
             tokens: m.join("tokens.txt"),
             silero: dir.join(SILERO),
         }
     }
 
     fn complete(&self) -> bool {
-        [
-            &self.preprocessor,
-            &self.encoder,
-            &self.uncached_decoder,
-            &self.cached_decoder,
-            &self.tokens,
-            &self.silero,
-        ]
-        .iter()
-        .all(|p| p.is_file())
+        self.parts.iter().chain([&self.tokens, &self.silero]).all(|p| p.is_file())
+    }
+
+    fn at(&self, i: usize) -> Option<String> {
+        self.parts.get(i).map(|p| p.display().to_string())
     }
 }
 
@@ -527,42 +652,54 @@ fn untar(archive: &Path, into: &Path, what: &str, say: &mut Say) -> Result<(), S
 /// That matters more than usual here: the failure it prevents is a half-written
 /// 122MB decoder, which ONNX Runtime rejects with a message about a protobuf
 /// that names nothing to do about it.
-fn ensure_models(dir: &Path, report: &dyn Fn(&str)) -> Result<Models, String> {
-    let models = Models::at(dir);
-    if models.complete() {
-        return Ok(models);
+pub fn ensure(dir: &Path, engine: &'static Engine, report: &dyn Fn(&str)) -> Result<Weights, String> {
+    let weights = Weights::of(dir, engine);
+    if weights.complete() {
+        return Ok(weights);
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
     let mut say = Say::new(report);
 
-    if !models.silero.is_file() {
-        let tmp = dir.join("silero_vad.onnx.part");
-        download(&format!("{MODEL_BASE}/{SILERO}"), &tmp, "the endpointer", &mut say)?;
-        std::fs::rename(&tmp, &models.silero).map_err(|e| format!("install {SILERO}: {e}"))?;
+    if !weights.silero.is_file() {
+        fetch_endpointer(dir, &weights.silero, &mut say)?;
     }
 
-    if !models.tokens.is_file() {
-        let archive = dir.join(MOONSHINE_ARCHIVE);
-        download(
-            &format!("{MODEL_BASE}/{MOONSHINE_ARCHIVE}"),
-            &archive,
-            "the speech model",
-            &mut say,
-        )?;
+    if !weights.tokens.is_file() {
+        let name = format!("{}.tar.bz2", engine.archive);
+        let archive = dir.join(&name);
+        download(&format!("{MODEL_BASE}/{name}"), &archive, "the speech model", &mut say)?;
         untar(&archive, dir, "the speech model", &mut say)?;
-        /* Best-effort: the archive is 200MB of no further use, but failing to
-           delete it is not a reason to fail the listen it was fetched for. */
+        /* Best-effort: the archive is no further use, but failing to delete it
+           is not a reason to fail the listen it was fetched for. */
         let _ = std::fs::remove_file(&archive);
     }
 
-    let models = Models::at(dir);
-    if !models.complete() {
+    let weights = Weights::of(dir, engine);
+    if !weights.complete() {
         return Err(format!(
-            "the speech models in {} are incomplete — delete that directory and try again",
+            "{}'s weights in {} are incomplete — delete that directory and try again",
+            engine.id,
             dir.display()
         ));
     }
-    Ok(models)
+    Ok(weights)
+}
+
+fn fetch_endpointer(dir: &Path, to: &Path, say: &mut Say) -> Result<(), String> {
+    let tmp = dir.join("silero_vad.onnx.part");
+    download(&format!("{MODEL_BASE}/{SILERO}"), &tmp, "the endpointer", say)?;
+    std::fs::rename(&tmp, to).map_err(|e| format!("install {SILERO}: {e}"))
+}
+
+/// The endpointer alone, for something that wants to bound an utterance without
+/// transcribing it. 644KB rather than the 200-odd megabytes of a recogniser.
+pub fn ensure_endpointer(dir: &Path, report: &dyn Fn(&str)) -> Result<Weights, String> {
+    let weights = Weights::of(dir, &ENGINES[0]);
+    if !weights.silero.is_file() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("make {}: {e}", dir.display()))?;
+        fetch_endpointer(dir, &weights.silero, &mut Say::new(report))?;
+    }
+    Ok(weights)
 }
 
 /* ── the microphone ───────────────────────────────────────────────────────── */
@@ -706,44 +843,58 @@ fn resample(block: &[f32], from: u32) -> Vec<f32> {
 
 /* ── listening ────────────────────────────────────────────────────────────── */
 
-/// The engine is English-only, so a request for anything else is refused in
-/// words rather than answered with confident nonsense.
-fn english_only(language: &str) -> Result<(), String> {
-    if language.to_ascii_lowercase().starts_with("en") {
-        return Ok(());
-    }
-    Err(format!(
-        "the installed model transcribes English only, and {language} was asked for — \
-         moonshine-base-en is what this build downloads, and a multilingual model \
-         is a different set of weights and a different decision"
-    ))
-}
-
-fn build_recognizer(m: &Models) -> Result<OfflineRecognizer, String> {
-    let mut config = OfflineRecognizerConfig::default();
-    config.model_config = OfflineModelConfig {
-        moonshine: OfflineMoonshineModelConfig {
-            preprocessor: Some(m.preprocessor.display().to_string()),
-            encoder: Some(m.encoder.display().to_string()),
-            uncached_decoder: Some(m.uncached_decoder.display().to_string()),
-            cached_decoder: Some(m.cached_decoder.display().to_string()),
-            merged_decoder: None,
-        },
-        tokens: Some(m.tokens.display().to_string()),
+pub fn build_recognizer(w: &Weights, language: &str) -> Result<OfflineRecognizer, String> {
+    let mut model = OfflineModelConfig {
+        tokens: Some(w.tokens.display().to_string()),
         /* Four is what the measurements in the header were taken with, on a
            machine that was already busy. More is not obviously better here —
            the wall has a dozen other cards wanting the same cores. */
         num_threads: 4,
         ..Default::default()
     };
+    match w.engine.shape {
+        Shape::Moonshine => {
+            model.moonshine = OfflineMoonshineModelConfig {
+                preprocessor: w.at(0),
+                encoder: w.at(1),
+                uncached_decoder: w.at(2),
+                cached_decoder: w.at(3),
+                merged_decoder: None,
+            }
+        }
+        Shape::Canary => {
+            let said = tongue(language);
+            model.canary = OfflineCanaryModelConfig {
+                encoder: w.at(0),
+                decoder: w.at(1),
+                /* **Both, and the same**, which is the whole of the difference
+                   between transcribing and translating: canary takes a source
+                   and a target language, and a target that is not the source
+                   hands back the sentence *in another language*. A wall that
+                   silently translated what you said into English would be a
+                   misparse nobody could diagnose, since the words would be
+                   perfectly good ones. */
+                src_lang: Some(said.clone()),
+                tgt_lang: Some(said),
+                /* Punctuation and capitals. Free here, and worth having: the
+                   grammar lowercases anyway, `spoken()` strips separators, and
+                   the steward reads a sentence better with its commas. */
+                use_pnc: true,
+            }
+        }
+    }
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config = model;
     OfflineRecognizer::create(&config).ok_or_else(|| {
-        "could not load the speech model — try deleting the speech directory in the app's \
-         data folder so it is fetched again"
-            .into()
+        format!(
+            "could not load {} — try deleting the speech directory in the app's data folder \
+             so it is fetched again",
+            w.engine.id
+        )
     })
 }
 
-fn build_vad(m: &Models) -> Result<VoiceActivityDetector, String> {
+fn build_vad(m: &Weights) -> Result<VoiceActivityDetector, String> {
     let config = VadModelConfig {
         silero_vad: SileroVadModelConfig {
             model: Some(m.silero.display().to_string()),
@@ -801,7 +952,7 @@ fn hear_loop(
     stop: &dyn Fn() -> bool,
     once: bool,
 ) -> Result<(), String> {
-    english_only(language)?;
+    let engine = engine_for(language)?;
 
     /* The very first listen ever made pays for ~286MB, and a bar that reads
        "listening…" for several minutes is indistinguishable from one that is
@@ -815,14 +966,15 @@ fn hear_loop(
        a real if small abuse of the field, and it is bounded: the first decoded
        segment overwrites it, the final transcript overwrites it, and nothing
        downstream ever acts on a hypothesis. */
-    if !Models::at(models_dir).complete() {
+    if !Weights::of(models_dir, engine).complete() {
         partial(&format!(
-            "fetching the speech model, about {MOONSHINE_MB}MB — first run only"
+            "fetching {}, about {}MB — first run only",
+            engine.id, engine.mb
         ));
     }
 
-    let models = ensure_models(models_dir, partial)?;
-    let recognizer = build_recognizer(&models)?;
+    let models = ensure(models_dir, engine, partial)?;
+    let recognizer = build_recognizer(&models, language)?;
     let vad = build_vad(&models)?;
 
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
@@ -1038,6 +1190,155 @@ fn outcome(text: String, language: &str, ms: u64) -> Result<Heard, String> {
     })
 }
 
+/// Record one utterance to a wav file, bounded the way the wall bounds one.
+///
+/// **This exists so a measurement can be repeated**, and that is the whole of
+/// its justification for sitting in a file that is otherwise the app's. Every
+/// number in the table at the top of this file was taken against Windows TTS
+/// clips — no room tone, no accent, no disfluency — and that file's own comment
+/// says so and calls them upper bounds. The honest number needs the person, the
+/// room and the microphone that will actually be used, and a person cannot be
+/// put in a test. What they *can* do is speak once into `voice-probe -- record`,
+/// after which the clip is a file and the measurement is as repeatable as any
+/// other.
+///
+/// Bounded by the same VAD and the same `TRAILING_SILENCE` as `hear_loop`, so
+/// what lands on disk is what the recogniser would have been handed rather than
+/// an approximation of it. No ASR model is loaded and none is fetched: this
+/// needs the endpointer and nothing else.
+pub fn record(models_dir: &Path, out: &Path, report: &dyn Fn(&str)) -> Result<f32, String> {
+    let weights = ensure_endpointer(models_dir, report)?;
+    let vad = build_vad(&weights)?;
+
+    let (tx, rx) = mpsc::channel::<Vec<f32>>();
+    let capture = open_microphone(tx)?;
+    report("listening — speak, and stop when you are done");
+
+    let began = Instant::now();
+    let mut frame: Vec<f32> = Vec::with_capacity(WINDOW * 2);
+    let mut kept: Vec<f32> = Vec::new();
+    let mut heard_speech = false;
+    let mut last_voice = Instant::now();
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(block) => {
+                let block = mono(&block, capture.channels);
+                let at = resample(&block, capture.rate);
+                /* Everything is kept, not only the voiced frames: the leading
+                   and trailing quiet is part of what the recogniser hears, and a
+                   clip trimmed to the speech would measure a different problem
+                   from the one the wall has. */
+                kept.extend_from_slice(&at);
+                frame.extend_from_slice(&at);
+                while frame.len() >= WINDOW {
+                    let rest = frame.split_off(WINDOW);
+                    vad.accept_waveform(&frame);
+                    frame = rest;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+
+        if vad.detected() || !vad.is_empty() {
+            if !heard_speech {
+                heard_speech = true;
+                report("…");
+            }
+            last_voice = Instant::now();
+        }
+        while !vad.is_empty() {
+            vad.pop();
+        }
+
+        if heard_speech && last_voice.elapsed() >= TRAILING_SILENCE {
+            break;
+        }
+        if !heard_speech && began.elapsed() >= ONSET_PATIENCE {
+            return Err("nothing was said".into());
+        }
+        if began.elapsed() >= MAX_UTTERANCE {
+            break;
+        }
+    }
+
+    let seconds = kept.len() as f32 / RATE as f32;
+    if !sherpa_onnx::write(&out.to_string_lossy(), &kept, RATE as i32) {
+        return Err(format!("could not write {}", out.display()));
+    }
+    Ok(seconds)
+}
+
+/// Decode one wav with a named engine, and say what it cost.
+///
+/// The probe's other half: a clip in, a transcript and a real-time factor out.
+/// **`rtf` is the column that decides an engine** — the header's table rejected
+/// a model at 1.8–2.9 because it cannot keep up with a live microphone — and it
+/// is a property of this CPU rather than of the model, which is why it is
+/// measured here rather than read off a leaderboard.
+pub fn decode(
+    models_dir: &Path,
+    language: &str,
+    wav: &Path,
+    /* Which engine, when the question is *these two on the same words* rather
+       than "what would the wall do". `engine_for` answers the second; a
+       comparison needs the first, and without it the specialist rule makes
+       canary-on-English unaskable — which is precisely the row the header's
+       table needs before it can drop a second engine. */
+    engine: Option<&str>,
+    report: &dyn Fn(&str),
+) -> Result<Decoded, String> {
+    let clip = sherpa_onnx::Wave::read(&wav.to_string_lossy())
+        .ok_or_else(|| format!("could not read {}", wav.display()))?;
+    /* Brought to the rate the models want rather than refused at the door: the
+       clips a release ships for testing are whatever rate they were recorded at
+       — canary's own are 22050Hz — and the capture path already resamples every
+       block it reads, so measuring through the same function is measuring the
+       same pipeline rather than being fussy about a file. */
+    let samples = resample(clip.samples(), clip.sample_rate() as u32);
+
+    let engine = match engine {
+        Some(id) => ENGINES
+            .iter()
+            .find(|e| e.id == id)
+            .ok_or_else(|| format!("no engine called {id}"))?,
+        None => engine_for(language)?,
+    };
+    let loading = Instant::now();
+    let weights = ensure(models_dir, engine, report)?;
+    let recognizer = build_recognizer(&weights, language)?;
+    let load_ms = loading.elapsed().as_millis() as u64;
+
+    let audio_ms = (samples.len() as f64 / RATE as f64 * 1000.0) as u64;
+    let decoding = Instant::now();
+    let text = transcribe(&recognizer, &samples);
+    let decode_ms = decoding.elapsed().as_millis() as u64;
+
+    Ok(Decoded {
+        engine: engine.id.to_string(),
+        text,
+        load_ms,
+        decode_ms,
+        audio_ms,
+        rtf: decode_ms as f32 / audio_ms.max(1) as f32,
+    })
+}
+
+/// One clip, decoded, with what it cost.
+#[derive(Debug)]
+pub struct Decoded {
+    pub engine: String,
+    pub text: String,
+    /// How long the weights took to load, which is paid once per process.
+    pub load_ms: u64,
+    pub decode_ms: u64,
+    pub audio_ms: u64,
+    /// `decode_ms / audio_ms`. Above 1.0 and the engine falls behind a live
+    /// microphone faster than you can speak.
+    pub rtf: f32,
+}
+
 /* ── the wall listens ─────────────────────────────────────────────────────────
  *
  * `docs/VOICE.md`'s Design 3: no key, a microphone that is simply open, and a
@@ -1139,7 +1440,16 @@ pub struct Listening {
 /// Idempotent. Asking for an ear that is already open is not an error, because
 /// the honest answer to *listen to me* from something already listening is yes.
 #[tauri::command]
-pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<bool, String> {
+pub fn voice_open(
+    app: tauri::AppHandle,
+    ear: tauri::State<'_, Ear>,
+    language: Option<String>,
+) -> Result<bool, String> {
+    /* Refused here rather than inside the thread, so "this build does not speak
+       Portuguese" arrives as the command failing rather than as an ear that
+       opens, says nothing, and closes again a moment later. */
+    let language = language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
+    engine_for(&language)?;
     let dir = models_dir(&app)?;
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -1183,7 +1493,7 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
         let flag = stop.clone();
         let out = hear_loop(
             &dir,
-            DEFAULT_LANGUAGE,
+            &language,
             &move |words| {
                 let _ = guessed.emit("voice:hypothesis", words.to_string());
             },
@@ -1285,16 +1595,18 @@ pub fn voice_ear(ear: tauri::State<'_, Ear>) -> bool {
 }
 
 /// What the recogniser could do, without opening the microphone.
-pub fn hearing(models_dir: &Path) -> Result<Hearing, String> {
-    let ready = Models::at(models_dir).complete();
+pub fn hearing(models_dir: &Path, language: &str) -> Result<Hearing, String> {
+    let engine = engine_for(language)?;
+    let ready = Weights::of(models_dir, engine).complete();
     let device = cpal::default_host()
         .default_input_device()
         .and_then(|d| d.name().ok());
     Ok(Hearing {
-        language: DEFAULT_LANGUAGE.to_string(),
+        language: language.to_string(),
         ready,
-        to_fetch_mb: if ready { 0 } else { MOONSHINE_MB },
+        to_fetch_mb: if ready { 0 } else { engine.mb },
         device,
+        languages: languages(),
     })
 }
 
@@ -1316,9 +1628,13 @@ fn models_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 /// What the recogniser can do, before anything is held down.
 #[tauri::command]
-pub async fn voice_hearing(app: tauri::AppHandle) -> Result<Hearing, String> {
+pub async fn voice_hearing(
+    app: tauri::AppHandle,
+    language: Option<String>,
+) -> Result<Hearing, String> {
+    let language = language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
     let dir = models_dir(&app)?;
-    crate::off_main(move || hearing(&dir)).await?
+    crate::off_main(move || hearing(&dir, &language)).await?
 }
 
 /// Listen for one utterance and hand back what was said.
@@ -1367,14 +1683,14 @@ mod tests {
     #[test]
     fn the_default_language_is_not_the_system_one() {
         /* Not a tautology — it is the whole of why this constant exists. The
-           wall's verbs are English and the OS's speech language is whatever it
-           is this week (`fr-FR` on 2026-09-06, `en-US` on 2026-09-08, with
-           nobody touching it in between), so a recogniser left to itself could
-           hand back words no rung can parse — and that fails as "it hears me
-           and nothing happens". The engine being English-only settles the
-           question rather than making the constant pointless. */
+           OS's speech language is whatever it is this week (`fr-FR` on
+           2026-09-06, `en-US` on 2026-09-08, with nobody touching it in
+           between), and a value that moves under you between two probes is not
+           one to inherit silently. It is a *default* rather than a limit now:
+           `engine_for` answers in four languages, and which one a person wants
+           is a setting rather than a guess made from the OS. */
         assert_eq!(DEFAULT_LANGUAGE, "en-US");
-        assert!(english_only(DEFAULT_LANGUAGE).is_ok());
+        assert!(engine_for(DEFAULT_LANGUAGE).is_ok());
     }
 
     #[test]
@@ -1411,38 +1727,88 @@ mod tests {
     }
 
     #[test]
-    fn a_language_this_model_cannot_speak_is_refused_by_name() {
+    fn a_language_nothing_here_speaks_is_refused_by_name() {
         /* The property: it names the language that was asked for and says what
-           is installed, rather than transcribing French as though it were
-           English and handing back words nobody said. */
-        let said = english_only("fr-FR").expect_err("french is not available");
-        assert!(said.contains("fr-FR"), "{said}");
-        assert!(said.contains("English"), "{said}");
+           this build *can* do, rather than transcribing Portuguese as though it
+           were English and handing back words nobody said. */
+        let said = engine_for("pt-BR").expect_err("portuguese is not available");
+        assert!(said.contains("pt-BR"), "{said}");
+        assert!(said.contains("fr"), "{said}");
+    }
+
+    #[test]
+    fn a_tag_is_read_down_to_the_language_in_it() {
+        /* Three places spell a language tag differently — a settings row, the
+           OS, and whatever somebody typed — and all of them mean the first two
+           letters. */
+        for tag in ["fr", "fr-FR", "fr_FR", "FR-fr", " fr-CA "] {
+            assert_eq!([tag, &tongue(tag)], [tag, "fr"]);
+        }
+    }
+
+    #[test]
+    fn a_specialist_answers_before_a_generalist() {
+        /* English is spoken by both rows, and the one that speaks *only*
+           English is the one every number in this file's header was measured
+           against. A wall that never asked for a second language must not have
+           its recogniser changed underneath it by a row added for somebody
+           else's — so the rule is the order of `speaks`, not the order of the
+           table, and adding a third row cannot re-point a measured language. */
+        assert_eq!(engine_for("en-US").expect("english").id, "moonshine-base-en");
+        assert_eq!(engine_for("en").expect("english").id, "moonshine-base-en");
+        /* And the language the user asked for this whole feature. */
+        assert_eq!(engine_for("fr-FR").expect("french").id, "canary-180m-flash");
+        assert_eq!(engine_for("de").expect("german").id, "canary-180m-flash");
+    }
+
+    #[test]
+    fn every_language_offered_is_a_language_something_speaks() {
+        /* The picker draws `languages()`, so an entry it cannot resolve is a
+           choice that fails after it is made. */
+        let offered = languages();
+        assert!(offered.contains(&"en".to_string()), "{offered:?}");
+        assert!(offered.contains(&"fr".to_string()), "{offered:?}");
+        for l in &offered {
+            assert!(engine_for(l).is_ok(), "offered but unanswerable: {l}");
+        }
+        /* English first, because the specialists lead — which is what makes the
+           order a property of the table rather than of a sort. */
+        assert_eq!(offered.first().map(String::as_str), Some("en"));
     }
 
     #[test]
     fn the_files_opened_are_the_files_the_release_ships() {
-        /* The test that would catch a rename inside the archive without
-           anybody having to hold a microphone. These five names were read off
-           the extracted release directory on 2026-09-09. */
-        let m = Models::at(Path::new("/models"));
-        for p in [
-            &m.preprocessor,
-            &m.encoder,
-            &m.uncached_decoder,
-            &m.cached_decoder,
-            &m.tokens,
-        ] {
+        /* The test that would catch a rename inside an archive without anybody
+           having to hold a microphone. Moonshine's five names were read off the
+           extracted release directory on 2026-09-09, canary's three on
+           2026-09-15 — both by unpacking the real archive and listing it. */
+        let moonshine = Weights::of(Path::new("/models"), &ENGINES[0]);
+        assert_eq!(moonshine.parts.len(), 4);
+        for p in moonshine.parts.iter().chain([&moonshine.tokens]) {
             assert!(
-                p.to_string_lossy().contains(MOONSHINE),
-                "moonshine files live inside the extracted directory: {}",
+                p.to_string_lossy().contains(ENGINES[0].archive),
+                "an engine's files live inside its own extracted directory: {}",
                 p.display()
             );
         }
-        assert!(m.encoder.to_string_lossy().ends_with("encode.int8.onnx"));
-        /* Silero sits beside that directory rather than inside it — separate
-           download, separate model, and it survives deleting the other. */
-        assert!(!m.silero.to_string_lossy().contains(MOONSHINE));
+        assert!(moonshine.at(1).unwrap().ends_with("encode.int8.onnx"));
+
+        let canary = Weights::of(Path::new("/models"), &ENGINES[1]);
+        assert_eq!(canary.parts.len(), 2);
+        assert!(canary.at(0).unwrap().ends_with("encoder.int8.onnx"));
+        assert!(canary.at(1).unwrap().ends_with("decoder.int8.onnx"));
+        assert!(canary.tokens.to_string_lossy().contains(ENGINES[1].archive));
+
+        /* Silero sits beside those directories rather than inside one — it is a
+           separate download and a separate model, it is what *bounds* an
+           utterance rather than transcribing it, and it is shared by every
+           engine. Putting it under one of them would mean a second copy the day
+           a second engine was installed, and deleting that engine would take
+           the endpointer with it. */
+        for w in [&moonshine, &canary] {
+            assert!(!w.silero.to_string_lossy().contains(w.engine.archive));
+        }
+        assert_eq!(moonshine.silero, canary.silero);
     }
 
     #[test]
@@ -1479,12 +1845,17 @@ mod tests {
            every-file check rather than a directory-exists one. */
         let dir = std::env::temp_dir().join("volery-voice-test-incomplete");
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join(MOONSHINE)).expect("make the test directory");
+        for engine in ENGINES {
+            std::fs::create_dir_all(dir.join(engine.archive)).expect("make the test directory");
+        }
         std::fs::write(dir.join(SILERO), b"not really a model").expect("write silero");
-        assert!(
-            !Models::at(&dir).complete(),
-            "silero alone is not the whole set"
-        );
+        for engine in ENGINES {
+            assert!(
+                !Weights::of(&dir, engine).complete(),
+                "silero alone is not the whole set for {}",
+                engine.id
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

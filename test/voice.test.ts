@@ -816,3 +816,34 @@ describe("the address gate, against a room rather than a fixture", () => {
     expect(addressIn("untitled, stop", wall)).toBeNull();
   });
 });
+
+describe("answering in French, which is the language the wall may be listening in", () => {
+  test("oui and non are a yes and a no", () => {
+    for (const yes of ["oui", "ouais", "vas-y", "d'accord", "Confirme.", "allez-y"]) {
+      expect([yes, answeredIn(yes)]).toEqual([yes, "yes"]);
+    }
+    for (const no of ["non", "annule", "laisse tomber", "Arrête !", "oublie"]) {
+      expect([no, answeredIn(no)]).toEqual([no, "no"]);
+    }
+  });
+
+  test("the rule does not loosen for a second language", () => {
+    /* Exact and whole in French too — "oui, et dis-le à la bague aussi" is a
+       sentence, and reading a yes out of it would confirm one plan while
+       throwing away the rest of what was said. */
+    expect(answeredIn("oui et dis-le à la bague aussi")).toBeNull();
+    expect(answeredIn("non, l'autre caravane")).toBeNull();
+  });
+
+  test("a French address is stripped the way an English one is", () => {
+    const wall = WALL;
+    /* The hail, the name, and the politeness — none of which is the message. */
+    expect(addressIn("eh volery, arrête la bague", wall)?.rest).toBe("arrête la bague");
+    expect(addressIn("volery, s'il te plaît arrête", wall)?.rest).toBe("arrête");
+    /* And the word-boundary rule holds in French: "tu peux" must not eat the
+       front of "tu peux-tu"-shaped nonsense, nor "peux-tu" the front of
+       "peux-tu-bien". The real case is that a payload starting with one of
+       these words keeps it. */
+    expect(addressIn("volery, peux-tu arrêter la bague", wall)?.rest).toBe("arrêter la bague");
+  });
+});
