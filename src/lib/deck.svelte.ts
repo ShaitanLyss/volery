@@ -28,7 +28,9 @@ import {
   applyEvent,
   emptyState,
   volumeToWire,
+  worthRetrying,
   worthSearching,
+  RETRY_DELAYS,
   type SpotifyEvent,
   type SpotifyHit,
   type SpotifyState,
@@ -187,8 +189,7 @@ export class Deck {
   async link() {
     await this.#guard(async () => {
       await invoke("spotify_link");
-      await invoke("spotify_start", {});
-      await this.refresh();
+      await this.#bringUp();
     });
   }
 
@@ -221,11 +222,47 @@ export class Deck {
     });
   }
 
+  /**
+   * Bring the receiver up on the credential already in the vault — no browser
+   * and no sign-in, which is the whole difference between this and `link`.
+   *
+   * It had no caller on the wall until now. `Spotify.svelte` drew its one empty
+   * state off `phase === "off"`, which is true of every launch, and offered
+   * `link()` under it — so the saved token was never reached by any gesture a
+   * person could make, and signing in through the browser became something you
+   * did once per restart. The face now asks `linked` as well, and this is what
+   * the answer reaches.
+   */
   async start() {
-    await this.#guard(async () => {
-      await invoke("spotify_start", {});
-      await this.refresh();
-    });
+    await this.#guard(() => this.#bringUp());
+  }
+
+  /**
+   * One attempt at `spotify_start`, then up to `RETRY_DELAYS.length` more.
+   *
+   * Retried because the moment this is most likely to be pressed — the first
+   * one after a launch — is also when a VPN tunnel is least likely to be up,
+   * and `refresh_stored` reaches accounts.spotify.com before anything else
+   * happens. One transient failure there used to cost the session for the rest
+   * of the run.
+   *
+   * `worthRetrying` keeps a dead credential out of the loop, so the fault the
+   * face draws is the first one rather than the third of three identical ones.
+   * Shared with `link` on purpose: a browser sign-in that lands while the
+   * network is still settling deserves the same second chance, and two copies
+   * of a retry are two places to get the bound wrong.
+   */
+  async #bringUp() {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await invoke("spotify_start", {});
+        await this.refresh();
+        return;
+      } catch (e) {
+        if (attempt >= RETRY_DELAYS.length || !worthRetrying(String(e))) throw e;
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+      }
+    }
   }
 
   async stop() {

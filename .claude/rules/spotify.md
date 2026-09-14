@@ -199,6 +199,53 @@ reads as the app having forgotten it.
 Not the wall's own database — `store.rs` is an unencrypted SQLite file that `portage.rs`
 exports layouts out of, and a token in a column there travels with them.
 
+### And it was kept perfectly, for a verb with no button
+
+Reported 2026-09-14, in the words that matter: *"why do I have to reauthenticate spotify
+whenever I restart volery"*. Everything above was working. `cmdkey /list` showed the
+credential sitting there under `dev.skein.studio/spotify` with local-machine persistence,
+`refresh_stored` was the single rotation-safe path it had been since `f274629`, and nothing
+but the widget's own forget button has ever called `clear_at`.
+
+The fault was in the face. `Spotify.svelte` drew its empty state on `deckState.phase ===
+"off"` and wrote **"not signed in"** under it — but `phase` is folded from librespot's
+events, so `"off"` means *no session is running*, which is true of every launch of the app.
+The vault question is a different field entirely, and `deck.svelte.ts` says so where it is
+declared: *"whether there is a credential in the vault — **not** whether it still works"*.
+One branch answered with the other one's words.
+
+Then the second half, which is what made it cost something: the only button in that branch
+was `link()`, and `link()` is `spotify_link` — **the full browser leg** — before
+`spotify_start`. `start()`, the verb that spends the saved token and opens a session without
+asking anyone anything, had exactly one caller in the codebase:
+
+```
+src/lib/control.svelte.ts:2141:  if (verb === "start") await deck.start();
+```
+
+The control surface. A *card* could bring the receiver up on the stored credential; a person
+could not, because no gesture on the wall reached it. So the honest description of the bug is
+not that the token was forgotten — it is that the token was never asked for, and the one
+affordance offered instead was a browser sign-in. Once per restart, for as long as it stood.
+
+**The general shape, which is not about Spotify: a state drawn from one fact and labelled
+with another is a bug you cannot find by reading either of them.** Both halves were correct
+and commented; `phase === "off"` really is the empty case, and `linked` really is the vault.
+Only the sentence under them was wrong, and prose is the one thing no test was checking.
+Worth noticing how it hid — it presents as a *credential* failure, which sends you to
+`vault.rs`, `refresh_stored` and Spotify's rotation semantics, all of which are fine.
+
+The face now asks both, and `start()` has a button. See `#bringUp`, which is also where the
+retry went: the first press after a launch is when a VPN tunnel is least likely to be up, and
+`refresh_stored` reaches accounts.spotify.com before anything else happens — so one name that
+did not resolve used to cost the session for the rest of the run, with a browser sign-in
+again the only way out. `worthRetrying` in `spotify.ts` is a **deny**-list of the two faults a
+second attempt cannot mend (`no spotify account is linked`, `spotify would not renew the
+sign-in`, which is where `invalid_grant` lands), so a fault added to `spotify.rs` later keeps
+its retry without anyone remembering to come back here. Three attempts, `CONNECT_BUDGET` each,
+~97s worst case with `busy` held throughout — bounded on purpose, since a face that never
+stops trying is a face that can never be pressed again.
+
 ## Signing in, and the four minutes nobody could see
 
 Reported 2026-08-28, in the words that matter because they are the symptom:

@@ -141,19 +141,33 @@
 
 <div class="sp" data-layout={cfg.layout}>
   {#if deckState.phase === "off"}
-    <!-- The one case with nothing to report and something to offer. -->
+    <!-- The one case with nothing to report and something to offer — but it is
+         *two* cases, and drawing them as one is what made a saved credential
+         invisible. `phase === "off"` is "no session is running", which is true
+         of every launch; `deck.linked` is "there is a credential in the vault".
+         This branch said "not signed in" for both and offered only `link()`, so
+         the verb that uses the stored token had no button anywhere on the wall
+         and a browser sign-in was the only way back — once per restart, for as
+         long as it stood. See `deck.start`. -->
     <div class="empty">
-      <p class="say">not signed in</p>
-      <!-- Not "waiting for the browser…": this branch is only drawn *before*
-           the first event of the chain arrives, and `spotify.rs` emits
-           `linking` the moment the browser leg starts — at which point the
-           face leaves this branch and `describe` names the leg it is really
-           on. A label that guessed which leg was running is what put this
-           widget on "waiting for the browser…" long after the browser was
-           done with. -->
-      <button class="link" onclick={() => deck.link()} disabled={deck.busy}>
-        {deck.busy ? "signing in…" : "sign in to spotify"}
-      </button>
+      {#if deck.linked}
+        <p class="say">signed in — not connected</p>
+        <button class="link" onclick={() => void deck.start()} disabled={deck.busy}>
+          {deck.busy ? "connecting…" : "connect"}
+        </button>
+      {:else}
+        <p class="say">not signed in</p>
+        <!-- Not "waiting for the browser…": this branch is only drawn *before*
+             the first event of the chain arrives, and `spotify.rs` emits
+             `linking` the moment the browser leg starts — at which point the
+             face leaves this branch and `describe` names the leg it is really
+             on. A label that guessed which leg was running is what put this
+             widget on "waiting for the browser…" long after the browser was
+             done with. -->
+        <button class="link" onclick={() => deck.link()} disabled={deck.busy}>
+          {deck.busy ? "signing in…" : "sign in to spotify"}
+        </button>
+      {/if}
     </div>
   {:else}
     <div class="head">

@@ -393,6 +393,45 @@ export function sayResults(
   }
 }
 
+/* ── bringing the receiver up again ────────────────────────────────────────*/
+
+/**
+ * How long to wait before each further attempt at bringing the receiver up.
+ *
+ * Two retries and no more. `CONNECT_BUDGET` in `spotify.rs` gives one attempt
+ * 30s, so three attempts plus these gaps is a worst case of about 97 seconds —
+ * long, and `busy` is held for the whole of it, but bounded. A tunnel that has
+ * not come back inside a minute and a half is not coming back on this press,
+ * and a face that never stops trying is a face that can never be pressed again.
+ */
+export const RETRY_DELAYS = [2000, 5000]
+
+/** What a failed start must say for a second attempt to be pointless. These
+ *  are `refresh_stored`'s own words — see `spotify.rs`. */
+const FATAL = ["no spotify account is linked", "spotify would not renew the sign-in"]
+
+/**
+ * Whether a failed `spotify_start` is worth trying again.
+ *
+ * The fault this exists for is a tunnel that has not come up yet. A launch is
+ * exactly when a VPN is reconnecting, and `refresh_stored` makes its round trip
+ * to accounts.spotify.com before anything else happens — so one name that did
+ * not resolve meant no session for the rest of the run, since nothing anywhere
+ * retried and the only affordance left on the face was a browser sign-in.
+ *
+ * **The list is of what must _not_ be retried, and that direction is the whole
+ * of the design.** A credential Spotify has revoked answers `invalid_grant` in
+ * milliseconds and will answer it twice more just as fast; a vault with nothing
+ * in it cannot fill itself by being asked again. Everything else — an access
+ * point that did not answer, a session that would not open, a 30s silence — is
+ * what a second attempt is for. Enumerating the *transient* faults instead
+ * would mean any fault added to `spotify.rs` later silently losing its retry,
+ * which is this same bug wearing a different hat.
+ */
+export function worthRetrying(fault: string): boolean {
+  return !FATAL.some((f) => fault.includes(f))
+}
+
 /* ── the widget's knobs ────────────────────────────────────────────────────*/
 
 /** What the face shows. `full` wants room; `bar` is a strip you can sit on a shelf. */

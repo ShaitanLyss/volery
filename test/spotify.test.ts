@@ -12,7 +12,9 @@ import {
   progressAt,
   sayHit,
   sayResults,
+  worthRetrying,
   worthSearching,
+  RETRY_DELAYS,
   volumeFromWire,
   volumeToWire,
   type SpotifyState,
@@ -444,5 +446,44 @@ describe("searching from the wall rather than from a card", () => {
       "spotify would not renew the sign-in",
     );
     expect(sayResults("failed", 0, null)).toBe("the search did not work");
+  });
+});
+
+describe("trying again at bringing the receiver up", () => {
+  /* The strings are `spotify.rs`'s own. A test that invented its own wording
+     would pass over a predicate that matches nothing the app can actually
+     emit, which is the only way this can be wrong. */
+
+  test("a credential that cannot be mended is not asked twice", () => {
+    expect(
+      worthRetrying("no spotify account is linked — sign in from the widget on the wall"),
+    ).toBe(false);
+    expect(
+      worthRetrying("spotify would not renew the sign-in: invalid_grant: Refresh token revoked"),
+    ).toBe(false);
+  });
+
+  test("the transient faults a launch actually hits are", () => {
+    expect(worthRetrying("spotify did not answer within 30s")).toBe(true);
+    expect(
+      worthRetrying("spotify would not open a session: Tried too many access points"),
+    ).toBe(true);
+    expect(worthRetrying("could not reach spotify: dns error")).toBe(true);
+  });
+
+  test("a fault nobody has seen yet gets its second chance", () => {
+    /* The deny-list direction, asserted rather than described: a string added
+       to `spotify.rs` tomorrow must retry without anyone editing this file. */
+    expect(worthRetrying("spotify would not do something invented in 2027")).toBe(true);
+    expect(worthRetrying("")).toBe(true);
+  });
+
+  test("the whole of it stays inside a minute and a half", () => {
+    /* `CONNECT_BUDGET` is 30s an attempt and `busy` is held throughout, so the
+       bound is a promise to whoever pressed the button. */
+    const attempts = RETRY_DELAYS.length + 1;
+    const worst = attempts * 30_000 + RETRY_DELAYS.reduce((a, b) => a + b, 0);
+    expect(attempts).toBe(3);
+    expect(worst).toBeLessThanOrEqual(97_000);
   });
 });
