@@ -53,10 +53,12 @@ import {
   planOf,
   resolveCard,
   resolveTerritory,
+  spelt,
   type Plan,
   type Step,
   type Wall,
 } from "./voice";
+import { score } from "./finding";
 
 /* ── the vocabulary the steward is given ──────────────────────────────────────
  *
@@ -231,6 +233,124 @@ function opTable(): string {
   return VOCABULARY.map(
     (v) => `${v.op.padEnd(OP_W)}${v.shape.padEnd(SHAPE_W)}  ${v.says}`,
   ).join("\n");
+}
+
+/* ── the wall, cut down to what one sentence could be about ──────────────────
+ *
+ * `stewardPrompt` puts **every file of every named territory** in front of the
+ * model, and that is right for the fixture wall the probe measured on: eleven
+ * paths, so a path in the reply can be checked for membership rather than
+ * resolved, and rule 1 — *never invent a referent* — has something to be true
+ * against.
+ *
+ * It does not survive contact with a repository. `find.rs` caps a listing at
+ * **40,000** files and this tree alone is four figures, so the unnarrowed prompt
+ * is tens of thousands of tokens of path, sent on every escalated sentence, to
+ * answer *"select the auth work"*. That is money and it is latency, and it is
+ * also worse at the job: the file that was meant is in there with ten thousand
+ * that were not.
+ *
+ * So the caller hands the steward a wall whose file lists have already been cut
+ * to what this particular sentence could plausibly be about. Three properties
+ * make that safe rather than merely cheap:
+ *
+ *  - **A small territory is passed through untouched**, so the probe's fixture —
+ *    and every real territory under the cap — reaches the model byte-identically
+ *    to what scored 28/30. The narrowing can only bite where the alternative was
+ *    not sendable anyway.
+ *  - **`understand` validates against the same narrowed wall**, so a path the
+ *    model proposes is checked against the list it was actually shown. The two
+ *    must be the same object; handing the model one list and checking against
+ *    another is how a reply becomes unusable for a reason nobody can see.
+ *  - **A file left out is a refusal, never a wrong file.** The worst case is
+ *    `understand` answering *no file "x" in y* and the sentence being said
+ *    again, which is the direction this whole subsystem errs in everywhere else.
+ */
+
+/** How many of a territory's files the steward may be shown.
+ *
+ *  Sixty. Enough that a spoken path is nearly always in it — the scorer below is
+ *  the finder's own, and the finder shows five — and small enough that a
+ *  territory contributes a few hundred tokens rather than tens of thousands.
+ *  Not measured against parse quality, because the thing it replaces could not
+ *  be sent at all: the honest comparison is against a request that fails. */
+export const IN_SIGHT = 60;
+
+/** Words too short or too common to be a filename hunting for its file.
+ *
+ *  `score` matches a *subsequence*, which is generous by design — "the" is a
+ *  subsequence of a great many paths, and a sentence full of ordinary English
+ *  would otherwise fill the shortlist before the one word that named a file got
+ *  a look in. Length alone is not enough ("and", "for", "the" are three), so
+ *  there is a list, and it is deliberately tiny: every word on it is a word no
+ *  one has ever said in order to name a file. */
+const STOP = new Set([
+  "the", "and", "for", "you", "your", "with", "that", "this", "then", "them",
+  "from", "into", "over", "out", "all", "can", "are", "its", "but", "not",
+  "card", "cards", "wall", "file", "open", "show", "tell", "say", "said",
+]);
+
+/** The files of one territory worth putting in front of the steward.
+ *
+ *  Ranked by the finder's own scorer, once per word of the sentence, keeping
+ *  each file's best showing. One pass, so the cost is `files × words` calls to
+ *  `score` — which on a forty-thousand-file tree is the most expensive thing on
+ *  this path by a distance, and is still a fraction of the request it is about
+ *  to save.
+ *
+ *  The sentence is `spelt` first, because a spoken path arrives as *"markdown
+ *  dot ts"* and the file is `markdown.ts`. That is the same normalisation
+ *  `resolveFile` does one rung up, and doing it here is what lets the word that
+ *  names the file match the file. */
+export function inSight(files: string[], utterance: string, cap = IN_SIGHT): string[] {
+  /* The property the whole arrangement rests on: under the cap, nothing
+     happens. A territory small enough to send whole is sent whole, in its own
+     order, and no scorer stands between the model and the truth. */
+  if (files.length <= cap) return files;
+
+  const words = spelt(utterance)
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !STOP.has(w));
+
+  /* **A sentence that could not be naming a file is shown none**, and the empty
+     list is the honest answer rather than a shortfall. `score` matches a
+     subsequence, so a path the sentence could plausibly mean always scores
+     *something*; nothing scoring means nothing here is a candidate, and an
+     arbitrary sixty paths would be the same refusal with a decoy in front of
+     it. "stop the ring" is about a card, and the territory's line in the
+     prompt says so by carrying nothing. */
+  if (!words.length) return [];
+
+  const best = new Map<string, number>();
+  for (const file of files) {
+    let top = -Infinity;
+    for (const word of words) {
+      const hit = score(file, word);
+      if (hit && hit.score > top) top = hit.score;
+    }
+    if (top > -Infinity) best.set(file, top);
+  }
+
+  return [...best.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, cap)
+    .map(([file]) => file);
+}
+
+/** The wall as the steward should see it for this one sentence.
+ *
+ *  **Hand the same value to `stewardPrompt` and to `understand`.** They are two
+ *  halves of one claim — *here is what exists* and *you may only name what
+ *  exists* — and the claim is only true if both read the same list. */
+export function narrow(wall: Wall, utterance: string, cap = IN_SIGHT): Wall {
+  return {
+    ...wall,
+    territories: wall.territories.map((t) => ({
+      ...t,
+      files: inSight(t.files, utterance, cap),
+    })),
+  };
 }
 
 /** What the steward is told, built from the wall it is being asked about.

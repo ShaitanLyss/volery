@@ -70,6 +70,11 @@ mod smith;
 mod spawn;
 mod spotify;
 mod status;
+/* The rung under voice's grammar: a small model, spawned per escalated
+   utterance. Beside `aside` in kind — a one-shot `claude` this app waits on —
+   and deliberately not inside `voice`, which is the recogniser and nothing
+   else. */
+mod steward;
 mod store;
 mod supervisor;
 /* The IPv4-first loopback CONNECT tunnel librespot dials through. Beside
@@ -624,6 +629,7 @@ pub fn run() {
             status::claude_status,
             voice::voice_hearing,
             voice::voice_listen,
+            steward::voice_steward,
             spotify::spotify_link,
             spotify::spotify_forget,
             spotify::spotify_start,

@@ -53,21 +53,40 @@ import {
   type VoiceTerritory,
   type Wall,
 } from "./voice";
+import { narrow, replyIn, stewardPrompt, understand } from "./steward";
 
-/** What became of an utterance. */
+/** Which rung answered. Carried on every plan, because the two cost different
+ *  things and only one of them can be wrong in an interesting way. */
+export type Rung = "grammar" | "steward";
+
+/** What became of an utterance.
+ *
+ *  **`escalate` is gone, and its absence is the feature.** It used to be a
+ *  distinct outcome meaning *the grammar could not account for the whole of it*,
+ *  kept apart from a failure on the stated grounds that the day the steward
+ *  arrived, every call site would otherwise have to be re-read to find out which
+ *  one it was handling. That day is this one: escalation is now a step in the
+ *  middle of `say()` rather than a thing that comes back out of it, and every
+ *  outcome below is an answer. */
 export type Heard =
-  /** The grammar could not account for the whole of it, so it is the steward's.
-   *
-   *  There is no steward yet, so this is where the ladder currently stops. It is
-   *  a distinct outcome rather than a failure on purpose: *escalate* and *did
-   *  not understand* are the same shape from outside and must not become the
-   *  same value, or the day the steward arrives every call site has to be
-   *  re-read to find out which one it was handling. */
-  | { kind: "escalate"; said: string }
   /** Understood, and not run: at least one step is not something you may do to
    *  the wall without being asked. */
-  | { kind: "confirm"; plan: Plan }
-  | { kind: "carried"; plan: Plan; outcome: Outcome };
+  | { kind: "confirm"; plan: Plan; from: Rung }
+  | { kind: "carried"; plan: Plan; outcome: Outcome; from: Rung }
+  /** The steward could not tell which thing was meant, and says what it would
+   *  need to know. A question *to you*, and the only one here you can answer by
+   *  saying the sentence again with a name in it. */
+  | { kind: "asked"; question: string }
+  /** A fair question about the wall, which is simply not a plan — *"what is the
+   *  ring doing?"*. Nothing on this path answers one, and saying so is better
+   *  than declining it as though it had been a bad instruction. */
+  | { kind: "question"; question: string }
+  /** A remark rather than an instruction. Acting on one is the worst thing
+   *  available here, so this is the outcome to be glad of. */
+  | { kind: "declined"; why: string }
+  /** Nothing usable came of it: the steward could not be reached, or answered
+   *  something `understand` refused. Never a plan, never partly one. */
+  | { kind: "unusable"; why: string };
 
 /** One utterance as `src-tauri/src/voice.rs` hands it over.
  *
@@ -122,6 +141,16 @@ export class Voicing {
    *  result replaces it, so **nothing acts on this** — it is drawn and thrown
    *  away. It is not a setting: the off position of that knob is the bug. */
   partial = $state("");
+  /** The steward has the sentence and has not answered yet.
+   *
+   *  Its own field rather than a widening of `listening`, which is
+   *  `turns.md`'s distinction one layer down: the microphone being open and a
+   *  parse being out are two different facts, they have different shapes, and
+   *  the bar draws them differently because one of them you can still talk
+   *  into. A parse is seconds — 9.3 of them at the median — so a bar that said
+   *  nothing across it would be the "misheard and went quiet" failure with a
+   *  stopwatch on it. */
+  thinking = $state(false);
 
   /** One project's file list per root, fetched once and kept.
    *
@@ -130,6 +159,21 @@ export class Voicing {
    *  release — which is worth saying, because most classes on this wall have
    *  both. */
   #files = new Map<string, string[]>();
+
+  /** Which rung proposed the plan now waiting for a yes. Kept so `confirm` can
+   *  say the same thing `report` would have. */
+  #pendingFrom: Rung = "grammar";
+
+  /** Which utterance the bar is currently about.
+   *
+   *  **A parse outlives the gesture that started it**, by up to a minute, and
+   *  an answer that lands after you have pressed Escape must not quietly become
+   *  a plan again — `pending` is armed by Enter from anywhere, so a stale one is
+   *  a sentence you dismissed running later under a keystroke you meant for
+   *  something else. Same shape as `aside.rs`'s generation: a number, bumped by
+   *  whatever supersedes, and the late arrival checks whether it is still the
+   *  one being waited for. */
+  #gen = 0;
 
   constructor(host: ControlHost) {
     this.#host = host;
@@ -252,10 +296,96 @@ export class Voicing {
    *  looking at it — and a caller that forgot would be a broadcast to a wall of
    *  cards spawned with `--dangerously-skip-permissions`. */
   async say(utterance: string, confirmed = false): Promise<Heard> {
-    const plan = hear(utterance, await this.wallFor(utterance));
-    if (!plan) return { kind: "escalate", said: utterance };
-    if (plan.needs === "confirmation" && !confirmed) return { kind: "confirm", plan };
-    return { kind: "carried", plan, outcome: await carry(plan, this.hands()) };
+    const wall = await this.wallFor(utterance);
+    const plan = hear(utterance, wall);
+    /* The ladder, and the rule that decides the rung: the grammar answers only
+       when it can account for the entire utterance, so `null` here is *not*
+       "did not understand" — it is "this one is the steward's". */
+    if (plan) return await this.#answer(plan, "grammar", confirmed);
+    return await this.#escalate(utterance, wall, confirmed);
+  }
+
+  /** A plan, carried or held for a yes. One place, so the gate above cannot be
+   *  true of one rung and not the other. */
+  async #answer(plan: Plan, from: Rung, confirmed: boolean): Promise<Heard> {
+    if (plan.needs === "confirmation" && !confirmed) return { kind: "confirm", plan, from };
+    return { kind: "carried", plan, outcome: await carry(plan, this.hands()), from };
+  }
+
+  /** The rung underneath: a small model, the wall in its prompt, and every word
+   *  of its reply treated as a proposal rather than as a decision.
+   *
+   *  **The wall it is shown and the wall its reply is checked against are the
+   *  same value**, and that is the only thing in here worth being careful about.
+   *  `narrow` cuts each territory's file list down to what this sentence could
+   *  be about — without which the prompt carries every path in every named
+   *  repository, which is tens of thousands of tokens on every escalated
+   *  sentence — and `understand` then checks a proposed path for membership of
+   *  the list the model was actually shown. Two different lists would refuse
+   *  good replies for a reason nothing could report.
+   *
+   *  Never throws. A steward that cannot be reached is an answer — an honest
+   *  one, naming what went wrong — and the caller is a keystroke. */
+  async #escalate(utterance: string, wall: Wall, confirmed: boolean): Promise<Heard> {
+    const seen = narrow(wall, utterance);
+    this.thinking = true;
+    try {
+      const said = await invoke<string>("voice_steward", {
+        system: stewardPrompt(seen),
+        utterance,
+      });
+      const { reply } = replyIn(said);
+      const got = understand(reply, utterance, seen);
+      if (got.kind === "plan") return await this.#answer(got.plan, "steward", confirmed);
+      if (got.kind === "ask") return { kind: "asked", question: got.question };
+      if (got.kind === "question") return { kind: "question", question: got.question };
+      if (got.kind === "decline") return { kind: "declined", why: got.why };
+      return { kind: "unusable", why: got.why };
+    } catch (err) {
+      return { kind: "unusable", why: err instanceof Error ? err.message : String(err) };
+    } finally {
+      this.thinking = false;
+    }
+  }
+
+  /** What the wall says back about an utterance, and what it holds on to.
+   *
+   *  One place for the same reason `spoke()` is one place: every rung and every
+   *  entry point settles into the same four fields, and a second mapping would
+   *  be a second vocabulary for the same outcomes. Silence is never a reading —
+   *  every branch either sets `pending` or says something. */
+  report(what: Heard): void {
+    if (what.kind === "confirm") {
+      this.pending = what.plan;
+      this.#pendingFrom = what.from;
+      return;
+    }
+    if (what.kind === "carried") {
+      this.says = spoke(what.outcome);
+      /* Success says nothing, and on a plan the steward proposed that would
+         leave the bar showing only the transcript — which is indistinguishable
+         from a sentence nothing came of. The wall moved, so this is a receipt
+         rather than an announcement, and it is one line. */
+      if (!this.says && what.from === "steward") this.says = "done";
+      return;
+    }
+    if (what.kind === "asked") {
+      this.says = what.question;
+      return;
+    }
+    if (what.kind === "question") {
+      /* Kept apart from a decline on purpose: asking the wall something is one
+         of the things voice is for, and answering it needs the addressed card's
+         own transcript rather than the wall in a prompt. Saying so is the
+         honest end of this path today. */
+      this.says = "that is a question rather than an instruction, and nothing here answers one yet";
+      return;
+    }
+    if (what.kind === "declined") {
+      this.says = what.why;
+      return;
+    }
+    this.says = what.why;
   }
 
   /* ── the whole gesture, from a key to the wall moving ─────────────────────── */
@@ -275,6 +405,7 @@ export class Voicing {
    *  is a keystroke and a keystroke has nowhere to put an exception. */
   async listen(): Promise<void> {
     if (this.listening) return;
+    const gen = ++this.#gen;
     this.listening = true;
     this.said = "";
     this.says = "";
@@ -296,14 +427,13 @@ export class Voicing {
       });
       const heard = await invoke<Transcript>("voice_listen", {});
       this.said = heard.text;
+      /* `listening` goes down before the parse rather than in the `finally`,
+         because the microphone is shut by then and a pulsing ear over a parse
+         says the wrong thing about what is open. */
+      this.listening = false;
       const what = await this.say(heard.text);
-      if (what.kind === "confirm") this.pending = what.plan;
-      else if (what.kind === "escalate") {
-        /* The grammar could not account for the whole sentence, and the rung
-           underneath it does not exist yet. Said plainly rather than as a
-           failure: the words were heard, and what is missing is a feature. */
-        this.says = "not understood — only the eight instant verbs are wired so far";
-      } else this.says = spoke(what.outcome);
+      /* Dropped rather than drawn if you have moved on — see `#gen`. */
+      if (gen === this.#gen) this.report(what);
     } catch (err) {
       /* Where the privacy-policy message arrives, and every other thing the
          recogniser refuses for. `voice.rs::explain` has already turned it into
@@ -326,12 +456,16 @@ export class Voicing {
   async confirm(): Promise<void> {
     const plan = this.pending;
     if (!plan) return;
+    const from = this.#pendingFrom;
     this.pending = null;
-    this.says = spoke(await carry(plan, this.hands()));
+    this.report({ kind: "carried", plan, outcome: await carry(plan, this.hands()), from });
   }
 
   /** Let go of what was heard, and of anything waiting on a yes. */
   dismiss(): void {
+    /* Which also disowns whatever is still out: a steward answering after this
+       has nothing left to land in. */
+    this.#gen++;
     this.pending = null;
     this.said = "";
     this.says = "";
@@ -340,6 +474,6 @@ export class Voicing {
 
   /** Is there anything to draw? */
   get showing(): boolean {
-    return this.listening || !!this.pending || !!this.said || !!this.says;
+    return this.listening || this.thinking || !!this.pending || !!this.said || !!this.says;
   }
 }

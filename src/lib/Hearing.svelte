@@ -43,7 +43,15 @@
         <span class="heard">“{voicing.said}”</span>
       {/if}
 
-      {#if voicing.pending}
+      {#if voicing.thinking}
+        <!-- The parse is out. Drawn, because it is seconds long — 9.3 at the
+             median — and a bar that showed only the transcript across it would
+             be the "misheard and went quiet" failure with a stopwatch on it.
+             The mark is achromatic rather than celadon: nothing is open, and
+             colour here is reserved for status. -->
+        <span class="ear mull" aria-hidden="true"></span>
+        <span class="what">thinking…</span>
+      {:else if voicing.pending}
         <span class="reads">{voicing.pending.reads}?</span>
         <!-- Enter and Escape do these two from anywhere, and the buttons exist
              because a gesture that has no visible target is one you have to
@@ -115,6 +123,12 @@
       animation: none;
       opacity: 0.85;
     }
+  }
+
+  /* Alive, but not listening: the same one moving thing, in the chrome's own
+     ink rather than in the wall's word for "a microphone is open". */
+  .mull {
+    background: var(--paper-mute);
   }
 
   .what,

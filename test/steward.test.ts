@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  inSight,
+  narrow,
   replyIn,
   stewardPrompt,
   understand,
@@ -424,5 +426,88 @@ describe("working — the plural rule's own answer", () => {
     const stopEverything = CASES.find((c) => c.say === "stop everything");
     expect(stopEverything?.ops).toEqual(["stop", "stop", "stop"]);
     expect(stopEverything?.refs).toEqual(working(WALL));
+  });
+});
+
+describe("the wall the steward is shown, cut to one sentence", () => {
+  /** A tree big enough that sending it whole is the thing being avoided. */
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => `src/lib/gen${String(i).padStart(4, "0")}.ts`);
+
+  test("a territory small enough to send whole is not touched at all", () => {
+    /* The property the narrowing rests on: everything the probe measured, and
+       every real territory under the cap, reaches the model byte-identically.
+       Same list, same order, same object's worth of truth. */
+    const files = ["src/lib/markdown.ts", "docs/VOICE.md", "README.md"];
+    expect(inSight(files, "open readme dot md", 60)).toEqual(files);
+  });
+
+  test("over the cap, the file that was named is in what is shown", () => {
+    const files = [...many(500), "src/lib/markdown.ts"];
+    const shown = inSight(files, "open markdown dot ts in volery", 10);
+    /* Bounded, and it is the *candidates* that are bounded rather than a page of
+       them: five hundred generated paths score nothing against this sentence, so
+       one file comes back and it is the one that was said. */
+    expect(shown.length).toBeLessThanOrEqual(10);
+    expect(shown).toContain("src/lib/markdown.ts");
+  });
+
+  test("a spoken separator is resolved before anything is scored", () => {
+    /* "markdown dot ts" is three words and the file is one. Without `spelt`
+       the word that names the file never matches it, and the shortlist fills
+       with whatever "dot" happens to be a subsequence of. */
+    const files = [...many(500), "src/lib/markdown.ts"];
+    expect(inSight(files, "markdown dot ts", 3)).toContain("src/lib/markdown.ts");
+  });
+
+  test("a sentence that could not be naming a file is shown none", () => {
+    /* "stop the ring" is about a card, and no word of it is a subsequence of any
+       path — so the honest shortlist is empty. Sixty arbitrary files here would
+       be the same refusal with a decoy in front of it. */
+    expect(inSight(many(5_000), "stop the ring", 20)).toEqual([]);
+  });
+
+  test("narrow cuts every territory and leaves the cards alone", () => {
+    const wall = {
+      ...WALL,
+      territories: WALL.territories.map((t) => ({ ...t, files: [...many(200), ...t.files] })),
+    };
+    const seen = narrow(wall, "open voice dot md in volery", 5);
+    expect(seen.cards).toEqual(wall.cards);
+    for (const t of seen.territories) expect(t.files.length).toBeLessThanOrEqual(5);
+  });
+
+  test("and what it shows is what a reply is checked against", () => {
+    /* The one thing that must not drift: `stewardPrompt` and `understand` read
+       the same value, so a path the model was shown is a path it may name — and
+       one it was not shown is refused rather than resolved. */
+    const wall = {
+      ...WALL,
+      territories: WALL.territories.map((t) => ({
+        ...t,
+        files: [...many(300), ...t.files],
+      })),
+    };
+    const seen = narrow(wall, "look at voice dot md in volery", 12);
+    const shown = seen.territories.find((t) => t.project === "volery")!.files;
+    expect(shown).toContain("docs/VOICE.md");
+    expect(stewardPrompt(seen)).toContain("docs/VOICE.md");
+
+    const got = understand(
+      one("find.lookAt", { project: "volery", path: "docs/VOICE.md" }),
+      "look at voice dot md in volery",
+      seen,
+    );
+    expect(got.kind).toBe("plan");
+
+    /* And a path that exists in the tree but was cut from the list is refused,
+       because the model was never shown it — which is the direction this errs
+       in everywhere else. */
+    const cut = understand(
+      one("find.lookAt", { project: "volery", path: "src/lib/gen0000.ts" }),
+      "look at gen zero in volery",
+      seen,
+    );
+    expect(cut.kind).toBe("unusable");
   });
 });
