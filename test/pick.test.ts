@@ -1,5 +1,6 @@
 import { expect, test, describe } from "bun:test";
 import {
+  clicked,
   covered,
   dedupe,
   haulLabel,
@@ -11,6 +12,7 @@ import {
   marqueed,
   NO_PICKS,
   pressed,
+  refused,
   tapped,
   without,
   withoutKind,
@@ -106,6 +108,74 @@ describe("the two modifiers", () => {
     const after = pressed([card("a")], card("b"), { ctrl: true });
     expect(keys(tapped(after, card("b"), { ctrl: true }))).toEqual(["card:a", "card:b"]);
     expect(keys(tapped(after, card("b"), { shift: true }))).toEqual(["card:a", "card:b"]);
+  });
+
+  /* A press the wall refuses is a press and a release at once: the grip, the
+     log's text or the live page has already taken the gesture, so there is no
+     drag coming that would want a group left standing. */
+  test("a refused press inside a thing collapses to it, group or no group", () => {
+    const sel = [card("a"), card("b"), widget("w")];
+    expect(keys(clicked(sel, widget("w")))).toEqual(["widget:w"]);
+    expect(keys(clicked(sel, widget("z")))).toEqual(["widget:z"]);
+  });
+
+  test("and the modifiers still mean what they mean", () => {
+    const sel = [card("a"), widget("w")];
+    expect(keys(clicked(sel, widget("z"), { shift: true }))).toEqual([
+      "card:a",
+      "widget:w",
+      "widget:z",
+    ]);
+    /* Once each, not twice: composing press onto release must not let ctrl
+       toggle the same thing back again. */
+    expect(keys(clicked(sel, widget("w"), { ctrl: true }))).toEqual(["card:a"]);
+    expect(keys(clicked(sel, widget("z"), { ctrl: true }))).toEqual([
+      "card:a",
+      "widget:w",
+      "widget:z",
+    ]);
+  });
+
+  test("a refused press that was not on a grip is just that click", () => {
+    const sel = [card("a"), widget("w")];
+    expect(keys(refused(sel, widget("z")))).toEqual(["widget:z"]);
+    expect(keys(refused(sel, widget("z"), { shift: true }))).toEqual([
+      "card:a",
+      "widget:w",
+      "widget:z",
+    ]);
+    expect(keys(refused(sel, widget("w"), { ctrl: true }))).toEqual(["card:a"]);
+  });
+
+  /* The grip only exists while its node is picked, so a modifier that took the
+     node out of the selection would delete the element mid-gesture. Ctrl
+     therefore reads as plain there — and can only ever collapse *to* the node. */
+  test("ctrl on a grip collapses to its node instead of removing it", () => {
+    const sel = [card("a"), widget("w")];
+    expect(keys(refused(sel, widget("w"), { ctrl: true }, true))).toEqual([
+      "widget:w",
+    ]);
+    expect(keys(refused(sel, widget("w"), {}, true))).toEqual(["widget:w"]);
+  });
+
+  /* And shift is *not* dropped with it. A kanban card is a `data-grip` the size
+     of a card, and shift is the gathering gesture — this must never be the one
+     place on the wall where it costs you what you had. */
+  test("shift on a grip keeps the gathering and never removes", () => {
+    const sel = [card("a"), card("b"), widget("w")];
+    expect(keys(refused(sel, widget("w"), { shift: true }, true))).toEqual([
+      "card:a",
+      "card:b",
+      "widget:w",
+    ]);
+    /* And on a grip whose node is somehow not yet held, it adds rather than
+       replaces — the same answer shift gives everywhere else. */
+    expect(keys(refused(sel, widget("z"), { shift: true }, true))).toEqual([
+      "card:a",
+      "card:b",
+      "widget:w",
+      "widget:z",
+    ]);
   });
 
   test("a bare marquee replaces, and either modifier adds", () => {

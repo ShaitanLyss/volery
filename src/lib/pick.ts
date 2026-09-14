@@ -122,6 +122,46 @@ export function tapped(sel: readonly Pick[], on: Pick, m: Mods = {}): Pick[] {
   return [{ ...on }];
 }
 
+/** What is picked by a press that is a press and a release at once.
+ *
+ *  The case is a press the wall *refuses* — a grip, a log's text, a live page —
+ *  where the gesture belongs to whatever answered for itself, so there is no
+ *  wall drag for the press and the release to be two halves of. Composed out of
+ *  the two rather than written again, so the modifiers cannot drift apart from
+ *  the ones a plain click honours. */
+export function clicked(sel: readonly Pick[], on: Pick, m: Mods = {}): Pick[] {
+  return tapped(pressed(sel, on, m), on, m);
+}
+
+/** What a refused press means once it turns out to have been a click: `on` is
+ *  the thing it landed *inside*, and `grip` says it landed on a gesture handle
+ *  belonging to that thing — a widget's resize or take-it-down, an image's
+ *  rotate or scale, a card in a kanban column.
+ *
+ *  **A grip drops ctrl and keeps shift**, which is the whole of what this adds.
+ *  Every one of those handles is drawn only while its node is picked, so a ctrl
+ *  that toggled the node out of the selection would delete, in the same tick,
+ *  the element the press had just landed on — and its `pointermove` and
+ *  `pointerup` are handlers *on that element*, so the gesture would begin and
+ *  never hear another event. A grip is part of the thing it is on rather than a
+ *  way of picking things, so ctrl there reads as a plain press and collapses to
+ *  the node instead of removing it.
+ *
+ *  Shift is not dropped with it, and that asymmetry is the point. Shift can
+ *  never cost you something you already had — the rule this whole file rests on
+ *  — and a kanban card is a `data-grip` the size of a card rather than an 11px
+ *  corner, so shift-clicking one while gathering things up is an ordinary thing
+ *  to do. Dropping shift too would have made this the one place on the wall
+ *  where shift *removes*, and it would have thrown away the gathering. */
+export function refused(
+  sel: readonly Pick[],
+  on: Pick,
+  m: Mods = {},
+  grip = false,
+): Pick[] {
+  return clicked(sel, on, grip ? { shift: m.shift } : m);
+}
+
 /** What is picked when a marquee is let go over `hit`. */
 export function marqueed(
   sel: readonly Pick[],

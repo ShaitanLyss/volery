@@ -33,6 +33,7 @@
     haulSize,
     marqueed,
     pressed,
+    refused,
     tapped,
     type Haul,
     type Mods,
@@ -814,7 +815,10 @@
    *  `.node` ran its own `onpointerdown`, and one that travels was a drag rather
    *  than a press on the button.
    *
-   *  Two things genuinely are not the wall's, and `null` says so:
+   *  Two things genuinely are not the wall's, and `null` says so — of the
+   *  *drag*, and only of the drag. `groundDown` still settles the selection off
+   *  a refused press, through `nodeOf`, because what you are pointing at is a
+   *  question the wall answers wherever the press landed:
    *
    *  - **A grip**, marked `data-grip`. These run a gesture of their own — an
    *    image's scale and rotate, a widget's resize — and are the one case where
@@ -855,10 +859,29 @@
     ) {
       return null;
     }
-    const node = el.closest<HTMLElement>(
+    return nodeOf(el) ?? "ground";
+  }
+
+  /** Which thing standing on the wall a press landed *inside*, whatever it
+   *  landed on.
+   *
+   *  The half of `handleOf` that reads the markers, asked on its own because a
+   *  press the wall refuses is still a press somewhere — a widget's own resize
+   *  grip and the lines of a log are both inside a widget, and the selection
+   *  wants to know that even though the drag does not.
+   *
+   *  `null` here means "inside nothing", which `groundUp` reads as bare ground.
+   *  It therefore also swallows `handleOf`'s older `null`, the one that meant "I
+   *  cannot read this target at all" — harmless, since every `pointerdown`
+   *  target inside `.surface` or `.glass` is an Element and SVG elements carry
+   *  `closest` too, but the two are not the same answer and nothing here would
+   *  notice if a third kind of target ever arrived. */
+  function nodeOf(target: EventTarget | null): Pick | null {
+    const el = target as HTMLElement | null;
+    const node = el?.closest?.<HTMLElement>(
       "[data-conv], [data-image], [data-widget], [data-region]",
     );
-    if (!node) return "ground";
+    if (!node) return null;
     const d = node.dataset;
     if (d.conv) return { kind: "card", id: d.conv };
     if (d.image) return { kind: "image", id: d.image };
@@ -878,8 +901,14 @@
         moved: boolean;
         /** What the press landed on, kept for the release: a tap on bare ground
          *  lets go of everything, and a tap on a thing collapses the selection
-         *  to it. */
-        aim: Pick | "ground";
+         *  to it. `"elsewhere"` is a press the wall refused — see `refusal`. */
+        aim: Pick | "ground" | "elsewhere";
+        /** When the press was refused: which thing standing on the wall it
+         *  landed *inside*, if any, and whether it landed on that thing's own
+         *  grip. Taken at the press because it is read at the release, by which
+         *  time the pointer may be somewhere else entirely — and the element it
+         *  started on may not even be in the document any more. */
+        refusal: { on: Pick | null; grip: boolean } | null;
         mods: Mods;
         /** Which frame the press landed in. A band is a wall gesture and must
          *  not be drawn from a press on the pane: the pane's bare areas — a
@@ -948,8 +977,44 @@
       glassEl.contains(e.target)
     );
     /* A control answers for itself — except to the two buttons that pan, which
-       reach past everything on the wall by design. */
-    if (aim === null && !panning) return;
+       reach past everything on the wall by design.
+
+       The *drag* is what it answers for, though, and not the selection. A
+       territory's edge grip lies on bare ground and a log's lines lie inside a
+       widget, so a left press on either is still a press somewhere on this
+       wall — and a wall that went on drawing a band round four cards while you
+       clicked something else is a wall whose selection has stopped describing
+       what you are pointing at. Worse than untidy: the edge grip runs the whole
+       height of a territory at `Z_CARD - 1`, so on a full wall it is a strip
+       you hit by accident reaching for bare ground, and the gesture that is
+       meant to let go of everything did nothing at all.
+
+       So the refusal is narrowed to the gesture. The press is recorded as
+       `"elsewhere"` — which starts no marquee, takes hold of nothing and takes
+       no pointer capture — and the *release* settles the selection, exactly as
+       it does for the two aims beside it. What it landed inside is read now
+       rather than then, because by the release the pointer has moved and the
+       element it started on may have gone.
+
+       On the release for the reason everything here is: a press that travels
+       was a gesture rather than a change of mind. That is sharper here than on
+       bare ground — a refused press is how a territory is *resized*, and a
+       release that let go of the focused card would close the transcript
+       mid-drag, hand the panel's width back to the wall, and re-lay the whole
+       thing out from under the edge you are holding. */
+    const refusal =
+      aim === null && e.button === 0
+        ? {
+            on: nodeOf(e.target),
+            grip: !!(e.target as HTMLElement | null)?.closest?.("[data-grip]"),
+          }
+        : null;
+    if (aim === null && !panning && !refusal) return;
+    /* And a refused press never takes a gesture already running out from under
+       itself: left-press over a log while a right-button pan is live and this
+       would otherwise claim `ground` and strand the pan. `sizeDown` guards the
+       same way, for the same reason. */
+    if (refusal && ground) return;
     /* Any press ends the last gesture's claim on the menu. Without this a
        right-drag that never produced a `contextmenu` — released off the window,
        say — left the flag standing and ate the next honest right-click. */
@@ -967,7 +1032,8 @@
       sx: e.clientX,
       sy: e.clientY,
       moved: false,
-      aim: aim ?? "ground",
+      aim: aim ?? "elsewhere",
+      refusal,
       mods: modsOf(e),
       glass: onGlass,
     };
@@ -1007,8 +1073,16 @@
       }
       ground.moved = true;
       /* Now it is a drag rather than a click, so taking the pointer is safe —
-         and necessary, or a gesture that wanders off the window stops dead. */
-      if (surface && !surface.hasPointerCapture(e.pointerId)) {
+         and necessary, or a gesture that wanders off the window stops dead.
+         Never on a refused press, where there is no wall gesture to keep alive
+         and a capture here would retarget the grip's own `pointermove` and
+         `pointerup` onto the surface — which is precisely the resize this
+         press belongs to, stopped dead at its fourth pixel. */
+      if (
+        surface &&
+        !ground.refusal &&
+        !surface.hasPointerCapture(e.pointerId)
+      ) {
         surface.setPointerCapture(e.pointerId);
       }
       /* And only now does a band exist. Drawn from where the press *landed*
@@ -1049,20 +1123,31 @@
         haulUp();
       }
     } else if (g && g.button === 0) {
-      /* A press that never travelled is a click, and there are two of them.
+      /* A press that never travelled is a click, and there are three of them.
          On bare ground it lets go of everything — the gathering, the focus, and
          the panel the focus opens. On a thing it collapses the selection to
          that one thing, which is the other half of `pressed` having left a group
-         standing so it could be carried.
+         standing so it could be carried. And on something the wall refused
+         (`groundDown`), it means whichever of those two the press was really
+         aimed at: a grip or a log's lines belong to the thing they are drawn
+         inside, and a territory's edge grip belongs to nothing, so a click
+         there is a click on the ground and lets go of all three.
          On the *release* rather than on the press, and that is the older half of
          this: clearing on pointerdown meant dragging the wall to look at
          something dropped the gathering you had assembled on the way there, and
          a pan is how this wall is read rather than how you change your mind
          about it. */
-      if (g.aim === "ground") {
+      if (g.refusal) {
+        if (g.refusal.on) {
+          studio.pick(refused(studio.picks, g.refusal.on, g.mods, g.refusal.grip));
+        } else {
+          studio.clearSelection();
+          ondeselect?.();
+        }
+      } else if (g.aim === "ground") {
         studio.clearSelection();
         ondeselect?.();
-      } else {
+      } else if (g.aim !== "elsewhere") {
         studio.pick(tapped(studio.picks, g.aim, g.mods));
       }
     }

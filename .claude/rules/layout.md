@@ -327,7 +327,10 @@ chord.
 shifting under you: there is one binding whose meaning does not move, so a card that is not
 asking is still two keys away rather than unreachable until the wall goes quiet.
 
-**Letting go is a click on bare ground, or Escape** — and it drops all three things that
+**Letting go is a click on bare ground, or Escape** — or, since it was a strip people kept
+hitting by accident, a click on a territory's edge grip, which is a grip lying on bare ground
+and is handled with the rest of the refused presses in the selection section below. It drops
+all three things that
 being held consists of: the focus ring, the gathering, and the panel that the focus opens
 (`ondeselect` in `App.svelte`, which the canvas can only *report* since the focus lives up
 beside the panel). It used to drop one of them. `groundDown` cleared `studio.selected` and
@@ -431,6 +434,38 @@ every frame writes `origin + delta` for all of it. Three consequences:
   a click on it, exactly as it was when `.node` ran its own `onpointerdown`. What genuinely is
   not the wall's is a grip and an editable — a drag across `.surface input`, which keeps
   `user-select: text` for the territory's worktree field, means selecting text.
+- **What a marker refuses is the drag, and not the selection**, which is the half `handleOf`
+  used to take with it. `groundDown` returned outright on a `null`, so a left click on a
+  territory's edge grip, on the lines of a log, on the browser widget's page or on the
+  branch-name field left the selection exactly as it was. The edge grip is the one that
+  matters: it runs the full height of a territory at `Z_CARD - 1`, so on a full wall it is a
+  strip you hit *by accident* reaching for bare ground — and the one gesture that means "let go
+  of everything" did nothing at all there. The refusal is now narrowed to the gesture. `nodeOf`
+  is the marker-reading half of `handleOf` asked on its own, the press is recorded as a third
+  aim, `"elsewhere"`, and the **release** settles the selection: collapsing to whatever node it
+  landed inside, or letting go of all three things — gathering, focus and panel — if it landed
+  inside none, which is what the edge grip does since it deliberately lies on bare ground.
+  Four riders, each of which is the interesting part:
+  - **On the release, like everything else here, and it matters more.** A refused press is how
+    a territory is *resized*, so settling on `pointerdown` would close the transcript mid-drag,
+    hand the panel's width back to the wall and re-lay the whole thing out from under the edge
+    you are holding. What the press landed inside is read at the press even so, because by the
+    release the pointer has moved and the element it started on may have gone.
+  - **`"elsewhere"` starts no marquee, grabs nothing, and takes no pointer capture.** The last
+    is the sharp one: `groundMove` captures on `.surface` at the 4px mark, and a capture
+    retargets everything after it — so capturing here would take the grip's own `pointermove`
+    and `pointerup` and stop the resize dead at its fourth pixel.
+  - **A refused press never claims `ground` from a gesture already running.** Left-press over a
+    log while a right-button pan is live and it would otherwise strand the pan. Same guard
+    `sizeDown` has, for the same reason.
+  - **A grip drops ctrl and keeps shift** (`pick.ts`'s `refused`). A widget's resize and
+    take-it-down, and an image's rotate, scale and shut, are all drawn `{#if selected}` — so a
+    ctrl that toggled the node out of the selection would delete, in the same tick, the element
+    the press had just landed on, and its handlers with it. Ctrl there reads as a plain press
+    and can only ever collapse *to* the node. Shift is deliberately not dropped with it: a
+    kanban card is a `data-grip` the size of a card rather than an 11px corner, shift is the
+    gathering gesture, and dropping it would have made this the one place on the wall where
+    shift costs you what you already had.
 - **`origin + delta` rather than an accumulation** is the bargain the two old drags already
   struck, and it earns its keep twice here: a pinned card that is both selected *and* inside a
   selected territory is written by two paths in the same frame, and computing from the origin
