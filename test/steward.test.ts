@@ -521,3 +521,19 @@ describe("the wall the steward is shown, cut to one sentence", () => {
     expect(cut.kind).toBe("unusable");
   });
 });
+
+describe("the shortlist against what a recogniser actually hands over", () => {
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => `src/lib/gen${String(i).padStart(4, "0")}.ts`);
+
+  test("punctuation on a word does not cost the territory its whole list", () => {
+    /* moonshine punctuates. `score` is a subsequence match, so a full stop the
+       path does not have makes the word score nothing — and when *every* word
+       scores nothing the territory is shown no files at all, which is not a
+       shortlist missing one file, it is `understand` refusing a path that was
+       right there after a request has been paid for. */
+    const files = [...many(500), "src/lib/markdown.ts"];
+    expect(inSight(files, "Volery, open markdown.ts.", 5)).toContain("src/lib/markdown.ts");
+    expect(inSight(files, "volery, open markdown dot ts", 5)).toContain("src/lib/markdown.ts");
+  });
+});

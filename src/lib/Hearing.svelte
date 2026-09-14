@@ -45,19 +45,26 @@
         <span class="what">listening…</span>
       {/if}
     {:else}
-      {#if voicing.said}
-        <!-- Quoted, so a transcript that is itself a sentence about the wall
-             cannot be misread as the wall talking. -->
-        <span class="heard">“{voicing.said}”</span>
-      {:else if voicing.partial}
+      {#if voicing.partial}
         <!-- Words forming on the open ear, before anyone knows whether they
              were for the wall. -->
         <span class="guess">{voicing.partial}</span>
       {:else if voicing.overheard}
         <!-- Heard and not acted on, because it was not addressed to anything.
              Drawn because it is the only evidence an open microphone is alive:
-             a gate doing its job and a dead device look identical otherwise. -->
+             a gate doing its job and a dead device look identical otherwise.
+
+             **Above `said`, not below it.** `said` is the last sentence the wall
+             acted on and it is cleared by very little, so drawing it first meant
+             the room stopped being shown one utterance in — and the evidence
+             this line exists to be was gone for the rest of the session.
+             `heard()` clears `overheard` whenever it accepts something, so
+             whichever of the two is set is the later one. -->
         <span class="aside">{voicing.overheard}</span>
+      {:else if voicing.said}
+        <!-- Quoted, so a transcript that is itself a sentence about the wall
+             cannot be misread as the wall talking. -->
+        <span class="heard">“{voicing.said}”</span>
       {:else if voicing.open && !voicing.says && !voicing.pending}
         <span class="what">listening — say its name</span>
       {/if}

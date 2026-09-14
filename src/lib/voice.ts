@@ -55,6 +55,7 @@
  */
 
 import { rank, score, splitPath } from "./finding";
+import { isNamed } from "./naming";
 
 /* ── the wall, as voice sees it ───────────────────────────────────────────────
  *
@@ -952,11 +953,28 @@ function addressable(wall: Wall): { name: string; to: Addressee }[] {
   }
   for (const name of WALL_NAMES) names.push({ name, to: { kind: "wall" } });
   return names
-    .filter((n) => n.name.trim().length > 0)
+    .filter((n) => addressable_enough(n.name))
     .sort(
       (a, b) =>
         b.name.length - a.name.length || ADDRESS_RANK[a.to.kind] - ADDRESS_RANK[b.to.kind],
     );
+}
+
+/** Long enough, and real enough, to be a name somebody said on purpose.
+ *
+ *  **Three characters, which is `SHORTEST_FUZZY`'s number for the same reason
+ *  one rung further in** — and the gate needs it more than the resolver does,
+ *  because this runs on every sentence in the room rather than on one already
+ *  known to be an instruction. A card called "a" makes *"a really long story
+ *  about lunch"* an address followed by a message, and then every ambient
+ *  sentence starting with that word is one syllable away from reaching an agent.
+ *
+ *  `untitled` is excluded outright: it is `naming.ts`'s placeholder, several
+ *  cards wear it at once, and picking one of them arbitrarily is precisely the
+ *  invented referent this whole subsystem refuses elsewhere. */
+function addressable_enough(name: string): boolean {
+  const said = name.trim();
+  return said.length >= 3 && isNamed(said);
 }
 
 /** Is `phrase` at `at` in `low`, on word boundaries both sides? */
@@ -1022,7 +1040,13 @@ export function addressIn(utterance: string, wall: Wall): Addressed | null {
 
   while (at < low.length && /[\s,:;]/.test(low[at])) at++;
   for (const filler of AFTER_ADDRESS) {
-    if (low.startsWith(filler, at)) {
+    /* `wordAt`, not `startsWith`, and the difference is a corrupted message
+       rather than a cosmetic one: *"the ring, can your last change be
+       reverted"* starts with `can you`, and a bare prefix test took those seven
+       characters out of the middle of a word and sent `r last change be
+       reverted` to an agent. The hail skip above got this right; this did not,
+       and the two are four lines apart. */
+    if (wordAt(low, at, filler)) {
       at += filler.length;
       while (at < low.length && /[\s,:;]/.test(low[at])) at++;
       break;

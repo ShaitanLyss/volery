@@ -112,6 +112,14 @@ export type Transcript = {
  *  for the wall. */
 const ATTENDING_MS = 15_000;
 
+/** How long a plan may wait and still be confirmed *out loud*, in milliseconds.
+ *
+ *  Twenty seconds: the length of an exchange. Past that, a yes in the room is
+ *  far more likely to be about something else than about a question the wall
+ *  asked, and the thing on the other side of it is a prompt delivered to an
+ *  agent. Enter is unbounded — see `#askedAt`. */
+const SPOKEN_YES_MS = 20_000;
+
 export class Voicing {
   #host: ControlHost;
 
@@ -153,7 +161,16 @@ export class Voicing {
    *  result replaces it, so **nothing acts on this** — it is drawn and thrown
    *  away. It is not a setting: the off position of that knob is the bug. */
   partial = $state("");
-  /** The steward has the sentence and has not answered yet.
+  /** How many parses are out. `thinking` is the reading of it.
+   *
+   *  A count rather than a flag because the open ear dispatches utterances as
+   *  they settle and does not wait for the last one: two escalations can be in
+   *  flight at once, and with a boolean the *first* to come back cleared the bar
+   *  while the second was still out — the "went quiet with a stopwatch on it"
+   *  failure this class is otherwise careful about. */
+  #parses = $state(0);
+
+  /** The steward has a sentence and has not answered yet.
    *
    *  Its own field rather than a widening of `listening`, which is
    *  `turns.md`'s distinction one layer down: the microphone being open and a
@@ -162,7 +179,9 @@ export class Voicing {
    *  into. A parse is seconds — 9.3 of them at the median — so a bar that said
    *  nothing across it would be the "misheard and went quiet" failure with a
    *  stopwatch on it. */
-  thinking = $state(false);
+  get thinking(): boolean {
+    return this.#parses > 0;
+  }
 
   /** One project's file list per root, fetched once and kept.
    *
@@ -187,6 +206,21 @@ export class Voicing {
    *  whatever supersedes, and the late arrival checks whether it is still the
    *  one being waited for. */
   #gen = 0;
+
+  /** When the plan now waiting was proposed, or 0.
+   *
+   *  **A spoken yes is bounded and a pressed one is not**, and that asymmetry is
+   *  the whole reason this field exists. Enter is an act: you are at the
+   *  keyboard, looking at the bar, and however long the plan has been up you
+   *  meant that key. A *word* is not — the ear hears the room, "sure" and "go
+   *  on" and "ok" are all a yes, and a plan with no expiry meant any of them,
+   *  said by anyone, at any distance in time from the question, could put a
+   *  prompt into a card spawned with `--dangerously-skip-permissions`.
+   *
+   *  A spoken **no** is deliberately not bounded: cancelling is never the
+   *  dangerous direction, and a wall that refused to let go because you took too
+   *  long to say so would be obeying a safety rule by ignoring you. */
+  #askedAt = 0;
 
   constructor(host: ControlHost) {
     this.#host = host;
@@ -278,6 +312,14 @@ export class Voicing {
   /** Open the ear, or say why it could not be opened. */
   async listenOn(): Promise<void> {
     if (this.open) return;
+    /* And not over a one-shot that is still running: Rust refuses this anyway —
+       the device is one device and `Ear::claim` is where that is decided — but
+       refusing it here means the reason arrives as the bar not changing rather
+       than as an error about a microphone you did not know you were holding. */
+    if (this.listening) {
+      this.says = "still listening to the last one — try again in a moment";
+      return;
+    }
     this.says = "";
     try {
       await invoke("voice_open");
@@ -325,18 +367,11 @@ export class Voicing {
    *     then the message a card was addressed with, then the steward.
    */
   async heard(text: string): Promise<void> {
-    const gen = ++this.#gen;
     this.partial = "";
     const attending = this.#attending > 0 && Date.now() - this.#attending < ATTENDING_MS;
 
     if (this.pending) {
       const answer = answeredIn(text);
-      if (answer === "yes") {
-        this.said = text;
-        this.#attending = 0;
-        await this.confirm();
-        return;
-      }
       if (answer === "no") {
         this.said = text;
         this.#attending = 0;
@@ -344,15 +379,34 @@ export class Voicing {
         this.says = "let go";
         return;
       }
+      if (answer === "yes") {
+        this.said = text;
+        this.#attending = 0;
+        if (Date.now() - this.#askedAt < SPOKEN_YES_MS) {
+          await this.confirm();
+          return;
+        }
+        /* Too old to be an answer to *this*. Let go rather than leaving it
+           armed for the next one, and say so — a plan that vanished without a
+           word would be the going-quiet failure wearing a safety rule. */
+        this.#forget();
+        this.says = "that had been waiting too long for a spoken yes — say it again";
+        return;
+      }
     }
 
     const wall = await this.wallFor(text);
     const said = addressIn(text, wall);
     if (!said && !attending) {
-      /* Not for us. Shown, never acted on — see `overheard`. */
+      /* Not for us. Shown, never acted on — see `overheard`.
+         **And it supersedes nothing**: the generation is claimed below this
+         return, so a colleague saying "anyway, lunch?" cannot invalidate the
+         sentence you spoke to the wall nine seconds ago and leave its answer
+         with nowhere to land. Room chatter is inert or it is not a gate. */
       this.overheard = text;
       return;
     }
+    const gen = ++this.#gen;
     this.#attending = 0;
     this.overheard = "";
 
@@ -362,6 +416,9 @@ export class Voicing {
        everything after the name. */
     const rest = said ? said.rest : text;
     this.said = text;
+    /* Whatever was waiting is waiting no longer: this utterance was addressed
+       to the wall, so it is the one the bar is about now. */
+    this.#forget();
     if (!rest) {
       /* Somebody said a name and nothing else. Answered rather than ignored, so
          the wall visibly heard its own name. */
@@ -369,7 +426,7 @@ export class Voicing {
       return;
     }
 
-    const what = await this.#routed(cards, rest, text, wall);
+    const what = await this.#routed(cards, rest, text, wall, gen);
     if (gen === this.#gen) this.report(what);
   }
 
@@ -395,15 +452,16 @@ export class Voicing {
     rest: string,
     whole: string,
     wall: Wall,
+    gen: number,
   ): Promise<Heard> {
     if (cards.length < 2) {
       const seen = cards.length === 1 ? { ...wall, focusedId: cards[0].id } : wall;
       const plan = hear(rest, seen);
-      if (plan) return await this.#answer(plan, "grammar", false);
+      if (plan) return await this.#answer(plan, "grammar", false, gen);
     }
     const message = messageTo(cards, rest, wall);
-    if (message) return await this.#answer(message, "grammar", false);
-    return await this.#escalate(whole, wall, false);
+    if (message) return await this.#answer(message, "grammar", false, gen);
+    return await this.#escalate(whole, wall, false, gen);
   }
 
   /* ── the wall, as voice sees it ────────────────────────────────────────── */
@@ -531,20 +589,28 @@ export class Voicing {
    *  is `IMMEDIATE`'s complement — everything the wall can do that is not merely
    *  looking at it — and a caller that forgot would be a broadcast to a wall of
    *  cards spawned with `--dangerously-skip-permissions`. */
-  async say(utterance: string, confirmed = false): Promise<Heard> {
+  async say(utterance: string, confirmed = false, gen = this.#gen): Promise<Heard> {
     const wall = await this.wallFor(utterance);
     const plan = hear(utterance, wall);
     /* The ladder, and the rule that decides the rung: the grammar answers only
        when it can account for the entire utterance, so `null` here is *not*
        "did not understand" — it is "this one is the steward's". */
-    if (plan) return await this.#answer(plan, "grammar", confirmed);
-    return await this.#escalate(utterance, wall, confirmed);
+    if (plan) return await this.#answer(plan, "grammar", confirmed, gen);
+    return await this.#escalate(utterance, wall, confirmed, gen);
   }
 
   /** A plan, carried or held for a yes. One place, so the gate above cannot be
-   *  true of one rung and not the other. */
-  async #answer(plan: Plan, from: Rung, confirmed: boolean): Promise<Heard> {
+   *  true of one rung and not the other.
+   *
+   *  **`gen` is checked here rather than only around the drawing, and that is
+   *  the difference between a stale answer being invisible and a stale answer
+   *  moving the wall.** A steward parse is out for seconds; an Escape in the
+   *  middle of one is a person saying *no, forget it*, and a plan that ran
+   *  anyway because only its *report* was suppressed would be the invariant
+   *  this class writes down and then keeps in one place out of two. */
+  async #answer(plan: Plan, from: Rung, confirmed: boolean, gen: number): Promise<Heard> {
     if (plan.needs === "confirmation" && !confirmed) return { kind: "confirm", plan, from };
+    if (gen !== this.#gen) return { kind: "unusable", why: "let go of before it could run" };
     return { kind: "carried", plan, outcome: await carry(plan, this.hands()), from };
   }
 
@@ -561,10 +627,21 @@ export class Voicing {
    *  good replies for a reason nothing could report.
    *
    *  Never throws. A steward that cannot be reached is an answer — an honest
-   *  one, naming what went wrong — and the caller is a keystroke. */
-  async #escalate(utterance: string, wall: Wall, confirmed: boolean): Promise<Heard> {
+   *  one, naming what went wrong — and the caller is a keystroke.
+   *
+   *  **A superseded parse is still paid for**, and there is nothing to be done
+   *  about that from here: a `--print` child cannot be told to stop wanting its
+   *  answer, and killing it would not unspend the request. What is avoided is
+   *  the second half of the waste — a stale reply moving the wall — which is
+   *  what `gen` is threaded through `#answer` for. */
+  async #escalate(
+    utterance: string,
+    wall: Wall,
+    confirmed: boolean,
+    gen: number,
+  ): Promise<Heard> {
     const seen = narrow(wall, utterance);
-    this.thinking = true;
+    this.#parses++;
     try {
       const said = await invoke<string>("voice_steward", {
         system: stewardPrompt(seen),
@@ -572,7 +649,7 @@ export class Voicing {
       });
       const { reply } = replyIn(said);
       const got = understand(reply, utterance, seen);
-      if (got.kind === "plan") return await this.#answer(got.plan, "steward", confirmed);
+      if (got.kind === "plan") return await this.#answer(got.plan, "steward", confirmed, gen);
       if (got.kind === "ask") return { kind: "asked", question: got.question };
       if (got.kind === "question") return { kind: "question", question: got.question };
       if (got.kind === "decline") return { kind: "declined", why: got.why };
@@ -580,7 +657,7 @@ export class Voicing {
     } catch (err) {
       return { kind: "unusable", why: err instanceof Error ? err.message : String(err) };
     } finally {
-      this.thinking = false;
+      this.#parses--;
     }
   }
 
@@ -594,8 +671,19 @@ export class Voicing {
     if (what.kind === "confirm") {
       this.pending = what.plan;
       this.#pendingFrom = what.from;
+      /* When it was asked, which is what bounds a *spoken* yes — see `heard`. */
+      this.#askedAt = Date.now();
       return;
     }
+    /* **Every other answer lets go of whatever was waiting.** A plan is a
+       question the wall asked about the sentence you just said; answering a
+       different sentence is not leaving that question open, it is moving on
+       from it. Leaving it armed had three faces: the bar drew a question about
+       an utterance two ago, `App.svelte`'s ladder gave Enter and Escape to that
+       plan for as long as it stood, and an ambient "sure" ten minutes later
+       could fire it. `listen()` has always cleared it on every gesture; `heard`
+       is the path that now takes every utterance, and it did not. */
+    this.#forget();
     if (what.kind === "carried") {
       this.says = spoke(what.outcome);
       /* Success says nothing, and on a plan the steward proposed that would
@@ -653,7 +741,7 @@ export class Voicing {
     this.said = "";
     this.says = "";
     this.partial = "";
-    this.pending = null;
+    this.#forget();
 
     /* Subscribed for the duration of this one call and dropped in the `finally`.
        `CLAUDE.md` warns that anything holding a Tauri subscription needs
@@ -700,8 +788,25 @@ export class Voicing {
     const plan = this.pending;
     if (!plan) return;
     const from = this.#pendingFrom;
+    /* Saying yes is a deliberate act and supersedes anything still out — and it
+       claims a generation of its own so a parse that lands mid-carry cannot
+       draw over what the yes did. */
+    const gen = ++this.#gen;
+    this.#forget();
+    const what: Heard = {
+      kind: "carried",
+      plan,
+      outcome: await carry(plan, this.hands()),
+      from,
+    };
+    if (gen === this.#gen) this.report(what);
+  }
+
+  /** Let go of a plan that was waiting, without touching what is drawn. */
+  #forget(): void {
     this.pending = null;
-    this.report({ kind: "carried", plan, outcome: await carry(plan, this.hands()), from });
+    this.#pendingFrom = "grammar";
+    this.#askedAt = 0;
   }
 
   /** Let go of what was heard, and of anything waiting on a yes. */
@@ -709,10 +814,11 @@ export class Voicing {
     /* Which also disowns whatever is still out: a steward answering after this
        has nothing left to land in. */
     this.#gen++;
-    this.pending = null;
+    this.#forget();
     this.said = "";
     this.says = "";
     this.partial = "";
+    this.overheard = "";
   }
 
   /** Is there anything to draw? */

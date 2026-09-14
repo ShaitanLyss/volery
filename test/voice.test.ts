@@ -776,3 +776,43 @@ describe("answeredIn — saying yes without reaching for the keyboard", () => {
     expect(answeredIn("fit the wall")).toBeNull();
   });
 });
+
+describe("the address gate, against a room rather than a fixture", () => {
+  const rest = (say: string, wall = WALL) => addressIn(say, wall)?.rest;
+
+  test("politeness is stripped on a word boundary and never inside one", () => {
+    /* "can you" is a prefix of "can your", and a bare `startsWith` took those
+       seven characters out of the middle of a word — sending `r last change be
+       reverted` to a live agent. The payload is what a message *is*, so this is
+       a corrupted instruction rather than a cosmetic slip. */
+    expect(rest("the ring, can your last change be reverted")).toBe(
+      "can your last change be reverted",
+    );
+    expect(rest("the ring, pleased to meet you")).toBe("pleased to meet you");
+    /* And the real thing still goes. */
+    expect(rest("the ring, can you stop")).toBe("stop");
+    expect(rest("the ring, please stop")).toBe("stop");
+  });
+
+  test("a name too short to have been meant is not an address", () => {
+    /* Three characters, the same floor `resolveCard` sets for a fuzzy query —
+       and the gate needs it more, because it runs on every sentence in the room.
+       A card called "a" would make every second remark an addressed one. */
+    const wall = {
+      ...WALL,
+      cards: [{ id: "cx", title: "a", project: "caravan", working: false }, ...CARDS],
+    };
+    expect(addressIn("a really long story about lunch", wall)).toBeNull();
+  });
+
+  test("an unnamed card answers to nothing", () => {
+    /* `untitled` is the placeholder several cards wear at once, so addressing
+       one of them is picking arbitrarily among identical names — which is the
+       invented referent this whole subsystem refuses everywhere else. */
+    const wall = {
+      ...WALL,
+      cards: [{ id: "cy", title: "untitled", project: "caravan", working: false }, ...CARDS],
+    };
+    expect(addressIn("untitled, stop", wall)).toBeNull();
+  });
+});

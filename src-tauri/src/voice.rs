@@ -869,8 +869,10 @@ fn hear_loop(
         }
     };
 
+    let mut asked_to_stop = false;
     loop {
         if stop() {
+            asked_to_stop = true;
             break;
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -929,11 +931,20 @@ fn hear_loop(
         }
     }
 
-    /* Stopped, or the device went away. Whatever was decoded before that is
-       still what was said, and is worth more than a sentence thrown away. */
-    vad.flush();
-    drain(&mut said, false);
-    settled(said.join(" ").trim().to_string());
+    /* The device went away mid-sentence. What was decoded before that is still
+       what was said and is worth more than a sentence thrown away.
+
+       **Not on an explicit stop**, and the difference is the whole of this
+       branch: closing the ear is somebody saying *stop listening to me*, and
+       handing over one more utterance afterwards means the wall acting on a
+       sentence spoken before the microphone was closed, with the bar already
+       saying it is shut. A tail worth keeping and a tail nobody asked for look
+       identical from here except for why the loop ended. */
+    if !asked_to_stop {
+        vad.flush();
+        drain(&mut said, false);
+        settled(said.join(" ").trim().to_string());
+    }
     Ok(())
 }
 
@@ -947,7 +958,14 @@ fn hear_loop(
 /// close as a batch engine gets to the running commentary the Windows path had.
 ///
 /// It ends on the first of: `TRAILING_SILENCE` after something was heard,
-/// `ONSET_PATIENCE` with nothing heard at all, or `MAX_UTTERANCE` regardless.
+/// `ONSET_PATIENCE` with nothing heard at all, or `MAX_UTTERANCE` measured from
+/// **the moment somebody started talking**. That last one used to be measured
+/// from the call and is not any more — `hear_loop` resets the clock at onset so
+/// the ceiling means the same thing to an ear that has been open all morning —
+/// so the longest a one-shot can now run is `ONSET_PATIENCE + MAX_UTTERANCE`,
+/// 35s rather than 30s. Nothing depends on the total; the note is here because
+/// the sentence above it was true before the refactor and is the only thing
+/// about the one-shot path that the refactor changed.
 pub fn listen(
     models_dir: &Path,
     language: &str,
@@ -1027,18 +1045,59 @@ fn outcome(text: String, language: &str, ms: u64) -> Result<Heard, String> {
  * so it is opened by a person and the wall says so for as long as it is open.
  */
 
-/// The one open ear, if there is one.
+/// Who has the microphone.
 ///
-/// A flag rather than a handle, for the reason `servers::RunningGroup::polling`
-/// settled on: the stream is owned by the thread that opened it — a `cpal`
-/// stream is not `Send` and could not be held here anyway — and the only thing
-/// another thread needs is to be able to say *come down*.
+/// **One lock over both questions, because they are one question.** There is a
+/// single input device and two things that want it — the key's one-shot and the
+/// open ear — and asking them separately is a check-then-claim with a window in
+/// it. Two `hear_loop`s on one device is not an error on Windows: WASAPI shared
+/// mode grants both, so what you get is two recognisers resident, two
+/// transcripts of the same room, and a bar flickering between them. A failure
+/// that succeeds is the worse kind.
 #[derive(Default)]
-pub struct Ear(Mutex<Option<Arc<AtomicBool>>>);
+pub struct Ear(Mutex<Ears>);
+
+#[derive(Default)]
+struct Ears {
+    /// The open ear's stop flag, if one is open.
+    ///
+    /// A flag rather than a handle, for the reason `servers::RunningGroup::polling`
+    /// settled on: the stream is owned by the thread that opened it — a `cpal`
+    /// stream is not `Send` and could not be held here anyway — and the only
+    /// thing another thread needs is to be able to say *come down*.
+    open: Option<Arc<AtomicBool>>,
+    /// A one-shot recognition is holding the device.
+    alone: bool,
+}
 
 impl Ear {
     fn open(&self) -> bool {
-        self.0.lock().map(|e| e.is_some()).unwrap_or(false)
+        self.0.lock().map(|e| e.open.is_some()).unwrap_or(false)
+    }
+
+    /// Take the microphone for one recognition, or say who has it.
+    fn claim(&self) -> Result<(), String> {
+        let mut held = self.0.lock().map_err(|_| "the ear is wedged".to_string())?;
+        if held.open.is_some() {
+            return Err(
+                "the wall is already listening — say its name, or close the ear with \
+                 alt+shift+v"
+                    .into(),
+            );
+        }
+        if held.alone {
+            return Err("already listening".into());
+        }
+        held.alone = true;
+        Ok(())
+    }
+
+    /// Give it back. Infallible on purpose: a poisoned lock here would otherwise
+    /// leave the device claimed forever by a recognition that has ended.
+    fn release(&self) {
+        if let Ok(mut held) = self.0.lock() {
+            held.alone = false;
+        }
     }
 }
 
@@ -1068,12 +1127,16 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
     let stop = Arc::new(AtomicBool::new(false));
     {
         /* Claimed under the lock rather than checked and then claimed, so two
-           gestures arriving together cannot both open one. */
+           gestures arriving together cannot both open one — and the one-shot is
+           checked here rather than beside it, for the reason `Ear` gives. */
         let mut held = ear.0.lock().map_err(|_| "the ear is wedged".to_string())?;
-        if held.is_some() {
+        if held.open.is_some() {
             return Ok(true);
         }
-        *held = Some(stop.clone());
+        if held.alone {
+            return Err("a single recognition has the microphone — try again in a moment".into());
+        }
+        held.open = Some(stop.clone());
     }
 
     let handle = app.clone();
@@ -1108,12 +1171,34 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
            and it is guarded on the flag being still ours, so a close followed
            immediately by an open cannot have this thread clear the new ear on
            its way out. */
-        if let Ok(mut held) = handle.state::<Ear>().0.lock() {
-            if held.as_ref().map(|f| Arc::ptr_eq(f, &stop)).unwrap_or(false) {
-                *held = None;
+        let mine = match handle.state::<Ear>().0.lock() {
+            Ok(mut held) => {
+                let mine = held.open.as_ref().map(|f| Arc::ptr_eq(f, &stop)).unwrap_or(false);
+                if mine {
+                    held.open = None;
+                }
+                mine
             }
+            Err(_) => false,
+        };
+        /* **Only this thread's own death is news**, and the guard has to reach
+           the announcement as well as the slot. A close followed immediately by
+           an open leaves the old thread still coming down — it notices `stop`
+           at the top of its loop and has a flush to transcribe first — and an
+           unguarded `open: false` from it would tell the wall it had stopped
+           listening while the *new* ear held an open microphone. That is the
+           privacy indication reading the exact opposite of the truth, and it
+           would also re-arm the key's one-shot path alongside a live ear.
+
+           A superseded thread says nothing at all, including about its own
+           failure: whatever went wrong belongs to a stream that has already been
+           replaced, and the ear now open is the one the wall should be told
+           about. An ear that falls over on its *way up* is still `mine` — it
+           holds the slot until it lets go of it — so a real failure is reported
+           by the only thread entitled to. */
+        if mine {
+            let _ = handle.emit("voice:ear", Listening { open: false, failed: out.err() });
         }
-        let _ = handle.emit("voice:ear", Listening { open: false, failed: out.err() });
     });
 
     /* Said now rather than when the stream is up, so a first run with a download
@@ -1128,7 +1213,7 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
 pub fn voice_close(ear: tauri::State<'_, Ear>) -> Result<bool, String> {
     let taken = {
         let mut held = ear.0.lock().map_err(|_| "the ear is wedged".to_string())?;
-        held.take()
+        held.open.take()
     };
     if let Some(flag) = taken {
         flag.store(true, Ordering::Relaxed);
@@ -1193,11 +1278,17 @@ pub async fn voice_hearing(app: tauri::AppHandle) -> Result<Hearing, String> {
 #[tauri::command]
 pub async fn voice_listen(
     app: tauri::AppHandle,
+    ear: tauri::State<'_, Ear>,
     language: Option<String>,
 ) -> Result<Heard, String> {
     let language = language.unwrap_or_else(|| DEFAULT_LANGUAGE.to_string());
     let dir = models_dir(&app)?;
-    crate::off_main(move || {
+    /* The device is one device. Claimed here rather than trusted to the front
+       end, which is where the check used to live and could only see half of it:
+       `listen()` refused to run while the ear was open, and nothing refused to
+       open an ear while a recognition was running. */
+    ear.claim()?;
+    let out = crate::off_main(move || {
         listen(&dir, &language, move |words| {
             /* One more event on the pipe that already carries `conv:event`,
                which is the whole of why nothing downstream of here needs to
@@ -1207,7 +1298,12 @@ pub async fn voice_listen(
             let _ = app.emit("voice:hypothesis", words);
         })
     })
-    .await?
+    .await;
+    /* Before the `?`, so a recognition that failed still hands the microphone
+       back — an error here is exactly the case where the claim would otherwise
+       be held forever. */
+    ear.release();
+    out?
 }
 
 #[cfg(test)]

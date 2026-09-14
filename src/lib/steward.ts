@@ -297,7 +297,12 @@ const STOP = new Set([
  *  each file's best showing. One pass, so the cost is `files × words` calls to
  *  `score` — which on a forty-thousand-file tree is the most expensive thing on
  *  this path by a distance, and is still a fraction of the request it is about
- *  to save.
+ *  to save. **Measured rather than asserted**, since it runs on the thread that
+ *  paints the wall: 43ms for `find.rs`'s whole 40,000-file cap against a
+ *  nine-word sentence, on this machine, 2026-09-14. That is one frame's worth
+ *  of hitch in front of a nine-second parse; a tree big enough for it to matter
+ *  would have to be an order of magnitude past the cap, and there is no such
+ *  tree because the cap is the cap.
  *
  *  The sentence is `spelt` first, because a spoken path arrives as *"markdown
  *  dot ts"* and the file is `markdown.ts`. That is the same normalisation
@@ -317,6 +322,15 @@ export function inSight(files: string[], utterance: string, cap = IN_SIGHT): str
   const words = spelt(spoken(utterance))
     .toLowerCase()
     .split(/\s+/)
+    /* **Punctuation off both ends, and only off the ends.** `score` is a
+       subsequence match, so a character the path does not have makes the whole
+       word score nothing — and moonshine punctuates. Measured: "Volery, open
+       markdown.ts." scored *every* word to null (a comma, a stop word, and one
+       full stop too many), which left the territory shown **no files at all**
+       and `understand` refusing a path that was right there, one Haiku request
+       later. Interior `.` `/` `_` `-` are kept, because those are what a path is
+       spelled with and are the whole point of `spoken` running first. */
+    .map((w) => w.replace(/^[^a-z0-9]+/, "").replace(/[^a-z0-9]+$/, ""))
     .filter((w) => w.length >= 3 && !STOP.has(w));
 
   /* **A sentence that could not be naming a file is shown none**, and the empty

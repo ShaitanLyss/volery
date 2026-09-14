@@ -95,10 +95,36 @@ Four rungs answer, and they cost four different things:
   referent to the *focused* card, so "the ring and the auth work, stop" would
   build a plan about whatever was in front. With two or more names it is a
   message to all of them, which is the reading that cannot be wrong about who.
-- **A late answer checks a generation.** A steward parse outlives the gesture
-  that started it by up to a minute, and `pending` is armed by Enter from
-  anywhere — so an answer that lands after an Escape must not quietly become a
-  plan again. `#gen` in `voicing.svelte.ts`, same shape as `aside.rs`'s.
+- **A late answer checks a generation, and the check is inside `#answer`.** A
+  steward parse outlives the gesture that started it by up to a minute, and
+  `pending` is armed by Enter from anywhere — so an answer that lands after an
+  Escape must not quietly become a plan again. Guarding only the *report* is
+  half of it: the plan still ran, and the invariant is about the wall moving
+  rather than about what is drawn. `#gen` in `voicing.svelte.ts`, same shape as
+  `aside.rs`'s. **An unaddressed utterance claims no generation** — room chatter
+  that superseded the sentence you actually spoke would leave its answer with
+  nowhere to land, which is the going-quiet failure arriving by the back door.
+- **A plan does not outlive the utterance it was about.** Every answer except a
+  `confirm` clears `pending`, because a plan is a question about the sentence you
+  just said. Leaving one armed had three faces at once: the bar asking about an
+  utterance two ago, `App.svelte`'s ladder giving Enter and Escape to that plan
+  for as long as it stood, and an ambient "sure" ten minutes later firing it.
+- **A spoken yes is bounded; a pressed one is not.** Enter is an act — you are at
+  the keyboard, looking at the bar. A word is not: the ear hears the room, "sure"
+  and "ok" and "go on" are all a yes, and the thing on the other side is a prompt
+  delivered to an agent. `SPOKEN_YES_MS` is twenty seconds. A spoken **no** is
+  deliberately unbounded, because cancelling is never the dangerous direction.
+- **One device, one claim, and Rust decides it.** `Ear` holds both the open ear's
+  flag and the one-shot's, under one lock, because two `hear_loop`s on one
+  microphone is not an error on Windows — WASAPI shared mode grants both, and
+  what you get is two recognisers, two transcripts of one room, and a bar
+  flickering between them. A failure that succeeds is the worse kind.
+- **Only the ear's own thread may say the ear is closed.** A close-then-open
+  leaves the old thread coming down with a flush still to transcribe; an
+  unguarded `open: false` from it tells the wall it has stopped listening while
+  the new ear holds an open microphone — the privacy indication reading the exact
+  opposite of the truth. `Arc::ptr_eq`, and it has to reach the emit as well as
+  the slot.
 - **`send` and `broadcast` are wired and are outside `IMMEDIATE`.** Project cards
   spawn with `--dangerously-skip-permissions`, so a misheard message is the most
   destructive thing this application can do. Both are spoken back and held for a
