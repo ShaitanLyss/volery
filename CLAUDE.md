@@ -84,6 +84,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # later.rs, pin.rs, spawn.rs,
                               # bang.rs, update.rs, guidance.rs, browser.rs,
                               # quit.rs,
+                              # voice.rs, steward.rs,
                               # repair/text.rs, hooks.rs,
                               # control.rs,
                               # supervisor.rs,
@@ -205,6 +206,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `spawn.md` | a card putting a card on the wall and taking it off again: which territories it may name and why a path is not one of them, the three bounds that are switched off and what is watching instead, the one birth path, what a card may close, and the root a spawned card is drawn on | `spawn.rs`, `lineage.ts`, `Lineage.svelte` |
 | `chat.md` | the card with no project, what `--tools` really does, and where a capability is decided | `supervisor.rs`, `store.rs`, `skein.svelte.ts` |
 | `gears.md` | the wall's second gear: a card that reads and thinks but cannot write, why plan mode beats the bypass flag, the document a planning turn leaves instead of a diff, why the viewer is re-rooted rather than the sandbox widened — and handing that plan to a fresh card, where the saving is the context reset rather than the cheaper model | `gears.ts`, `handoff.ts`, `Card.svelte`, `supervisor.rs` |
+| `voice.md` | speaking to the wall: the four rungs and what each costs, why silence is not a transcript, the prompt that had to be narrowed to fit a repository, an address gate that is exact on purpose, and the two ops a spoken sentence may now reach an agent with | `voice.ts`, `voicing.svelte.ts`, `steward.ts`, `voice.rs`, `steward.rs`, `Hearing.svelte` |
 | `hooks.md` | the hook Skein hands its cards: the Bash tool halving runs of backslashes, why a quoted heredoc was never the cause, the one binary that undoes it, and the one thing on that binary a *card* invokes rather than Volery | `hooks.rs`, `main.rs` |
 | `remove.md` | deleting a path from a card behind the user's own click: why a permission can refuse and only a tool can ask, the deny everybody reasoned from that governs nothing a card can call, why the delete is permanent rather than recoverable, and the two denials whose reasons name the tool | `remove.rs`, `hooks.rs`, `tools/probe-rm.ts` |
 | `accounts.md` | more than one subscription: an account as a credential store and why Skein holds none of it, signing one in without a terminal, the waterfall and its stickiness, your caps against the server's, the per-card bypass, being held, and finding Claude Code before installing it | `accounts.ts`, `accounts.rs`, `signin.ts`, `signin.rs`, `claude.rs`, `Accounts.svelte` |

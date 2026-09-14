@@ -541,12 +541,16 @@ so the two disagreeing reads as normal rather than as a fault.
 
 **Alt+V**, beside Alt+I at the top of `onGlobalKey`.
 
-**Press to talk, not hold**, and that is the recogniser's doing rather than the shortcut's.
-`RecognizeAsync` is one-shot: it opens the microphone and ends on its own end-of-speech
-silence, and there is no *stop now and give me what you have*. So the release has nothing to
-do. Hold-to-release wants `SpeechContinuousRecognitionSession` — which is also exactly what
-the always-on channel of Design 3 needs, so **those two arrive together or not at all**, and
-that is the single most useful thing to know before picking up this file.
+**Press to talk, not hold.** This paragraph used to say that was `RecognizeAsync`'s doing —
+one-shot, no *stop now and give me what you have* — and that hold-to-release and Design 3's
+always-on channel therefore arrived together or not at all. Both halves are now history.
+The engine is local and VAD-bounded (2026-09-09), so an utterance ends on its own trailing
+silence whoever asked for it; and the always-on channel arrived on its own (2026-09-14),
+without hold-to-release, because **addressing replaced the key rather than the key growing a
+second gesture**. What is left of the original claim is the behaviour: the press starts a
+recognition, the release has nothing to do, and there is still no way to stop one early —
+nothing on this path is interruptible, which is a real gap and a small one at five seconds
+of patience and a 900ms tail.
 
 *Which is also what settled the key.* It was briefly bare `v`, on the reasonable argument that
 a hold you make dozens of times a day should not want two hands — and a bare letter had to be
@@ -584,7 +588,8 @@ words, since the wall may have moved since you were shown it.
 side was run for real. The key, the bar's layout and a genuine sentence going all the way to
 the wall moving have **not** been seen in the running app — the microphone is the one thing
 here no test can reach, which is what `examples/voice-probe.rs` exists for and why this
-paragraph is in the file rather than in a commit message.
+paragraph is in the file rather than in a commit message. That is still true of everything
+below as well, and is the first thing to do with any of it.
 
 ### What is now unresolved, and was not before
 
@@ -597,6 +602,87 @@ paragraph is in the file rather than in a commit message.
   round trip to fix a first one. The cheap answer is that a rejected confirmation drops the
   plan and says nothing further, and you say it again. Worth trying that before building
   anything cleverer.
+
+### The steward and the channel, both built — 2026-09-14
+
+Everything above this line was written before either of the two rungs it argues for existed.
+Both exist now, and what follows is what was actually built, what changed on the way, and
+what is still missing — kept here rather than folded into the sections above, because the
+reasoning above is what a reader needs and a status report is not.
+
+**The steward.** `steward.ts` had been complete since 2026-09-06 — prompt, vocabulary,
+tolerant read, and `understand`'s re-check of every referent, path and payload — and nothing
+imported it; the escalate arm said *"not understood — only the eight instant verbs are wired
+so far"*, which names a missing feature to somebody who has just spoken a whole sentence.
+`steward.rs` is the other half and is deliberately boring: spawn `claude --print`, wait, hand
+the reply back **unread**, so the validation keeps one owner. Lifted from `aside.rs` — job
+object, timeout poll, stderr thread, `CREATE_NO_WINDOW` — minus `--fork-session`, which is
+the one difference that matters and is this file's own decision: a fork inherits the
+addressed card's model, and the model choice was worth more than the context.
+
+**One thing the probe could not see, and it nearly sank the rung.** `stewardPrompt` puts
+*every file of every named territory* in front of the model. That is right for the fixture
+wall — eleven paths, so a proposed path can be checked for membership rather than resolved —
+and it does not survive contact with a repository: `find.rs` caps a listing at 40,000 files
+and this tree alone is four figures, so the unnarrowed prompt is tens of thousands of tokens
+of path on every escalated sentence. `narrow` cuts each list to what the sentence could
+plausibly be about, using the finder's own scorer over the `spelt(spoken(…))` utterance, and
+**the same narrowed wall goes to `understand`** — showing a model one list and validating
+against another refuses good replies for a reason nothing can report. A territory under the
+cap is passed through untouched, so the 28/30 was measured on what still ships.
+
+**The channel.** No key: `hear_loop` in `voice.rs` is the loop `listen` was already, with a
+flag, and the three differences are all the one-shot case being the special one — an open ear
+has no onset patience, `MAX_UTTERANCE` is measured from when somebody started talking, and
+silence between utterances is the normal state of a room rather than an error.
+
+**The address gate moved to TypeScript, and this file said it would be in Rust.** The
+argument above — *a hot-path closed-set match rather than a parse, beside the recogniser* —
+was written when the engine was Microsoft's cloud dictation, where keeping the expensive
+engine asleep meant keeping a room's audio off the network. It is not the engine any more.
+Moonshine runs here at RTF 0.15–0.28, so transcribing a segment nobody addressed costs a
+fraction of one core and no bytes anywhere, and what is left of the decision is where the
+*names* live: card titles and territory names, which are front-end `$state` that changes
+every time a card is renamed. A gate in Rust would need that set shipped down on every
+change, to answer a question a pure function answers here, in Bun, under test.
+
+**What addressing bought that was not in the design.** Naming a card and then saying
+something that is not a wall command is not an ambiguity for a model to resolve — the address
+settled *who*, and everything after it is the message. So *"caravan, halt work"* is one send
+carrying two words, built by a pure function, costing nothing and taking no time. That put
+`send` and `broadcast` on the wall's hands for the first time, both outside `IMMEDIATE`, both
+spoken back and held for a yes. It is the sentence the whole design exists for and it never
+reaches the steward.
+
+**And the yes can be spoken**, which the design did not say and needed to: hands-free that
+ends in a keystroke is not the feature. It is the one thing on this path heard without an
+address, because you are already in an exchange and nobody prefixes their own name to *yes*.
+Exact and whole, the same rule the grammar has — *"yes and tell the ring as well"* is a
+sentence, not an answer.
+
+**What is drawn.** The mark is on whenever the stream is, which the cost section above makes
+a condition of shipping one. And the last thing heard that was *not* for the wall is shown,
+faintly, and acted on never — this is the only evidence an open microphone is alive, since a
+gate doing its job and a dead device are otherwise identical, and that is the failure people
+give up over.
+
+**Still missing, and each is on purpose rather than forgotten:**
+
+- **The wall does not speak.** The fourth rung of `attention.svelte.ts`'s ladder is the half
+  of Design 3 that works when you are not looking at the screen, and none of it is built. It
+  is why the yes being sayable mattered enough to do first.
+- **Barge-in and ducking** follow it, and only matter once it speaks.
+- **A question about the wall is answered by saying it cannot be answered.** `understand`
+  keeps a question apart from a remark, and nothing here can answer one: it would need the
+  addressed card's own transcript rather than the wall in a prompt.
+- **Nothing is interruptible.** Neither a listen nor a steward parse can be stopped once it
+  is out; the parse is at least disowned, so a late answer cannot become a plan you dismissed.
+- **A handle is a rename away, and nothing prompts you to make one.** The gate is exact, so a
+  card called "fixing the ring occupancy bug" cannot be addressed out loud. The design
+  predicted this — *it forces the naming problem to be solved* — and solving it is still a
+  thing you have to think to do.
+
+---
 
 ---
 
