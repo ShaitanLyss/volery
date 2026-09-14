@@ -213,6 +213,26 @@
         <button class="give" onclick={() => void deck.cancelLink()} title="stop waiting for the browser">
           give up
         </button>
+      {:else if deckState.phase === "fault"}
+        <!-- The way out of a fault, and it has to be here rather than in the
+             empty branch above: `#guard` writes `phase: "fault"`, which moves
+             the face *out* of `off` — so a failure left the only two buttons
+             that can mend one on the other side of an `{:else}`. Harmless while
+             the sole route in was `link()`, since a sign-in that just failed is
+             one you can simply press again; not harmless now that `connect`
+             reaches a stored token that Spotify may have revoked, which is
+             precisely the fault a browser sign-in is the answer to.
+
+             Both, because the fault does not say which is needed and guessing
+             costs the wrong one: `try again` is free when the tunnel was late,
+             and `sign in again` is the only thing that mends a dead credential.
+             `describe` is already showing librespot's own words above. -->
+        <button class="give" onclick={() => void deck.start()} disabled={deck.busy} title="bring the receiver up again">
+          {deck.busy ? "connecting…" : "try again"}
+        </button>
+        <button class="give" onclick={() => deck.link()} disabled={deck.busy} title="sign in to spotify again">
+          sign in again
+        </button>
       {:else if deckState.phase !== "opening"}
         <button class="find" class:on={open} onclick={toggleSearch} title="search spotify">
           ⌕
