@@ -675,6 +675,80 @@ files. Re-sending is still right, because the retry resumes the same session and
 reads back what it already did rather than starting over blind. What must not happen is a
 repeat of a request that *itself* had an effect.
 
+#### And nothing checked that, which is the bug it describes
+
+The paragraph above is the licensing condition for the whole feature, and until 2026-09-14 it
+was stated in three places and enforced in none. `#heal` was documented *"try a turn again that
+broke before it reached a model"*, the reset beside `healAttempts` said *"a turn that reached a
+model at all clears the budget"*, and `resendMark` told the agent outright that the attempt
+before it *"failed before reaching a model"* — a sentence Volery was in no position to make
+true. All three read the property off the **kind** of failure. It is a property of the
+individual turn, and the two come apart.
+
+**`limited` is where they come apart, and it is not an edge case.** A 400 truncated on the way
+out and a 529 refused at the door genuinely did nothing. An allowance runs out *when it runs
+out* — overwhelmingly part-way through a turn that is already under way, after the agent has
+spoken and run tools. Re-sending there is the one thing this list forbids.
+
+Measured against Volery's own `turn` table before the fix, on the wall that reported it: of 80
+rows at `fail`, **36 carried real tokens** — between 2,347 and 51,274 output tokens each, and
+\$0.95 to \$15.64 apiece. Replayed a second way, over all 575 session transcripts on this
+machine, **31 of 53 real 429s arrived after the turn had already produced output**. Sink
+`5748301e` is what that looks like from inside the card: one prompt delivered three times, and
+the agent — with no reason to think otherwise — reading it as the user repeating themselves and
+acting on it again. The user's own words: *"it literally affect what the agent does and it
+doesn't pick up on the fact that it's a volery bug"*. `resendMark` is the mitigation that was
+reached for instead, and a mark cannot fix this: it explains a duplicate that should not have
+been sent, and asserts a reason that was false in most of them.
+
+**`mayHeal(kind, producedOutput)` is the check**, and the evidence is folded rather than
+accounted. `Conversation` watches the stream and already knows what the turn produced —
+`#producedOutput`, set from `producedModelOutput`, one pure predicate asked once of each
+assistant message. Not read off `result.usage`: the store holds a failed turn with zero tokens
+and \$0.58 of cost against it, so those fields disagree with each other on precisely the rows
+this decides, and a missing one would have to be given a meaning. A block that arrived is not
+ambiguous.
+
+**`dropped` is exempt, and the first cut of this got that wrong in the expensive direction.**
+It held all four kinds uniformly, on the argument that a kind-shaped exception would repeat the
+original mistake one layer down. That reasoning was sound and the conclusion was still wrong,
+because it rested on a scope error: the four-of-six measurement in the section below is about
+the **last message** on the stream, and `#producedOutput` is a property of the whole turn. Both
+real dropped turns on this machine — `380ab9fc-…jsonl`, lines 158–211 and 214–263 — yielded
+dozens of text and `tool_use` blocks before the wire went, so a per-turn reading is `true` for
+every dropped stream there has ever been here, and the heal built to stop cards dying silently
+would never have fired again. Measured per-message, implemented per-turn. The section below
+already argues the exception on its own merits — the CLI commits the partial before it reports
+the failure, so a re-send resumes a session that already holds the work rather than asking for
+it again — and that is the property `limited` lacks: a 429 closes the door on a turn whose work
+stands finished, where a dropped stream is a turn cut off that wants continuing.
+
+The other three cost nothing by being held. Over the same 575 transcripts, **all 22 real 529s
+arrived before any output at all**, so `overloaded` behaves exactly as it did; no 400 has ever
+been recorded here arriving after some.
+
+**An empty thinking block is not output**, and a `<synthetic>` message is not either. The
+second was found by review: the CLI authors those itself and 82 on this machine carry a plain
+text block reading "No response requested.", which the fold *draws* — deliberately — twelve
+lines before the guard that excludes them from the arithmetic. Drawing and counting are
+different questions, which is why `producedModelOutput` asks its own.
+
+**The held turn says so out loud.** `healHeldNote` is the third way a heal can end and it was
+the one with no line — an error, and then nothing, which reads as a card that gave up for no
+reason. It names what broke, says the prompt is not being repeated and why, and hands the
+decision back. It deliberately does not offer to carry on: composing a "pick up where you left
+off" is Volery putting words in your mouth, which is rejected below for this same path, and it
+cannot know whether the turn finished what you asked.
+
+**Marking the account spent is a fact, not a policy, and it moved out of `#heal` for it.**
+`waterfall.markSpent` had exactly one call site, inside the resend — so an allowance that ran
+out mid-turn marked nothing at all once such a turn stopped being re-sent, `choose` went on
+offering the refused subscription against a reading up to a minute old, and the reactive swap
+the waterfall exists for waited for the user to send something by hand. `Conversation.pendingSpent`
+is set on every `limited` failure before any decision about the prompt, and `Skein.#spend`
+drains it ahead of `#heal`, which is the ordering the in-`#heal` call had and for the same
+reason.
+
 #### `dropped` does not clear that bar the same way, and saying so is the point
 
 The other three are cases where **nothing happened**. A connection lost mid-response is not:

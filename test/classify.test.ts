@@ -63,6 +63,9 @@ import {
   wasRateLimited,
   wasConnectionDropped,
   healKindOf,
+  mayHeal,
+  healHeldNote,
+  producedModelOutput,
   healDelayMs,
   healNote,
   healGaveUpNote,
@@ -2318,5 +2321,115 @@ describe("a nudge that disproves its own premise", () => {
     expect(ghostNote(1)).toContain("never reached this card");
     expect(ghostNote(3)).toContain("3 prompts");
     expect(ghostNote(1)).not.toContain("do the thing");
+  });
+});
+
+describe("producedModelOutput", () => {
+  const msg = (content: any[], model = "claude-opus-5") => ({ model, content });
+
+  test("non-empty text and a tool call are output", () => {
+    expect(producedModelOutput(msg([{ type: "text", text: "here you go" }]))).toBe(true);
+    expect(producedModelOutput(msg([{ type: "tool_use", name: "Edit", input: {} }]))).toBe(
+      true,
+    );
+  });
+
+  /* The bound that keeps `dropped` healing where the turn had barely started.
+     `turns.md` measures four of six dropped streams as having yielded nothing
+     but an empty thinking block, and every thinking block on this machine's
+     transcripts is empty — the CLI yields the envelope before the content. */
+  test("a thinking block is not output, empty or otherwise", () => {
+    expect(producedModelOutput(msg([{ type: "thinking", thinking: "" }]))).toBe(false);
+    expect(producedModelOutput(msg([{ type: "thinking", thinking: "hmm" }]))).toBe(false);
+    expect(producedModelOutput(msg([{ type: "redacted_thinking", data: "x" }]))).toBe(false);
+  });
+
+  test("an empty or whitespace text block is not output", () => {
+    expect(producedModelOutput(msg([{ type: "text", text: "" }]))).toBe(false);
+    expect(producedModelOutput(msg([{ type: "text", text: "   \n " }]))).toBe(false);
+  });
+
+  /* 82 of these on this machine, all carrying a plain text block reading "No
+     response requested.". There was no model, so nothing was produced — and
+     the fold draws their text anyway, which is why this cannot be read off
+     whether a line was pushed. */
+  test("a <synthetic> message is never output, whatever it carries", () => {
+    expect(producedModelOutput(msg([{ type: "text", text: "No response requested." }], "<synthetic>"))).toBe(false);
+    expect(producedModelOutput(msg([{ type: "tool_use", name: "Edit", input: {} }], "<synthetic>"))).toBe(false);
+  });
+
+  test("survives the shapes a malformed event can arrive in", () => {
+    expect(producedModelOutput(undefined)).toBe(false);
+    expect(producedModelOutput(null)).toBe(false);
+    expect(producedModelOutput({})).toBe(false);
+    expect(producedModelOutput(msg([]))).toBe(false);
+    expect(producedModelOutput({ model: "claude-opus-5", content: "a string" })).toBe(false);
+    expect(producedModelOutput(msg([null as any, { type: "text", text: "hi" }]))).toBe(true);
+  });
+
+  /* The real shape, off this machine's own transcripts: a turn opens with an
+     empty thinking block and only then says anything. Read one message at a
+     time, the first must not count and the second must. */
+  test("the opening thinking block of a real turn does not count, the text after it does", () => {
+    expect(producedModelOutput(msg([{ type: "thinking", thinking: "" }]))).toBe(false);
+    expect(producedModelOutput(msg([{ type: "text", text: "Looking at this now." }]))).toBe(
+      true,
+    );
+  });
+});
+
+describe("mayHeal", () => {
+  const KINDS = ["malformed", "overloaded", "limited", "dropped"] as const;
+
+  test("a turn that got nothing out of a model may always be tried again", () => {
+    for (const k of KINDS) expect(mayHeal(k, false)).toBe(true);
+  });
+
+  /* The whole of sink 5748301e in one assertion. Measured on this wall's own
+     `turn` table: 36 of 80 failed turns carried real output tokens, and every
+     one of them was eligible to have the prompt sent again. */
+  test("a turn that already produced output is not re-sent", () => {
+    expect(mayHeal("limited", true)).toBe(false);
+    expect(mayHeal("malformed", true)).toBe(false);
+    expect(mayHeal("overloaded", true)).toBe(false);
+  });
+
+  /* The exception `turns.md` argues under its own heading, and the one this
+     was got wrong on first: the CLI commits the partial before reporting the
+     drop, so re-sending resumes a session already holding the work rather than
+     asking for it again. Both real dropped turns on this machine had produced
+     dozens of blocks before the wire went, so without this the heal that was
+     built to stop cards dying silently would never fire. */
+  test("a dropped stream is re-sent even though it produced output", () => {
+    expect(mayHeal("dropped", true)).toBe(true);
+  });
+});
+
+describe("healHeldNote", () => {
+  const KINDS = ["malformed", "overloaded", "limited", "dropped"] as const;
+
+  test("names what broke, and says the prompt is not being repeated", () => {
+    for (const k of KINDS) {
+      const note = healHeldNote(k);
+      expect(note).toMatch(/not sending it again/);
+      expect(note.length).toBeGreaterThan(40);
+    }
+    expect(healHeldNote("limited")).toMatch(/allowance/);
+    expect(healHeldNote("overloaded")).toMatch(/overloaded/);
+    expect(healHeldNote("malformed")).toMatch(/cut short/);
+  });
+
+  /* It is the third exit and the other two both hand the decision back in
+     words. A line that only said what had happened would leave somebody
+     watching a card that had stopped with nothing to do about it. */
+  test("hands the decision back rather than stopping at the diagnosis", () => {
+    for (const k of KINDS) expect(healHeldNote(k)).toMatch(/send again yourself/);
+  });
+
+  /* Distinct from the line the spent-budget exit pushes, since they describe
+     different decisions and a reader has to be able to tell which one they are
+     looking at. */
+  test("is not the line for a budget that ran out", () => {
+    for (const k of KINDS) expect(healHeldNote(k)).not.toBe(healGaveUpNote(k));
   });
 });

@@ -2351,6 +2351,14 @@ export function healNote(kind: HealKind, attempt: number, waitMs: number): strin
  *  is where the explanation is wanted anyway — the duplicate is *above*, so the
  *  sentence accounting for it goes at the bottom of the second copy.
  *
+ *  **The sentence is now true, which it was not when it was written.** It
+ *  asserts the previous attempt "failed before reaching a model", and nothing
+ *  checked that until `mayHeal` — on the wall that reported sink `5748301e`,
+ *  45% of failed turns had reached one. A mark explaining a duplicate cannot
+ *  fix a duplicate that should not have been sent, and it was asserting a
+ *  reason that was false. `mayHeal` is what makes this honest: the only turns
+ *  that now reach a resend are the ones this sentence describes.
+ *
  *  It states the event and stops. It does not tell the agent what to do about
  *  it, because there is nothing to do: the retry is the same request and the
  *  answer is the same answer. A paragraph of advice here would be a third
@@ -2491,4 +2499,115 @@ export function healGaveUpNote(kind: HealKind): string {
   return kind === "malformed"
     ? `cut short ${HEAL_BUDGET.malformed} more times — leaving it, send again to try once more`
     : `still overloaded after ${HEAL_BUDGET.overloaded} tries — leaving it, send again when it clears`;
+}
+
+/** Whether an assistant message is a model having produced something that
+ *  re-sending the prompt would make it do over.
+ *
+ *  Non-empty text or a `tool_use`, and nothing else. The two exclusions are
+ *  both load-bearing and both were found by review rather than by reasoning:
+ *
+ *  **A thinking block does not count**, which is what keeps `dropped` healing
+ *  where the turn had barely started. `turns.md` measures four of six dropped
+ *  streams as having produced "nothing but an empty thinking block when the
+ *  wire went", because the CLI's "mid-response" wording fires on any block
+ *  having been yielded, an empty one included.
+ *
+ *  **A `<synthetic>` message does not count**, because there was no model. The
+ *  CLI authors these itself — a locally-answered slash command, a refusal, the
+ *  "API Error" sentence that ends a dropped stream — and 82 of them on this
+ *  machine carry a plain `text` block reading "No response requested.". The
+ *  fold draws their text deliberately (whatever it said belongs in the
+ *  transcript) and excludes them from the arithmetic twelve lines later, which
+ *  is exactly the distinction wanted here: this is arithmetic, not drawing.
+ *
+ *  Pure and separate from the fold so it can be tested against real block
+ *  shapes. The fold used to make this judgement inline, in two branches, which
+ *  put the one thing worth testing on the wrong side of the purity boundary. */
+export function producedModelOutput(message: any): boolean {
+  if (!message || message.model === "<synthetic>") return false;
+  const blocks = Array.isArray(message.content) ? message.content : [];
+  return blocks.some(
+    (b: any) =>
+      (b?.type === "text" && typeof b.text === "string" && b.text.trim() !== "") ||
+      b?.type === "tool_use",
+  );
+}
+
+/** Whether a failed turn may be tried again, given whether it had already got
+ *  anything out of a model.
+ *
+ *  This is the licensing condition `.claude/rules/turns.md` states for the
+ *  whole feature — *"the request did not get a turn out of a model, so
+ *  re-sending repeats nothing … what must not happen is a repeat of a request
+ *  that itself had an effect"* — and until 2026-09-14 **nothing checked it**.
+ *  `#heal`'s own doc said "a turn that broke before it reached a model", the
+ *  comment above `healAttempts` said "a turn that reached a model at all", and
+ *  `resendMark` told the agent in as many words that the attempt before it
+ *  "failed before reaching a model". Three statements of a property that was
+ *  assumed to follow from the *kind* of failure and is in fact a property of
+ *  the individual turn.
+ *
+ *  It does not follow from the kind, and `limited` is where that breaks. A 400
+ *  truncated on the way out and a 529 refused at the door really are failures
+ *  before a model; an allowance, however, runs out *when it runs out* — most
+ *  often part-way through a turn the agent is in the middle of, after it has
+ *  spoken and run tools. Re-sending there does not repeat a request that did
+ *  nothing, it asks a second time for work that has already been done.
+ *
+ *  **Measured before it was written**, against Volery's own `turn` table on
+ *  this wall: of 80 rows at `fail`, **36 carried real tokens** — 2,347 to
+ *  51,274 output tokens apiece, \$0.95 to \$15.64 each. Not an edge case;
+ *  45% of every failure eligible for a heal had demonstrably had an effect.
+ *  The reported symptom is what that looks like from inside the card — sink
+ *  `5748301e`, where one prompt arrived three times and the agent, reasonably,
+ *  read it as the user repeating themselves and acted on it again.
+ *
+ *  ## `dropped` is exempt, and that is the rule's own exception rather than a
+ *  ## softening of it
+ *
+ *  The first version of this held all four kinds uniformly, on the argument
+ *  that a kind-shaped exception would repeat the original mistake one layer
+ *  down. That was wrong, and wrong in the expensive direction: it would have
+ *  killed the `dropped` heal outright. Both dropped turns on this machine
+ *  (`380ab9fc-…jsonl`, lines 158–211 and 214–263) had produced dozens of text
+ *  and `tool_use` blocks before the wire went, so a *per-turn* reading of
+ *  "produced output" is `true` for every real one — where the four-of-six
+ *  measurement quoted above is about the **last message** on the stream. The
+ *  rule was measured per-message and the first cut implemented per-turn.
+ *
+ *  `turns.md` already argues the exception at length, under its own heading:
+ *  the CLI *commits the partial before it reports the failure*, so a re-send
+ *  "does not repeat the request: it resumes a session that already holds
+ *  whatever that request achieved, and the agent reads it back". That is the
+ *  property `limited` lacks — a 429 is the door closing on a turn whose work
+ *  stands finished in the session, and re-sending asks for it again; a dropped
+ *  stream is a turn that was cut off and wants continuing. Same evidence, two
+ *  failures, opposite right answers.
+ *
+ *  So the kind is consulted, and only to name the one failure whose own
+ *  section explains why it does not clear this bar the usual way. The other
+ *  three cost nothing by being held: of 22 real 529s on this machine, every
+ *  one arrived before any output at all, and no 400 has ever been recorded
+ *  here arriving after some. */
+export function mayHeal(kind: HealKind, producedOutput: boolean): boolean {
+  /* The one exception, argued in `turns.md`'s "`dropped` does not clear that
+     bar the same way" — and note which direction it runs: `dropped` is the
+     kind most likely to have produced output and the one that most needs
+     re-sending anyway, because the session holds the partial and the agent
+     reads it back rather than starting over. */
+  if (kind === "dropped") return true;
+  return !producedOutput;
+}
+
+export function healHeldNote(kind: HealKind): string {
+  const why =
+    kind === "limited"
+      ? "the allowance ran out"
+      : kind === "dropped"
+        ? "the connection dropped"
+        : kind === "malformed"
+          ? "the request was cut short"
+          : "the api was overloaded";
+  return `${why} part-way through — not sending it again, since this turn had already reached a model and asking twice would repeat work it had done; send again yourself if it stopped short`;
 }

@@ -261,8 +261,8 @@ export class Skein {
   #heals = new Map<string, ReturnType<typeof setTimeout>>();
   /** Nudges waiting to fire, by conversation id. Kept separately from `#heals`
    *  because the two can be owed at once and mean opposite things — a heal
-   *  re-sends a turn that never reached a model, a nudge asks a card to look at
-   *  work that finished — and collapsing them into one map would silently drop
+   *  re-sends a turn that never reached a model — enforced rather than assumed
+   *  since `mayHeal` — a nudge asks a card to look at work that finished — and collapsing them into one map would silently drop
    *  whichever was owed second. */
   #nudges = new Map<string, ReturnType<typeof setTimeout>>();
   /** Forgettings waiting to fire, one per card an agent has closed. Held for
@@ -440,6 +440,10 @@ export class Skein {
            about to be tried again — a retry that swallowed the failed attempt
            would make the day's figure understate what the wall actually
            spent. */
+        /* Before `#heal`, which is the ordering the old in-`#heal` call had for
+           the same reason: `choose` must have stopped offering the refused
+           account by the time anything re-sends. */
+        this.#spend(c);
         this.#heal(c);
         this.#nudge(c);
         this.#settleRepair(c);
@@ -1861,7 +1865,26 @@ export class Skein {
     );
   }
 
+  /** Tell the waterfall an account has just been refused.
+   *
+   *  Separate from `#heal` because the fact and the policy are separate: the
+   *  server refusing this subscription is news whether or not the prompt is
+   *  going to be sent again, and folding it into the resend meant a 429 that
+   *  landed mid-turn never marked anything. See `Conversation.pendingSpent`. */
+  #spend(conv: Conversation) {
+    const label = conv.pendingSpent;
+    if (!label) return;
+    conv.pendingSpent = null;
+    waterfall.markSpent(label);
+  }
+
   /** Try a turn again that broke before it reached a model.
+   *
+   *  That first sentence was decoration until 2026-09-14 — three places in this
+   *  codebase asserted the property and nothing tested it, which is sink
+   *  `5748301e`: a prompt re-sent to a card that had already acted on it. It is
+   *  now true by construction, because `Conversation` will not arm a heal for a
+   *  turn that produced text or a tool call. See `mayHeal`.
    *
    *  The decision is the card's (`Conversation.pendingHeal`, and
    *  `wasMalformedRequest` for why it is safe); this is only the doing of it.
@@ -1915,15 +1938,10 @@ export class Skein {
        overwrite the handle and leak the first — and there is no path that wants
        two anyway, since a heal only ever comes from a settled turn. */
     if (this.#heals.has(conv.id)) return;
-    /* The server has refused this account, which is newer than anything the
-       poll knows and is the actual refusal rather than a percentage implying
-       one. Marked *before* the delay so that when `send` runs, `choose` has
-       already stopped offering the account that just said no — without this the
-       card would re-send to the same subscription and fail identically until
-       the budget ran out. */
-    if (heal.kind === "limited" && conv.accountLabel) {
-      waterfall.markSpent(conv.accountLabel);
-    }
+    /* The account was marked spent by `#spend`, before this ran and outside
+       the decision about re-sending — see `Conversation.pendingSpent`. It used
+       to be done here, which meant a 429 that arrived mid-turn marked nothing
+       once such a turn stopped being re-sent. */
     conv.activity =
       heal.kind === "overloaded"
         ? "overloaded — waiting…"

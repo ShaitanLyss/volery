@@ -20,6 +20,9 @@ import {
   describeTool,
   endingFor,
   healKindOf,
+  mayHeal,
+  healHeldNote,
+  producedModelOutput,
   healGaveUpNote,
   HEAL_BUDGET,
   type HealKind,
@@ -1115,6 +1118,40 @@ export class Conversation {
   #turnText: string[] = [];
   #sawAskTool = false;
 
+  /** Whether this turn has got anything out of a model that the agent would be
+   *  made to do twice if the prompt were sent again. The evidence `mayHeal`
+   *  decides a resend on; see it for why the question is asked of the turn
+   *  rather than of the failure's kind, and for the 36-of-80 that motivated it.
+   *
+   *  Not `#turnText.length > 0`, which is next to it and is the near-miss worth
+   *  naming: that field holds text only, so a turn that had spent ten minutes
+   *  editing files and said nothing would have read as a turn that did nothing
+   *  — which is precisely the turn it is most important not to ask for twice.
+   *
+   *  What counts is `producedModelOutput`, deliberately one pure predicate over
+   *  the whole message rather than a judgement spread through the fold below.
+   *
+   *  Deliberately not `$state`. Nothing draws it; it is read once, inside the
+   *  `result` arm that folds the turn that set it. */
+  #producedOutput = false;
+
+  /** An account the server has just refused, for Skein to mark spent.
+   *
+   *  A field rather than a call, for the reason `pendingHeal` is one — the card
+   *  decides, Skein does, and `waterfall` is not something a `Conversation`
+   *  reaches for. It is separate from `pendingHeal` because the two answer
+   *  different questions and only one of them used to be asked: `markSpent`
+   *  lived inside `#heal`, so an allowance that ran out *mid-turn* — 37 of the
+   *  60 real 429s on this machine — marked nothing at all once such a turn
+   *  stopped being re-sent. The account stayed trusted, `choose` went on
+   *  offering it against a reading up to a minute old, and the swap the
+   *  waterfall exists for waited for the user to send something by hand.
+   *
+   *  Which account refused is a fact about the account. Whether to send the
+   *  prompt again is a policy about the prompt. Nothing about the second should
+   *  be able to suppress the first. */
+  pendingSpent = $state<string | null>(null);
+
   /** `TaskCreate` calls whose receipt has not yet named their number. */
   #creating = new Map<string, { subject: string; activeForm: string }>();
 
@@ -2005,6 +2042,7 @@ export class Conversation {
   #beginTurn() {
     this.#turnText = [];
     this.#sawAskTool = false;
+    this.#producedOutput = false;
     this.streaming = "";
     this.restingSince = null;
     this.working = true;
@@ -2231,6 +2269,14 @@ export class Conversation {
            the error line to have come from. One predicate, two folds, which is
            what stops the halves drifting; see sink 999cadb7. */
         if (isApiErrorMessage(ev)) break;
+
+        /* Asked once, of the whole message, and before the blocks are drawn —
+           the judgement is arithmetic rather than drawing, so it excludes the
+           `<synthetic>` messages the loop below deliberately *does* draw. The
+           guard that already makes that distinction for context occupancy sits
+           twelve lines further down, which is too late to borrow. See
+           `producedModelOutput`. */
+        if (producedModelOutput(ev.message)) this.#producedOutput = true;
 
         for (const block of ev.message?.content ?? []) {
           if (block.type === "text" && block.text?.trim()) {
@@ -2515,7 +2561,28 @@ export class Conversation {
              find. Skein adds the note saying it is trying again, when it
              actually does. */
           const kind = healKindOf(ev);
-          if (kind && this.#lastSent !== null && this.healAttempts < HEAL_BUDGET[kind]) {
+          /* Before any decision about re-sending, and outside every branch
+             below — see `pendingSpent`. The server refusing this account is
+             news whatever is then done about the prompt. */
+          if (kind === "limited" && this.accountLabel) {
+            this.pendingSpent = this.accountLabel;
+          }
+          /* The turn's own shape decides this, not the failure's kind — the
+             licensing condition `turns.md` has always stated and nothing here
+             used to check. A turn that already got text or a tool call out of
+             a model is one whose prompt must not be sent again, whatever broke
+             it. See `mayHeal`; it is checked before the budget so that holding
+             a resend spends none of it. */
+          if (
+            kind !== null &&
+            this.#lastSent !== null &&
+            !mayHeal(kind, this.#producedOutput)
+          ) {
+            /* Never silently. This is the third way a heal can end and it was
+               the one with no line: an error above and nothing following it
+               reads as a card that gave up for no reason. */
+            this.#push("meta", healHeldNote(kind));
+          } else if (kind && this.#lastSent !== null && this.healAttempts < HEAL_BUDGET[kind]) {
             this.healAttempts += 1;
             this.pendingHeal = { text: this.#lastSent, attempt: this.healAttempts, kind };
           } else if (kind && this.healAttempts >= HEAL_BUDGET[kind]) {
