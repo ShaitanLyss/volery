@@ -246,6 +246,42 @@ its retry without anyone remembering to come back here. Three attempts, `CONNECT
 ~97s worst case with `busy` held throughout — bounded on purpose, since a face that never
 stops trying is a face that can never be pressed again.
 
+### And then the button was itself half an answer
+
+Shipped, shown to the user, and the reply was *"I said I wanted auto connect"* — correctly. A
+button you must press every launch to spend a token you already gave is the same chore the
+browser sign-in was, one click cheaper, and the point of keeping a credential is not having to
+present it again. The wall connects itself.
+
+`#autoConnect` hangs off `#wire`'s `refresh` rather than a widget's mount, so it belongs to
+the deck's wiring — and it is **not awaited**, because `#bringUp` can hold ninety seconds of
+retries and `#wiring` is a lock on *wiring*: holding it across a network wait would make the
+flag mean something it does not say.
+
+`shouldAutoConnect` is pure and lives in `spotify.ts`, because *should something happen that
+nobody asked for* is the judgement worth being able to read as a table. Three conditions, each
+one a way an unprompted act turns into an annoying one:
+
+- **`linked`** — otherwise the unasked act is opening a *browser*, which a widget may not do
+  to you. That is the whole difference between connecting and signing in.
+- **`phase === "off"`** — never onto a session already up, coming up, or waiting on a person
+  in a browser tab. Nor onto a `fault`, whose three attempts are already spent and whose two
+  buttons are a person's to press.
+- **`!tried`** — once per *launch*, not once per mount. The deck is a module singleton, so the
+  flag is per launch for free. Without it, scrolling the widget off the wall and back re-wires
+  the deck and would restart a player you had deliberately stopped, which is the one thing
+  `detach` already refuses to do, arrived at from the other side.
+
+The flag is set **before** the conditions are read rather than after the attempt: this launch
+has had its unprompted go whether the answer was to connect or that there was nothing to
+connect with.
+
+Failure still speaks — `start` routes through `#guard`, so a fault draws librespot's own words
+with `try again` and `sign in again` under them. **An unasked attempt that failed silently
+would be worse than not trying**, since the widget would sit on "signed in — not connected"
+with no account of why. The button stays for exactly the two states auto-connect will not
+touch: after a stop, and after a fault.
+
 ## Signing in, and the four minutes nobody could see
 
 Reported 2026-08-28, in the words that matter because they are the symptom:
