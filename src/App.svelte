@@ -2452,15 +2452,22 @@
        else. Escape stops a turn further down this ladder and Enter belongs to
        the draft, and neither is what you meant while the wall is asking whether
        to carry out something you said out loud. Only these two keys, and only
-       while something is actually pending — so the branch is invisible the rest
-       of the time. */
-    if (voicing.pending && !isTyping(e.target)) {
-      if (e.key === "Enter") {
+       while a plan is pending or a parse is out — so the branch is invisible the
+       rest of the time. */
+    if ((voicing.pending || voicing.thinking) && !isTyping(e.target)) {
+      if (e.key === "Enter" && voicing.pending) {
         e.preventDefault();
         await voicing.confirm();
         return;
       }
       if (e.key === "Escape") {
+        /* **Escape also reaches a parse that is still out**, which is the half
+           that was missing: `#gen` exists precisely so that letting go during a
+           steward parse means something, and until this branch saw `thinking`
+           there was no gesture anywhere that could produce one — the bar draws
+           its dismiss button under the thinking line, and Escape stopped a turn
+           instead. Enter stays with `pending` alone: there is nothing yet to say
+           yes to. */
         e.preventDefault();
         voicing.dismiss();
         return;

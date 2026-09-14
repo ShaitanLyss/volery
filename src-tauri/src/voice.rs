@@ -1092,12 +1092,14 @@ impl Ear {
         Ok(())
     }
 
-    /// Give it back. Infallible on purpose: a poisoned lock here would otherwise
-    /// leave the device claimed forever by a recognition that has ended.
+    /// Give it back. Infallible on purpose, and **through a poisoned lock** —
+    /// which the first version of this said and did not do: `if let Ok` skips
+    /// the body on a `PoisonError`, so the one case the comment was written
+    /// about was the one case it did not cover, and the device would have stayed
+    /// claimed for the life of the process.
     fn release(&self) {
-        if let Ok(mut held) = self.0.lock() {
-            held.alone = false;
-        }
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        held.alone = false;
     }
 }
 
@@ -1171,32 +1173,43 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
            and it is guarded on the flag being still ours, so a close followed
            immediately by an open cannot have this thread clear the new ear on
            its way out. */
-        let mine = match handle.state::<Ear>().0.lock() {
-            Ok(mut held) => {
-                let mine = held.open.as_ref().map(|f| Arc::ptr_eq(f, &stop)).unwrap_or(false);
-                if mine {
+        let speak = match handle.state::<Ear>().0.lock() {
+            Ok(mut held) => match held.open.as_ref() {
+                /* Still ours: let go of the slot and say so. This is the ear
+                   falling over on its own — no microphone, a model that would
+                   not fetch — and it is the one case with a `failed` worth
+                   carrying. */
+                Some(flag) if Arc::ptr_eq(flag, &stop) => {
                     held.open = None;
+                    true
                 }
-                mine
-            }
+                /* Somebody else's ear is in the slot. This thread was superseded
+                   and is coming down behind a *live* microphone, so it says
+                   nothing at all — including about its own failure, which
+                   belongs to a stream that has already been replaced. */
+                Some(_) => false,
+                /* Nobody's. `voice_close` empties the slot and *then* sets the
+                   flag, so this is the ordinary deliberate close — and it is
+                   exactly the news. Reading it as "not mine" is how a two-way
+                   guard broke the thing it was written to protect: `mine` was
+                   false on every close, nothing emitted, and `voicing.open`
+                   latched true over a microphone that was off — with the
+                   privacy dot lit, the ear unable to reopen, and Alt+V dead
+                   because it thought an ear was already listening. */
+                None => true,
+            },
             Err(_) => false,
         };
-        /* **Only this thread's own death is news**, and the guard has to reach
-           the announcement as well as the slot. A close followed immediately by
-           an open leaves the old thread still coming down — it notices `stop`
-           at the top of its loop and has a flush to transcribe first — and an
-           unguarded `open: false` from it would tell the wall it had stopped
-           listening while the *new* ear held an open microphone. That is the
-           privacy indication reading the exact opposite of the truth, and it
-           would also re-arm the key's one-shot path alongside a live ear.
-
-           A superseded thread says nothing at all, including about its own
-           failure: whatever went wrong belongs to a stream that has already been
-           replaced, and the ear now open is the one the wall should be told
-           about. An ear that falls over on its *way up* is still `mine` — it
-           holds the slot until it lets go of it — so a real failure is reported
-           by the only thread entitled to. */
-        if mine {
+        /* **The question is whether a live ear would be lied about**, which is
+           three answers and not two. A close followed immediately by an open
+           leaves the old thread still coming down — it notices `stop` at the top
+           of its loop and has a flush to transcribe first — and an `open: false`
+           from it there would tell the wall it had stopped listening while the
+           new ear held an open microphone: the privacy indication reading the
+           exact opposite of the truth, and the key's one-shot path re-armed
+           alongside a live stream. That is the only case worth silencing, and
+           it is the only one where somebody else's flag is in the slot. */
+        if speak {
             let _ = handle.emit("voice:ear", Listening { open: false, failed: out.err() });
         }
     });

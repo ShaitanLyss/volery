@@ -119,12 +119,27 @@ Four rungs answer, and they cost four different things:
   microphone is not an error on Windows — WASAPI shared mode grants both, and
   what you get is two recognisers, two transcripts of one room, and a bar
   flickering between them. A failure that succeeds is the worse kind.
-- **Only the ear's own thread may say the ear is closed.** A close-then-open
-  leaves the old thread coming down with a flush still to transcribe; an
-  unguarded `open: false` from it tells the wall it has stopped listening while
-  the new ear holds an open microphone — the privacy indication reading the exact
-  opposite of the truth. `Arc::ptr_eq`, and it has to reach the emit as well as
-  the slot.
+- **The ear's closing is announced by its own thread, and the guard is three-way
+  rather than two.** A close-then-open leaves the old thread coming down with a
+  flush still to transcribe; an unguarded `open: false` from it tells the wall it
+  has stopped listening while the new ear holds an open microphone — the privacy
+  indication reading the exact opposite of the truth. So the emit is guarded as
+  well as the slot. But `voice_close` empties the slot *before* it sets the flag,
+  so a plain `Arc::ptr_eq(…).unwrap_or(false)` is false on **every deliberate
+  close** — and that version shipped for one commit: nothing emitted, `voicing.open`
+  latched true over a dead microphone, the privacy dot stayed lit, and both Alt+V
+  and Alt+Shift+V went dead because the front end believed an ear was already
+  open. Only a window reload recovered it. The three cases are *mine* (clear and
+  announce), *nobody's* (the ordinary close — announce), and *somebody else's*
+  (superseded — silent). The general shape: **a guard written for one case has to
+  be read against every state its subject can actually be in**, and "the slot is
+  empty" was a state nobody checked the guard against.
+- **If you captured a generation before an await, pass it.** `say`'s `gen`
+  defaults to *now*, which is right for the control surface and wrong for anything
+  that took one earlier: the default is evaluated after the await, silently
+  adopting whatever superseded it. `listen()` omitted it and `#answer`'s check
+  therefore passed while `listen`'s own suppressed the report — the wall moving
+  and saying nothing, which is the same bug the generation exists to prevent.
 - **`send` and `broadcast` are wired and are outside `IMMEDIATE`.** Project cards
   spawn with `--dangerously-skip-permissions`, so a misheard message is the most
   destructive thing this application can do. Both are spoken back and held for a

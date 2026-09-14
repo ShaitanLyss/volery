@@ -373,9 +373,12 @@ export class Voicing {
     if (this.pending) {
       const answer = answeredIn(text);
       if (answer === "no") {
-        this.said = text;
         this.#attending = 0;
         this.dismiss();
+        /* After `dismiss`, which clears it — the bar says what it let go of, and
+           this is the one branch where `said` was being written and then wiped
+           one line later. */
+        this.said = text;
         this.says = "let go";
         return;
       }
@@ -461,7 +464,7 @@ export class Voicing {
     }
     const message = messageTo(cards, rest, wall);
     if (message) return await this.#answer(message, "grammar", false, gen);
-    return await this.#escalate(whole, wall, false, gen);
+    return await this.#escalate(whole, wall, false, gen, rest);
   }
 
   /* ── the wall, as voice sees it ────────────────────────────────────────── */
@@ -589,6 +592,14 @@ export class Voicing {
    *  is `IMMEDIATE`'s complement — everything the wall can do that is not merely
    *  looking at it — and a caller that forgot would be a broadcast to a wall of
    *  cards spawned with `--dangerously-skip-permissions`. */
+  /* `gen` defaults to *now*, which is right for the control surface — it drives
+     one sentence at a time and nothing is in flight behind it — and wrong for
+     anything that captured a generation before an await. `listen()` omitted it
+     and the default was then evaluated after a recognition had been open for up
+     to 35 seconds, quietly adopting whatever had superseded it: `#answer`'s
+     check passed, the plan ran, and `listen`'s own check suppressed the report.
+     The wall moves and says nothing, which is finding #3 rebuilt on the other
+     path. **If you captured a generation, pass it.** */
   async say(utterance: string, confirmed = false, gen = this.#gen): Promise<Heard> {
     const wall = await this.wallFor(utterance);
     const plan = hear(utterance, wall);
@@ -639,8 +650,16 @@ export class Voicing {
     wall: Wall,
     confirmed: boolean,
     gen: number,
+    /** What to score the file shortlist against, when that is not the whole
+     *  sentence. An address is words the model needs and the scorer does not:
+     *  this wall's own territory is *called* volery, so "volery" as a scoring
+     *  word is a subsequence of every path under it and fills the sixty slots
+     *  with files the sentence was not about. Stripping it costs nothing — a
+     *  name is never a filename — and the prompt still carries the whole
+     *  utterance, which is where the address has to be. */
+    about = utterance,
   ): Promise<Heard> {
-    const seen = narrow(wall, utterance);
+    const seen = narrow(wall, about);
     this.#parses++;
     try {
       const said = await invoke<string>("voice_steward", {
@@ -762,7 +781,7 @@ export class Voicing {
          because the microphone is shut by then and a pulsing ear over a parse
          says the wrong thing about what is open. */
       this.listening = false;
-      const what = await this.say(heard.text);
+      const what = await this.say(heard.text, false, gen);
       /* Dropped rather than drawn if you have moved on — see `#gen`. */
       if (gen === this.#gen) this.report(what);
     } catch (err) {
@@ -815,6 +834,12 @@ export class Voicing {
        has nothing left to land in. */
     this.#gen++;
     this.#forget();
+    /* Including the arming: `attend()` puts the wall in a state where the next
+       thing anybody in the room says is taken as an instruction, and says so on
+       the bar. Escape clears the saying and used to leave the state — an armed
+       microphone with nothing drawn to admit it, which is the one disagreement
+       between indicator and truth this subsystem may not have. */
+    this.#attending = 0;
     this.said = "";
     this.says = "";
     this.partial = "";

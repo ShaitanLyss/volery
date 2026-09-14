@@ -77,6 +77,11 @@
              colour here is reserved for status. -->
         <span class="ear mull" aria-hidden="true"></span>
         <span class="what">thinking…</span>
+        <!-- A parse is seconds long and nothing else here could stop one: the
+             thinking line sat above the dismiss button and hid it, so `#gen` —
+             which exists so that letting go *during* a parse means something —
+             had no gesture anywhere that could produce one. Escape does it too. -->
+        <button class="no" onclick={() => voicing.dismiss()}>dismiss</button>
       {:else if voicing.pending}
         <span class="reads">{voicing.pending.reads}?</span>
         <!-- Enter and Escape do these two from anywhere, and the buttons exist
