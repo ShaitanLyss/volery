@@ -1135,6 +1135,16 @@ export class Conversation {
    *  `result` arm that folds the turn that set it. */
   #producedOutput = false;
 
+  /** Whether this card has already said it is waiting for an allowance rather
+   *  than nudging.
+   *
+   *  A nudge deferred for want of an account is re-entered by the hold sweep
+   *  every minute, and on the job side every further notification arms another
+   *  — so without this the transcript fills with the same sentence for as long
+   *  as the window takes to turn over. Cleared in `#beginTurn`: a turn opening
+   *  is the card demonstrably moving again, whatever moved it. */
+  saidNoAllowance = $state(false);
+
   /** An account the server has just refused, for Skein to mark spent.
    *
    *  A field rather than a call, for the reason `pendingHeal` is one — the card
@@ -2043,6 +2053,7 @@ export class Conversation {
     this.#turnText = [];
     this.#sawAskTool = false;
     this.#producedOutput = false;
+    this.saidNoAllowance = false;
     this.streaming = "";
     this.restingSince = null;
     this.working = true;

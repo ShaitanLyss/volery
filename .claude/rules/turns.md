@@ -494,6 +494,71 @@ What was wrong was what the wall drew while it waited, and it was worse than say
   thing you had just refused.
 - **A dead card is not nudged.** `markExited` clears the stall along with the jobs: there is no
   process to look at anything, and the amber would be asking for a gesture that does nothing.
+- **And a card with no allowance is not nudged either**, which is the same argument one
+  resource further out. A nudge is the one prompt on this wall Volery sends *on its own
+  initiative*, and that is affordable because the usual outcome is a card picking work back up.
+  Against an exhausted allowance the outcome is known before it goes: the turn cannot reach a
+  model, so it can neither flush a queue nor pick a job up, and the only thing it can produce
+  is another error. Sink `4ac63054` is what that looks like from outside — two nudges and four
+  heal attempts interleaved with *"You've hit your session limit · resets 3:30pm"*, and the
+  user's title is the whole of the argument: Volery is "useless doing automatic nudges when
+  there is no allowance left instead of naturally waiting for" the reset.
+
+  The question is asked of `waterfall.next`, not of the last error: what matters is whether
+  anything would take work *now* — another account, or a window that has since turned over.
+  Asking is free and provably so, which had to be checked rather than assumed: `next`'s only
+  mutation is deleting `#spent` entries already past, `#spent` is a plain `Map` and not
+  `$state`, and the call sits in a timer callback where no reactive dependency can be
+  registered. Skipped where no account is managed, since then there is no allowance to know
+  about — and note this does *not* suppress nudges on a cold start, because `standingOf`
+  returns `ready` for an allowance that is missing or failed, so an unread waterfall lets
+  everything through rather than holding it.
+
+- **A deferred nudge is put back, not dropped, and that is the half that makes the sentence
+  true.** The note says the card is waiting for the reset. Nothing else would ever re-arm one:
+  the prompt arm fires on a `result` and the job arm on a notification, and the premise of the
+  stall is that nothing is running to produce either — so a nudge merely dropped would leave
+  the card stalled past the reset with Volery's last word on it being that it was waiting.
+  `#holdSweep` re-enters `#nudge` for any card still carrying a `pendingNudge`, which is one
+  `choose` a minute on an idle card and no network at all, and `#nudge` keeps one timer per
+  card so finding the same one again costs nothing. **The budget is deliberately not spent**,
+  for the reason the ghost backstop above gives: a nudge that never went is not an attempt, and
+  charging one takes the allowance away from a real stall later in the session.
+
+  The note is said **once**, on `saidNoAllowance`, cleared in `#beginTurn`. Without it the
+  sweep prints the same sentence every minute for as long as the window takes to turn over, and
+  on the job side every further notification arms another — the unbounded case the `fresh`
+  guard beside `pendingNudge` already exists to stop.
+
+- **"Every window is spent" and "nothing is signed in" are opposites, and collapsing them was
+  the first cut's bug.** Written as `choice.kind !== "use"` the guard treats them alike. A
+  `hold` ends by itself at a known time and waiting is exactly right; a `none` never ends,
+  because there is nothing to reset — so a card promising to wait for that reset is a card that
+  has quietly stopped working, which is the sentence `#settleAccount` goes to length to avoid
+  saying. `choose` also hands back a `why` naming the thing to go and fix, and the collapsed
+  branch threw it away. `nudgeSkipFor` is the three-way decision, pure and in `classify.ts` so
+  it can be asserted at all: a hold waits and says so, a fault names itself and is raised to
+  `Skein.fault`.
+
+- **The one held slot refuses to be overwritten, and that is where the class was closed.**
+  `conv.held` holds the text waiting for an account, and both `#nudge` and `#heal` send on
+  their own initiative on a card that may already be holding your words — a held card is
+  deliberately not `working`, which is exactly what lets them through. Their text then landed
+  in that slot on top of yours, `#writeHold` persisted it, and `releaseHeld` spent the account
+  that finally freed up on *"skein here — if a message is queued behind this one…"*, with your
+  line still `awaited`, so `awaiting` never came down and the next nudge was armed by that.
+  Both orderings are reachable — the job arm has no `held` check at all, and the prompt arm can
+  be armed before a send is held inside the grace.
+
+  Guarded at `#hold` rather than at each caller, because one slot with many writers wants the
+  refusal where the write is: a check at the callers is one `if` somebody has to remember, and
+  the cost of forgetting it is a prompt of yours that no longer exists anywhere. The same text
+  is let through, since that is `releaseHeld` putting a prompt back after a door turned out to
+  be shut and needing its timer re-armed. `#nudge` and `#heal` refuse a held card as well, both
+  because a send that can only join the queue is not worth arming and because belt and braces
+  is cheap here. This is the third time this file has recorded the hold and the nudge meeting
+  each other; the bullet above has the 08:06-to-13:03 case, which is the other order of the
+  same meeting.
 
 `WAKE_GRACE_S` is twelve seconds, which is just past the median wake delay of ten — long
 enough that a card taking the ordinary path is never accused, short enough that the reading

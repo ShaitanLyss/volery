@@ -1366,6 +1366,67 @@ export function nudgeGaveUpNote(kind: NudgeKind = "job"): string {
     : "still nothing after asking twice — send it something to pick the job up";
 }
 
+/** What a card says when a nudge fell due and no account would have taken it.
+ *
+ *  A nudge is the one prompt on this wall Volery sends **on its own
+ *  initiative** — a whole turn, against a whole context, that nobody asked
+ *  for. That is affordable when the usual outcome is a card picking work back
+ *  up. It is not affordable against an exhausted allowance, where the outcome
+ *  is known in advance: the turn cannot reach a model, so it cannot flush a
+ *  queue or pick up a job, and all it can do is produce another error.
+ *
+ *  Reported by the user with two nudges and four heal attempts interleaved
+ *  against a wall of *"You've hit your session limit · resets 3:30pm"* — sink
+ *  `4ac63054`, whose title is the whole argument: Volery is "useless doing
+ *  automatic nudges when there is no allowance left instead of naturally
+ *  waiting for" the reset.
+ *
+ *  Says what it is *not* doing and why, because the alternative is a card that
+ *  silently stopped asking — the same bar `healHeldNote` and `nudgeGaveUpNote`
+ *  clear, and for the same reason: a card that has stopped trying must not look
+ *  like one that never had to. It may promise the wait because the wait is
+ *  real: the nudge is put back rather than dropped, and the hold sweep re-enters
+ *  it. A sentence saying "waiting" over a nudge nothing would ever fire again
+ *  would be the worse half of both options. */
+export function nudgeNoAllowanceNote(kind: NudgeKind = "job"): string {
+  const tail = "no allowance left — waiting for the reset rather than spending a turn on it";
+  return kind === "prompt" ? `${tail}; send again yourself once it is back` : tail;
+}
+
+/** What a nudge does about the account it was offered, given the waterfall's
+ *  answer. `null` means go ahead.
+ *
+ *  The three-way shape exists because collapsing two of them was a real bug in
+ *  the first cut of this, caught in review: a guard written as
+ *  `choice.kind !== "use"` treats *"every window is spent"* and *"no account is
+ *  signed in"* as one thing, and they are opposites. The first ends by itself
+ *  at a known time and waiting is exactly right. The second never ends — there
+ *  is no reset, because there is nothing to reset — so a card promising to wait
+ *  for one is a card that has quietly stopped working, which is the sentence
+ *  `#settleAccount` already goes to length to avoid saying. Worse, `choose`
+ *  hands back a `why` naming the thing to go and fix ("not signed in — sign in
+ *  to this account"), and the collapsed branch threw it away.
+ *
+ *  So: a hold waits and says so, a fault names itself and is raised. Pure and
+ *  here rather than inline in `#nudge` because the distinction is the part with
+ *  a history of being got wrong, and inline it could not be asserted at all —
+ *  everything around it lives behind the purity boundary. */
+export function nudgeSkipFor(
+  choiceKind: "use" | "hold" | "none",
+  kind: NudgeKind,
+  why: string | null,
+): { note: string; fault: string | null } | null {
+  if (choiceKind === "use") return null;
+  if (choiceKind === "none") {
+    /* `why` is `choose`'s own sentence and is the only actionable thing in
+       either branch. Falling back rather than asserting it is present: a note
+       reading "undefined" on a card that has stopped is worse than a vague one. */
+    const said = why ?? "no account will take work — check the accounts panel";
+    return { note: said, fault: said };
+  }
+  return { note: nudgeNoAllowanceNote(kind), fault: null };
+}
+
 /** What a card says while it is holding a prompt no account would take.
  *
  *  The fallback wording, for the case where nothing named a particular blocker.

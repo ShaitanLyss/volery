@@ -66,6 +66,8 @@ import {
   mayHeal,
   healHeldNote,
   producedModelOutput,
+  nudgeNoAllowanceNote,
+  nudgeSkipFor,
   healDelayMs,
   healNote,
   healGaveUpNote,
@@ -2431,5 +2433,80 @@ describe("healHeldNote", () => {
      looking at. */
   test("is not the line for a budget that ran out", () => {
     for (const k of KINDS) expect(healHeldNote(k)).not.toBe(healGaveUpNote(k));
+  });
+});
+
+describe("nudgeNoAllowanceNote", () => {
+  /* A nudge is the one prompt Volery sends on its own initiative. Against an
+     exhausted allowance its outcome is known before it goes, so it is not sent
+     — and sink 4ac63054 is what happens when it is. */
+  test("names the allowance and says it is waiting rather than asking", () => {
+    for (const k of ["prompt", "job"] as const) {
+      const note = nudgeNoAllowanceNote(k);
+      expect(note).toMatch(/no allowance left/);
+      expect(note).toMatch(/waiting for the reset/);
+    }
+  });
+
+  /* The prompt side is the one holding words of yours, so it is the one that
+     has somewhere to hand the decision back to. */
+  test("only the prompt side offers you the next move", () => {
+    expect(nudgeNoAllowanceNote("prompt")).toMatch(/send again yourself/);
+    expect(nudgeNoAllowanceNote("job")).not.toMatch(/send again yourself/);
+  });
+
+  test("is not either of the other two things a nudge can say", () => {
+    for (const k of ["prompt", "job"] as const) {
+      expect(nudgeNoAllowanceNote(k)).not.toBe(nudgeGaveUpNote(k));
+      expect(nudgeNoAllowanceNote(k)).not.toBe(nudgeNote(1, k));
+      expect(nudgeNoAllowanceNote(k)).not.toBe(nudgeNote(2, k));
+    }
+  });
+
+  test("defaults to the job wording, as its siblings do", () => {
+    expect(nudgeNoAllowanceNote()).toBe(nudgeNoAllowanceNote("job"));
+  });
+});
+
+describe("nudgeSkipFor", () => {
+  test("an account that will take work is not skipped", () => {
+    expect(nudgeSkipFor("use", "prompt", null)).toBeNull();
+    expect(nudgeSkipFor("use", "job", null)).toBeNull();
+  });
+
+  /* Every window spent. This ends by itself at a known time, so waiting is
+     exactly right and the card says so. */
+  test("a hold waits, and raises no fault", () => {
+    for (const k of ["prompt", "job"] as const) {
+      const skip = nudgeSkipFor("hold", k, null);
+      expect(skip?.note).toBe(nudgeNoAllowanceNote(k));
+      expect(skip?.fault).toBeNull();
+    }
+  });
+
+  /* The distinction the first cut of this collapsed, and they are opposites:
+     nothing signed in never ends, because there is nothing to reset. A card
+     promising to wait for that reset is a card that has quietly stopped. */
+  test("a fault names itself instead of promising a reset", () => {
+    const why = "not signed in — sign in to this account";
+    const skip = nudgeSkipFor("none", "prompt", why);
+    expect(skip?.note).toBe(why);
+    expect(skip?.fault).toBe(why);
+    expect(skip?.note).not.toMatch(/waiting for the reset/);
+  });
+
+  test("a fault with no sentence still says something actionable", () => {
+    const skip = nudgeSkipFor("none", "job", null);
+    expect(skip?.note).toBeTruthy();
+    expect(skip?.note).not.toMatch(/undefined|null/);
+    expect(skip?.fault).toBe(skip!.note);
+  });
+
+  /* The two skips must not read alike: one is a clock, the other is a job for
+     the person reading it. */
+  test("the two skips are different sentences", () => {
+    const hold = nudgeSkipFor("hold", "prompt", null);
+    const none = nudgeSkipFor("none", "prompt", "not signed in — sign in to this account");
+    expect(hold?.note).not.toBe(none?.note);
   });
 });

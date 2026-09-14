@@ -31,6 +31,7 @@ import {
   healNote,
   HOLD_LINE,
   NUDGE_BUDGET,
+  nudgeSkipFor,
   nudgeGaveUpNote,
   nudgeNote,
   NUDGE_PROMPT_TEXT,
@@ -368,6 +369,12 @@ export class Skein {
          precise way out and this is the backstop for the case it cannot cover:
          a blocker that named no reset, so there was no instant to aim at. */
       if (this.convs.some((c) => c.held)) void this.releaseHeld();
+      /* And the nudges put back for want of an allowance. This is the only
+         thing that re-enters one: the prompt arm is armed by a `result` and the
+         job arm by a notification, and a card stalled with nothing running
+         produces neither. `#nudge` keeps one timer per card, so a sweep that
+         finds the same card again costs nothing. */
+      for (const c of this.convs) if (c.pendingNudge) this.#nudge(c);
     }, HOLD_SWEEP_MS);
   }
 
@@ -1933,6 +1940,12 @@ export class Skein {
   #heal(conv: Conversation) {
     const heal = conv.pendingHeal;
     if (!heal) return;
+    /* A held card is already waiting for an account, so there is nothing a
+       resend can do but join the queue — and before `#hold` learned to refuse,
+       joining it meant overwriting the prompt being held. Belt as well as
+       braces: the slot is safe now either way, and a heal that cannot help is
+       still a heal not worth arming. */
+    if (conv.held) return;
     conv.pendingHeal = null;
     /* One in flight per card. The map is keyed by id, so a second would
        overwrite the handle and leak the first — and there is no path that wants
@@ -2132,6 +2145,56 @@ export class Skein {
       if (conv.working || conv.dormant) return;
       const prompt = nudge.kind === "prompt";
       if (prompt ? conv.awaiting === 0 : conv.unwoken === null) return;
+      /* A nudge is the one prompt this app sends on its own initiative, and an
+         exhausted allowance is the one case where its outcome is known before
+         it goes: the turn cannot reach a model, so it can neither flush a queue
+         nor pick a job up, and the only thing it can produce is another error.
+         Sink `4ac63054` is what that looks like from the outside — two nudges
+         and four heal attempts interleaved with "You've hit your session
+         limit".
+
+         A held card is the same question already answered: it is waiting for an
+         account by construction, so there is nothing to flush it with.
+
+         Asked of the waterfall rather than of the last error, because the
+         question is whether anything would take work *now* — another account,
+         or a window that has since turned over. `next` commits nothing: its one
+         mutation is expiring `#spent` entries that are already past, `#spent`
+         is a plain Map rather than `$state`, and this runs in a timer callback
+         where no reactive dependency can be registered. Skipped entirely where
+         no account is managed, since then there is no allowance to know about
+         and a card with no waterfall behind it must nudge exactly as it did. */
+      if (conv.held) return;
+      if (this.#managing) {
+        const choice = waterfall.next({
+          bypass: conv.bypassCaps,
+          stickTo: conv.accountLabel,
+        });
+        const skip = nudgeSkipFor(choice.kind, nudge.kind, choice.kind === "none" ? choice.why : null);
+        if (skip) {
+          /* Put back, not dropped — this is the difference between waiting and
+             giving up, and the note promises the former. Nothing else would
+             re-arm it: the job arm only fires on a *new* notification, and the
+             premise of the stall is that nothing is running to produce one. The
+             hold sweep re-enters `#nudge`, which is a `choose` a minute on an
+             idle card and no network at all. The budget is left alone for the
+             same reason it is not spent on a ghost — a nudge that never went is
+             not an attempt, and charging one takes the allowance away from a
+             real stall later in the session. */
+          conv.pendingNudge = nudge;
+          if (skip.fault !== null) this.fault = skip.fault;
+          /* Once. The note is otherwise printed on every sweep for as long as
+             the window takes to turn over, and on the job side every further
+             notification re-arms one — the unbounded case the `fresh` guard
+             next to `pendingNudge` exists to stop. Cleared when a turn opens,
+             which is the card demonstrably moving again. */
+          if (!conv.saidNoAllowance) {
+            conv.saidNoAllowance = true;
+            conv.note(skip.note);
+          }
+          return;
+        }
+      }
       if (prompt) conv.promptNudgeAttempts = nudge.attempt;
       else conv.nudgeAttempts = nudge.attempt;
       conv.note(nudgeNote(nudge.attempt, nudge.kind));
@@ -2325,6 +2388,23 @@ export class Skein {
    *  `until` null and leaves the poll as the only way out, which is right:
    *  there is nothing to aim a timer at. */
   #hold(conv: Conversation, text: string, choice: Extract<Choice, { kind: "hold" }>) {
+    /* One slot, and everything that reaches here wants to write it — so the
+       refusal belongs here rather than at each caller, where it is one `if`
+       somebody has to remember and the cost of forgetting is a prompt of yours
+       that no longer exists anywhere.
+       `#nudge` and `#heal` both send on their own initiative, and both can fall
+       due on a card that is *already* holding your words: a held card is
+       deliberately not `working`, which is what lets them through. Their text
+       then landed in this slot on top of yours, `#writeHold` persisted it, and
+       `releaseHeld` spent the account that finally freed up on Volery's own
+       sentence — with your line still `awaited`, so `awaiting` never came down
+       and the next nudge was armed by that. Found in review against sink
+       `4ac63054`, which reports both offenders in one breath: "two nudges and
+       four heal attempts".
+       The same text is allowed through, since that is `releaseHeld` putting a
+       prompt back after a door turned out to be shut, and it needs the timer
+       re-armed. */
+    if (conv.held && conv.held.text !== text) return;
     const blocked = choice.standings.find((st) => st.state === "blocked");
     conv.held = {
       text,
