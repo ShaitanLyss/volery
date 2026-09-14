@@ -54,6 +54,7 @@ import {
   resolveCard,
   resolveTerritory,
   spelt,
+  spoken,
   type Plan,
   type Step,
   type Wall,
@@ -308,7 +309,12 @@ export function inSight(files: string[], utterance: string, cap = IN_SIGHT): str
      order, and no scorer stands between the model and the truth. */
   if (files.length <= cap) return files;
 
-  const words = spelt(utterance)
+  /* `spoken` first and `spelt` over it, which is the pair `resolveFile` uses one
+     rung up: the first turns "markdown dot ts" into `markdown.ts`, the second
+     turns a said "source" into `src`. Getting this wrong is quiet — "markdown"
+     on its own still matches `src/lib/markdown.ts`, so a shortlist built from
+     the raw words looks fine until the file is named by its extension. */
+  const words = spelt(spoken(utterance))
     .toLowerCase()
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !STOP.has(w));

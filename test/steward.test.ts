@@ -453,11 +453,17 @@ describe("the wall the steward is shown, cut to one sentence", () => {
   });
 
   test("a spoken separator is resolved before anything is scored", () => {
-    /* "markdown dot ts" is three words and the file is one. Without `spelt`
-       the word that names the file never matches it, and the shortlist fills
-       with whatever "dot" happens to be a subsequence of. */
-    const files = [...many(500), "src/lib/markdown.ts"];
-    expect(inSight(files, "markdown dot ts", 3)).toContain("src/lib/markdown.ts");
+    /* Precision is what it buys. Said as three words, "markdown" alone matches
+       both of these; glued into `markdown.ts` it matches one, and the one it
+       matches is the one that was said. */
+    expect(inSight(["docs/markdown.md", "src/lib/markdown.ts"], "markdown dot ts", 1)).toEqual([
+      "src/lib/markdown.ts",
+    ]);
+    /* And the substitution `spelt` exists for: a said "source" is `src/`, which
+       no amount of scoring recovers — `src/lib/markdown.ts` has no `o` in it. */
+    expect(
+      inSight([...many(500), "src/lib/markdown.ts"], "source slash lib slash markdown", 3),
+    ).toEqual(["src/lib/markdown.ts"]);
   });
 
   test("a sentence that could not be naming a file is shown none", () => {
