@@ -870,6 +870,7 @@ fn hear_loop(
     };
 
     let mut asked_to_stop = false;
+    let mut lost = false;
     loop {
         if stop() {
             asked_to_stop = true;
@@ -887,8 +888,14 @@ fn hear_loop(
             }
             Err(RecvTimeoutError::Timeout) => {}
             /* The device went away mid-utterance. Whatever was already decoded
-               is still worth handing back, so this breaks rather than errors. */
-            Err(RecvTimeoutError::Disconnected) => break,
+               is still worth handing back, so this breaks rather than errors —
+               and `lost` is what lets the *ear* say why it stopped, since a bar
+               that quietly gives up claiming to listen is the going-quiet
+               failure with a hardware cause behind it. */
+            Err(RecvTimeoutError::Disconnected) => {
+                lost = true;
+                break;
+            }
         }
 
         if vad.detected() || !vad.is_empty() {
@@ -944,6 +951,14 @@ fn hear_loop(
         vad.flush();
         drain(&mut said, false);
         settled(said.join(" ").trim().to_string());
+    }
+    /* The tail first, then the reason. A one-shot says nothing about it: it has
+       already handed back whatever it heard, and an error there would throw a
+       transcript away to report a device it no longer needs. An open ear is the
+       opposite — it is about to stop existing, and *why* is the whole of what
+       the bar can still say. */
+    if lost && !once {
+        return Err("the microphone went away".into());
     }
     Ok(())
 }
@@ -1139,6 +1154,11 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
             return Err("a single recognition has the microphone — try again in a moment".into());
         }
         held.open = Some(stop.clone());
+        /* Said now rather than when the stream is up, so a first run with a
+           286MB download in front of it still draws something — and said *under
+           the lock*, so it cannot land before a dying thread's `open: false`
+           that was decided first. See the exit block. */
+        let _ = app.emit("voice:ear", Listening { open: true, failed: None });
     }
 
     let handle = app.clone();
@@ -1173,32 +1193,35 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
            and it is guarded on the flag being still ours, so a close followed
            immediately by an open cannot have this thread clear the new ear on
            its way out. */
-        let speak = match handle.state::<Ear>().0.lock() {
-            Ok(mut held) => match held.open.as_ref() {
+        let ear = handle.state::<Ear>();
+        /* **Through a poison**, the same argument `Ear::release` just learned:
+           reporting a poisoned lock as "not mine" means nobody clears the slot
+           *and* nobody says the ear is down, which latches `voicing.open` true
+           over a dead microphone — the exact failure this block exists to
+           remove, surviving in the one state it had not been read against. */
+        let mut held = ear.0.lock().unwrap_or_else(|e| e.into_inner());
+        let speak = match held.open.as_ref() {
                 /* Still ours: let go of the slot and say so. This is the ear
                    falling over on its own — no microphone, a model that would
                    not fetch — and it is the one case with a `failed` worth
                    carrying. */
-                Some(flag) if Arc::ptr_eq(flag, &stop) => {
-                    held.open = None;
-                    true
-                }
-                /* Somebody else's ear is in the slot. This thread was superseded
-                   and is coming down behind a *live* microphone, so it says
-                   nothing at all — including about its own failure, which
-                   belongs to a stream that has already been replaced. */
-                Some(_) => false,
-                /* Nobody's. `voice_close` empties the slot and *then* sets the
-                   flag, so this is the ordinary deliberate close — and it is
-                   exactly the news. Reading it as "not mine" is how a two-way
-                   guard broke the thing it was written to protect: `mine` was
-                   false on every close, nothing emitted, and `voicing.open`
-                   latched true over a microphone that was off — with the
-                   privacy dot lit, the ear unable to reopen, and Alt+V dead
-                   because it thought an ear was already listening. */
-                None => true,
-            },
-            Err(_) => false,
+            Some(flag) if Arc::ptr_eq(flag, &stop) => {
+                held.open = None;
+                true
+            }
+            /* Somebody else's ear is in the slot. This thread was superseded and
+               is coming down behind a *live* microphone, so it says nothing at
+               all — including about its own failure, which belongs to a stream
+               that has already been replaced. */
+            Some(_) => false,
+            /* Nobody's. `voice_close` empties the slot and *then* sets the flag,
+               so this is the ordinary deliberate close — and it is exactly the
+               news. Reading it as "not mine" is how a two-way guard broke the
+               thing it was written to protect: it was false on every close,
+               nothing emitted, and `voicing.open` latched true over a microphone
+               that was off — privacy dot lit, the ear unable to reopen, and
+               Alt+V dead because it believed one was already listening. */
+            None => true,
         };
         /* **The question is whether a live ear would be lied about**, which is
            three answers and not two. A close followed immediately by an open
@@ -1210,13 +1233,19 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
            alongside a live stream. That is the only case worth silencing, and
            it is the only one where somebody else's flag is in the slot. */
         if speak {
+            /* **Emitted under the lock, so the wire order is the slot order.**
+               This is `emit` from a thread that is not the main one, which
+               queues rather than dispatching, so holding a mutex across it costs
+               nothing and cannot re-enter. Outside the lock the two events can
+               cross: this thread decides it may speak, is descheduled, a new ear
+               claims the slot and emits `open: true` inline from the main
+               thread, and then this `open: false` lands last — over a live
+               microphone, which is the one lie the whole guard is about. */
             let _ = handle.emit("voice:ear", Listening { open: false, failed: out.err() });
         }
+        drop(held);
     });
 
-    /* Said now rather than when the stream is up, so a first run with a download
-       in front of it still draws something. */
-    let _ = app.emit("voice:ear", Listening { open: true, failed: None });
     Ok(true)
 }
 

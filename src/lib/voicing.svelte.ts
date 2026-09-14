@@ -168,7 +168,7 @@ export class Voicing {
    *  flight at once, and with a boolean the *first* to come back cleared the bar
    *  while the second was still out — the "went quiet with a stopwatch on it"
    *  failure this class is otherwise careful about. */
-  #parses = $state(0);
+  #parses = $state<number[]>([]);
 
   /** The steward has a sentence and has not answered yet.
    *
@@ -180,7 +180,16 @@ export class Voicing {
    *  nothing across it would be the "misheard and went quiet" failure with a
    *  stopwatch on it. */
   get thinking(): boolean {
-    return this.#parses > 0;
+    /* **A parse you let go of is not a parse you are waiting for**, and a plain
+       count could not tell them apart: `dismiss` disowns an escalation by
+       bumping the generation, the request goes on being paid for either way, and
+       a count still said *thinking…* for the rest of it. That left the bar
+       offering a dismiss button that did nothing to a parse already dismissed —
+       and, worse, held `App.svelte`'s Escape branch open for the whole nine
+       seconds, so Escape could not stop a turn, deselect, or reach anything
+       below it. So the reading is *is a parse I still care about out*, which is
+       a question about generations rather than about arithmetic. */
+    return this.#parses.includes(this.#gen);
   }
 
   /** One project's file list per root, fetched once and kept.
@@ -205,7 +214,7 @@ export class Voicing {
    *  something else. Same shape as `aside.rs`'s generation: a number, bumped by
    *  whatever supersedes, and the late arrival checks whether it is still the
    *  one being waited for. */
-  #gen = 0;
+  #gen = $state(0);
 
   /** When the plan now waiting was proposed, or 0.
    *
@@ -279,6 +288,15 @@ export class Voicing {
         if (!e.payload.open) {
           this.partial = "";
           this.overheard = "";
+          /* And the arming, which outlived the device it was arming. Alt+V
+             inside the ≤100ms it takes the thread to notice leaves the bar
+             saying *go on — the next thing said is for the wall* over a
+             microphone that is closing, which is the bar inviting you to speak
+             into nothing. */
+          if (this.#attending) {
+            this.#attending = 0;
+            this.says = "";
+          }
         }
         /* A microphone that stopped listening says so. The rest of this class
            is careful never to go quiet on a failure and this is the one failure
@@ -322,7 +340,17 @@ export class Voicing {
     }
     this.says = "";
     try {
-      await invoke("voice_open");
+      /* **The answer is kept**, and that is not the same rule as "the state
+         follows the event" one method down. That rule is about *closing*, where
+         the microphone is still live while the thread comes down and only the
+         thread knows when it is really shut. Opening has no such gap, and
+         throwing the answer away meant nothing in the app could ever recover
+         from a disagreement: `voice_open`'s idempotent arm returns before it
+         emits, so a front end that thought the ear was shut over a live one
+         would ask again, be told yes, and go on believing it was shut — with the
+         privacy dot dark, the one-shot refused by Rust, and no gesture anywhere
+         able to close the thing. */
+      this.open = await invoke<boolean>("voice_open");
     } catch (err) {
       this.says = err instanceof Error ? err.message : String(err);
     }
@@ -342,6 +370,16 @@ export class Voicing {
   async toggleEar(): Promise<void> {
     if (this.open) await this.listenOff();
     else await this.listenOn();
+  }
+
+  /** Armed by Alt+V and still within its window: the next thing said is taken
+   *  as an instruction whether or not it names anything.
+   *
+   *  Public because `App.svelte` needs it in the Escape branch — an arming you
+   *  can see on the bar and cannot cancel from the keyboard is a state with one
+   *  door. */
+  get armed(): boolean {
+    return this.#attending > 0 && Date.now() - this.#attending < ATTENDING_MS;
   }
 
   /** Take the next utterance as though it had been addressed to the wall. */
@@ -368,7 +406,7 @@ export class Voicing {
    */
   async heard(text: string): Promise<void> {
     this.partial = "";
-    const attending = this.#attending > 0 && Date.now() - this.#attending < ATTENDING_MS;
+    const attending = this.armed;
 
     if (this.pending) {
       const answer = answeredIn(text);
@@ -660,7 +698,7 @@ export class Voicing {
     about = utterance,
   ): Promise<Heard> {
     const seen = narrow(wall, about);
-    this.#parses++;
+    this.#parses.push(gen);
     try {
       const said = await invoke<string>("voice_steward", {
         system: stewardPrompt(seen),
@@ -676,7 +714,8 @@ export class Voicing {
     } catch (err) {
       return { kind: "unusable", why: err instanceof Error ? err.message : String(err) };
     } finally {
-      this.#parses--;
+      const at = this.#parses.indexOf(gen);
+      if (at >= 0) this.#parses.splice(at, 1);
     }
   }
 
@@ -835,10 +874,12 @@ export class Voicing {
     this.#gen++;
     this.#forget();
     /* Including the arming: `attend()` puts the wall in a state where the next
-       thing anybody in the room says is taken as an instruction, and says so on
-       the bar. Escape clears the saying and used to leave the state — an armed
-       microphone with nothing drawn to admit it, which is the one disagreement
-       between indicator and truth this subsystem may not have. */
+       thing anybody in the room says is taken as an instruction. Clearing `says`
+       without clearing that would leave an armed microphone with nothing drawn
+       to admit it — the one disagreement between indicator and truth this
+       subsystem may not have. (Escape only *reaches* here in that state because
+       `armed` is in `App.svelte`'s branch; without it this clear was written for
+       a path nobody could take.) */
     this.#attending = 0;
     this.said = "";
     this.says = "";

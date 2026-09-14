@@ -2452,9 +2452,14 @@
        else. Escape stops a turn further down this ladder and Enter belongs to
        the draft, and neither is what you meant while the wall is asking whether
        to carry out something you said out loud. Only these two keys, and only
-       while a plan is pending or a parse is out — so the branch is invisible the
-       rest of the time. */
-    if ((voicing.pending || voicing.thinking) && !isTyping(e.target)) {
+       while a plan is pending, a parse you still care about is out, or the ear is
+       armed — three states you can see on the bar, so the branch is invisible the
+       rest of the time and never captures Escape for longer than something is
+       drawn saying why. That last clause is load-bearing: `thinking` was briefly
+       true for the whole of a parse you had *already* dismissed, which held this
+       branch open for nine seconds after the bar had stopped being about
+       anything. */
+    if ((voicing.pending || voicing.thinking || voicing.armed) && !isTyping(e.target)) {
       if (e.key === "Enter" && voicing.pending) {
         e.preventDefault();
         await voicing.confirm();
