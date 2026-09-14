@@ -84,6 +84,52 @@ here all along with no trouble, and `pwsh` would cost the ~4s profile load per s
 `shell.md` measured. The store held zero `server_group` rows when this changed, so nothing
 stored had to be re-authored — but that is luck, and a future change of shell is a migration.
 
+### A group you put down stays down
+
+**The wall comes back the way you left it, and before 2026-09-14 it did not.** The load path
+started every `autostart` group on every launch, so a dev server you had deliberately stopped —
+because it was holding a port, because you were running it in a terminal instead, because it
+was noisy — came back on the next launch, and there was no gesture anywhere in the app that
+meant *and stay down*. The only way to keep one down was `SKEIN_NO_SERVERS=1`, which is an
+argument about the whole wall and about this launch only.
+
+`server_group.was_running` is the memory (schema v36). Three things about its shape are
+load-bearing, and each of them is a way of getting this wrong that was considered first:
+
+- **It is a second flag rather than a reuse of `autostart`.** They answer different questions.
+  `autostart` is configuration — *may this group start itself* — authored by hand, carried in an
+  exported layout, and an import arriving with it false is the one thing standing between a
+  document and a machine running its commands (`portage.ts`, and `addGroup`'s `was` argument
+  says so where it is). `was_running` is session state: *and was it up when you left*. Folded
+  together, an export would carry "I stopped it this afternoon" to another machine as "never arm
+  this". So the new flag only ever subtracts: a group starts at launch when
+  `autostart AND was_running`.
+- **It is written by `start` and `stop` in `servers.rs`, not by the buttons.** The wall is not
+  the only thing that starts a group: the control surface goes through the same pair, and so
+  does a card holding `mcp__skein__server`. A flag written by the click would be a flag an agent
+  walks straight past, and the wall would come back armed with no record of who disarmed it.
+  `remember` is the one-line helper, and it swallows its failure exactly as `browser::remember`
+  does — a lost write costs one launch, and nothing here is worth failing a start over.
+- **Nothing writes it at exit, and `Servers::shutdown` deliberately does not come through
+  `stop`.** This is `set_mid_turn`'s rule and `browser_state.was_running`'s after it, restated
+  in `CLAUDE.md`: a flag recording what was true must be written when it becomes true, because
+  the code that runs at exit is the code a crash skips. Kill Volery with three servers up and
+  they come back up. If shutdown went through `stop`, every launch would come back with the
+  whole wall down — the failure this feature is *for*, wearing the opposite face.
+
+Two smaller decisions in the same shape. `stop` writes the flag **before** its early return, so
+a stop aimed at a group that is already down still records the intent — what is written is what
+was asked, not what was killed. And the wire carries the exceptions rather than a field per
+group: `Studio::stopped_groups` is a list of ids, because `ServerGroup` is the value the front
+end *sends back* to `save_server_group`, and a flag on it would be re-written by every rename
+and every reroot — `reworkGroup` would quietly arm what you had put down. `upsert_server_group`
+exists as a separate function purely so that "the upsert does not name `was_running`" is a thing
+a test can assert.
+
+`SKEIN_NO_SERVERS=1` still writes nothing down, and that asymmetry is the point: the flag means
+*not this launch*, where a stop means *not until I say*. A quiet launch that disarmed the wall
+would be the more expensive of the two mistakes, since nothing on the wall would say why.
+
 ### A card driving the dev servers
 
 Three tools on the `skein` MCP server — `servers`, `server_log`, `server` — declared in

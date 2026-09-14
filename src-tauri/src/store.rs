@@ -192,6 +192,22 @@ pub struct Studio {
     /// paint wants it, and a round trip of its own is one the first paint would
     /// have to wait for.
     pub default_preset: Option<String>,
+    /// The dev server groups that were put down and left down — `was_running`
+    /// false — so the load path can arm everything else and skip these.
+    ///
+    /// A list of ids beside the groups rather than a field on `ServerGroup`,
+    /// and that is the decision worth stating: `ServerGroup` is the value the
+    /// front end *sends back* to `save_server_group`, so a flag living on it
+    /// would be carried by every edit — renaming a group, or rerooting one for
+    /// a carried territory (`reworkGroup`), would write back whatever the front
+    /// end happened to be holding and quietly re-arm something you had put
+    /// down. Nothing here is configuration, so nothing here belongs on the
+    /// config object.
+    ///
+    /// The exceptions rather than a flag per group, so a snapshot from a build
+    /// that has never heard of this degrades the safe way: no list is nothing
+    /// stopped, which is what every build before this one meant.
+    pub stopped_groups: Vec<String>,
 }
 
 impl Store {
@@ -284,7 +300,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 35;
+const SCHEMA_VERSION: i64 = 36;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -325,6 +341,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (33, migrate_v33),
     (34, migrate_v34),
     (35, migrate_v35),
+    (36, migrate_v36),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1746,6 +1763,35 @@ fn migrate_v34(conn: &Connection) -> Result<(), String> {
 /// changes, and a wall whose territories all sat half a card out.
 fn migrate_v35(conn: &Connection) -> Result<(), String> {
     add_column(conn, "project", "cols", "INTEGER")
+}
+
+/// Whether this group was up when the wall was last left.
+///
+/// An ALTER with a default, per the note on `SCHEMA_VERSION`, and **the default
+/// is 1** so nothing about an existing wall changes: every group already on
+/// disk comes back armed, exactly as it did before this column existed, and the
+/// only groups that stay down are the ones somebody has since put down.
+///
+/// It is a second flag rather than a reuse of `autostart`, and the two answer
+/// different questions. `autostart` is configuration — *may this group start
+/// itself* — it is authored by hand, it travels in a carried layout
+/// (`portage.ts`), and an import arriving with it false is the one thing
+/// standing between a document and a machine running its commands. This is
+/// session state: *and was it up when you left*. Folding the second into the
+/// first would mean an export carrying "I stopped it this afternoon" as "never
+/// arm this", and a group put down for ten minutes coming back disarmed on
+/// another machine. So it only ever subtracts: the load path starts a group
+/// when `autostart AND was_running`.
+///
+/// **Written at both ends of the group's life rather than at exit**, which is
+/// `browser_state.was_running`'s rule and `set_mid_turn`'s before it, restated
+/// in `CLAUDE.md`: a flag recording what was true must be written when it
+/// becomes true, because the code that runs at exit is exactly the code a crash
+/// skips. `Servers::shutdown` therefore does not touch it — quitting with a
+/// group up is a group that comes back up, and a wall that was killed comes
+/// back the same way.
+fn migrate_v36(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "server_group", "was_running", "INTEGER NOT NULL DEFAULT 1")
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -3535,6 +3581,19 @@ pub fn save_server_group(
     group: ServerGroup,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
+    upsert_server_group(&conn, &group)
+}
+
+/// Write a group down, making it or replacing what is there.
+///
+/// Cut out of the command so the one thing that has to stay true about the
+/// upsert can be asserted: **it does not name `was_running`.** The column is
+/// session state written by `servers::start` and `servers::stop`, and a group
+/// arriving from the front end knows nothing about it — an `ON CONFLICT` that
+/// listed it would take a group you had put down and arm it again the next time
+/// anything renamed or rerooted it. A new row gets the column's default, which
+/// is armed.
+pub(crate) fn upsert_server_group(conn: &Connection, group: &ServerGroup) -> Result<(), String> {
     let spec = serde_json::to_string(&group.servers).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO server_group (id, project_id, label, autostart, start_order, spec_json)
@@ -3552,6 +3611,45 @@ pub fn save_server_group(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Remember that this group is up, or that it is not.
+///
+/// Called from `servers::start` and `servers::stop` — both of them, so every
+/// door onto a group writes it: the wall's own buttons, the control surface,
+/// and a card holding `mcp__skein__server`. Whoever put it down, the wall comes
+/// back the way it was left.
+///
+/// A silent no-op for a group that is not there, deliberately: `forgetProject`
+/// stops a territory's groups on its way to deleting their rows, and a stop
+/// that failed because the row had already gone would be an error about
+/// bookkeeping in the middle of a delete that worked.
+pub(crate) fn set_group_running(conn: &Connection, group_id: &str, running: bool) {
+    if let Err(e) = conn.execute(
+        "UPDATE server_group SET was_running = ?2 WHERE id = ?1",
+        params![group_id, running as i64],
+    ) {
+        log::warn!("could not remember that {group_id} is running={running}: {e}");
+    }
+}
+
+/// The groups somebody left down.
+///
+/// Ids rather than rows, and the negative rather than the positive — see
+/// `Studio::stopped_groups`, which is the only caller and where the shape is
+/// argued. Every failure is an empty list: not knowing is not evidence that a
+/// group was put down, and the direction matters — a read that answered "all of
+/// them" because the query failed would be a wall that came back with none of
+/// its servers, which is a fault you have to go looking for the cause of. The
+/// other direction costs one click.
+pub(crate) fn groups_left_stopped(conn: &Connection) -> Vec<String> {
+    let Ok(mut stmt) = conn.prepare("SELECT id FROM server_group WHERE was_running = 0") else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 #[tauri::command]
@@ -3668,6 +3766,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
         server_groups,
         guidance: wall_guidance(&conn),
         default_preset: default_preset(&conn),
+        stopped_groups: groups_left_stopped(&conn),
     })
 }
 
@@ -6445,6 +6544,88 @@ mod tests {
            they read the brand before checking the length. */
         assert_eq!(sniff_image(b"RIFF"), None);
         assert_eq!(sniff_image(b"\x00\x00\x00\x20ftyp"), None);
+    }
+
+    /* ── a group you put down stays down (v36) ────────────────────────── */
+
+    fn seed_group(conn: &Connection, id: &str, autostart: bool) -> ServerGroup {
+        let g = ServerGroup {
+            id: id.into(),
+            project_id: "p".into(),
+            label: id.into(),
+            autostart,
+            start_order: 0,
+            servers: vec![ServerSpec {
+                label: "web".into(),
+                command: "pnpm dev".into(),
+                cwd: None,
+                port: Some(5173),
+            }],
+        };
+        upsert_server_group(conn, &g).unwrap();
+        g
+    }
+
+    /// The default the whole migration turns on: a wall that has never stopped
+    /// anything is a wall where nothing changed. Every group already on disk
+    /// when v36 ran, and every group made since, is armed until somebody says
+    /// otherwise — the alternative default would have been one launch on which
+    /// the entire wall came up with its dev servers down and no cause visible
+    /// anywhere.
+    #[test]
+    fn a_group_nobody_has_stopped_is_armed() {
+        let conn = db();
+        seed_project(&conn, "p", "/tmp/p");
+        seed_group(&conn, "web", true);
+
+        assert!(groups_left_stopped(&conn).is_empty());
+    }
+
+    /// What the user asked for: stopped stays stopped, and starting it again is
+    /// what takes it back.
+    #[test]
+    fn a_group_put_down_is_remembered_until_it_is_started_again() {
+        let conn = db();
+        seed_project(&conn, "p", "/tmp/p");
+        seed_group(&conn, "web", true);
+        seed_group(&conn, "api", true);
+
+        set_group_running(&conn, "web", false);
+        assert_eq!(groups_left_stopped(&conn), vec!["web".to_string()]);
+
+        set_group_running(&conn, "web", true);
+        assert!(groups_left_stopped(&conn).is_empty());
+    }
+
+    /// The invariant `upsert_server_group` exists to make assertable: an edit
+    /// to a group — a rename, or `reworkGroup` rerooting one for a carried
+    /// territory — must not carry the front end's idea of whether it is running
+    /// back into the column. The front end has no idea; it never receives the
+    /// field.
+    #[test]
+    fn editing_a_group_does_not_arm_one_that_was_put_down() {
+        let conn = db();
+        seed_project(&conn, "p", "/tmp/p");
+        let mut g = seed_group(&conn, "web", true);
+
+        set_group_running(&conn, "web", false);
+        g.label = "web (vite)".into();
+        g.servers[0].command = "pnpm dev --host".into();
+        upsert_server_group(&conn, &g).unwrap();
+
+        assert_eq!(groups_left_stopped(&conn), vec!["web".to_string()]);
+    }
+
+    /// Bookkeeping for a row that is not there is not an error. `forgetProject`
+    /// stops a territory's groups on its way to deleting them, and the two
+    /// orders that reach the database differ by a lock.
+    #[test]
+    fn remembering_a_group_that_has_been_deleted_is_quiet() {
+        let conn = db();
+        seed_project(&conn, "p", "/tmp/p");
+
+        set_group_running(&conn, "never-existed", false);
+        assert!(groups_left_stopped(&conn).is_empty());
     }
 
     /* ── what the plain `+` opens (v28) ───────────────────────────────── */

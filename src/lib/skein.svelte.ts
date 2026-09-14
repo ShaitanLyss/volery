@@ -711,6 +711,7 @@ export class Skein {
         projects: Project[];
         conversations: any[];
         server_groups: ServerGroup[];
+        stopped_groups: string[];
         guidance: string;
         default_preset: string | null;
       }>("load_studio");
@@ -856,15 +857,36 @@ export class Skein {
       /* Servers start eagerly, staged by start_order — backend before
          frontend, because the frontend usually wants the backend up.
 
-         Unless asked not to: `SKEIN_NO_SERVERS=1` leaves every group listed and
-         clickable but starts none of them, which is what makes it safe to run a
-         second Skein against the same store — two instances racing for every
-         port in the workspace leave both walls showing `exited`. Asked of Rust
-         rather than read from a query string, since only the process knows its
-         own environment. */
+         Two things can hold one back, and they are different questions.
+
+         `autostart` is the group's own: may it start itself at all. It is
+         configuration, it travels in a carried layout, and an import arriving
+         with it false is what stops a document running somebody's commands.
+
+         `stopped_groups` is what you left: a group put down by hand — or by the
+         control surface, or by a card holding `mcp__skein__server` — stays down
+         until something asks for it again. Before this the wall armed every
+         autostart group on every launch, so a server you had deliberately
+         stopped came back on the next one and there was no gesture anywhere
+         that meant "and stay down". Read from the snapshot rather than
+         re-derived, and `?? []` because a snapshot from a build before v36 has
+         no such key: nothing stopped is what that build meant.
+
+         And unless asked not to at all: `SKEIN_NO_SERVERS=1` leaves every group
+         listed and clickable but starts none of them, which is what makes it
+         safe to run a second Skein against the same store — two instances
+         racing for every port in the workspace leave both walls showing
+         `exited`. Asked of Rust rather than read from a query string, since
+         only the process knows its own environment. It writes nothing down:
+         the flag means "not this launch", where a stop means "not until I say",
+         and a quiet launch that disarmed the wall would be the more expensive
+         of the two mistakes. */
+      const stopped = new Set(s.stopped_groups ?? []);
       this.serversQuiet = await invoke<boolean>("servers_quiet").catch(() => false);
       if (!this.serversQuiet) {
-        for (const g of this.groups.filter((g) => g.group.autostart)) {
+        for (const g of this.groups.filter(
+          (g) => g.group.autostart && !stopped.has(g.group.id),
+        )) {
           await this.startGroup(g);
           await new Promise((r) => setTimeout(r, 250));
         }

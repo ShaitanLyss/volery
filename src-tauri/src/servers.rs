@@ -839,6 +839,7 @@ pub(crate) fn start(app: &AppHandle, servers: &Servers, group: &ServerGroup, cwd
         },
     );
     say_running(app, &group.id, true);
+    remember(app, &group.id, true);
 
     /* Ports come up asynchronously, so report health shortly after rather than
        claiming "up" the instant a process exists.
@@ -933,6 +934,11 @@ pub fn stop_group(
 /// something false about the machine, and it is exactly the sort of false thing
 /// an agent then reasons from.
 pub(crate) fn stop(app: &AppHandle, servers: &Servers, group_id: &str) -> bool {
+    /* Before the early return, because what is written down is what was
+       *asked*, not what was killed. A stop aimed at a group that is already
+       down still says "leave this one alone next time", and that is the whole
+       of what the next launch reads. */
+    remember(app, group_id, false);
     let Some(mut g) = servers.running.lock().unwrap().remove(group_id) else {
         return false;
     };
@@ -964,6 +970,32 @@ pub(crate) fn stop(app: &AppHandle, servers: &Servers, group_id: &str) -> bool {
     }
     say_running(app, group_id, false);
     true
+}
+
+/// Write down that this group is up, or that it is not, so the next launch can
+/// leave it as you left it.
+///
+/// Here rather than in the two `#[tauri::command]`s above it, because the wall
+/// is not the only thing that starts and stops a group: the control surface
+/// goes through the same pair, and so does a card holding `mcp__skein__server`.
+/// A flag written by the button rather than by the act is a flag an agent can
+/// walk straight past.
+///
+/// Swallows its failure, in one place, exactly as `browser::remember` does:
+/// none of this is worth failing a start or a stop over, and the cost of a lost
+/// write is one launch that arms a group you had put down.
+///
+/// **Nothing writes this at exit.** `Servers::shutdown` kills every tree
+/// without coming through here on purpose — quitting with a group up is a group
+/// that comes back up, and if it went through `stop` the wall would come back
+/// with every server down and no way to tell that from a wall you had tidied.
+/// See `migrate_v36`.
+fn remember(app: &AppHandle, group_id: &str, running: bool) {
+    let Some(store) = app.try_state::<crate::store::Store>() else {
+        return;
+    };
+    let Ok(conn) = store.0.lock() else { return };
+    crate::store::set_group_running(&conn, group_id, running);
 }
 
 #[tauri::command]
