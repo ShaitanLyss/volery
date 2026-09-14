@@ -245,13 +245,16 @@ pub struct Heard {
     ///
     /// The four values are the Windows recogniser's vocabulary, and the front
     /// end's `Transcript` type still spells all four, so the wire shape is
-    /// unchanged. What changed is that only two can now occur: `rejected` when
-    /// nothing was transcribed, `medium` when something was. `medium` rather
-    /// than `high` because a model that cannot score itself has not earned
-    /// `high` — but it is a placeholder, not a measurement, and **nothing may
-    /// threshold on it**. Nothing does today; `voicing.svelte.ts` reads only
-    /// `text`. If something ever needs to weigh how sure the recogniser was,
-    /// the honest fix is a new field, not a finer guess in this one.
+    /// unchanged. What changed is that only **one** can now occur: `medium`,
+    /// whenever there is a `Heard` at all. `rejected` briefly stood for "nothing
+    /// was transcribed", which is not a confidence — it is the absence of the
+    /// thing being scored, and `outcome` below refuses it as an error rather
+    /// than dressing it as a doubtful transcript. `medium` rather than `high`
+    /// because a model that cannot score itself has not earned `high` — but it
+    /// is a placeholder, not a measurement, and **nothing may threshold on
+    /// it**. Nothing does today; `voicing.svelte.ts` reads only `text`. If
+    /// something ever needs to weigh how sure the recogniser was, the honest
+    /// fix is a new field, not a finer guess in this one.
     pub confidence: String,
     /// Which language it listened in, so a transcript that came back as
     /// nonsense can be told apart from one that came back in French.
@@ -901,12 +904,49 @@ pub fn listen(
         }
     }
 
-    let text = said.join(" ").trim().to_string();
+    outcome(
+        said.join(" ").trim().to_string(),
+        language,
+        began.elapsed().as_millis() as u64,
+    )
+}
+
+/// What a finished listen amounts to: a transcript, or the one fact that there
+/// was not one.
+///
+/// **Silence is not a transcript, and saying so here is the whole of this
+/// function.** It was a guard inside the Windows path (f8f88c1, written the day
+/// the first real recognition returned success carrying an empty string) and it
+/// was lost with that path when the engine became local — after which a silent
+/// listen handed `""` up as though it were words, `hear("")` found no verb, and
+/// the wall answered *"not understood"* to something nobody had said. That reads
+/// as a parse failure where the fact is an unheard microphone, and it is the
+/// same *real cause reported as something else* this file has now been bitten by
+/// four times.
+///
+/// Its own function because the guard needs a test and a microphone cannot be
+/// one. The deleted version had exactly such a test against `why_empty`, which
+/// is what makes losing it a thing that can happen quietly.
+///
+/// Keyed on the *text*, deliberately, and the reasoning is unchanged from the
+/// original: an empty string is the absence of a transcript, which is a fact.
+/// Words the recogniser is unsure of are a different thing entirely, and
+/// discarding those here would be exactly the thresholding `Heard::confidence`
+/// says nothing may do — the rung with the wall in front of it is the one that
+/// can weigh a doubtful sentence against what is actually on the wall.
+fn outcome(text: String, language: &str, ms: u64) -> Result<Heard, String> {
+    if text.trim().is_empty() {
+        /* The same words the Windows path used, on purpose: `ONSET_PATIENCE`'s
+           own comment says this is a reading people are already used to here,
+           and two engines answering silence differently would make that false
+           for no benefit. */
+        return Err("nothing was said".into());
+    }
     Ok(Heard {
-        confidence: if text.is_empty() { "rejected" } else { "medium" }.to_string(),
+        confidence: "medium".to_string(),
         text,
         language: language.to_string(),
-        ms: began.elapsed().as_millis() as u64,
+        ms,
     })
 }
 
@@ -990,6 +1030,39 @@ mod tests {
            question rather than making the constant pointless. */
         assert_eq!(DEFAULT_LANGUAGE, "en-US");
         assert!(english_only(DEFAULT_LANGUAGE).is_ok());
+    }
+
+    #[test]
+    fn silence_is_not_a_transcript() {
+        /* The property that was lost when the engine changed, in the words the
+           other engine answered silence with. An empty result is the absence of
+           a transcript, so it leaves as an error and never as a `Heard` — which
+           is what stops `hear("")` downstream from calling nothing-at-all "not
+           understood", and stops the steward rung being spent on it. */
+        assert_eq!(
+            outcome(String::new(), DEFAULT_LANGUAGE, 5_000).expect_err("silence is not words"),
+            "nothing was said"
+        );
+        /* Whitespace is the same fact wearing punctuation. */
+        assert_eq!(
+            outcome("   ".to_string(), DEFAULT_LANGUAGE, 5_000).expect_err("silence is not words"),
+            "nothing was said"
+        );
+    }
+
+    #[test]
+    fn words_come_back_whatever_they_sound_like() {
+        /* The other half, and the reason the guard reads the text rather than a
+           score: a transcript this file has no opinion about is still a
+           transcript. Nothing here may throw words away for being unlikely —
+           the rung with the wall in front of it is the one that can tell
+           "Scain" against a card called skein. */
+        let heard = outcome("scain fit the wall".to_string(), DEFAULT_LANGUAGE, 1_200)
+            .expect("words are a transcript");
+        assert_eq!(heard.text, "scain fit the wall");
+        assert_eq!(heard.confidence, "medium");
+        assert_eq!(heard.language, DEFAULT_LANGUAGE);
+        assert_eq!(heard.ms, 1_200);
     }
 
     #[test]
