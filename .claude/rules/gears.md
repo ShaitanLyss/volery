@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/lib/gears.ts"
+  - "src/lib/handoff.ts"
   - "src/lib/Card.svelte"
   - "src-tauri/src/supervisor.rs"
 ---
@@ -223,3 +224,80 @@ For the record, since the feature is mostly invisible until it is used:
 - A card *spawned* with `--permission-mode plan` and no bypass flag — the roused-card path,
   which is a different one from the control request — ran its tools without hanging on a
   permission prompt there is nobody to answer, refused the write, and produced a plan.
+
+## Handing the plan on
+
+A planning turn ends in a document, and for a while the only thing to do with one was read it
+and put the same card back into making. That keeps the conversation — and **the conversation
+is the expensive part.**
+
+Measured across this wall over the 24 hours to 2026-09-14, by walking the transcripts under
+`~/.claude/projects` and pricing them with `usage.ts`'s own table: $510.90 of Opus spend, of
+which **output was 14.8% and re-reading context already held was 85.3%** (cache reads 68.3%,
+cache writes 17.0%). Mean occupancy per message 221k, peak 848k. At that size a turn costs
+about $0.11 in cache reads before the model has said a word, so **a token put into context at
+turn 10 of 60 is paid for fifty more times.**
+
+Which corrects the usual argument for "plan on the big model, build on the small one". The
+price difference is real and is the small half — Sonnet is $3/$15 against Opus $5/$25, a flat
+60% on the tokens it moves. **The large half is that a handoff is a context reset that keeps
+the conclusions.** The planner spends 200k discovering which three files matter; without a
+handoff every implementation turn re-reads all 200k of that discovery for the rest of the
+card's life. With one, the maker starts at ten thousand tokens holding only the answer — and
+that is true *even when the maker is another Opus*, which is the part the usual telling gets
+wrong.
+
+So the gesture opens a **new card** rather than changing this one's gear. `/gear making` is
+still there and is still right for "keep going here"; it simply saves none of the above,
+because it keeps the context that is the cost.
+
+- **The planner is left alone.** It costs nothing at rest — a card nobody has been near for
+  hours puts its process down — it is what to go back to if the plan turns out wrong, and its
+  transcript is what the brief tells the maker to `recall`.
+- **The maker stands in the planner's tree.** Same `cwd`, same worktree name, since
+  `worktree::ensure` reads an existing one as "put a card on that branch". A plan is about a
+  particular tree; building it somewhere else is building something else.
+- **The preset is chosen at the moment the card opens, because that is the only moment it is
+  free.** Same argument the `+`'s right-click makes, and the same five rows with the same
+  notes: after the first word, changing the model is a `/model` into a card that has already
+  spent a context.
+- **What goes in the brief is decided by what it must *not* contain** (`handoff.ts`). The plan
+  by path rather than inlined, so the document lands in context once. The planner's file trail,
+  which is the second-biggest lever after the reset itself — a maker with a plan and no trail
+  repeats the planner's own exploration, which is the 200k bought twice. The planner's handle,
+  because `recall` reads a card's transcript off disk without costing that card a turn, and
+  that is what makes escalation affordable. And one sentence about what to do when the plan is
+  wrong about the code, which is the failure mode of a smaller model against a good plan: not
+  that it follows it badly, but that it improvises when the code is not shaped as assumed.
+- **`store::files_handled_by` is the first reader the `file_touch` table has had for this
+  question.** The table has been written since the first build; `touches_near` asks *who else
+  has been in this file*, and this asks the only other question it can answer.
+- **The trail carries its own root, and getting that wrong was the one blocker review found.**
+  The brief shortens paths so the maker reads a list of files rather than a column of
+  `C:\Users\…`. The root to shorten *against* is where the planner's child actually ran —
+  `worktree::run_dir` — and for a card on a branch that is **not** its `cwd`. The first draft
+  passed `conv.cwd` with a comment claiming that a worktree card's paths would simply "stay
+  absolute, which is honest rather than wrong". They do not: `worktree::dir_for` puts a
+  worktree at `cwd/.claude/worktrees/<slug>`, *nested under* the territory rather than beside
+  it, so the prefix matches and the paths shorten to
+  `.claude/worktrees/feat-x/src/lib/store.ts` — a relative path that looks right and, resolved
+  from the maker's own directory (which **is** the worktree), names
+  `…/worktrees/feat-x/.claude/worktrees/feat-x/…`. Every path in the brief would have been
+  wrong for exactly the cards the trail helps most.
+
+  So `files_handled_by` returns a `Trail` — the files **and** the root, derived in Rust off the
+  conversation row, the way `open_gate_run` derives it and for the same reason: the slug
+  algorithm is `worktree::dir_for`'s and a second spelling of it in TypeScript is a second
+  thing to be wrong. `run_dir`'s own doc comment already says this in the general case — *"every
+  question the CLI answers per-directory is a question about this directory, and a year of the
+  app asking it about `cwd` instead is the bug this was extracted for"* — and this is that bug
+  arriving for the second time in a new feature. `handoff.test.ts` pins both readings.
+
+### Not built, and deliberately
+
+- **No lineage.** The maker is opened through `Skein.open`, not `spawn.rs`, so the wall draws
+  no parent line between the two cards. It would be a real reading — "this card came out of
+  that plan" — and it is a separate piece of work from making the handoff exist.
+- **No cost instrument.** A card's context size *is* its per-turn price, and the wall could say
+  so on the card's face, which is what would make this gesture feel motivated rather than
+  clever. Deliberately its own piece of work; the handoff should not wait on it.

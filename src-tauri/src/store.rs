@@ -2979,6 +2979,112 @@ pub fn touches_near(conn: &Connection, needle: &str, limit: i64) -> Vec<Touch> {
     rows.filter_map(Result::ok).collect()
 }
 
+/// One file a card has been in, and how much.
+///
+/// `op` is `write` if the card ever wrote it and `read` otherwise, because the
+/// question a reader has is which kind of involvement this was and a card that
+/// wrote a file once and read it nine times wrote it.
+#[derive(Debug, Serialize, Clone)]
+pub struct Handled {
+    pub path: String,
+    pub op: String,
+    pub count: i64,
+}
+
+/// A card's trail, and the directory it is to be read against.
+///
+/// **The root travels with the files, and that is the whole point of the
+/// struct.** The row's `cwd` is the card's *territory* — its project, its dev
+/// servers, its shell — and for a worktree card it is not where the agent
+/// stood: `worktree::run_dir` is, and it is `cwd/.claude/worktrees/<slug>`,
+/// nested *under* the root rather than beside it. So a caller shortening these
+/// paths against `cwd` does not leave them absolute, which would at least be
+/// readable; it produces `.claude/worktrees/feat-x/src/lib/store.ts`, a
+/// relative path that resolves from the maker's own directory to a place that
+/// does not exist. Caught in review before it shipped.
+///
+/// Derived here rather than sent in, the way `open_gate_run` derives it — the
+/// slug algorithm is `worktree::dir_for`'s and a second spelling of it in
+/// TypeScript is a second thing to be wrong. The front end knows a worktree by
+/// name only and has no business knowing more.
+#[derive(Debug, Serialize, Clone)]
+pub struct Trail {
+    pub root: String,
+    pub files: Vec<Handled>,
+}
+
+/// What one card has been in, most-handled first.
+///
+/// The same table `touches_near` reads, turned round: that one asks *who else
+/// has been in this file*, which is the collision question, and this asks *what
+/// has this card been in*, which is the only other question the table can
+/// answer and had no reader until the handoff wanted one. A planning card's
+/// trail is the most useful thing it owns after the plan itself — it is where
+/// the context went, and handing it forward is what stops the next card
+/// spending its own on rediscovering the same files (`handoff.ts`).
+///
+/// Ordered by how often a path was handled rather than by when, because
+/// recency is the tail of an exploration and frequency is its subject. Ties go
+/// to the newer, which is the later and usually narrower pass.
+///
+/// **No index on `conversation_id`, so this scans.** Adding one is a migration
+/// rung and a `SCHEMA_VERSION` bump, which is not a thing to spend on a query
+/// run once per handoff against a table SQLite walks in milliseconds —
+/// `overlapping_conversations` next door does a self-join over the same table
+/// with the same gap. Worth revisiting together if either ever reads slow.
+#[tauri::command]
+pub fn files_handled_by(
+    store: tauri::State<'_, Store>,
+    conversation_id: String,
+    limit: i64,
+) -> Result<Trail, String> {
+    let conn = store.0.lock().unwrap();
+    /* Where the child actually ran, which for a worktree card is not the row's
+       `cwd` — see `Trail`, and `worktree::run_dir`'s own note about the year
+       this app spent asking the wrong one. */
+    let root = conn
+        .query_row(
+            "SELECT cwd, worktree FROM conversation WHERE id = ?1",
+            params![conversation_id],
+            |r| {
+                let cwd: String = r.get(0)?;
+                let worktree: Option<String> = r.get(1)?;
+                Ok(crate::worktree::run_dir(&cwd, worktree.as_deref()))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let mut stmt = conn
+        .prepare(
+            /* Grouped on the *folded* path, because the table keeps whatever
+               the tool call typed and one card across a resumed session types
+               `C:\a.ts` and `c:/A.ts` for the same file. Ungrouped, the brief
+               lists one file twice — and `shortPath` folds for display, so the
+               two rows come out identical and read as a bug in the wall. The
+               spelling handed back is the earliest, arbitrary but stable. */
+            "SELECT MIN(path), MAX(op = 'write') AS wrote, COUNT(*) AS n
+               FROM file_touch
+              WHERE conversation_id = ?1
+              GROUP BY lower(replace(path, '\\', '/'))
+              ORDER BY n DESC, MAX(at) DESC
+              LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![conversation_id, limit], |r| {
+            let wrote: i64 = r.get(1)?;
+            Ok(Handled {
+                path: r.get(0)?,
+                op: if wrote == 1 { "write" } else { "read" }.to_string(),
+                count: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let files = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    Ok(Trail { root, files })
+}
+
 /// Where a card is standing and which session it is on, which is the pair
 /// `supervisor::transcript_path` needs. `None` for the session on a card that
 /// has never taken a turn.

@@ -112,6 +112,11 @@ export type MenuTarget = {
    *  preset is" belongs to `presets.ts`. Undefined marks nothing, which is what
    *  a caller with no opinion gets. */
   presetDefault?: string;
+  /** This card has written a plan it has not been let out of, so there is
+   *  something to hand on. Gated rather than always offered: a handoff with no
+   *  plan behind it would open a card and tell it to read a document that does
+   *  not exist. */
+  plan?: boolean;
   /** ground: what the undo stack would do in each direction, named, or null
    *  where there is nothing that way.
    *
@@ -254,6 +259,33 @@ export function menuFor(t: MenuTarget): MenuItem[] {
   switch (t.kind) {
     case "card":
       return tidy([
+        /* First, because on a card that has one it is what you right-clicked
+           for — and because handing a plan on is the only item here that does
+           something with what the card *produced* rather than with the card.
+
+           A submenu rather than a row, for the reason the `+` has one: the
+           model is decided before the first word and never again cheaply, so
+           the moment of opening the maker is the only moment the choice is
+           free. The five are `presets.ts`'s, ordered as it orders them, and the
+           notes are there because the point of choosing is seeing what it will
+           cost. */
+        /* And only where there is something to open onto. `offerItems` states
+           the house rule next door — an empty family is dropped rather than
+           drawn — and a row that opens a submenu with nothing in it is the
+           worst version of that, since it takes a gesture to find out. */
+        t.plan && (t.presets ?? []).length
+          ? more(
+              "handoff",
+              "hand the plan to a maker",
+              (t.presets ?? []).map((p) => ({
+                kind: "item" as const,
+                id: `hand:${p.id}`,
+                label: p.label,
+                note: p.note,
+              })),
+            )
+          : null,
+        t.plan && (t.presets ?? []).length ? sep : null,
         t.dormant ? item("wake", "wake it") : null,
         /* The thing that was missing when a card and a terminal wanted the same
            conversation: the session id is what `--resume` takes, and until now

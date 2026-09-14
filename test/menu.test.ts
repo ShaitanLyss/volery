@@ -5,6 +5,12 @@ import { WIDGETS, offersOf } from "../src/lib/widgets";
 const ids = (items: MenuItem[]) =>
   items.filter((i) => i.kind === "item").map((i) => (i as { id: string }).id);
 
+/** The handoff row, which is a `more` and so invisible to `ids`. */
+const handoffOf = (items: MenuItem[]) => {
+  const row = items.find((i) => i.kind === "more" && i.id === "handoff");
+  return row && row.kind === "more" ? row : null;
+};
+
 /** What one item is *called*, for the few whose wording is the state. */
 const label = (items: MenuItem[], id: string) =>
   items.find((i): i is Extract<MenuItem, { kind: "item" }> =>
@@ -15,6 +21,45 @@ describe("a menu offers only what the target can actually do", () => {
   test("a dormant card can be woken; a live one has nothing to wake", () => {
     expect(ids(menuFor({ kind: "card", dormant: true }))).toContain("wake");
     expect(ids(menuFor({ kind: "card", dormant: false }))).not.toContain("wake");
+  });
+
+  /* The handoff is the only item on a card that does something with what the
+     card *produced* rather than with the card, and it is gated on there being
+     something to hand on — offered with no plan behind it, it would open a
+     maker and tell it to read a document that does not exist. */
+  test("a plan is handed on only where there is one", () => {
+    const picks = [{ id: "work", label: "ordinary work", note: "sonnet · medium" }];
+    /* `ids` reads only clickable rows, and this one is a `more` — the whole
+       point being that it opens onto the five presets rather than doing
+       anything itself. */
+    expect(handoffOf(menuFor({ kind: "card", plan: true, presets: picks }))).not.toBeNull();
+    expect(handoffOf(menuFor({ kind: "card", plan: false, presets: picks }))).toBeNull();
+    expect(handoffOf(menuFor({ kind: "card", presets: picks }))).toBeNull();
+  });
+
+  test("the handoff rows carry the preset ids, under their own prefix", () => {
+    /* `hand:` rather than `preset:`: the two live on different menu kinds and
+       are dispatched by different closures, and a shared prefix would make the
+       one place they could ever meet impossible to see. */
+    const picks = [
+      { id: "work", label: "ordinary work", note: "sonnet · medium" },
+      { id: "deep", label: "the hard thing", note: "opus[1m] · xhigh" },
+    ];
+    const row = handoffOf(menuFor({ kind: "card", plan: true, presets: picks }));
+    expect(row ? ids(row.items) : []).toEqual(["hand:work", "hand:deep"]);
+    /* The note is what says what the card will cost before it is opened, which
+       is the whole reason the choice is made here. */
+    expect(row && row.items[0].kind === "item" ? row.items[0].note : null).toBe(
+      "sonnet · medium",
+    );
+  });
+
+  test("a handoff with nothing to open onto is not offered at all", () => {
+    /* The house rule stated at `offerItems`: an empty family is dropped rather
+       than drawn, and a row that takes a gesture to reveal an empty list is the
+       worst version of it. */
+    expect(handoffOf(menuFor({ kind: "card", plan: true, presets: [] }))).toBeNull();
+    expect(handoffOf(menuFor({ kind: "card", plan: true }))).toBeNull();
   });
 
   test("only a pinned card can be let go", () => {

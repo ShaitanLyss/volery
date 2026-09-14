@@ -511,6 +511,7 @@ pub fn run() {
             store::spend_since,
             store::record_file_touch,
             store::overlapping_conversations,
+            store::files_handled_by,
             store::save_placement,
             store::place_project,
             store::stick_project,

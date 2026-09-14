@@ -57,6 +57,8 @@ import { Gates } from "./gates.svelte";
 import { cliCommand, isEffort, type SlashCommand } from "./commands";
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, type Preset } from "./presets";
+import { BRIEF_FETCH, briefFor, type Trail } from "./handoff";
+import { handleOf } from "./relay";
 import { UNNAMED, isNamed, nameBesideProject, titleFromPrompt } from "./naming";
 import {
   ROUSE_GAP_MS,
@@ -903,6 +905,85 @@ export class Skein {
       preset === undefined ? defaultPresetFor(this.defaultPreset) : (preset ?? undefined);
     return this.#openIn(cwd, worktree?.trim() || null, "project", null, setup);
   }
+
+  /** Hand a planning card's plan to a fresh card that will build it.
+   *
+   *  The saving is the context reset, not the cheaper model — `handoff.ts` has
+   *  the measurement and the reasoning. What matters here is only that this
+   *  opens a **new** card rather than putting the planner into making: the
+   *  planner is carrying the two hundred thousand tokens it took to reach the
+   *  plan, every one of which would be re-read on every implementation turn for
+   *  the rest of that card's life, and dropping them is the entire point.
+   *
+   *  The planner is left exactly as it is. It costs nothing at rest, it is the
+   *  thing to go back to if the plan turns out wrong, and its transcript is
+   *  what the brief tells the maker to `recall`.
+   *
+   *  Same directory and the same worktree name, since `worktree::ensure` reads
+   *  an existing one as "put a card on that branch" — the maker has to stand in
+   *  the tree the plan was written about, or it is a plan about somewhere else.
+   *
+   *  A trail that cannot be read is not a reason to refuse the handoff: the
+   *  brief degrades to the plan and the escalation path, which is still most of
+   *  it. Swallowed for the reason every other opportunistic read here is.
+   */
+  async handOff(conv: Conversation, preset: Preset | null): Promise<Conversation | null> {
+    const plan = conv.planDoc;
+    if (!plan) {
+      /* The plan went between the menu opening and a row being picked — the
+         card came back into making, which retires it. Said rather than
+         swallowed: the gesture is a click that appears to do nothing, and a
+         gesture that silently does nothing is one you try again. */
+      this.fault = "that card has no plan waiting any more";
+      return null;
+    }
+    /* `open` spawns a process, which is not instant, and the menu can be
+       reopened while it does. Two makers on one plan is two contexts and two
+       allowances for one piece of work — cheap to prevent and, on a wall where
+       the whole point of this gesture is what it saves, exactly the wrong way
+       to fail. */
+    if (this.#handingOff.has(conv.id)) return null;
+    this.#handingOff.add(conv.id);
+    try {
+      /* The trail carries its own root: the row's `cwd` is the card's
+         territory and a worktree card did not stand there — it stood in
+         `cwd/.claude/worktrees/<slug>`, *under* the root, so shortening
+         against `cwd` yields a relative path that resolves from the maker's
+         own directory to nowhere. Derived in Rust off the row, the way
+         `open_gate_run` derives it, so the slug algorithm has one spelling.
+         See `store::Trail`. */
+      let trail: Trail = { root: conv.cwd, files: [] };
+      try {
+        trail = await invoke<Trail>("files_handled_by", {
+          conversationId: conv.id,
+          limit: BRIEF_FETCH,
+        });
+      } catch (e) {
+        /* A trail that cannot be read is not a reason to refuse the handoff:
+           the brief degrades to the plan and the escalation path, which is
+           still most of it. The fallback root is right for every card without
+           a worktree and only ever affects how paths are *drawn*. */
+        console.error("files_handled_by", e);
+      }
+      const maker = await this.open(conv.cwd, conv.worktree ?? undefined, preset);
+      if (!maker) return null;
+      await this.send(
+        maker,
+        briefFor({
+          plan,
+          handled: trail.files,
+          cwd: trail.root || conv.cwd,
+          planner: handleOf(conv.id),
+        }),
+      );
+      return maker;
+    } finally {
+      this.#handingOff.delete(conv.id);
+    }
+  }
+
+  /** Cards with a handoff in flight — see `handOff`. */
+  #handingOff = new Set<string>();
 
   /** Remember what a plain `+` should open. `""` for "as claude code is set up".
    *

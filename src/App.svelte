@@ -1133,9 +1133,20 @@
           aside: conv.aside,
           bypassing: conv.bypassCaps,
           accounts: waterfall.list.length > 0,
+          /* Only where there is a plan to hand on — see menu.ts. The field is
+             cleared when a card goes back into making, so a plan that has been
+             acted on stops being offered as one that has not. */
+          plan: !!conv.planDoc,
+          presets: presetPicks(),
         };
         act = (id) => {
-          if (id === "wake") void skein.wake(conv);
+          /* The maker opens on the preset the row named, never on the wall's
+             default: this menu exists precisely because the choice is worth
+             making here, and falling back to the default would make the five
+             rows decorative. */
+          if (id.startsWith("hand:"))
+            void skein.handOff(conv, presetById(id.slice(5)) ?? null);
+          else if (id === "wake") void skein.wake(conv);
           else if (id === "aside") skein.setAside(conv, !conv.aside);
           else if (id === "bypass") skein.setBypass(conv, !conv.bypassCaps);
           /* The session id is what `--resume` takes, and this is the only place
