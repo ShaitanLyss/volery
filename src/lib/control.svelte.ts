@@ -2572,6 +2572,29 @@ export class Control {
         return { plan, escalated: plan === null };
       },
 
+      /* One utterance as the *open ear* produces it — the always-on channel
+       *  minus its microphone, which is the same bargain `voice.say` strikes
+       *  with the recogniser. It is a different path from `voice.say` and not a
+       *  synonym for it: the address gate, the spoken yes and no, and the
+       *  message an addressed card gets are all only reachable this way, and
+       *  all three are pure functions a wall test can now hold to account.
+       *
+       *  Everything it answers with is what the bar would be showing. */
+      "voice.heard": async (op) => {
+        const say = String(op.say ?? op.text ?? "");
+        await this.#voicing.heard(say);
+        await settle();
+        return {
+          said: this.#voicing.said,
+          says: this.#voicing.says,
+          /* What was heard and deliberately not acted on, because it was not
+             addressed to anything. The one field only this path can produce. */
+          overheard: this.#voicing.overheard,
+          pending: this.#voicing.pending,
+          open: this.#voicing.open,
+        };
+      },
+
       "voice.say": async (op) => {
         const say = String(op.say ?? op.text ?? "");
         const heard = await this.#voicing.say(say, !!op.confirmed);

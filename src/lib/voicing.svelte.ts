@@ -41,9 +41,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen as onEvent } from "@tauri-apps/api/event";
 import type { ControlHost } from "./control.svelte";
+import { Listeners } from "./listeners";
 import {
+  addressedCards,
+  addressIn,
+  answeredIn,
   carry,
   hear,
+  messageTo,
   spoke,
   territoriesIn,
   type Hands,
@@ -100,6 +105,13 @@ export type Transcript = {
   ms: number;
 };
 
+/** How long Alt+V arms the ear for, in milliseconds.
+ *
+ *  Fifteen seconds: long enough to gather a sentence, short enough that a key
+ *  pressed and forgotten does not leave a microphone quietly taking dictation
+ *  for the wall. */
+const ATTENDING_MS = 15_000;
+
 export class Voicing {
   #host: ControlHost;
 
@@ -155,9 +167,10 @@ export class Voicing {
   /** One project's file list per root, fetched once and kept.
    *
    *  Plain, not `$state`: nothing draws it, and a fetch landing must not repaint
-   *  the wall. Nothing subscribes and no timer runs, so there is nothing here to
-   *  release — which is worth saying, because most classes on this wall have
-   *  both. */
+   *  the wall. No timer runs here; the subscriptions the open ear needs are
+   *  `#ears`, and `detach` is what releases them — `App.svelte`'s `onDestroy`
+   *  calls it, per the rule that anything holding a Tauri subscription needs
+   *  releasing. */
   #files = new Map<string, string[]>();
 
   /** Which rung proposed the plan now waiting for a yes. Kept so `confirm` can
@@ -177,6 +190,220 @@ export class Voicing {
 
   constructor(host: ControlHost) {
     this.#host = host;
+    /* Same shape as `Control`'s own constructor: the subscriptions are how this
+       object hears about anything, so there is no state in which it is built and
+       not listening. Released by `detach`. */
+    void this.attach();
+  }
+
+  /* ── the wall listens ─────────────────────────────────────────────────────
+   *
+   * Design 3: no key at all. The microphone is simply open, and what decides
+   * whether anything happens is whether you said the wall's name or a card's —
+   * `addressIn` next door, which is where the whole of that reasoning lives.
+   *
+   * The shape here is the supervisor's, one subsystem over: a stream in Rust,
+   * events on the ordinary pipeline, a fold into `$state`. Nothing polls, and
+   * the ear's own truth lives in Rust — `#sync` asks once at startup because a
+   * window that reloaded has no memory of what it asked for, and after that
+   * every change arrives as an event.
+   */
+
+  /** The ear is open: the microphone is on and the room is being transcribed. */
+  open = $state(false);
+  /** The last thing heard that was not spoken to the wall.
+   *
+   *  Drawn, faintly, and acted on never. **This is the only evidence an open
+   *  microphone is working**, and without it a gate doing its job is
+   *  indistinguishable from a dead device — which is the failure people give up
+   *  over, and the one this subsystem is organised around not producing. It is
+   *  the room's own words, on the user's own screen, and it goes no further:
+   *  nothing reads this field but the bar. */
+  overheard = $state("");
+
+  /** When Alt+V was last pressed while the ear was open, or 0.
+   *
+   *  **A key that means "this next one is for you"**, so a sentence can be
+   *  spoken to the wall without saying its name — which is what you want when
+   *  you are sitting in front of it, and is also the only thing left for that
+   *  key to mean once the microphone is already open. It expires, because an
+   *  armed microphone you have forgotten about is exactly what addressing exists
+   *  to prevent. */
+  #attending = 0;
+
+  /** Everything this holds on the wire, released with the object. */
+  #ears = new Listeners();
+
+  /** Ask Rust what it is doing, once, and keep up with it after that.
+   *
+   *  Called by the app at startup. The subscriptions are registered before the
+   *  question is asked, so an ear that opens between the two is not missed. */
+  async attach(): Promise<void> {
+    this.#ears.keep(
+      onEvent<{ open: boolean; failed: string | null }>("voice:ear", (e) => {
+        this.open = e.payload.open;
+        if (!e.payload.open) {
+          this.partial = "";
+          this.overheard = "";
+        }
+        /* A microphone that stopped listening says so. The rest of this class
+           is careful never to go quiet on a failure and this is the one failure
+           that can happen while nobody is even talking. */
+        if (e.payload.failed) this.says = e.payload.failed;
+      }),
+    );
+    this.#ears.keep(
+      onEvent<string>("voice:hypothesis", (e) => {
+        /* Only while the ear owns the microphone — a one-shot `listen()` runs
+           its own subscription for the duration of the gesture, and two of them
+           writing the same field would have the bar flickering between a guess
+           and the same guess. */
+        if (this.open && !this.listening) this.partial = e.payload;
+      }),
+    );
+    this.#ears.keep(onEvent<string>("voice:utterance", (e) => void this.heard(e.payload)));
+    try {
+      this.open = await invoke<boolean>("voice_ear");
+    } catch {
+      /* An app that cannot answer this is an app with no ear, which is what the
+         field already says. */
+    }
+  }
+
+  /** Let go of the wire. The ear itself is Rust's and outlives the window. */
+  detach(): void {
+    this.#ears.detach();
+  }
+
+  /** Open the ear, or say why it could not be opened. */
+  async listenOn(): Promise<void> {
+    if (this.open) return;
+    this.says = "";
+    try {
+      await invoke("voice_open");
+    } catch (err) {
+      this.says = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /** Close it. The state follows the event rather than this call, because the
+   *  thread coming down is the thing that makes it true. */
+  async listenOff(): Promise<void> {
+    this.#attending = 0;
+    try {
+      await invoke("voice_close");
+    } catch (err) {
+      this.says = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async toggleEar(): Promise<void> {
+    if (this.open) await this.listenOff();
+    else await this.listenOn();
+  }
+
+  /** Take the next utterance as though it had been addressed to the wall. */
+  attend(): void {
+    this.#attending = Date.now();
+    this.said = "";
+    this.says = "go on — the next thing said is for the wall";
+  }
+
+  /** One utterance off the open ear.
+   *
+   *  The order of the three questions below is the design, and it is the order
+   *  of how little each costs to be wrong about:
+   *
+   *  1. **Is this the answer to a question the wall just asked?** Heard without
+   *     an address, because you are already in an exchange and nobody prefixes
+   *     their own name to *yes*. Exact and whole, so only an actual yes or no
+   *     is one.
+   *  2. **Was it spoken to the wall at all?** If not it is forgotten here, and
+   *     that is the whole of the privacy claim on this side: nothing leaves the
+   *     machine either way, and nothing acts on what the room said to itself.
+   *  3. **Then the ladder**, exactly as the key's own path runs it — grammar,
+   *     then the message a card was addressed with, then the steward.
+   */
+  async heard(text: string): Promise<void> {
+    const gen = ++this.#gen;
+    this.partial = "";
+    const attending = this.#attending > 0 && Date.now() - this.#attending < ATTENDING_MS;
+
+    if (this.pending) {
+      const answer = answeredIn(text);
+      if (answer === "yes") {
+        this.said = text;
+        this.#attending = 0;
+        await this.confirm();
+        return;
+      }
+      if (answer === "no") {
+        this.said = text;
+        this.#attending = 0;
+        this.dismiss();
+        this.says = "let go";
+        return;
+      }
+    }
+
+    const wall = await this.wallFor(text);
+    const said = addressIn(text, wall);
+    if (!said && !attending) {
+      /* Not for us. Shown, never acted on — see `overheard`. */
+      this.overheard = text;
+      return;
+    }
+    this.#attending = 0;
+    this.overheard = "";
+
+    const to = said?.to ?? [];
+    const cards = addressedCards(to);
+    /* Attending, the whole sentence is the instruction; addressed, it is
+       everything after the name. */
+    const rest = said ? said.rest : text;
+    this.said = text;
+    if (!rest) {
+      /* Somebody said a name and nothing else. Answered rather than ignored, so
+         the wall visibly heard its own name. */
+      this.says = "yes?";
+      return;
+    }
+
+    const what = await this.#routed(cards, rest, text, wall);
+    if (gen === this.#gen) this.report(what);
+  }
+
+  /** The ladder, with whatever the address already settled.
+   *
+   *  **One addressed card becomes the referent the grammar falls back on**, so
+   *  *"the ring, stop"* stops the ring rather than whatever happens to be in
+   *  front — `hear` resolves a missing referent to the focused card, and for an
+   *  addressed sentence the addressed card is what "this one" means.
+   *
+   *  **Several addressed cards skip the grammar entirely**, and that is the one
+   *  asymmetry worth stating. The grammar has no way to take a plural referent
+   *  it was not told about, so *"the ring and the auth work, stop"* would
+   *  resolve `stop` against the *focused* card — a plan about a card nobody
+   *  named. A message to both is the reading that cannot be wrong about who,
+   *  and it is confirmed before it goes.
+   *
+   *  The steward is handed the **whole** utterance, address included, because a
+   *  name at the front of a sentence is exactly what its prompt is built to
+   *  resolve — and stripping it would take away the one thing that said who. */
+  async #routed(
+    cards: VoiceCard[],
+    rest: string,
+    whole: string,
+    wall: Wall,
+  ): Promise<Heard> {
+    if (cards.length < 2) {
+      const seen = cards.length === 1 ? { ...wall, focusedId: cards[0].id } : wall;
+      const plan = hear(rest, seen);
+      if (plan) return await this.#answer(plan, "grammar", false);
+    }
+    const message = messageTo(cards, rest, wall);
+    if (message) return await this.#answer(message, "grammar", false);
+    return await this.#escalate(whole, wall, false);
   }
 
   /* ── the wall, as voice sees it ────────────────────────────────────────── */
@@ -276,6 +503,15 @@ export class Voicing {
         await h.skein.stop(card(id));
       },
       aside: (id, aside) => h.skein.setAside(card(id), aside),
+      /* The card's own send, the one the dock calls — so a spoken message and a
+         typed one are the same act, drawn the same way, echoed the same way, and
+         a card that is dormant is woken by either. */
+      send: async (id, text) => {
+        await h.skein.send(card(id), text);
+      },
+      broadcast: async (ids, text) => {
+        await h.skein.broadcast(ids.map(card), text);
+      },
       open: async (cwd) => {
         await h.openIn(cwd);
       },
@@ -404,6 +640,13 @@ export class Voicing {
    *  Never throws. Every way this can fail ends up in `says`, because the caller
    *  is a keystroke and a keystroke has nowhere to put an exception. */
   async listen(): Promise<void> {
+    /* With the ear already open there is nothing to open, and the key means the
+       one thing left for it to mean: *this next one is for you*, without having
+       to say the wall's name to something already listening. */
+    if (this.open) {
+      this.attend();
+      return;
+    }
     if (this.listening) return;
     const gen = ++this.#gen;
     this.listening = true;
@@ -474,6 +717,13 @@ export class Voicing {
 
   /** Is there anything to draw? */
   get showing(): boolean {
-    return this.listening || this.thinking || !!this.pending || !!this.said || !!this.says;
+    return (
+      this.open ||
+      this.listening ||
+      this.thinking ||
+      !!this.pending ||
+      !!this.said ||
+      !!this.says
+    );
   }
 }

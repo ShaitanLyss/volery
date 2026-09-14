@@ -3348,6 +3348,69 @@ t("deselecting by voice is the wall's own deselect", async () => {
   expect((await snapshot()).studio.selected).toEqual([]);
 });
 
+/* ── the wall listening, driven with text ────────────────────────────────
+ *
+ * `voice.heard` is the always-on channel minus its microphone: one settled
+ * utterance, as the open ear would hand it over. Everything these exercise is
+ * unreachable from `voice.say` — the address gate, what an addressed card is
+ * told, and answering out loud — and none of it can be got at from a unit test,
+ * because the wall it resolves against is this wall.
+ *
+ * Nothing here escalates, which is deliberate: every sentence below is either
+ * refused by the gate or answered by the grammar, so the suite costs no requests
+ * and takes no seconds. A steward case belongs in `live.test.ts` with the other
+ * things that spend money.
+ */
+
+t("a sentence nobody addressed is heard and not acted on", async () => {
+  const { title } = await cardOf(card);
+  const heard = await ctl("voice.heard", { say: `we should probably stop ${title} before lunch` });
+  /* Held up so a working microphone can be told from a dead one — and that is
+     the whole of what happens to it. */
+  expect(heard.overheard).toContain("before lunch");
+  expect(heard.pending).toBeNull();
+});
+
+t("a card addressed by name is what the verb lands on", async () => {
+  /* Renamed first, because this is the design saying so out loud: a card called
+     "fixing the ring occupancy bug" cannot be addressed across a room, and
+     `/rename` is how it gets a handle that can be. */
+  await ctl("rename", { card, name: "caravan" });
+  const heard = await ctl("voice.heard", { say: "caravan, stop" });
+  /* "stop" names no card. The addressed one is what "this one" means, so the
+     plan is about caravan rather than about whatever is in front. */
+  expect(heard.pending?.steps?.[0]?.op).toBe("stop");
+  expect(heard.pending?.steps?.[0]?.args?.card).toBe(card);
+  await ctl("voice.heard", { say: "no" });
+});
+
+t("a card addressed and then told something is sent it, verbatim", async () => {
+  await ctl("rename", { card, name: "caravan" });
+  const heard = await ctl("voice.heard", { say: "caravan, run the release build" });
+  /* Not a wall verb, so the grammar declines — and the address already settled
+     who, which is the rung that makes this free rather than a request. */
+  expect(heard.pending?.steps?.[0]?.op).toBe("send");
+  expect(heard.pending?.steps?.[0]?.args?.text).toBe("run the release build");
+  expect(heard.pending?.reads).toBe('send "run the release build" to caravan');
+  /* And it is held for a yes, because a message reaches an agent. */
+  expect(heard.pending?.needs).toBe("confirmation");
+
+  /* Said out loud, which is the half that makes it hands-free. */
+  const after = await ctl("voice.heard", { say: "no" });
+  expect(after.pending).toBeNull();
+  expect(after.says).toBe("let go");
+});
+
+t("a plan waiting for a yes is not confirmed by a sentence with a yes in it", async () => {
+  await ctl("rename", { card, name: "caravan" });
+  await ctl("voice.heard", { say: "caravan, run the release build" });
+  const heard = await ctl("voice.heard", { say: "yes and tell the others as well" });
+  /* Exact and whole, the same rule the grammar has. A yes read out of a sentence
+     would confirm one plan while throwing away the rest of what was said. */
+  expect(heard.pending).not.toBeNull();
+  await ctl("voice.heard", { say: "no" });
+});
+
 t("a file named out loud opens in the viewer", async () => {
   /* `voice.ts` normalises the spoken separator, and the territory's file list is
      fetched on demand — so this is also the only test that the fetch lands. */

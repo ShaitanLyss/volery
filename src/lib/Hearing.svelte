@@ -26,8 +26,16 @@
   <!-- `aria-live` because the whole point of this bar is that something which
        happened without your hands is announced. -->
   <div class="hearing" role="status" aria-live="polite">
-    {#if voicing.listening}
+    {#if voicing.open || voicing.listening}
+      <!-- **On whenever the stream is**, which is not decoration: an always-on
+           microphone is a privacy fact, and `docs/VOICE.md` makes a visible
+           indication a condition of shipping one. It is the same mark the
+           push-to-talk gesture uses, because it means the same thing — this
+           device is open. -->
       <span class="ear" aria-hidden="true"></span>
+    {/if}
+
+    {#if voicing.listening}
       {#if voicing.partial}
         <!-- The words so far. Dimmer than a finished transcript because it is a
              guess in progress and will be replaced — so it reads as something
@@ -41,6 +49,17 @@
         <!-- Quoted, so a transcript that is itself a sentence about the wall
              cannot be misread as the wall talking. -->
         <span class="heard">“{voicing.said}”</span>
+      {:else if voicing.partial}
+        <!-- Words forming on the open ear, before anyone knows whether they
+             were for the wall. -->
+        <span class="guess">{voicing.partial}</span>
+      {:else if voicing.overheard}
+        <!-- Heard and not acted on, because it was not addressed to anything.
+             Drawn because it is the only evidence an open microphone is alive:
+             a gate doing its job and a dead device look identical otherwise. -->
+        <span class="aside">{voicing.overheard}</span>
+      {:else if voicing.open && !voicing.says && !voicing.pending}
+        <span class="what">listening — say its name</span>
       {/if}
 
       {#if voicing.thinking}
@@ -61,7 +80,7 @@
       {:else if voicing.says}
         <span class="says">{voicing.says}</span>
         <button class="no" onclick={() => voicing.dismiss()}>dismiss</button>
-      {:else}
+      {:else if voicing.said || voicing.says}
         <button class="no" onclick={() => voicing.dismiss()}>dismiss</button>
       {/if}
     {/if}
@@ -143,6 +162,16 @@
   .guess {
     color: var(--paper-mute);
     font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The room, not the wall. Fainter than a transcript the wall acted on, and
+     the same weight as a guess in progress — because that is what it is to this
+     bar: words it is holding and will do nothing with. */
+  .aside {
+    color: var(--paper-mute);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

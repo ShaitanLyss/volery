@@ -464,6 +464,11 @@
     synth.release();
     editor.detach();
     bang.detach();
+    /* Holds the ear's three subscriptions. The ear itself is Rust's and is
+       deliberately *not* closed here: a reload of this window is not a reason to
+       stop listening to the room, and `attach` asks what it is doing rather than
+       assuming. */
+    voicing.detach();
     /* Not a subscription but the same hazard: a superseded generation's sampler
        would go on enumerating every process on the machine every two seconds
        for a wall nobody can see. */
@@ -2402,7 +2407,18 @@
        quietly changing meaning based on where the caret is. */
     if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "v" || e.key === "V")) {
       e.preventDefault();
-      await voicing.listen();
+      /* **Shift opens the ear and closes it again**, which is the one gesture
+         in the app that turns a microphone on — so it is deliberately not the
+         one your hand finds by accident, and the bar says so for as long as it
+         is open. Everything after that is spoken: Design 3's whole argument is
+         that addressing replaces the key, so this is the only press the
+         always-on channel has.
+
+         Bare Alt+V keeps both of its meanings and they are the same meaning
+         one layer apart: with no ear, listen once; with the ear open, take the
+         next utterance as though it had been addressed. */
+      if (e.shiftKey) await voicing.toggleEar();
+      else await voicing.listen();
       return;
     }
     /* **Ctrl+F belongs to whatever it was opened over, and never to the

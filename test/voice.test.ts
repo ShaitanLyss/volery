@@ -12,9 +12,14 @@ import {
   resolveCards,
   resolveFile,
   resolveTerritory,
+  addressedCards,
+  addressIn,
+  answeredIn,
+  messageTo,
   spelt,
   spoke,
   spoken,
+  WALL_NAMES,
   territoriesIn,
   uncarriable,
   type Hands,
@@ -528,6 +533,8 @@ function stub(fails?: { op: string; why: string }) {
     aside: (c, a) => note(`aside ${c} ${a}`),
     open: (cwd) => note(`open ${cwd}`),
     lookAt: (cwd, p) => note(`lookAt ${cwd} ${p}`),
+    send: (c, t) => note(`send ${c} ${t}`),
+    broadcast: (cs, t) => note(`broadcast ${cs.join("+")} ${t}`),
   };
   return { hands, log };
 }
@@ -627,5 +634,145 @@ describe("spoke — what the wall says afterwards", () => {
     expect(spoke({ kind: "stopped", at: 0, step, why: "that card has gone" })).toBe(
       "nothing happened — that card has gone",
     );
+  });
+});
+
+describe("addressIn — who the room was talking to", () => {
+  const rest = (say: string) => addressIn(say, WALL)?.rest;
+  const who = (say: string) =>
+    addressIn(say, WALL)?.to.map((a) =>
+      a.kind === "card" ? a.card.id : a.kind === "territory" ? a.it.project : "wall",
+    );
+
+  test("a sentence spoken at nothing is not for the wall", () => {
+    /* The whole of the privacy and the whole of the safety: an always-on
+       microphone hears the room, and what the room says to itself is dropped
+       before anything looks at it. */
+    expect(addressIn("we should probably stop the auth work before lunch", WALL)).toBeNull();
+    expect(addressIn("stop everything", WALL)).toBeNull();
+  });
+
+  test("a card by its name, and what was said to it", () => {
+    expect(who("the ring, halt work")).toEqual(["c5"]);
+    expect(rest("the ring, halt work")).toBe("halt work");
+    /* No comma either — an engine punctuates as it likes and a gate that needed
+       one would work in writing and not out loud. */
+    expect(who("the ring halt work")).toEqual(["c5"]);
+    expect(rest("the ring halt work")).toBe("halt work");
+  });
+
+  test("the longest name wins, so one card is not addressed by another's prefix", () => {
+    /* "the ring" is a whole card and also the start of "fixing the ring
+       occupancy bug" — but only one of them is what the sentence began with. */
+    expect(who("fixing the ring occupancy bug, stop")).toEqual(["c4"]);
+    expect(who("the ring, stop")).toEqual(["c5"]);
+  });
+
+  test("the wall itself, by any of its names", () => {
+    for (const name of WALL_NAMES) expect(who(`${name}, fit the wall`)).toEqual(["wall"]);
+    expect(rest("volery, fit the wall")).toBe("fit the wall");
+  });
+
+  test("several, joined the way people join them", () => {
+    expect(who("the ring and the auth work, halt work")).toEqual(["c5", "c1"]);
+    expect(rest("the ring and the auth work, halt work")).toBe("halt work");
+    expect(who("the ring, sink triage, stop")).toEqual(["c5", "c6"]);
+  });
+
+  test("a hail is skipped and is not itself an address", () => {
+    expect(who("hey volery, fit the wall")).toEqual(["wall"]);
+    /* Said on its own it is somebody greeting a person in the room. */
+    expect(addressIn("hey, could you stop that", WALL)).toBeNull();
+  });
+
+  test("politeness after the name is not part of what was said", () => {
+    expect(rest("volery, please fit the wall")).toBe("fit the wall");
+    expect(rest("volery could you fit the wall")).toBe("fit the wall");
+  });
+
+  test("a name inside a sentence is not an address", () => {
+    /* The gate is a head match and only a head match. Somebody saying "I think
+       the ring is stuck" is talking about a card, not to one. */
+    expect(addressIn("I think the ring is stuck", WALL)).toBeNull();
+  });
+
+  test("the payload keeps the case it was said in", () => {
+    /* It is about to be sent to an agent verbatim, and a message lowercased on
+       the way is a different message. */
+    expect(rest("The Ring, run the RELEASE build")).toBe("run the RELEASE build");
+  });
+
+  test("a territory answers to its own name", () => {
+    expect(who("caravan, open a card")).toEqual(["t:caravan"].map(() => "caravan"));
+    expect(who("orchard, open a card")).toEqual(["orchard"]);
+  });
+
+  test("a name said twice is one addressee", () => {
+    expect(who("the ring and the ring, stop")).toEqual(["c5"]);
+  });
+
+  test("an address with nothing after it is an address with nothing after it", () => {
+    /* Said and answered by the caller rather than here: this function reports
+       what it heard, and "somebody said the wall's name" is a true thing to
+       report. */
+    expect(who("volery")).toEqual(["wall"]);
+    expect(rest("volery")).toBe("");
+  });
+});
+
+describe("messageTo — the rung addressing buys", () => {
+  test("one card and some words is one send, carried verbatim", () => {
+    const plan = messageTo([CARDS[4]], "halt work", WALL)!;
+    expect(plan.steps.map((s) => s.op)).toEqual(["send"]);
+    expect(plan.steps[0].args).toEqual({ card: "c5", text: "halt work" });
+    /* And it asks first, by the same table as everything else. */
+    expect(plan.needs).toBe("confirmation");
+    expect(plan.reads).toBe('send "halt work" to the ring');
+  });
+
+  test("several cards is one broadcast rather than several sends", () => {
+    const plan = messageTo([CARDS[4], CARDS[0]], "halt work", WALL)!;
+    expect(plan.steps.map((s) => s.op)).toEqual(["broadcast"]);
+    expect(plan.steps[0].args).toEqual({ cards: ["c5", "c1"], text: "halt work" });
+    expect(plan.reads).toBe('send "halt work" to the ring and the auth work');
+  });
+
+  test("nothing to say is nothing to send", () => {
+    expect(messageTo([CARDS[4]], "   ", WALL)).toBeNull();
+    expect(messageTo([], "halt work", WALL)).toBeNull();
+  });
+
+  test("and the cards it was addressed to are the cards it reaches", () => {
+    const said = addressIn("the ring and the auth work, halt work", WALL)!;
+    expect(addressedCards(said.to).map((c) => c.id)).toEqual(["c5", "c1"]);
+    /* A territory in the list contributes no card, which is what stops
+       "caravan, halt work" from becoming a message to a repository. */
+    const mixed = addressIn("caravan and the ring, halt work", WALL)!;
+    expect(addressedCards(mixed.to).map((c) => c.id)).toEqual(["c5"]);
+  });
+});
+
+describe("answeredIn — saying yes without reaching for the keyboard", () => {
+  test("the words people actually use", () => {
+    for (const yes of ["yes", "yeah", "go ahead", "do it", "Confirm."]) {
+      expect([yes, answeredIn(yes)]).toEqual([yes, "yes"]);
+    }
+    for (const no of ["no", "nope", "cancel", "never mind", "Stop!"]) {
+      expect([no, answeredIn(no)]).toEqual([no, "no"]);
+    }
+  });
+
+  test("exact and whole, so a yes cannot be read out of a sentence", () => {
+    /* The same rule the grammar has, and here for the same reason: confirming
+       one plan while throwing away half of what was said is the failure that
+       makes a confirmation worthless. */
+    expect(answeredIn("yes and tell the ring as well")).toBeNull();
+    expect(answeredIn("no, the other caravan")).toBeNull();
+    expect(answeredIn("stop the auth work")).toBeNull();
+  });
+
+  test("anything else is not an answer at all", () => {
+    expect(answeredIn("")).toBeNull();
+    expect(answeredIn("fit the wall")).toBeNull();
   });
 });

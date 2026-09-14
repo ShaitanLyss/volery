@@ -388,14 +388,18 @@ describe("the vocabulary against what the wall can do", () => {
        containing one is a plan that needs no confirmation and then cannot run.
        That reads as a contradiction and is not one: `carry` refuses before
        disposition is consulted at all, so the answer is "nothing here can
-       rename" rather than a silent no-op. They are also the two cheapest to
-       wire, which is presumably why they will be first. */
+       rename" rather than a silent no-op.
+
+       `send` and `broadcast` came off this list when the wall started
+       listening, and not because they were cheap — they are the two most
+       consequential ops here, and they were wired because *"caravan, halt
+       work"* is the sentence the always-on channel exists for. Both are outside
+       `IMMEDIATE`, so both are spoken back and confirmed before anything
+       reaches an agent. */
     const carriable = (op: string) =>
       uncarriable(planOf([{ op, args: {}, said: "" }])).length === 0;
     expect(unwired(carriable)).toEqual([
       "chat",
-      "send",
-      "broadcast",
       "rename",
       "clear",
       "close",

@@ -869,6 +869,235 @@ export function territoriesIn(utterance: string, wall: Wall): VoiceTerritory[] {
   return wall.territories.filter((t) => low.includes(` ${t.project.toLowerCase()} `));
 }
 
+/* ── the wall listens ─────────────────────────────────────────────────────────
+ *
+ * Design 3 of `docs/VOICE.md`, which is a design about the *channel* rather than
+ * about the parsing: no key, a microphone that is always open, and a **spoken
+ * address** deciding what was meant for the wall. Everything before an address
+ * is discarded; everything after it, until a pause, is the utterance.
+ *
+ * > Addressing is what a push-to-talk key is for, moved into the language.
+ *
+ * **The gate is here rather than beside the recogniser, and that is a change of
+ * plan worth stating.** This file's own header says the address match belongs in
+ * Rust — *"a hot-path closed-set match rather than a parse"* — on the argument
+ * that it would run on every audio frame and keep the expensive engine asleep
+ * until a name was heard. That argument was written when the engine was Windows'
+ * cloud dictation, where "expensive" meant a network round trip and a room's
+ * audio leaving the machine. It is not the engine any more: moonshine runs here
+ * at RTF 0.15–0.28 (`voice.rs`), so transcribing a segment nobody addressed
+ * costs a fraction of one core and no bytes anywhere. What is left of the
+ * decision is where the *names* live — and they are card titles and territory
+ * names, which are front-end `$state` changing every time a card is renamed. A
+ * gate in Rust would need that set shipped down on every change, to answer a
+ * question a pure function can answer here, in Bun, under test.
+ *
+ * What the audio still gets is the whole of the privacy claim: nothing leaves
+ * this machine, addressed or not, and an unaddressed segment is dropped before
+ * anything acts on it.
+ */
+
+/** What the wall itself answers to.
+ *
+ *  Four names for one thing, because this is the word you say when you are not
+ *  talking to any particular card, and being unable to remember it is the same
+ *  as the feature not working. `skein` is here for the reason `CLAUDE.md` gives
+ *  about everything else that kept the old name: it is what somebody who has
+ *  used this wall for a year will say. */
+export const WALL_NAMES = ["volery", "skein", "wall", "studio"];
+
+/** What people put in front of a name without meaning anything by it. */
+const HAILS = ["hey", "hi", "hello", "ok", "okay", "yo", "um", "uh"];
+
+/** What people put after one, before getting to the point. */
+const AFTER_ADDRESS = ["please", "could you", "can you", "would you"];
+
+/** Who an utterance was addressed to. */
+export type Addressee =
+  | { kind: "wall" }
+  | { kind: "card"; card: VoiceCard }
+  | { kind: "territory"; it: VoiceTerritory };
+
+/** An utterance that was addressed to something, split at the address. */
+export type Addressed = {
+  /** In the order they were named, without repeats. */
+  to: Addressee[];
+  /** Everything after the address, in its original case — because this is what
+   *  a message carries, and a payload is carried verbatim. */
+  rest: string;
+};
+
+/** How a tie between two names of the same length is settled.
+ *
+ *  It is settled at all because this wall's own territory is *called* volery: a
+ *  repository and the studio share a name, and "volery, fit the wall" has to
+ *  mean the wall. Cards first because that is who you talk to; the wall's own
+ *  names next, since they are the word for "not any one card"; a territory last,
+ *  because it is still perfectly reachable by being named *inside* a sentence,
+ *  which is where the grammar already looks for one. */
+const ADDRESS_RANK = { card: 0, wall: 1, territory: 2 } as const;
+
+/** The names this wall answers to right now, longest first.
+ *
+ *  Longest first is the whole of the disambiguation: a card called *"the ring"*
+ *  and one called *"the ring occupancy bug"* both start the same way, and the
+ *  one that was said is the longer match. */
+function addressable(wall: Wall): { name: string; to: Addressee }[] {
+  const names: { name: string; to: Addressee }[] = [];
+  for (const card of wall.cards) {
+    names.push({ name: card.title.toLowerCase(), to: { kind: "card", card } });
+  }
+  for (const it of wall.territories) {
+    names.push({ name: it.project.toLowerCase(), to: { kind: "territory", it } });
+  }
+  for (const name of WALL_NAMES) names.push({ name, to: { kind: "wall" } });
+  return names
+    .filter((n) => n.name.trim().length > 0)
+    .sort(
+      (a, b) =>
+        b.name.length - a.name.length || ADDRESS_RANK[a.to.kind] - ADDRESS_RANK[b.to.kind],
+    );
+}
+
+/** Is `phrase` at `at` in `low`, on word boundaries both sides? */
+function wordAt(low: string, at: number, phrase: string): boolean {
+  if (!low.startsWith(phrase, at)) return false;
+  const before = at === 0 ? " " : low[at - 1];
+  const after = low[at + phrase.length];
+  return /[\s,:;]/.test(before) && (after === undefined || /[\s,:;.!?]/.test(after));
+}
+
+/** Who this utterance was spoken to, and what was said to them — or null, which
+ *  means it was not spoken to the wall at all and is to be forgotten.
+ *
+ *  **Exact names only, at the head, and that strictness is the design.** An
+ *  always-on channel hears every conversation in the room, so the cost of a
+ *  loose gate is not a misparse — it is the wall acting on something nobody said
+ *  to it. `resolveCard`'s fuzzy ladder is right one rung in, where a sentence is
+ *  already known to be an instruction; it would be wrong here, where the
+ *  question is whether this is an instruction at all.
+ *
+ *  Which is also why `docs/VOICE.md` says this design *forces the naming problem
+ *  to be solved*: a card called "fixing the ring occupancy bug" cannot be
+ *  addressed out loud, and `/rename` is how it gets a handle that can be. */
+export function addressIn(utterance: string, wall: Wall): Addressed | null {
+  const said = tidy(utterance);
+  const low = said.toLowerCase();
+  const names = addressable(wall);
+
+  let at = 0;
+  /* A hail is not an address and never counts as one — "hey" on its own is not
+     talking to the wall — so it is only skipped over. */
+  for (const hail of HAILS) {
+    if (wordAt(low, at, hail)) {
+      at += hail.length;
+      while (low[at] === " " || low[at] === ",") at++;
+      break;
+    }
+  }
+
+  const to: Addressee[] = [];
+  const seen = new Set<string>();
+  for (;;) {
+    const hit = names.find((n) => wordAt(low, at, n.name));
+    if (!hit) break;
+    const key =
+      hit.to.kind === "card"
+        ? `c:${hit.to.card.id}`
+        : hit.to.kind === "territory"
+          ? `t:${hit.to.it.project}`
+          : "wall";
+    if (!seen.has(key)) {
+      seen.add(key);
+      to.push(hit.to);
+    }
+    at += hit.name.length;
+    /* Another one, if several were named. Only "and" and a comma join
+       addressees; anything else is the start of what was said to them. */
+    const more = /^(\s*,\s*|\s+and\s+)/.exec(low.slice(at));
+    if (!more) break;
+    at += more[0].length;
+  }
+  if (!to.length) return null;
+
+  while (at < low.length && /[\s,:;]/.test(low[at])) at++;
+  for (const filler of AFTER_ADDRESS) {
+    if (low.startsWith(filler, at)) {
+      at += filler.length;
+      while (at < low.length && /[\s,:;]/.test(low[at])) at++;
+      break;
+    }
+  }
+
+  return { to, rest: said.slice(at).trim() };
+}
+
+/** The cards that were addressed, in the order they were named. */
+export function addressedCards(to: Addressee[]): VoiceCard[] {
+  return to.flatMap((a) => (a.kind === "card" ? [a.card] : []));
+}
+
+/** What an utterance spoken *at a card* amounts to once the grammar has
+ *  declined it.
+ *
+ *  **This is the rung addressing buys, and it is free.** Naming a card and then
+ *  saying something that is not a wall command is not an ambiguity for a model
+ *  to resolve — the address settled the target and everything after it is the
+ *  message, which is rule 2 of the steward's own prompt applied by the channel
+ *  instead of by a request. *"caravan, halt work"* is one send carrying two
+ *  words, and it costs nothing and takes no time.
+ *
+ *  It is a plan like any other, so `needs` comes from the same table — and
+ *  `send` is not in `IMMEDIATE`, so it is confirmed. It should be: project cards
+ *  spawn with `--dangerously-skip-permissions`, and a misheard message is the
+ *  most destructive thing this application can do. */
+export function messageTo(cards: VoiceCard[], text: string, wall: Wall): Plan | null {
+  const words = text.trim();
+  if (!cards.length || !words) return null;
+  const op = cards.length === 1 ? "send" : "broadcast";
+  const args =
+    cards.length === 1
+      ? { card: cards[0].id, text: words }
+      : { cards: cards.map((c) => c.id), text: words };
+  return planOf([{ op, args, said: phraseOf(op, args, wall) }]);
+}
+
+/* ── yes, and no ──────────────────────────────────────────────────────────────
+ *
+ * A plan that needs confirming is confirmed with Enter, which is fine at the
+ * wall and useless across the room — and *hands-free* that ends in a keystroke
+ * is not the feature. So the answer can be spoken, and it is the one thing on
+ * this path heard without an address: you are already in an exchange, the wall
+ * has just asked you a question, and prefixing your own name to the answer is
+ * not how anybody talks.
+ *
+ * **Exact and whole, for the same reason the grammar is.** "yes" is an answer;
+ * "yes, and tell the ring as well" is a sentence, and reading a yes out of it
+ * would confirm one plan while throwing away half of what was said. Anything
+ * that is not exactly one of these is a new utterance and goes through the
+ * address gate like any other.
+ */
+
+const YES = [
+  "yes", "yeah", "yep", "yup", "aye", "ok", "okay", "go ahead", "do it", "go on",
+  "please do", "confirm", "sure",
+];
+const NO = [
+  "no", "nope", "nah", "cancel", "never mind", "nevermind", "forget it", "stop",
+  "dont", "don't", "do not", "dismiss", "no thanks",
+];
+
+/** A spoken yes or no, or null for anything that is neither. */
+export function answeredIn(utterance: string): "yes" | "no" | null {
+  const said = tidy(utterance)
+    .toLowerCase()
+    .replace(/[.?!,]+$/, "")
+    .trim();
+  if (YES.includes(said)) return "yes";
+  if (NO.includes(said)) return "no";
+  return null;
+}
+
 /* ── carrying it out ──────────────────────────────────────────────────────────
  *
  * Still pure: a plan is carried out against a `Hands`, which is an interface and
@@ -891,6 +1120,11 @@ export type Hands = {
   fit(): void | Promise<void>;
   stop(card: string): void | Promise<void>;
   aside(card: string, aside: boolean): void | Promise<void>;
+  /** Put a prompt in one card's hands. The first thing here that costs money
+   *  and the first that reaches an agent, which is why nothing routes to it
+   *  without a yes — see `IMMEDIATE`, which does not contain it. */
+  send(card: string, text: string): void | Promise<void>;
+  broadcast(cards: string[], text: string): void | Promise<void>;
   open(cwd: string): void | Promise<void>;
   lookAt(cwd: string, path: string): void | Promise<void>;
 };
@@ -910,7 +1144,20 @@ const CARRIERS: Record<string, Carrier> = {
   aside: (a, h) => h.aside(String(a.card), a.aside !== false),
   open: (a, h) => h.open(String(a.cwd)),
   "find.lookAt": (a, h) => h.lookAt(String(a.cwd), String(a.path)),
+  /* The two that reach an agent. Both refuse an empty payload rather than
+     sending one: a card woken by a blank prompt has spent a turn on nothing,
+     and an empty `text` here means a step was built wrong somewhere above. */
+  send: (a, h) => h.send(String(a.card), payload(a.text)),
+  broadcast: (a, h) =>
+    h.broadcast(Array.isArray(a.cards) ? a.cards.map(String) : [], payload(a.text)),
 };
+
+/** The words of a message, or a refusal to send nothing. */
+function payload(text: unknown): string {
+  const said = String(text ?? "").trim();
+  if (!said) throw new Error("there was nothing to send");
+  return said;
+}
 
 export type Outcome =
   /** Every step, in order. */

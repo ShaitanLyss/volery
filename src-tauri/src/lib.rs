@@ -254,6 +254,10 @@ pub fn run() {
         .manage(Runs::default())
         .manage(Asks::default())
         .manage(aside::Asides::default())
+        /* The one open microphone, and never more than one. Default is closed:
+           nothing here opens an ear at launch, because an always-on microphone
+           is a thing a person asks for rather than a thing an app decides. */
+        .manage(voice::Ear::default())
         /* The chain marks and the rate limit, and nothing that survives a quit
            — a card holding an inbox holds it in the `relay` table, not here. */
         .manage(Relays::default())
@@ -629,6 +633,9 @@ pub fn run() {
             status::claude_status,
             voice::voice_hearing,
             voice::voice_listen,
+            voice::voice_open,
+            voice::voice_close,
+            voice::voice_ear,
             steward::voice_steward,
             spotify::spotify_link,
             spotify::spotify_forget,

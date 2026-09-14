@@ -192,7 +192,9 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -773,32 +775,41 @@ fn transcribe(rec: &OfflineRecognizer, samples: &[f32]) -> String {
         .unwrap_or_default()
 }
 
-/// Listen for one utterance and hand back what was said.
+/// Listen until told to stop, handing over each utterance as it settles.
 ///
-/// The shape of the loop is the whole design: audio arrives in blocks on a
-/// channel, is brought to mono 16kHz, and is handed to the VAD in exact
-/// `WINDOW` frames. Whenever the VAD has *finished* a segment, that segment is
-/// transcribed immediately and the running text emitted as a hypothesis — so a
-/// long sentence appears in pieces while it is still being spoken, which is as
-/// close as a batch engine gets to the running commentary the Windows path had.
+/// The same loop `listen` is a single turn of, which is why they are one
+/// function with a flag rather than two that have to be kept in step. The
+/// differences are exactly three, and every one of them is the *one-shot* case
+/// being the special one:
 ///
-/// It ends on the first of: `TRAILING_SILENCE` after something was heard,
-/// `ONSET_PATIENCE` with nothing heard at all, or `MAX_UTTERANCE` regardless.
-pub fn listen(
+///  - **A continuous ear has no onset patience.** Five seconds of nobody talking
+///    ends a push-to-talk recognition and means nothing at all to a microphone
+///    that is simply open.
+///  - **`MAX_UTTERANCE` is measured from when somebody started talking**, rather
+///    than from when the call began. A ceiling measured from this morning would
+///    cut the afternoon's sentences in half.
+///  - **It reports every utterance instead of returning one**, and silence
+///    between them is not an error — it is the normal state of a room.
+///
+/// `stop` is asked once per turn of the loop, which is at most every 100ms, so
+/// coming down is prompt without anything here having to be interruptible.
+fn hear_loop(
     models_dir: &Path,
     language: &str,
-    partial: impl Fn(&str) + Send + 'static,
-) -> Result<Heard, String> {
+    partial: &dyn Fn(&str),
+    settled: &mut dyn FnMut(String),
+    stop: &dyn Fn() -> bool,
+    once: bool,
+) -> Result<(), String> {
     english_only(language)?;
 
     /* The very first listen ever made pays for ~286MB, and a bar that reads
        "listening…" for several minutes is indistinguishable from one that is
-       broken — the same *real cause reported as silence* the comment below is
-       about, which is why it is worth a line here rather than a note in a
-       changelog.
+       broken — the same *real cause reported as silence* this file has been
+       bitten by three times in three costumes.
 
        There is exactly one channel from here to that bar, `voice:hypothesis`,
-       because the point of this whole change is that nothing in `src/` had to
+       because the point of the local engine was that nothing in `src/` had to
        move for it. So the notice goes down that channel, and it is **the one
        thing ever sent that way that is not a guess at what was said**. That is
        a real if small abuse of the field, and it is bounded: the first decoded
@@ -810,7 +821,7 @@ pub fn listen(
         ));
     }
 
-    let models = ensure_models(models_dir, &partial)?;
+    let models = ensure_models(models_dir, partial)?;
     let recognizer = build_recognizer(&models)?;
     let vad = build_vad(&models)?;
 
@@ -821,23 +832,47 @@ pub fn listen(
        it is declared here rather than at the top.** `ensure_models` downloads
        286MB on a first run, and `build_recognizer` is seconds more; timed from
        the start of the call, `ONSET_PATIENCE` would already be spent by the
-       time there was anything to listen to, so the loop's very first check
-       would fire and report *nothing was said* — on a freshly installed app,
-       for the first thing anybody ever tried to say to it, without the
-       microphone having been opened at all.
+       time there was anything to listen to, so the loop's very first check would
+       fire and report *nothing was said* — on a freshly installed app, for the
+       first thing anybody ever tried to say to it, without the microphone having
+       been opened at all.
 
-       That is the failure this file has now been bitten by three times in three
-       different costumes: a real cause reported as silence. It also makes `ms`
-       honest, since what a caller wants from that field is how long the
-       utterance took and not how long a one-off download did. */
-    let began = Instant::now();
+       It is then reset when somebody starts talking, which is what makes it the
+       utterance's clock afterwards: the onset check only runs while nothing has
+       been heard, so one variable honestly answers both questions. */
+    let mut began = Instant::now();
 
     let mut frame: Vec<f32> = Vec::with_capacity(WINDOW * 2);
     let mut said: Vec<String> = Vec::new();
     let mut heard_speech = false;
     let mut last_voice = Instant::now();
 
+    /* Everything the VAD is holding, transcribed and added to what is being
+       built. Its own closure because the loop and the flush at the end were the
+       same eight lines twice. */
+    let drain = |said: &mut Vec<String>, speak: bool| {
+        while !vad.is_empty() {
+            /* Copied out and the borrow dropped before `pop`, because the
+               segment is a view onto memory that `pop` is entitled to free. */
+            let samples: Vec<f32> = match vad.front() {
+                Some(seg) => seg.samples().to_vec(),
+                None => break,
+            };
+            vad.pop();
+            let text = transcribe(&recognizer, &samples);
+            if !text.is_empty() {
+                said.push(text);
+                if speak {
+                    partial(&said.join(" "));
+                }
+            }
+        }
+    };
+
     loop {
+        if stop() {
+            break;
+        }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(block) => {
                 let block = mono(&block, capture.channels);
@@ -854,61 +889,81 @@ pub fn listen(
             Err(RecvTimeoutError::Disconnected) => break,
         }
 
-        if vad.detected() {
-            heard_speech = true;
-            last_voice = Instant::now();
-        }
-
-        while !vad.is_empty() {
-            /* Copied out and the borrow dropped before `pop`, because the
-               segment is a view onto memory that `pop` is entitled to free. */
-            let samples: Vec<f32> = match vad.front() {
-                Some(seg) => seg.samples().to_vec(),
-                None => break,
-            };
-            vad.pop();
-
-            let text = transcribe(&recognizer, &samples);
-            if !text.is_empty() {
-                said.push(text);
-                partial(&said.join(" "));
+        if vad.detected() || !vad.is_empty() {
+            if !heard_speech {
+                heard_speech = true;
+                began = Instant::now();
             }
-            heard_speech = true;
             last_voice = Instant::now();
         }
+        drain(&mut said, true);
 
-        if heard_speech && last_voice.elapsed() >= TRAILING_SILENCE {
-            break;
+        /* Ended by silence after something, or by the ceiling that stops a
+           stuck-open microphone holding a thread forever. Both arms require
+           having heard something: neither is a statement about an empty room. */
+        if heard_speech
+            && (last_voice.elapsed() >= TRAILING_SILENCE || began.elapsed() >= MAX_UTTERANCE)
+        {
+            /* Anything the VAD is still holding — a final segment whose trailing
+               silence *is* the silence that ended the turn. Without this the last
+               few words of every utterance go missing, which reads as the
+               recogniser mishearing rather than as the loop stopping early. */
+            vad.flush();
+            drain(&mut said, false);
+            settled(said.join(" ").trim().to_string());
+            if once {
+                return Ok(());
+            }
+            said.clear();
+            heard_speech = false;
+            began = Instant::now();
+            last_voice = Instant::now();
+            continue;
         }
-        if !heard_speech && began.elapsed() >= ONSET_PATIENCE {
-            break;
-        }
-        if began.elapsed() >= MAX_UTTERANCE {
-            break;
+
+        if once && !heard_speech && began.elapsed() >= ONSET_PATIENCE {
+            /* Nobody said anything. Only a one-shot listen can conclude that;
+               for an open ear it is simply Tuesday. */
+            settled(String::new());
+            return Ok(());
         }
     }
 
-    /* Anything the VAD is still holding when the loop ends — a final segment
-       whose trailing silence *is* the silence that ended the turn. Without this
-       the last few words of every utterance go missing, which reads as the
-       recogniser mishearing rather than as the loop stopping early. */
+    /* Stopped, or the device went away. Whatever was decoded before that is
+       still what was said, and is worth more than a sentence thrown away. */
     vad.flush();
-    while !vad.is_empty() {
-        let Some(samples) = vad.front().map(|s| s.samples().to_vec()) else {
-            break;
-        };
-        vad.pop();
-        let text = transcribe(&recognizer, &samples);
-        if !text.is_empty() {
-            said.push(text);
-        }
-    }
+    drain(&mut said, false);
+    settled(said.join(" ").trim().to_string());
+    Ok(())
+}
 
-    outcome(
-        said.join(" ").trim().to_string(),
+/// Listen for one utterance and hand back what was said.
+///
+/// The shape of the loop is the whole design: audio arrives in blocks on a
+/// channel, is brought to mono 16kHz, and is handed to the VAD in exact `WINDOW`
+/// frames. Whenever the VAD has *finished* a segment, that segment is
+/// transcribed immediately and the running text emitted as a hypothesis — so a
+/// long sentence appears in pieces while it is still being spoken, which is as
+/// close as a batch engine gets to the running commentary the Windows path had.
+///
+/// It ends on the first of: `TRAILING_SILENCE` after something was heard,
+/// `ONSET_PATIENCE` with nothing heard at all, or `MAX_UTTERANCE` regardless.
+pub fn listen(
+    models_dir: &Path,
+    language: &str,
+    partial: impl Fn(&str) + Send + 'static,
+) -> Result<Heard, String> {
+    let began = Instant::now();
+    let mut text = String::new();
+    hear_loop(
+        models_dir,
         language,
-        began.elapsed().as_millis() as u64,
-    )
+        &partial,
+        &mut |said| text = said,
+        &|| false,
+        true,
+    )?;
+    outcome(text, language, began.elapsed().as_millis() as u64)
 }
 
 /// What a finished listen amounts to: a transcript, or the one fact that there
@@ -948,6 +1003,146 @@ fn outcome(text: String, language: &str, ms: u64) -> Result<Heard, String> {
         language: language.to_string(),
         ms,
     })
+}
+
+/* ── the wall listens ─────────────────────────────────────────────────────────
+ *
+ * `docs/VOICE.md`'s Design 3: no key, a microphone that is simply open, and a
+ * spoken address deciding what was meant for the wall. The address gate is not
+ * here — it is `voice.ts::addressIn`, and that file carries the argument for
+ * why it moved — so what this owns is narrow: keep a stream open, transcribe
+ * what the room says, and put each settled utterance on the event pipeline.
+ *
+ * **It is not a fourth poller**, and `CLAUDE.md` asks that to be answered rather
+ * than assumed. A poller asks a question on a clock because the thing it watches
+ * emits nothing; a microphone *is* an emitter, and this is the supervisor's own
+ * shape — a reader thread on a stream, folding what arrives into `$state`, with
+ * no clock anywhere in it. What it costs instead is a thread and continuous CPU,
+ * which is a different objection and is answered by the engine: moonshine runs
+ * at RTF 0.15–0.28 here, so a segment costs a fraction of one core for a
+ * fraction of its own duration, and the VAD means silence costs almost nothing.
+ *
+ * **What it does not do is decide when it is on.** Nothing here starts by
+ * itself: an always-on microphone is a privacy fact rather than a feature flag,
+ * so it is opened by a person and the wall says so for as long as it is open.
+ */
+
+/// The one open ear, if there is one.
+///
+/// A flag rather than a handle, for the reason `servers::RunningGroup::polling`
+/// settled on: the stream is owned by the thread that opened it — a `cpal`
+/// stream is not `Send` and could not be held here anyway — and the only thing
+/// another thread needs is to be able to say *come down*.
+#[derive(Default)]
+pub struct Ear(Mutex<Option<Arc<AtomicBool>>>);
+
+impl Ear {
+    fn open(&self) -> bool {
+        self.0.lock().map(|e| e.is_some()).unwrap_or(false)
+    }
+}
+
+/// What the wall is told when the ear opens, closes, or falls over.
+#[derive(Clone, serde::Serialize)]
+pub struct Listening {
+    pub open: bool,
+    /// Why it is not open, when that is something that happened rather than
+    /// something that was asked for. Said rather than swallowed: a microphone
+    /// that quietly stopped listening is the one failure this whole subsystem is
+    /// organised around not producing.
+    pub failed: Option<String>,
+}
+
+/// Open the ear, and keep it open until something closes it.
+///
+/// Returns as soon as the thread is running rather than when the microphone is
+/// up, because the first call ever made fetches ~286MB and a command that waited
+/// on that would be a frozen window. What the front end watches instead is
+/// `voice:ear`, which arrives again — with `failed` — if it never got there.
+///
+/// Idempotent. Asking for an ear that is already open is not an error, because
+/// the honest answer to *listen to me* from something already listening is yes.
+#[tauri::command]
+pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<bool, String> {
+    let dir = models_dir(&app)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        /* Claimed under the lock rather than checked and then claimed, so two
+           gestures arriving together cannot both open one. */
+        let mut held = ear.0.lock().map_err(|_| "the ear is wedged".to_string())?;
+        if held.is_some() {
+            return Ok(true);
+        }
+        *held = Some(stop.clone());
+    }
+
+    let handle = app.clone();
+    /* A plain thread rather than `off_main`'s pool: this one is meant to sit
+       there for hours, and a `spawn_blocking` worker held for a day is a worker
+       the rest of the app does not have. */
+    std::thread::spawn(move || {
+        let guessed = handle.clone();
+        let heard = handle.clone();
+        let flag = stop.clone();
+        let out = hear_loop(
+            &dir,
+            DEFAULT_LANGUAGE,
+            &move |words| {
+                let _ = guessed.emit("voice:hypothesis", words.to_string());
+            },
+            &mut |text| {
+                /* Silence between utterances is the normal state of a room, so
+                   an empty one is dropped here rather than sent up to be
+                   refused. Same rule as `outcome`, one layer over. */
+                if !text.trim().is_empty() {
+                    let _ = heard.emit("voice:utterance", text);
+                }
+            },
+            &move || flag.load(Ordering::Relaxed),
+            false,
+        );
+
+        /* Whatever brought it down, the wall is no longer being listened to and
+           must stop saying that it is. Clearing the slot here rather than only
+           in `voice_close` is what makes an ear that *fell over* re-openable —
+           and it is guarded on the flag being still ours, so a close followed
+           immediately by an open cannot have this thread clear the new ear on
+           its way out. */
+        if let Ok(mut held) = handle.state::<Ear>().0.lock() {
+            if held.as_ref().map(|f| Arc::ptr_eq(f, &stop)).unwrap_or(false) {
+                *held = None;
+            }
+        }
+        let _ = handle.emit("voice:ear", Listening { open: false, failed: out.err() });
+    });
+
+    /* Said now rather than when the stream is up, so a first run with a download
+       in front of it still draws something. */
+    let _ = app.emit("voice:ear", Listening { open: true, failed: None });
+    Ok(true)
+}
+
+/// Close the ear. Silent about one that was not open, since that is the state
+/// being asked for.
+#[tauri::command]
+pub fn voice_close(ear: tauri::State<'_, Ear>) -> Result<bool, String> {
+    let taken = {
+        let mut held = ear.0.lock().map_err(|_| "the ear is wedged".to_string())?;
+        held.take()
+    };
+    if let Some(flag) = taken {
+        flag.store(true, Ordering::Relaxed);
+    }
+    Ok(false)
+}
+
+/// Whether the wall is listening right now.
+///
+/// For a front end coming up against a process that was already running: the ear
+/// is Rust's fact, and a window that reloaded has no memory of asking for one.
+#[tauri::command]
+pub fn voice_ear(ear: tauri::State<'_, Ear>) -> bool {
+    ear.open()
 }
 
 /// What the recogniser could do, without opening the microphone.
