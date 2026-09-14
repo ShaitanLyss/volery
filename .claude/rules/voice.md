@@ -134,6 +134,15 @@ Four rungs answer, and they cost four different things:
   (superseded — silent). The general shape: **a guard written for one case has to
   be read against every state its subject can actually be in**, and "the slot is
   empty" was a state nobody checked the guard against.
+- **`voicing.open` has exactly one writer, and it is the event.** A command's
+  result and an emitted event travel different pipes — the IPC response body and
+  an `ExecuteScript` — and nothing orders them against each other. So keeping
+  what `voice_open` returned put a second writer on the flag that could overtake
+  an `open: false` emitted before it, which is the same latch from the other end:
+  the privacy dot lit over a microphone that never opened, unrecoverable without
+  a reload. The recovery that was wanted lives in `voice_open`'s idempotent arm,
+  which emits as well as returning, so a front end that is wrong about the ear is
+  put right through the channel that is right about everything else.
 - **If you captured a generation before an await, pass it.** `say`'s `gen`
   defaults to *now*, which is right for the control surface and wrong for anything
   that took one earlier: the default is evaluated after the await, silently

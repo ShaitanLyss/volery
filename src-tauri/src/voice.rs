@@ -1148,6 +1148,18 @@ pub fn voice_open(app: tauri::AppHandle, ear: tauri::State<'_, Ear>) -> Result<b
            checked here rather than beside it, for the reason `Ear` gives. */
         let mut held = ear.0.lock().map_err(|_| "the ear is wedged".to_string())?;
         if held.open.is_some() {
+            /* **The idempotent arm says so too, and that is what makes a
+               disagreement recoverable.** A front end that believes the ear is
+               shut over a live one asks again; answering `Ok(true)` and emitting
+               nothing left it believing exactly what it believed before, with no
+               gesture anywhere able to close the thing. Correcting it through
+               the event rather than through the return value keeps one writer of
+               `voicing.open` and one ordering — a command result and an emitted
+               event travel different pipes (the IPC response body and an
+               `ExecuteScript`) and nothing orders them against each other, so a
+               kept return value can and does overtake a `voice:ear` that was
+               emitted first. */
+            let _ = app.emit("voice:ear", Listening { open: true, failed: None });
             return Ok(true);
         }
         if held.alone {

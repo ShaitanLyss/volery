@@ -340,17 +340,22 @@ export class Voicing {
     }
     this.says = "";
     try {
-      /* **The answer is kept**, and that is not the same rule as "the state
-         follows the event" one method down. That rule is about *closing*, where
-         the microphone is still live while the thread comes down and only the
-         thread knows when it is really shut. Opening has no such gap, and
-         throwing the answer away meant nothing in the app could ever recover
-         from a disagreement: `voice_open`'s idempotent arm returns before it
-         emits, so a front end that thought the ear was shut over a live one
-         would ask again, be told yes, and go on believing it was shut — with the
-         privacy dot dark, the one-shot refused by Rust, and no gesture anywhere
-         able to close the thing. */
-      this.open = await invoke<boolean>("voice_open");
+      /* **The answer is deliberately thrown away**, and it was briefly kept —
+         which put a third writer on `voicing.open` with nothing ordering it
+         against the other two. A command's result and an emitted event travel
+         different pipes: the result comes back as the IPC response body, the
+         event as an `ExecuteScript`, and neither waits for the other. So an ear
+         that failed *between* the claim and the response — `ensure_models`
+         begins with a `create_dir_all`, which returns instantly on a full disk —
+         could emit `open: false` and then have this continuation write `true`
+         over it, leaving the privacy dot lit above a microphone that never
+         opened and no gesture able to correct it.
+
+         The recovery that assignment was for is real and is now where it
+         belongs: `voice_open`'s idempotent arm emits as well as returning, so a
+         front end that is wrong about the ear is put right by the same channel
+         that is right about everything else. One writer, one order. */
+      await invoke("voice_open");
     } catch (err) {
       this.says = err instanceof Error ? err.message : String(err);
     }
@@ -359,6 +364,12 @@ export class Voicing {
   /** Close it. The state follows the event rather than this call, because the
    *  thread coming down is the thing that makes it true. */
   async listenOff(): Promise<void> {
+    /* The prompt goes with the arming. `attend()` writes it, and clearing the
+       state without the words leaves the bar saying *go on — the next thing said
+       is for the wall* over an ear that is closing — which the `voice:ear`
+       handler cannot mend, since by the time that lands `#attending` is already
+       zero and its guard is false. */
+    if (this.#attending) this.says = "";
     this.#attending = 0;
     try {
       await invoke("voice_close");
