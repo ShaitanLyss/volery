@@ -18,6 +18,9 @@ import {
   NUDGE_PROMPT_TEXT,
   NUDGE_TEXT,
   nudgeGaveUpNote,
+  isPromptNudge,
+  ghostedByNudge,
+  ghostNote,
   nudgeNote,
   UNACKNOWLEDGED_LINE,
   unwokenNote,
@@ -2257,5 +2260,63 @@ describe("marking a re-sent prompt", () => {
        difference between stripping a mark and eating somebody's paragraph. */
     const said = "read this\n\nskein: attempt something else entirely";
     expect(stripResendMark(said)).toBe(said);
+  });
+});
+
+describe("a nudge that disproves its own premise", () => {
+  /* The whole of the bug, in the shape the field has: a line you typed that
+     never got its echo, and the flush Skein sends to shake it loose. */
+  const typed = { text: "do the thing", awaited: true as const };
+  const nudge = { text: NUDGE_PROMPT_TEXT, awaited: true as const };
+
+  test("the flush is told apart from an ordinary prompt coming home", () => {
+    expect(isPromptNudge(NUDGE_PROMPT_TEXT)).toBe(true);
+    /* Trimmed, because the claim matches on a trimmed string everywhere else
+       and a nudge that failed this test would go on nudging for ever. */
+    expect(isPromptNudge(`  ${NUDGE_PROMPT_TEXT}\n`)).toBe(true);
+    expect(isPromptNudge("do the thing")).toBe(false);
+    expect(isPromptNudge(NUDGE_TEXT)).toBe(false);
+  });
+
+  test("everything awaited in front of the flush is a ghost", () => {
+    /* Delivery is sequential, so the CLI replaying the nudge is the CLI having
+       drained its queue up to it. The earlier line was not in that queue. */
+    expect(ghostedByNudge([typed, nudge], nudge)).toEqual([typed]);
+  });
+
+  test("a prompt written after the flush is still genuinely owed", () => {
+    /* The bound that keeps this from being a blanket amnesty: you can type
+       into the card while the nudge is in flight, and those words really are
+       queued. Only what is in front of the nudge has been ruled on. */
+    const later = { text: "and this too", awaited: true as const };
+    expect(ghostedByNudge([typed, nudge, later], nudge)).toEqual([typed]);
+  });
+
+  test("lines already claimed are not ghosted twice", () => {
+    /* `awaiting` is decremented per ghost, so a line whose echo already came
+       home must not be counted again or the card ends up believing it is owed
+       fewer prompts than it is. */
+    const done = { text: "answered ages ago" };
+    expect(ghostedByNudge([done, typed, nudge], nudge)).toEqual([typed]);
+  });
+
+  test("a flush with nothing in front of it ghosts nothing", () => {
+    /* The ordinary outcome, and the one the nudge is actually for: the queue
+       really did hold your words and the flush really did shake them loose. */
+    expect(ghostedByNudge([nudge], nudge)).toEqual([]);
+    expect(ghostedByNudge([typed, nudge], typed)).toEqual([]);
+  });
+
+  test("a line the list does not hold ghosts nothing", () => {
+    expect(ghostedByNudge([typed], nudge)).toEqual([]);
+  });
+
+  test("giving up is said out loud, and counts rather than quotes", () => {
+    /* A card must not silently stop waiting for words it told you it was
+       holding — `nudgeNote`'s rule. And the words are drawn immediately above,
+       so repeating them back reads as the wall having lost them. */
+    expect(ghostNote(1)).toContain("never reached this card");
+    expect(ghostNote(3)).toContain("3 prompts");
+    expect(ghostNote(1)).not.toContain("do the thing");
   });
 });

@@ -451,6 +451,35 @@ What was wrong was what the wall drew while it waited, and it was worse than say
   that abandons a prompt owes one — a path that merely stops sending it leaves a card
   permanently owed a turn nobody can give it.**
 
+- **And then a backstop, because the causes kept coming and the nudge could not stop on its
+  own.** Both fixes above are exact: each found one way a line keeps `awaited` for ever and
+  closed it. The symptom kept happening anyway — measured over the seven days to 2026-09-14,
+  14 prompt nudges on this wall and at least 6 answered with a version of "Nothing is queued",
+  twice in consecutive pairs, which is the whole budget on one phantom. The reason it could
+  never stop is structural rather than one more cause: **`#nudge`'s premise is `awaiting > 0`,
+  and the flush it sends is incapable of moving that number for a line that was never queued.**
+  So every `result` scheduled another one, and `#nudge` re-checking at the grace boundary
+  re-asked the one question its own action could not answer. That is `#adoptModel`'s lesson
+  turned inside out — a guard that compares against a value its subject mutates has a state it
+  cannot come back from; a guard whose evidence its action *cannot* mutate never stops firing.
+
+  `ghostedByNudge` closes it without knowing the cause, the way `widenedWindow` does. The
+  inference is the one `#echoOf` already turns on and it is exact, not a heuristic: **delivery
+  down this stream is sequential**, so the CLI replaying the nudge is the CLI having drained its
+  queue up to and including it, and any line still awaited that was written *earlier* was
+  demonstrably not in that queue. `#claimEcho` retires those — `awaited` off, `awaiting` down,
+  one meta line saying so. Lines written *after* the nudge are left alone, since typing into a
+  card while the flush is in flight really does queue something.
+
+  **`state` is untouched and that is the point of there being two fields.** What has been
+  learned is that the wire owes this line nothing, not that it was delivered, so the face goes
+  on saying whatever it honestly said and only the bookkeeping driving the nudge retires. The
+  bullet above says every path abandoning a prompt owes `awaiting` a decrement; this is that
+  path for the case where nothing abandoned it and it was never there. It also refunds the
+  budget at zero through the existing arm, which is the second half of the fault each earlier
+  fix describes: a real stall later in the session now gets the nudge that used to have been
+  spent on a ghost.
+
 - **The face says *sent*, not *delivered*.** Skein knows the prompt reached the child's stdin
   and knows the wire never echoed it back. Whether the CLI is holding it or lost it is not a
   question this side can answer, and both are "you are owed a turn nobody is taking".

@@ -1280,6 +1280,70 @@ export type NudgeKind = "job" | "prompt";
 export const NUDGE_PROMPT_TEXT =
   "skein here — if a message is queued behind this one, answer that instead.";
 
+/** Is this line the prompt nudge itself?
+ *
+ *  Asked of a line being claimed, so the claim can tell the flush apart from an
+ *  ordinary prompt coming home. Matched on the constant rather than on a flag
+ *  carried through `send`, because the nudge goes out through exactly the same
+ *  path every other prompt does and giving it a private one would be a second
+ *  way to send — which is the thing `#heal` and `#nudge` both deliberately do
+ *  not have. */
+export function isPromptNudge(text: string): boolean {
+  return text.trim() === NUDGE_PROMPT_TEXT;
+}
+
+/** The prompts a returning nudge echo has just proved were never queued.
+ *
+ *  **The nudge's own echo is evidence about everything in front of it.**
+ *  Delivery down this stream is sequential — the reason `#echoOf` takes the
+ *  oldest copy of a repeated prompt — so the CLI replaying the nudge is the CLI
+ *  having drained its queue up to and including it. Any line still awaited that
+ *  was written *earlier* is therefore not sitting in that queue. It is a
+ *  bookkeeping ghost: a prompt whose echo was lost or never came, which is a
+ *  thing no amount of flushing will ever fix.
+ *
+ *  This exists because the nudge could not otherwise ever stop. `#nudge`'s
+ *  premise is `awaiting > 0`, the nudge sends a prompt to flush the queue, and
+ *  the flush cannot change `awaiting` for a line that was never queued — so
+ *  every `result` scheduled another one and the whole budget went on a single
+ *  phantom, every time. Measured over seven days on this wall: 14 prompt
+ *  nudges, at least 6 of them answered with some version of "nothing is
+ *  queued", twice in consecutive pairs. Each one is a real turn against a real
+ *  context. And the budget spent here is a budget a genuine stall later in the
+ *  same session does not get, which is the second half of the same fault
+ *  `localCommandAwaiting` was written for.
+ *
+ *  The general shape, which is `#adoptModel`'s one turned inside out: **a guard
+ *  whose evidence its own action cannot move is a guard that never stops
+ *  firing.** Asking `awaiting > 0` again after a nudge is asking the one
+ *  question the nudge was incapable of answering.
+ *
+ *  Generic over the line, because what a line *is* belongs to the panel and
+ *  nothing here needs to know: this reads an order and a flag. Lines at or
+ *  after the claimed one are left alone — a prompt written after the nudge
+ *  went out is genuinely still owed its echo. */
+export function ghostedByNudge<T extends { awaited?: true }>(
+  lines: readonly T[],
+  claimed: T,
+): T[] {
+  const at = lines.indexOf(claimed);
+  if (at < 0) return [];
+  return lines.slice(0, at).filter((l) => l.awaited === true);
+}
+
+/** Said when a nudge disproves its own premise, because a card must not
+ *  silently stop waiting for words it told you it was holding — the same rule
+ *  `nudgeNote` and `healNote` exist for.
+ *
+ *  Names the count rather than the words. What was in those lines is still
+ *  drawn immediately above, and repeating a prompt back at you to say it went
+ *  nowhere reads as the wall having lost it. */
+export function ghostNote(count: number): string {
+  return count === 1
+    ? "the queue was empty — that prompt never reached this card"
+    : `the queue was empty — ${count} prompts never reached this card`;
+}
+
 /** The card's own account of having been told and not stirred. */
 export function unwokenNote(count: number): string {
   return count === 1

@@ -28,6 +28,9 @@ import {
   isApiErrorMessage,
   isImageNote,
   isRetryNudge,
+  isPromptNudge,
+  ghostedByNudge,
+  ghostNote,
   isStopNote,
   skillBody,
   jobLabel,
@@ -1736,6 +1739,26 @@ export class Conversation {
     line.state = undefined;
     line.awaited = undefined;
     this.awaiting = Math.max(0, this.awaiting - 1);
+    /* The nudge coming home is evidence about everything in front of it, and
+       it is the only evidence there will ever be — see `ghostedByNudge`, which
+       has the measurement and the reason this could not stop on its own.
+       Delivery is sequential, so the CLI replaying the flush is the CLI having
+       drained its queue up to it; anything still awaited from earlier was never
+       in that queue and no further flushing will produce it.
+
+       `awaited` comes off and `state` is left exactly as it stands, which is
+       the whole point of their being two fields. We have learned that the wire
+       owes this line nothing — not that it was delivered — so the panel goes on
+       saying whatever it was honestly saying, and only the bookkeeping that was
+       driving the nudge is retired. */
+    if (isPromptNudge(line.text)) {
+      const ghosts = ghostedByNudge(this.lines, line);
+      for (const g of ghosts) {
+        g.awaited = undefined;
+        this.awaiting = Math.max(0, this.awaiting - 1);
+      }
+      if (ghosts.length) this.#push("meta", ghostNote(ghosts.length));
+    }
     /* Only once *everything* sent has been acknowledged, which is not the same
        as one prompt being taken up — and the difference is the whole budget. A
        nudge is itself a prompt, so a card that took the nudge and left your
