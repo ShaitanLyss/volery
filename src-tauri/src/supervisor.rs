@@ -174,6 +174,144 @@ fn system_prompt(
     Some(parts.join("\n\n"))
 }
 
+/// The subagent definitions every card is spawned with, as `--agents` takes
+/// them.
+///
+/// **Why the wall ships these rather than the machine.** A card's most
+/// expensive decision is not which model *it* runs on — it is which model it
+/// spawns a subagent on, and a subagent inherits the parent unless something
+/// says otherwise. Measured 2026-09-15 on one card over one 5-hour window: three
+/// subagents were **68% of its cost**, all of them on Opus, and two were doing
+/// read-only reconnaissance that wanted nothing Opus has. One of those read its
+/// way to a 220k context over 58 tool calls, and cost within a turn is context
+/// size × number of calls, so an unscoped reader is quadratically expensive.
+///
+/// The fix has to arrive at spawn, because the alternative is each machine
+/// growing its own `~/.claude/agents/*.md` by hand — and **this app does not
+/// write to the user's config**. That is the same argument `guidance::compose`
+/// makes for `--append-system-prompt` over a `CLAUDE.md`, and the one `hooks.rs`
+/// makes about never editing `~/.claude/settings.json`, one door over. A wall
+/// carried to another laptop should think the same way on both, and a file in
+/// somebody's home directory is exactly the thing that does not travel.
+///
+/// Probed against claude 2.1.266 before this existed: `--agents` honours
+/// `model`, end to end. A definition passed this way produced
+/// `subagent_stats: {"probe-scout": 1}` with `claude-haiku-4-5` in `modelUsage`
+/// while the parent stayed on `claude-opus-5[1m]`.
+///
+/// **`scout` is deliberately not a second `Explore`.** Explore answers *where
+/// is X* by fanning out over names. `scout` answers *what happens when Y*, by
+/// following one path — which is the shape of the job that actually went wrong,
+/// since "audit the walk-mode selection path" was dispatched to the
+/// write-capable catch-all on Opus for want of anywhere better to send it. The
+/// split that matters is not parent-versus-subagent but **read-only versus
+/// writes**: a reconnaissance miss is detectable, because you open the file it
+/// named and it is not there, so a cheaper model costs you a retry. A
+/// correctness-review miss is invisible, so review is left alone here and keeps
+/// inheriting the parent.
+///
+/// The tool-call budget in the prompt is the other half and is the half with no
+/// quality cost — a well-scoped Opus run beats a sprawling Sonnet one, so
+/// nothing here relies on the model swap alone.
+///
+/// **This flag merges, and it wins.** Probed: `system/init.agents` carries the
+/// built-ins, the plugin agents *and* what is passed here, so nothing is lost by
+/// passing it. But on a name collision the flag beats a `~/.claude/agents/<name>.md`
+/// or a project `.claude/agents/<name>.md`, silently and with nothing anywhere
+/// saying so — a file of the same name goes on sitting there looking live while
+/// every card ignores it.
+///
+/// That is **not** the same bargain `guidance::compose` strikes one door over,
+/// and the difference is worth being exact about, because the doc comment there
+/// is the obvious thing to reason from. `--append-system-prompt` *appends*: it
+/// cannot clobber a `CLAUDE.md`, so "this app does not write to the user's
+/// config" is the whole of what it owes. `--agents` overrides by name, and "does
+/// not write to" is not "does not override". Anyone wanting their own `scout`
+/// has to call it something else; anyone changing this has to know they are
+/// changing what every card on the wall gets regardless of what is on disk.
+///
+/// **`sonnet` is an absolute, not "cheaper than the parent"**, because the flag
+/// has no vocabulary for a relative model. It is the right way round for the
+/// case that prompted it — a card on Opus spawning Opus readers — and the wrong
+/// way round for a card the user has put on haiku, where it is an *upcharge*.
+/// There is no spawn-time validation either: probed, a model string the account
+/// cannot reach is accepted here and fails later, mid-turn, inside a dispatch.
+///
+/// **`Bash` is granted on purpose, and it is why the read-only promise is the
+/// prompt's rather than the allowlist's.** Reconnaissance without `git log`,
+/// `rg` or a directory listing is not reconnaissance — the same trade
+/// `guidance.rs` makes for the read-only lock. So the allowlist forecloses the
+/// *editing* tools and the fan-out tools, and nothing in it stops a shell line
+/// from writing, since a project card spawns with
+/// `--dangerously-skip-permissions` and there is no prompt to refuse one.
+/// Probed against the real payload: asked to `echo` into a file, `scout`
+/// refused and the file was not created — so the guard that held is
+/// `SCOUT_PROMPT`, and it is load-bearing rather than decorative. Weakening the
+/// no-editing sentences in it is a behaviour change, not a wording change.
+///
+/// **Chat cards get none of it.** They spawn with `--tools WebSearch,WebFetch`
+/// and no bypass (`.claude/rules/chat.md`), so every tool `scout` is declared
+/// with is one that card does not have. The stronger form of the same point:
+/// a chat card has no `Agent` tool in its filtered set at all, so it could not
+/// dispatch a subagent if it wanted to — offering it one is an instruction to
+/// try something it will be told it may not do, which is the failure the roster
+/// paragraph avoids by being left off a chat card too.
+fn agents(chat: bool) -> Option<String> {
+    if chat {
+        return None;
+    }
+    Some(
+        serde_json::json!({
+            "scout": {
+                "description": "Read-only reconnaissance over a code path — traces what \
+                    actually happens along a flow (what re-renders, what refetches, what \
+                    calls what) and reports the mechanism with file:line evidence. Use for \
+                    \"how does X work\" and \"what runs when Y happens\", including perf \
+                    reconnaissance. It gathers and reports; it does not judge whether the \
+                    code is good, hunt for bugs, or propose fixes — correctness and design \
+                    questions belong elsewhere.",
+                "prompt": SCOUT_PROMPT,
+                "tools": ["Bash", "Glob", "Grep", "Read"],
+                "model": "sonnet",
+            }
+        })
+        .to_string(),
+    )
+}
+
+/// `scout`'s own instructions. Kept out of [`agents`] so the prose is readable
+/// and so the byte count the test asserts is about one thing.
+const SCOUT_PROMPT: &str = "You trace code paths and report what you found. You are \
+read-only and you never edit a file.
+
+You answer mechanism questions: what runs when this happens, what this value flows \
+through, what causes this to be rebuilt, which of these call sites are live. You report \
+the machinery and the evidence for it. You do not evaluate — no verdicts on whether the \
+code is correct, well-designed or fast enough, no bug hunting, no proposed fixes. The \
+agent that spawned you is doing that reasoning and needs facts. If something looks \
+wrong, note it in one line under \"worth a look\" and move on.
+
+Staying scoped is the point of you. You have a budget of roughly 25 tool calls. \
+Exceeding it is the failure this agent exists to prevent: an unscoped trace reads the \
+whole repository, and cost grows with context size multiplied by number of calls, so \
+wandering is quadratically expensive.
+
+- Start from what you were given — the named files, the entry point, the symbol. If you \
+were given none, spend your first call finding one, not reading.
+- Follow the path you were asked about. Do not read a file because it is nearby.
+- Read excerpts. Grep for the symbol and read the lines around it; open a whole file \
+only when the file is the answer.
+- Prefer one wide Grep over five narrow Reads.
+- Stop when you can answer. You are not required to have read everything.
+- If the budget runs out first, say so, report what you have, and name what you would \
+look at next. A partial answer with its edges marked is useful; a partial answer \
+presented as complete is not.
+
+Report compactly, in this order: the mechanism in a few sentences; the evidence as \
+path:line lines with a few words each; where it ends, marking what you confirmed apart \
+from what you inferred; and at most three one-line \"worth a look\" notes. No search \
+log, no narration of your process.";
+
 /// What a card knows about *itself*, as the only channel that can tell it.
 ///
 /// Three sink items turned out to be one gap — `be79bb41` (a card is never told
@@ -1200,6 +1338,13 @@ fn spawn_now(
     if let Some(text) = system_prompt(chat, ask_port != 0, card_browser.is_some(), standing, Some(&me))
     {
         cmd.args(["--append-system-prompt", &text]);
+    }
+
+    /* The wall's own subagent definitions. One flag, composed in one place, for
+       the same reason the block above is — `--agents` is last-one-wins too, so a
+       second call site here would silently be the only one that counted. */
+    if let Some(defs) = agents(chat) {
+        cmd.args(["--agents", &defs]);
     }
 
     cmd.stdin(Stdio::piped())
@@ -2737,6 +2882,134 @@ mod tests {
            `--append-system-prompt ""` is a flag the CLI still reads. */
         assert!(system_prompt(false, false, true, None, None).is_none());
         assert!(system_prompt(false, false, true, Some("   ".to_string()), None).is_none());
+    }
+
+    /// `--agents` takes JSON, so a definition that does not parse is a flag the
+    /// CLI rejects at spawn — which is every card on the wall failing to start,
+    /// for a typo in a string literal nothing else reads.
+    #[test]
+    fn the_wall_s_agents_are_json_the_cli_can_take() {
+        let defs = agents(false).expect("a project card gets the definitions");
+        let v: serde_json::Value = serde_json::from_str(&defs).expect("--agents must be valid JSON");
+
+        let scout = &v["scout"];
+        assert!(scout.is_object(), "scout is defined");
+
+        /* The whole point of shipping these. A definition with no `model` is a
+           subagent that inherits the parent, which is the Opus-on-reconnaissance
+           bill this exists to stop — and it would look completely fine here. */
+        assert_eq!(scout["model"], serde_json::json!("sonnet"));
+
+        /* What this actually checks is that four *names* are absent, and saying
+           so is the point — `Bash` is in the allowlist and a project card has
+           `--dangerously-skip-permissions`, so this does not and cannot assert
+           that scout is unable to write. That guarantee lives in `SCOUT_PROMPT`,
+           which is why `the_scout_prompt_is_the_read_only_guard` exists below.
+
+           `Task` is here for the reason `classify.ts` already records: it is the
+           older spelling of the subagent tool, `system/init.tools` on 2.1.266
+           still lists it while a `tool_use` block emits `Agent`, and keying on
+           one name is what left the seat machinery dead code from the day it
+           shipped. The old name costs one line. */
+        let tools: Vec<String> = scout["tools"]
+            .as_array()
+            .expect("scout declares its tools")
+            .iter()
+            .map(|t| t.as_str().unwrap_or_default().to_string())
+            .collect();
+        for forbidden in ["Edit", "Write", "NotebookEdit", "Agent", "Task", "Workflow", "Skill"] {
+            assert!(
+                !tools.contains(&forbidden.to_string()),
+                "scout may not edit or delegate: found {forbidden}"
+            );
+        }
+        assert!(tools.contains(&"Grep".to_string()), "scout can still search");
+
+        /* Both halves of the anti-sprawl instruction, which is the half with no
+           quality cost. A prompt that lost its budget is a scout that reads the
+           repository, and nothing else here would notice. */
+        let prompt = scout["prompt"].as_str().expect("scout carries a prompt");
+        assert!(prompt.contains("25 tool calls"), "the budget survives");
+        assert!(prompt.contains("excerpts"), "the read-excerpts rule survives");
+    }
+
+    /// `scout` holds `Bash` on a card spawned with
+    /// `--dangerously-skip-permissions`, so nothing in the allowlist stops a
+    /// shell line from writing — the no-editing guarantee is these sentences and
+    /// only these sentences. Probed against the real payload before this was
+    /// written: asked to `echo` into a file, scout refused and named this rule,
+    /// and the file was not created.
+    ///
+    /// So this is not a wording test. Cutting the read-only sentences out of
+    /// `SCOUT_PROMPT` removes the only thing standing between a Sonnet
+    /// reconnaissance agent and a repository it can edit, and the change would
+    /// look like tightening some prose.
+    #[test]
+    fn the_scout_prompt_is_the_read_only_guard() {
+        let defs = agents(false).expect("a project card gets the definitions");
+        let v: serde_json::Value = serde_json::from_str(&defs).unwrap();
+        let prompt = v["scout"]["prompt"].as_str().expect("scout carries a prompt");
+
+        assert!(prompt.contains("read-only"), "the claim is stated");
+        assert!(prompt.contains("never edit a file"), "and it is stated as an absolute");
+
+        /* The allowlist grants Bash, so the prompt is carrying the weight the
+           tools list cannot. If Bash ever leaves, this test is still right and
+           merely belt-and-braces; while it is there, this is the guard. */
+        let tools = v["scout"]["tools"].to_string();
+        assert!(
+            tools.contains("Bash"),
+            "if scout no longer has Bash, say so here — the reasoning above changes"
+        );
+    }
+
+    /// A chat card spawns with `--tools WebSearch,WebFetch` and no bypass, so
+    /// every tool `scout` is declared with is one it does not have. Offering it
+    /// is an instruction to try something it will be told it may not do — the
+    /// same reason the roster paragraph is left off one.
+    #[test]
+    fn a_chat_card_is_offered_no_agents() {
+        assert!(agents(true).is_none());
+    }
+
+    /// **The description is the part that is paid for per turn, and it is the
+    /// only part.** It rides in the parent's `Agent` tool schema, so every turn
+    /// of every card carries it whether or not a scout is ever dispatched; the
+    /// `prompt` is paid once, by the subagent, when one actually runs.
+    ///
+    /// Bounding the whole payload — which is what this asserted first — bounds
+    /// the wrong number for the reason it gives: measured, 2,435 bytes total is
+    /// 439 of description and 1,846 of prompt, so 76% of the ceiling guarded
+    /// something that costs nothing per turn and the description could have
+    /// tripled with the test still green. Same mistake as measuring a roster by
+    /// its `tools/list` rather than by its loaded tier.
+    ///
+    /// The total is still bounded underneath, on a different argument that has
+    /// nothing to do with tokens: every flag here shares one Windows command
+    /// line against `CreateProcess`'s 32,767.
+    #[test]
+    fn the_agent_descriptions_are_what_every_turn_pays_for() {
+        let defs = agents(false).expect("a project card gets the definitions");
+        let v: serde_json::Value = serde_json::from_str(&defs).unwrap();
+
+        let described: usize = v
+            .as_object()
+            .expect("the payload is an object of agents")
+            .values()
+            .map(|a| a["description"].as_str().unwrap_or_default().len())
+            .sum();
+        assert!(
+            described < 700,
+            "agent descriptions are {described} bytes in front of the model on every turn \
+             of every card; if this is deliberate, move the number and say why here"
+        );
+
+        assert!(
+            defs.len() < 4_096,
+            "the --agents argument is {} bytes and shares one command line with every \
+             other flag — see guidance.rs on the margin",
+            defs.len()
+        );
     }
 
     /// Advertised is not enough, and `append_prompt`'s own doc comment leans on

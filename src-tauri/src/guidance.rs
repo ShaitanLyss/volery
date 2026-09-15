@@ -83,9 +83,18 @@
 /// A cap rather than none, because this text goes on the child's command line
 /// and Windows' `CreateProcess` takes 32767 UTF-16 units for the *whole* of it —
 /// argv that also holds a settings JSON, a resume id and an absolute path to the
-/// CLI. Two scopes at this limit plus the frame below is under 9k, so the margin
-/// is a factor of three and the failure it prevents is the bad one: a spawn that
-/// fails with an OS error naming nothing.
+/// CLI. Two scopes at this limit plus the frame below is under 9k, and the
+/// failure it prevents is the bad one: a spawn that fails with an OS error
+/// naming nothing.
+///
+/// **The margin was a factor of three and is now closer to two**, because argv
+/// has since grown: `--mcp-config`, `append_prompt` carrying a `Selfhood`, and
+/// `supervisor::agents`' `--agents` payload. Measured worst case — every fixed
+/// flag, the settings JSON, the MCP config, the fullest prompt and two scopes at
+/// this `LIMIT` — is ~16.4k of the 32,767. Still safe, and no longer safe by so
+/// much that the next thing added to argv can skip the arithmetic. Anything that
+/// puts a *third* substantial payload on this command line should raise the
+/// ceiling here or move one of them off the argv.
 ///
 /// 4000 is about a thousand words per scope, which is longer than any standing
 /// instruction has a right to be and long enough that nobody meets it by
