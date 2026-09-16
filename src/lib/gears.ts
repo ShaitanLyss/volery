@@ -144,6 +144,52 @@ export function gearOfModeAck(ev: unknown): Gear | null {
   return typeof mode === "string" ? gearOfWire(mode) : null;
 }
 
+/**
+ * The prefix on every mode-change request id Volery mints
+ * (`supervisor::MODE_REQUEST_PREFIX`). A contract with Rust, not a debugging aid.
+ */
+export const MODE_REQUEST_PREFIX = "skein-mode-";
+
+/**
+ * The CLI's reason for refusing a gear change, or `null` for anything else on
+ * the stream.
+ *
+ * **This is the half `gearOfModeAck` deliberately does not have**, and the cost
+ * of it not existing was a gesture that did nothing and said nothing. A card
+ * spawned into plan mode without the bypass flag cannot be put back into making
+ * — the CLI answers *"Cannot set permission mode to bypassPermissions because
+ * the session was not launched with --dangerously-skip-permissions"* — and every
+ * reader here dropped it, because a success is the only shape either function
+ * looked at. `/gear making` wrote the row, wrote the wire, returned Ok, and left
+ * the card exactly where it was: no fault, no note, nothing to act on. The card
+ * that found this had been stuck for half an hour with no way out but a restart.
+ *
+ * **Matched on the request id, where the acknowledgement matches on nothing.**
+ * That asymmetry is forced rather than chosen. A success carries the mode it
+ * took, so the stream being per-card is enough to know the message is ours and
+ * what it says. An **error** carries no mode at all — there is the id, and there
+ * is a sentence a person wrote — and `interrupt`, `set_model` and every other
+ * subtype share this response type. Reading the sentence is the thing this
+ * codebase keeps deciding not to do (see `isPlanDocument`); the id is one Volery
+ * minted, which makes it the structural answer rather than the only one left.
+ *
+ * The CLI's own words are handed back rather than paraphrased. It is the only
+ * account of the refusal that exists, it names the flag, and a sentence invented
+ * here would go stale against a CLI that changed its mind about the rule.
+ */
+export function modeRefusal(ev: unknown): string | null {
+  const e = ev as { type?: unknown; response?: Record<string, unknown> } | null;
+  if (e?.type !== "control_response") return null;
+  const outer = e.response;
+  if (!outer || outer.subtype !== "error") return null;
+  const id = outer.request_id;
+  if (typeof id !== "string" || !id.startsWith(MODE_REQUEST_PREFIX)) return null;
+  const why = outer.error;
+  /* A refusal with no words is still a refusal, and the one thing that must not
+     happen is it going quiet again for want of a sentence to draw. */
+  return typeof why === "string" && why.trim() ? why.trim() : "the gear change was refused";
+}
+
 /** What the gear is called, and what it means, in the wall's voice. */
 export function readingOf(gear: Gear): { name: string; note: string } {
   return gear === "planning"
@@ -236,10 +282,39 @@ export function freshGear(gear: Gear = DEFAULT_GEAR): GearState {
 /**
  * The wire acknowledged a change. This is the authoritative one — the process
  * saying it has taken the mode, ~60ms after being asked — so it is taken
- * immediately and remembered as outstanding until an init agrees.
+ * immediately, and remembered as outstanding *only where a stale init is
+ * actually possible*.
+ *
+ * **`turnOpen` is that condition, and without it this guard was wider than its
+ * own premise.** What `pending` defends against is one measured thing: an init
+ * belonging to a turn that was *already running* when the mode changed, which
+ * reports the mode that turn started under. No turn running means no such init
+ * can exist, so holding the flag there buys nothing and costs the thing it is
+ * cheapest to lose — `afterInit` ignores every init that disagrees with an
+ * outstanding change, and only an agreeing one clears it, so a `pending` set
+ * where it was not needed makes the card **deaf to every init for the life of
+ * the process** if the acknowledgement and the reality ever part company.
+ *
+ * That went from theoretical to reachable the day the gear started being set at
+ * **spawn** (`supervisor::spawn_now`). There is no older turn there — the
+ * process is new and its first init is the newest possible evidence about what
+ * it is really running under, which is exactly the evidence the flag threw away.
+ * A CLI that acknowledged a mode without applying it would have left the card
+ * drawn dashed and labelled *planning*, permanently, while holding the machine.
+ * The argv used to make that state structurally impossible; the wire does not,
+ * so the instrument that would notice has to keep working.
+ *
+ * Note the asymmetry that makes this the direction worth protecting: a planning
+ * card drawn as making costs you a reading, and a making card drawn as planning
+ * is the wall lying about the one thing this gear exists to say.
+ *
+ * The residue is honest and bounded: a change acknowledged mid-turn and never
+ * applied still holds the flag until the process goes (`afterExit`). That needs
+ * the CLI to confirm a mode it did not take, which `tools/probe-modes.ts` says
+ * it does not do.
  */
-export function afterAck(s: GearState, gear: Gear): GearState {
-  return { gear, pending: gear };
+export function afterAck(s: GearState, gear: Gear, turnOpen: boolean): GearState {
+  return { gear, pending: turnOpen ? gear : null };
 }
 
 /**

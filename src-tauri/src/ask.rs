@@ -756,6 +756,68 @@ fn always(mut schema: Value) -> Value {
     schema
 }
 
+/// This tool only reads, and **that is the difference between being callable in
+/// plan mode and not being callable at all**.
+///
+/// Claude Code refuses every MCP tool to a planning card unless the tool says it
+/// is read-only. Nothing here said so, so nothing here was reachable: a card in
+/// plan mode could not read the sink it is told to read, could not read the
+/// billboard it is told to read *before working in a shared repository*, and
+/// could not ask the user a question. What it got instead was
+/// `Cannot call mcp__skein__board while in plan mode.` — with the description
+/// that told it to call `board` still in its prompt, because the roster below is
+/// the only copy of that instruction.
+///
+/// Probed at claude 2.1.241 with a stub server carrying two otherwise identical
+/// tools, one annotated and one bare:
+///
+/// ```text
+/// init  mode=plan  offered: [mcp__stub__peek_annotated, mcp__stub__peek_bare]
+///   mcp__stub__peek_annotated  ALLOWED  "peek_annotated ran fine."
+///   mcp__stub__peek_bare       BLOCKED  "Cannot call mcp__stub__peek_bare while in plan mode."
+/// ```
+///
+/// Note both were *offered* — the annotation does not change what a planning
+/// card is told it has, only what happens when it reaches. So an unannotated
+/// read-only tool is worse than an absent one: it is advertised, described, and
+/// refused at the moment of use.
+///
+/// **Only `readOnlyHint`.** The spec offers three more, `destructiveHint` is
+/// defined to be ignored wherever this one is true, and none of the others is
+/// read by anything measured here. One hint with one meaning is a thing that can
+/// be right; four, of which three are decoration, is four things to drift.
+///
+/// The bar is *this wall's state as a caller can change it*, not a literal claim
+/// that no byte moves. A tool that writes a row, a notice, an image or another
+/// card's turn **on the strength of being called** is not read-only however
+/// harmless it looks — `send` costs another agent a turn, which is a change to
+/// something somebody is watching.
+///
+/// **Two of these do write, and the qualifier above is where they fit.** `board`
+/// sweeps expired notices on the read path (`board::do_board` → `sweep`, which
+/// `drop_notice`s and writes an inbox row per affected card) and `sink` sweeps
+/// expired holds. Both are kept annotated, and both are honest here because the
+/// write is **driven by the clock rather than by the caller**: `read_board` does
+/// the identical sweep on every paint of the panel, so a planning card asking
+/// changes nothing that was not already going to happen the next time anybody
+/// looked. Refusing a planning card the billboard — the one thing every card is
+/// told to read *before working in a shared repository* — would be the larger
+/// error by a distance. State it as the rule for tool seventeen: **a caller may
+/// not cause a change; time may.**
+///
+/// `ask_user` is the judgement call and it is deliberate. Not because it changes
+/// nothing — it emits `ask:opened`, puts the card in the asking tier, opens the
+/// `peek` window, flashes the taskbar, may chime, and holds the call open for the
+/// whole answer window. The narrower claim is the one that survives: **it writes
+/// nothing another agent can trip over, and the only thing it spends is the
+/// user's attention — which is precisely what a planning card is *for*.** A card
+/// that cannot ask what it is planning for is not a gear, it is a broken card,
+/// and the roster is the only copy of the instruction telling it to ask.
+fn reads_only(mut schema: Value) -> Value {
+    schema["annotations"]["readOnlyHint"] = json!(true);
+    schema
+}
+
 /// What to match a deferred tool on, when an agent goes looking for a capability
 /// rather than a name.
 ///
@@ -832,19 +894,19 @@ fn found_by(mut schema: Value, hint: &str) -> Value {
 pub(crate) fn roster() -> Vec<Value> {
     vec![
         // ── loaded: the prompt's referent, or the last copy of its instruction ──
-        always(tool_schema()),
-        always(crate::board::board_schema()),
+        always(reads_only(tool_schema())),
+        always(reads_only(crate::board::board_schema())),
         always(crate::board::post_schema()),
         always(crate::board::unpost_schema()),
-        always(crate::sink::sink_schema()),
+        always(reads_only(crate::sink::sink_schema())),
         always(crate::sink::drop_schema()),
-        always(crate::relay::list_schema()),
+        always(reads_only(crate::relay::list_schema())),
         always(crate::relay::send_schema()),
         // ── loaded: reflex-shaped, where not looking is the failure ──
         always(crate::pin::pin_schema()),
         always(crate::later::wake_schema()),
-        always(crate::limits::allowance_schema()),
-        always(crate::servers::servers_schema()),
+        always(reads_only(crate::limits::allowance_schema())),
+        always(reads_only(crate::servers::servers_schema())),
         always(crate::chronicle::wisp_schema()),
         // ── discoverable: a card knows from its prompt whether it wants these ──
         found_by(
@@ -858,24 +920,24 @@ pub(crate) fn roster() -> Vec<Value> {
              off, I fixed the bug that was filed",
         ),
         found_by(
-            crate::chronicle::chronicle_schema(),
+            reads_only(crate::chronicle::chronicle_schema()),
             "what has been happening on this wall, catch up on the other cards, what \
              have they finished or broken, recent activity, what did I miss, the feed \
              or notification history — not who is working on what, which is the board",
         ),
         found_by(
-            crate::status::status_schema(),
+            reads_only(crate::status::status_schema()),
             "is claude down, is it me or them, api error, 500, overloaded, rate \
              limited, request failed for no reason, outage, service status, is the \
              api having problems",
         ),
         found_by(
-            crate::relay::touched_schema(),
+            reads_only(crate::relay::touched_schema()),
             "who else has edited this file, other agents, conflict, clash, is \
              anyone in my way, am I about to work over somebody, recent writes",
         ),
         found_by(
-            crate::relay::recall_schema(),
+            reads_only(crate::relay::recall_schema()),
             "what did another card do or say, read its words, catch up on a \
              conversation, what happened there, without costing it a turn",
         ),
@@ -885,7 +947,7 @@ pub(crate) fn roster() -> Vec<Value> {
              screenshot with a newer render, take a picture down",
         ),
         found_by(
-            crate::pin::pinned_schema(),
+            reads_only(crate::pin::pinned_schema()),
             "what images has this card put on the wall, what have I pinned \
              already, list my pins before pinning another",
         ),
@@ -902,7 +964,7 @@ pub(crate) fn roster() -> Vec<Value> {
              child card that has finished and reported",
         ),
         found_by(
-            crate::servers::server_log_schema(),
+            reads_only(crate::servers::server_log_schema()),
             "local dev server output on this machine, local build error, local \
              compile failure, stack trace, vite next pnpm dev tsc output, why \
              did the dev server fall over, read the log — not a CI or pipeline \
@@ -942,13 +1004,13 @@ pub(crate) fn roster() -> Vec<Value> {
            of them carry one. Qualify only the winner and the loser still ranks
            on the bare noun. */
         found_by(
-            crate::smith::pipelines_schema(),
+            reads_only(crate::smith::pipelines_schema()),
             "azure devops pipelines CI build remote build builds ci status runs \
              workflow actions did my build pass on CI check the pipeline is the \
              pipeline green az pipelines certificate error ssl self-signed",
         ),
         found_by(
-            crate::smith::reviews_schema(),
+            reads_only(crate::smith::reviews_schema()),
             "pull request PR review reviews approved votes merge conflicts open \
              PRs is my PR approved who reviewed az repos pr list gh pr list \
              certificate error",
@@ -982,7 +1044,7 @@ pub(crate) fn roster() -> Vec<Value> {
            picking before it picks, and the hint is the only text it reads
            before the schema. */
         found_by(
-            crate::docket::tasks_schema(),
+            reads_only(crate::docket::tasks_schema()),
             "asana tasks assigned to me my tickets what am I working on read the asana board \
              a project's columns kanban backlog sprint what does the ticket say read a task \
              description acceptance criteria",
@@ -1038,7 +1100,7 @@ pub(crate) fn roster() -> Vec<Value> {
            function is the one place an agent actually goes looking, so it is
            where the scoping has to hold as well as in the schemas. */
         found_by(
-            crate::selector::records_schema(),
+            reads_only(crate::selector::records_schema()),
             "search spotify for music find a song track album playlist artist \
              what is this song called look up a record catalogue what should we \
              listen to",
@@ -1978,6 +2040,68 @@ mod tests {
                  find it — give it one in `ask::roster` or load it"
             );
         }
+    }
+
+    /// Which tools a planning card may still reach, pinned by name.
+    ///
+    /// The list is the point rather than the count. Claude Code refuses an MCP
+    /// tool to a planning card unless it declares `readOnlyHint`, so this is the
+    /// difference between a card that can read the sink it is told to read and
+    /// one that is told to read it and then refused — which is what shipped, for
+    /// every tool on this server, until 2026-09-16.
+    ///
+    /// Asserted in **both** directions on purpose. A tool missing from the
+    /// read-only list is a capability quietly lost to plan mode and nothing
+    /// anywhere would say so; a tool wrongly *in* it is the worse half — a
+    /// planning card writing a row, a notice or another card's turn, which is
+    /// the one thing the gear exists to prevent.
+    #[test]
+    fn a_planning_card_may_read_and_may_not_write() {
+        /* No tool here changes this wall *because it was called*. `board` and
+           `sink` do sweep expired rows on the read path, and `ask_user` spends
+           the user's attention; both are argued at `reads_only`, and the rule
+           for the next one is stated there. */
+        const READS: [&str; 16] = [
+            "ask_user",
+            "board",
+            "sink",
+            "list",
+            "allowance",
+            "servers",
+            "chronicle",
+            "claude_status",
+            "touched",
+            "recall",
+            "pinned",
+            "server_log",
+            "pipelines",
+            "reviews",
+            "tasks",
+            "records",
+        ];
+
+        let mut seen: Vec<String> = vec![];
+        for t in roster() {
+            let name = t["name"].as_str().expect("every tool is named").to_string();
+            let reads = t["annotations"]["readOnlyHint"] == json!(true);
+            if reads {
+                assert!(
+                    READS.contains(&name.as_str()),
+                    "`{name}` says it only reads, so a planning card can call it —                      if that is right, add it to READS here and say why at                      `reads_only`; if it writes anything, take the annotation off"
+                );
+                seen.push(name);
+            } else {
+                assert!(
+                    !READS.contains(&name.as_str()),
+                    "`{name}` is meant to be readable from a planning card and                      carries no `readOnlyHint`, so plan mode refuses it — wrap it                      in `reads_only` in `roster`"
+                );
+            }
+        }
+
+        let mut want: Vec<String> = READS.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        seen.sort();
+        assert_eq!(seen, want, "READS names a tool this server does not advertise");
     }
 
     /// Absent, not `false`, and the difference is the whole feature.

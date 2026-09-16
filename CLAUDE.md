@@ -113,6 +113,13 @@ bun tools/probe-skills.ts initialize   # the whole slash vocabulary with a descr
                                    # shows what system/init publishes; `silent` that it
                                    # publishes nothing until a first message lands;
                                    # `seeded` adds three .claude/commands/ files
+bun tools/probe-modes.ts           # which permission modes a card can be put into, and OUT
+                                   # of. `--plan-born` reproduces the one-way door: a card
+                                   # spawned `--permission-mode plan` is refused
+                                   # `bypassPermissions` for ever. No API turn at all
+bun tools/probe-readonly.ts        # whether plan mode honours `readOnlyHint` on an MCP tool,
+                                   # which is the whole of why a planning card can read the
+                                   # sink. Two identical stub tools, one annotated. One turn
 bun tools/probe-lock.ts            # whether permissions.deny bites through the bypass flag
 bun tools/probe-rm.ts              # what `deny: Bash(rm -rf:*)` actually stops. The answer
                                    # is nothing a card can call — it is given PowerShell and

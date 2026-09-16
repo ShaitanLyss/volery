@@ -10,6 +10,8 @@ import {
   gearOfInit,
   gearOfWire,
   isPlanDocument,
+  modeRefusal,
+  MODE_REQUEST_PREFIX,
   planTitle,
   isGear,
   planFile,
@@ -211,7 +213,7 @@ describe("the two events disagree, and the acknowledgement wins", () => {
      belonged to a turn asked for at 0.06s. Folding that init flips the card. */
   test("a stale init does not undo an acknowledged change", () => {
     let s = freshGear("making");
-    s = afterAck(s, "planning");
+    s = afterAck(s, "planning", true);
     expect(s.gear).toBe("planning");
 
     s = afterInit(s, "making"); // the in-flight turn's init
@@ -220,7 +222,7 @@ describe("the two events disagree, and the acknowledgement wins", () => {
   });
 
   test("the init that agrees clears the doubt", () => {
-    let s = afterAck(freshGear("making"), "planning");
+    let s = afterAck(freshGear("making"), "planning", true);
     s = afterInit(s, "planning");
     expect(s).toEqual({ gear: "planning", pending: null });
   });
@@ -228,7 +230,7 @@ describe("the two events disagree, and the acknowledgement wins", () => {
   test("after which an init folds normally again", () => {
     /* Which is what keeps a card put into planning by something that is not
        Volery drawn correctly. */
-    let s = afterInit(afterAck(freshGear("making"), "planning"), "planning");
+    let s = afterInit(afterAck(freshGear("making"), "planning", true), "planning");
     s = afterInit(s, "making");
     expect(s).toEqual({ gear: "making", pending: null });
   });
@@ -241,15 +243,125 @@ describe("the two events disagree, and the acknowledgement wins", () => {
   });
 
   test("a second acknowledgement supersedes the first", () => {
-    let s = afterAck(freshGear("making"), "planning");
-    s = afterAck(s, "making");
+    let s = afterAck(freshGear("making"), "planning", true);
+    s = afterAck(s, "making", true);
     expect(s).toEqual({ gear: "making", pending: "making" });
   });
 
   /* Or a change that never took effect would deafen the card to every init for
      the rest of its life. */
   test("the process going clears the doubt but not the reading", () => {
-    const s = afterExit(afterAck(freshGear("making"), "planning"));
+    const s = afterExit(afterAck(freshGear("making"), "planning", true));
     expect(s).toEqual({ gear: "planning", pending: null });
+  });
+
+  /* The half that was missing, and the case that made it reachable: at a spawn
+     there is no older turn, so there is no stale init to guard against — and a
+     `pending` held there makes the card deaf to the newest evidence there is. */
+  test("with no turn open, an acknowledgement leaves nothing outstanding", () => {
+    expect(afterAck(freshGear("making"), "planning", false)).toEqual({
+      gear: "planning",
+      pending: null,
+    });
+  });
+
+  test("so a spawn's first init is believed, whatever it says", () => {
+    /* The dangerous shape this protects: a CLI that acknowledges a mode and
+       does not apply it would otherwise leave the card drawn dashed and
+       labelled planning, for ever, while holding the machine. */
+    const spawned = afterAck(freshGear("making"), "planning", false);
+    expect(afterInit(spawned, "making")).toEqual({ gear: "making", pending: null });
+    /* And the ordinary case is unchanged. */
+    expect(afterInit(spawned, "planning")).toEqual({ gear: "planning", pending: null });
+  });
+
+  test("a card can never be left deaf by an acknowledgement it did not need", () => {
+    /* Two inits that disagree in a row. With `pending` wrongly set, the second
+       would be ignored exactly as the first was — which is the state with no
+       way back out of it. */
+    let s = afterAck(freshGear("making"), "planning", false);
+    s = afterInit(s, "making");
+    s = afterInit(s, "making");
+    expect(s.pending).toBeNull();
+    expect(s.gear).toBe("making");
+  });
+});
+
+describe("a refused gear change", () => {
+  /* The refusal that cost half an hour: a card spawned into plan mode without
+     the bypass flag cannot be put back, and for the life of the feature nothing
+     read the error — so `/gear making` did nothing and said nothing. */
+  const REAL =
+    "Cannot set permission mode to bypassPermissions because the session was " +
+    "not launched with --dangerously-skip-permissions";
+  const refusal = (extra: Record<string, unknown> = {}) => ({
+    type: "control_response",
+    response: {
+      subtype: "error",
+      request_id: `${MODE_REQUEST_PREFIX}7`,
+      error: REAL,
+      ...extra,
+    },
+  });
+
+  test("the CLI's own words come back, because they name the flag", () => {
+    expect(modeRefusal(refusal())).toBe(REAL);
+  });
+
+  test("a refusal with no sentence is still a refusal", () => {
+    for (const empty of [{ error: "" }, { error: "   " }, { error: undefined }]) {
+      expect(modeRefusal(refusal(empty))).toBe("the gear change was refused");
+    }
+  });
+
+  test("the id is what makes it ours, since an error carries no mode", () => {
+    /* An interrupt or a set_model can fail on the same stream with the same
+       shape. Matching the sentence is what this codebase keeps deciding not to
+       do; the id is one Volery minted. */
+    expect(
+      modeRefusal({
+        type: "control_response",
+        response: { subtype: "error", request_id: "skein-interrupt-3", error: REAL },
+      }),
+    ).toBeNull();
+    expect(
+      modeRefusal({
+        type: "control_response",
+        response: { subtype: "error", error: REAL },
+      }),
+    ).toBeNull();
+  });
+
+  test("a success is the other function's business, not this one's", () => {
+    expect(
+      modeRefusal({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: `${MODE_REQUEST_PREFIX}7`,
+          response: { mode: "plan" },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  test("and the two never both answer, whatever arrives", () => {
+    for (const ev of [
+      refusal(),
+      { type: "control_response", response: { subtype: "success", response: { mode: "plan" } } },
+      { type: "system", subtype: "init", permissionMode: "plan" },
+      { type: "result" },
+      {},
+      null,
+      undefined,
+      "control_response",
+    ]) {
+      const both = gearOfModeAck(ev) !== null && modeRefusal(ev) !== null;
+      expect(both).toBe(false);
+    }
+  });
+
+  test("the prefix is the contract Rust mints against", () => {
+    expect(MODE_REQUEST_PREFIX).toBe("skein-mode-");
   });
 });

@@ -1063,23 +1063,45 @@ fn spawn_now(
        See `store::gear_of`. */
     let gear = crate::store::gear_of(&app.state::<crate::store::Store>(), &id);
 
+    /* **Every project card spawns with the bypass flag, whatever gear it is in**,
+       and the gear is then set over the wire below. That is not the obvious
+       arrangement and it is the only one that works.
+
+       It used to be the obvious one: a planning card got `--permission-mode
+       plan` and no flag. The card really did start in plan — and could never
+       leave, because runtime escalation to bypass is the one change the CLI
+       refuses to a session that was not launched holding it:
+
+       ```text
+       --> set_permission_mode bypassPermissions   (on a card spawned --permission-mode plan)
+           control_response  error, "Cannot set permission mode to
+             bypassPermissions because the session was not launched with
+             --dangerously-skip-permissions"
+       ```
+
+       So `/gear making` was a door that only opened one way, and it opened onto
+       a card that could not write, could not call `ask_user`, and had no gesture
+       anywhere in the app to get out — only a restart, which respawns off
+       `gear_of` and is why the state was recoverable at all.
+
+       Passing *both* is not the fix; it was probed and the flag silently wins.
+       A card given `--dangerously-skip-permissions --permission-mode plan`
+       reports `permissionMode=bypassPermissions` on its first init and writes
+       files, which is a planning card holding the machine and is worse than the
+       bug it would be fixing.
+
+       What does work is the property the whole gear design already rests on and
+       `gears.md` states first: `set_permission_mode` **beats** the flag. So the
+       flag goes on for the launch privilege, and the gear is asked for on stdin
+       before anything else reaches the card. Probed at claude 2.1.241 with the
+       control request and the first prompt written back to back with no delay
+       between them — the worst case for the ordering — and the mode wins: the
+       first init reports `plan` with 29 tools and the turn ends in a plan
+       document. The pipe is ordered and the CLI drains it in order. */
     if chat {
         chat_argv(&mut cmd);
     } else {
-        match gear.as_deref() {
-            /* A card nobody has ever set a gear on spawns exactly as every card
-               did before gears existed. Kept as the flag rather than spelled
-               `--permission-mode bypassPermissions`, because the flag is what
-               every rule in this repository names and two spellings of one
-               state is how a mode ends up set in one place and read in
-               another. */
-            None | Some("bypassPermissions") => {
-                cmd.arg("--dangerously-skip-permissions");
-            }
-            Some(mode) => {
-                cmd.args(["--permission-mode", mode]);
-            }
-        }
+        cmd.arg("--dangerously-skip-permissions");
     }
 
     /* Every card, not only a chat card, because the layer now also carries the
@@ -1368,7 +1390,57 @@ fn spawn_now(
 
     let stdout = child.stdout.take().ok_or("no stdout on child")?;
     let stderr = child.stderr.take().ok_or("no stderr on child")?;
-    let stdin = child.stdin.take().ok_or("no stdin on child")?;
+    let mut stdin = child.stdin.take().ok_or("no stdin on child")?;
+
+    /* The gear, asked for on the wire rather than on the argv — see the note at
+       the flag above for why it cannot be an argument.
+
+       **First thing written to this child, ahead of the reader threads and ahead
+       of `drain_inbox`**, which is the whole of the ordering guarantee: the pipe
+       is FIFO, so a prompt written after this cannot be taken up before it. A
+       card whose gear is bypass writes nothing, because the flag has already
+       said so and a redundant request is a second spelling of one state.
+
+       **A chat card gets this too, where it does not get the flag**, and the
+       asymmetry is the point rather than an oversight. The flag is a launch
+       privilege and a chat card must never hold one; the control request is a
+       *de-escalation* and needs no privilege at all. Skipping it would give that
+       one card kind the failure `gear_of` exists to prevent — `#restore` reads
+       `permissionMode` for every card regardless of kind, so a chat card put
+       into planning would be drawn planning for ever while every spawn quietly
+       came back in the CLI's default. `/gear` is reachable from any card's dock
+       and does not ask what kind it is aimed at. Plan mode leaves `ask_user`
+       reachable (`ask::reads_only`), which `chat.md` names as the one capability
+       a chat card genuinely wants.
+
+       A failure here is *not* fatal to the spawn. The child is alive, its
+       session is real, and refusing to finish spawning over a mode would cost
+       the card its process to save it from having the wrong permissions — where
+       the honest report is a card that came up in making and says so. The
+       refusal reaches the front end as a `control_response` error on the same
+       stream (`gears.ts::modeRefusal`), which is the path every other failed
+       mode change now takes. */
+    if let Some(mode) = gear.as_deref().filter(|m| *m != "bypassPermissions") {
+        let msg = mode_request(mode);
+        if let Err(e) = writeln!(stdin, "{msg}").and_then(|()| stdin.flush()) {
+            /* **On the card's own channel, not this process's stderr.** A failed
+               write here is the one failure that inverts the gear — the card
+               comes up in making while the row says planning — so the account of
+               it has to reach the person who is about to type into that card,
+               and Volery's stderr has no reader at all on a bundled build. The
+               reader thread three blocks down emits exactly this event for
+               everything the child says; there is nothing to invent. */
+            let _ = app.emit(
+                "conv:stderr",
+                ConvLine {
+                    id: id.clone(),
+                    line: format!(
+                        "skein could not ask this card for the {mode} gear — {e}.                          It is running in making; try the gear again."
+                    ),
+                },
+            );
+        }
+    }
 
     let turn = Arc::new(AtomicBool::new(false));
     /* Minted before the reader thread is given it, so the thread and the map
@@ -1826,6 +1898,28 @@ static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 ///    then an init at 17.76s still saying `bypassPermissions`. So nothing here
 ///    has to tell the front end what it just did, but `gears.ts` does have to
 ///    decide which of the two to believe, and does.
+/// 2b. **And the way back is not free, which that run did not establish.** It
+///    came out of plan via `acceptEdits`, on a card spawned *with* the bypass
+///    flag — so it asked for a privilege the session already held, twice over,
+///    and every arm of the question that could fail was missed. `/gear making`
+///    sends `bypassPermissions`, and on a card launched without the flag the
+///    CLI refuses it outright:
+///
+///    ```text
+///    --> set_permission_mode bypassPermissions   (spawned --permission-mode plan)
+///        control_response  error, "Cannot set permission mode to
+///          bypassPermissions because the session was not launched with
+///          --dangerously-skip-permissions"
+///    ```
+///
+///    Which is correct of the CLI — runtime escalation to bypass would make the
+///    flag meaningless — and was a one-way door here for as long as a planning
+///    card was spawned without the flag. `spawn_now` no longer does; see the
+///    note there. What is left of the refusal is a backstop, and it is now
+///    *said*: an error carries no mode to read, so the front end matches
+///    `MODE_REQUEST_PREFIX` on the id and draws the CLI's own sentence, where it
+///    used to drop anything that was not a success and leave `/gear making`
+///    doing nothing at all.
 /// 3. **`ExitPlanMode` is gone.** 2.1.241's plan mode writes a document to
 ///    `~/.claude/plans/` rather than parking a tool call for approval, so none
 ///    of `ask.rs` is involved and there is nothing to resume.
@@ -1863,9 +1957,29 @@ pub async fn set_permission_mode(app: AppHandle, id: String, mode: String) -> Re
     }
 
     crate::off_main(move || {
+        let sup = app.state::<Supervisor>();
+
+        /* **Refused while a spawn is working on this id, and refused before the
+           row is written**, which is the half that makes it honest rather than
+           merely loud. A starting card is not a dormant one — see
+           `Supervisor::starting` — and the two are indistinguishable from the
+           map. Writing the row and then failing to reach the child would leave
+           the store saying one thing and the process doing another, which is the
+           state this command exists to prevent; nothing is written, so the
+           retry is the whole of the recovery.
+
+           An error rather than a park-and-retry. The window is a spawn, so it
+           ends in seconds, and a sentence the dock puts in front of you beats a
+           queue that has to be got right — `Skein.setGear`'s catch is already
+           wired to `fault` and to the card's activity line. */
+        if sup.starting(&id) {
+            return Err(
+                "this card is still starting — its gear can be changed once it is up".into(),
+            );
+        }
+
         crate::store::set_permission_mode(&app.state::<crate::store::Store>(), &id, &mode)?;
 
-        let sup = app.state::<Supervisor>();
         let mut map = sup.0.lock().unwrap();
         /* A dormant card has no process and that is not a failure: the gear is
            stored, and `spawn` reads it when the card wakes. */
@@ -1873,12 +1987,7 @@ pub async fn set_permission_mode(app: AppHandle, id: String, mode: String) -> Re
             return Ok(());
         };
 
-        let n = GEAR_CHANGES.fetch_add(1, Ordering::Relaxed);
-        let msg = serde_json::json!({
-            "type": "control_request",
-            "request_id": format!("skein-mode-{n}"),
-            "request": { "subtype": "set_permission_mode", "mode": mode }
-        });
+        let msg = mode_request(&mode);
         writeln!(conv.stdin, "{msg}").map_err(|e| format!("write to claude stdin: {e}"))?;
         conv.stdin
             .flush()
@@ -1888,6 +1997,41 @@ pub async fn set_permission_mode(app: AppHandle, id: String, mode: String) -> Re
 }
 
 static GEAR_CHANGES: AtomicU64 = AtomicU64::new(0);
+
+/// One mode-change line, so the two places that write one cannot drift.
+///
+/// `spawn_now` asks for the stored gear and `set_permission_mode` asks for a new
+/// one, and for one commit those were two byte-identical literals — which is the
+/// duplication `user_envelope` and `write_prompt` were extracted to end, for the
+/// reason sink `6e62c9ea` gives and this file quotes further down: *one of them
+/// was going to grow a fix the other did not*. It had already begun, in the two
+/// spellings of the same `format!`.
+///
+/// A `String` rather than a write, so a test can read it — the ids have to carry
+/// `MODE_REQUEST_PREFIX` or `gears.ts::modeRefusal` stops recognising a refusal
+/// as ours and the gesture goes quiet again.
+fn mode_request(mode: &str) -> String {
+    let n = GEAR_CHANGES.fetch_add(1, Ordering::Relaxed);
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": format!("{MODE_REQUEST_PREFIX}{n}"),
+        "request": { "subtype": "set_permission_mode", "mode": mode }
+    })
+    .to_string()
+}
+
+/// The prefix on every mode-change request id Volery mints, and a contract with
+/// the front end rather than a debugging aid: `gears.ts::modeRefusal` matches on
+/// it to tell a refused *gear* change from a refused `interrupt` or `set_model`.
+///
+/// It has to be the id, because it is the only structured thing a refusal
+/// carries. A successful `control_response` names the mode it took and can be
+/// read straight off (`gearOfModeAck`, which correlates nothing, deliberately —
+/// the stream is per-card so any mode acknowledgement on it is about this card).
+/// An **error** response has no mode field at all: there is the id, and there is
+/// a sentence a person wrote. Matching the sentence is the thing this codebase
+/// keeps deciding not to do, and the id is ours, so it is the structural answer.
+pub(crate) const MODE_REQUEST_PREFIX: &str = "skein-mode-";
 
 /// How Claude Code names a transcript directory: every character that is not
 /// ASCII alphanumeric becomes a dash. `C:\atelier\skein` → `C--atelier-skein`.
@@ -3668,6 +3812,38 @@ mod tests {
     /// A child that exits with a known code, so reaping can be tested without a
     /// `claude` on the machine.
     #[cfg(windows)]
+    /// The one line both writers send, and the field the front end matches on.
+    ///
+    /// `gears.ts::modeRefusal` tells a refused *gear* change from a refused
+    /// `interrupt` or `set_model` by this prefix and nothing else, because an
+    /// error response carries no mode — only an id and a sentence. So the id is
+    /// a wire contract with the other half of the app, and a rename here goes
+    /// quiet rather than red: `/gear making` would stop saying why it failed,
+    /// which is the exact silence this whole change was about.
+    #[test]
+    fn a_mode_request_names_itself_so_a_refusal_can_be_recognised() {
+        let first: serde_json::Value = serde_json::from_str(&mode_request("plan")).unwrap();
+        assert_eq!(first["type"], "control_request");
+        assert_eq!(first["request"]["subtype"], "set_permission_mode");
+        assert_eq!(first["request"]["mode"], "plan");
+
+        let id = first["request_id"].as_str().expect("a request id");
+        assert!(
+            id.starts_with(MODE_REQUEST_PREFIX),
+            "`gears.ts::modeRefusal` matches on {MODE_REQUEST_PREFIX:?} and got {id:?}"
+        );
+
+        /* Distinct per call, since two changes in flight at once would otherwise
+           be one id the responses cannot be told apart by. */
+        let second: serde_json::Value =
+            serde_json::from_str(&mode_request("bypassPermissions")).unwrap();
+        assert_ne!(first["request_id"], second["request_id"]);
+
+        /* One line, because it is written with `writeln!` into a stream the CLI
+           reads a JSON object per line from. */
+        assert!(!mode_request("plan").contains('\n'));
+    }
+
     fn dying_child(code: i32) -> Conv {
         dying_child_at(code, 0)
     }
@@ -4266,6 +4442,27 @@ impl Supervisor {
     /// Lock order is `.2` then `.0`, and it is the only place in this module
     /// that holds two at once — every other path takes `.0` alone, so there is
     /// no second order for this one to deadlock against. Keep it that way.
+    /// Is a spawn working on this id right now?
+    ///
+    /// The third state, and for a while there were only two readings of it:
+    /// `map.get_mut` answers `None` for a **dormant** card and for a **starting**
+    /// one alike, and treating the second as the first is a decision silently
+    /// thrown away. `spawn_now` holds a claim across three store reads,
+    /// `claude::program`, `worktree::ensure` — **including a network `git
+    /// fetch`** — and `CreateProcess`, so the window is seconds rather than
+    /// instants, and every launch walks the whole wall through it.
+    ///
+    /// What falls in it is a gear change: `spawn_now` read `gear_of` before the
+    /// row was written, so it asks for nothing, and `set_permission_mode` then
+    /// writes the row, finds no map entry, reads that as dormant and answers
+    /// `Ok`. The card is drawn in the gear you chose and the process was never
+    /// told — which is the "did nothing and said nothing" failure this whole
+    /// area was rewritten to stop, arriving in the direction that matters: a
+    /// card labelled planning with the machine in its hands.
+    fn starting(&self, id: &str) -> bool {
+        self.2.lock().map(|s| s.contains(id)).unwrap_or(false)
+    }
+
     fn claim(&self, id: &str) -> Option<Claim<'_>> {
         let mut starting = self.2.lock().ok()?;
         if starting.contains(id) {

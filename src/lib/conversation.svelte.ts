@@ -90,6 +90,7 @@ import {
   gearOfModeAck,
   gearOfWire,
   isPlanDocument,
+  modeRefusal,
   type Gear,
   type GearState,
 } from "./gears";
@@ -1039,9 +1040,16 @@ export class Conversation {
     this.#pendingGear = next.pending;
   }
 
-  /** Take a gear the wire has acknowledged. */
+  /** Take a gear the wire has acknowledged.
+   *
+   *  `working` is handed to the rule rather than read there, because whether a
+   *  turn is open is the whole of what decides if a stale init can exist — and
+   *  at a **spawn** it cannot, which is the case that made this an argument.
+   *  See `afterAck`. */
   ackGear(gear: Gear) {
-    this.#foldGear(afterAck({ gear: this.gear, pending: this.#pendingGear }, gear));
+    this.#foldGear(
+      afterAck({ gear: this.gear, pending: this.#pendingGear }, gear, this.working),
+    );
   }
 
   /** The newest plan document this card has written, or `null`.
@@ -2918,7 +2926,22 @@ export class Conversation {
          in flight. So this is where the gear is really learned. See `gears.ts`. */
       case "control_response": {
         const acked = gearOfModeAck(ev);
-        if (acked !== null) this.ackGear(acked);
+        if (acked !== null) {
+          this.ackGear(acked);
+          break;
+        }
+        /* And the other half, which for the life of the feature was dropped on
+           the floor. A refused gear change is the one failure here that the
+           invoke cannot report: Rust wrote the row and wrote the wire, both
+           succeeded, and the refusal arrives later on the stream — so without
+           this the gesture did nothing and said nothing, which is the failure
+           mode a wall of green tests is least able to see. See
+           `gears.ts::modeRefusal`. */
+        const refused = modeRefusal(ev);
+        if (refused !== null) {
+          this.activity = "the gear did not change";
+          this.note(`skein asked for another gear and the CLI refused — ${refused}`);
+        }
         break;
       }
 

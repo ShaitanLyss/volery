@@ -74,6 +74,47 @@ Nothing polls, either way, which is still the shape `CLAUDE.md` asks for. And `S
 does not set the gear optimistically, because the answer is already on its way and is faster
 than the round trip the call is making.
 
+**And the flag is only held where a stale init can exist, which is narrower than it looks.**
+`afterAck` takes `turnOpen`, and without that argument the guard was wider than its own
+premise: what it defends against is an init belonging to a turn that was *already running*, so
+with nothing running there is no such init and the flag buys nothing. What it costs is the
+thing cheapest to lose — `afterInit` ignores every init that disagrees with an outstanding
+change and only an agreeing one clears it, so a `pending` set where it was not needed leaves
+the card **deaf to every init for the life of the process** if the acknowledgement and the
+reality ever part company.
+
+That went from theoretical to reachable the day the gear started being set **at spawn**. There
+is no older turn there; the first init is the newest possible evidence about what the process
+is really running under, and it was exactly the evidence being thrown away. A CLI that
+acknowledged a mode without applying it would have left the card drawn dashed and labelled
+planning, permanently, with the machine in its hands — and the argv used to make that
+impossible where the wire does not. Note which direction is worth the guard: a planning card
+drawn as making costs a reading; **a making card drawn as planning is the wall lying about the
+one thing this gear exists to say.** The general shape is `#adoptModel`'s, which this codebase
+has already paid for once: *a guard whose premise holds at one call site and not at a new one
+is a guard that has quietly become something else.*
+
+### Starting is a third state, and it is not dormant
+
+`set_permission_mode` reads `map.get_mut(&id)` and a `None` used to mean "dormant — store the
+row, `spawn` will read it". But an id being spawned is **claimed** and not yet in the map, and
+`spawn_now` holds that claim across three store reads, `claude::program`, `worktree::ensure` —
+*including a network `git fetch`* — and `CreateProcess`. Seconds, and every launch walks the
+whole wall through it.
+
+A gear change landing in that window was lost twice over: `spawn_now` read `gear_of` before the
+row was written, so it asked the child for nothing, and the command then wrote the row, missed
+the map, read that as dormant and answered `Ok`. Row says planning, card drawn planning,
+process never told — the "did nothing and said nothing" failure this area was rewritten to
+stop, arriving in the direction that matters.
+
+`Supervisor::starting` is the missing reading, and the command now refuses **before the row is
+written**, which is the half that makes it honest rather than merely loud: nothing is stored,
+so there is nothing for the store and the process to disagree about and the retry is the whole
+of the recovery. An error rather than a park-and-retry, because the window ends in seconds and
+`Skein.setGear`'s catch already reaches `fault` and the card's activity line — a sentence in
+front of you beats a queue somebody has to get right.
+
 The one exception is a **dormant** card, which has no process to answer at all. There the row is
 the only truth there is, so `setGear` folds it locally and the restore reads `permissionMode`
 off `StoredConversation` — without which the whole wall would come back drawn as making until
@@ -144,10 +185,93 @@ lesson from the other side: bookkeeping that records a decision must not wait fo
 decides to succeed. A card whose process dies between the write and the flush comes back in the
 gear you asked for.
 
-Spawning a card whose stored gear is NULL or `bypassPermissions` still uses
-`--dangerously-skip-permissions` rather than `--permission-mode bypassPermissions`. The two ask
-for the same state, and the flag is what every rule in this repository names — two spellings of
-one state is how a mode ends up set in one place and read in another.
+Spawning uses `--dangerously-skip-permissions` rather than `--permission-mode
+bypassPermissions`. The two ask for the same state, and the flag is what every rule in this
+repository names — two spellings of one state is how a mode ends up set in one place and read
+in another. It is now what *every* project card spawns with, whatever gear it is in, and the
+section below is why.
+
+### Every card spawns with the flag, and the gear goes over the wire
+
+**A planning card used to spawn with `--permission-mode plan` and no flag at all, and it could
+never come back.** That was the obvious arrangement — the row says plan, so start in plan — and
+it made `/gear making` a door that only opened one way:
+
+```text
+--> set_permission_mode bypassPermissions   (on a card spawned --permission-mode plan)
+    control_response  error, "Cannot set permission mode to bypassPermissions
+      because the session was not launched with --dangerously-skip-permissions"
+```
+
+Which is correct of the CLI. Runtime escalation to bypass would make the flag worth nothing, so
+it is refused to any session that was not launched holding it. What was wrong was Volery
+spawning a card into a state it had no way out of — and then not saying so, since
+`gearOfModeAck` reads only successes and there was no reader for an error at all. The card that
+found this sat in plan mode for half an hour: no writing tools, no `ask_user`, no
+`ExitPlanMode` (it does not exist, see above), and a `/gear making` that did nothing and
+printed nothing. The only way out was restarting the app, which respawns off `gear_of` — so
+the state was recoverable and nothing on the wall said how.
+
+**Two probes, and the first answer is the one that looks right and is not.** Passing both
+`--dangerously-skip-permissions` and `--permission-mode plan` does not start a card in plan:
+the flag wins silently, the first init reports `bypassPermissions`, and the card writes files.
+That is a planning card holding the machine, which is worse than the bug.
+
+What works is finding 1 above, used as a mechanism rather than only as a fact: the control
+request **beats** the flag. So the flag goes on for the launch privilege, and the gear is asked
+for on stdin before anything else reaches the card. Probed with the control request and the
+first prompt written back to back with no delay — the worst case for the ordering — and the
+mode wins: `permissionMode=plan`, 29 tools, and a turn that ends in a plan document.
+
+- **The write is the first thing to reach the child**, ahead of the reader threads and ahead of
+  `relay::drain_inbox`. The pipe is FIFO and the CLI drains it in order, so a prompt written
+  behind it cannot be taken up in front of it. Nothing else can be holding that stdin yet — the
+  `Conv` has not been put in the supervisor's map.
+- **A failed write is not fatal to the spawn.** The child is alive and its session is real;
+  refusing to finish spawning over a mode would cost the card its process to save it from the
+  wrong permissions, where the honest report is a card that came up in making and says so.
+- **And the refusal is now said.** `gears.ts::modeRefusal` reads the error side of a
+  `control_response` and the card draws the CLI's own sentence. It matches on the request id —
+  `supervisor::MODE_REQUEST_PREFIX` — because that asymmetry is forced: a success carries the
+  mode it took, and an error carries no mode at all, only an id and a sentence a person wrote.
+  Reading the sentence is what `isPlanDocument` already refuses to do; the id is one Volery
+  minted.
+
+The general shape, and it is the one this feature keeps teaching: **a probe that establishes a
+capability has not established its inverse.** `probe-plan.ts` proved the way in with `plan` and
+came back out with `acceptEdits`, on a card spawned *with* the flag — so it asked for a
+privilege the session already held, and every arm of the question that could fail was missed.
+The way back is the half a person uses every time.
+
+### A planning card is refused every MCP tool that does not say it only reads
+
+`.claude/rules/ask.md` owns the roster; this is the half of it that is about the gear, and it
+was wrong for the whole life of both features. Claude Code blocks an MCP tool in plan mode
+unless the tool declares `annotations.readOnlyHint`. **Nothing on this server declared
+anything**, so a planning card could not read the sink it is told to read, could not read the
+billboard it is told to read *before working in a shared repository*, and could not ask the
+user a question — while the descriptions telling it to do all three were still in its prompt,
+because the roster is the only copy of those instructions. What it got was
+`Cannot call mcp__skein__board while in plan mode.`
+
+Probed with a stub server carrying two otherwise identical tools:
+
+```text
+init  mode=plan  offered: [mcp__stub__peek_annotated, mcp__stub__peek_bare]
+  mcp__stub__peek_annotated  ALLOWED
+  mcp__stub__peek_bare       BLOCKED  "Cannot call mcp__stub__peek_bare while in plan mode."
+```
+
+Note **both were offered**. The annotation does not change what a planning card is told it
+has, only what happens when it reaches — so an unannotated read-only tool is worse than an
+absent one: advertised, described, and refused at the moment of use.
+
+`ask::reads_only` is the marker and `a_planning_card_may_read_and_may_not_write` pins the list
+in both directions. The bar is *this wall's state*: a tool that writes a row, a notice, an
+image or another card's turn is not read-only however harmless it looks — `send` costs another
+agent a turn. `ask_user` is the one judgement call and is deliberate, since parking a question
+changes nothing anywhere and a planning card that cannot ask what it is planning for is the
+shape of card this gear exists to make useful.
 
 ### How it is drawn
 
@@ -223,7 +347,10 @@ For the record, since the feature is mostly invisible until it is used:
 - The gear survived a full restart of the app: the card came back in **planning**, off the row.
 - A card *spawned* with `--permission-mode plan` and no bypass flag — the roused-card path,
   which is a different one from the control request — ran its tools without hanging on a
-  permission prompt there is nobody to answer, refused the write, and produced a plan.
+  permission prompt there is nobody to answer, refused the write, and produced a plan. **That
+  path no longer exists**, and the reason is the section above: it was also a card that could
+  never be put back into making. What the observation still establishes is that a planning card
+  does not hang on a permission prompt, which was the doubt it was recorded against.
 
 ## Handing the plan on
 
