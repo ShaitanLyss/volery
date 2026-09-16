@@ -2,10 +2,13 @@ import { expect, test, describe } from "bun:test";
 import {
   FALLBACK_DEFAULT_PRESET,
   PRESETS,
+  SPAWN_MODELS,
   defaultPresetFor,
   presetById,
+  presetForSpawn,
   presetPicks,
 } from "../src/lib/presets";
+import { readFileSync } from "node:fs";
 import { EFFORT_LEVELS, isEffort } from "../src/lib/commands";
 import { contextWindowFor } from "../src/lib/classify";
 import { menuFor, type MenuItem } from "../src/lib/menu";
@@ -195,5 +198,71 @@ describe("what a plain + opens, and changing it", () => {
     expect(hints({ kind: "spawn", presets: presetPicks() }).length).toBe(0);
     /* And it stays the one menu in the app with a caption on it. */
     expect(hints({ kind: "card" }).length).toBe(0);
+  });
+});
+
+describe("what a card an agent opened is set up as", () => {
+  test("each of the three names resolves to a preset this build has", () => {
+    /* The failure this catches is the one that costs money quietly: a name the
+       tool accepts and the table does not know opens a card on the machine's
+       own setting, while the agent, the receipt and the wall all say otherwise.
+       `presetForSpawn` degrades rather than throws on purpose, so nothing but
+       this notices. */
+    for (const name of SPAWN_MODELS) {
+      expect(presetForSpawn(name)).toBeDefined();
+    }
+  });
+
+  test("the three are the three `spawn` will hand over", () => {
+    /* The seam is a name crossing an `emit`, and the two ends are in different
+       languages — so this reads the Rust array rather than a transcription of
+       it. `spawn.rs`'s `the_three_names_are_the_ones_the_wall_resolves` holds
+       the other half, that the schema's enum is what the validator accepts. */
+    const rs = readFileSync("src-tauri/src/spawn.rs", "utf8");
+    const arr = rs.match(/pub const SPAWN_MODELS: \[&str; \d+\] = \[([^\]]*)\]/);
+    expect(arr).not.toBeNull();
+    const rust = [...arr![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(rust).toEqual([...SPAWN_MODELS]);
+  });
+
+  test("the cheap name is the one preset that claims no effort", () => {
+    /* Haiku 4.5 has no `--effort`, and the CLI drops the flag silently rather
+       than refusing it — so a mapping that landed `haiku` on any other row
+       would look right everywhere and buy nothing. */
+    expect(presetForSpawn("haiku")?.model).toBe("haiku");
+    expect(presetForSpawn("haiku")?.effort).toBeUndefined();
+  });
+
+  test("a family name never resolves to a narrower window than the menu would pick", () => {
+    /* The point of resolving to a preset rather than to a bare `--model` is
+       that the pairing comes with it. `sonnet` is sonnet at a level somebody
+       chose; `opus` is the wide window, because the presets that are not are
+       the cheap end of a menu this door does not offer. */
+    expect(presetForSpawn("sonnet")).toMatchObject({ model: "sonnet", effort: "medium" });
+    expect(presetForSpawn("opus")?.model).toBe("opus[1m]");
+  });
+
+  test("nobody naming one is not the wall's default, it is no preset at all", () => {
+    /* Three inputs and they are genuinely three, exactly as `defaultPresetFor`
+       has to be. Silently spending the dear end of the menu on every spawned
+       card would be the one change here nobody chose — and the wall's default
+       answers a different question, which is what the user's own `+` opens. */
+    expect(presetForSpawn(null)).toBeUndefined();
+    expect(presetForSpawn(undefined)).toBeUndefined();
+    expect(presetForSpawn("")).toBeUndefined();
+    expect(presetForSpawn("  ")).toBeUndefined();
+  });
+
+  test("a name this build has never heard of opens a card rather than failing to", () => {
+    /* `do_spawn` has refused anything but the three by the time this is
+       reached, so this arm is only ever a build that gained a fourth name at
+       one end. The normalizer's usual bargain: degrade to something that
+       works. */
+    expect(presetForSpawn("fable")).toBeUndefined();
+    expect(presetForSpawn("gpt-4")).toBeUndefined();
+  });
+
+  test("it reads what a model would actually write", () => {
+    expect(presetForSpawn(" Sonnet ")?.id).toBe(presetForSpawn("sonnet")?.id);
   });
 });

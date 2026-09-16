@@ -57,7 +57,7 @@ import { Sink } from "./sink.svelte";
 import { Gates } from "./gates.svelte";
 import { cliCommand, isEffort, type SlashCommand } from "./commands";
 import { wireOf, type Gear } from "./gears";
-import { defaultPresetFor, type Preset } from "./presets";
+import { defaultPresetFor, presetForSpawn, type Preset } from "./presets";
 import { BRIEF_FETCH, briefFor, type Trail } from "./handoff";
 import { handleOf } from "./relay";
 import { UNNAMED, isNamed, nameBesideProject, titleFromPrompt } from "./naming";
@@ -584,10 +584,15 @@ export class Skein {
         worktree: string | null;
         prompt: string;
         title: string | null;
+        /** One of `haiku`, `sonnet`, `opus`, or null for none named — see
+         *  `presetForSpawn`. Validated in `do_spawn`, which refuses anything
+         *  else before a card is minted, so this arrives as one of the three or
+         *  not at all. */
+        model: string | null;
       }>(
         "spawn:asked",
         (e) => {
-          const { id, parent_id, cwd, worktree, prompt, title } = e.payload;
+          const { id, parent_id, cwd, worktree, prompt, title, model } = e.payload;
           /* The root is recorded before the card is opened, and `born` is
              stamped here rather than read back off the row: this is the moment
              it happened, and a growth animation timed off a later query would
@@ -595,7 +600,7 @@ export class Skein {
              the row (`record_spawn`), so nothing is being claimed early — this
              is the same fact, in the frame that draws it. */
           this.kin = [...this.kin, { child: id, parent: parent_id, born: Date.now() }];
-          void this.openSpawned(id, cwd, worktree, prompt, title);
+          void this.openSpawned(id, cwd, worktree, prompt, title, model);
         },
       ),
     );
@@ -1082,15 +1087,29 @@ export class Skein {
    *  `worktree` is the parent's branch, or null — and it is the difference
    *  between a card opened *beside* its parent and one opened in the main tree
    *  four hours of work behind it. Resolved in `spawn.rs` for the same reason
-   *  `cwd` is; this passes it on and decides nothing. */
+   *  `cwd` is; this passes it on and decides nothing.
+   *
+   *  `model` is the one thing on this path the *parent* decides rather than the
+   *  wall: one of three family names, or null for the machine's own setting.
+   *  Turned into a preset here rather than in Rust because a preset is this
+   *  side's vocabulary — `presets.ts` is the one table saying what `sonnet`
+   *  costs in effort, and Rust has never heard of it. From there it is an
+   *  ordinary preset, written onto the row by `#openIn` and read back at every
+   *  wake, so a card an agent opened on haiku comes back on haiku tomorrow
+   *  (`store::setup_of`). */
   async openSpawned(
     id: string,
     cwd: string,
     worktree: string | null,
     prompt: string,
     title: string | null,
+    /* Required rather than defaulted, with one caller and on purpose: a model
+       that quietly failed to arrive is the expensive failure on this path (see
+       the receipt in `do_spawn`), and a default here is the one place it could
+       happen without anybody writing it down. */
+    model: string | null,
   ): Promise<void> {
-    const conv = await this.#openIn(cwd, worktree, "project", id);
+    const conv = await this.#openIn(cwd, worktree, "project", id, presetForSpawn(model));
     if (!conv) return;
     if (title) {
       conv.title = title;

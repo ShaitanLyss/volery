@@ -190,3 +190,77 @@ export function defaultPresetFor(stored: string | null | undefined): Preset | un
 export function presetPicks(): { id: string; label: string; note: string }[] {
   return PRESETS.map((p) => ({ id: p.id, label: p.label, note: p.note }));
 }
+
+/* ── the three names an agent may spawn a card on ───────────────────────────
+ *
+ * `mcp__skein__spawn` lets one card open another, and until now every card
+ * opened that way ran on whatever Claude Code is configured for on this
+ * machine — one setting standing in for a rename across four files and a
+ * migration alike. That is the same complaint the `+`'s right-click answers,
+ * arriving through the one door that has no right-click: a parent deciding to
+ * fan a job out knows better than any global default which pieces are cheap,
+ * because it is the thing that divided them up.
+ *
+ * **Three names rather than the five presets**, and the cut is deliberate.
+ * A preset id is Skein vocabulary — `ask`, `work`, `read`, `bug`, `deep` — and
+ * an agent choosing between them has to have read `presets.ts` to know that
+ * `read` is a window rather than a mode. A model family is vocabulary the
+ * caller already has: it knows what haiku costs and what opus is for, from the
+ * same knowledge that made it decide the piece was small. So the tool takes the
+ * word everybody already shares and this table turns it into the pairing the
+ * menu would have picked, effort and window included — which is the half an
+ * agent naming a bare `--model` would have got wrong for free.
+ *
+ * Mapping to a preset rather than straight to `--model` is what buys that
+ * second half. `sonnet` alone is sonnet at whatever effort the CLI defaults to;
+ * `work` is sonnet at `medium`, which is a judgement somebody made about the
+ * pair. And it keeps one table: change what `ordinary work` means and the cards
+ * an agent opens change with it, rather than drifting a week later.
+ */
+
+/** The three, as `spawn`'s schema offers them and in the order it does. */
+export const SPAWN_MODELS = ["haiku", "sonnet", "opus"] as const;
+
+export type SpawnModel = (typeof SPAWN_MODELS)[number];
+
+/** Which preset each of the three names, and why that one.
+ *
+ *  - `haiku` → **ask**, the only preset on that model, and the only one that
+ *    claims no effort — the parameter does nothing there (see `Preset.effort`).
+ *  - `sonnet` → **work**, sonnet · medium. Not `read`: the wide window is a
+ *    different question from the model, and a parent that wants a card to hold
+ *    a lot of material can say so in the brief where it cannot say so here.
+ *  - `opus` → **deep**, opus[1m] · xhigh. The dear end, because a card opened
+ *    on opus by an agent that had a cheaper word available is one that was
+ *    asked for on purpose — and `xhigh` is Anthropic's own recommendation for
+ *    coding and agentic work specifically, which is what a card gets opened to
+ *    do. Same argument as `FALLBACK_DEFAULT_PRESET`, and it lands on the same
+ *    row.
+ */
+const SPAWN_PRESET: Record<SpawnModel, string> = {
+  haiku: "ask",
+  sonnet: "work",
+  opus: "deep",
+};
+
+/** The preset a card an agent opened is set up as, or `undefined` for none.
+ *
+ *  `undefined` is the whole of what a spawn was before this existed — no
+ *  `--model`, no `--effort`, the machine's own setting — and it is what an
+ *  omitted `model` still means. It is deliberately *not* the wall's default
+ *  preset: that setting is the answer to "what does my `+` open", and a card an
+ *  agent asked for is not a card the user clicked for. Silently spending the
+ *  dear end of this menu on every spawned card would be the one change here
+ *  nobody chose.
+ *
+ *  An unrecognised name degrades to `undefined` rather than throwing. `do_spawn`
+ *  has already refused anything but the three by the time this is reached, so
+ *  this is the normalizer's usual bargain (`CLAUDE.md`, opaque JSON columns):
+ *  a build that gains a fourth name before this table does opens a card on the
+ *  machine's setting instead of failing to open one. */
+export function presetForSpawn(asked: string | null | undefined): Preset | undefined {
+  const name = asked?.trim().toLowerCase();
+  if (!name) return undefined;
+  const id = SPAWN_PRESET[name as SpawnModel];
+  return id ? presetById(id) : undefined;
+}

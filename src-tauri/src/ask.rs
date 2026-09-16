@@ -892,7 +892,9 @@ pub(crate) fn roster() -> Vec<Value> {
         found_by(
             crate::spawn::spawn_schema(),
             "open another card, start a second conversation, delegate a separate \
-             job, run work in parallel, hand something to a new agent",
+             job, run work in parallel, hand something to a new agent, fan out \
+             the building work, spawn several agents to implement, choose which \
+             model an agent runs on, haiku sonnet opus",
         ),
         found_by(
             crate::spawn::close_schema(),

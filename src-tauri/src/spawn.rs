@@ -273,6 +273,61 @@ const MAX_PROMPT: Option<usize> = None;
 /// a label with hours to live.
 const MAX_TITLE: usize = 80;
 
+/// The model families a card may be opened on, cheapest first.
+///
+/// **Three names, and they are families rather than preset ids.** The wall
+/// already has a five-row menu behind the `+`'s right-click (`presets.ts`), and
+/// offering those ids here would be asking an agent to choose between `read` and
+/// `bug` — Skein vocabulary, whose meaning is in a file the caller has not read.
+/// A model family is vocabulary the caller already has: it knows what haiku is
+/// for from the same knowledge that made it decide the piece was small. So the
+/// tool takes the shared word and `presets::presetForSpawn` turns it into the
+/// pairing the menu would have picked, effort and window included — which is the
+/// half a bare `--model` would have got wrong for free.
+///
+/// **Nothing here reaches `--model`.** The word is carried on `spawn:asked` and
+/// resolved on the other side, because the table that says what `sonnet` costs
+/// in effort is the front end's and always has been. That keeps one table rather
+/// than two that agree today; `the_three_names_are_the_ones_the_wall_resolves`
+/// is what stops them drifting apart.
+///
+/// The order is the order the schema offers them in, and it is cheapest first
+/// for the reason `PRESETS` is: the order is the only thing in a list of three
+/// that says they are a scale.
+pub const SPAWN_MODELS: [&str; 3] = ["haiku", "sonnet", "opus"];
+
+/// Which model the caller asked for, or why nothing was opened.
+///
+/// Pure, and refusing rather than falling back is the whole of the decision
+/// here. A misspelled model quietly becoming "the machine's own setting" is a
+/// card that costs ten times what the parent budgeted for and says nothing about
+/// it anywhere — the agent believes it opened a haiku card, the receipt agrees,
+/// and the only place the truth appears is a bill at the end of the month. So an
+/// unknown name is answered the way an unknown project is: with the list of what
+/// would have worked, before the id is minted and the spawn recorded.
+///
+/// Folded for case and trimmed, because `"Sonnet"` is the same intention and
+/// refusing it would teach nothing.
+fn asked_model(args: &Value) -> Result<Option<String>, String> {
+    let Some(raw) = args.get("model").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let name = raw.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if SPAWN_MODELS.contains(&name.as_str()) {
+        return Ok(Some(name));
+    }
+    Err(format!(
+        "{raw:?} is not a model this wall can open a card on, so none was opened. It \
+         takes {}, and nothing else — an alias, a full id or a tier suffix is not one of \
+         them. Leave `model` out to open the card on whatever Claude Code is set up for \
+         here.",
+        SPAWN_MODELS.join(", ")
+    ))
+}
+
 #[derive(Clone, Serialize)]
 struct SpawnAsked {
     /// The id the wall must use, so the handle in the receipt is the handle of
@@ -292,6 +347,11 @@ struct SpawnAsked {
     prompt: String,
     /// What to call it until it has named itself, or null.
     title: Option<String>,
+    /// Which model family it is opened on — one of [`SPAWN_MODELS`], or null
+    /// for none named. Validated here so the wall is handed a word it knows;
+    /// what that word costs in effort and window is `presets.ts`'s table, and
+    /// deliberately not this side's business. See [`asked_model`].
+    model: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -316,6 +376,15 @@ pub fn spawn_schema() -> Value {
              need in order to carry on. Use this for work that is genuinely a separate job — \
              a second feature, a long migration, an investigation that should not be \
              interleaved with yours.\n\n\
+             **Fanning out work that *writes* means cards, not subagents**, and this is the \
+             line that gets crossed by reflex. Reconnaissance is a subagent's shape: it \
+             answers a question, you need the answer to carry on, and it is over. Building \
+             is not — four features in four `general-purpose` subagents is four editors in \
+             your working tree that the user cannot see, cannot talk to, cannot stop, and \
+             whose work you have to summarise for them because the transcripts die with \
+             your turn. The same four as cards are four things on the wall, each with its \
+             own context and its own history, any of which can be read or redirected \
+             mid-flight. So: a question goes to `Agent`, a piece of the job goes here.\n\n\
              It costs the user money and attention without asking, so treat it as you would \
              a broadcast. **Tell them you are opening a card, and why, before or in the same \
              reply.** Two or three is a decomposition; eight is a fan-out nobody asked for.\n\n\
@@ -379,6 +448,31 @@ pub fn spawn_schema() -> Value {
                         "Optional. What to call the card until it names itself — a few \
                          words, so the user can tell your cards apart at a glance on the \
                          wall."
+                },
+                "model": {
+                    "type": "string",
+                    "enum": SPAWN_MODELS,
+                    "description":
+                        "Optional. Which model the card runs on — and **this is the one \
+                         knob on this tool that costs or saves real money**, so spend a \
+                         moment on it rather than leaving it off out of habit. You are \
+                         the thing that divided the job up, so you know which pieces are \
+                         small.\n\n\
+                         - `haiku` — a lookup, a rename, a file to summarise, a mechanical \
+                           edit you have already specified completely.\n\
+                         - `sonnet` — ordinary work: a small feature, a fix with its test, \
+                           a change across a few files. Where most cards belong.\n\
+                         - `opus` — design, a migration, a bug that has already resisted \
+                           one attempt, anything where being wrong is expensive.\n\n\
+                         Each name brings a thinking effort and a context window chosen to \
+                         go with it, so you are picking a whole setup rather than a bare \
+                         model. Omit it and the card opens on whatever Claude Code is \
+                         configured for on this machine, which is one setting doing duty \
+                         for a one-line question and a day-long refactor alike — it is \
+                         never *wrong*, but it is a guess where you have knowledge.\n\n\
+                         It cannot be changed cheaply afterwards: `/model` on a card that \
+                         has already spent a context on its opening prompt is a new card \
+                         in all but name, so the decision is now or not at all."
                 }
             },
             "required": ["prompt"]
@@ -1027,6 +1121,14 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         .and_then(Value::as_str)
         .map(|t| clip(t.trim(), MAX_TITLE))
         .filter(|t| !t.is_empty());
+    /* Before the store is touched and long before an id is minted, for the
+       reason a misnamed project is resolved early: an agent correcting a word is
+       not an agent fanning out, and nothing should be written down about a card
+       that was never opened. */
+    let model = match asked_model(args) {
+        Ok(m) => m,
+        Err(why) => return why,
+    };
 
     let Some(store) = app.try_state::<Store>() else {
         return "the store is unavailable".into();
@@ -1152,6 +1254,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
             worktree: worktree.clone(),
             prompt,
             title: title.clone(),
+            model: model.clone(),
         },
     );
 
@@ -1159,6 +1262,18 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
     let called = match &title {
         Some(t) => format!(" It is called {t:?} until it names itself."),
         None => " It will name itself from its first turn.".into(),
+    };
+    /* Said back rather than assumed, and said in the case where nothing was
+       named too. A model that did not arrive is indistinguishable from one that
+       did until the card has run for a while — and the way it fails to arrive is
+       not a refusal but a *key* that missed (`"models"`, `"Model"`), which
+       `asked_model` never sees and therefore cannot answer. The receipt is the
+       only place that gap is visible from, and it is visible there for free. */
+    let on = match &model {
+        Some(m) => format!(" It runs on {m}."),
+        None => " You named no model, so it opens on whatever Claude Code is set up for on \
+                 this machine."
+            .into(),
     };
     /* Said out loud, because it is the one thing about a card opened here that
        the caller cannot see and has to act on: two agents in one checkout is
@@ -1193,7 +1308,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              nothing else of yours. Tell the user you have opened it and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, which takes a \
-             moment.{called}{sharing}{ate}"
+             moment.{called}{on}{sharing}{ate}"
         ),
         /* Said differently on purpose. A card in another repository is the one
            case where "it has the brief and nothing else" costs something real:
@@ -1209,7 +1324,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              be in the brief. Tell the user you have opened it, where, and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, and then only under \
-             `scope: \"skein\"`, since it is not in your project.{called}{ate}"
+             `scope: \"skein\"`, since it is not in your project.{called}{on}{ate}"
         ),
     }
 }
@@ -1655,6 +1770,118 @@ mod tests {
         /* Omitting it has to read as the normal case, or every spawn arrives
            carrying a project it did not need to name. */
         assert!(d.contains("Omit it and the card stands where you do"), "{d}");
+    }
+
+    /// The three names, and the one thing this side may not decide about them.
+    ///
+    /// Rust validates the word and the front end resolves what it costs
+    /// (`presets.ts`'s `presetForSpawn`), which is one table rather than two
+    /// that agree today. The seam is a name crossing an `emit`, so the way it
+    /// breaks is silent in the expensive direction: a fourth name added here
+    /// and not there is a card the agent believes it opened on that model, a
+    /// receipt that agrees, and a card actually running on the machine's own
+    /// setting. Nothing anywhere would say so.
+    ///
+    /// `test/presets.test.ts` holds the other end — it reads this array out of
+    /// this file and asserts the table resolves every one of them. This half
+    /// asserts the schema offers exactly what the validator accepts, since an
+    /// `enum` and a `contains` drifting apart is the same bug one step earlier.
+    #[test]
+    fn the_three_names_are_the_ones_the_wall_resolves() {
+        let e = spawn_schema()["inputSchema"]["properties"]["model"]["enum"].clone();
+        assert_eq!(e, json!(SPAWN_MODELS), "the schema offers what {SPAWN_MODELS:?} takes");
+        /* Cheapest first, because the order is the only thing in a list of
+           three that says they are a scale — `PRESETS`' own argument. */
+        assert_eq!(SPAWN_MODELS, ["haiku", "sonnet", "opus"]);
+        for name in SPAWN_MODELS {
+            assert_eq!(asked_model(&json!({ "model": name })), Ok(Some(name.into())));
+        }
+        /* The same intention, spelled by a model that has just read a heading. */
+        assert_eq!(asked_model(&json!({ "model": " Sonnet " })), Ok(Some("sonnet".into())));
+        /* Absent and empty are both "nobody said", which is a real answer and
+           not a failure — it is what every spawn did before this existed. */
+        assert_eq!(asked_model(&json!({})), Ok(None));
+        assert_eq!(asked_model(&json!({ "model": "  " })), Ok(None));
+    }
+
+    /// An unknown model refuses rather than falling back, and says what would
+    /// have worked.
+    ///
+    /// Falling back is the tempting arm and it is the expensive one: a
+    /// misspelled model quietly becoming "the machine's setting" is a card that
+    /// costs ten times what the parent budgeted, with the agent, the receipt and
+    /// the wall all agreeing it did not. The only place the truth appears is the
+    /// bill. So it is answered the way an unknown project is — `MAX_HOPS`'
+    /// lesson, since an agent told only "no" tries a different phrasing.
+    #[test]
+    fn a_model_this_wall_cannot_open_is_refused_with_the_list() {
+        let why = asked_model(&json!({ "model": "opus[1m]" })).unwrap_err();
+        /* The three, so the retry is the right one rather than another guess. */
+        for name in SPAWN_MODELS {
+            assert!(why.contains(name), "{why}");
+        }
+        /* What it got, quoted — an agent that cannot see which of two arguments
+           the wall objected to has to re-send both. */
+        assert!(why.contains("opus[1m]"), "{why}");
+        /* And the way out that is not a fourth guess at a name. */
+        assert!(why.contains("Leave `model` out"), "{why}");
+        /* A full id and a tier suffix are the two near-misses worth naming,
+           because both are things this wall's own `--model` really accepts
+           (`presets.ts`) — an agent that has read a preset row would otherwise
+           reasonably expect one here. */
+        assert!(why.contains("tier suffix"), "{why}");
+    }
+
+    /// The knob that costs money says so, and says what omitting it means.
+    ///
+    /// Both halves matter and the second is the one an enum cannot carry. A
+    /// model field with three values and no guidance is answered by whatever
+    /// word the agent last read; a model field that does not say what its
+    /// absence means is left off by habit, which is the state this arrived to
+    /// fix.
+    #[test]
+    fn the_model_field_says_what_it_costs_and_what_leaving_it_off_means() {
+        let d = spawn_schema()["inputSchema"]["properties"]["model"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        /* One sentence per name, so the choice is made against the work rather
+           than against a price list the agent has to remember. */
+        for name in SPAWN_MODELS {
+            assert!(d.contains(&format!("`{name}`")), "{d}");
+        }
+        assert!(d.contains("costs or saves real money"), "{d}");
+        /* The absence is a real branch and has to read as one. */
+        assert!(d.contains("Omit it"), "{d}");
+        /* And that it cannot be undone cheaply, which is what makes this a
+           decision rather than a default to be revisited. */
+        assert!(d.contains("/model"), "{d}");
+    }
+
+    /// Fanning out work that *writes* is the reflex this tool has to catch, and
+    /// the description is the only thing in a position to.
+    ///
+    /// The tool sits in `ask::roster`'s deferred tier, so nothing about it is in
+    /// front of an agent until the agent goes looking — and an agent dividing a
+    /// job into four does not go looking, because `Agent` is already loaded and
+    /// already answers. Promoting it is not available: the loaded tier is a
+    /// hair under its 25KB budget and this schema is several KB. So what is left
+    /// is the search hint (which is where "fan out the building work" went) and
+    /// this paragraph, which is what the agent reads the moment the hint works.
+    ///
+    /// It draws the line at *writing* rather than at size, because size is the
+    /// cut an agent will argue itself across and the shape is not: a
+    /// reconnaissance answer is needed to carry on and a built feature is not.
+    #[test]
+    fn the_description_sends_work_that_writes_to_a_card() {
+        let d = spawn_schema()["description"].as_str().unwrap().to_string();
+        assert!(d.contains("work that *writes* means cards, not subagents"), "{d}");
+        /* The named tool, because the reflex is a specific call and a paragraph
+           about "subagents" in the abstract does not interrupt one. */
+        assert!(d.contains("general-purpose"), "{d}");
+        /* And the reason, which is the half that survives an agent deciding the
+           rule does not apply to it: what the user can see and stop. */
+        assert!(d.contains("cannot see"), "{d}");
     }
 
     /// The brief says what the child gets, so it is the one place that can stop

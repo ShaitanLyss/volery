@@ -184,6 +184,75 @@ answer is the same: bound it, make it visible, and say what it cost.
   and spend a turn asking. Neither end was told anything, which is why this was found by a
   sentence stopping mid-word.
 
+### Which model it opens on
+
+For its whole first life every card an agent opened ran on **whatever Claude Code is
+configured for on this machine** — one setting standing in for a lookup and a day-long
+migration alike. That is the complaint the `+`'s right-click answers (`presets.ts`), arriving
+through the one door with no right-click, and it is worse here than at the `+`: the thing
+opening the card is the thing that *divided the job up*, so it knows which pieces are small
+and had no way to say so.
+
+`model` takes **three family names** — `haiku`, `sonnet`, `opus` — and nothing else.
+
+- **Families rather than preset ids.** The menu behind the `+` has five rows and their ids are
+  Skein vocabulary: an agent choosing between `read` and `bug` has to have read a file it has
+  never opened to know that one of them is a *window*. A model family is vocabulary the caller
+  already has, from the same knowledge that made it decide the piece was small.
+- **And families rather than a bare `--model`.** The word is resolved to a whole preset —
+  effort and window included — so `sonnet` is sonnet at a level somebody chose rather than at
+  whatever the CLI defaults to. That is the half an agent naming a raw model string would have
+  got wrong for free, and it keeps **one table**: change what `ordinary work` means and the
+  cards an agent opens change with it.
+- **Rust validates the word; the front end resolves what it costs.** `SPAWN_MODELS` is the
+  list and `asked_model` is the gate; `presets.ts`'s `presetForSpawn` is the table. The seam is
+  a name crossing an `emit`, so it breaks silently and in the expensive direction — a fourth
+  name at one end only is a card the agent believes it opened on that model, a receipt that
+  agrees, and a card running on the machine's setting. Both ends are held to the same array:
+  `the_three_names_are_the_ones_the_wall_resolves` reads the schema's `enum`, and
+  `test/presets.test.ts` reads `SPAWN_MODELS` **out of `spawn.rs` itself** rather than a
+  transcription of it.
+- **An unknown name refuses rather than falling back**, which is the one real decision in the
+  file. Falling back is the tempting arm: it always opens a card. It is also a card that costs
+  ten times what the parent budgeted for, with every surface agreeing it did not, and the only
+  place the truth appears is the bill. So it is answered the way an unknown project is — the
+  three names, the word that was rejected, and the way out that is not a fourth guess.
+- **Omitting it stays exactly what it was**, and is deliberately *not* the wall's default
+  preset. That setting answers "what does my `+` open", and a card an agent asked for is not a
+  card the user clicked for; quietly spending the dear end of the menu on every spawned card
+  would be the one change here nobody chose.
+- **The receipt says what it opened on, including when nothing was named.** The way a model
+  fails to arrive is not a refusal — `asked_model` never sees a *key* that missed (`"Model"`,
+  `"models"`), so there is nothing for it to answer. The receipt is the only place that gap is
+  visible from, and it is visible there for nothing.
+- **It is resolved on the way in and then holds.** The preset goes onto the row, not into the
+  spawn call, so `store::setup_of` hands it back at every wake — a card an agent opened on
+  haiku comes back on haiku next month. Same argument as `kind`, `worktree` and the rest: the
+  one caller who would have had to remember is `wake`.
+
+### And why building fans out to cards rather than to subagents
+
+The tool has always said it is not a subagent. What it did not say, and what agents crossed by
+reflex, is where the line falls: **reconnaissance is a subagent's shape and building is not.**
+
+A read-only trace answers a question, the answer is needed to carry on, and it is over — which
+is exactly `supervisor::agents`' `scout`, shipped by the wall for the same cost reasons. Four
+features in four `general-purpose` subagents is a different thing wearing the same gesture:
+four editors in one working tree that the user cannot see, cannot talk to, cannot stop, and
+whose transcripts die with the parent's turn, so everything they did reaches the user only as
+the parent's summary of it. The same four as cards are four things on the wall.
+
+The description says so in those words, and a test holds it there, because **nothing else is in
+a position to say it.** `spawn` sits in `ask::roster`'s deferred tier: nothing about it reaches
+an agent until the agent goes looking, and an agent dividing a job into four does not go
+looking — `Agent` is already loaded and already answers. Promoting it is not available either,
+the loaded tier being a hair under its 25KB budget with a schema several KB wide. So the two
+places that can reach the reflex are the **search hint** (which is why it now carries "fan out
+the building work" and "spawn several agents to implement") and this paragraph, which is what
+gets read the moment the hint works. A wall whose standing instructions route read-only work to
+`scout` should say in the same breath where the writing work goes, or the sentence that names
+the catch-all subagent is the only one there.
+
 ### Rust decides; the wall opens
 
 `Skein.#openIn` is the one correct way a card comes into being: ensure the project, write the
