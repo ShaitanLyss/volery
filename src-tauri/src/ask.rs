@@ -1993,6 +1993,32 @@ mod tests {
     /// its point removed. The price was quoted before it was agreed: ~520 tokens
     /// on every spawn and every wake, permanently.
     ///
+    /// **Raised to 26KB on 2026-09-18, once, deliberately, and by the user.**
+    /// Same bar, and a different kind of spend: nothing was added to the roster
+    /// at all. `4ff85f3` annotated six already-loaded tools `readOnlyHint`, and
+    /// `,"annotations":{"readOnlyHint":true}` is 36 bytes apiece — 216 together,
+    /// which took a tier sitting at 24,911 to 25,127. The price was quoted
+    /// before it was agreed: ~54 tokens on every spawn and every wake,
+    /// permanently.
+    ///
+    /// What those tokens buy is not a feature but the removal of a lie. Without
+    /// the annotation those six tools are *offered* to a planning card,
+    /// described to it, and then refused at the moment it reaches — see
+    /// `reads_only`, where the probe is. So the question this budget exists to
+    /// force — "does a card have to know this exists without being told?" — was
+    /// already answered yes for all six, by whoever made them `always`. There
+    /// was no deferring available to pay for it, and shaving 127 bytes off a
+    /// description would have tuned the tier to ~24,990, which is the thing the
+    /// paragraph above says not to build.
+    ///
+    /// **It was the tag that found this, not a commit.** `cargo test` does not
+    /// run on the machine this is developed on (`.claude/rules/build.md`), and
+    /// the scheduled build gated out the day between, so `4ff85f3` reached a
+    /// release tag before anything had ever compiled it. That is the arrangement
+    /// working as designed rather than a miss — but it is worth knowing that the
+    /// feedback on a Rust assertion here is a *release*, and to read one that
+    /// goes red before assuming the tree is fine.
+    ///
     /// That this happened at all is the budget working. What it must not become
     /// is a number that moves whenever it is inconvenient — so the bar for the
     /// next raise is the bar this one met: somebody names the tokens it costs
@@ -2005,7 +2031,7 @@ mod tests {
             .collect();
         let bytes = json!(loaded).to_string().len();
         assert!(
-            bytes < 25_000,
+            bytes < 26_000,
             "the loaded tier is {bytes} bytes of schema on every spawn of every \
              card — see ask::roster, and ask whether the new tool is one a card \
              must know exists without being told"
