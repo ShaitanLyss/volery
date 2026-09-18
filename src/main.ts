@@ -37,6 +37,49 @@ fitNerdSymbols();
    the devtools shortcut still work. */
 window.addEventListener("contextmenu", (e) => e.preventDefault());
 
+/* And no drag ever starts *inside* the webview, which is not a preference — it
+   is the one gesture that takes the whole window's input away.
+
+   Selecting a word in the transcript arms it: the next press on that selection
+   plus a pixel of travel is an HTML5 text drag, and on Windows that drag has
+   nowhere to go. Tauri's drop support (`dragDropEnabled`, on by default and the
+   whole of how a folder becomes a card and an image lands on the wall) is
+   implemented in wry by walking the WebView2 child windows, calling
+   `RevokeDragDrop` on each and registering an `IDropTarget` of its own
+   (wry 0.55.1, `src/webview2/drag_drop.rs`). That target understands exactly
+   one clipboard format, `CF_HDROP` — a list of file paths. Anything else and
+   `DragEnter` returns `S_OK` having set neither `enter_is_valid` nor
+   `*pdwEffect`, and `Drop` never writes `*pdwEffect` at all.
+
+   So a text drag is a drag whose source is Chromium and whose target was taken
+   out from under it: `DoDragDrop` is a modal loop that owns the mouse and the
+   keyboard for as long as it runs, and it is handed back a result nobody on
+   either end agrees about. What that looks like from the room is the bug as
+   reported — the wall still paints, cards still tick, the backdrop still
+   drifts, and not one click or keypress reaches anything.
+
+   Refusing `dragstart` costs this app nothing, which is the reason it is the
+   fix rather than turning `dragDropEnabled` off. **Volery contains no HTML5
+   drag-and-drop.** Every drag it answers is pointer events — the wall, the
+   panel grip, widgets, images, and Kanban's columns, which chose pointer events
+   on their own argument (see `.claude/rules/asana.md`). And every drop it
+   accepts is an OS file drag delivered by `onDragDropEvent`, which fires no DOM
+   drag event on any element whatsoever — App.svelte's `dropTargetAt` exists
+   precisely because nothing under the cursor is ever told it is being hovered.
+   The two `draggable="false"` attributes in `Browser.svelte` and
+   `ImageNode.svelte` were this same bug met twice and answered locally; this is
+   that answer stated once, for every element there is.
+
+   Read off wry's source rather than probed against the running app: this
+   machine has no MSVC toolchain, so nothing here can build or drive the window
+   (`.claude/rules/build.md`).
+
+   Capture phase, so it lands before anything that might want to stop
+   propagation. It reaches this document only — an `ask` mockup renders in an
+   iframe with a document of its own, so agent-authored markup that sets
+   `draggable` is still able to arm this. Nothing has yet. */
+window.addEventListener("dragstart", (e) => e.preventDefault(), true);
+
 export default mount(isPeek ? Peek : App, {
   target: document.getElementById("app")!,
 });
