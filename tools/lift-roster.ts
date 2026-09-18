@@ -149,7 +149,18 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
   { file: "src-tauri/src/limits.rs", items: ["const ALLOWANCE_TOOL", "fn allowance_schema"] },
   {
     file: "src-tauri/src/spawn.rs",
-    items: ["const SPAWN_TOOL", "const CLOSE_TOOL", "fn spawn_schema", "fn close_schema"],
+    /* `SPAWN_MODELS` is read by `spawn_schema`'s `enum`, so it is lifted with
+       it. Added 2026-09-18 for the same reason as `ask.rs`'s `reads_only` one
+       block down: `6fec05d` introduced it and left this list alone. Two
+       consecutive commits rotted this lift and neither build noticed, because
+       nothing runs it but `bun run lifts`. */
+    items: [
+      "const SPAWN_TOOL",
+      "const SPAWN_MODELS",
+      "const CLOSE_TOOL",
+      "fn spawn_schema",
+      "fn close_schema",
+    ],
   },
   {
     file: "src-tauri/src/servers.rs",
@@ -217,6 +228,11 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "fn option_schema",
       "fn tool_schema",
       "fn always",
+      /* Used by `roster` and therefore declared before it. Added 2026-09-18,
+         after `4ff85f3` introduced it and left this list alone: the lift went
+         red on `cannot find function reads_only`, which is loud, but nothing
+         runs it on a gate — `bun run lifts` is the only thing that does. */
+      "fn reads_only",
       "fn found_by",
       "fn roster",
       "fn mcp_config",

@@ -66,6 +66,9 @@ const ITEMS = [
   "const BOUNDARY_FLOOR",
   "fn clip_brief",
   "const SPAWN_TOOL",
+  /* Read by `spawn_schema`'s `enum`. Added 2026-09-18, the same omission as in
+     `lift-roster.ts`: `6fec05d` introduced it and updated neither list. */
+  "const SPAWN_MODELS",
   "fn spawn_schema",
 ];
 
