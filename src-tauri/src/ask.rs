@@ -183,11 +183,21 @@ pub fn client_timeout_ms() -> u64 {
 /// argument that put the guidance and the roster paragraph behind one
 /// `system_prompt` seam puts both servers behind this one function.
 ///
-/// `shared_browser` is `None` when no browser is running and on a chat card,
-/// which has no business reaching one (`chat.md`). Both cases must agree with
-/// what `supervisor::append_prompt` was told, or the card is handed a paragraph
-/// about tools it does not have — see `browser::mcp_server` for what that
-/// already cost once.
+/// `shared_browser` is `None` on a chat card, which has no business reaching
+/// one (`chat.md`), and `Some` on every other card — **including one spawned
+/// onto a wall with no browser running**, which is the change. It used to
+/// depend on whether a Chrome happened to be up at that instant, and the card
+/// that lost that coin flip could not be given the tools afterwards at any
+/// price. The address is a constant (`browser::address`), so the entry can be
+/// written whatever the weather, and `@playwright/mcp` does not dial it until
+/// the first tool call — measured, in that function's doc.
+///
+/// It must still agree with what `supervisor::append_prompt` was told, and that
+/// is why `spawn_now` takes one reading and passes it to both rather than each
+/// asking. A card handed a paragraph about tools it does not have is sink
+/// `b6bfecba`, and the guard is worth keeping even now that the reading has
+/// only one input — a condition with one input today is a condition with two
+/// next year.
 ///
 /// `timeout` is not a second copy of `MCP_TOOL_TIMEOUT` above, and reading it
 /// as one is what let a question die at five minutes with the hard deadline set
@@ -1394,6 +1404,39 @@ fn respond(req: tiny_http::Request, mut body: Value) {
     let _ = req.respond(tiny_http::Response::from_string(data).with_header(header));
 }
 
+/// The one route on this listener that is not MCP: start the shared browser.
+///
+/// **A hook is a process, and a process cannot start a browser this app is
+/// allowed to own.** The lazy browser needs something in front of a card's
+/// first `mcp__browser__*` call to put a Chrome up, and the only thing standing
+/// there is the `PreToolUse` hook (`hooks::reply`) — which is a short-lived
+/// child of the card, not of Volery. If *it* spawned Chrome, the Chrome would
+/// be a child of a process that exits immediately: outside Volery's job object,
+/// unreaped when the wall closes, invisible to the widget, and unknown to
+/// `browser_stop`. That is the orphan `CLAUDE.md` describes as "the one that did
+/// not was the biggest", built on purpose.
+///
+/// So the hook asks, and Volery does it. This listener is what the hook can
+/// reach: it is already bound, already on loopback, already addressed to this
+/// wall, and its port is already being written into the card's own argv — so
+/// carrying it one flag further costs nothing and invents no second channel.
+///
+/// Not under `/mcp/`, and the path is checked before `conversation_of` runs,
+/// because that function reads the *last* segment as a conversation id and
+/// would cheerfully report this one as a card called `wake`.
+///
+/// **It names no card and is not authenticated**, which is worth stating rather
+/// than leaving to be noticed. Every other route on this listener carries a
+/// conversation id; this one has nothing to correlate — the browser is the
+/// wall's, there is one of it, and starting it is the same act whoever asked.
+/// So any process on this machine can cause a ~450 MB Chrome to start. The
+/// listener was already loopback-only and already unauthenticated, and CDP on
+/// 9222 is reachable by anything local regardless, so this widens nothing that
+/// was not already open — but it is the first route here whose side effect
+/// costs memory, and a second one should not be added on the strength of this
+/// one existing.
+pub const WAKE_PATH: &str = "/browser/wake";
+
 /// Bind on an ephemeral loopback port and serve until the process exits.
 /// Returns the port so `spawn_conversation` can point `--mcp-config` at it.
 pub fn start(app: AppHandle) -> Result<u16, String> {
@@ -1414,6 +1457,28 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
             std::thread::spawn(move || {
                 if req.method() != &tiny_http::Method::Post {
                     let _ = req.respond(tiny_http::Response::empty(405));
+                    return;
+                }
+
+                /* Before the body is read and before the url is read as a card,
+                   because this one is neither. Blocking here for the length of
+                   a Chrome start is exactly right and is why the thread-per-
+                   request above exists — a parked question already holds one
+                   for up to ten minutes, so a browser coming up is the cheap
+                   case. The reason travels in the body of a 503 so the hook can
+                   put Volery's own words in front of the model rather than
+                   playwright's `ECONNREFUSED`. */
+                if req.url().split('?').next().unwrap_or_default() == WAKE_PATH {
+                    match crate::browser::ensure_running(&app) {
+                        Ok(()) => {
+                            let _ = req.respond(tiny_http::Response::empty(204));
+                        }
+                        Err(e) => {
+                            let _ = req.respond(
+                                tiny_http::Response::from_string(e).with_status_code(503),
+                            );
+                        }
+                    }
                     return;
                 }
 

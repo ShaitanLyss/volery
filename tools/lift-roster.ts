@@ -271,6 +271,13 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "fn system_prompt",
     ],
   },
+  /* `append_prompt` prints the browser tool prefix and does not own it — the
+     constant lives beside the hook that routes on it, so the paragraph and the
+     wake cannot drift apart (`hooks::BROWSER_PREFIX`). Lifted rather than
+     stubbed for the reason every borrowed item here is: a copy spelled by hand
+     would make the assertion about this file's idea of the name instead of the
+     one a card is actually given. */
+  { file: "src-tauri/src/hooks.rs", items: ["const BROWSER_PREFIX"] },
 ];
 
 /** The assertions, per file. Helpers first — they are declared inside the test

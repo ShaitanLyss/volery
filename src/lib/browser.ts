@@ -411,6 +411,34 @@ export function normalizeMode(m: unknown): Mode {
  *  shown for a sign-in and parked again afterwards. */
 export type Standing = { running: boolean; mode: Mode; onDesktop: boolean };
 
+/** What the widget says when there is no browser, and what the button means.
+ *
+ *  **"the browser is not running" stopped being the whole truth**, and the half
+ *  it was missing is the half that matters to somebody deciding whether to
+ *  press anything. It used to mean two things at once — there is nothing to
+ *  look at, *and* no card on this wall can drive a browser — and the second was
+ *  the one that made the button feel obligatory. Only the first is true now: a
+ *  card's first `mcp__browser__*` call starts one by itself, so the tools are
+ *  there whether or not this says so.
+ *
+ *  So the line says what the state is *for*, not merely what it is. A widget
+ *  that went on reporting "not running" beside a card happily driving a page
+ *  would read as the widget being broken; one that said "no browser — agents
+ *  cannot test UI" would be plainly false. And the button is not made
+ *  decorative by any of it, which is why it keeps its verb: it is how you get a
+ *  browser to *look at* before an agent has asked for one, and how you pay the
+ *  ~450 MB now rather than in the middle of a turn you are reading.
+ *
+ *  `coming` covers both a press of this window's own button and the launch
+ *  auto-start, which may have been in flight before this widget existed. Both
+ *  mean the same thing to a person, and neither should be offered a start — a
+ *  second Chrome on the same port is the failure that reads as "the browser is
+ *  broken".
+ */
+export function idleWord(coming: boolean): string {
+  return coming ? "starting the browser…" : "not running — a card's first browser tool starts it";
+}
+
 /** Whether the widget may offer to put the browser back on the desktop.
  *
  *  Only when there is a window to give and it is not already there: headless

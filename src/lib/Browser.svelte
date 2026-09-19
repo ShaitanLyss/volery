@@ -34,6 +34,7 @@
     toPage,
     canPark,
     canShowWindow,
+    idleWord,
     MODES,
     MODE_NOTE,
     type FrameMeta,
@@ -222,18 +223,18 @@
     pane.starting ? "pending" : !pane.status.running ? "idle" : subject ? "live" : "rest",
   );
 
-  /* `pane.starting` is this window's own press; `status.starting` is the launch
-     auto-start, which may have been in flight before this widget existed. Both
-     mean the same thing to a person and neither should offer a start button —
-     a second Chrome on the same port is the failure that reads as "the browser
-     is broken". */
+  /* `pane.starting` is this window's own press; `status.starting` is a start
+     somebody else began — the launch auto-start, or a card's first browser tool
+     waking one through the hook. Both mean the same thing to a person and
+     neither should offer a start button; the wording and the rest of the
+     reasoning are `idleWord`'s. */
   const coming = $derived(pane.starting || pane.status.starting);
 
   const down = $derived(
     pane.status.running
       ? null
       : {
-          word: coming ? "starting the browser…" : "the browser is not running",
+          word: idleWord(coming),
           verb: coming ? null : "start",
           press: () => void pane.start(),
         },

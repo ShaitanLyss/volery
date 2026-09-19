@@ -61,6 +61,7 @@ import type { Shell } from "./shell.svelte";
 import type { Finder } from "./finder.svelte";
 import type { Leader } from "./leader.svelte";
 import type { Editor } from "./nvim.svelte";
+import type { Pane } from "./pane.svelte";
 import { fuses, keyOf } from "./dogears";
 import type { Bang } from "./bang.svelte";
 import {
@@ -133,6 +134,10 @@ export type ControlHost = {
    *  nvim running with unsaved buffers in it, and from outside a panel showing
    *  a file and an editor holding one look identical. */
   editor: Editor;
+  /** The shared browser, for its listener count alone. It holds one
+   *  subscription (`browser:changed`), and `CLAUDE.md`'s rule is that a
+   *  subscription nothing can see from outside is a leak nothing can catch. */
+  pane: Pane;
   canvas: () =>
     | {
         toCanvas(x: number, y: number): { x: number; y: number };
@@ -1043,6 +1048,7 @@ export class Control {
         shell: h.shell.listenerCount,
         bang: h.bang.listenerCount,
         editor: h.editor.listenerCount,
+        pane: h.pane.listenerCount,
       },
       /* The panel and the session are two facts, and the whole shape of this
          thing is that closing one does not end the other. The flat fields are

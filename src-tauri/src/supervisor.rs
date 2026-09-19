@@ -63,6 +63,12 @@ fn chat_argv(cmd: &mut Command) {
 /// `mcp__skein__board`.
 pub(crate) const MCP_PREFIX: &str = "mcp__skein__";
 
+/// The other family this prompt names, borrowed rather than spelled a second
+/// time. `hooks::BROWSER_PREFIX` is where it lives, because the hook that
+/// routes on it is the thing that would break silently if the two drifted — and
+/// the paragraph below is the only other place the name appears.
+use crate::hooks::BROWSER_PREFIX;
+
 /// The `--append-system-prompt` every card is spawned with.
 ///
 /// Every word here is paid for on every spawn of every card, so what is here is
@@ -145,12 +151,19 @@ pub(crate) const MCP_PREFIX: &str = "mcp__skein__";
 ///
 /// `shared_browser` is the same question about a different server, and it is
 /// asked here for the same reason: `spawn_now` puts the `browser` entry in the
-/// `--mcp-config` only when one is running and the card is not a chat card, and
-/// this is the flag that keeps the prose from claiming otherwise. It must be
-/// the *same reading* the config was built from rather than a second look at
-/// `browser::endpoint` — a browser stopped between the two would be a card told
-/// it has tools it was never given, which is sink `b6bfecba` reintroduced by a
-/// race instead of by a missing feature.
+/// `--mcp-config` for every card that is not a chat card, and this is the flag
+/// that keeps the prose from claiming otherwise. It must be the *same reading*
+/// the config was built from rather than a second look of its own — which used
+/// to be the whole point, since a browser stopped between the two would have
+/// been a card told it has tools it was never given, sink `b6bfecba`
+/// reintroduced as a race.
+///
+/// That race is gone: the reading no longer depends on anything that can change
+/// between one line and the next, only on whether this is a chat card. The flag
+/// is kept anyway, and deliberately. What it defends is not the old race but the
+/// invariant behind it — **the paragraph and the config are one decision** — and
+/// a condition with one input today is a condition with two the next time
+/// somebody has a reason to withhold the browser from some other kind of card.
 fn system_prompt(
     chat: bool,
     ask: bool,
@@ -599,38 +612,52 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
            it has neither browser and telling it about them would be an
            instruction to try something it will be refused. See `chat.md`.
 
-           **And the absent case is said out loud, which is the other half of
-           the report.** Volery does not start the browser by itself and never
-           will — ~450 MB for a wall that may never open one (`browser.md`) —
-           and an MCP server's arguments are settled at spawn, so a card opened
-           before the start button was pressed cannot be given these tools
-           without being woken again. Saying nothing there would leave a card
-           asked for a UI check exactly where `b6bfecba` found it: unable to
-           distinguish "no shared browser on this wall" from "not wired to me",
-           and therefore unable to complain precisely — which is the whole of
-           what the standing instruction *only use the volery browser tools for
-           UI testing, if you can't, complain about it* asks of it. Twenty-odd
-           words, and on a wall with no browser running they replace eighty. */
-        prompt.push_str(&if shared_browser {
-            format!(
-                "\n\n`mcp__browser__*` is the shared Chrome this studio owns — one \
+           **There used to be an absent case, and its disappearance is the
+           change.** This paragraph had a second arm, eighty words long, telling
+           a card that the shared browser was not running, that it therefore had
+           no `mcp__browser__*` at all, and that it could not be given any until
+           it was woken again. Every word of that was true and it was the right
+           thing to say, because saying nothing would have left a card asked for
+           a UI check exactly where `b6bfecba` found it — unable to distinguish
+           "no shared browser on this wall" from "not wired to me", and so unable
+           to complain precisely, which is the whole of what the standing
+           instruction *only use the volery browser tools for UI testing, if you
+           can't, complain about it* asks of it.
+
+           It is gone because the condition is gone. The tools are on every
+           project card whatever the browser is doing, and the first call to one
+           starts a Chrome in front of itself (`hooks::wake_browser`). A card
+           that cannot have a browser — no Chrome on the machine, a port already
+           held — still finds out, and finds out *better*: at the moment it asks,
+           in a refusal that names the reason, rather than as a standing claim in
+           a prompt written before anybody knew whether it would matter.
+
+           **What replaced it is one clause about latency**, and it is here
+           rather than in the tool result for a reason worth keeping. The first
+           call on a sleeping wall takes a second or two longer than the rest,
+           and that is exactly the shape an agent misreads as a hang and works
+           around — by retrying, by reaching for the other browser family, or by
+           telling the user the tool is broken. A sentence *before* the wait
+           costs eleven words on every card and forecloses all three; the same
+           information after the wait would arrive too late to be worth
+           anything. It does not promise a figure, because ~450 MB of Chrome on
+           a cold profile is not a number this paragraph can honour. */
+        if shared_browser {
+            prompt.push_str(&format!(
+                "\n\n`{BROWSER_PREFIX}*` is the shared Chrome this studio owns — one \
                  session every card sees and the user can watch, so never sign it \
-                 out or clear its cookies. Any other browser server here is your \
-                 own; use that when you need a different login or to clear state \
-                 as you go. **Neither promises you a signed-in session.** Both \
-                 usually carry the user's own sign-ins, so a login page means the \
-                 seeding did not cover that site rather than that something is \
-                 broken — ask with `{MCP_PREFIX}ask_user` rather than improvising \
+                 out or clear its cookies. It is started on demand, so if nothing \
+                 is up your first call to one of these tools takes a second or two \
+                 longer while a browser is made; that is expected and is not a \
+                 fault to work around. Any other browser server here is your own; \
+                 use that when you need a different login or to clear state as you \
+                 go. **Neither promises you a signed-in session.** Both usually \
+                 carry the user's own sign-ins, so a login page means the seeding \
+                 did not cover that site rather than that something is broken — \
+                 ask with `{MCP_PREFIX}ask_user` rather than improvising \
                  credentials."
-            )
-        } else {
-            "\n\nThe studio's shared browser is not running, so this card has no \
-             `mcp__browser__*` tools and cannot be given them until it is woken \
-             again. If you are asked to look at a UI, say that rather than \
-             quietly driving some other browser: starting it is a button on the \
-             browser widget, and it is the session the user can watch."
-                .to_string()
-        });
+            ));
+        }
 
         /* **This paragraph exists because the prompt already contains a
            confident wrong answer, and no schema can rebut it.**
@@ -1124,9 +1151,20 @@ fn spawn_now(
        with nobody watching. A chat card is never locked and never needs to be —
        it has no file tool to deny. */
     let locked = !chat && crate::store::read_only_of(&app.state::<crate::store::Store>(), &id);
+    /* Read here rather than at its other use further down, because the settings
+       layer is built first and the hook needs it: this is the address a
+       `mcp__browser__*` call reaches back on to have the browser started before
+       it is dialled. One port, two consumers — the `--mcp-config` below and the
+       hook's argv — and reading it once is what keeps them the same port. */
+    let ask_port = app.state::<crate::ask::Asks>().port();
     cmd.args([
         "--settings",
-        &crate::hooks::settings(chat, Some((id.as_str(), studio.as_path())), locked),
+        &crate::hooks::settings(
+            chat,
+            Some((id.as_str(), studio.as_path())),
+            locked,
+            ask_port,
+        ),
     ]);
 
     /* A credential the user has agreed this card may hold, put where a script
@@ -1224,35 +1262,53 @@ fn spawn_now(
        takes a string, and a string in the environment is one a shell expansion
        reaches without a round trip. Same argument as `SKEIN_CARD` one line up.
 
-       Set only while a browser is actually running, and that is the whole
-       reason it is `Option`: an empty variable would read as an endpoint to a
-       card checking whether the variable exists, and it would connect to
-       nothing. A card spawned before the browser started does not have it —
-       which is honest, since at that moment there was nowhere to connect. */
-    let shared_browser = crate::browser::endpoint(app);
-    if let Some(endpoint) = &shared_browser {
-        cmd.env("VOLERY_CDP_ENDPOINT", endpoint);
-    }
+       **Set on every card now, where it used to be set only while a browser was
+       actually running.** The old rule was defensible — an empty variable would
+       read as an endpoint to anything checking whether it exists — but what it
+       was really encoding was a guess about the future made at spawn, and the
+       port is a constant, so the address is right whether or not anything is
+       listening this second. Its meaning narrows accordingly: it is *where* the
+       wall's browser is, not a promise that one is up. A card that wants it up
+       calls a `mcp__browser__*` tool, which starts one (`hooks::wake_browser`);
+       `connectOverCDP` against a browser nobody has woken still refuses, and
+       that is the one rough edge this change leaves — an environment can only be
+       written at spawn, so there is no version of this variable that could
+       carry the wake with it. See `.claude/rules/browser.md`. */
+    let shared_browser = crate::browser::address();
+    cmd.env("VOLERY_CDP_ENDPOINT", &shared_browser);
 
-    /* And the same fact as a *tool set*, which is the half that was missing.
-       One reading, used three times — the variable above, the `browser` server
-       in the `--mcp-config` below, and whether `append_prompt` may claim the
-       family exists — so a card cannot be handed any two of the three and not
-       the third. That coherence is the actual fix for sink `b6bfecba`: the
-       endpoint said a browser was there and the tools were not, and nothing on
-       either side could say why.
+    /* And the same fact as a *tool set*. One reading, used three times — the
+       variable above, the `browser` server in the `--mcp-config` below, and
+       whether `append_prompt` may claim the family exists — so a card cannot be
+       handed any two of the three and not the third. That coherence is the
+       actual fix for sink `b6bfecba`: the endpoint said a browser was there and
+       the tools were not, and nothing on either side could say why.
 
        Not on a chat card, which spawns `--tools WebSearch,WebFetch` and
        `--strict-mcp-config` precisely so it can reach nothing on this machine;
        a browser is the largest thing it could be handed. `chat.md`.
 
-       **A card spawned before the browser started still has neither**, and that
-       is not a bug that survived — an MCP server's arguments are settled at
-       spawn and cannot be renegotiated (`browser.md`), so there is no injecting
-       this into a card already running. What changed is that the card is now
-       *told*, in as many words, rather than being told the opposite. Waking it
-       is a spawn, so a rouse picks the tools up. */
-    let card_browser = shared_browser.as_deref().filter(|_| !chat);
+       **And that is now the only thing it depends on.** It used to also depend
+       on a browser being up at this instant, so a card opened onto a sleeping
+       wall got no browser tools and — an MCP server's arguments being settled at
+       spawn — could not be given any without being woken again. The honest
+       answer at the time was to *tell* it so, which is what the paragraph's
+       other arm did. The answer now is that there is no gap: the tools are
+       there, and the browser arrives when one of them is first called.
+
+       **`ask_port != 0` is belt to `system_prompt`'s braces, not a fix.** With
+       no ask server there is no `--mcp-config` at all (the `if` below), so the
+       card gets no `browser` server — and `append_prompt` is not called either,
+       because `system_prompt` only reaches it when `ask` is true, which is this
+       same condition. So the two already agree and no card has ever been told
+       about a browser it did not get. What this buys is that `card_browser`
+       means *what the card was actually given* on its own terms, rather than by
+       a coincidence of how another function is gated: the variable is read
+       three lines down and forty lines down, and neither reader should have to
+       go and check `system_prompt`'s body to know whether it is telling the
+       truth. `hooks::settings` applies the identical guard for the identical
+       reason, one argument over. */
+    let card_browser = (!chat && ask_port != 0).then_some(shared_browser.as_str());
 
     /* Which subscription this card spends. `CLAUDE_SECURESTORAGE_CONFIG_DIR`
        selects the credential store and *only* the store — `CLAUDE_CONFIG_DIR`
@@ -1326,8 +1382,8 @@ fn spawn_now(
     }
 
     /* Hand the agent a way to ask us something. The URL carries the
-       conversation id, so a call arrives already addressed to a card. */
-    let ask_port = app.state::<crate::ask::Asks>().port();
+       conversation id, so a call arrives already addressed to a card. The port
+       was read above, where the hook's argv needed it. */
     if ask_port != 0 {
         let cfg = crate::ask::mcp_config(ask_port, &id, card_browser);
         cmd.args(["--mcp-config", &cfg.to_string()]);
@@ -1722,8 +1778,11 @@ fn write_prompt(w: &mut impl Write, content: &[Block]) -> Result<(), String> {
 /// telling it whose.
 ///
 /// Errs when the card has no process. That is not a failure: it is the answer
-/// `do_send` turns into a queued row, so a dormant card is written to rather
-/// than woken.
+/// `do_send` turns into a queued row, and then — for a message addressed to one
+/// card by name — into a `relay:wake` the front end answers by spawning it. So
+/// a dormant card is written to *and* woken, and this function is still the
+/// thing that decides which by failing. The write itself happens once, in
+/// `relay::drain_inbox`, on the way back up through the spawn.
 ///
 /// **The two not-found messages were one message all along.** This said "that
 /// card is dormant" and `send_prompt` said "no open conversation {id}", and the
@@ -2706,20 +2765,37 @@ mod tests {
                 "an unsigned-in app is not routed to the user: {p}"
             );
 
-            /* And with no browser running: the family is named only to say it
-               is absent, and the card is told what to do instead. Both halves
-               are asserted, because a paragraph that merely went quiet would
-               leave the card exactly where `b6bfecba` found it — unable to tell
-               "not started" from "not wired to me", and therefore unable to
-               complain precisely. */
+            /* **The latency clause, asserted because it is the one thing here
+               that is load-bearing and reads as padding.** A card whose first
+               browser call takes two seconds longer than the rest, with nothing
+               having said it would, is a card that concludes the tool is hanging
+               — and then retries it, or reaches for the other browser family, or
+               reports it broken. The sentence costs eleven words and forecloses
+               all three, and it is exactly the sort of sentence a later edit
+               shortening this paragraph would take out first. */
+            assert!(
+                p.contains("started on demand") && p.contains("second or two"),
+                "the paragraph no longer warns that the first call starts a browser: {p}"
+            );
+
+            /* And a card that was **not** given the server says nothing about
+               it whatsoever.
+               This arm used to be the interesting one: it carried eighty words
+               telling a card the shared browser was not running and could not be
+               wired to it without a fresh spawn. That is gone, because the state
+               it described is gone — every project card holds the tools and the
+               first call starts the browser. What the arm now guards is the
+               invariant underneath it, which never changed: prose about a tool
+               the config did not carry is sink `b6bfecba`, whichever direction
+               the drift runs in. */
             let off = append_prompt(false, false, me.as_ref());
             assert!(
-                !off.contains("never sign it out"),
-                "a card with no shared browser was told how to treat one: {off}"
+                !off.contains("mcp__browser__"),
+                "a card given no browser server was told about one anyway: {off}"
             );
             assert!(
-                off.contains("is not running") && off.contains("mcp__browser__"),
-                "a card with no shared browser was not told why: {off}"
+                !off.contains("shared Chrome") && !off.contains("never sign it out"),
+                "a card given no browser server was told how to treat one: {off}"
             );
         }
 
@@ -2852,11 +2928,37 @@ mod tests {
         let without = crate::ask::mcp_config(1234, "abc", None);
         assert!(
             without["mcpServers"].get("browser").is_none(),
-            "a browser server was passed with none running: {without}"
+            "a browser server was passed to a card that gets none: {without}"
         );
         assert!(
             !append_prompt(false, false, None).contains("never sign it out"),
             "the prompt claims a browser the config does not carry"
+        );
+
+        /* **The endpoint is now written with nothing at the other end of it**,
+           and this is the assertion that says so out loud. `browser::address`
+           takes no app handle and asks nothing about a running Chrome, which is
+           the whole of how a card spawned onto a sleeping wall still lists
+           `mcp__browser__*`. A regression to a reading that consults the live
+           browser would compile, pass every other assertion here on a machine
+           with a browser up, and quietly restore the gap. */
+        let cold = crate::ask::mcp_config(1234, "abc", Some(&crate::browser::address()));
+        let args = cold["mcpServers"]["browser"]["args"]
+            .as_array()
+            .expect("the browser server has args")
+            .clone();
+        assert!(
+            args.iter().any(|a| a == &format!("http://127.0.0.1:{}", crate::browser::DEFAULT_PORT)),
+            "the endpoint handed to a card is not the fixed one: {cold}"
+        );
+
+        /* And the two names are one name. `append_prompt` prints the prefix the
+           hook routes on, so a rename that touched one and not the other would
+           be a paragraph naming tools that wake nothing — the `b6bfecba` shape
+           with the halves swapped. */
+        assert!(
+            append_prompt(false, true, None).contains(crate::hooks::BROWSER_PREFIX),
+            "the paragraph names a prefix the wake hook does not route on"
         );
 
         /* And the ask server survives either way, which is the failure that

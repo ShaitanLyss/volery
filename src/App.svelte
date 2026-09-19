@@ -2775,6 +2775,7 @@
     leader,
     bang,
     editor,
+    pane,
     canvas: () => canvas,
     focusedId: () => focusedId,
     setFocused: (id) => (focusedId = id),

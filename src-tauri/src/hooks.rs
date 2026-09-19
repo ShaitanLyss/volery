@@ -209,7 +209,12 @@ pub fn intercept() -> bool {
         return true;
     }
 
-    if let Some(out) = reply(&raw, after(&args, FLAG_CARD), after(&args, FLAG_DB)) {
+    if let Some(out) = reply(
+        &raw,
+        after(&args, FLAG_CARD),
+        after(&args, FLAG_DB),
+        after(&args, FLAG_PORT).and_then(|p| p.parse::<u16>().ok()),
+    ) {
         print!("{out}");
     }
     true
@@ -285,6 +290,134 @@ fn deny(reason: String) -> String {
     .to_string()
 }
 
+/* ── the browser, started in front of the call that needs it ──────────────── */
+
+/// The tool prefix the `browser` entry in `ask::mcp_config` produces.
+///
+/// One copy, here, because the server is named in exactly one other place and
+/// the two have to mean the same thing — `browser::mcp_server` supplies it and
+/// `supervisor::append_prompt` tells the card what it is called. A rename that
+/// missed this would leave a hook that wakes nothing, silently, which is the
+/// failure shape this module already has one scar from.
+pub(crate) const BROWSER_PREFIX: &str = "mcp__browser__";
+
+/// Is this a call to the wall's shared browser?
+///
+/// A prefix rather than a list of tool names, for the reason `settings` carries
+/// no matcher: `@playwright/mcp` publishes 25 tools today and is free to publish
+/// 30 next month, so a list would go stale in the way nothing announces — one
+/// browser tool in twenty-five that quietly wakes nothing, on a wall where the
+/// other twenty-four work.
+///
+/// It catches `browser_close` too, which means a card closing a page it never
+/// opened can start a ~450 MB Chrome to do nothing with. That is a real cost
+/// and it is still the better trade: the alternative is an exception list, and
+/// an exception list is the thing that rots.
+pub fn wakes_browser(tool_name: Option<&str>) -> bool {
+    tool_name.is_some_and(|n| n.starts_with(BROWSER_PREFIX))
+}
+
+/// How long to give Volery to produce a browser.
+///
+/// Comfortably past what `browser::ensure_running` can take — a headless start
+/// is two launches of ten seconds each, and a caller waiting on somebody else's
+/// start gives up at twenty-two. The number that matters is that this is
+/// *shorter* than the `timeout` the `PreToolUse` entry carries in `settings`:
+/// a hook the CLI kills prints nothing, and printing nothing is indistinguishable
+/// from allowing the call, so the tool would then run into a browser that is not
+/// there with no word about why. Answering first is what makes the refusal
+/// reachable.
+const WAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// Ask Volery to put the shared browser up, and hold the call until it has.
+///
+/// **This is the whole of the lazy start, and it works because of two measured
+/// facts.** The CLI *waits* for a `PreToolUse` hook before running the tool —
+/// probed 2026-09-19 against a hook that slept 1.5s in front of an MCP call,
+/// which ran 69ms after the hook returned (`tools/probe-mcp-hook.ts`) — and
+/// `@playwright/mcp` does not dial its `--cdp-endpoint` until that first call
+/// (`tools/probe-lazy-browser.ts`). So there is a window, between the model
+/// asking for a browser tool and the server reaching for a socket, in which a
+/// browser can be made to exist. This stands in it.
+///
+/// **What the first call reports, which is a decision rather than an
+/// oversight.** On success: nothing. The call simply takes a second or two
+/// longer and then succeeds, because that is what happened — there is no
+/// failure to explain and a hook that narrated one would be noise on every
+/// first call of every card. The honesty is paid for *in advance* instead, in
+/// `supervisor::append_prompt`, which tells the card before it ever calls that
+/// the browser starts on demand and that the first call is slower. A warning
+/// that arrives before the wait beats a note that arrives after it.
+///
+/// On failure it is the opposite, and the channel is the reason this is a hook
+/// rather than a proxy in front of the port: `permissionDecision: "deny"` stops
+/// the call and the reason reaches the model — probed for a shell tool in
+/// `probe-deny.ts` and again for an MCP tool here. So a card that cannot have a
+/// browser is told, in Volery's words, that the *studio's* browser could not be
+/// started and why, instead of being handed playwright's `ECONNREFUSED
+/// 127.0.0.1:9222` — which names a port the agent has never heard of and
+/// invites it to go and find another browser.
+///
+/// **It does not fail open, and that is a departure from this module's rule.**
+/// The compensator fails open because there is something to fail open *to*: an
+/// uncompensated command still runs. Here there is not. A browser tool with no
+/// browser cannot succeed however quietly we step aside, so the choice is not
+/// between refusing and allowing — it is between a refusal that explains and a
+/// failure that does not. The one case that is genuinely open is a card spawned
+/// with no port to ask on, which is a build mismatch rather than a browser
+/// problem, and that says nothing.
+fn wake_browser(ask_port: Option<u16>) -> Option<String> {
+    /* Nothing to ask. An older wall's card resumed against a newer binary, or a
+       spawn that named no port: not a claim that the browser is down, so not a
+       refusal. The call goes through and playwright says what it finds. */
+    let port = ask_port?;
+
+    let agent = ureq::AgentBuilder::new().timeout(WAKE_TIMEOUT).build();
+    match agent
+        .post(&format!(
+            "http://127.0.0.1:{port}{}",
+            crate::ask::WAKE_PATH
+        ))
+        .call()
+    {
+        Ok(_) => None,
+        Err(ureq::Error::Status(_, resp)) => {
+            let why = resp
+                .into_string()
+                .unwrap_or_else(|_| "no reason given".into());
+            Some(deny(format!(
+                "volery: the studio's shared browser could not be started, so `{BROWSER_PREFIX}*` \
+                 has nothing to drive: {why}. Say so rather than reaching for another browser — \
+                 starting it is also a button on the browser widget, and the user may be able \
+                 to see what went wrong there."
+            )))
+        }
+        /* **A timeout is not a wall that could not be reached**, and telling an
+           agent it was sends it reasoning about Volery being down when what is
+           actually wedged is a Chrome. The two are split because they want
+           different next moves from whoever reads them: one is "the studio is
+           not answering", the other is "the browser did not come up in time".
+           `ureq`'s transport kinds carry the distinction already; this only
+           declines to throw it away. */
+        Err(ureq::Error::Transport(t))
+            if matches!(t.kind(), ureq::ErrorKind::Io) && t.to_string().contains("timed out") =>
+        {
+            Some(deny(format!(
+                "volery: the studio's shared browser did not start within \
+                 {}s, so `{BROWSER_PREFIX}*` has nothing to drive. Volery answered — it is \
+                 the browser that is slow or wedged. Say so rather than retrying blindly; \
+                 the browser widget has a start button and will show what went wrong.",
+                WAKE_TIMEOUT.as_secs()
+            )))
+        }
+        Err(e) => Some(deny(format!(
+            "volery: the shared browser could not be started, because this card could not \
+             reach Volery to ask ({e}). `{BROWSER_PREFIX}*` has nothing to drive until it \
+             can; tell the user rather than reaching for another browser."
+        ))),
+    }
+}
+
 /// The pure-ish half of `intercept`: a hook payload in, the reply to print out,
 /// or `None` for "say nothing", which is how a hook declines to change anything.
 ///
@@ -293,7 +426,7 @@ fn deny(reason: String) -> String {
 /// things — one hands back a corrected input, the other stops the call — so
 /// there is an order and this is it. Compensating a command that is about to be
 /// refused would also be work done for nothing.
-fn reply(raw: &str, card: Option<&str>, db: Option<&str>) -> Option<String> {
+fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>) -> Option<String> {
     let payload: serde_json::Value = serde_json::from_str(raw).ok()?;
 
     /* **Which hook this is, decided here rather than by a matcher.** Three
@@ -312,6 +445,21 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>) -> Option<String> {
             return standing(&payload, card, db);
         }
         _ => {}
+    }
+
+    /* **The browser arm, and it is above the shell arm because it is not about a
+       command at all.** Everything below reads `tool_input.command` and leaves
+       when there isn't one, which an MCP tool call never has — so this has to be
+       asked first or it is never asked.
+
+       Cheap in the case that is nearly all of them: one string comparison
+       against a prefix, on a payload already parsed. The hook fires on every
+       tool call of every card (`settings` registers no matcher, for the reason
+       recorded at the top of this file), so anything here that cost real work
+       would be a tax on the whole wall. Only a call under this prefix reaches
+       the network, and there are none on a wall nobody is driving a UI on. */
+    if wakes_browser(payload.get("tool_name").and_then(serde_json::Value::as_str)) {
+        return wake_browser(ask_port);
     }
 
     let mut input = payload.get("tool_input")?.as_object()?.clone();
@@ -417,7 +565,19 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>) -> Option<String> {
 /// name should get rather than a guard that does not know whose commit it is
 /// looking at. The id is baked in here, once, rather than looked up per call:
 /// see `FLAG_CARD`.
-pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>, locked: bool) -> String {
+///
+/// `ask_port` is where Volery is listening, and it is what lets a browser tool
+/// call start the browser (`wake_browser`). Withheld from a chat card, which is
+/// given no `browser` server and therefore has no call that could use it — and
+/// which is deliberately the card that can reach nothing on this machine, so
+/// handing it a loopback port that starts a Chrome would be the largest hole in
+/// that promise. See `chat.md`.
+pub fn settings(
+    chat: bool,
+    card: Option<(&str, &std::path::Path)>,
+    locked: bool,
+    ask_port: u16,
+) -> String {
     let mut root = serde_json::Map::new();
 
     /* The permissions a chat card is granted, and the whole of them. Moved here
@@ -495,6 +655,14 @@ pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>, locked: bool
             args.push(FLAG_DB.to_string());
             args.push(dir.join("skein.db").to_string_lossy().into_owned());
         }
+        /* `ask_port != 0` is the same guard `spawn_now` puts on the
+           `--mcp-config`: zero means the ask server never bound, so there is
+           nobody to ask and a flag pointing at port zero would only turn a
+           clean "nothing to ask" into a connection error. */
+        if !chat && ask_port != 0 {
+            args.push(FLAG_PORT.to_string());
+            args.push(ask_port.to_string());
+        }
         /* One entry, three events. The binary and the argv are identical for all
            of them — `reply` routes on `hook_event_name`, which is the whole
            point of registering broad — so building the object once and naming it
@@ -541,7 +709,15 @@ pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>, locked: bool
                         "type": "command",
                         "command": exe.to_string_lossy(),
                         "args": args,
-                        "timeout": 10,
+                        /* Longer than the ten the other two get, and only this
+                           one needs it: a `mcp__browser__*` call blocks here
+                           while Chrome starts (`wake_browser`). A ceiling is not
+                           a cost — every other path through `reply` answers in
+                           milliseconds — but it has to sit *above*
+                           `WAKE_TIMEOUT`, or the CLI kills the hook while it is
+                           still holding the answer and a refusal that explains
+                           itself becomes silence that does not. */
+                        "timeout": 50,
                     }],
                 }],
             }),
@@ -570,6 +746,13 @@ pub fn settings(chat: bool, card: Option<(&str, &std::path::Path)>, locked: bool
 /// place `tauri.conf.json` already puts it.
 pub const FLAG_CARD: &str = "--card";
 pub const FLAG_DB: &str = "--db";
+
+/// Where Volery is listening, so this hook can ask it to start the browser.
+///
+/// The same argument as `--db` one line up: a hook process has no Tauri app to
+/// ask, and the port is `ask::start`'s to know. Baked into the card's argv at
+/// spawn rather than looked up, because there is nowhere to look it up from.
+pub const FLAG_PORT: &str = "--ask-port";
 
 /// What this binary is asked by, to hand a card a credential it was granted.
 ///
@@ -2268,7 +2451,7 @@ mod tests {
     #[test]
     fn rewrite_preserves_the_rest_of_the_input() {
         let raw = r#"{"tool_name":"Bash","tool_input":{"command":"echo 'a\\b'","description":"keep","timeout":5}}"#;
-        let out = reply(raw, None, None).expect("a command with backslashes should be rewritten");
+        let out = reply(raw, None, None, None).expect("a command with backslashes should be rewritten");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         let upd = &v["hookSpecificOutput"]["updatedInput"];
         assert_eq!(upd["description"], "keep");
@@ -2450,7 +2633,7 @@ mod tests {
            payload that names neither -- which is what a spawn with no card
            gives it. */
         let payload = r#"{"tool_name":"Bash","tool_input":{"command":"mv dist dist.bak"}}"#;
-        let said = reply(payload, None, None).expect("said nothing");
+        let said = reply(payload, None, None, None).expect("said nothing");
         assert!(said.contains("mcp__skein__remove"), "{said}");
         assert!(said.contains("\"permissionDecision\":\"deny\""), "{said}");
     }
@@ -2481,13 +2664,13 @@ mod tests {
             // a lone run against a quote needs no change
             r#"{"tool_input":{"command":"echo \"a\\\\\"\""}}"#,
         ] {
-            assert!(reply(raw, None, None).is_none(), "should have declined: {raw:?}");
+            assert!(reply(raw, None, None, None).is_none(), "should have declined: {raw:?}");
         }
     }
 
     #[test]
     fn settings_carry_the_hook_in_exec_form() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
         let h = &v["hooks"]["PreToolUse"][0];
         /* No matcher: the Windows shell tool was renamed once already and a
            matcher that stops matching says nothing when it does. See the
@@ -2498,7 +2681,7 @@ mod tests {
         assert_eq!(h["hooks"][0]["args"].as_array().unwrap().len(), 1);
         assert!(v.get("permissions").is_none(), "a project card gets no allow list");
 
-        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false)).unwrap();
+        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false, 0)).unwrap();
         assert_eq!(chat["permissions"]["allow"][0], "WebSearch");
         assert_eq!(chat["hooks"]["PreToolUse"][0]["hooks"][0]["type"], "command");
     }
@@ -2515,10 +2698,10 @@ mod tests {
     /// nobody turned on.
     #[test]
     fn a_locked_territory_denies_the_three_editing_tools_and_nothing_else() {
-        let open: serde_json::Value = serde_json::from_str(&settings(false, None, false)).unwrap();
+        let open: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
         assert!(open.get("permissions").is_none(), "an unlocked card is granted nothing");
 
-        let shut: serde_json::Value = serde_json::from_str(&settings(false, None, true)).unwrap();
+        let shut: serde_json::Value = serde_json::from_str(&settings(false, None, true, 0)).unwrap();
         let deny = shut["permissions"]["deny"].as_array().expect("a deny list");
         assert_eq!(
             deny.iter().filter_map(|d| d.as_str()).collect::<Vec<_>>(),
@@ -2546,7 +2729,7 @@ mod tests {
     /// like `PreToolUse` — with no matcher, so nothing can quietly stop matching.
     #[test]
     fn the_two_forgetting_hooks_are_registered_the_same_way() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
         for ev in ["SessionStart", "UserPromptSubmit"] {
             let h = &v["hooks"][ev][0];
             assert!(h.get("matcher").is_none(), "{ev}: a matcher is a name that can rot");
@@ -2556,7 +2739,7 @@ mod tests {
         /* A chat card gets them too. It can run nothing, so it will never have a
            row — but the registration must not be the thing that decides that,
            or the day a chat card gains a tool the guard is silently absent. */
-        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false)).unwrap();
+        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false, 0)).unwrap();
         assert!(chat["hooks"]["UserPromptSubmit"][0]["hooks"][0]["args"][0] == FLAG);
     }
 
@@ -3018,13 +3201,13 @@ mod tests {
         };
         for quiet in ["startup", "resume", "clear"] {
             assert!(
-                reply(&at(quiet), Some("card"), Some("nowhere.db")).is_none(),
+                reply(&at(quiet), Some("card"), Some("nowhere.db"), None).is_none(),
                 "{quiet} must say nothing"
             );
         }
         /* `compact` gets as far as the database, which is not there — so still
            None, and silently, which is the fail-open this whole module keeps. */
-        assert!(reply(&at("compact"), Some("card"), Some("nowhere.db")).is_none());
+        assert!(reply(&at("compact"), Some("card"), Some("nowhere.db"), None).is_none());
     }
 
     /// A hook layer with no card named leaves these two doing nothing, the way
@@ -3033,7 +3216,7 @@ mod tests {
     #[test]
     fn the_forgetting_hooks_need_a_card_to_be_about() {
         let p = r#"{"hook_event_name":"UserPromptSubmit","prompt":"hi","session_id":"s1"}"#;
-        assert!(reply(p, None, None).is_none());
+        assert!(reply(p, None, None, None).is_none());
     }
 
     /// **The routing must not eat the old path.** A payload from a build that
@@ -3042,10 +3225,10 @@ mod tests {
     #[test]
     fn a_payload_with_no_event_name_still_reaches_the_compensator() {
         let cmd = r#"{"tool_name":"Bash","tool_input":{"command":"echo 'a\\b'"}}"#;
-        assert!(reply(cmd, None, None).is_some());
+        assert!(reply(cmd, None, None, None).is_some());
         /* And one that names PreToolUse explicitly reaches it too. */
         let named = r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo 'a\\b'"}}"#;
-        assert!(reply(named, None, None).is_some());
+        assert!(reply(named, None, None, None).is_some());
     }
 
     /// Now that the hook fires on every tool, the tool name is what decides
@@ -3056,12 +3239,12 @@ mod tests {
     fn only_the_bash_tool_is_compensated() {
         let cmd = r#"{"tool_name":"%NAME%","tool_input":{"command":"echo 'a\\b'"}}"#;
         assert!(
-            reply(&cmd.replace("%NAME%", "Bash"), None, None).is_some(),
+            reply(&cmd.replace("%NAME%", "Bash"), None, None, None).is_some(),
             "the Bash tool eats backslashes and must be compensated"
         );
         for other in ["PowerShell", "Read", "Edit", ""] {
             assert!(
-                reply(&cmd.replace("%NAME%", other), None, None).is_none(),
+                reply(&cmd.replace("%NAME%", other), None, None, None).is_none(),
                 "{other} must be left alone"
             );
         }
@@ -3071,7 +3254,8 @@ mod tests {
     /// named — which is how a `Read` leaves now that there is no matcher.
     #[test]
     fn a_tool_with_no_command_is_not_a_shell_call() {
-        assert!(reply(r#"{"tool_name":"Read","tool_input":{"file_path":"a.ts"}}"#, None, None).is_none());
+        assert!(reply(r#"{"tool_name":"Read","tool_input":{"file_path":"a.ts"}}"#, None, None, None)
+            .is_none());
     }
 
     /// A named card puts its id and its database in the argv, so a hook process
@@ -3080,7 +3264,7 @@ mod tests {
     fn a_named_card_arms_the_guard_through_the_argv() {
         let dir = std::path::Path::new("C:/Users/x/AppData/Roaming/dev.skein.studio");
         let v: serde_json::Value =
-            serde_json::from_str(&settings(false, Some(("abc123", dir)), false)).unwrap();
+            serde_json::from_str(&settings(false, Some(("abc123", dir)), false, 0)).unwrap();
         let args = v["hooks"]["PreToolUse"][0]["hooks"][0]["args"]
             .as_array()
             .unwrap()
@@ -3090,6 +3274,193 @@ mod tests {
         assert_eq!(args[0], FLAG);
         assert_eq!(after(&args, FLAG_CARD), Some("abc123"));
         assert!(after(&args, FLAG_DB).unwrap().ends_with("skein.db"));
+    }
+
+    /* ── waking the shared browser ────────────────────────────────────────── */
+
+    /// Which tool calls reach for a browser, and which are left entirely alone.
+    ///
+    /// **Both directions matter and they fail differently.** Too narrow and a
+    /// browser tool quietly wakes nothing — the card gets `ECONNREFUSED` and no
+    /// idea why, which is the whole failure this exists to end. Too wide and an
+    /// ordinary `Read` spends a second on a loopback round trip before every
+    /// file in the repository, on every card, forever.
+    ///
+    /// The false rows are the ones worth keeping: `mcp__skein__board` and
+    /// `mcp__plugin_playwright_playwright__browser_navigate` both contain the
+    /// word `browser` somewhere near them, and neither is this server.
+    #[test]
+    fn only_the_shared_browsers_tools_wake_a_browser() {
+        for name in [
+            "mcp__browser__browser_navigate",
+            "mcp__browser__browser_snapshot",
+            "mcp__browser__browser_take_screenshot",
+            /* Deliberately included. It starts a browser to close a page that
+               is not open, which is a real waste and still cheaper than an
+               exception list nobody maintains. */
+            "mcp__browser__browser_close",
+        ] {
+            assert!(wakes_browser(Some(name)), "{name} should wake the browser");
+        }
+        for name in [
+            "Bash",
+            "PowerShell",
+            "Read",
+            "ToolSearch",
+            "mcp__skein__board",
+            "mcp__skein__ask_user",
+            /* The user's own playwright, under whatever prefix their plugin
+               produces. It has its own browser and Volery must not start one
+               for it — see `.claude/rules/browser.md` on the two families. */
+            "mcp__plugin_playwright_playwright__browser_navigate",
+            "browser_navigate",
+        ] {
+            assert!(!wakes_browser(Some(name)), "{name} should not wake anything");
+        }
+        assert!(
+            !wakes_browser(None),
+            "a payload with no tool name must not wake a browser"
+        );
+    }
+
+    /// A browser call is routed before the shell arm, and out of it.
+    ///
+    /// The ordering is the load-bearing part. Everything below the browser arm
+    /// in `reply` reads `tool_input.command` and returns `None` when there is
+    /// none — and an MCP tool call never has one — so an arm placed *after* the
+    /// shell arm would compile, pass every other test in this file, and never
+    /// once fire. That is the same silent shape as the matcher that stopped
+    /// matching, which is why it gets a test of its own rather than being read
+    /// off the source order.
+    ///
+    /// With no port there is nobody to ask, so the call goes through untouched:
+    /// asserted here because that arm is the one a build mismatch lands on, and
+    /// a version of it that denied instead would make a card spawned by an older
+    /// wall unable to use a browser at all.
+    #[test]
+    fn a_browser_call_is_routed_and_says_nothing_with_no_port() {
+        let call = r#"{"tool_name":"mcp__browser__browser_navigate",
+                       "tool_input":{"url":"http://localhost:3000"}}"#;
+        assert!(
+            reply(call, None, None, None).is_none(),
+            "a browser call with no port to ask on should be left alone"
+        );
+
+        /* And the shell arm is genuinely not reached: a browser payload that
+           also carried a `command` with backslashes in it must come back
+           uncompensated, because it left before that code. Contrived on
+           purpose — it is the only way to observe the ordering from outside. */
+        let odd = r#"{"tool_name":"mcp__browser__browser_navigate",
+                      "tool_input":{"command":"echo a\\\\b"}}"#;
+        assert!(
+            reply(odd, None, None, None).is_none(),
+            "a browser call fell through into the shell arm"
+        );
+    }
+
+    /// The prefix the hook routes on is the prefix the card is told about.
+    ///
+    /// One constant, two readers — this and `supervisor::append_prompt` — and
+    /// the drift between them is invisible from both ends: the paragraph would
+    /// name tools that wake nothing, and the hook would wait for a call that
+    /// never comes under that name. It is `mcp__` plus the server name
+    /// `ask::mcp_config` registers plus `__`, and that is the whole derivation.
+    #[test]
+    fn the_wake_prefix_is_the_server_the_config_registers() {
+        assert_eq!(BROWSER_PREFIX, "mcp__browser__");
+        let cfg = crate::ask::mcp_config(1234, "abc", Some("http://127.0.0.1:9222"));
+        let server = cfg["mcpServers"]
+            .as_object()
+            .expect("servers")
+            .keys()
+            .find(|k| *k != "skein")
+            .expect("a browser server")
+            .clone();
+        assert_eq!(
+            BROWSER_PREFIX,
+            format!("mcp__{server}__"),
+            "the hook routes on a prefix no server on this card produces"
+        );
+    }
+
+    /// The hook that may block is the only one given room to.
+    ///
+    /// `wake_browser` holds a call for as long as a Chrome takes to come up, so
+    /// the `PreToolUse` entry's `timeout` has to sit above `WAKE_TIMEOUT` — and
+    /// the relationship is the assertion rather than the numbers, because the
+    /// failure it prevents is subtle: a hook the CLI kills prints nothing, and
+    /// printing nothing is how this module says *allow*. So an over-tight
+    /// timeout does not produce an error, it produces a browser tool running
+    /// against a browser that is still starting, with the refusal that would
+    /// have explained it discarded unread.
+    #[test]
+    fn the_hook_outlives_the_wait_it_may_have_to_do() {
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
+        let pre = v["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"]
+            .as_u64()
+            .expect("the PreToolUse hook has a timeout");
+        assert!(
+            pre > WAKE_TIMEOUT.as_secs(),
+            "the PreToolUse hook ({pre}s) is killed before the wake it is waiting on \
+             ({}s) can answer",
+            WAKE_TIMEOUT.as_secs()
+        );
+
+        /* And the rung below it. Volery's own longest wait — a card queued
+           behind somebody else's start — has to finish *inside* the client's
+           timeout, or the hook gives up on a request the wall was about to
+           answer and reports a studio it could not reach, over a browser that
+           was seconds away. Three numbers in two files, and every inversion
+           between them fails in the permissive direction: nothing errors, the
+           call simply runs against a browser that is not there yet. */
+        assert!(
+            crate::browser::SHARED_START_WAIT < WAKE_TIMEOUT,
+            "a card waiting on another card's start ({}s) outlasts the wake request \
+             that is carrying it ({}s)",
+            crate::browser::SHARED_START_WAIT.as_secs(),
+            WAKE_TIMEOUT.as_secs()
+        );
+    }
+
+    /// A chat card is given no port, because it is given no browser.
+    ///
+    /// `chat.md`'s promise is that a chat card can reach nothing on this
+    /// machine — `--tools WebSearch,WebFetch`, `--strict-mcp-config`, no bypass.
+    /// A loopback port that starts a 450 MB Chrome would be the largest hole
+    /// anybody had put in that, and it would be there for a capability the card
+    /// has no tool to use.
+    #[test]
+    fn a_chat_card_gets_no_port_to_wake_anything_with() {
+        let chat: serde_json::Value =
+            serde_json::from_str(&settings(true, None, false, 51234)).unwrap();
+        let args = chat["hooks"]["PreToolUse"][0]["hooks"][0]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(after(&args, FLAG_PORT), None, "a chat card was given a port");
+
+        let project: serde_json::Value =
+            serde_json::from_str(&settings(false, None, false, 51234)).unwrap();
+        let args = project["hooks"]["PreToolUse"][0]["hooks"][0]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            after(&args, FLAG_PORT),
+            Some("51234"),
+            "a project card cannot reach the wall to wake a browser"
+        );
+        /* And the port must survive the round trip `intercept` makes of it —
+           argv is strings, and a flag parsed back as `None` is a hook that
+           silently stops waking anything. */
+        assert_eq!(
+            after(&args, FLAG_PORT).and_then(|p| p.parse::<u16>().ok()),
+            Some(51234u16)
+        );
     }
 
     /* ── the shared index ─────────────────────────────────────────────────── */

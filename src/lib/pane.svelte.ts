@@ -35,6 +35,8 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { Listeners } from "./listeners";
 import {
   consoleRow,
   failedRow,
@@ -154,6 +156,40 @@ export class Pane {
    *  Chrome announces every target — and a new window cannot arrive without
    *  one. */
   #watcher: WebSocket | null = null;
+
+  #listeners = new Listeners();
+
+  constructor() {
+    /* **The browser can now start without this window asking for it**, and
+     *  before this there was nothing to hear about it. `refresh` was reached
+     *  only from the start button, from `saveSession`, and from CDP target
+     *  events — which arrive over `#watcher`, a socket that only exists once a
+     *  browser has already been found. So any browser that came up some other
+     *  way left the widget reading "not running" indefinitely.
+     *
+     *  That was already true of the launch restore and was survivable, because
+     *  the only other way to get a browser was the button in this very widget.
+     *  It stopped being survivable when a card's first `mcp__browser__*` call
+     *  began starting one: the widget's entire job is to say whether there is a
+     *  browser, and it would have said no with an agent driving a page through
+     *  it.
+     *
+     *  `browser:changed` is emitted by `browser.rs` at both boundaries — a
+     *  start claimed, a start settled either way, a stop — so this is a fold
+     *  over an event rather than a clock, which is the bar `CLAUDE.md` sets.
+     *  The payload is deliberately empty: `refresh` is about to read the
+     *  status, the targets and the socket together, and a status in the
+     *  envelope would be a second, racier copy of that. */
+    this.#listeners.keep(
+      listen("browser:changed", () => {
+        void this.refresh();
+      }),
+    );
+  }
+
+  get listenerCount(): number {
+    return this.#listeners.size;
+  }
 
   /* ── the browser itself ──────────────────────────────────────────────── */
 
@@ -704,5 +740,9 @@ export class Pane {
    *  on acknowledging frames for a wall nobody is looking at. */
   release() {
     for (const id of [...this.#live.keys()]) this.#drop(id);
+    /* `CLAUDE.md`: anything holding a Tauri subscription needs releasing, or a
+       superseded instance goes on ingesting events — and in dev that is one
+       more `Pane` per file save, each refreshing on every `browser:changed`. */
+    this.#listeners.detach();
   }
 }

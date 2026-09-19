@@ -19,6 +19,7 @@ import {
   toneOfConsole,
   canPark,
   canShowWindow,
+  idleWord,
   normalizeMode,
   MODES,
   MODE_NOTE,
@@ -469,5 +470,31 @@ describe("how the browser stands on the desktop", () => {
     /* And nothing at all is offered for a browser that is not running. */
     expect(canShowWindow(stand({ running: false }))).toBe(false);
     expect(canPark(stand({ running: false, onDesktop: true }))).toBe(false);
+  });
+
+  /* The idle line has to be true about *both* halves of a state that used to be
+     one. "not running" once meant there is nothing to look at AND no card can
+     drive a browser; only the first is true now, since a card's first
+     `mcp__browser__*` call starts one through the PreToolUse hook. A line still
+     claiming the second would send somebody to press a button they do not need,
+     and — worse — would tell them agents cannot test UI on this wall, which is
+     the exact false report sink `b6bfecba` was filed about, arriving from the
+     widget instead of from the prompt. */
+  test("the idle line does not claim the tools are missing", () => {
+    const idle = idleWord(false);
+    expect(idle).toContain("not running");
+    /* The half that is the whole point: it says what ends the state. */
+    expect(idle).toContain("first browser tool");
+    /* And it does not say any of the things that are no longer true. */
+    for (const lie of ["cannot", "no tools", "wake", "re-spawn"]) {
+      expect(idle.toLowerCase()).not.toContain(lie);
+    }
+
+    /* A start already in flight says so instead, and offers no second one — a
+       second Chrome on the same port is the failure that reads as the browser
+       being broken. Distinct strings, because the widget uses this to decide
+       whether to draw a verb at all. */
+    expect(idleWord(true)).toContain("starting");
+    expect(idleWord(true)).not.toBe(idle);
   });
 });

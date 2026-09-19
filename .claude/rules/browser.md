@@ -127,7 +127,7 @@ Two general things fall out, and they are why this is written at length:
   built and all correct. What was missing was six lines of JSON that neither this repo nor the
   user had been made responsible for, and the gap was invisible from both ends.
 
-## The port is fixed, and that is a constraint rather than a preference
+## The port is fixed, and that turned out to be worth more than it was chosen for
 
 `DEFAULT_PORT` is 9222 and not an ephemeral port. **An MCP server's arguments are settled when
 the card spawns and cannot be renegotiated**, and a static config is the only kind the thing
@@ -135,11 +135,31 @@ supplying `@playwright/mcp` has — so an endpoint whose port moved between runs
 written down anywhere. Everything about the agent half of this feature follows from that one
 fact.
 
-`VOLERY_CDP_ENDPOINT` is the other half, in every card's environment while a browser is
-running — for test code the agent *writes*, since `connectOverCDP` takes a string and a string
-in the environment is one a shell expansion reaches without a round trip. Set only while there
-is a browser: an empty variable would read as an endpoint to anything checking whether it
-exists.
+**And then the same fact paid for the lazy start.** A fixed port means the address can be
+written down *before there is anything at the other end of it*, which is what lets every card
+hold `mcp__browser__*` whether or not a Chrome exists. `browser::address` takes no app handle
+and asks nothing about a running browser; it is a constant. See the lazy-start section below
+— it is the one place where a constraint this file spent a page apologising for turned out to
+be the mechanism.
+
+`VOLERY_CDP_ENDPOINT` is the other half, in **every** card's environment — for test code the
+agent *writes*, since `connectOverCDP` takes a string and a string in the environment is one a
+shell expansion reaches without a round trip.
+
+It used to be set only while a browser was actually running, on the argument that an empty
+variable would read as an endpoint to anything checking whether it exists. That is still true
+about an empty one and is no longer the right conclusion, because the variable stopped being
+evidence: the address is correct at all times and what varies is whether anything answers.
+**So its meaning is narrower now — where the wall's browser is, not that there is one.** A
+card that wants one up calls a `mcp__browser__*` tool, which starts it.
+
+**That leaves one rough edge and it is not fixable in this direction.** An environment is
+written at spawn and cannot be added to afterwards, so a card that wakes the browser through
+a tool call still has the same variable it always had — correct, and pointing at something
+that is now running, which is the good case. A card that reaches for `connectOverCDP` *first*,
+with no browser up, gets a connection refused and has to call a browser tool to wake one. The
+hook cannot help there: it fires on tool names, and starting a 450 MB browser because a shell
+command happened to mention a variable is not a trade worth making.
 
 ## The two flags that are load-bearing, both found the hard way
 
@@ -308,11 +328,21 @@ in both directions. The false arm is the one that matters — a paragraph naming
 unconditionally passes every other assertion on a wall with no browser running, which is
 exactly how this shipped.
 
-**And the absence is now said rather than left silent.** A card spawned with no browser
-running is told so, in one sentence, and told that starting it is a button on the widget. That
-is the direct answer to the sink item's second question: Volery cannot inject tools into an
-open card, and the honest substitute is a card that can complain precisely instead of
-reporting "no volery browser tools on this wall" with no idea why.
+**The absence used to be said, and now there is no absence to say.** For a while this
+paragraph had a second arm — eighty words telling a card the shared browser was not running,
+that it therefore had no `mcp__browser__*`, and that it could not be given any until it was
+woken again. That was the honest answer to the sink item's second question at the time, and
+the honest substitute for a capability nobody could hand over: a card that can complain
+precisely beats one reporting "no volery browser tools on this wall" with no idea why.
+
+It is gone because the condition is gone; see the lazy-start section. What replaced it is one
+clause about **latency**, and that clause is doing real work rather than padding the
+paragraph. The first browser call on a sleeping wall takes a second or two longer than the
+rest, and an unexplained pause is the exact shape an agent misreads as a hang — after which it
+retries, or reaches for the other browser family, or reports the tool broken. Eleven words
+before the wait forecloses all three; the same words after it would arrive too late to be
+worth anything. It promises no figure, because a cold Chrome on a cold profile is not a number
+that paragraph can honour.
 
 **What is proven and what is not.** `browser::mcp_server`'s doc comment carries the probe:
 spawned with exactly that entry, `system/init` reports the server connected and 24 tools under
@@ -482,25 +512,245 @@ so a wall that was *killed* holding a browser comes back holding one. Stopping i
 is what stops the next launch bringing it back, and that is the only thing distinguishing the
 two.
 
-**And it closes the rough edge this section used to name as the one left.** The `browser`
-entry is supplied only when a browser is running *at spawn* — an MCP server's arguments are
-settled there and cannot be renegotiated — so a card opened before you pressed start never had
-`mcp__browser__*` at all. With the browser coming up at launch, the cards roused at launch do
-have it. That needs the two halves to be ordered, and they are: `resume_at_launch` publishes a
-`starting` flag *before* its background thread begins, and `Skein.rouse` awaits
-`browser_await_start` before its first spawn. A card spawned into that gap would be silently
-less capable than the one beside it for the rest of its life, which is not a thing you would
-ever notice as a bug.
+**It used to close a rough edge as well, and that half of its justification has expired.** The
+`browser` entry was supplied only when a browser was running *at spawn*, so a card opened
+before you pressed start never had `mcp__browser__*` at all — and restoring the browser at
+launch was what gave the cards roused at launch their tools. That needed the two halves
+ordered, and they were: a `starting` flag published before the background thread began, and
+`Skein.rouse` awaiting `browser_await_start` before its first spawn.
+
+**Both of those are deleted.** Cards hold the tools regardless now, so there is no gap to
+order against, and what the wait had become was a second or two of nothing at the head of
+every launch that restored a browser. `browser_await_start` is gone rather than unused — a
+command still registered is one the next reader has to work out the purpose of.
+
+What the restore still does is put back **the page you were looking at**. A widget showing a
+live browser is furniture, and a wall that comes back with its furniture missing reads as
+having forgotten something. That is a smaller claim than the one it used to make and it is
+still worth the ~450 MB, because it is only ever paid on a wall that demonstrably had a
+browser open when it closed.
 
 Nothing about it delays the window. `setup` loads the mode synchronously and returns; the wall
 paints while Chrome is still starting.
 
-**Conditional rather than always, and the arithmetic is why.** An idle
-`npx @playwright/mcp --cdp-endpoint` with no browser attached is 2 node processes and
-~212 MB, measured 2026-09-10 and consistent with the census above — spawned per card, at
-card start, whether or not that card ever looks at a page. Passing it unconditionally would
-make every card on the wall pay that for a browser most of them will never touch. Ten cards
-is 2 GB, and `processes.md` is the whole argument against paying that way.
+## The browser starts itself, in front of the call that needs it
+
+The ask, from a card on `nova` that had been asked to drive a UI and had to say it could not:
+make the tools **always** available and start Chrome **lazily**. What stood in the way was one
+sentence this file had repeated in four places — an MCP server's arguments are settled at
+spawn, and `--cdp-endpoint` needs a value that does not exist until Chrome is running.
+
+**That sentence is true about arguments and says nothing about connections**, which is the
+whole of it. `tools/probe-lazy-browser.ts`, 2026-09-19, `@playwright/mcp` pointed at a port
+with nothing bound to it:
+
+```text
+initialize              ok in 1030ms
+tools/list              25 tools
+first tools/call        isError: connect ECONNREFUSED 127.0.0.1:19222       [22ms]
+…Chrome started…        385ms
+second tools/call       ok — same server process, no restart              [1800ms]
+```
+
+Three findings, each of which had to hold:
+
+- **The endpoint is an address, not a dependency.** The server comes up and advertises all 25
+  tools with nothing listening. So the entry can be written into every card's `--mcp-config`
+  at spawn, and `browser::address` is a constant rather than a reading.
+- **The failure does not latch.** One process, one refused call, Chrome appears, next call
+  succeeds. A server that cached its first CDP failure would have made this unbuildable.
+- **It does not dial at startup at all.** A third arm pointed it at a listener counting its
+  accepts: **zero** across `initialize` and `tools/list`. So registering the server costs no
+  connection, and therefore nothing that could be made to start a browser by itself.
+
+### The hook is what stands in the gap
+
+Between the model asking for a browser tool and the server reaching for a socket there is a
+window, and Volery already has something standing in it: the `PreToolUse` hook it hands every
+card (`hooks.md`). `tools/probe-mcp-hook.ts` measured the two things that had to be true of it
+— it fires for **MCP** tools, with `tool_name` as the prefixed name, and **the CLI waits for
+it**: a hook that held for 1.5s in front of an MCP call had that call run 69ms after it
+returned.
+
+So `hooks::wakes_browser` routes on `mcp__browser__`, `hooks::wake_browser` POSTs to
+`ask::WAKE_PATH`, and `browser::ensure_running` puts a Chrome up. On success the hook says
+nothing and the call proceeds; on failure it returns `permissionDecision: "deny"`, which stops
+the call and reaches the model.
+
+Four things about that shape are load-bearing:
+
+- **The hook asks Volery rather than spawning Chrome itself.** A hook is a short-lived child
+  of the *card*, so a Chrome it spawned would be outside Volery's job object, unreaped at
+  quit, invisible to the widget and unknown to `browser_stop` — the orphan `processes.md` is
+  entirely about, built on purpose. The wake route is on the listener the card's argv already
+  carries, so it invents no second channel.
+- **It does not fail open**, which is a departure from that module's rule. The compensator
+  fails open because an uncompensated command still runs; here there is nothing to fail open
+  *to*. A browser tool with no browser cannot succeed however quietly we step aside, so the
+  choice is between a refusal that explains and playwright's `ECONNREFUSED 127.0.0.1:9222` —
+  a port the agent has never heard of, with an invitation to go and find another browser.
+- **The claim and the check are under one lock.** Two cards asked to drive a UI in the same
+  second is a Tuesday, and the loser of that race does not fail cleanly: its `await_ready` is
+  answered by the *winner's* browser, so it reports success holding a child that bound
+  nothing. `ensure_running` claims `starting` in the same critical section that finds nothing
+  running; everyone else waits on it.
+- **The `PreToolUse` timeout had to go up.** It was 10s and a wake can take longer; a hook the
+  CLI kills prints nothing, and printing nothing is how that module says *allow*. So it is 50s
+  against a 40s `WAKE_TIMEOUT`, and `lift-browser.ts` asserts the relationship rather than the
+  numbers — the failure is a ceiling wrong in the permissive direction, which is the shape
+  this codebase refuses everywhere.
+
+### And the widget had to be told, because nothing had ever needed to tell it
+
+`Pane.refresh` was reached from three places: the start button, `saveSession`,
+and CDP target events — which arrive over `#watcher`, **a socket that only exists
+once a browser has already been found**. So a browser that came up any other way
+left the widget reading "not running" for ever.
+
+That was already true of the launch restore, and it was survivable, because the
+only other way to get a browser was the button in that very widget: press it,
+`ensure_running` finds one already up, `refresh` runs, and the face corrects
+itself. Nobody would have called it a bug.
+
+**A card starting one is what made it a bug**, and a bad one — the widget's
+entire job is to say whether there is a browser, and it would have said no with
+an agent driving a page through it. So `browser::announce` emits
+`browser:changed` at both boundaries: when a start is claimed (the face says
+"starting the browser…" and offers no second start), when it settles either way
+— from the `Starting` guard's `Drop`, so a *failed* start redraws too rather
+than leaving "starting…" up for ever with no button — and when a browser is
+stopped.
+
+It is a fold over an event that is made to exist at the moment of the change, by
+the code making the change, which is what `CLAUDE.md` asks for in place of a
+fourth poller. There is no clock and nothing to stop. The payload is empty on
+purpose: the front end is about to read the status, the target list and the
+browser socket together, and a status in the envelope would be a second, racier
+copy of a reading it is going to take properly.
+
+`Pane` therefore holds a subscription and owes a release — `release()` detaches,
+and `snapshot.listeners.pane` is how a superseded generation is seen from
+outside, which is the rule `CLAUDE.md` states for every other class here.
+
+### Volery will not adopt a browser it did not start
+
+`await_ready` polls `/json/version` and takes the first answer, and for the whole
+of this feature's life nothing asked **who owned the port**. That was survivable
+while a browser could only start two ways — a person pressing the button, or a
+launch restore — because both have somebody watching.
+
+Every `mcp__browser__*` call now reaches `ensure_running`, so it stopped being
+survivable. Two shapes, both ordinary:
+
+- **The person's own Chrome, started with a debugging port** — a common dev
+  habit, and one `resume_at_launch`'s own comment already named as the commonest
+  cause of a failed restore. Volery's Chrome launches on its own profile, fails
+  to bind 9222, and stays up as a plain window; `await_ready` is answered by the
+  *person's* browser and `Running` is stored pointing at it. Every card on the
+  wall would then be driving their live sessions, with `browser_close` and
+  `browser_run_code_unsafe` among the tools, while `browser_stop` killed the
+  window Volery spawned and left the driven one running outside the job object.
+- **A Chrome already holding Volery's own profile.** Chrome's profile singleton
+  hands the new process's command line to the existing instance and **exits
+  immediately**, so `await_ready` succeeds off that instance and `Running.child`
+  is dead the moment it is stored. The reap in `ensure_running` then fires on
+  the next call and does it all again — a process spawn, a `save_browser_state`
+  write and two `browser:changed` emits **per browser tool call**, with the
+  widget flapping between running and not for the length of the turn.
+
+Two guards, because the two shapes are caught at different moments:
+
+- **`port_is_free`** bind-tests the port before spawning and refuses by name.
+  There is no ownership to check — CDP has no notion of a credential and
+  `/json/version` says nothing about who started the browser — so binding is the
+  only question with an honest answer, and it is the same question Chrome is
+  about to ask. It races, which is fine: the listener is dropped before Chrome
+  is spawned, so this is a diagnostic that turns a silent adoption into a
+  refusal naming the cause, not a lock.
+- **`await_ready` bails when the child has exited.** A process that is gone did
+  not open this port, so whoever answered is a stranger. This is what catches
+  the profile-singleton handoff, which no bind test can see — the port is
+  legitimately occupied by a Chrome, just not ours.
+
+`await_port_closed` is the same fact from the other side, and is why the headless
+relaunch waits: `kill` reaches one process and Chrome is a dozen, so the port
+outlives the handle. `tools/probe-lazy-browser.ts` measured that as a 30-second
+timeout that looked exactly like the whole design being unworkable.
+
+The general shape, which is the reason this is written at length rather than
+fixed quietly: **a check nobody performs is affordable only for as long as a
+person is standing where it would have run.** Automating the gesture is what
+turns a latent adoption into a routine one, and the automation is the change
+that owes the check.
+
+### The proxy was the other answer, it works, and it is not what shipped
+
+Arm D of the same probe built the alternative: a port Volery always has bound, which starts
+Chrome on its first connection and then splices bytes to it. It works — tools listed with no
+Chrome, first tool call starts one in 448ms and succeeds. So this is a choice rather than an
+elimination, and the reasons are:
+
+- **A TCP accept is not evidence that anybody wants a browser.** Anything touching the port
+  starts 450 MB of Chrome — a stale playwright from a dead card, a port scan, a `curl` by
+  hand. A card calling a browser tool is unambiguous.
+- **The proxy cannot say anything.** When Chrome will not start, all it can do is close the
+  socket, and playwright reports a timeout naming a port. The founding bug of this whole
+  subsystem (`b6bfecba`) is *a card unable to say why*, so a mechanism with no voice loses on
+  the criterion this file already cares most about.
+- **It would give the wall two addresses for one browser.** The widget, `browser_targets`,
+  `browser_open` and the screencast socket all speak to 9222 directly.
+
+What the proxy would have bought, and the hook does not, is agent-written
+`connectOverCDP($VOLERY_CDP_ENDPOINT)` — which dials the port without going through any tool.
+That is the rough edge recorded above. If it ever matters more than the three objections, arm
+D is already proved and is the thing to build.
+
+**Two of that arm's three failures were the prototype's own**, and they are worth knowing
+because both read as the design being impossible: bytes arriving while the proxy is still
+starting Chrome have to be *kept* (bun drops them across an `await` even after `pause()`), and
+a killed Chrome holds its port for a moment after the handle is gone. A Rust implementation
+gets the first for free — not reading a socket leaves the bytes in the kernel buffer.
+
+### What it costs, and this is the part to argue with
+
+This section used to carry the paragraph *"conditional rather than always, and the arithmetic
+is why"*, and that arithmetic did not go away — **the feature spends it deliberately.**
+Re-measured 2026-09-19, one idle `@playwright/mcp` pointed at a dead endpoint, private commit
+of the whole tree:
+
+```text
+npx @playwright/mcp@latest --cdp-endpoint …    3 procs   216.7 MB
+   node.exe  (the npx wrapper)                            99.9 MB
+   cmd.exe                                                11.4 MB
+   node.exe  (the server itself)                         105.4 MB
+node <cache>/@playwright/mcp/cli.js …          1 proc    105.3 MB   <- same 25 tools
+```
+
+**That is per card, at card start, whether or not the card ever looks at a page**, and it is
+the cost of the thing that was asked for: tools that are always listed need a server that is
+always running. No mechanism avoids it — the hook and the proxy pay it identically — so it is
+not a consequence of choosing one.
+
+What changed is who pays. Before, a card spawned while a browser happened to be running paid
+it; on a wall that keeps a browser up, that was most cards already. Now every project card
+does. Ten cards is ~2.2 GB on a machine `processes.md` measures at 15.8 GB, and that file's
+whole argument is against paying that way.
+
+**And 111 MB of it is `npx`, for nothing.** The wrapper is two processes that resolve a
+package and then sit there; running the same `cli.js` under `node` directly serves the same
+25 tools in 1 process at 105 MB. Halving the cost of this feature is available and is *not*
+taken here, deliberately: resolving that path means reading npm's hash-named `_npx` cache,
+which freezes the version `@latest` exists to move, and fails on a machine that has never
+cached it — a silent failure in the direction of a card with no browser tools, which is
+exactly the bug this subsystem was created by. It wants to be its own change with its own
+fallback, and it would benefit every card that already carried the server. Filed in the sink
+with these numbers.
+
+The other end of the ladder, for whoever picks that up: a shim registered in place of
+`@playwright/mcp` — Volery's own binary answering `initialize` and `tools/list` from a cached
+schema and spawning the real server only on the first `tools/call` — takes the resting cost to
+roughly a small Rust process, and subsumes the hook. It costs an MCP server implementation, a
+schema cache and a version-drift story, which is why it is named here rather than built.
 
 ## What is not built
 
@@ -512,7 +762,21 @@ is 2 GB, and `processes.md` is the whole argument against paying that way.
 - **One browser, not one per territory.** Nothing stops a second, but the port is a single
   constant and the config that points the agent at it is wall-wide.
 
-## The probe
+## The probes
+
+Three of them now, and only the first has the `node` restriction.
+
+```powershell
+bun tools/probe-lazy-browser.ts   # when @playwright/mcp dials its endpoint, and
+                                  # whether the browser may arrive after the card.
+                                  # No API turn; one Chrome on port 19222, its own profile
+bun tools/probe-mcp-hook.ts       # whether a PreToolUse hook sees an MCP call and whether
+                                  # the CLI WAITS for it. Two real turns, pinned to Haiku
+```
+
+Both are what the lazy start rests on, and both are written to be re-run when the CLI or
+`@playwright/mcp` updates — the failures they guard against are silent in the direction that
+matters. `probe-lazy-browser` never touches the wall's own browser on 9222.
 
 `bun tools/probe-browser.ts` — except **it must be run with `node`, not `bun`**:
 

@@ -104,6 +104,13 @@ bun tools/probe-nvim.ts --config   # what `nvim --embed` answers over pipes, wit
 node --experimental-strip-types tools/probe-browser.ts   # what a browser costs, and whether
                                    # two clients can share one. NODE, not bun: playwright's
                                    # launch() never returns under bun on this machine.
+bun tools/probe-lazy-browser.ts    # when `@playwright/mcp` dials its `--cdp-endpoint`, and
+                                   # so whether the browser may arrive *after* the card that
+                                   # will drive it. The whole of the lazy start rests on it.
+                                   # No API turn; its own Chrome on 19222, never the wall's
+bun tools/probe-mcp-hook.ts        # whether a PreToolUse hook sees an MCP tool call and
+                                   # whether the CLI *waits* for it before running the tool.
+                                   # Two real turns, pinned to Haiku
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
 bun tools/probe-image.ts           # whether an image on stdin reaches the model, interleaved
                                    # with text and in order. Generates its own two pictures,

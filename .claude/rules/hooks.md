@@ -6,10 +6,18 @@ paths:
 
 # The hooks Skein hands its cards
 
-One `PreToolUse` filter doing two jobs. The first undoes a bug in the tool it is handed to;
-the second stops a card committing a sibling's work out of the git index they share. This
-file is the measurements behind both, and the conditions under which the first should be
-deleted — the *how* is in `hooks.rs`, which is short.
+One `PreToolUse` filter doing several jobs. Most of them are guards — the first undoes a bug
+in the tool it is handed to; the rest stop a card committing a sibling's work out of the git
+index they share, shelving a directory instead of deleting it, or wiping a tree. This file is
+the measurements behind them, and the conditions under which the first should be deleted; the
+*how* is in `hooks.rs`, which is short.
+
+**One of them is not a guard**, and it is worth naming at the top because it changes what this
+file is about. The browser arm does not refuse anything in the ordinary case: it *waits*,
+while Volery starts a Chrome the call is about to need, and then lets the call through. The
+hook is the only thing on this machine standing between a model asking for a tool and the tool
+running, which makes it the only place a capability can be **created** just in time rather
+than merely withheld. See "The hook that makes something possible" at the foot of this file.
 
 **Read the last three sections before changing anything here.** The first two-thirds of this
 file describes a compensator that had silently stopped running, and the correction is at the
@@ -591,3 +599,62 @@ inside an hour: `joblog.rs`'s twelve were first run against a lift taken *before
 threaded into `window`, so the green they reported was about a version of the function that no
 longer existed. Re-lifted from source, they still pass — but that was luck rather than
 method.
+
+
+## The hook that makes something possible
+
+Every other arm in `reply` answers *may this happen*. The browser arm answers *can this
+happen yet*, and if the answer is no it makes it yes.
+
+`mcp__browser__*` is on every project card now, whether or not a Chrome exists
+(`.claude/rules/browser.md` has the whole design and the measurements). What makes that
+honest rather than cruel is `wake_browser`: on a call under that prefix, the hook POSTs to
+`ask::WAKE_PATH`, Volery starts the browser, and the hook returns. The call then dials a port
+that answers.
+
+Two measurements it rests on, both in `tools/probe-mcp-hook.ts`:
+
+- **The hook fires for MCP tools**, and `tool_name` is the prefixed name —
+  `mcp__stub__ping`, so a router keys on `mcp__<server>__`. Nothing had established that here;
+  every arm before this one reads `tool_input.command`, which an MCP call never has.
+- **The CLI waits for it.** A hook that slept 1.5s in front of an MCP call had that call run
+  **69ms after the hook returned**. That is the mechanism, and without it none of this is
+  possible: a hook the CLI ran concurrently would still "fire", still look right in a log, and
+  start a browser that arrived after the call that needed it.
+
+Four things about it that are easy to get wrong:
+
+- **It is routed above the shell arm, and must be.** Everything below reads
+  `tool_input.command` and leaves when there is none. An arm placed after them would compile,
+  pass every other test in this file, and never once fire — the matcher that stopped matching,
+  again, this time as a line in the wrong order.
+- **It is one string comparison in the common case.** The hook fires on *every* tool call of
+  every card, and the probe above turned up something nobody had asked: `ToolSearch` goes
+  through it too, and is the first thing a turn does. Anything here that cost real work would
+  be a tax on the whole wall before the model had called a single real tool.
+- **It does not fail open**, which is this module's rule everywhere else. The compensator
+  fails open because an uncompensated command still runs; a browser tool with no browser
+  cannot succeed however quietly we step aside. So the choice is between a refusal that
+  explains and playwright's `ECONNREFUSED`, and `deny` is the only channel on this machine
+  that reaches the model at the moment of use. The one genuinely open case is a card spawned
+  with no `--ask-port`: that is a build mismatch rather than a browser problem, and it says
+  nothing.
+- **The hook spawns nothing itself**, and that is not fastidiousness. It is a short-lived
+  child of the *card*, so a Chrome it started would be outside Volery's job object, unreaped
+  at quit, invisible to the widget and unknown to `browser_stop` — the orphan `processes.md`
+  is entirely about, created on purpose. It asks, and Volery does it.
+
+**And the timeout stopped being decorative.** It was 10s for all three events, which was
+generous for arms that answer in milliseconds. A wake can take as long as a Chrome takes, so
+the `PreToolUse` entry alone carries 50s against a 40s `WAKE_TIMEOUT` — and the ordering is
+the thing, not the numbers. A hook the CLI kills prints nothing, and printing nothing is how
+this module says *allow*: so a timeout set too tight does not produce an error, it produces a
+browser tool running against a browser that is still starting, with the refusal that would
+have explained it discarded unread. `tools/lift-browser.ts` asserts the relationship and
+actually runs it.
+
+`FLAG_PORT` is how the hook knows where to ask, baked into the card's argv at spawn beside
+`--card` and `--db` and for the same reason: a hook process has no Tauri app to ask, and the
+port is `ask::start`'s to know. A chat card is given none, since it is given no browser server
+and a loopback port that starts a 450 MB Chrome would be the largest hole anybody had put in
+`chat.md`'s promise.

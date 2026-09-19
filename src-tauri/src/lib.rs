@@ -447,7 +447,6 @@ pub fn run() {
             browser::browser_park,
             browser::browser_show,
             browser::browser_set_mode,
-            browser::browser_await_start,
             browser::browser_targets,
             browser::browser_open,
             claude::find_claude,

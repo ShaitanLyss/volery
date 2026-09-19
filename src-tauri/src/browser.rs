@@ -76,12 +76,19 @@ const HOST: &str = "127.0.0.1";
 /// The conventional CDP port, and the number a person will type into a
 /// `--cdp-endpoint` by hand without being told twice.
 ///
-/// Fixed rather than ephemeral on purpose. An MCP server's arguments are
-/// settled when the card spawns and cannot be renegotiated afterwards, so an
-/// endpoint whose port moves between runs is one that cannot appear in a static
-/// config — which is the only kind of config the plugin that supplies
-/// `@playwright/mcp` has. A stable number is what makes the agent half of this
-/// work at all.
+/// Fixed rather than ephemeral on purpose, and what that buys grew. An MCP
+/// server's arguments are settled when the card spawns and cannot be
+/// renegotiated afterwards, so an endpoint whose port moved between runs could
+/// not appear in a static config at all. A fixed one can be written down
+/// **before there is anything at the other end of it** — which is the whole of
+/// how a card spawned with no browser running still holds `mcp__browser__*`.
+/// See `address`.
+///
+/// It is therefore not a default any more, it is *the* port: `browser_start`
+/// used to take one and no caller ever passed it, and an override would now
+/// silently unwire every card on the wall, since their arguments were written
+/// before the choice was made. The name is kept because it is in the comments
+/// and in people's fingers; the parameter is gone.
 pub const DEFAULT_PORT: u16 = 9222;
 
 /// How long to wait for a freshly spawned Chrome to answer `/json/version`.
@@ -209,13 +216,17 @@ pub struct Browser {
     /// while nothing is running. Loaded from the database at `setup` and
     /// written back whenever it changes, so the wall comes back as you left it.
     mode: Mutex<Mode>,
-    /// Whether the launch auto-start is still in flight.
+    /// Whether a start is in flight — **any** start, not only the launch
+    /// restore.
     ///
-    /// The wall paints before the browser is up, and a card spawned in that gap
-    /// gets no `mcp__browser__*` — an MCP server's arguments are settled at
-    /// spawn and cannot be renegotiated. So the gap has to be *visible* rather
-    /// than merely short: the rouse queue waits on this, and the widget can say
-    /// "starting" instead of "not running" for the second or two it takes.
+    /// It was the launch restore's alone, and the rouse queue waited on it
+    /// because a card spawned into that gap got no `mcp__browser__*` at all.
+    /// Both halves of that are gone: cards hold the tools regardless, and the
+    /// queue waits on nothing. What the flag does now is two things that
+    /// outlived the reason it was added — it is the claim `ensure_running`
+    /// takes so two cards asking for a browser in the same second produce one
+    /// Chrome, and it is what lets the widget say "starting the browser…"
+    /// rather than "not running" for the second or two it takes.
     starting: Mutex<bool>,
 }
 
@@ -243,9 +254,11 @@ pub struct Status {
     /// Whether its window is somewhere you can see it right now. Distinct from
     /// `mode`, which is how it was launched and cannot change.
     pub on_desktop: bool,
-    /// Whether the launch auto-start is still in flight, so the widget says
-    /// "starting" rather than "not running" and nothing offers you a button
-    /// that would start a second one.
+    /// Whether a start is in flight, whoever asked for it — the widget's
+    /// button, the launch restore, or a card's first browser tool going
+    /// through the wake hook. The widget says "starting the browser…" rather
+    /// than "not running", and offers no button that would ask for a second
+    /// one.
     pub starting: bool,
     /// What went not-quite-right, or empty. Empty rather than `null` to match
     /// `version` and `endpoint`, which are the same kind of field.
@@ -478,11 +491,27 @@ fn get(url: &str, timeout: std::time::Duration) -> Result<String, String> {
 /// event to fold *from the thing being watched*, which is the test `CLAUDE.md`
 /// sets for a poller. It is bounded by construction: it runs once per start and
 /// stops at the first answer.
-fn await_ready(port: u16) -> Result<Ready, String> {
+fn await_ready(port: u16, child: &mut Child) -> Result<Ready, String> {
     let url = format!("http://{HOST}:{port}/json/version");
     let deadline = std::time::Instant::now() + READY_TIMEOUT;
     let mut last = String::from("no answer");
     while std::time::Instant::now() < deadline {
+        /* **A child that has exited did not open this port, so whoever
+           answered is a stranger.** Chrome's profile singleton is the way in:
+           launched on a `--user-data-dir` some other Chrome already holds, it
+           hands its command line to that instance and exits at once — and the
+           instance it handed to may well be answering on this very port. The
+           poll below would then succeed, and `Running` would be stored around a
+           dead handle pointing at somebody else's browser.
+           That is checked *first* so an exit that happened before the port
+           answered is caught in the same tick rather than a wait later. */
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return Err(format!(
+                "the browser exited immediately — {port} is very likely being held by \
+                 another Chrome using the same profile directory, which takes over the \
+                 launch and leaves nothing here to drive"
+            ));
+        }
         match get(&url, std::time::Duration::from_millis(500)) {
             Ok(body) => {
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
@@ -580,19 +609,32 @@ fn mode_and_starting(state: &Browser) -> (Mode, bool) {
     (mode, starting)
 }
 
-/// The endpoint, for code that cannot await a command.
+/// Where the wall's browser is, whether or not anything is listening right now.
 ///
-/// Deliberately synchronous and deliberately not a `#[tauri::command]`: it
-/// takes the mutex, reads two fields and returns. There is no I/O behind it, so
-/// the rule that a blocking command must leave the main thread does not apply —
-/// and `spawn_now` is not async, so a command is not reachable from there
-/// anyway. Returns nothing when no browser is running, which is the honest
-/// answer and is why the caller sets no variable rather than an empty one.
-pub fn endpoint(app: &AppHandle) -> Option<String> {
-    let state = app.try_state::<Browser>()?;
-    let guard = state.inner.lock().ok()?;
-    let r = guard.as_ref()?;
-    Some(format!("http://{HOST}:{}", r.port))
+/// **This replaced a function that asked whether a browser was running**, and
+/// the difference is the feature. `endpoint` read the port out of the live
+/// `Running` and returned nothing when there was none, so `spawn_now` could
+/// only give a card `mcp__browser__*` if a Chrome happened to be up at the
+/// instant it spawned — and could never give it any afterwards, since an MCP
+/// server's arguments are settled at spawn. A card that started while the
+/// browser was asleep was less capable than the one beside it for the rest of
+/// its life, and the only remedy was to wake it again.
+///
+/// The port is a constant, so the address is a constant, so it can be written
+/// into every card's config unconditionally. What was load-bearing about the
+/// old reading — that the prompt must not claim tools the config did not carry
+/// — is kept by `spawn_now` still taking *one* reading and using it for both;
+/// it is simply a reading that no longer depends on the weather.
+///
+/// Whether anything answers at that address is a separate question, asked at
+/// the moment it matters by `hooks::reply` → `ask`'s wake route →
+/// `ensure_running`. Probed 2026-09-19 (`tools/probe-lazy-browser.ts`,
+/// `@playwright/mcp` against a refused port): `initialize` succeeds and
+/// `tools/list` returns all 25 tools, the CDP connection is not opened until
+/// the first `tools/call`, and a call made *after* Chrome appears succeeds on
+/// the same server process. Every one of those three had to hold.
+pub fn address() -> String {
+    format!("http://{HOST}:{DEFAULT_PORT}")
 }
 
 /// The MCP server that turns this browser into `mcp__browser__*` on a card.
@@ -626,6 +668,29 @@ pub fn endpoint(app: &AppHandle) -> Option<String> {
 /// pinned client that stops speaking to it fails in the CDP handshake naming
 /// nothing. The cost is an npx registry check at spawn, which is already paid
 /// once per card by the plugin's own server.
+///
+/// **The endpoint it is handed need not answer yet**, and that is the second
+/// thing the probe was for. `--cdp-endpoint` reads as a dependency — the value
+/// cannot be written until Chrome is up — but it is only an *address*, and
+/// `@playwright/mcp` does not dial it at startup. Measured 2026-09-19 against a
+/// port with nothing bound to it (`tools/probe-lazy-browser.ts`):
+///
+/// ```text
+/// initialize              ok in 1320ms
+/// tools/list              25 tools
+/// first tools/call        isError: connect ECONNREFUSED 127.0.0.1:19222   [26ms]
+/// …Chrome started…        716ms
+/// second tools/call       ok — same server process, no restart            [1798ms]
+/// ```
+///
+/// So the argument is settled at spawn and the *connection* is not, which is
+/// the seam the whole lazy start goes through: the tools are listed on every
+/// card from the moment it opens, and the one thing missing when the first call
+/// arrives is a Chrome — which `hooks::reply` starts, in front of the call,
+/// before `@playwright/mcp` ever dials. A third arm of the same probe pointed it
+/// at a listener that counted its accepts and saw **zero** across `initialize`
+/// and `tools/list`, which is what makes "lazy" true rather than merely hoped:
+/// registering the server does not itself cost 450 MB.
 pub fn mcp_server(endpoint: &str) -> serde_json::Value {
     serde_json::json!({
         "command": "npx",
@@ -648,51 +713,249 @@ pub async fn browser_status(state: State<'_, Browser>) -> Result<Status, String>
     Ok(status_of(&guard, mode, starting))
 }
 
-/// Start the shared browser, or return the one already running.
+/// How long a caller will wait for a start somebody else is already doing.
 ///
-/// `async`, and that is not decoration: this spawns a process and then blocks
-/// on a loopback poll for up to ten seconds. A non-`async`
-/// `#[tauri::command]` compiles to the `body_blocking` arm and runs *inline on
-/// the thread that dispatched the IPC* — the main thread, which is also the only
-/// thread that drains the event-loop queue. Ten seconds there is not one slow
-/// command, it is every card on the wall going unpainted for ten seconds and
-/// then landing at once. See `CLAUDE.md`.
-#[tauri::command]
-pub async fn browser_start(
-    app: AppHandle,
-    state: State<'_, Browser>,
-    port: Option<u16>,
-) -> Result<Status, String> {
-    {
-        let guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
-        if guard.is_some() {
-            let (m, starting) = mode_and_starting(&state);
-            return Ok(status_of(&guard, m, starting));
-        }
-    }
+/// Headless is two launches, each bounded by `READY_TIMEOUT`, and the starter
+/// does more than wait on those: a profile directory to create, a five-second
+/// `await_port_closed` between the two launches, an `EnumWindows` pass to park,
+/// and `remember`'s acquisition of the store mutex, which another query can
+/// hold. So twice `READY_TIMEOUT` is the *poll* budget rather than the
+/// starter's ceiling, and this is deliberately well past it — there are
+/// eighteen seconds of slack under `hooks::WAKE_TIMEOUT` and no reason to be
+/// mean with them.
+///
+/// Past it the *wait* gives up rather than the browser: a Chrome wedged on a
+/// first-run profile must not hold a card's tool call open until the CLI kills
+/// the hook underneath it, because a killed hook says nothing and a refusal
+/// says why. `wait_for_start` takes one more look before it refuses, since the
+/// refusal is final and the browser may have arrived in the last tick.
+pub(crate) const SHARED_START_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(READY_TIMEOUT.as_secs() * 3 + 5);
 
-    /* Always the mode that is *set*, never one passed in beside the press.
+/// Say that the browser's standing has changed, so the widget can go and look.
+///
+/// **This is the event that did not exist, and the lazy start is what made its
+/// absence a bug rather than a curiosity.** `Pane.refresh` was only ever called
+/// by the start button, by `saveSession`, and by CDP target events over a
+/// socket that only exists once a browser has already been found — so a browser
+/// that came up any *other* way left the widget reading "not running" until
+/// somebody pressed a button. That was already true of the launch restore and
+/// was survivable, because the only other way to start one was the button
+/// itself. It stopped being survivable the moment a card could start one: the
+/// widget's whole job is to say whether there is a browser, and it would have
+/// said no while an agent was driving a page through it.
+///
+/// A fold rather than a poll, which is the bar `CLAUDE.md` sets for exactly this
+/// shape — the thing being watched emits nothing, so the *change itself* is made
+/// to emit, at the two moments it happens, by the code that makes it happen.
+/// There is no clock here and nothing to stop.
+///
+/// Deliberately carries no payload. The front end has `browser_status` and
+/// needs the target list and the browser socket beside it anyway, so a status
+/// in the envelope would be a second, racier copy of a reading it is about to
+/// take properly. This says only *go and look*.
+fn announce(app: &AppHandle) {
+    use tauri::Emitter;
+    /* Swallowed, in one place, like `remember` next door: a widget that missed
+       one redraws on the next gesture, and nothing here is worth failing a
+       start over. */
+    if let Err(e) = app.emit("browser:changed", ()) {
+        log::warn!("browser: could not announce the change: {e}");
+    }
+}
+
+/// Clears `starting` however the start ends — returned early, failed, panicked.
+///
+/// A flag saying "somebody is on it" that outlives the somebody is a wall where
+/// no card can ever wake the browser again and the widget offers no button,
+/// which is a worse outcome than any failure it is guarding. Every exit from
+/// `ensure_running` is therefore this `Drop` rather than a line at the bottom.
+struct Starting(AppHandle);
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        if let Some(state) = self.0.try_state::<Browser>() {
+            if let Ok(mut s) = state.starting.lock() {
+                *s = false;
+            }
+        }
+        /* And whichever way it went, the standing has changed — `starting` was
+           true a moment ago and is not now. Announced from the Drop rather than
+           from the success path so the *failed* start also redraws: a widget
+           left saying "starting the browser…" for ever, with no button, is the
+           one outcome worse than saying nothing. */
+        announce(&self.0);
+    }
+}
+
+/// Put the shared browser up if it is not already, and return when it answers.
+///
+/// **The one way a browser starts**, and everything that wants one goes through
+/// here: the widget's button, the launch restore, and — the reason it exists —
+/// a card's first `mcp__browser__*` call, which arrives over `ask`'s wake route
+/// from the `PreToolUse` hook. Before this there were two copies of the start,
+/// one in `browser_start` and one in `resume_at_launch`, and only the second
+/// knew about the `starting` flag.
+///
+/// **Synchronous, and it must not be called on the main thread.** It spawns a
+/// process and then blocks on a loopback poll for up to ten seconds; the main
+/// thread is the only one that drains the event-loop queue, so ten seconds
+/// there is every card on the wall going unpainted and then landing at once
+/// (see `CLAUDE.md`). `browser_start` reaches it through `off_main`; the wake
+/// route is already on a thread of its own, which is the ordinary case now.
+///
+/// **The claim and the check are under one lock, because they are one
+/// question.** Two cards asked to drive a UI in the same second is not a
+/// hypothetical — it is a Tuesday — and between reading "nothing is running"
+/// and writing "I am starting one" there must be nothing at all, or both spawn
+/// a Chrome on one port. The loser of that race does not fail cleanly either:
+/// its `await_ready` is answered by the *winner's* browser, so it reports
+/// success and holds a child that bound nothing. A failure that looks like
+/// success is the one worth taking a lock to avoid.
+pub fn ensure_running(app: &AppHandle) -> Result<(), String> {
+    let ours = {
+        let state = app
+            .try_state::<Browser>()
+            .ok_or("this wall has no browser")?;
+        let mut guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
+        if let Some(r) = guard.as_mut() {
+            /* A browser that died on its own — crashed, or closed from its own
+               window — is not a browser, and the same reap `browser_status`
+               does has to happen here too. Without it a wake returns Ok on the
+               strength of a dead handle and the tool call behind it meets a
+               closed port, which is precisely the error this exists to stop. */
+            if matches!(r.child.try_wait(), Ok(Some(_))) {
+                *guard = None;
+            } else {
+                return Ok(());
+            }
+        }
+        let mut starting = state.starting.lock().map_err(|_| "browser state poisoned")?;
+        if *starting {
+            false
+        } else {
+            *starting = true;
+            true
+        }
+    };
+
+    if !ours {
+        return wait_for_start(app);
+    }
+    let _mark = Starting(app.clone());
+    /* The claim is drawable in its own right: `starting` is now true, and the
+       widget says "starting the browser…" and offers no second start. Said
+       here rather than after the spawn, because the whole point of the flag is
+       to cover the seconds a Chrome takes. */
+    announce(app);
+
+    /* Always the mode that is *set*, never one named beside the request.
        Choosing and starting are two gestures and therefore two commands
        (`browser_set_mode` is the other): a start that could also change the
-       setting gives the wall two ways to answer "how does this browser
-       stand", and the one that loses is whichever was not the last call. */
-    let mode = state.mode.lock().map(|m| *m).unwrap_or_default();
-
-    let port = port.unwrap_or(DEFAULT_PORT);
-    let profile = profile_dir(&app)?;
+       setting gives the wall two ways to answer "how does this browser stand",
+       and the one that loses is whichever was not the last call. It is also
+       what makes a card's wake honest — the browser an agent wakes is the one
+       the person configured, not one it chose the shape of. */
+    let mode = {
+        let state = app
+            .try_state::<Browser>()
+            .ok_or("this wall has no browser")?;
+        let m = state.mode.lock().map(|m| *m).unwrap_or_default();
+        m
+    };
+    let profile = profile_dir(app)?;
     let exe = find_chrome().ok_or_else(|| {
         "no Chrome or Edge found — looked in Program Files, Program Files (x86) and \
          Local AppData"
             .to_string()
     })?;
 
-    let started = crate::off_main(move || spawn_browser(&exe, &profile, port, mode)).await??;
+    let started = spawn_browser(&exe, &profile, DEFAULT_PORT, mode)?;
 
-    let mut guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
-    *guard = Some(started);
+    {
+        let state = app
+            .try_state::<Browser>()
+            .ok_or("this wall has no browser")?;
+        let mut guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
+        *guard = Some(started);
+    }
     /* And *now* it is running, so say so where a crash cannot unsay it. */
-    remember(&app, mode, true);
-    let (_, starting) = mode_and_starting(&state);
+    remember(app, mode, true);
+    Ok(())
+}
+
+/// Wait out a start another caller claimed, and say whether it worked.
+///
+/// Returns the same `Ok`/`Err` shape as doing the start, because the caller is
+/// a card's tool call and it does not care who put the browser up — only
+/// whether there is one to dial. The failing arm says the start was somebody
+/// else's, since "no Chrome or Edge found" arriving on a call that never tried
+/// to spawn one would send an agent looking in the wrong place.
+fn wait_for_start(app: &AppHandle) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + SHARED_START_WAIT;
+    loop {
+        let (starting, running) = {
+            let state = app
+                .try_state::<Browser>()
+                .ok_or("this wall has no browser")?;
+            let starting = state.starting.lock().map(|s| *s).unwrap_or(false);
+            let running = state
+                .inner
+                .lock()
+                .map_err(|_| "browser state poisoned")?
+                .is_some();
+            (starting, running)
+        };
+        if !starting {
+            return if running {
+                Ok(())
+            } else {
+                Err("something else was already starting the shared browser and it did not \
+                     come up"
+                    .into())
+            };
+        }
+        if std::time::Instant::now() >= deadline {
+            /* One last look before refusing, because the two readings above
+               were taken a whole iteration ago and the thing being waited for
+               is a browser that may have arrived in between. Refusing a card's
+               tool call for a browser that came up 200ms later is the worst
+               outcome available here — the deny is final, where waiting a
+               moment longer costs nothing anybody sees. */
+            let arrived = app
+                .try_state::<Browser>()
+                .and_then(|s| s.inner.lock().ok().map(|g| g.is_some()))
+                .unwrap_or(false);
+            return if arrived {
+                Ok(())
+            } else {
+                Err("the shared browser is still starting and is taking too long".into())
+            };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Start the shared browser now, rather than when something first needs it.
+///
+/// **The button behind this did not become decorative when the browser learned
+/// to start itself, and it is worth saying which question it still answers.** A
+/// card's first browser tool wakes one — so this is no longer what decides
+/// whether agents *have* the capability, which is what it used to mean. What it
+/// still decides is whether there is a browser to *look at*: you press it to
+/// sign into something, to watch a page in the widget before any agent has
+/// asked for one, or to pay the ~450 MB and the second of startup now rather
+/// than in the middle of a turn you are reading.
+///
+/// `async` for the reason `ensure_running` says it must not run on the main
+/// thread; `off_main` is `spawn_blocking`, which is the pool built for work
+/// that parks a thread.
+#[tauri::command]
+pub async fn browser_start(app: AppHandle, state: State<'_, Browser>) -> Result<Status, String> {
+    let handle = app.clone();
+    crate::off_main(move || ensure_running(&handle)).await??;
+    let (mode, starting) = mode_and_starting(&state);
+    let guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
     Ok(status_of(&guard, mode, starting))
 }
 
@@ -701,15 +964,80 @@ pub async fn browser_start(
 /// Split out of `browser_start` because it is what the launch auto-start needs
 /// too, and because the headless arm makes this a two-launch function rather
 /// than the one-liner it used to be.
+/// Refuse the port if somebody is already on it.
+///
+/// **Nothing in this file used to ask who owned the port, and the lazy start is
+/// what made that reachable without a person.** `await_ready` polls
+/// `/json/version` and takes the first answer; it cannot tell a browser we
+/// launched from one that was already there. Before, adopting a stranger needed
+/// somebody to press start, or a launch restore — `resume_at_launch`'s own
+/// comment names the two ways it happens, "a stale one from a wall that was
+/// killed, or the person's own with a debugging port". Now **every**
+/// `mcp__browser__*` call reaches `ensure_running`, so it would happen by
+/// itself, repeatedly, on any wall where the person runs Chrome with a
+/// debugging port — a common enough dev habit.
+///
+/// What it costs to get wrong is not a failed start. It is every card on the
+/// wall driving *the person's own browser*, with their live sessions in it and
+/// `browser_close` and `browser_run_code_unsafe` among the tools — while
+/// `browser_stop` kills the window Volery spawned and leaves the driven one
+/// running, outside the job object. That is the orphan `processes.md` exists to
+/// prevent, arrived at from the far end.
+///
+/// A bind test rather than an ownership check, because there is no ownership to
+/// check: CDP has no notion of a credential and `/json/version` says nothing
+/// about who started the browser. Binding is the one question with an honest
+/// answer — *is this port free for us* — and it is the same question Chrome is
+/// about to ask.
+///
+/// **It races, and that is fine.** The listener is dropped before Chrome is
+/// spawned, so something could take the port in between; this is a diagnostic
+/// that turns a silent adoption into a refusal that names the cause, not a
+/// lock. The window it leaves is microseconds against a habit that lasts all
+/// day, and `await_ready`'s exit check covers the profile-singleton half
+/// regardless.
+/// Wait until nothing answers on the port any more.
+///
+/// The other half of `port_is_free`: that one asks whether a port is free
+/// before a launch, and this waits for one to *become* free after a kill. Both
+/// exist because a bound port outlives the process handle that bound it.
+///
+/// Returns either way — a port still held after this is a fact the caller's own
+/// deadline will discover, and refusing a start over it would turn a slow
+/// teardown into a browser you cannot have.
+fn await_port_closed(port: u16) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpListener::bind((HOST, port)).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    log::warn!("browser: {port} is still held after the browser was stopped");
+}
+
+fn port_is_free(port: u16) -> Result<(), String> {
+    match std::net::TcpListener::bind((HOST, port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(e) => Err(format!(
+            "something is already listening on {HOST}:{port} ({e}) — that is usually              a Chrome started with a debugging port by hand, or one left by a wall that              was killed. Volery will not adopt a browser it did not start, because every              card on this wall would then be driving it. Close it, or stop whatever is              using {port}."
+        )),
+    }
+}
+
 fn spawn_browser(
     exe: &std::path::Path,
     profile: &std::path::Path,
     port: u16,
     mode: Mode,
 ) -> Result<Running, String> {
+    port_is_free(port)?;
     let (mut child, mut job) = raw_spawn(exe, profile, port, mode, None)?;
 
-    let mut ready = match await_ready(port) {
+    let mut ready = match await_ready(port, &mut child) {
         Ok(v) => v,
         Err(e) => {
             /* Dropping the job kills the tree. Leaving a Chrome running on
@@ -731,10 +1059,22 @@ fn spawn_browser(
             let _ = child.kill();
             let _ = child.wait();
             drop(job);
+            /* **And wait for the port to actually go, which is not the same as
+               the handle going.** `kill` reaches one process and Chrome is a
+               dozen, so 9222 stays bound for a moment after the child is
+               reaped — and a relaunch inside that moment has its `await_ready`
+               answered by the *dying* browser, which reads as a successful
+               start and then drops every connection made to it. Measured
+               exactly this way in `tools/probe-lazy-browser.ts`, where it
+               produced a 30-second timeout that looked like the whole design
+               being unworkable. Bounded, and a timeout here is not fatal: the
+               relaunch is attempted anyway and `await_ready`'s own deadline is
+               the backstop. */
+            await_port_closed(port);
             let (c, j) = raw_spawn(exe, profile, port, mode, Some(&ua))?;
             child = c;
             job = j;
-            ready = match await_ready(port) {
+            ready = match await_ready(port, &mut child) {
                 Ok(v) => v,
                 Err(e) => {
                     drop(job);
@@ -878,6 +1218,23 @@ fn remember(app: &AppHandle, mode: Mode, running: bool) {
     }
 }
 
+/// Close the shared browser and reclaim what it costs.
+///
+/// **This stopped meaning "and it stays stopped", and the honest reading is
+/// that it never quite did.** A card's first `mcp__browser__*` call now starts
+/// one, so an agent given a UI to look at a minute after you press this will
+/// put a browser back up. The alternative was considered — a held-down flag
+/// that refuses a card's wake until you start it again — and rejected: the
+/// gesture would then mean two different things depending on why you pressed
+/// it, and the one it would mean *least* often is the one it would enforce.
+/// Pressing stop is reclaiming ~450 MB from a browser nothing is using, which
+/// is exactly what it still does; it is not an instruction to the wall about
+/// the next hour, and a button that silently became one would be the widget
+/// lying in the other direction.
+///
+/// What it does still settle for good is the *launch* restore — `remember`
+/// writes `was_running = false`, so a wall closed after this comes back with no
+/// browser, which is the preference it is fair to read into the press.
 #[tauri::command]
 pub async fn browser_stop(app: AppHandle, state: State<'_, Browser>) -> Result<Status, String> {
     let mut guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
@@ -893,50 +1250,31 @@ pub async fn browser_stop(app: AppHandle, state: State<'_, Browser>) -> Result<S
        the whole of what distinguishes a browser you closed from one the wall
        was killed holding. */
     remember(&app, mode, false);
-    Ok(status_of(&guard, mode, starting))
+    /* The status is built *before* the lock goes, so what comes back is one
+       reading rather than three taken across a gap a wake could land in. Then
+       the other boundary is announced: this caller redraws itself, but any
+       other browser widget on the wall would otherwise go on drawing a page
+       that is gone. */
+    let status = status_of(&guard, mode, starting);
+    drop(guard);
+    announce(&app);
+    Ok(status)
 }
 
-/// Wait until the launch auto-start has settled, and say whether there is a
-/// browser.
-///
-/// One call, for one caller: the rouse queue, which spawns cards at launch and
-/// must not spawn them into the gap where the browser is coming up but not yet
-/// answering. A card spawned in that gap has no `mcp__browser__*` and cannot be
-/// given any — an MCP server's arguments are settled at spawn — so the cost of
-/// getting this wrong is a card that is silently less capable than the one
-/// beside it, for the rest of its life.
-///
-/// Returns immediately when nothing is starting, which is every launch that
-/// had no browser to restore. Bounded well past what a start can take, so a
-/// wedged Chrome delays the queue rather than stopping it: the queue is
-/// background work and a card roused late is a card roused.
-///
-/// This is a wait rather than a poll, and the distinction is the one
-/// `await_ready` already makes one screen up — it runs once, it stops at the
-/// first answer, and there is nothing here that goes on asking after that.
-#[tauri::command]
-pub async fn browser_await_start(app: AppHandle) -> Result<bool, String> {
-    /* Generous: a headless start is two launches, each bounded by
-       READY_TIMEOUT, so the honest ceiling is a little over twice that. */
-    let deadline =
-        std::time::Instant::now() + READY_TIMEOUT * 2 + std::time::Duration::from_secs(2);
-    loop {
-        let Some(state) = app.try_state::<Browser>() else {
-            return Ok(false);
-        };
-        let starting = state.starting.lock().map(|s| *s).unwrap_or(false);
-        if !starting {
-            let guard = state.inner.lock().map_err(|_| "browser state poisoned")?;
-            return Ok(guard.is_some());
-        }
-        if std::time::Instant::now() >= deadline {
-            log::warn!("browser: the restored browser is taking too long; rousing anyway");
-            return Ok(false);
-        }
-        drop(state);
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-}
+/* `browser_await_start` was here, and it is gone rather than unused.
+ *
+ * It existed for one caller — the rouse queue, which held every card at launch
+ * until the restored browser had answered, because a card spawned in that gap
+ * got no `mcp__browser__*` and could never be given any. That was a real cost
+ * paid for a real reason: an MCP server's arguments are settled at spawn.
+ *
+ * The reason is what went away. Every card now spawns with the tools whatever
+ * the browser is doing (`address`), so there is no gap left to wait out, and
+ * the wait had become a second or two of nothing at the front of every launch
+ * that restored a browser. Deleted rather than left behind a comment, because a
+ * command still registered in `lib.rs` is one the next person to read
+ * `skein.svelte.ts` has to work out the purpose of.
+ */
 
 /// Choose how the browser stands, without starting or stopping anything.
 ///
@@ -1125,13 +1463,16 @@ fn show_windows(_pid: u32) {}
 /// demonstrably in use when the wall closed, which is not a guess about what
 /// you might want but a record of what you had.
 ///
-/// It also closes the rough edge that file names as the one left: a card
-/// spawned at launch could not have `mcp__browser__*`, because the browser was
-/// not up yet and an MCP server's arguments are settled at spawn. With the
-/// browser coming up at launch, cards roused after it do have the tools — which
-/// is why `starting` is a published field and the rouse queue waits on it.
-/// Nothing here blocks the window: `setup` returns immediately and the wall
-/// paints while Chrome is still starting.
+/// **Its second justification has expired, and the restore is kept on the
+/// first.** It used to be the only way a card could have `mcp__browser__*` at
+/// launch — the tools existed if and only if a Chrome happened to be up when
+/// the card spawned — which is why `starting` was published and why the rouse
+/// queue waited on it. Cards now spawn with the tools regardless, so nothing
+/// waits and this is no longer load-bearing for capability at all. What it
+/// still does is put back the *page you were looking at*: a widget showing a
+/// live browser is furniture, and a wall that comes back with its furniture
+/// gone reads as having forgotten something. Nothing here blocks the window:
+/// `setup` returns immediately and the wall paints while Chrome is starting.
 pub fn resume_at_launch(app: &AppHandle) {
     let (mode, was_running) = {
         let Some(store) = app.try_state::<crate::store::Store>() else {
@@ -1154,50 +1495,37 @@ pub fn resume_at_launch(app: &AppHandle) {
         return;
     }
 
-    /* Marked before the thread starts rather than inside it. The rouse queue
-       reads this to decide whether to wait, and a flag set a few milliseconds
-       into the background work is a flag it can miss entirely. */
-    if let Ok(mut s) = state.starting.lock() {
-        *s = true;
-    }
-
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let done = |handle: &AppHandle| {
-            if let Some(state) = handle.try_state::<Browser>() {
-                if let Ok(mut s) = state.starting.lock() {
-                    *s = false;
-                }
-            }
-        };
+        /* The flag, the mode, the profile, finding Chrome and remembering the
+           result are all `ensure_running`'s now. What is left here is the
+           decision to start one at all, which is the only thing about a restore
+           that is peculiar to a launch.
 
-        let (Ok(profile), Some(exe)) = (profile_dir(&handle), find_chrome()) else {
-            log::warn!("browser: was running last time, but there is no Chrome to start");
-            done(&handle);
-            return;
-        };
-
-        match crate::off_main(move || spawn_browser(&exe, &profile, DEFAULT_PORT, mode)).await {
-            Ok(Ok(running)) => {
-                if let Some(state) = handle.try_state::<Browser>() {
-                    if let Ok(mut guard) = state.inner.lock() {
-                        *guard = Some(running);
-                    }
-                }
-                log::info!("browser: restored, {}", mode.as_str());
-            }
+           **`starting` is therefore claimed a few milliseconds late**, where it
+           used to be published synchronously before this thread began. That was
+           load-bearing when the rouse queue waited on it — a flag set inside the
+           background work is one the queue could miss entirely — and nothing
+           waits on it now. What is left is a sliver in which the widget would
+           offer a start button for a restore already under way, and pressing it
+           is harmless: it lands in `ensure_running`, finds the claim taken and
+           waits on the same start. */
+        let h = handle.clone();
+        match crate::off_main(move || ensure_running(&h)).await {
+            Ok(Ok(())) => log::info!("browser: restored, {}", mode.as_str()),
             Ok(Err(e)) | Err(e) => {
                 /* Not fatal and not silent. The commonest cause is a Chrome
                    already holding 9222 — a stale one from a wall that was
-                   killed, or the person's own with a debugging port. The widget
-                   will offer a start button, which is the right next move. */
+                   killed, or the person's own with a debugging port. Nothing is
+                   stranded by it any more: the cards still hold their browser
+                   tools, and the first one to use them tries the start again
+                   with a person watching the widget. */
                 log::warn!("browser: could not restore the browser that was running: {e}");
                 /* And it is no longer running, so stop claiming it was — else
                    every launch from here tries and fails again. */
                 remember(&handle, mode, false);
             }
         }
-        done(&handle);
     });
 }
 
