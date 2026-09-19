@@ -280,7 +280,7 @@ survive `--resume` reading the CLI's own file.
   end reads the name out of. Folded to an apostrophe rather than escaped — one less thing for
   two parsers in two languages to agree about.
 
-### Queued, not woken
+### Queued, then woken
 
 A dormant target gets a row with `delivered_at` null, and the card wears a mark saying it is
 holding post. `spawn_conversation` drains the inbox — the one line both `wake` and `open`
@@ -288,9 +288,49 @@ reach, the same argument the `kind` lookup there makes — *before* anything els
 written, so a card woken by a prompt you typed reads what it was told while it slept first.
 That is the order the two actually happened in.
 
-Waking instead was the alternative and is the more consistent rule; it was not taken because
-an agent that can spend a process and an API turn on six sleeping cards without anybody asking
-is the wrong default. `wake: true` is available and says what it costs.
+**And a message addressed to one card by name now wakes it**, which it did not until
+2026-09-19. The queue is unchanged and is still how the message travels; what was added is a
+`relay:wake` the front end answers by spawning the card, so the row that was already written
+is drained a second later instead of whenever somebody next happened to speak to it.
+
+The argument against had been that an agent able to spend a process and an API turn on six
+sleeping cards without anybody asking is the wrong default — and this file claimed a
+`wake: true` that would say what that costs, which **was never built**, so the paragraph
+described a door that was not there. The half of it that was right is the six: the cost it
+feared is a fan-out, and a fan-out is exactly what `project` and `skein` are. So the carve-out
+is where the cost is rather than where the convenience was, and a broadcast still queues.
+
+What the old rule cost is what made it worth changing: the reaper stands idle cards down
+(`reaping.ts`), so two cards coordinating across a quiet half-hour would have one of them
+reaped mid-exchange — and from the other end that is a card that has simply stopped replying,
+with the message sitting in an inbox nothing was going to open. The wall's own reaper made the
+recipient unreachable and then the send agreed with it.
+
+- **Directed only, and `do_send` decides.** The front end is told *which card* to wake and
+  never *whether* — the policy is one condition, in the file that knows what a broadcast is.
+- **Rust asks; the webview spawns.** Everything a wake needs lives on the front end: the
+  session id a cleared card points at (not its own id), the account label, the `dormant` flag
+  the wall is drawn from, and `Skein.#spawn`'s single-flight guard, without which a rouse and
+  a send race over one card and the loser reads the refusal as a card that failed to wake.
+  Spawning from `relay.rs` would be a second birth path with none of that — the arrangement
+  `spawn.rs` already refused, for the same reasons, when a card first opened a card.
+- **The receipt does not claim the wake happened.** It is written before the spawn is
+  attempted and the spawn is a process, which can fail. What it can stand behind is that the
+  message is kept and will be the first thing that card reads, which is what the sender
+  needed to know — and if the wake fails, the inbox behaves exactly as it did before.
+- **Nothing is delivered twice.** `record_relay(awake: false)` writes the row and
+  `drain_inbox` is still the only thing that hands it over. A card that woke by some other
+  route in the meantime gets it from that drain instead, and `stir` is a no-op on a card with
+  a process.
+- **The strand is honest about the gap.** `relay:sent` still carries `delivered: false`, so
+  the wall draws a message that left and did not arrive; the inbox mark goes up and then comes
+  down a moment later under `from_inbox: true`. Marking it delivered at the send would be the
+  wall claiming a landing that has not happened — `Conversation.echo`'s pending line, one
+  surface over.
+- **The tool description says none of this**, on purpose. The loaded tier is a byte budget
+  every spawn of every card pays (`ask::the_loaded_tier_is_what_every_turn_pays_for`) and
+  `send` is in it; the receipt teaches the same thing at the one moment it is actionable, to
+  the one agent it concerns.
 
 **`chain` and `hops` are stored, not only held in `Relays`.** This used to be a guard in its
 own right — a queued message delivered at tomorrow's launch is the sixth hop of something, and

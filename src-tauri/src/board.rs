@@ -1045,8 +1045,9 @@ fn still_theirs(subject: &str, who: &str, title: &str, live: bool, quiet: i64) -
          take down. {}\n\n\
          A notice is a claim the card that posted it is still making, and that card is \
          the one thing that knows whether it still is. Two things that do work: \
-         `mcp__skein__send` it and ask — a dormant card is given the message at its next \
-         wake — or, if it has plainly finished, `mcp__skein__close` it, which retires \
+         `mcp__skein__send` it and ask — a dormant card is woken to read a message \
+         addressed to it — or, if it has plainly finished, `mcp__skein__close` it, \
+         which retires \
          everything it has up. And if nobody is ever behind it again, the wall takes it \
          down by itself once it and its card have been silent for three days.",
         if live {

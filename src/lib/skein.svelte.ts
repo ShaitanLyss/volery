@@ -544,6 +544,26 @@ export class Skein {
     );
 
     keep(
+      /* A card was sent something while it slept, and the message names it
+         rather than being a broadcast. `relay.rs` has already written the row;
+         all that is wanted here is the process, and `drain_inbox` hands the
+         message over on the way back up through the spawn — so this listener
+         delivers nothing and cannot drop anything if it never fires.
+         `mcp__skein__send` is the only emitter, and it decides *whether* to ask.
+
+         Waking lives on this side because everything a wake needs is on this
+         side: the session id a cleared card points at, the account it spends,
+         the `dormant` flag the wall is drawn from, and the single-flight guard
+         that stops this and a rouse racing over one card. `stir` is precisely
+         that gesture — it is what typing at a dormant card already does — and
+         it is a no-op for a card that is awake, which is the ordinary case for
+         a recipient that went to sleep between the two events. */
+      listen<{ to: string }>("relay:wake", (e) => {
+        this.stir(this.#byId.get(e.payload.to) ?? null);
+      }),
+    );
+
+    keep(
       /* Every write to the billboard goes through `board.rs`, which emits — so
          there is an event for every change there is and nothing here polls.
          `refresh` is a no-op when nothing is looking at it, which is the whole

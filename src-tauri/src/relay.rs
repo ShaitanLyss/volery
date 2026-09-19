@@ -146,6 +146,21 @@ struct RelaySent {
     preview: String,
 }
 
+/// A dormant card has post addressed to it by name, and should be woken.
+///
+/// An ask rather than an instruction, and it carries nothing but the id on
+/// purpose: the message is already in the store by the time this is emitted, so
+/// there is nothing here for the front end to deliver and nothing it could get
+/// wrong. It spawns the card — `drain_inbox` runs inside the spawn and hands
+/// over what was waiting, in order, exactly as it does for a card woken by a
+/// prompt you typed.
+///
+/// Emitted per recipient and only for a directed send, per `do_send`.
+#[derive(Clone, Serialize)]
+struct RelayWake {
+    to: String,
+}
+
 /* ── handles ──────────────────────────────────────────────────────────────
  *
  * A card's id is a uuid, and a model addressing one by 36 characters of hex is
@@ -648,6 +663,28 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
         if awake {
             arm(&relays, app, to_id, &chain, hops);
         }
+        /* A dormant card addressed *by name* is woken to read this, rather than
+           left holding it until somebody next speaks to it. See `Queued, then
+           woken` in `.claude/rules/relay.md`: the row is written either way and
+           `drain_inbox` is still what hands the message over, so this adds a
+           wake to the existing path and no second delivery.
+
+           Directed only, and the carve-out is the whole of the old argument:
+           what must not happen is one tool call spending a process and an API
+           turn on every sleeping card on the wall, and that is `project` /
+           `skein`, not a handle. A broadcast still queues.
+
+           **Rust asks rather than spawns.** Waking is the front end's — it
+           holds the session id a cleared card points at, the account label, the
+           `dormant` flag the wall is drawn from, and the single-flight guard
+           that stops a rouse and a send racing over one card (`Skein.#spawn`).
+           Spawning from here would be a second birth path with none of that,
+           which is the arrangement `spawn.rs` already refused for the same
+           reasons. */
+        let waking = !awake && !broadcast;
+        if waking {
+            let _ = app.emit("relay:wake", RelayWake { to: to_id.clone() });
+        }
         let name = rows
             .iter()
             .find(|r| &r.id == to_id)
@@ -655,10 +692,22 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
             .unwrap_or_else(|| handle_of(to_id));
         receipts.push(if awake {
             format!("delivered to \"{name}\" ({})", handle_of(to_id))
+        } else if waking {
+            /* Said without claiming the wake has happened: the spawn is a
+               process and it can fail, and this receipt is written before it is
+               even attempted. What is certain is that the message is kept and
+               will be the first thing that card reads, which is what the sender
+               actually needs to know. */
+            format!(
+                "\"{name}\" ({}) was dormant — it is being woken, and this is the first \
+                 thing it will be given. It has not read it yet, so nothing has come \
+                 back; if it cannot be started the message keeps until it next opens.",
+                handle_of(to_id)
+            )
         } else {
             format!(
-                "queued for \"{name}\" ({}) — that card is dormant and will be given \
-                 this when it wakes",
+                "queued for \"{name}\" ({}) — that card is dormant and a broadcast does \
+                 not wake anybody, so it will be given this when it wakes",
                 handle_of(to_id)
             )
         });
