@@ -248,6 +248,49 @@ build's catalogue of presets lives in the front end, and Rust keeping a second c
 vocabulary it does not own is what `classify.ts` exists to prevent. An unknown id is handled
 where it is read.
 
+### The same five, reached from the territory
+
+The `+`'s right-click answered "what is this card for" for the `+`, and left the gesture most
+often used to open a card answering nothing: **right-click a territory → new conversation
+here** goes through `openIn(cwd)` with no preset, which resolves to the wall's default. That
+is not a bad card — the default is a real choice and ctrl-click is how it was made — but it is
+the *same* card every time, from the one menu where you have already stopped to read something.
+
+So the territory menu gains `new conversation as… ▸`, the five rows with their notes, and the
+`""` row beside them.
+
+- **A sibling of the plain row, not a submenu on it**, and that is the whole decision. This
+  file's standing rule is that a family's row opens a list *instead of* doing something —
+  "a row that did both would be a row where the fast gesture and the careful one disagree" —
+  so folding the choice into `new conversation here` would have cost the one-click opening.
+  That is the common case and the reason the menu is reached for at all. One extra line buys
+  the choice without taking the default away, which is the same bargain the `+` strikes with
+  its two buttons: plain gesture opens, considered gesture chooses.
+- **Directly under the row it varies**, because that is what it is — the same opening with the
+  cost chosen. Not down with the widgets, where it would be found by hunting.
+- **The dot marks what the plain row above does**, which is a little more than it means on the
+  `+`. There the mark answers "what will the button cost"; here the thing it describes is
+  sitting one line up, so the list doubles as the answer to "and what does *that* one do". The
+  `""` row is markable for the reason it is there at all: a wall that deliberately chose no
+  preset would otherwise show a list with no dot anywhere.
+- **Marking is all it does — there is no ctrl-click here.** Setting the default is the `+`'s
+  job, and one gesture in two places is two places for it to drift. The hint line is the `+`'s
+  too, for the reason it was added: a modifier nobody is told about is a feature only its
+  author has, and repeating the caption on a menu that does not answer the gesture would be
+  worse than silent.
+- **The worktree row keeps the default deliberately.** A preset on a worktree opening is the
+  rarer half of a rarer gesture, and four rows where there were two is how a menu stops being
+  read. If that turns out wrong it is one more `more` and the leaves already exist.
+- **An empty list is no row**, the rule this file already states one level up — a caller that
+  hands in no presets gets the menu exactly as it was, which is what keeps the existing
+  `ids(menuFor({ kind: "region" }))` assertion true without a word changed.
+- **`newas:` rather than `preset:` or `hand:`.** Three menus now open a card between them and
+  each is dispatched by its own closure in `App.svelte`; a shared prefix would make the one
+  place they could ever meet impossible to see. And `newas:` with nothing after it reaches
+  `openIn` as **`null`**, not `undefined` — undefined means "nobody said, use the wall's
+  default", which is the one thing that row exists not to do. Same three states `Skein.open`
+  carries and the same trap the `+`'s handler already names.
+
 **Spawned cards are untouched.** `openSpawned` goes through `#openIn` rather than `open`, so a
 card an agent opens is set up exactly as it was before. Whether `spawn` should be able to name
 a preset at all is a live question and deliberately not answered here.

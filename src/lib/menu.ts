@@ -98,19 +98,29 @@ export type MenuTarget = {
      about each other — see `widgets.ts`'s `Offer`, which is this written from
      the other side. */
   offers?: Offer[];
-  /* spawn: how a new card can be set up before it is opened — a model and an
-     effort under one name. Handed in rather than looked up, the bargain
-     `offers` and `picks` already strike: what a preset *is* belongs to
-     `presets.ts`, and this file's business is only what the click offers. */
+  /* spawn / region / card: how a new card can be set up before it is opened — a
+     model and an effort under one name. Handed in rather than looked up, the
+     bargain `offers` and `picks` already strike: what a preset *is* belongs to
+     `presets.ts`, and this file's business is only what the click offers.
+
+     Three targets read it, which is the point of it being one field: the `+`'s
+     own menu, the `hand the plan to a maker` family on a card, and the
+     territory's `new conversation as…`. All three are the same five rows under
+     three verbs, so a fourth place that opens a card gets them for nothing. */
   presets?: { id: string; label: string; note: string }[];
-  /** Which of these rows the plain `+` opens on, so the menu can mark it: a
+  /** Which of these rows a plain opening lands on, so a menu can mark it: a
    *  preset id, or `""` for the "as claude code is set up" row, which is one of
    *  the same choices and is marked the same way.
    *
    *  The *marking* is this file's business even though the presets are handed
    *  in — "which of these is in force" is what the click offers, where "what a
    *  preset is" belongs to `presets.ts`. Undefined marks nothing, which is what
-   *  a caller with no opinion gets. */
+   *  a caller with no opinion gets.
+   *
+   *  On the territory's `new conversation as…` the dot means the same thing and
+   *  carries a little more, since the plain row sits directly above it: it is
+   *  what *that* row does. Marking is all it does there — the gesture that
+   *  changes the default lives on the `+` and only on the `+`. */
   presetDefault?: string;
   /** This card has written a plan it has not been let out of, so there is
    *  something to hand on. Gated rather than always offered: a handoff with no
@@ -406,6 +416,46 @@ export function menuFor(t: MenuTarget): MenuItem[] {
       return tidy([
         t.chat ? item("chat", "new chat conversation") : null,
         t.chat ? null : item("new", "new conversation here"),
+        /* A *sibling* of the plain row rather than a submenu on it, and that is
+           the one decision here. This file's standing rule is that a family's
+           row opens a list instead of doing something — "a row that did both
+           would be a row where the fast gesture and the careful one disagree" —
+           so turning `new conversation here` into a family would have cost the
+           one-click opening, which is the common case and the reason this menu
+           is reached for at all. One extra line buys the choice without taking
+           the default away.
+
+           Directly under the row it varies, because that is what it is: the
+           same opening with the cost chosen. The worktree row below keeps the
+           default deliberately — a preset on a worktree opening is the rarer
+           half of a rarer gesture, and four rows for what was two is how a menu
+           stops being read.
+
+           The leaves are `presets.ts`'s five and the same `""` row the `+`
+           offers, carrying their notes for the reason the `+`'s do: the point
+           of choosing is seeing what the card will cost before it exists. And
+           the dot marks which one the plain row above opens, so this list also
+           answers "what does the default do" without a trip to the `+`. There
+           is deliberately no ctrl-click here — setting the default is the `+`'s
+           job and one gesture in two places is two places for it to drift. */
+        t.chat || !(t.presets ?? []).length
+          ? null
+          : more("new-as", "new conversation as…", [
+              ...(t.presets ?? []).map((p) => ({
+                kind: "item" as const,
+                id: `newas:${p.id}`,
+                label: p.label,
+                note: p.note,
+                ...(t.presetDefault === undefined ? {} : { on: t.presetDefault === p.id }),
+              })),
+              sep,
+              {
+                kind: "item" as const,
+                id: "newas:",
+                label: "as claude code is set up",
+                ...(t.presetDefault === undefined ? {} : { on: t.presetDefault === "" }),
+              },
+            ]),
         t.chat ? null : item("new-worktree", "new conversation in a worktree"),
         sep,
         item("adopt", "adopt a recorded session…"),

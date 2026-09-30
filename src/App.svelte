@@ -1295,13 +1295,27 @@
         chat: skein.isChatHome(cwd),
         nowhere: adrift.has(cwd),
         offers: offersOf(),
+        /* The same five the `+` offers, so `new conversation as…` and the `+`'s
+           right-click cannot come to disagree about what a card costs. The
+           default rides along only to be *marked* — the row above opens on it,
+           and this is the list that says which one that is. */
+        presets: presetPicks(),
+        presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
       };
       act = (id) => {
         if (id === "glass") canvas?.toggleGlass("region", cwd);
         else if (id === "explorer") void skein.showInExplorer(cwd);
         else if (id === "chat") void openChat();
         else if (id === "new") void openIn(cwd);
-        else if (id === "new-worktree") canvas?.startBranch(cwd);
+        /* `newas:` with nothing after it is "as claude code is set up", and it
+           has to reach `openIn` as `null` rather than `undefined`: undefined
+           means "nobody said, use the wall's default", which is the one thing
+           this row is for *not* doing. Same distinction `Skein.open` draws and
+           the same one the `+`'s handler makes a few lines up. */
+        else if (id.startsWith("newas:")) {
+          const chosen = id.slice(6);
+          void openIn(cwd, undefined, chosen === "" ? null : presetById(chosen));
+        } else if (id === "new-worktree") canvas?.startBranch(cwd);
         else if (id === "adopt") void openImport();
         else if (id === "image") void pickImage(where);
         else if (id.startsWith("widget:")) hangWidget(id.slice(7), where);

@@ -11,6 +11,12 @@ const handoffOf = (items: MenuItem[]) => {
   return row && row.kind === "more" ? row : null;
 };
 
+/** The territory's `new conversation as…` row, a `more` for `handoff`'s reason. */
+const newAsOf = (items: MenuItem[]) => {
+  const row = items.find((i) => i.kind === "more" && i.id === "new-as");
+  return row && row.kind === "more" ? row : null;
+};
+
 /** What one item is *called*, for the few whose wording is the state. */
 const label = (items: MenuItem[], id: string) =>
   items.find((i): i is Extract<MenuItem, { kind: "item" }> =>
@@ -213,6 +219,9 @@ describe("the list is shaped like something a person meant", () => {
       "ambience",
       "guidance",
     ]);
+    /* No presets handed in, so `new conversation as…` is dropped rather than
+       drawn onto an empty list — this file's standing rule about an empty
+       family, and the reason this list is unchanged by that row existing. */
     expect(ids(menuFor({ kind: "region" }))).toEqual([
       "new",
       "new-worktree",
@@ -222,6 +231,82 @@ describe("the list is shaped like something a person meant", () => {
       "explorer",
       "guidance",
     ]);
+  });
+
+  describe("opening a card from a territory at a chosen cost", () => {
+    const picks = [
+      { id: "ask", label: "a quick question", note: "haiku" },
+      { id: "work", label: "ordinary work", note: "sonnet[1m] · medium" },
+    ];
+
+    test("the plain row survives, which is the whole point of it being a sibling", () => {
+      /* A submenu *on* `new conversation here` would have read tidier and cost
+         the one-click opening — this file's rule that a family's row opens a
+         list instead of doing something. The common case is opening one on the
+         default, so it keeps its own row and the choice sits beside it. */
+      const m = menuFor({ kind: "region", presets: picks });
+      expect(ids(m)).toContain("new");
+      expect(label(m, "new")).toBe("new conversation here");
+      expect(newAsOf(m)).not.toBeNull();
+    });
+
+    test("it sits directly under the row it varies", () => {
+      /* Not at the bottom with the widgets: it is the same opening with the
+         cost chosen, and a reader finds it by being next to the thing it is a
+         variant of. */
+      const m = menuFor({ kind: "region", presets: picks });
+      const at = m.findIndex((i) => i.kind === "more" && i.id === "new-as");
+      const plain = m.findIndex((i) => i.kind === "item" && i.id === "new");
+      expect(at).toBe(plain + 1);
+    });
+
+    test("the leaves carry the presets and the deliberate absence of one", () => {
+      /* `newas:` rather than `preset:` or `hand:` — three menus open a card
+         between them and each is dispatched by its own closure, so a shared
+         prefix would make the one place they could meet impossible to see. */
+      const row = newAsOf(menuFor({ kind: "region", presets: picks }))!;
+      expect(ids(row.items)).toEqual(["newas:ask", "newas:work", "newas:"]);
+      /* The notes ride along, because the point of choosing is seeing what the
+         card costs before it exists. */
+      expect(row.items.filter((i) => i.kind === "item" && i.note).length).toBe(2);
+      expect(label(row.items, "newas:")).toBe("as claude code is set up");
+    });
+
+    test("the dot says which of them the plain row above opens", () => {
+      /* Marking only — the gesture that *changes* the default lives on the `+`
+         and only there, since one gesture in two places is two places for it to
+         drift. `""` is markable too, or a wall that deliberately chose no
+         preset would show a list with no dot anywhere. */
+      const on = (items: MenuItem[]) =>
+        items.filter((i) => i.kind === "item" && (i as { on?: boolean }).on === true)
+          .map((i) => (i as { id: string }).id);
+      expect(on(newAsOf(menuFor({ kind: "region", presets: picks, presetDefault: "work" }))!.items))
+        .toEqual(["newas:work"]);
+      expect(on(newAsOf(menuFor({ kind: "region", presets: picks, presetDefault: "" }))!.items))
+        .toEqual(["newas:"]);
+      /* Nobody said what the default is, so nothing is claimed about it. */
+      const quiet = newAsOf(menuFor({ kind: "region", presets: picks }))!;
+      expect(quiet.items.some((i) => "on" in i)).toBe(false);
+    });
+
+    test("a chat territory is offered none of it", () => {
+      /* Its `+` routes somewhere else entirely and a chat card has two web
+         tools and no project — the same gate the two plain rows already pass. */
+      const m = menuFor({ kind: "region", chat: true, presets: picks });
+      expect(newAsOf(m)).toBeNull();
+      expect(ids(m)).not.toContain("new");
+    });
+
+    test("the worktree opening keeps the default on purpose", () => {
+      /* A preset on a worktree opening is the rarer half of a rarer gesture,
+         and four rows where there were two is how a menu stops being read. */
+      const m = menuFor({ kind: "region", presets: picks, offers: offersOf() });
+      expect(ids(m)).toContain("new-worktree");
+      /* Asserted against the real catalogue's families beside it, so this says
+         "no second opening family" rather than "no families at all". */
+      const openers = m.filter((i) => i.kind === "more" && /new|work/.test(i.id));
+      expect(openers.map((i) => (i as { id: string }).id)).toEqual(["new-as"]);
+    });
   });
 
   /* The wall's gestures are mouse gestures — you dragged a territory with this
