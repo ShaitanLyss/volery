@@ -41,6 +41,7 @@ use tauri::{AppHandle, Manager};
 use crate::store::Store;
 
 pub const WAKE_TOOL: &str = "wake_me";
+pub const CANCEL_TOOL: &str = "cancel_wake";
 
 /// The soonest a wake may be asked for.
 ///
@@ -120,7 +121,10 @@ pub fn wake_schema() -> Value {
              worked. Then finish your turn and tell the user when you will look again.\n\n\
              **Not for a reminder about next week** — use `drop` to put that in the sink, \
              where it costs no turn when it comes due. This is for a wait you are in the \
-             middle of.",
+             middle of.\n\n\
+             Armed one as a fallback, in case a job hangs, and the job finished first? \
+             Cancel it with `cancel_wake` before you finish, or it wakes you after the \
+             work is over.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -249,6 +253,7 @@ fn do_wake(app: &AppHandle, caller: &str, args: &Value) -> String {
     match armed {
         Err(e) => format!("could not arm that: {e}"),
         Ok(()) => {
+            let handle = short(&id);
             let clamped = if asked != secs {
                 format!(
                     " You asked for {asked}s; the range here is {MIN_DELAY_S}–{MAX_DELAY_S}, \
@@ -258,14 +263,191 @@ fn do_wake(app: &AppHandle, caller: &str, args: &Value) -> String {
                 String::new()
             };
             format!(
-                "armed — this conversation will be handed that note in {}.{clamped} End \
-                 your turn now: nothing is gained by waiting for it, and the note will \
-                 arrive whether or not you are mid-anything. Tell the user when you will \
-                 look again.",
-                said(secs)
+                "armed — this conversation will be handed that note in {}; its id is \
+                 `{handle}`.{clamped} End your turn now: nothing is gained by waiting for it, \
+                 and the note will arrive whether or not you are mid-anything. Tell the user \
+                 when you will look again. If what you are waiting for arrives first — a \
+                 background job reporting back, say — call `mcp__skein__cancel_wake` with \
+                 that id once you are done, or it wakes you after the work is over.",
+                within(secs)
             )
         }
     }
+}
+
+/* ── taking one back ──────────────────────────────────────────────────────
+ *
+ * The case this exists for is a wake armed as a *fallback*: an agent starts a
+ * background job, arms a wake in case it hangs, and the job reports back first.
+ * The agent carries on, finishes, and stops — and twenty minutes later is handed
+ * a note about a job that finished long ago, which costs a turn and an API call
+ * to read and conclude there is nothing to do. With no way to disarm it, the
+ * only correct use of a fallback was one that always cost a turn.
+ *
+ * Scoped to the caller's own wakes and nothing wider: a note to yourself is
+ * yours, and `disarm_wake` checks the owner as well as the id.
+ */
+
+/// The id an agent is given and hands back — the first eight characters, like
+/// a card's handle. A UUID is 36 characters of noise to repeat; eight is unique
+/// among the three a card may have armed.
+fn short(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
+/// How long until, said the way `said` says how long since.
+fn within(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 90 {
+        return format!("{secs} seconds");
+    }
+    let mins = secs / 60;
+    if mins < 90 {
+        return format!("{mins} minutes");
+    }
+    format!("{} hours", mins / 60)
+}
+
+/// One armed wake as a listing line: its id, when it is due, and the start of
+/// its note — a preview, since the agent wrote the note and the whole of it is
+/// only a question away.
+fn line(id: &str, due_at: i64, note: &str, now: i64) -> String {
+    let first = note.lines().next().unwrap_or("").trim();
+    let first: String = if first.chars().count() > 70 {
+        format!("{}…", first.chars().take(69).collect::<String>())
+    } else {
+        first.to_string()
+    };
+    format!(
+        "- `{}`, due in {}: {first}",
+        short(id),
+        within((due_at - now) / 1_000)
+    )
+}
+
+/// Which of the caller's armed wakes to cancel, or what to say instead. Pure.
+///
+/// `armed` is `(id, due_at, note)`. An `id` is matched as a prefix, folded for
+/// case, so the eight characters the receipt gave work and so does the whole
+/// UUID. `all` takes every one. **Neither, with exactly one armed, takes that
+/// one** — the commonest case is one fallback and a card that has forgotten its
+/// id, and making it look the id up first is a round trip for nothing. With
+/// several armed and nothing named, nothing is cancelled and the list is said,
+/// since guessing which fallback is stale is the one thing this must not do.
+fn pick(armed: &[(String, i64, String)], args: &Value, now: i64) -> Result<Vec<String>, String> {
+    let listing = || {
+        armed
+            .iter()
+            .map(|(id, due, note)| line(id, *due, note, now))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if armed.is_empty() {
+        return Err("this conversation has no wakes armed, so there was nothing to cancel — \
+                    nothing will wake it."
+            .into());
+    }
+    if args.get("all").and_then(Value::as_bool) == Some(true) {
+        return Ok(armed.iter().map(|w| w.0.clone()).collect());
+    }
+    let asked = args
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|s| s.trim().trim_matches('`').to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let Some(asked) = asked else {
+        return match armed {
+            [only] => Ok(vec![only.0.clone()]),
+            _ => Err(format!(
+                "this conversation has {} wakes armed, so none was cancelled rather than the \
+                 wrong one. Name one by `id`, or pass `all: true`:\n{}",
+                armed.len(),
+                listing()
+            )),
+        };
+    };
+    let hits: Vec<String> = armed
+        .iter()
+        .filter(|w| w.0.to_ascii_lowercase().starts_with(&asked))
+        .map(|w| w.0.clone())
+        .collect();
+    match hits.len() {
+        0 => Err(format!(
+            "no wake armed by this conversation has the id {asked:?} — it may already have \
+             been served or cancelled. What is armed:\n{}",
+            listing()
+        )),
+        1 => Ok(hits),
+        _ => Err(format!(
+            "{asked:?} matches more than one armed wake, so none was cancelled. Use more of \
+             the id:\n{}",
+            listing()
+        )),
+    }
+}
+
+pub fn cancel_schema() -> Value {
+    json!({
+        "name": CANCEL_TOOL,
+        "description":
+            "Disarm a `wake_me` you armed, so it does not hand you its note later. Use it \
+             when what you were waiting for arrived first — a background job reported \
+             back, the build finished, the user answered — and above all **before you \
+             finish**, because a fallback wake left armed wakes you after the work is \
+             over, and reading it costs a turn to learn there is nothing to do.\n\n\
+             Name it by the `id` `wake_me` gave you. With only one armed you may leave the \
+             id out; with several, name one or pass `all: true`. Only this conversation's \
+             own wakes can be cancelled.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The id `wake_me` gave you, e.g. `3f2a9c1e`."
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "Cancel every wake this conversation has armed."
+                }
+            }
+        }
+    })
+}
+
+fn do_cancel(app: &AppHandle, caller: &str, args: &Value) -> String {
+    let Some(store) = app.try_state::<Store>() else {
+        return "the store is unavailable".into();
+    };
+    let Ok(conn) = store.0.lock() else {
+        return "the store is unavailable".into();
+    };
+    let now = crate::store::now();
+    let armed = crate::store::wakes_of(&conn, caller);
+    let ids = match pick(&armed, args, now) {
+        Ok(ids) => ids,
+        Err(say) => return say,
+    };
+    let gone: Vec<String> = ids
+        .iter()
+        .filter(|id| crate::store::disarm_wake(&conn, caller, id))
+        .map(|id| format!("`{}`", short(id)))
+        .collect();
+    let left = crate::store::wakes_armed_by(&conn, caller);
+    drop(conn);
+    /* Zero only if the tick took it between the read and the delete — the note
+       is already on its way, and saying "cancelled" would be the lie. */
+    if gone.is_empty() {
+        return "that wake came due as this was asked and has already been handed over, \
+                so it could not be cancelled — expect its note, and read it knowing it is \
+                stale."
+            .into();
+    }
+    let rest = match left {
+        0 => " Nothing else is armed, so nothing will wake this conversation.".to_string(),
+        1 => " One other wake is still armed.".to_string(),
+        n => format!(" {n} other wakes are still armed."),
+    };
+    format!("cancelled {}.{rest}", gone.join(", "))
 }
 
 /* `later.rs` has no clipper of its own any more. It had the silent kind, and a
@@ -359,7 +541,11 @@ fn serve_due(app: &AppHandle) {
 
 /// Route a `tools/call` that belongs here.
 pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) -> Option<String> {
-    (tool == WAKE_TOOL).then(|| do_wake(app, conversation_id, args))
+    match tool {
+        WAKE_TOOL => Some(do_wake(app, conversation_id, args)),
+        CANCEL_TOOL => Some(do_cancel(app, conversation_id, args)),
+        _ => None,
+    }
 }
 
 /// A card is going, or has been cleared. Its wakes go with it: a note to
@@ -462,5 +648,57 @@ mod tests {
         assert_eq!(said(45), "45 seconds ago");
         assert_eq!(said(600), "10 minutes ago");
         assert_eq!(said(4 * 3600), "4 hours ago");
+        /* And the other direction, which the arming receipt says — it used
+           `said` and so promised a note "in 10 minutes ago". */
+        assert_eq!(within(45), "45 seconds");
+        assert_eq!(within(600), "10 minutes");
+        assert_eq!(within(4 * 3600), "4 hours");
+    }
+
+    fn armed(ids: &[&str]) -> Vec<(String, i64, String)> {
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| (id.to_string(), 60_000 * (i as i64 + 1), format!("check job {i}\nmore")))
+            .collect()
+    }
+
+    /// One armed and nothing named takes that one; several and nothing named
+    /// takes none and lists them — guessing which fallback is stale is the one
+    /// thing a cancel must not do.
+    #[test]
+    fn a_cancel_takes_the_one_it_can_name_and_no_other() {
+        let one = armed(&["3f2a9c1e-aaaa"]);
+        assert_eq!(pick(&one, &json!({}), 0), Ok(vec!["3f2a9c1e-aaaa".into()]));
+
+        let three = armed(&["3f2a9c1e-aaaa", "3f2b0000-bbbb", "77777777-cccc"]);
+        let why = pick(&three, &json!({}), 0).unwrap_err();
+        assert!(why.contains("none was cancelled"), "{why}");
+        assert!(why.contains("- `3f2a9c1e`, due in 60 seconds: check job 0"), "{why}");
+        assert!(why.contains("`all: true`"), "{why}");
+
+        /* The eight the receipt gave, case-folded and with its backticks, and
+           the whole UUID too. */
+        assert_eq!(pick(&three, &json!({ "id": "`3F2A9C1E`" }), 0), Ok(vec!["3f2a9c1e-aaaa".into()]));
+        assert_eq!(pick(&three, &json!({ "id": "77777777-cccc" }), 0), Ok(vec!["77777777-cccc".into()]));
+        /* A prefix that could be either is not a match. */
+        assert!(pick(&three, &json!({ "id": "3f2" }), 0).unwrap_err().contains("more than one"));
+        assert!(pick(&three, &json!({ "id": "deadbeef" }), 0).unwrap_err().contains("already"));
+
+        assert_eq!(pick(&three, &json!({ "all": true }), 0).unwrap().len(), 3);
+        assert!(pick(&[], &json!({ "all": true }), 0).unwrap_err().contains("no wakes armed"));
+    }
+
+    /// The reflex is forgetting, so both tools have to say it in the place an
+    /// agent reads — `wake_me` is loaded, and its receipt carries the id.
+    #[test]
+    fn a_fallback_wake_says_how_to_take_it_back() {
+        let d = wake_schema()["description"].as_str().unwrap().to_string();
+        assert!(d.contains("`cancel_wake`"), "{d}");
+        let c = cancel_schema();
+        assert_eq!(c["name"], CANCEL_TOOL);
+        let c = c["description"].as_str().unwrap();
+        assert!(c.contains("before you"), "{c}");
+        assert!(c.contains("own wakes"), "{c}");
+        assert_eq!(short("3f2a9c1e-1234-4abc"), "3f2a9c1e");
     }
 }

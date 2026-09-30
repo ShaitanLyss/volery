@@ -6093,6 +6093,33 @@ pub fn wakes_served_to(conn: &Connection, conversation_id: &str, since: i64) -> 
 }
 
 /// A card is going, or has been cleared. Nothing here is worth keeping.
+/// One card's own armed wakes as `(id, due_at, note)`, soonest first — what
+/// `cancel_wake` chooses among.
+pub fn wakes_of(conn: &Connection, conversation_id: &str) -> Vec<(String, i64, String)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, due_at, note FROM wake WHERE conversation_id = ?1 ORDER BY due_at",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map(params![conversation_id], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+/// Disarm one wake, and only if it is this card's — the id came from an agent,
+/// and a card must not be able to cancel another card's note to itself.
+pub fn disarm_wake(conn: &Connection, conversation_id: &str, id: &str) -> bool {
+    conn.execute(
+        "DELETE FROM wake WHERE id = ?1 AND conversation_id = ?2",
+        params![id, conversation_id],
+    )
+    .unwrap_or(0)
+        > 0
+}
+
 pub fn drop_wakes_of(conn: &Connection, conversation_id: &str) {
     let _ = conn.execute("DELETE FROM wake WHERE conversation_id = ?1", params![conversation_id]);
     let _ = conn.execute(

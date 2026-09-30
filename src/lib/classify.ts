@@ -138,6 +138,7 @@ export const SKEIN_DONE_TOOL = "mcp__skein__done";
 export const SKEIN_SPAWN_TOOL = "mcp__skein__spawn";
 export const SKEIN_CLOSE_TOOL = "mcp__skein__close";
 export const SKEIN_WAKE_TOOL = "mcp__skein__wake_me";
+export const SKEIN_CANCEL_WAKE_TOOL = "mcp__skein__cancel_wake";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
 /** Every account on the wall by label, for `spawn`'s `account`. */
 export const SKEIN_ACCOUNTS_TOOL = "mcp__skein__accounts";
@@ -599,6 +600,8 @@ export function describeTool(name: string, input: any): string {
       const card = arg(input?.card);
       return card ? `closed ${clip(card, 26)}` : "closed a card";
     }
+    case SKEIN_CANCEL_WAKE_TOOL:
+      return input?.all === true ? "cancelled its wakes" : "cancelled a wake";
     case SKEIN_WAKE_TOOL: {
       const secs = input?.seconds;
       return typeof secs === "number" && Number.isFinite(secs) && secs > 0

@@ -234,6 +234,20 @@ second mechanism beside it would be a second thing for `relay.ts` to learn to dr
   so there is no event to subscribe to.
 - **A card that closes or is cleared loses its wakes.** Unlike the sink, there is nothing here
   worth keeping: a note to yourself has no value once there is no self to hand it to.
+- **And a card can take one back — `cancel_wake`, added 2026-09-30.** The use nobody had
+  accounted for is the *fallback*: start a background job, arm a wake in case it hangs, and
+  the job reports back first. The card finished its work and stopped, and was woken twenty
+  minutes later by a note about a job long since done — a turn and an API call spent learning
+  there was nothing to do. With no way to disarm, the only correct fallback was one that
+  always cost a turn. So `wake_me`'s receipt hands back an eight-character id, and the cancel
+  takes it (as a prefix, folded for case), or `all`, or — **with exactly one armed — nothing**,
+  since one fallback and a forgotten id is the commonest case. With several and nothing named
+  it cancels none and lists them: guessing which fallback is stale is the one thing it must
+  not do. `disarm_wake` checks the owner as well as the id, so a card cannot reach another
+  card's note to itself. Deferred rather than loaded, because the reflex it answers is
+  forgetting, and what reaches that is `wake_me`'s loaded description and its receipt naming
+  `mcp__skein__cancel_wake` beside the id — `servers`' argument for its siblings. The same
+  receipt used to promise a note "in 10 minutes ago"; `within` is the forward half of `said`.
 
 ### Chat cards may do neither, and this is the one gate worth arguing for
 

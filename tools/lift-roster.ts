@@ -145,7 +145,10 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "fn recall_schema",
     ],
   },
-  { file: "src-tauri/src/later.rs", items: ["const WAKE_TOOL", "fn wake_schema"] },
+  {
+    file: "src-tauri/src/later.rs",
+    items: ["const WAKE_TOOL", "const CANCEL_TOOL", "fn wake_schema", "fn cancel_schema"],
+  },
   {
     file: "src-tauri/src/limits.rs",
     items: ["const ALLOWANCE_TOOL", "const ACCOUNTS_TOOL", "fn allowance_schema", "fn accounts_schema"],

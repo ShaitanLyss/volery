@@ -953,6 +953,17 @@ pub(crate) fn roster() -> Vec<Value> {
             "what did another card do or say, read its words, catch up on a \
              conversation, what happened there, without costing it a turn",
         ),
+        /* Deferred although `wake_me` is loaded, and the reflex it answers is
+           the same one — forgetting. What reaches that reflex is not this
+           schema but `wake_me`'s own description and its receipt, which names
+           this tool in full beside the id to hand it: a tool result costs
+           nothing per turn, which is `servers`' argument for its two siblings. */
+        found_by(
+            crate::later::cancel_schema(),
+            "cancel a wake, disarm a wake_me, the background job finished before \
+             the fallback, stop being woken later, unschedule a reminder I set, \
+             I am done and a wake is still armed",
+        ),
         found_by(
             crate::pin::repin_schema(),
             "update or move or remove an image already on the wall, replace a \
