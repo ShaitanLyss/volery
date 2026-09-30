@@ -40,7 +40,10 @@ const T0 = Date.UTC(2026, 7, 14, 12, 0, 0);
 describe("what a token costs", () => {
   test("every model in the table prices", () => {
     expect(rateFor("claude-opus-5")).toEqual({ input: 5, output: 25 });
-    expect(rateFor("claude-sonnet-5")).toEqual({ input: 3, output: 15 });
+    /* $2/$10, not the $3/$15 this table carried for a month: the scheduled
+       2026-09-01 increase was cancelled and the introductory rate became the
+       standard one. See the note above `RATES`. */
+    expect(rateFor("claude-sonnet-5")).toEqual({ input: 2, output: 10 });
     expect(rateFor("claude-haiku-4-5")).toEqual({ input: 1, output: 5 });
     expect(rateFor("claude-fable-5")).toEqual({ input: 10, output: 50 });
   });

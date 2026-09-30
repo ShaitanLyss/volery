@@ -56,10 +56,25 @@ const CACHE_READ = 0.1;
 const WRITE_5M = 1.25;
 const WRITE_1H = 2;
 
-/** Rates as published 2026-08-14. Sonnet 5's introductory $2/$10 runs to
- *  2026-08-31 and is deliberately *not* used: a reading that quietly gets 50%
- *  more expensive one morning is a wall arguing with itself, and the standing
- *  rate is the one worth planning against. */
+/** Rates as published 2026-08-14, Sonnet 5 corrected 2026-09-30.
+ *
+ *  **The increase this table was waiting for never happened.** Sonnet 5 was
+ *  entered at $3/$15 on a deliberate argument — its $2/$10 was announced as
+ *  introductory through 2026-08-31, and a reading that quietly gets 50% more
+ *  expensive one morning is a wall arguing with itself, so the standing rate
+ *  was the one worth planning against. The rate that became standing was the
+ *  introductory one. Read off the pricing docs 2026-09-30, verbatim: "The $2/$10
+ *  per million input/output token pricing for Claude Sonnet 5, announced at
+ *  launch as introductory pricing through August 31, 2026, is now the standard
+ *  price. The previously scheduled increase to $3/$15 per million input/output
+ *  tokens on September 1, 2026 will not occur."
+ *
+ *  So every sonnet card on this wall has been priced 50% high for a month, in
+ *  the day's figure, the ledger and the burn horizon alike. Worth the caution it
+ *  is worth: **a table that encodes a future is a table with an expiry date on
+ *  it, and nothing here can tell when one has passed.** The rate is what is
+ *  charged today; a scheduled change is something to re-read the docs about on
+ *  the day, not to pre-empt a month early. */
 export const RATES: Record<string, Rate> = {
   "claude-fable-5": { input: 10, output: 50 },
   "claude-mythos-5": { input: 10, output: 50 },
@@ -68,7 +83,7 @@ export const RATES: Record<string, Rate> = {
   "claude-opus-4-7": { input: 5, output: 25 },
   "claude-opus-4-6": { input: 5, output: 25 },
   "claude-opus-4-5": { input: 5, output: 25 },
-  "claude-sonnet-5": { input: 3, output: 15 },
+  "claude-sonnet-5": { input: 2, output: 10 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-sonnet-4-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
