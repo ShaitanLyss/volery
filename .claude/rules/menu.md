@@ -275,14 +275,33 @@ of this menu is for.
 
 **The window is not one of the two axes, and it was priced as though it were.** The catalogue
 was built when `[1m]` read as the expensive tier — the `bug` preset said so in as many words,
-"deliberately not the 1M window" — and that is not what the price table says: Opus 5 is one
-row at $5/$25 per MTok whatever the tier, as Sonnet 5 is one row at $2/$10. So holding the
-wide window back from `bug` bought nothing and cost the card room, which is the one thing a
-bug that has resisted the obvious fix actually needs: the answer is somewhere you have not
-looked, and a card that compacts halfway through looking has thrown away the half it read.
-`bug` is `opus[1m] · high` now, and what separates it from `deep` is the effort alone. The
-cheap end keeps the small window on a different argument — not the rate, but that a card
-opened to be cheap should not be able to quietly grow into a large one.
+"deliberately not the 1M window" — and that is not what Anthropic charges. Read 2026-09-30
+off the pricing docs' long-context section, verbatim: *"Claude 4.6 and later models … include
+the full 1M token context window at standard pricing. (A 900k-token request is billed at the
+same per-token rate as a 9k-token request.)"* So holding the wide window back bought nothing
+and cost the card room, which is the one thing a bug that has resisted the obvious fix
+actually needs: the answer is somewhere you have not looked, and a card that compacts halfway
+through looking has thrown away the half it read.
+
+**That correction reached `bug` first and the sonnet rows a month later, and the second half
+is the one that reshaped the menu.** `bug` became `opus[1m] · high`, separated from `deep` by
+effort alone. The two sonnet rows were left as they were, on a reading that survived only
+because nobody said it out loud: `work` was sonnet at 200k and `read` was *the same level with
+a wider window*, so the menu's cheap half was ordered by window and its dear half by effort —
+two axes half-crossed, which is a menu you have to learn rather than read. With the tier free,
+`work` is `sonnet[1m] · medium` and `read` is `sonnet[1m] · low`, and the whole catalogue is
+one scale: a family, then a level. `read` losing a rung is not a demotion but the honest
+pairing for it — what reading a lot of something runs out of is **room, not thinking**, and a
+card asked to hold a million tokens *and* reason hard about every one of them is spending the
+dear axis on a job whose difficulty is bookkeeping. It moves above `work` in the list for the
+same reason everything else is where it is: the order is the price.
+
+The cheap end keeps the small window, and the argument for that changed too. It used to be
+that a card opened to be cheap should not quietly grow into a large one; with the rate flat
+there is nothing left to grow *into*, and what the small window actually bought was a
+compaction in the middle of the work. `ask` is narrow now because **haiku 4.5 has no 1M tier
+to ask for** — the only row without the wide window is the only row whose model has none, and
+`presets.test.ts` asserts it in exactly those terms rather than by naming ids.
 
 The model stored is an alias (`opus[1m]`, `sonnet`), not a full id, so a preset does not go
 stale the week a new model ships. Probed 2026-08-20 against claude 2.1.233: `opus[1m]` →

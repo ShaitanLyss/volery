@@ -19,7 +19,7 @@
  * without orphaning the cards opened from it.
  */
 
-import type { Effort } from "./commands";
+import { isEffort, type Effort } from "./commands";
 
 export type Preset = {
   /** What a menu item and a stored row call it. Stable; the label is not. */
@@ -77,24 +77,42 @@ export const PRESETS: Preset[] = [
        parameter does nothing on this model — see the note on `effort`. */
   },
   {
-    id: "work",
-    label: "ordinary work",
-    note: "sonnet · medium",
-    model: "sonnet",
-    effort: "medium",
-    /* The everyday card: a small feature, a fix with its test, a rename across
-       a few files. Where the `+` would land if it had one honest default. */
-  },
-  {
     id: "read",
     label: "reading a lot of it",
+    note: "sonnet[1m] · low",
+    model: "sonnet[1m]",
+    effort: "low",
+    /* Checking a claim across a codebase, or a long transcript held whole. What
+       this kind of work runs out of is *room*, not thinking — so the window is
+       the whole of what this row buys and the level is the cheap end, which is
+       the honest pairing for it: a card asked to hold a million tokens and
+       reason hard about all of them is a card spending the dear axis on a job
+       whose difficulty is bookkeeping.
+
+       It was `medium`, which made it `work` with a wider window — and once the
+       window stopped being something you pay for (below), that was two rows
+       doing one thing. Now the two sonnet rows differ by effort, exactly as the
+       two opus rows do, and the menu reads as one scale rather than two axes
+       half-crossed. */
+  },
+  {
+    id: "work",
+    label: "ordinary work",
     note: "sonnet[1m] · medium",
     model: "sonnet[1m]",
     effort: "medium",
-    /* Checking a claim across a codebase, or a long transcript held whole. The
-       million-token window rather than a harder-thinking model: what this kind
-       of work runs out of is room, and paying for effort instead buys a careful
-       answer about the third of the material that fitted. */
+    /* The everyday card: a small feature, a fix with its test, a rename across
+       a few files. Where the `+` would land if it had one honest default.
+
+       On the wide window, and for the reason `bug` is: **the tier is not a
+       price**. Read 2026-09-30 off the pricing docs' long-context section —
+       "Claude 4.6 and later models … include the full 1M token context window
+       at standard pricing. (A 900k-token request is billed at the same
+       per-token rate as a 9k-token request.)" — so holding it back bought
+       nothing and cost the card room. What it cost was not hypothetical: the
+       everyday card is the one that gets handed a long file halfway through and
+       compacts, and a compaction in the middle of ordinary work throws away the
+       context the work was standing on. */
   },
   {
     id: "bug",
@@ -216,6 +234,17 @@ export function presetPicks(): { id: string; label: string; note: string }[] {
  * `work` is sonnet at `medium`, which is a judgement somebody made about the
  * pair. And it keeps one table: change what `ordinary work` means and the cards
  * an agent opens change with it, rather than drifting a week later.
+ *
+ * **The effort is a default and not a fixture**, which is the one thing this
+ * arrangement got wrong for its first life. A bundled pairing is the right
+ * *starting* answer and the wrong *only* answer: the parent is the thing that
+ * decomposed the job, so it is the one party that knows which lanes are
+ * mechanical, and a lane that is mechanical does not get better at a harder
+ * level — it only costs more, once per card, inside whatever budget the user
+ * set. So `spawn` takes an optional `effort` beside `model`, the levels are the
+ * ones `/effort` already takes (`EFFORT_LEVELS`), and leaving it off lands on
+ * the row below. Found the expensive way, with five cards on the wall running
+ * `xhigh` against a capped window budget — sink `564bd55d`.
  */
 
 /** The three, as `spawn`'s schema offers them and in the order it does. */
@@ -225,22 +254,39 @@ export type SpawnModel = (typeof SPAWN_MODELS)[number];
 
 /** Which preset each of the three names, and why that one.
  *
+ *  These are the **defaults** — what a name means when the caller said nothing
+ *  about effort. Naming one overrides the level and keeps everything else the
+ *  row decided; see `presetForSpawn`.
+ *
  *  - `haiku` → **ask**, the only preset on that model, and the only one that
  *    claims no effort — the parameter does nothing there (see `Preset.effort`).
- *  - `sonnet` → **work**, sonnet · medium. Not `read`: the wide window is a
- *    different question from the model, and a parent that wants a card to hold
- *    a lot of material can say so in the brief where it cannot say so here.
- *  - `opus` → **deep**, opus[1m] · xhigh. The dear end, because a card opened
- *    on opus by an agent that had a cheaper word available is one that was
- *    asked for on purpose — and `xhigh` is Anthropic's own recommendation for
- *    coding and agentic work specifically, which is what a card gets opened to
- *    do. Same argument as `FALLBACK_DEFAULT_PRESET`, and it lands on the same
- *    row.
+ *  - `sonnet` → **work**, sonnet[1m] · medium. Not `read`, which is now the
+ *    cheap-thinking row rather than the wide-window one: the window comes with
+ *    the family either way, since the tier is not a price (see the `work` row).
+ *    That matters more here than at the `+`, because there is no argument on
+ *    this tool that says *window* — a parent who wanted room could not ask for
+ *    it, so the name has to carry it. A spawned card is always doing work
+ *    somebody else scoped and cannot ask for more room the way a card with a
+ *    person in front of it can.
+ *  - `opus` → **bug**, opus[1m] · high. The wide window, because that is not a
+ *    price tier (`menu.md`), and `high` rather than `xhigh` because **the
+ *    argument that puts the user's own `+` at the dear end runs backwards
+ *    here.** `FALLBACK_DEFAULT_PRESET` is `deep` on the asymmetry that a card
+ *    opened too cheap is answered worse for hours and nothing says so — which
+ *    holds when a *person* clicks `+` not knowing yet what the card is for. A
+ *    spawned card is the opposite case: the parent divided the job up, wrote
+ *    the brief, and knows what this lane is. An implementation lane briefed in
+ *    full does not get better at `xhigh`, and a card opened by an agent is one
+ *    of several — so the overspend is multiplied by the fan-out and lands
+ *    inside a budget somebody set. `high` is Anthropic's documented starting
+ *    point for Opus 5; `xhigh` is one word away for the piece that earns it.
+ *    Sink `564bd55d`, where five spawned cards ran `xhigh` because nothing
+ *    could say otherwise.
  */
 const SPAWN_PRESET: Record<SpawnModel, string> = {
   haiku: "ask",
   sonnet: "work",
-  opus: "deep",
+  opus: "bug",
 };
 
 /** The preset a card an agent opened is set up as, or `undefined` for none.
@@ -253,14 +299,42 @@ const SPAWN_PRESET: Record<SpawnModel, string> = {
  *  dear end of this menu on every spawned card would be the one change here
  *  nobody chose.
  *
+ *  `effort` is the second half of the pair, and it overrides the row's level
+ *  while keeping the row's *window* — which is the whole reason this still
+ *  resolves through a preset rather than building a pair from two strings. The
+ *  caller names a family and a level; which window that family gets is a
+ *  judgement this table made and the caller has not read. Asking for the level
+ *  the row already holds gives the row back unchanged, so `opus` and
+ *  `opus`+`high` are the same preset and not two ids meaning one thing.
+ *
+ *  A synthesized row's `id` is not a menu row and nothing stores it — `#openIn`
+ *  writes `model` and `effort` onto the conversation and never the id. It is
+ *  spelled `<base>·<effort>` so that anything that does print one says which
+ *  pairing it was rather than claiming to be a preset you could pick.
+ *
  *  An unrecognised name degrades to `undefined` rather than throwing. `do_spawn`
  *  has already refused anything but the three by the time this is reached, so
  *  this is the normalizer's usual bargain (`CLAUDE.md`, opaque JSON columns):
  *  a build that gains a fourth name before this table does opens a card on the
- *  machine's setting instead of failing to open one. */
-export function presetForSpawn(asked: string | null | undefined): Preset | undefined {
+ *  machine's setting instead of failing to open one. An unrecognised *effort*
+ *  degrades the same way, to the row's own level — a card on the right model at
+ *  the wrong level is recoverable, and a refusal here would be a refusal after
+ *  Rust already accepted the word, which is a seam saying two things. */
+export function presetForSpawn(
+  asked: string | null | undefined,
+  effort?: string | null,
+): Preset | undefined {
   const name = asked?.trim().toLowerCase();
   if (!name) return undefined;
   const id = SPAWN_PRESET[name as SpawnModel];
-  return id ? presetById(id) : undefined;
+  const base = id ? presetById(id) : undefined;
+  if (!base) return undefined;
+  const level = effort?.trim().toLowerCase();
+  /* Nothing named, the row's own level, or a level on a model that has none:
+     the row, unchanged. The third of those is the one that matters — haiku
+     takes no `--effort` (see `Preset.effort`), `do_spawn` refuses the pairing
+     before it gets here, and a build where that gate went missing must still
+     not produce a card *claiming* a level the CLI silently dropped. */
+  if (!level || !isEffort(level) || level === base.effort || !base.effort) return base;
+  return { ...base, id: `${base.id}·${level}`, note: `${base.model} · ${level}`, effort: level };
 }

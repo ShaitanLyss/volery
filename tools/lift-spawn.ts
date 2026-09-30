@@ -69,6 +69,14 @@ const ITEMS = [
   /* Read by `spawn_schema`'s `enum`. Added 2026-09-18, the same omission as in
      `lift-roster.ts`: `6fec05d` introduced it and updated neither list. */
   "const SPAWN_MODELS",
+  /* The model gate and the effort gate. Both pure — a `&Value` in, a `String`
+     out — and both refuse rather than fall back, which is the arm worth running
+     rather than merely typechecking: a refusal that stops saying *what would
+     have worked* is one an agent answers with a second guess. */
+  "fn asked_model",
+  "const SPAWN_EFFORTS",
+  "const EFFORTLESS",
+  "fn asked_effort",
   "fn spawn_schema",
 ];
 
@@ -96,6 +104,17 @@ const TESTS = [
   "nothing_bounds_how_much",
   "the_brief_says_it_is_not_clipped",
   "a_clipped_brief_stops_somewhere_and_says_so",
+  /* What a card is opened on and how hard it thinks. The two enums are seams
+     crossing an `emit` into a language this crate cannot see, so the half that
+     can be run here is the half that says the schema offers exactly what the
+     validator takes — and the refusals, which are the expensive arms. */
+  "the_three_names_are_the_ones_the_wall_resolves",
+  "a_model_this_wall_cannot_open_is_refused_with_the_list",
+  "the_model_field_says_what_it_costs_and_what_leaving_it_off_means",
+  "the_five_levels_are_the_ones_a_card_understands",
+  "an_effort_that_cannot_land_is_refused_rather_than_dropped",
+  "the_family_with_no_effort_is_one_of_the_three",
+  "the_effort_field_says_when_to_leave_it_alone",
 ];
 
 const src = readFileSync(SRC, "utf8");

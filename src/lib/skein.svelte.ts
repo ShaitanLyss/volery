@@ -609,10 +609,15 @@ export class Skein {
          *  else before a card is minted, so this arrives as one of the three or
          *  not at all. */
         model: string | null;
+        /** One of the five `/effort` takes, or null to leave the level to the
+         *  family's own row. Never set without `model` and never on a family
+         *  with no effort — `asked_effort` refuses both before a card is
+         *  minted, so this arrives already paired or not at all. */
+        effort: string | null;
       }>(
         "spawn:asked",
         (e) => {
-          const { id, parent_id, cwd, worktree, prompt, title, model } = e.payload;
+          const { id, parent_id, cwd, worktree, prompt, title, model, effort } = e.payload;
           /* The root is recorded before the card is opened, and `born` is
              stamped here rather than read back off the row: this is the moment
              it happened, and a growth animation timed off a later query would
@@ -620,7 +625,7 @@ export class Skein {
              the row (`record_spawn`), so nothing is being claimed early — this
              is the same fact, in the frame that draws it. */
           this.kin = [...this.kin, { child: id, parent: parent_id, born: Date.now() }];
-          void this.openSpawned(id, cwd, worktree, prompt, title, model);
+          void this.openSpawned(id, cwd, worktree, prompt, title, model, effort);
         },
       ),
     );
@@ -1116,7 +1121,14 @@ export class Skein {
    *  costs in effort, and Rust has never heard of it. From there it is an
    *  ordinary preset, written onto the row by `#openIn` and read back at every
    *  wake, so a card an agent opened on haiku comes back on haiku tomorrow
-   *  (`store::setup_of`). */
+   *  (`store::setup_of`).
+   *
+   *  `effort` is the other half of that decision and travels beside it: null
+   *  for the level the family's row already holds, or one of the five when the
+   *  parent knew better — which it often does, being the thing that divided the
+   *  job into lanes. The pairing rules (never without a model, never on a
+   *  family that has none) are settled in `asked_effort` before this is
+   *  reached, so `presetForSpawn` only has to resolve, not judge. */
   async openSpawned(
     id: string,
     cwd: string,
@@ -1128,8 +1140,19 @@ export class Skein {
        the receipt in `do_spawn`), and a default here is the one place it could
        happen without anybody writing it down. */
     model: string | null,
+    /* Required for `model`'s reason and then one more: this is the knob that
+       decides what a fan-out costs, and a default spelled here would be a
+       level nobody wrote down applied to every spawned card on the wall —
+       which is the bug this argument was added to fix (sink `564bd55d`). */
+    effort: string | null,
   ): Promise<void> {
-    const conv = await this.#openIn(cwd, worktree, "project", id, presetForSpawn(model));
+    const conv = await this.#openIn(
+      cwd,
+      worktree,
+      "project",
+      id,
+      presetForSpawn(model, effort),
+    );
     if (!conv) return;
     if (title) {
       conv.title = title;

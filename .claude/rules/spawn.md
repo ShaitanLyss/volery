@@ -184,7 +184,7 @@ answer is the same: bound it, make it visible, and say what it cost.
   and spend a turn asking. Neither end was told anything, which is why this was found by a
   sentence stopping mid-word.
 
-### Which model it opens on
+### Which model it opens on, and how hard it thinks
 
 For its whole first life every card an agent opened ran on **whatever Claude Code is
 configured for on this machine** — one setting standing in for a lookup and a day-long
@@ -221,10 +221,69 @@ and had no way to say so.
   preset. That setting answers "what does my `+` open", and a card an agent asked for is not a
   card the user clicked for; quietly spending the dear end of the menu on every spawned card
   would be the one change here nobody chose.
+- **And the name carries the window, because nothing else here can.** There is no `window`
+  argument and there will not be one — the tier is not a price (`menu.md` quotes the docs), so
+  there is nothing to trade and a third knob would only be a third thing to get wrong. What
+  that means for the table is that `sonnet` must resolve to `sonnet[1m]` and `opus` to
+  `opus[1m]`: a parent who needed room could not ask for it, and a spawned card is always
+  doing work somebody else scoped, so it cannot notice it is short of room and ask the way a
+  card with a person in front of it can.
 - **The receipt says what it opened on, including when nothing was named.** The way a model
   fails to arrive is not a refusal — `asked_model` never sees a *key* that missed (`"Model"`,
   `"models"`), so there is nothing for it to answer. The receipt is the only place that gap is
   visible from, and it is visible there for nothing.
+#### The effort, which was a fixture and should have been a default
+
+For the tool's first life `model` was the whole of it, and the level came bundled — `opus`
+meant `xhigh`, because the row it resolved to was the dear end of the menu. That was the
+`FALLBACK_DEFAULT_PRESET` argument carried one door across, and **it does not survive the
+journey.** The `+`'s default sits at the dear end on an asymmetry about *ignorance*: a person
+clicking `+` does not yet know what the card is for, and a card opened too cheap is answered
+worse for hours with nothing on it saying so. A spawning agent is the opposite case in every
+term — it decomposed the job, it wrote the brief, it knows which lane is mechanical, and it is
+opening *several*, so an overspend is multiplied by the fan-out and lands inside a budget
+somebody set.
+
+Found the expensive way and filed as sink `564bd55d`: five cards opened for a budget-capped
+rewrite, three of them opus, all running `xhigh` on well-specified implementation lanes,
+because the tool took a model and nothing else.
+
+- **`effort` is an argument now, and the bundled levels became defaults.** Five levels, the
+  same five `/effort` takes (`SPAWN_EFFORTS`, held against `commands.ts`'s `EFFORT_LEVELS`) —
+  a caller that knows what to type into a card it is talking to should not learn a second
+  vocabulary to open one.
+- **`opus` defaults to `high` rather than `xhigh`**, which is the one substantive change to
+  what an existing call does. `high` is Anthropic's documented starting point for Opus 5;
+  `xhigh` is one word away for the piece that earns it. `sonnet` stays at `medium`.
+- **`max` is offered here although it is on no preset.** The menu stops at `xhigh` because a
+  menu is picked from without measuring and `max` is the level that is right only once you
+  have. That argument is about a menu. A parent naming `max` has decided something about one
+  lane of a job it divided up itself, and the alternative is a second turn sending
+  `/effort max` — after the card has already read its brief.
+- **Two pairings are refused rather than mended**, both for `asked_model`'s reason: accepting
+  the word would leave every surface agreeing with a false belief. An effort with **no model**
+  has nothing to hang on, since a spawn naming neither goes out with no flags at all — "the
+  machine's model at `low`" would be a level written onto a card whose model this wall never
+  chose. And an effort on **haiku** is refused because the CLI *accepts it and drops it*
+  (probed 2026-08-20): the card would carry the level on its row, draw it in the meta bar and
+  report it in the receipt while running at none. A silent drop is worse than a failure
+  wherever a surface exists to be believed.
+- **`EFFORTLESS` is the one fact about what a model costs that lives in Rust**, and it is
+  there because a refusal has to happen before an id is minted and a row is written — which is
+  before `presets.ts` is reached at all. That makes it a second copy, so `test/presets.test.ts`
+  reads the array out of `spawn.rs` and holds it against the real rows. Held *there* rather
+  than in a cargo test for a second reason: this machine has no MSVC and runs none of those,
+  so a cargo assertion about a `.ts` file is one nobody would see go red (`build.md`).
+- **The receipt says the effort even when nothing was named**, which is the case worth reading.
+  A parent seeing `high` it did not ask for is a parent being told the knob exists, in the one
+  place and at the one moment it is about to matter — the same argument that makes the receipt
+  name a model that never arrived.
+- **A named level overrides the row's effort and keeps the row's window.** `presetForSpawn`
+  still resolves through a preset rather than building a pair out of two strings, because which
+  window a family gets is a judgement that table made and the caller has not read. Asking for
+  the level a row already holds gives the row back unchanged, so `opus` and `opus`+`high` are
+  one preset rather than two ids meaning one thing.
+
 - **It is resolved on the way in and then holds.** The preset goes onto the row, not into the
   spawn call, so `store::setup_of` hands it back at every wake — a card an agent opened on
   haiku comes back on haiku next month. Same argument as `kind`, `worktree` and the rest: the

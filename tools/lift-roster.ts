@@ -149,14 +149,19 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
   { file: "src-tauri/src/limits.rs", items: ["const ALLOWANCE_TOOL", "fn allowance_schema"] },
   {
     file: "src-tauri/src/spawn.rs",
-    /* `SPAWN_MODELS` is read by `spawn_schema`'s `enum`, so it is lifted with
-       it. Added 2026-09-18 for the same reason as `ask.rs`'s `reads_only` one
-       block down: `6fec05d` introduced it and left this list alone. Two
-       consecutive commits rotted this lift and neither build noticed, because
-       nothing runs it but `bun run lifts`. */
+    /* `SPAWN_MODELS` and `SPAWN_EFFORTS` are read by `spawn_schema`'s two
+       `enum`s, so they are lifted with it. Added 2026-09-18 and 2026-09-30, the
+       first for the same reason as `ask.rs`'s `reads_only` one block down:
+       `6fec05d` introduced it and left this list alone. Two consecutive commits
+       rotted this lift and neither build noticed, because nothing runs it but
+       `bun run lifts` — and the third, `SPAWN_EFFORTS`, was caught *by* that
+       command on the same afternoon it was written. That is the whole argument
+       for the runner: a schema growing a constant is the routine edit that
+       breaks this list, so the list is only as good as something running it. */
     items: [
       "const SPAWN_TOOL",
       "const SPAWN_MODELS",
+      "const SPAWN_EFFORTS",
       "const CLOSE_TOOL",
       "fn spawn_schema",
       "fn close_schema",

@@ -328,6 +328,90 @@ fn asked_model(args: &Value) -> Result<Option<String>, String> {
     ))
 }
 
+/// How hard the card is asked to think, cheapest first.
+///
+/// The same five `/effort` takes, and deliberately the same words: a caller that
+/// knows what to type into a card it is talking to should not have to learn a
+/// second vocabulary to open one. `commands.ts`'s `EFFORT_LEVELS` is the front
+/// end's copy and `the_five_levels_are_the_ones_a_card_understands` holds them
+/// together — the same seam, and the same silent-and-expensive failure, as
+/// [`SPAWN_MODELS`].
+///
+/// **`max` is on this list although it is on no preset.** The menu behind the
+/// `+` stops at `xhigh` because a menu exists to be picked from without
+/// measuring, and `max` is the level that is right only once you have. That
+/// argument is about a menu; this is not one. A parent naming `max` has decided
+/// something about one piece of a job it divided up itself, which is exactly the
+/// case the docs reserve it for — and the alternative is that it opens the card
+/// and sends `/effort max` as a second turn, which costs a turn and arrives
+/// after the card has read its brief.
+pub const SPAWN_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// The one family that has no effort, and why this side knows that at all.
+///
+/// Haiku 4.5 does not take `--effort`. The CLI does not refuse it — probed
+/// 2026-08-20, `--model haiku --effort low` ran a normal turn and reported
+/// nothing — it drops it, which is worse than a failure here: the card would
+/// carry a level in the store, draw it in the meta bar and report it in the
+/// receipt, and the level would be doing nothing at any of those three places.
+///
+/// So the pairing is refused rather than accepted-and-ignored, and this is the
+/// one fact about what a model *costs* that lives on this side of the seam. It
+/// is here rather than in `presets.ts` because a refusal has to happen before an
+/// id is minted and a row is written, and `presets.ts` is reached after both.
+/// `test/presets.test.ts` reads this array out of this file and holds it against
+/// the real table, so the two cannot drift.
+const EFFORTLESS: [&str; 1] = ["haiku"];
+
+/// Which effort the caller asked for, or why nothing was opened.
+///
+/// Pure, and refusing for the reason [`asked_model`] refuses: a level that
+/// quietly failed to apply is a card the agent believes it opened cheaply, a
+/// receipt that agrees, and a bill that does not. Two pairings are refused
+/// rather than mended, and both are pairings where no repair is honest —
+///
+/// - **an effort with no model.** There is no third thing to hang a level on:
+///   a spawn that names neither goes out with no `--model` and no `--effort` at
+///   all, so "the machine's model at `low`" would mean writing a level onto a
+///   card whose model this wall never chose and cannot name. The parent almost
+///   certainly meant a family too, and asking it to say which costs one call.
+/// - **an effort on [`EFFORTLESS`].** See that constant.
+fn asked_effort(args: &Value, model: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = args.get("effort").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let level = raw.trim().to_ascii_lowercase();
+    if level.is_empty() {
+        return Ok(None);
+    }
+    if !SPAWN_EFFORTS.contains(&level.as_str()) {
+        return Err(format!(
+            "{raw:?} is not a thinking effort, so no card was opened. It takes {}, \
+             cheapest first. Leave `effort` out to take the level that goes with the \
+             model you named.",
+            SPAWN_EFFORTS.join(", ")
+        ));
+    }
+    let Some(model) = model else {
+        return Err(format!(
+            "you asked for {level:?} effort but named no model, so no card was opened — \
+             an effort is a level *on* a model, and with neither named the card opens on \
+             whatever Claude Code is set up for here, which is a setup this wall did not \
+             choose and cannot put a level on. Name a `model` as well, or leave `effort` \
+             out."
+        ));
+    };
+    if EFFORTLESS.contains(&model) {
+        return Err(format!(
+            "{model} takes no thinking effort, so no card was opened. The CLI accepts \
+             `--effort` there and silently drops it, which would leave the card claiming \
+             {level:?} everywhere while running at none — so this is refused rather than \
+             ignored. Leave `effort` out on {model}, or name a model that has one."
+        ));
+    }
+    Ok(Some(level))
+}
+
 #[derive(Clone, Serialize)]
 struct SpawnAsked {
     /// The id the wall must use, so the handle in the receipt is the handle of
@@ -352,6 +436,10 @@ struct SpawnAsked {
     /// what that word costs in effort and window is `presets.ts`'s table, and
     /// deliberately not this side's business. See [`asked_model`].
     model: Option<String>,
+    /// How hard it is asked to think — one of [`SPAWN_EFFORTS`], or null to
+    /// take whatever level goes with the family. Only ever set alongside
+    /// `model`, and never on a family that has none; see [`asked_effort`].
+    effort: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -464,15 +552,48 @@ pub fn spawn_schema() -> Value {
                            a change across a few files. Where most cards belong.\n\
                          - `opus` — design, a migration, a bug that has already resisted \
                            one attempt, anything where being wrong is expensive.\n\n\
-                         Each name brings a thinking effort and a context window chosen to \
-                         go with it, so you are picking a whole setup rather than a bare \
-                         model. Omit it and the card opens on whatever Claude Code is \
-                         configured for on this machine, which is one setting doing duty \
-                         for a one-line question and a day-long refactor alike — it is \
-                         never *wrong*, but it is a guess where you have knowledge.\n\n\
+                         Each name brings a context window and a **default** thinking \
+                         effort chosen to go with it — `sonnet` at medium, `opus` at high \
+                         — so the name alone is a whole setup rather than a bare model. \
+                         Use `effort` to move the level off that default. Omit `model` and \
+                         the card opens on whatever Claude Code is configured for on this \
+                         machine, which is one setting doing duty for a one-line question \
+                         and a day-long refactor alike — it is never *wrong*, but it is a \
+                         guess where you have knowledge.\n\n\
                          It cannot be changed cheaply afterwards: `/model` on a card that \
                          has already spent a context on its opening prompt is a new card \
                          in all but name, so the decision is now or not at all."
+                },
+                "effort": {
+                    "type": "string",
+                    "enum": SPAWN_EFFORTS,
+                    "description":
+                        "Optional. How hard the card thinks, on top of the model you \
+                         named. Only with `model`, and not with `haiku` — that model has \
+                         no effort at all, and asking for one there is refused rather \
+                         than quietly dropped.\n\n\
+                         **Leave it out unless you have a reason.** The default that \
+                         comes with each name is the level somebody chose for that kind \
+                         of work — `sonnet · medium`, `opus · high` — and it is right for \
+                         most cards. Name one when you know something the default cannot:\n\n\
+                         - `low` / `medium` — a lane you have specified completely. A \
+                           mechanical edit, a migration you wrote the steps for, a test \
+                           to fill in against a signature that already exists. Thinking \
+                           harder about an instruction that leaves nothing open buys \
+                           nothing and costs per card.\n\
+                         - `high` — the default on `opus`, and where an ordinary hard \
+                           piece belongs.\n\
+                         - `xhigh` — design, an audit, a long agentic run, a bug that has \
+                           already resisted one attempt. Worth it where being wrong is \
+                           expensive.\n\
+                         - `max` — a genuinely frontier problem. It adds significant cost \
+                           for small gains on most work and can overthink structured \
+                           tasks, so reach for it having decided, not by default.\n\n\
+                         **You are the one who can get this right**, because you divided \
+                         the job up and know which pieces are mechanical. Opening several \
+                         cards, this is the knob that decides what the fan-out costs: a \
+                         level spent on every lane is spent once per card, against \
+                         whatever budget the user set."
                 }
             },
             "required": ["prompt"]
@@ -1129,6 +1250,13 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         Ok(m) => m,
         Err(why) => return why,
     };
+    /* Behind the model and for the same reason: an effort is a level *on* a
+       family, so it cannot be judged until the family is known, and both are
+       judged before anything is written down. */
+    let effort = match asked_effort(args, model.as_deref()) {
+        Ok(e) => e,
+        Err(why) => return why,
+    };
 
     let Some(store) = app.try_state::<Store>() else {
         return "the store is unavailable".into();
@@ -1255,6 +1383,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
             prompt,
             title: title.clone(),
             model: model.clone(),
+            effort: effort.clone(),
         },
     );
 
@@ -1268,11 +1397,22 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        did until the card has run for a while — and the way it fails to arrive is
        not a refusal but a *key* that missed (`"models"`, `"Model"`), which
        `asked_model` never sees and therefore cannot answer. The receipt is the
-       only place that gap is visible from, and it is visible there for free. */
-    let on = match &model {
-        Some(m) => format!(" It runs on {m}."),
-        None => " You named no model, so it opens on whatever Claude Code is set up for on \
-                 this machine."
+       only place that gap is visible from, and it is visible there for free.
+
+       The effort is said the same way and in the same breath, because it is the
+       other half of one fact: what the card costs. Said even when it was not
+       named, since that is the case worth reading — the level came from the
+       family's default, and a parent seeing `high` it did not ask for is a
+       parent being told the knob exists in the one place it is about to matter.
+       Sink `564bd55d`, where five cards ran a level nobody chose. */
+    let on = match (&model, &effort) {
+        (Some(m), Some(e)) => format!(" It runs on {m}, at {e} effort as you asked."),
+        (Some(m), None) => format!(
+            " It runs on {m}, at whatever effort goes with that name — say `effort` to \
+             move it, which is worth doing for a lane you have specified completely."
+        ),
+        (None, _) => " You named no model, so it opens on whatever Claude Code is set up for \
+                      on this machine."
             .into(),
     };
     /* Said out loud, because it is the one thing about a card opened here that
@@ -1851,11 +1991,136 @@ mod tests {
             assert!(d.contains(&format!("`{name}`")), "{d}");
         }
         assert!(d.contains("costs or saves real money"), "{d}");
-        /* The absence is a real branch and has to read as one. */
-        assert!(d.contains("Omit it"), "{d}");
+        /* The absence is a real branch and has to read as one. Named rather
+           than "it", now that the tool has a second optional knob and "omit it"
+           would be a sentence with two referents. */
+        assert!(d.contains("Omit `model`"), "{d}");
+        /* And that each name carries a *default* level rather than a fixed one,
+           since the field next door is what moves it. A name that reads as
+           bringing one settled effort is a name nobody looks past. */
+        assert!(d.contains("**default** thinking effort"), "{d}");
         /* And that it cannot be undone cheaply, which is what makes this a
            decision rather than a default to be revisited. */
         assert!(d.contains("/model"), "{d}");
+    }
+
+    /// The five levels, and the seam they cross.
+    ///
+    /// Same arrangement and same failure mode as
+    /// `the_three_names_are_the_ones_the_wall_resolves`: the word is validated
+    /// here and spent on the other side, so a level accepted here that
+    /// `presets.ts` cannot read is a card running at the family's default with
+    /// the receipt claiming otherwise. `test/presets.test.ts` holds that end by
+    /// reading this array out of this file.
+    #[test]
+    fn the_five_levels_are_the_ones_a_card_understands() {
+        let e = spawn_schema()["inputSchema"]["properties"]["effort"]["enum"].clone();
+        assert_eq!(e, json!(SPAWN_EFFORTS), "the schema offers what {SPAWN_EFFORTS:?} takes");
+        /* Cheapest first, for `SPAWN_MODELS`' reason — and the same five words
+           `/effort` takes, so a caller needs one vocabulary rather than two. */
+        assert_eq!(SPAWN_EFFORTS, ["low", "medium", "high", "xhigh", "max"]);
+        for level in SPAWN_EFFORTS {
+            assert_eq!(
+                asked_effort(&json!({ "effort": level, "model": "opus" }), Some("opus")),
+                Ok(Some(level.into())),
+            );
+        }
+        /* Folded and trimmed, because `"High"` is the same intention. */
+        assert_eq!(
+            asked_effort(&json!({ "effort": " XHigh " }), Some("opus")),
+            Ok(Some("xhigh".into())),
+        );
+        /* Absent and empty are "nobody said", which is the default-bearing case
+           and not a failure — it is every spawn written before this existed. */
+        assert_eq!(asked_effort(&json!({}), Some("opus")), Ok(None));
+        assert_eq!(asked_effort(&json!({ "effort": "  " }), Some("opus")), Ok(None));
+        /* And nothing named at all still opens a card, which is the arm an
+           effort must not be able to break. */
+        assert_eq!(asked_effort(&json!({}), None), Ok(None));
+    }
+
+    /// The two pairings that are refused, and why neither could be mended.
+    ///
+    /// Both are cases where accepting the word would leave a surface agreeing
+    /// with a belief that is false — `asked_model`'s argument one axis over. A
+    /// level with no model has nothing to hang on; a level on a model with none
+    /// is dropped by the CLI without a word, so the card would carry it in the
+    /// store, draw it in the meta bar and report it in the receipt while running
+    /// at no level at all.
+    #[test]
+    fn an_effort_that_cannot_land_is_refused_rather_than_dropped() {
+        let why = asked_effort(&json!({ "effort": "low" }), None).unwrap_err();
+        /* It says which way out, since the parent almost certainly meant a
+           family too and is one word from a card. */
+        assert!(why.contains("Name a `model`"), "{why}");
+        assert!(why.contains("no card was opened"), "{why}");
+
+        let why = asked_effort(&json!({ "effort": "high" }), Some("haiku")).unwrap_err();
+        assert!(why.contains("haiku"), "{why}");
+        /* The reason, not just the refusal — an agent told only "no" tries a
+           different phrasing, which here would be a different level. */
+        assert!(why.contains("silently drops it"), "{why}");
+        assert!(why.contains("Leave `effort` out"), "{why}");
+
+        /* And a level this wall has never heard of answers with the five,
+           rather than falling through to the family's default — which is the
+           same silent overspend `asked_model` refuses. */
+        let why = asked_effort(&json!({ "effort": "ultra" }), Some("opus")).unwrap_err();
+        for level in SPAWN_EFFORTS {
+            assert!(why.contains(level), "{why}");
+        }
+        assert!(why.contains("ultra"), "{why}");
+    }
+
+    /// Whatever is in [`EFFORTLESS`] is one of the three, or the constant
+    /// guards nothing at all.
+    ///
+    /// That it is the *right* one — the family whose preset claims no level —
+    /// is asserted on the other side of the seam, in `test/presets.test.ts`,
+    /// which reads this array out of this file and holds it against the real
+    /// table. It has to be there rather than here: the fact is a fact about
+    /// `presets.ts`, and a cargo test could only compare against a
+    /// transcription of it, which is a third thing to keep in step. It also
+    /// runs there, on a machine with no MSVC, which nothing in this module does.
+    #[test]
+    fn the_family_with_no_effort_is_one_of_the_three() {
+        for name in EFFORTLESS {
+            assert!(SPAWN_MODELS.contains(&name), "{name} is not a family this tool offers");
+        }
+    }
+
+    /// The effort field tells the caller when *not* to use it, which is the
+    /// half an enum cannot carry and the half that decides the bill.
+    ///
+    /// Sink `564bd55d`: five cards spawned for a budget-capped rewrite all ran
+    /// `xhigh`, because the tool took a model and nothing else and the bundled
+    /// pairing was the dear one. The fix is the argument; this is the sentence
+    /// that makes an agent reach for it on a mechanical lane, which is where
+    /// the saving actually is.
+    #[test]
+    fn the_effort_field_says_when_to_leave_it_alone() {
+        let d = spawn_schema()["inputSchema"]["properties"]["effort"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        /* The default is the recommendation, so the field cannot read as a knob
+           to turn on every call. */
+        assert!(d.contains("Leave it out unless you have a reason"), "{d}");
+        /* The two defaults, named — a caller that cannot see what it is moving
+           off cannot tell whether it is moving up or down. */
+        assert!(d.contains("sonnet · medium"), "{d}");
+        assert!(d.contains("opus · high"), "{d}");
+        /* One sentence per level, for the reason the model field has one per
+           name: the choice is made against the work, not a remembered scale. */
+        for level in SPAWN_EFFORTS {
+            assert!(d.contains(&format!("`{level}`")), "{d}");
+        }
+        /* The refused pairing, said before it is hit — a refusal costs a whole
+           call and this costs a clause. */
+        assert!(d.contains("not with `haiku`"), "{d}");
+        /* And the reason this is the caller's to get right, which is the thing
+           no default can know. */
+        assert!(d.contains("divided the job up"), "{d}");
     }
 
     /// Fanning out work that *writes* is the reflex this tool has to catch, and
