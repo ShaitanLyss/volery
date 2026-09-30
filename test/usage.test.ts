@@ -44,22 +44,61 @@ describe("what a token costs", () => {
        2026-09-01 increase was cancelled and the introductory rate became the
        standard one. See the note above `RATES`. */
     expect(rateFor("claude-sonnet-5")).toEqual({ input: 2, output: 10 });
+    expect(rateFor("claude-sonnet-5-5")).toEqual({ input: 2, output: 10 });
+    expect(rateFor("claude-opus-5-5")).toEqual({ input: 4, output: 20, cacheRead: 0.05 });
+    expect(rateFor("claude-opus-4-1")).toEqual({ input: 15, output: 75 });
+    expect(rateFor("claude-fable-5-1")).toEqual({ input: 10, output: 50, cacheRead: 0.025 });
     expect(rateFor("claude-haiku-4-5")).toEqual({ input: 1, output: 5 });
     expect(rateFor("claude-fable-5")).toEqual({ input: 10, output: 50 });
   });
 
   /* `system/init` gives the configured id with its window tier attached — see
-     the note in classify.ts. A ring is not a price. */
+     the note in classify.ts. A ring is not a price, and the pricing docs are
+     explicit that the full 1M window bills at standard rates. */
   test("a window tier is not part of the model's name", () => {
     expect(rateFor("claude-opus-5[1m]")).toEqual(rateFor("claude-opus-5"));
+    expect(rateFor("claude-sonnet-5[1m]")).toEqual(rateFor("claude-sonnet-5"));
+  });
+
+  test("a dated id prices as the model it is dated from, not as its family", () => {
+    /* The rung that was missing for this table's whole life. Model ids arrive
+       dated — both of these are in this machine's transcripts — and no dated id
+       is ever a key, so they fell past to the family guess and every one of them
+       was priced as the *newest* model in its family. Sonnet 4 at $3/$15 was
+       being read at Sonnet 5's $2/$10, silently. */
+    expect(rateFor("claude-sonnet-4-20250514")).toEqual({ input: 3, output: 15 });
+    expect(rateFor("claude-haiku-4-5-20251001")).toEqual({ input: 1, output: 5 });
+    /* Longest prefix wins, or this would match `claude-opus-4` and price at the
+       retired $15/$75 — a 3x error in the expensive direction. */
+    expect(rateFor("claude-opus-4-5-20251101")).toEqual({ input: 5, output: 25 });
+    /* And the cut is only ever at a `-`, so a bare digit run cannot match a
+       shorter id: `claude-opus-45` is not an `claude-opus-4` anything. */
+    expect(rateFor("claude-opus-45")).toEqual(rateFor("claude-opus-5-5"));
+  });
+
+  test("the cache read multiplier is the model's where it has one of its own", () => {
+    /* Cache is ~89% of this wall's spend, so the one multiplier allowed to vary
+       is the one deciding most of the bill. A million cache-read tokens on Opus
+       5.5 is $0.20, not the $0.40 a flat 0.1x would have charged. */
+    const cr = (m: string) => {
+      const r = rateFor(m)!;
+      return (1e6 * r.input * (r.cacheRead ?? 0.1)) / 1e6;
+    };
+    expect(cr("claude-opus-5-5")).toBeCloseTo(0.2, 10);
+    expect(cr("claude-fable-5-1")).toBeCloseTo(0.25, 10);
+    /* Everything else is the standard 0.1x the docs name. */
+    expect(cr("claude-opus-5")).toBeCloseTo(0.5, 10);
+    expect(cr("claude-sonnet-5")).toBeCloseTo(0.2, 10);
   });
 
   /* The one failure this widget must not have: a model released after the build
      shipped pricing at nothing, so the reading silently reads low for the model
-     you are actually using. */
+     you are actually using. It guesses the family's *newest*, not its previous
+     generation: rates fall across a family's life — opus has gone $15/$75 →
+     $5/$25 → $4/$20 — so the last release is the better predictor of the next. */
   test("a model this build has never heard of prices by its tier", () => {
-    expect(rateFor("claude-opus-9")).toEqual(rateFor("claude-opus-5"));
-    expect(rateFor("claude-sonnet-7-2")).toEqual(rateFor("claude-sonnet-5"));
+    expect(rateFor("claude-opus-9")).toEqual(rateFor("claude-opus-5-5"));
+    expect(rateFor("claude-sonnet-7-2")).toEqual(rateFor("claude-sonnet-5-5"));
     expect(rateFor("claude-haiku-6")).toEqual(rateFor("claude-haiku-4-5"));
   });
 

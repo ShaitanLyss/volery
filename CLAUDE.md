@@ -95,6 +95,12 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # tunnel.rs, applog.rs,
                               # limits.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
+bun tools/probe-prices.ts          # whether usage.ts's price table still agrees with the
+                                   # installed CLI's own rates, which it encodes as
+                                   # `tier_<in>_<out>` tokens. Reads the binary, no network
+                                   # and no API turn. It is a probe rather than a fetch
+                                   # because the model→tier assignment is NOT recoverable —
+                                   # see usage.md, which records the four sources looked at
 cd src-tauri && cargo run --example voice-probe    # which speech engines this machine has, and
                                    # `-- listen` for one spoken utterance. The microphone is
                                    # the one thing here no test can reach

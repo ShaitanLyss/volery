@@ -7,6 +7,7 @@ paths:
   - "src-tauri/src/usage.rs"
   - "src-tauri/src/limits.rs"
   - "tools/probe-usage.ts"
+  - "tools/probe-prices.ts"
   - "src-tauri/examples/limits-probe.rs"
 ---
 
@@ -268,11 +269,63 @@ stays right when the account you were watching stops being the one being spent.
   1.6 between two numbers it would be easy to add together, which is the split `migrate_v7`
   had to make one level up. A record with no breakdown is charged at the cheaper rate rather
   than dropped: under-reporting is a smaller lie than losing the tokens.
+- **The table is hard-coded, and `tools/probe-prices.ts` is the answer to "why not
+  fetch it".** It went stale by a month once — Sonnet 5 sat at $3/$15 waiting for a
+  2026-09-01 increase the docs then cancelled — so the question is a fair one and was
+  actually looked into, 2026-09-30 against claude 2.1.285. Four sources, and only the
+  last is interesting:
+  - **the transcripts** carry five kinds of token and no money; every field on an
+    `assistant` record was enumerated and no key anywhere contains "cost" or "price".
+    That is precisely why a table exists.
+  - **a local file** — `policy-limits.json` holds restrictions and defaults, no rates.
+  - **an endpoint** — the CLI's URL strings offer `/v1/models` and
+    `/api/model_selector/`, neither of which prices anything, and `/api/oauth/usage`
+    answers in percentages of an allowance rather than dollars.
+  - **the CLI's own table**, which it must have, since `result.total_cost_usd` is where
+    the day's figure comes from. It encodes rates as `tier_<in>_<out>[_cache_read_d_dd]`
+    and all seven of them match the published docs exactly, overrides included. **But
+    the model to tier assignment is not recoverable** — the tokens sit in a minified
+    bundle with no readable structure binding one to the other, and the decisive
+    evidence is an absence: there is no `tier_1_5` anywhere in the binary, so Haiku
+    4.5's $1/$5, a rate the CLI demonstrably charges, is not expressible in that
+    vocabulary at all. **A source that cannot name one of the rates it uses is not a
+    source**, and that is the finding worth keeping — the near-miss here is a reader
+    that works for six models and silently prices the seventh at nothing.
+
+  So the probe checks the half that *is* sound: every distinct (input, output, cache
+  read) triple in `RATES` must be a tier the installed CLI knows. That catches an
+  invented rate, a typo, and a tier the CLI gained that this build has not. It cannot
+  catch a right rate on the wrong model and says so on every run, because the thing
+  most likely to go wrong is reading a green run as "the table is correct". The two
+  haiku rates are listed as expected absences with their reasons — without that the
+  probe is red in its correct state, and a check that is always red is one nobody runs
+  twice.
+- **The cache *read* is the one multiplier allowed to vary, and it had to become one.**
+  The note above `RATES` said in as many words that reads and both write TTLs were
+  multiples of input across every model; then Fable 5.1 and Mythos 5.1 arrived at
+  0.025x and Opus 5.5 at 0.05x. Cache is ~89% of this wall's spend, so the multiplier
+  that varies is the one deciding most of the bill — a flat 0.1x on Opus 5.5 reads its
+  cache reads at exactly double. `Rate.cacheRead` is the optional override; the writes
+  are still flat, since nothing has broken that yet.
+- **A dated id prices as the model it is dated from, and for this table's whole life it
+  did not.** Ids arrive dated — `claude-sonnet-4-20250514` and
+  `claude-haiku-4-5-20251001` are both in this machine's transcripts — and no dated id
+  is ever a key, so every one of them fell past the exact lookup straight to the family
+  guess and was priced as the *newest* model in its family. Sonnet 4 at $3/$15 was
+  being read at Sonnet 5's $2/$10, silently, for as long as there has been a table. The
+  middle rung is a longest-prefix match, cut only at a `-`: longest, or
+  `claude-opus-4-5-...` matches `claude-opus-4` and prices at the retired $15/$75; and
+  only at a `-`, or `claude-opus-45` matches `claude-opus-4`. **A prefix is exact
+  information, and the bug was throwing it away in favour of a guess.**
 - **`rateFor` guesses by tier rather than returning nothing.** A model released after the build
   shipped would otherwise price at zero, and a ledger silently reading zero for the model you
   are actually using is the one failure this widget must not have. Tiers have held their rate
   across every release so far, so guessing by tier is a much smaller error. A model matching no
-  tier is counted as `unpriced` and said out loud on the face.
+  tier is counted as `unpriced` and said out loud on the face. The guess is the
+  family's **newest** member rather than its previous generation, which is a reversal:
+  rates fall across a family's life — opus has gone $15/$75 -> $5/$25 -> $4/$20 — so
+  the last release predicts the next one better than the one before it does, and it is
+  the only member whose cache-read override is likely to carry forward.
 - **All five kinds of token are priced, and cache is most of the bill.** Input at the model's
   rate, output at its output rate, a cache read at 0.1x input, a five-minute cache write at
   1.25x and an hour one at 2x. Measured over this machine's past seven days on 2026-08-14:

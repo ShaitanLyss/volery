@@ -45,12 +45,27 @@ export const WEEK_MS = 7 * 24 * HOUR;
 
 /* ── what a token costs ─────────────────────────────────────────────────────
  *
- * Dollars per million tokens, at published list rates. Cache reads and the two
- * cache-write TTLs are all multiples of the input rate rather than columns of
- * their own — that relationship holds across every model and has done since
- * caching shipped, so a new model is one line here rather than five. */
+ * Dollars per million tokens, at published list rates. The two cache-write TTLs
+ * are multiples of the input rate rather than columns of their own — that
+ * relationship has held across every model since caching shipped, so a new model
+ * is one line here rather than three.
+ *
+ * **The cache *read* stopped being one of those multiples**, and that is the
+ * single structural change this table has needed. It was 0.1x everywhere, and
+ * the comment above said so in as many words; then Fable 5.1 and Mythos 5.1
+ * arrived at 0.025x and Opus 5.5 at 0.05x. Cache is ~89% of this wall's spend
+ * (measured, see `usage.md`), so the one multiplier that is allowed to vary is
+ * the one that decides most of the bill — a 0.1x assumed on Opus 5.5 reads its
+ * cache reads at double. So `Rate.cacheRead` is an optional override and
+ * `CACHE_READ` is what the docs call "the standard 0.1x multiplier". */
 
-export type Rate = { input: number; output: number };
+export type Rate = {
+  input: number;
+  output: number;
+  /** Cache reads as a multiple of `input`, where the model does not use the
+   *  standard rate. Absent means [`CACHE_READ`], which is almost everything. */
+  cacheRead?: number;
+};
 
 const CACHE_READ = 0.1;
 const WRITE_5M = 1.25;
@@ -76,37 +91,82 @@ const WRITE_1H = 2;
  *  charged today; a scheduled change is something to re-read the docs about on
  *  the day, not to pre-empt a month early. */
 export const RATES: Record<string, Rate> = {
+  "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.025 },
+  "claude-mythos-5-1": { input: 10, output: 50, cacheRead: 0.025 },
   "claude-fable-5": { input: 10, output: 50 },
   "claude-mythos-5": { input: 10, output: 50 },
+  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.05 },
   "claude-opus-5": { input: 5, output: 25 },
   "claude-opus-4-8": { input: 5, output: 25 },
   "claude-opus-4-7": { input: 5, output: 25 },
   "claude-opus-4-6": { input: 5, output: 25 },
   "claude-opus-4-5": { input: 5, output: 25 },
+  "claude-opus-4-1": { input: 15, output: 75 },
+  "claude-opus-4": { input: 15, output: 75 },
+  "claude-sonnet-5-5": { input: 2, output: 10 },
   "claude-sonnet-5": { input: 2, output: 10 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-sonnet-4-5": { input: 3, output: 15 },
+  "claude-sonnet-4": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
+  "claude-haiku-3-5": { input: 0.8, output: 4 },
+};
+
+/** The newest member of each family, which is what an unknown one is guessed as.
+ *
+ *  Named rather than spelled into `rateFor`'s branches, because the direction of
+ *  the guess is the decision and it changed: the fallback used to name the
+ *  *previous* generation, so `claude-opus-9` priced at Opus 5's $5/$25. Rates
+ *  fall across a family's life — opus has gone $15/$75 → $5/$25 → $4/$20 — so
+ *  the newest release is the better predictor of the next one, and it is the
+ *  only member whose cache-read multiplier is likely to carry forward too. */
+const NEWEST: Record<string, string> = {
+  fable: "claude-fable-5-1",
+  mythos: "claude-fable-5-1",
+  opus: "claude-opus-5-5",
+  sonnet: "claude-sonnet-5-5",
+  haiku: "claude-haiku-4-5",
 };
 
 /** What one model costs, or null when nothing here can say.
  *
- * The family fallback is the point rather than a nicety: a model released after
- * this build ships would otherwise price at nothing, and a ledger that silently
- * reads zero for the model you are actually using is the one failure this
- * widget must not have. Tiers have held their rate across every release so far,
- * so guessing by tier is a much smaller error than guessing zero — and a model
- * that matches no tier at all is counted as `unpriced` and said out loud rather
- * than folded into the total. `[1m]` and the like are stripped: `system/init`
- * gives the configured id with its window tier attached (see `classify.ts`). */
+ * Three rungs, and the middle one was missing for this table's whole life.
+ *
+ * 1. **The id itself.** `claude-opus-5-5` is a key.
+ * 2. **The longest key it starts with.** Model ids arrive dated —
+ *    `claude-sonnet-4-20250514`, `claude-haiku-4-5-20251001` are both in this
+ *    machine's transcripts — and no dated id is ever a key. They used to fall
+ *    straight past this rung to the family, so **every dated id was priced as
+ *    the newest model in its family**: Sonnet 4 at $3/$15 was being read at
+ *    Sonnet 5's $2/$10, silently and for as long as the table has existed. A
+ *    prefix is exact information and it was being thrown away. Longest wins, or
+ *    `claude-opus-4-5-…` would match `claude-opus-4` and price at $15/$75.
+ * 3. **The family's newest**, per [`NEWEST`]. This rung is the point rather than
+ *    a nicety: a model released after this build ships would otherwise price at
+ *    nothing, and a ledger that silently reads zero for the model you are
+ *    actually using is the one failure this widget must not have. A model
+ *    matching no family at all is counted as `unpriced` and said out loud
+ *    rather than folded into the total.
+ *
+ * `[1m]` and the like are stripped first: `system/init` gives the configured id
+ * with its window tier attached (see `classify.ts`), and the tier is not a price
+ * — the pricing docs' long-context section is explicit that the full 1M window
+ * is billed at standard rates. */
 export function rateFor(model: string): Rate | null {
   const id = model.replace(/\[.*$/, "").trim();
   const exact = RATES[id];
   if (exact) return exact;
-  if (id.includes("fable") || id.includes("mythos")) return RATES["claude-fable-5"];
-  if (id.includes("opus")) return RATES["claude-opus-5"];
-  if (id.includes("sonnet")) return RATES["claude-sonnet-5"];
-  if (id.includes("haiku")) return RATES["claude-haiku-4-5"];
+  /* The dated-id rung. A version suffix may only be cut at a `-`, or
+     `claude-opus-45` would match `claude-opus-4`. */
+  let best: string | null = null;
+  for (const key of Object.keys(RATES)) {
+    if (!id.startsWith(`${key}-`)) continue;
+    if (best === null || key.length > best.length) best = key;
+  }
+  if (best !== null) return RATES[best];
+  for (const [family, newest] of Object.entries(NEWEST)) {
+    if (id.includes(family)) return RATES[newest];
+  }
   return null;
 }
 
@@ -154,7 +214,7 @@ function absorb(t: Totals, s: Slice) {
   t.usd +=
     (s.input * rate.input +
       s.output * rate.output +
-      s.cacheRead * rate.input * CACHE_READ +
+      s.cacheRead * rate.input * (rate.cacheRead ?? CACHE_READ) +
       s.write5m * rate.input * WRITE_5M +
       s.write1h * rate.input * WRITE_1H) /
     1e6;
