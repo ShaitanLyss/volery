@@ -697,7 +697,8 @@ pub fn spawn_schema() -> Value {
                          has no room left when the card starts, or runs out later, the card \
                          moves down the ladder like any other. A name that is not \
                          registered, is switched off, or is not signed in is refused with \
-                         the list of what is here — so a guess costs one call, not a card."
+                         the list of what is here — so a guess costs one call, not a card. \
+                         `accounts` lists the labels, their tiers and their last readings."
                 }
             },
             "required": ["prompt"]
@@ -2313,6 +2314,9 @@ mod tests {
         assert!(d.contains("Leave it out unless the user asked"), "{d}");
         assert!(d.contains("ladder"), "{d}");
         assert!(d.contains("starting point rather than a pin"), "{d}");
+        /* And where the names come from, or the field is one only a refusal
+           can teach. */
+        assert!(d.contains("`accounts` lists the labels"), "{d}");
     }
 
     /// Fanning out work that *writes* is the reflex this tool has to catch, and

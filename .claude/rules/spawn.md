@@ -308,6 +308,9 @@ exactly as a card from the `+` does (`accounts.md`). Added 2026-09-30.
   since there is nothing to choose between.
 - **Matched exactly, then case-folded if that is unambiguous.** Labels are typed by a person
   and repeated by a model.
+- **The names come from `mcp__skein__accounts`** and from `allowance`'s scope line, which
+  names the accounts it did not read (`usage.md`). Before both, a refusal was the only place an
+  agent could learn a label — a field only a mistake can teach.
 - **The receipt is silent when nothing was named**, unlike the model's line: the ladder is
   the right answer for nearly every card, and advertising the knob there would invite
   second-guessing the user's own order.

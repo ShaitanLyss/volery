@@ -139,6 +139,8 @@ export const SKEIN_SPAWN_TOOL = "mcp__skein__spawn";
 export const SKEIN_CLOSE_TOOL = "mcp__skein__close";
 export const SKEIN_WAKE_TOOL = "mcp__skein__wake_me";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
+/** Every account on the wall by label, for `spawn`'s `account`. */
+export const SKEIN_ACCOUNTS_TOOL = "mcp__skein__accounts";
 /** Whether Claude itself is up — the agent's half of the status widget.
  *
  *  Beside `allowance` because they are the same shape of question: both ask
@@ -605,6 +607,8 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_ALLOWANCE_TOOL:
       return "checked the allowance";
+    case SKEIN_ACCOUNTS_TOOL:
+      return "listed the accounts";
     /* Deliberately says what was *asked*, not what came back. Every other line
        here names the gesture, and this one has a stronger reason than symmetry:
        the answer changes minute to minute, so a line reading "claude is up"

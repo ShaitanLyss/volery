@@ -830,6 +830,7 @@ pub fn release_limits(state: State<'_, Limits>) {
  */
 
 pub const ALLOWANCE_TOOL: &str = "allowance";
+pub const ACCOUNTS_TOOL: &str = "accounts";
 
 /// How far back the spend figure looks.
 ///
@@ -884,7 +885,145 @@ pub fn handle(
     tool: &str,
     _args: &serde_json::Value,
 ) -> Option<String> {
-    (tool == ALLOWANCE_TOOL).then(|| do_allowance(app, caller))
+    match tool {
+        ALLOWANCE_TOOL => Some(do_allowance(app, caller)),
+        ACCOUNTS_TOOL => Some(do_accounts(app, caller)),
+        _ => None,
+    }
+}
+
+/// Every account on the wall, by the label `spawn` takes.
+///
+/// `allowance` reads one account — the asking card's — and says how many
+/// others there are. That is the right scope for *what can I afford*, and it
+/// left an agent with no way to answer *which account should this card go on*:
+/// `spawn` takes a label, and the only place a label appeared was a refusal.
+/// This is the other half, and it is deliberately the cheap half.
+///
+/// **No network.** The figures are whatever `Limits` already holds — the
+/// waterfall polls every usable account about once a minute, so on a wall that
+/// manages accounts they are rarely old, and each is dated so a stale one says
+/// so. Asking the endpoint for every account on one tool call would be N
+/// requests against `FLOOR_MS`'s one-per-minute bargain, for a listing.
+///
+/// **Figures, not a verdict.** Whether an account has room is the user's caps
+/// against these percentages, and `accounts.ts::choose` is the one place that
+/// weighs them. A "has room" computed here would be a second waterfall, and the
+/// one that drifts. So this reports and the answer says the wall decides.
+pub fn accounts_schema() -> serde_json::Value {
+    serde_json::json!({
+        "name": ACCOUNTS_TOOL,
+        "description":
+            "List the Claude accounts this wall can put a card on, in the order work \
+             falls through them: each one's label, its priority tier, whether it can \
+             take work at all (switched on and signed in), the last reading of how much \
+             of it is used, and which one *this* card is on. Costs nothing — no request \
+             is made, the figures are the wall's last poll and each says how old it is.\n\n\
+             Read it before passing `account` to `spawn`, which takes one of these labels. \
+             Leave `account` out unless the user asked for one: the ladder already puts \
+             new work on the lowest tier with room, using caps the user set that this \
+             listing does not apply. For what *this* card can afford, `allowance` is the \
+             fresher answer.",
+        "inputSchema": { "type": "object", "properties": {} }
+    })
+}
+
+/// One account as the listing draws it.
+struct Seat<'a> {
+    label: &'a str,
+    priority: i64,
+    enabled: bool,
+    signed_in: bool,
+    /// The last reading `Limits` holds for it, if any.
+    reading: Option<&'a Report>,
+}
+
+fn do_accounts(app: &AppHandle, caller: &str) -> String {
+    let (seats, mine) = app
+        .try_state::<crate::store::Store>()
+        .and_then(|s| {
+            s.0.lock().ok().map(|conn| {
+                (
+                    crate::accounts::registry(app, &conn),
+                    crate::store::account_of(&conn, caller),
+                )
+            })
+        })
+        .unwrap_or((Vec::new(), None));
+    /* Cloned out under the lock and read after it, so a slow format never holds
+       the mutex every poll and every card's `allowance` goes through. */
+    let held: std::collections::HashMap<String, Report> = app
+        .state::<Limits>()
+        .0
+        .lock()
+        .map(|all| {
+            all.iter()
+                .filter_map(|(k, c)| c.last.clone().map(|r| (k.clone(), r)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let rows: Vec<Seat> = seats
+        .iter()
+        .map(|s| Seat {
+            label: &s.label,
+            priority: s.priority,
+            enabled: s.enabled,
+            signed_in: s.signed_in,
+            reading: held.get(&s.label),
+        })
+        .collect();
+    say_accounts(&rows, mine.as_deref(), now_ms())
+}
+
+/// The listing, pure. `mine` is the asking card's account, or `None` for the
+/// CLI's own sign-in, which is none of these rows.
+fn say_accounts(rows: &[Seat], mine: Option<&str>, now: i64) -> String {
+    if rows.is_empty() {
+        return "This wall manages no accounts: every card runs as whoever Claude Code is \
+                signed in as on this machine, so there is nothing to choose between — \
+                leave `account` out of `mcp__skein__spawn`."
+            .into();
+    }
+    let mut out = String::from(
+        "Accounts on this wall, in the order work falls through them. A lower priority is \
+         spent first; accounts sharing one share the work.\n",
+    );
+    for r in rows {
+        let standing = match (r.enabled, r.signed_in) {
+            (false, _) => "switched off — takes no work".to_string(),
+            (true, false) => "not signed in — takes no work".to_string(),
+            (true, true) => match r.reading {
+                None => "usable, not read yet".to_string(),
+                Some(rep) if rep.windows.is_empty() => {
+                    format!("usable, no windows touched (read {} ago)", soon(now - rep.at))
+                }
+                Some(rep) => {
+                    let used = rep
+                        .windows
+                        .iter()
+                        .map(|w| format!("{} {:.0}%", w.kind, w.used))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("usable, {used} used (read {} ago)", soon(now - rep.at))
+                }
+            },
+        };
+        let here = if Some(r.label) == mine { " — this card is on it" } else { "" };
+        out.push_str(&format!(
+            "- {} · priority {} · {standing}{here}\n",
+            r.label, r.priority
+        ));
+    }
+    if mine.is_none() {
+        out.push_str("This card is on Claude Code's own sign-in, which is none of these.\n");
+    }
+    out.push_str(
+        "\nTo start a card on one, pass its label as `account` to `mcp__skein__spawn`; left out, the \
+         ladder picks. These are figures, not a verdict: whether an account has room is the \
+         user's caps against them, which the wall applies and this listing does not — and a \
+         card named onto an account without room goes down the ladder anyway.",
+    );
+    out
 }
 
 /// Blocking, on the MCP request's own thread. `ask::start` gives every request a
@@ -913,10 +1052,10 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
        scope stated is read as the wall's. A card with no account of its own is
        on the CLI's global sign-in, which is not one of these rows, so every
        usable account is one this reading passes over. */
-    let others = usable
-        .iter()
+    let others: Vec<String> = usable
+        .into_iter()
         .filter(|l| Some(l.as_str()) != label.as_deref())
-        .count();
+        .collect();
 
     /* **The asking card's account, not the wall's.** This passed `""` — the
        CLI's own sign-in — for every caller, so a card spawned on a registered
@@ -955,7 +1094,7 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
                  was never made looks like, and those are worth fixing rather than \
                  working around. Do not report to the user that they are on per-token \
                  billing on the strength of this line alone.{}",
-                elsewhere(others)
+                elsewhere(&others)
             )
         }
     };
@@ -966,7 +1105,7 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
        what gets asked, a percentage with no name on it is a percentage the user
        cannot check. `source` is where the credential was found and never a
        fragment of it — the rule the rest of this file keeps. */
-    out.push_str(&scope_line(&report.source, others));
+    out.push_str(&scope_line(&report.source, &others));
     if let Some(plan) = &report.plan {
         out.push_str(&format!("Plan: {plan}.\n"));
     }
@@ -1016,7 +1155,7 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
         .iter()
         .map(|w| w.used)
         .fold(0.0f64, f64::max);
-    format!("{out}\n{day}\n\n{}", advice_for(worst, others))
+    format!("{out}\n{day}\n\n{}", advice_for(worst, others.len()))
 }
 
 /* -- saying how much of the wall this is -----------------------------------
@@ -1044,22 +1183,32 @@ fn do_allowance(app: &AppHandle, caller: &str) -> String {
 /// failure arm too: "no allowance could be read for this account" is *more*
 /// likely to stop an agent than a high percentage is, and it was equally silent
 /// about the rest of the wall.
-fn elsewhere(others: usize) -> String {
-    match others {
+///
+/// **Named, not only counted.** A count told an agent the wall was bigger than
+/// this reading and left it unable to do anything about it — `spawn` takes an
+/// `account`, and a label an agent has never seen is one it can only guess at.
+/// The labels are the user's own names for their subscriptions and carry no
+/// credential, so there is nothing to withhold; the `accounts` tool is where
+/// the rest of each one is.
+fn elsewhere(others: &[String]) -> String {
+    let named = others.join(", ");
+    match others.len() {
         0 => String::new(),
-        1 => " One other account on this wall is usable, and nothing above is a reading \
-              of it."
-            .to_string(),
+        1 => format!(
+            " One other account on this wall is usable ({named}), and nothing above is a \
+             reading of it — `mcp__skein__accounts` lists every account and its last reading."
+        ),
         n => format!(
-            " {n} other accounts on this wall are usable, and nothing above is a reading \
-             of any of them."
+            " {n} other accounts on this wall are usable ({named}), and nothing above is a \
+             reading of any of them — `mcp__skein__accounts` lists every account and its last \
+             reading."
         ),
     }
 }
 
 /// Whose figures these are, and whether they are the wall's -- the first line of
 /// the answer, so the scope is established before any number is.
-fn scope_line(source: &str, others: usize) -> String {
+fn scope_line(source: &str, others: &[String]) -> String {
     format!("Account: {source}.{}\n", elsewhere(others))
 }
 
@@ -1377,21 +1526,66 @@ mod tests {
     /// first — and says nothing where there is nothing to say.
     #[test]
     fn the_answer_names_its_account_and_owns_up_to_the_rest_of_the_wall() {
-        let alone = scope_line("the 'personal' account", 0);
+        let alone = scope_line("the 'personal' account", &[]);
         assert!(
             alone.starts_with("Account: the 'personal' account."),
             "{alone}"
         );
         assert!(!alone.contains("usable"), "nothing to disclaim: {alone}");
 
-        let one = scope_line("the 'personal' account", 1);
+        let one = scope_line("the 'personal' account", &["work".into()]);
         assert!(one.contains("One other account"), "{one}");
+        assert!(one.contains("(work)"), "the label is what spawn takes: {one}");
 
-        let many = scope_line("the CLI's sign-in", 3);
+        let many = scope_line("the CLI's sign-in", &["a".into(), "b".into(), "c".into()]);
         assert!(many.contains("3 other accounts"), "{many}");
+        assert!(many.contains("(a, b, c)"), "{many}");
         assert!(many.contains("nothing above is a reading"), "{many}");
+        assert!(many.contains("`mcp__skein__accounts`"), "and where the rest is: {many}");
 
-        assert!(elsewhere(0).is_empty());
+        assert!(elsewhere(&[]).is_empty());
+    }
+
+    /// The listing names every account by the label `spawn` takes, says which
+    /// can take work and which one the caller is on, and dates every figure.
+    #[test]
+    fn the_accounts_listing_names_what_spawn_can_take() {
+        let read = Report {
+            windows: vec![Window {
+                kind: "session".into(),
+                group: "session".into(),
+                used: 42.4,
+                severity: "normal".into(),
+                resets_at: None,
+                scope: None,
+                active: true,
+            }],
+            overage: None,
+            at: 1_000,
+            source: "the 'work' account".into(),
+            plan: None,
+        };
+        let rows = [
+            Seat { label: "work", priority: 1, enabled: true, signed_in: true, reading: Some(&read) },
+            Seat { label: "spare", priority: 1, enabled: true, signed_in: true, reading: None },
+            Seat { label: "off", priority: 2, enabled: false, signed_in: true, reading: None },
+            Seat { label: "new", priority: 3, enabled: true, signed_in: false, reading: None },
+        ];
+        let said = say_accounts(&rows, Some("work"), 1_000 + 120_000);
+        assert!(said.contains("- work · priority 1 · usable, session 42% used (read 2m ago) — this card is on it"), "{said}");
+        assert!(said.contains("- spare · priority 1 · usable, not read yet\n"), "{said}");
+        assert!(said.contains("- off · priority 2 · switched off"), "{said}");
+        assert!(said.contains("- new · priority 3 · not signed in"), "{said}");
+        assert!(said.contains("`account` to `mcp__skein__spawn`"), "{said}");
+        assert!(said.contains("not a verdict"), "{said}");
+        assert!(!said.contains("own sign-in"), "{said}");
+
+        let global = say_accounts(&rows, None, 2_000);
+        assert!(global.contains("Claude Code's own sign-in, which is none of these"), "{global}");
+        assert!(!global.contains("this card is on it"), "{global}");
+
+        let none = say_accounts(&[], None, 0);
+        assert!(none.contains("manages no accounts"), "{none}");
     }
 
     #[test]

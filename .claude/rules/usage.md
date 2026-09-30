@@ -459,6 +459,17 @@ off in the middle of it.
   against the four phrases that actually did it. The tool's own description lost its definite
   article for the same reason; it is where an agent forms its expectation of what the number
   covers.
+- **The accounts it passed over are named, not only counted** (2026-09-30). `spawn` takes an
+  `account`, and a count told an agent the wall was bigger than the reading while leaving it
+  nothing to act on. Labels are the user's names for their subscriptions and carry no
+  credential. The rest of each account is `mcp__skein__accounts`: the registry in ladder order,
+  tier, whether it can take work, which one the caller is on, and the last reading **out of the
+  `Limits` cache — no request**, since N accounts on one call would be N asks against
+  `FLOOR_MS`'s one-per-minute bargain, and the waterfall's own poll keeps the cache warm. It
+  reports figures and never "has room": that is the user's caps against them, `choose` is the
+  one place that weighs them, and a verdict here would be a second waterfall. Deferred with a
+  search hint rather than loaded — the loaded tier has no room, and an agent reaching for an
+  account label already knows it wants one.
 - **A rolling day, not "today".** `spend_since`'s cutoff comes from the front end because the
   timezone lives there; nothing in Rust knows where midnight is, and a guessed one is wrong
   twice a year and every morning before breakfast. `store::spend_over` takes the window instead

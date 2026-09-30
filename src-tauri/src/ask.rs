@@ -968,7 +968,14 @@ pub(crate) fn roster() -> Vec<Value> {
             "open another card, start a second conversation, delegate a separate \
              job, run work in parallel, hand something to a new agent, fan out \
              the building work, spawn several agents to implement, choose which \
-             model an agent runs on, haiku sonnet opus",
+             model an agent runs on, haiku sonnet opus, which account or \
+             subscription it spends",
+        ),
+        found_by(
+            reads_only(crate::limits::accounts_schema()),
+            "which claude accounts or subscriptions are on this wall, list account \
+             labels, which account am I on, which one has room, pick an account \
+             for a new card, priority tiers, is another account usable",
         ),
         found_by(
             crate::spawn::close_schema(),
@@ -2154,12 +2161,13 @@ mod tests {
            `sink` do sweep expired rows on the read path, and `ask_user` spends
            the user's attention; both are argued at `reads_only`, and the rule
            for the next one is stated there. */
-        const READS: [&str; 16] = [
+        const READS: [&str; 17] = [
             "ask_user",
             "board",
             "sink",
             "list",
             "allowance",
+            "accounts",
             "servers",
             "chronicle",
             "claude_status",

@@ -146,7 +146,10 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     ],
   },
   { file: "src-tauri/src/later.rs", items: ["const WAKE_TOOL", "fn wake_schema"] },
-  { file: "src-tauri/src/limits.rs", items: ["const ALLOWANCE_TOOL", "fn allowance_schema"] },
+  {
+    file: "src-tauri/src/limits.rs",
+    items: ["const ALLOWANCE_TOOL", "const ACCOUNTS_TOOL", "fn allowance_schema", "fn accounts_schema"],
+  },
   {
     file: "src-tauri/src/spawn.rs",
     /* `SPAWN_MODELS` and `SPAWN_EFFORTS` are read by `spawn_schema`'s two
