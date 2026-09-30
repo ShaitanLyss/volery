@@ -321,16 +321,20 @@ an Escape: the card is interrupted, the question stands, and the answer arrives 
   is canonicalized instead and `settle_delete` takes the link off with `remove_dir`, which does
   not enter it. That was true of the tool before this and is fixed for both doors.
 
-### What a Bash `rm -rf` still meets first
+### The user's `Bash(rm -rf:*)` was dropped, on her word
 
-**The user's own `Bash(rm -rf:*)` answers before any of this can.** The incident's denial was
-the CLI's wording, not Volery's, so on a card that has a Bash tool that rule wins — whether it
-preempts the hook or overrides its reason was not measured (`tools/probe-deny-order.ts` only ever
-got PowerShell under this argv, as `probe-rm.ts` did). Handing over therefore works for every
-shell spelling *except* the one that rule covers, until the rule is narrowed or dropped. That is
-the user's config and is not Volery's to edit — see `accounts.rs` for the house rule — and
-dropping it is now safe to recommend: every recursive delete in every shell reaches her click or
-the temp tier through this path.
+It answered before any of this could: the incident's denial was the CLI's wording, not
+Volery's, so on a card with a Bash tool the literal `rm -rf` spelling met a bare refusal that
+named no route — while every other spelling (`rm -fr`, `rm -r -f`, `Remove-Item -Recurse`) and
+every card on PowerShell, which is most of them, reached the hook. Whether the rule preempts the
+hook or merely overrides its reason was never measured (`tools/probe-deny-order.ts` only ever got
+PowerShell under this argv, as `probe-rm.ts` did).
+
+The user removed it from `~/.claude/settings.json` on 2026-10-01, asked in so many words, once
+routing made it redundant: every recursive delete in every shell now reaches her click or the
+temp tier through the hook. **So the guard on deleting is this file and `hooks.rs`, and nothing
+else** — the premise this document opened by overturning is now gone in fact as well as in
+effect. If it is ever put back, the literal `rm -rf` in Bash goes back to a bare refusal.
 
 **Which layer refused is never ambiguous**, which was the brief's stated worry about Volery
 guarding anything the user's own config touches. Every reason in `hooks.rs` opens with
