@@ -79,6 +79,7 @@ const HOOKS_ITEMS = [
   "const WAKE_TIMEOUT",
   "fn wakes_browser",
   "fn after",
+  "const PRE_TOOL_TIMEOUT_S",
   "fn settings",
 ];
 

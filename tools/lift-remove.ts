@@ -91,6 +91,9 @@ const REMOVE_ITEMS = [
   "fn question",
   "fn remove_schema",
   "fn paths_from",
+  "fn narrow_temp",
+  "fn reserved",
+  "fn unasked",
   "const REMOVE_TOOL",
 ];
 
@@ -106,6 +109,16 @@ const HOOKS_ITEMS = [
   "const RECURSIVE",
   "struct Wipe",
   "fn commands",
+  "fn commands_as",
+  "fn cmd_verb",
+  "fn is_cmd_switch",
+  "struct Routed",
+  "const PLAIN_SWITCHES",
+  "const PATH_PARAMS",
+  "const INERT_PARAMS",
+  "fn routable",
+  "fn resolve",
+  "fn routed_reason",
   "fn heredoc_delims",
   "fn strip_heredocs",
   "fn is_shelving",
@@ -138,6 +151,9 @@ const REMOVE_TESTS = [
   "paths_come_in_as_one_or_many_and_never_twice",
   "the_schema_leads_with_the_habit_it_replaces",
   "the_schema_promises_no_self_serve_tier_and_no_way_back",
+  "fn temp_root",
+  "only_untouched_scratch_inside_temp_goes_unasked",
+  "a_temp_directory_pointed_somewhere_broad_is_not_one",
 ];
 
 /** The move guard's own, minus the one that needs `reply`. */
@@ -152,6 +168,11 @@ const HOOKS_TESTS = [
   "deleting_one_file_is_not_this",
   "the_wipe_refusal_hands_over_a_working_route",
   "a_wipe_written_into_a_commit_message_is_prose",
+  "an_absolute_path_is_something_to_delete",
+  "fn routed",
+  "a_delete_is_handed_on_only_when_it_can_be_read_exactly",
+  "an_operand_resolves_the_way_its_shell_reads_it",
+  "a_handed_on_delete_says_the_shell_ran_nothing",
 ];
 
 /** The per-file machinery, closed over one file's lines. */

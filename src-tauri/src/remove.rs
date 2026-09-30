@@ -1,9 +1,11 @@
 /*! Deleting a path from a card, behind the user's own click.
  *
  * `mcp__skein__remove` takes a path and a reason, says everything it can find
- * out about what is there, and waits for a person. Nothing here auto-approves
- * and nothing here is undoable — see `.claude/rules/remove.md` for the whole
- * argument, and the header below for the two facts it turns on.
+ * out about what is there, and waits for a person. Nothing here is undoable, and
+ * the one thing that does not ask is scratch in the OS temp directory that git
+ * does not know and no other card wrote (`unasked`) — see
+ * `.claude/rules/remove.md` for the whole argument, and the header below for the
+ * facts it turns on.
  *
  * ## Why a tool rather than a permission
  *
@@ -41,6 +43,17 @@
  * by deleting something that could not be got back. The tiers are still the
  * right analysis and the file is still worth reading; what is deferred is
  * spending them.
+ *
+ * **One narrow tier was spent on 2026-09-30, and it is not "build cache"** (sink
+ * `b3d1036c`). A path strictly inside the OS temp directory, untracked by git,
+ * written by no other card on this wall and under no running dev server, deletes
+ * without a click. The argument is not the agent's judgement but the
+ * directory's: temp is where the OS says scratch goes, the cards put their
+ * scratch there constantly, and a click on `%TEMP%\rv1` is a click nobody can
+ * weigh. The other-writer and untracked conditions are what keep it from being
+ * the shared-`.scratch/` hazard one level out — temp is shared by every card on
+ * the machine, so "in temp" alone would be a card sweeping another card's
+ * in-flight files. Anything failing a condition is asked about as before.
  *
  * ## What the confirmation has to carry
  *
@@ -232,6 +245,12 @@ pub(crate) struct Survey {
     /// The walk hit `WALK_ENTRIES` or `WALK_TIME`, so `bytes` and `files` are
     /// floors rather than counts and the question says so.
     pub(crate) capped: bool,
+    /// The walk met a `.git` somewhere below the target — a clone or worktree
+    /// nested inside it, which `repo_root` cannot see because git is asked from
+    /// the target and the target is not itself a repository.
+    pub(crate) nested_git: bool,
+    /// The target is a symlink or junction, and it is the *link* that goes.
+    pub(crate) is_link: bool,
     /// Other cards on this wall that have *written* to something under it.
     pub(crate) writers: Vec<String>,
     /// Dev server groups currently up in a territory that contains it.
@@ -352,6 +371,97 @@ pub(crate) fn refuse(s: &Survey, g: &Ground) -> Option<String> {
     }
 
     None
+}
+
+/* ── the one tier that does not ask ─────────────────────────────────────── */
+
+/// Whether this temp root is narrow enough to spend a no-click delete under.
+///
+/// `TEMP` is an environment variable, and an environment variable is whatever
+/// somebody set it to. Set to `C:\` or to the home directory it would turn
+/// `unasked` into "delete anything, silently", so a root is refused as a temp
+/// root when it is a filesystem root, is the home directory or contains it, or
+/// contains a territory. Pure; `temp_roots` gathers the candidates.
+pub(crate) fn narrow_temp(t: &str, g: &Ground) -> bool {
+    let named = key(t)
+        .rsplit('/')
+        .next()
+        .is_some_and(|n| n == "temp" || n == "tmp");
+    named
+        && !is_root(t)
+        && !(!g.home.is_empty() && under(t, &g.home))
+        && !g.roots.iter().any(|r| under(t, r))
+}
+
+/// Is this inside a part of temp that belongs to something running, however
+/// quiet it looks? `claude` is the CLI's own — every card's background-task
+/// output and shell state lives there, none of it tracked or recorded as a
+/// write — and `skein-`/`volery-` are this app's. A denylist, and it is
+/// deliberately short: these are the three things on this machine known to keep
+/// live state in temp that no card's delete should reach without a person.
+pub(crate) fn reserved(t: &str, path: &str) -> bool {
+    let (t, p) = (key(t), key(path));
+    let Some(rest) = p.strip_prefix(&t).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    let first = rest.split('/').next().unwrap_or("");
+    first == "claude" || first.starts_with("skein-") || first.starts_with("volery-")
+}
+
+/// Does this target delete without a click?
+///
+/// Strictly inside a temp root — the root itself is asked about, since it is
+/// every card's scratch at once — outside the parts of it something live keeps
+/// (`reserved`), and nothing about it a person would want to weigh: not in a
+/// repository and holding none (`nested_git`, walked in full), no other card on
+/// this wall has written under it, no dev server runs over it. `refuse` has
+/// already run; this only decides whether the question is worth putting.
+///
+/// **It is evidence of absence, and that is its limit.** A card's writes are
+/// recorded when it uses the file tools; a card's *shell* writes are not, so
+/// "no other writer" means none on record. The adversarial review of this tier
+/// said so first, and the answer was the three hard conditions above rather
+/// than a claim of ownership nothing here can make.
+pub(crate) fn unasked(s: &Survey, temps: &[String]) -> bool {
+    s.exists
+        && temps
+            .iter()
+            .any(|t| under(t, &s.path) && !same(t, &s.path) && !reserved(t, &s.path))
+        && s.tracked == 0
+        && s.repo_root.is_none()
+        && !s.nested_git
+        /* A capped walk may have stopped short of the `.git` it would have seen. */
+        && !s.capped
+        && s.writers.is_empty()
+        && s.servers.is_empty()
+}
+
+/// Every spelling of the OS temp directory this process can find, canonical.
+///
+/// `temp_dir()` and `TEMP` usually agree and are usually an 8.3 short path
+/// (`C:\Users\LYSS~1.DEL\…`), which is why each is canonicalized: the targets
+/// are, and `under` compares strings. `LOCALAPPDATA\Temp` is where a card's
+/// Git Bash `/tmp` lands, named in case the two variables were pointed
+/// elsewhere.
+fn temp_roots(g: &Ground) -> Vec<String> {
+    let mut raw: Vec<PathBuf> = vec![std::env::temp_dir()];
+    for v in ["TEMP", "TMP"] {
+        if let Some(p) = std::env::var_os(v) {
+            raw.push(PathBuf::from(p));
+        }
+    }
+    if let Some(l) = std::env::var_os("LOCALAPPDATA") {
+        raw.push(PathBuf::from(l).join("Temp"));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for p in raw {
+        let Ok(c) = std::fs::canonicalize(&p) else { continue };
+        let c = c.to_string_lossy().trim_start_matches("\\\\?\\").to_string();
+        if narrow_temp(&c, g) && !out.iter().any(|o| same(o, &c)) {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /* ── the reading a person is given ────────────────────────────────────────*/
@@ -500,8 +610,10 @@ pub fn remove_schema() -> Value {
              user with everything they cannot see from the path itself: how big it is and how \
              many files, whether git tracks it, whether another card on this wall has been \
              writing in it, and whether a dev server is running out of that tree. Then they \
-             press a button. There is no self-serve tier and no 'it's only a build cache' \
-             — say what you want gone and let them decide.\n\n\
+             press a button. There is no 'it's only a build cache' tier — say what you want \
+             gone and let them decide. **The one exception is your own scratch in the OS temp \
+             directory**: a path inside it that git does not track and no other card wrote \
+             is deleted at once, with no click.\n\n\
              **It is permanent.** Nothing goes to the recycle bin, nothing is undoable, and \
              the confirmation says so. Treat a yes as final.\n\n\
              Refused outright, with a click or without one: a path holding uncommitted \
@@ -615,16 +727,17 @@ fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
 /// Iterative rather than recursive: the depth of a `node_modules` is whatever
 /// npm felt like, and a stack overflow inside a survey would take the whole
 /// request thread with it.
-fn weigh(root: &Path) -> (u64, usize, bool) {
+fn weigh(root: &Path) -> (u64, usize, bool, bool) {
     let started = Instant::now();
     let mut bytes = 0u64;
     let mut files = 0usize;
     let mut seen = 0usize;
+    let mut git = false;
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
         if seen >= WALK_ENTRIES || started.elapsed() >= WALK_TIME {
-            return (bytes, files, true);
+            return (bytes, files, true, git);
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -632,7 +745,12 @@ fn weigh(root: &Path) -> (u64, usize, bool) {
         for e in entries.flatten() {
             seen += 1;
             if seen >= WALK_ENTRIES || started.elapsed() >= WALK_TIME {
-                return (bytes, files, true);
+                return (bytes, files, true, git);
+            }
+            /* A file (worktree) or a directory (clone), and either way a
+               repository somebody may have unpushed work in. */
+            if e.file_name().eq_ignore_ascii_case(".git") {
+                git = true;
             }
             /* `DirEntry::metadata` and not `fs::metadata`, which are not the
                same function: this one does **not** traverse a symlink, so a
@@ -652,7 +770,7 @@ fn weigh(root: &Path) -> (u64, usize, bool) {
             }
         }
     }
-    (bytes, files, false)
+    (bytes, files, false, git)
 }
 
 /// Everything about one path, gathered before the question.
@@ -663,6 +781,7 @@ fn survey(app: &AppHandle, caller: &str, abs: &Path) -> Survey {
         path: path.clone(),
         exists: md.is_some(),
         is_dir: md.as_ref().is_some_and(|m| m.is_dir()),
+        is_link: md.as_ref().is_some_and(|m| m.file_type().is_symlink()),
         ..Default::default()
     };
     if !s.exists {
@@ -670,10 +789,11 @@ fn survey(app: &AppHandle, caller: &str, abs: &Path) -> Survey {
     }
 
     if s.is_dir {
-        let (bytes, files, capped) = weigh(abs);
+        let (bytes, files, capped, git) = weigh(abs);
         s.bytes = bytes;
         s.files = files;
         s.capped = capped;
+        s.nested_git = git;
     } else {
         s.bytes = md.as_ref().map(|m| m.len()).unwrap_or(0);
         s.files = 1;
@@ -914,8 +1034,21 @@ fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
            case-variant all reduce to the one spelling the refusals compare on.
            A path that does not exist cannot be canonicalized, and that is the
            case `refuse` reports rather than an error — so the fallback keeps the
-           joined form and lets the survey say it is not there. */
-        let abs = std::fs::canonicalize(&joined).unwrap_or(joined);
+           joined form and lets the survey say it is not there.
+
+           **Except a link, whose parent is canonicalized instead.**
+           `canonicalize` follows a junction to its target, so `rm -rf
+           %TEMP%\link` pointing at a repository's `node_modules` became a
+           question about — and on a yes, a delete of — the real
+           `node_modules`, where the shell would have removed the link. */
+        let link = std::fs::symlink_metadata(&joined)
+            .is_ok_and(|m| m.file_type().is_symlink());
+        let abs = match (link, joined.parent(), joined.file_name()) {
+            (true, Some(dir), Some(name)) => std::fs::canonicalize(dir)
+                .map(|d| d.join(name))
+                .unwrap_or_else(|_| joined.clone()),
+            _ => std::fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone()),
+        };
         let abs = PathBuf::from(
             abs.to_string_lossy()
                 .trim_start_matches(r"\\?\")
@@ -931,6 +1064,18 @@ fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
     }
 
     let targets: Vec<String> = surveys.iter().map(|s| s.path.clone()).collect();
+
+    /* All or none: a question that lists five paths when three of them were
+       going anyway is a question about the wrong thing, and deleting three and
+       asking about two is two answers to one call. */
+    let temps = temp_roots(&g);
+    if surveys.iter().all(|s| unasked(s, &temps)) {
+        return Writing::Now(format!(
+            "{}\nnobody was asked: every path was inside the OS temp directory, untracked by \
+             git, and written by no other card on this wall.",
+            settle_delete(app, &targets)
+        ));
+    }
     let q = question(reason, &surveys);
 
     Writing::Ask {
@@ -945,6 +1090,54 @@ fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
             settle_delete(app, &targets)
         }),
     }
+}
+
+/// A delete a card typed into its shell, which `hooks.rs` stopped and handed
+/// here rather than refusing (sink `b3d1036c`).
+///
+/// The same call as the tool with one difference: the card never gave a reason,
+/// because it never meant to ask. The question says so and quotes what it ran,
+/// so the user is deciding on the command rather than on a reason nobody wrote.
+/// `paths` are absolute — the hook resolved them against the shell's own `cwd`,
+/// which for a card that has `cd`-ed is not the row's.
+pub(crate) fn from_shell(app: &AppHandle, caller: &str, command: &str, paths: &[String]) -> Writing {
+    let shown = crate::clip::preview(command.trim(), 200);
+    remove(
+        app,
+        caller,
+        &json!({
+            "paths": paths,
+            "reason": format!(
+                "no reason given — it ran `{shown}` in its shell, and Volery stopped that and \
+                 put it to you instead"
+            ),
+        }),
+    )
+}
+
+/// Tell a card what came of a shell delete whose question outlasted the hook.
+///
+/// A shape under `RELAY_MARK` — `from the wall —`, the one `spawn.rs`'s settle
+/// notice already taught `relay.ts` — rather than a mark of its own, per
+/// `relay.md`: a new kind of unbidden prompt owes a shape, not a mark. Dormant,
+/// it goes to the inbox a wake drains, `later.rs`'s road.
+pub(crate) fn deliver_late(app: &AppHandle, card: &str, command: &str, said: &str) {
+    let shown = crate::clip::preview(command.trim(), 200);
+    let text = format!(
+        "{} from the wall —\n\nThe delete you ran in your shell (`{shown}`) has been dealt \
+         with, and this is what came of it:\n\n{said}\n\n(This came from the wall rather \
+         than from anybody, so nobody is waiting on a reply. Your shell never ran that \
+         command — do not run it again. If this changes nothing about what you are doing, \
+         do nothing.)",
+        crate::relay::RELAY_MARK
+    );
+    if crate::supervisor::deliver(app, card, &text).is_ok() {
+        return;
+    }
+    let Some(store) = app.try_state::<crate::store::Store>() else { return };
+    let Ok(conn) = store.0.lock() else { return };
+    let id = crate::store::uuid_v4();
+    let _ = crate::store::record_relay(&conn, &id, card, card, &text, &id, 0, false);
 }
 
 /// Do the deleting, on the parking thread, after the click.
@@ -982,7 +1175,12 @@ fn settle_delete(app: &AppHandle, targets: &[String]) -> String {
             continue;
         }
         let p = Path::new(t);
-        let r = if s.is_dir {
+        /* A link goes as a link: `remove_dir` takes a directory junction or
+           symlink off without entering it, and a file link falls through to
+           `remove_file`. Neither follows it. */
+        let r = if s.is_link {
+            std::fs::remove_dir(p).or_else(|_| std::fs::remove_file(p))
+        } else if s.is_dir {
             std::fs::remove_dir_all(p)
         } else {
             std::fs::remove_file(p)
@@ -1049,6 +1247,7 @@ fn survey_light(path: &str) -> Survey {
         path: path.to_string(),
         exists: md.is_some(),
         is_dir: md.as_ref().is_some_and(|m| m.is_dir()),
+        is_link: md.as_ref().is_some_and(|m| m.file_type().is_symlink()),
         ..Default::default()
     };
     if !s.exists {
@@ -1358,5 +1557,68 @@ mod tests {
            want to leave out — it is the sentence the user decides on. */
         let req = remove_schema()["inputSchema"]["required"].clone();
         assert_eq!(req, json!(["paths", "reason"]));
+        /* And the one exception, said where the promise is — a card told only
+           "every call asks" would be surprised by a delete that did not. */
+        assert!(d.contains("OS temp"), "{d}");
+    }
+
+    fn temp_root() -> &'static str {
+        "C:\\Users\\lyss\\AppData\\Local\\Temp"
+    }
+
+    /// Scratch inside temp goes without a click; the temp root itself, anything
+    /// git knows, anything another card wrote, and anything under a live server
+    /// are asked about as before.
+    #[test]
+    fn only_untouched_scratch_inside_temp_goes_unasked() {
+        let temps = vec![temp_root().to_string()];
+        let scratch = dir("C:\\Users\\lyss\\AppData\\Local\\Temp\\rv1");
+        assert!(unasked(&scratch, &temps));
+        /* Case and separators, since the canonical spellings disagree. */
+        assert!(unasked(&dir("c:/users/lyss/appdata/local/temp/rv1/deep"), &temps));
+
+        assert!(!unasked(&dir(temp_root()), &temps), "the root is every card's scratch at once");
+        assert!(!unasked(&dir("C:\\Users\\lyss\\AppData\\Local\\Temp-old\\x"), &temps));
+        assert!(!unasked(&dir("C:\\Users\\lyss\\workbench\\skein\\.next"), &temps));
+        assert!(!unasked(&scratch, &[]), "no temp root found means everything asks");
+
+        let tracked = Survey { tracked: 3, ..scratch.clone() };
+        assert!(!unasked(&tracked, &temps));
+        let theirs = Survey { writers: vec!["\"lane B\" (3f2a9c1e)".into()], ..scratch.clone() };
+        assert!(!unasked(&theirs, &temps), "temp is shared by every card on the machine");
+        let served = Survey { servers: vec!["web".into()], ..scratch.clone() };
+        assert!(!unasked(&served, &temps));
+        let gone = Survey { exists: false, ..scratch.clone() };
+        assert!(!unasked(&gone, &temps));
+        /* The review's two blockers: a repository nested under the target, and
+           the CLI's own live state in temp. */
+        let clone = Survey { nested_git: true, ..scratch.clone() };
+        assert!(!unasked(&clone, &temps), "a clone inside it is somebody's unpushed work");
+        let inside = Survey { repo_root: Some("C:/x".into()), ..scratch.clone() };
+        assert!(!unasked(&inside, &temps));
+        let capped = Survey { capped: true, ..scratch.clone() };
+        assert!(!unasked(&capped, &temps), "a capped walk may have missed a .git");
+        for live in ["claude\\C--w\\s1\\tasks", "skein-bump-x", "volery-lab"] {
+            let p = format!("{}\\{live}", temp_root());
+            assert!(!unasked(&dir(&p), &temps), "{p}");
+        }
+        assert!(unasked(&dir(&format!("{}\\claude-notes", temp_root())), &temps));
+    }
+
+    /// `TEMP` is an environment variable, and one pointed at a root or at home
+    /// must not turn the no-click tier into "delete anything".
+    #[test]
+    fn a_temp_directory_pointed_somewhere_broad_is_not_one() {
+        let g = ground_at("C:\\Users\\lyss\\workbench\\skein");
+        assert!(narrow_temp(temp_root(), &g));
+        assert!(!narrow_temp("C:\\", &g));
+        assert!(!narrow_temp("C:\\Users\\lyss", &g), "home itself");
+        assert!(!narrow_temp("C:\\Users", &g), "contains home");
+        assert!(!narrow_temp("C:\\Users\\lyss\\workbench", &g), "contains a territory");
+        assert!(
+            !narrow_temp("C:\\Users\\lyss\\Documents", &g),
+            "a TEMP pointed at Documents is not a temp directory"
+        );
+        assert!(narrow_temp("C:\\Windows\\Temp", &g));
     }
 }

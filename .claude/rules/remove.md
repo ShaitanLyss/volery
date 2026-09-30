@@ -99,6 +99,37 @@ The tiers remain the right analysis and the file remains worth reading. What is 
 the click is actually a nuisance — which nobody has yet, because until tonight there was no
 tool to be a nuisance.
 
+### And then one tier was spent, and it is not "build cache"
+
+The evidence arrived on 2026-09-30 (sink `b3d1036c`): a card cleaning up its own review
+subagents' copies asked the user to click on `%TEMP%\rv1`, a directory nothing reads. So a path
+**strictly inside the OS temp directory** deletes without a click — `unasked` — provided it is
+also outside any repository and holding none (`nested_git`, from a walk that was not capped),
+outside the parts of temp something live keeps (`reserved`: the CLI's own `claude\`, where every
+card's background-task output lives, and this app's `skein-`/`volery-`), written by no other card
+on this wall, and under no running dev server.
+
+The argument is the directory's, not the agent's, which is what keeps it clear of the judgement
+this section refuses to spend: temp is where the OS says scratch goes, and nobody can weigh a
+click on it. The three extra conditions are there because **temp is shared by every card on the
+machine**, so "in temp" alone would be the shared-`.scratch/` hazard (`CLAUDE.md`) one directory
+out — a card sweeping another card's in-flight files. The temp root itself is asked about, since
+it is everyone's scratch at once, and it is all-or-none per call: a question listing five paths
+when three were going anyway is a question about the wrong thing.
+
+**It is evidence of absence, and the adversarial review said so first.** A card's writes are
+recorded when it uses the file tools; its *shell* writes are not, so "no other writer" means none
+on record — which is why the repository and reserved-subtree conditions are hard checks rather
+than trust. The same review caught a clone nested under the target counting as "untracked"
+(git is asked from the target, which is not itself a repo), and `%TEMP%\claude` passing every
+condition.
+
+`TEMP` is an environment variable and could say anything, so `narrow_temp` refuses a candidate
+root that is not named `Temp`/`tmp`, is a filesystem root, is the home directory or an ancestor
+of it, or contains a territory. Roots are canonicalized before comparison — `temp_dir()` hands back the 8.3 short
+form (`LYSS~1.DEL`) on this machine, and the targets are long-form. The refusals all still run
+first; the tier only decides whether the question is worth putting.
+
 ## The delete is permanent, and the confirmation is the whole of the safety
 
 Considered and rejected: `SHFileOperationW` with `FOF_ALLOWUNDO`, which puts the tree in the
@@ -239,6 +270,67 @@ failure it was added to fix.
 
 Deleting **one file, non-recursively, is not denied at all**. That line is what keeps this from
 being a guard on `rm`, and `deleting_one_file_is_not_this` holds it.
+
+**And it let the commonest spelling through for three weeks.** `wipes_in` read any word opening
+with `/` as a cmd switch, so `rm -rf /tmp/rv1` — any absolute POSIX path — "named nothing" and
+was not a wipe. `is_cmd_switch` now asks for cmd's actual shape, one letter after the slash, and
+only for cmd's own verbs (`cmd_verb`): to `rm`, `/c` is Git Bash's whole C: drive.
+
+### A shell delete is handed over, not refused
+
+Refusing with the tool's name in the reason cost a turn every time and relied on the card
+reading closely; the item that changed this was filed by one that did not (sink `b3d1036c`). So
+where the command can be read **exactly**, the hook does the call itself: it POSTs the paths to
+`ask::REMOVE_PATH`, which runs `remove`'s own decision — refusals, survey, question on the card,
+temp tier. The shell call is then **denied whatever the answer**, with what happened as the
+reason: a yes has already deleted and a no means no, so the command must never run itself.
+
+**It does not hold the hook while the user decides**, and the first version did. A hook the CLI
+kills prints nothing, and printing nothing *allows the call* — so a question parked past the
+`PreToolUse` ceiling would have run the delete in the shell after all, and nothing had measured
+whether the CLI honours a fifteen-minute ceiling. Now `hand_off` runs the whole decision on its
+own thread and the request waits at most `HAND_OFF_WAIT` (25s): a refusal, a temp delete or a
+quick click comes back in the reply, and anything slower returns "still asking" — the thread
+that sees the question through then tells the card what happened as a `from the wall —` message
+(`remove::deliver_late`, to the inbox if the card is dormant). Whoever takes the reply sender
+decides which, so the outcome is neither lost nor reported twice. `hooks::ROUTE_TIMEOUT` (40s)
+sits between that and the unchanged 50s `PRE_TOOL_TIMEOUT_S`, so the hook always answers first,
+and a client error is a refusal naming the tool, never silence. It also means a question outlives
+an Escape: the card is interrupted, the question stands, and the answer arrives as a message.
+
+- **`routable` is written to say no.** Literal paths only: no glob, brace, comma list or
+  unknown variable, no flag it has not heard of, no `-Filter`/`-Include`, no redirection, no
+  backtick. `find … -delete` is never handed on — it deletes what *matches* under its operand,
+  and handing the operand to `remove` would delete more than was asked. Anything unreadable falls
+  back to `wipe_reason`, which is still right, one turn slower.
+- **Only when the delete is the first command on the line**, because a `cd` before it moves the
+  ground every relative path is measured from. What is chained after it did not run either, and
+  the reason says so.
+- **Operands are resolved in the hook**, which runs in the card's environment, each variable by
+  its own name (`$env:TEMP` is `TEMP`, not `temp_dir()`, which reads `TMP` first): the payload's
+  `cwd` (the shell's own, which after a `cd` is not the row's) and Git Bash's mounts — `/tmp` is
+  `TEMP`, `/c/…` is `C:/…`. Refused rather than guessed: any other absolute POSIX path, an unset
+  variable (the shell would delete `/x`), PowerShell's `~`/`$HOME` (5.1 builds them from
+  `HOMEDRIVE`+`HOMEPATH`), drive-relative `C:x` and root-relative `\x`, **any relative path under
+  PowerShell** (whether its `cwd` follows `Set-Location` is not measured), a variable or `~` on a
+  line with any quote in it (quoting decides whether it expands, and the tokens do not keep it),
+  a backslash under Bash, and `''` under PowerShell. PowerShell is tokenized with
+  `commands_as(…, false)`, where a backslash is a separator and not an escape.
+- **A link is deleted as a link.** `canonicalize` follows a junction, so `rm -rf %TEMP%\link`
+  into a repository's `node_modules` would have become a question about the real one. The parent
+  is canonicalized instead and `settle_delete` takes the link off with `remove_dir`, which does
+  not enter it. That was true of the tool before this and is fixed for both doors.
+
+### What a Bash `rm -rf` still meets first
+
+**The user's own `Bash(rm -rf:*)` answers before any of this can.** The incident's denial was
+the CLI's wording, not Volery's, so on a card that has a Bash tool that rule wins — whether it
+preempts the hook or overrides its reason was not measured (`tools/probe-deny-order.ts` only ever
+got PowerShell under this argv, as `probe-rm.ts` did). Handing over therefore works for every
+shell spelling *except* the one that rule covers, until the rule is narrowed or dropped. That is
+the user's config and is not Volery's to edit — see `accounts.rs` for the house rule — and
+dropping it is now safe to recommend: every recursive delete in every shell reaches her click or
+the temp tier through this path.
 
 **Which layer refused is never ambiguous**, which was the brief's stated worry about Volery
 guarding anything the user's own config touches. Every reason in `hooks.rs` opens with

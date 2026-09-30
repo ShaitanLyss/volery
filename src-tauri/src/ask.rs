@@ -1457,6 +1457,134 @@ fn respond(req: tiny_http::Request, mut body: Value) {
 /// one existing.
 pub const WAKE_PATH: &str = "/browser/wake";
 
+/// Where `hooks.rs` hands over a shell delete it stopped, as
+/// `POST /remove/shell/<card id>` with `{ "command", "paths" }` in the body.
+///
+/// **A hook cannot call an MCP tool**, so this is the tool's decision reached
+/// by the one other door into this process: the same refusals, the same survey,
+/// the same question on the same card, and — for a path `remove::unasked` lets
+/// through — the same immediate delete. The body of the reply is the sentence
+/// `remove` would have returned, and the hook hands it to the model inside a
+/// denial, because the shell must never run the command itself (sink
+/// `b3d1036c`).
+///
+/// **It does not hold the hook for as long as the question stands**, and that
+/// was the first design and the reason it changed. A hook the CLI kills prints
+/// nothing, and printing nothing *runs the command* — so a delete parked past
+/// the `PreToolUse` ceiling would have gone through the shell after all, and
+/// nothing had measured whether the CLI honours a fifteen-minute ceiling at all.
+/// So the whole of it runs on its own thread (`hand_off`) and the request waits
+/// at most [`HAND_OFF_WAIT`]: a refusal, a temp delete or a quick click comes
+/// back in the reply; anything slower is told to the card later, as a message
+/// from the wall, by the thread that saw it through.
+pub const REMOVE_PATH: &str = "/remove/shell/";
+
+/// How long [`REMOVE_PATH`] holds its request before telling the hook the
+/// question is standing. Under `hooks::ROUTE_TIMEOUT`, which is under the
+/// `PreToolUse` ceiling, so the hook always has its answer before it is killed.
+pub const HAND_OFF_WAIT: Duration = Duration::from_secs(25);
+
+/// What the hook is told when the decision outlasted [`HAND_OFF_WAIT`].
+///
+/// Worded for both of the ways that happens, because it is said before this
+/// side knows which: the user has not answered the question on the card yet,
+/// or there was no question and a large no-click temp delete is still running.
+const STILL_ASKING: &str = "that is still being dealt with — either the user has been asked on \
+     your card and has not answered yet, or it needed no question and a large delete is still \
+     running. You do not need to wait for it or ask again: when it is done, the wall will send \
+     you what happened as a message of its own. Carry on with something that does not need it \
+     gone, or end your turn.";
+
+/// What the hook is told when the thread doing the work died without a word.
+/// Not [`STILL_ASKING`], which promises a message nothing is left to send.
+const WENT_WRONG: &str = "Volery failed while handling that delete and cannot say how far it \
+     got. Check whether the path still exists before doing anything else, and tell the user; \
+     if it is still there, `mcp__skein__remove` asks again from the start.";
+
+/// Run a shell delete through `remove` on a thread of its own, and give the
+/// request whatever it has by [`HAND_OFF_WAIT`].
+///
+/// The one race is the thread finishing at the moment the wait gives up, and
+/// the `Option` is what settles it: whoever takes the sender decides. The
+/// thread takes it to reply; the request takes it to say "still asking", and
+/// then the thread, finding it gone, delivers late instead. Neither can lose
+/// the outcome and neither can report it twice.
+fn hand_off(app: &AppHandle, card: &str, command: &str, paths: Vec<String>) -> String {
+    let (tx, rx) = mpsc::channel::<String>();
+    let reply = std::sync::Arc::new(Mutex::new(Some(tx)));
+    let (app2, card2, cmd2, reply2) =
+        (app.clone(), card.to_string(), command.to_string(), reply.clone());
+    std::thread::spawn(move || {
+        let said = match crate::remove::from_shell(&app2, &card2, &cmd2, &paths) {
+            crate::remove::Writing::Now(said) => said,
+            crate::remove::Writing::Ask { question, settle } => {
+                park_and_wait(&app2, &app2.state::<Asks>(), &card2, &question, settle)
+            }
+        };
+        let taken = reply2.lock().ok().and_then(|mut r| r.take());
+        match taken {
+            Some(tx) => {
+                let _ = tx.send(said);
+            }
+            None => crate::remove::deliver_late(&app2, &card2, &cmd2, &said),
+        }
+    });
+    match rx.recv_timeout(HAND_OFF_WAIT) {
+        Ok(said) => said,
+        /* The sender dropped unsent: the thread panicked. Nothing will deliver
+           late, so promising a message would be a card waiting for nothing. */
+        Err(RecvTimeoutError::Disconnected) => WENT_WRONG.to_string(),
+        Err(RecvTimeoutError::Timeout) => {
+            let taken = reply.lock().map(|mut r| r.take().is_some()).unwrap_or(false);
+            if taken {
+                STILL_ASKING.to_string()
+            } else {
+                /* The thread took the sender first and is sending now — or died
+                   between taking it and sending. */
+                rx.recv().unwrap_or_else(|_| WENT_WRONG.to_string())
+            }
+        }
+    }
+}
+
+/// Park a question with no request behind it, and return what the settle made
+/// of the answer.
+///
+/// `park_and_stream`'s lifecycle without its transport — `hand_off`'s thread is
+/// the only thing waiting, so there is no socket to keep alive and no client to
+/// notice hanging up. What is kept exactly is the part with consequences: the
+/// window, the dismissal, the `ask:closed` that takes the question down, and the
+/// settle running here after the answer.
+fn park_and_wait(
+    app: &AppHandle,
+    asks: &Asks,
+    conversation_id: &str,
+    question: &Value,
+    settle: Settle,
+) -> String {
+    let (ask_id, rx) = open_ask(app, asks, conversation_id, question, true);
+    let window = answer_window(question);
+    let answer = match rx.recv_timeout(window) {
+        Ok(a) => Some(a),
+        Err(RecvTimeoutError::Disconnected) => None,
+        Err(RecvTimeoutError::Timeout) => {
+            asks.pending.lock().unwrap().remove(&ask_id);
+            None
+        }
+    };
+    let real = answer.as_deref().is_some_and(|a| a != DISMISSED);
+    let reply = settle(app, if real { answer.as_deref() } else { None });
+    let _ = app.emit(
+        "ask:closed",
+        AskClosed {
+            ask_id,
+            answered: real,
+        },
+    );
+    reply
+}
+
+
 /// Bind on an ephemeral loopback port and serve until the process exits.
 /// Returns the port so `spawn_conversation` can point `--mcp-config` at it.
 pub fn start(app: AppHandle) -> Result<u16, String> {
@@ -1499,6 +1627,23 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             );
                         }
                     }
+                    return;
+                }
+
+                if req.url().starts_with(REMOVE_PATH) {
+                    let card = conversation_of(req.url()).to_string();
+                    let mut body = String::new();
+                    let parsed = std::io::Read::read_to_string(req.as_reader(), &mut body)
+                        .ok()
+                        .and_then(|_| serde_json::from_str::<Value>(&body).ok());
+                    let Some(body) = parsed else {
+                        let _ = req.respond(tiny_http::Response::empty(400));
+                        return;
+                    };
+                    let command = body.get("command").and_then(Value::as_str).unwrap_or("");
+                    let paths: Vec<String> = crate::remove::paths_from(&body);
+                    let said = hand_off(&app, &card, command, paths);
+                    let _ = req.respond(tiny_http::Response::from_string(said));
                     return;
                 }
 

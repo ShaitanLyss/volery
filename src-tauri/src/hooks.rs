@@ -501,6 +501,32 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>)
        a `mv`, which this one does not match anyway but which reads better
        stated than relied on. */
     if let Some(w) = wipes(command) {
+        let tool = payload.get("tool_name").and_then(serde_json::Value::as_str);
+        let powershell = tool == Some("PowerShell");
+        let cwd = payload.get("cwd").and_then(serde_json::Value::as_str).unwrap_or("");
+        let env = |name: &str| std::env::var(name).ok();
+        let handed = routable(command, powershell).and_then(|r| {
+            let paths: Option<Vec<String>> = r
+                .operands
+                .iter()
+                .map(|o| resolve(o, powershell, cwd, &env))
+                .collect();
+            Some((r, paths?))
+        });
+        if let (Some((r, paths)), Some(card), Some(port)) = (handed, card, ask_port) {
+            return Some(deny(match route(port, card, command, &paths) {
+                Ok(said) => routed_reason(&r, &said),
+                /* Could not ask, so nothing was deleted by Volery either — the
+                   ordinary refusal, with the reason it is not the smooth path. */
+                Err(e) => format!(
+                    "{}\n(volery tried to take this delete over itself and could not reach \
+                     the studio: {e}. if the error was a timeout, the question may still be \
+                     standing on your card — check whether the path still exists before doing \
+                     anything else.)",
+                    wipe_reason(&w)
+                ),
+            }));
+        }
         return Some(deny(wipe_reason(&w)));
     }
 
@@ -717,7 +743,7 @@ pub fn settings(
                            `WAKE_TIMEOUT`, or the CLI kills the hook while it is
                            still holding the answer and a refusal that explains
                            itself becomes silence that does not. */
-                        "timeout": 50,
+                        "timeout": PRE_TOOL_TIMEOUT_S,
                     }],
                 }],
             }),
@@ -726,6 +752,11 @@ pub fn settings(
 
     serde_json::Value::Object(root).to_string()
 }
+
+/// The `PreToolUse` entry's ceiling, in seconds. Everything that can hold the
+/// hook — `WAKE_TIMEOUT`, `ROUTE_TIMEOUT` — has to answer inside it, because a
+/// hook the CLI kills prints nothing and printing nothing *allows the call*.
+pub const PRE_TOOL_TIMEOUT_S: u64 = 50;
 
 /* ── the one git index behind a shared working tree ───────────────────────── */
 
@@ -999,6 +1030,18 @@ fn names_a_path(words: &[String]) -> bool {
 /// yes/no question, and every way it can be wrong is arranged to end in a
 /// denied call with a message naming the safe form, never in a call let through.
 fn commands(line: &str) -> Vec<Vec<String>> {
+    commands_as(line, true)
+}
+
+/// [`commands`], told which shell it is reading.
+///
+/// `posix: false` is PowerShell, where a backslash is a path separator rather
+/// than an escape. Read POSIX-style, `C:\work\x` unquoted comes out as
+/// `C:workx` — harmless for a yes/no guard, and exactly wrong for the one caller
+/// that has to hand the path on (`routable`). PowerShell's own escape is the
+/// backtick, which this does not interpret; `routable` refuses any line carrying
+/// one rather than guessing.
+fn commands_as(line: &str, posix: bool) -> Vec<Vec<String>> {
     let chars: Vec<char> = line.chars().collect();
     let mut out: Vec<Vec<String>> = Vec::new();
     let mut cur: Vec<String> = Vec::new();
@@ -1012,7 +1055,7 @@ fn commands(line: &str) -> Vec<Vec<String>> {
         if let Some(q) = quote {
             if c == q {
                 quote = None;
-            } else if q == '"' && c == '\\' && i + 1 < chars.len() {
+            } else if posix && q == '"' && c == '\\' && i + 1 < chars.len() {
                 i += 1;
                 tok.push(chars[i]);
             } else {
@@ -1027,7 +1070,7 @@ fn commands(line: &str) -> Vec<Vec<String>> {
                 has = true;
                 i += 1;
             }
-            '\\' if i + 1 < chars.len() => {
+            '\\' if posix && i + 1 < chars.len() => {
                 i += 1;
                 /* A backslash before a newline is a continuation: it joins the
                    two lines rather than contributing a character. */
@@ -1700,22 +1743,286 @@ fn wipes_in(words: &[String]) -> Option<Wipe> {
     /* A switch rather than a name, since every remover above is the same cmdlet
        and only this tells a file delete from a tree delete. `/s` is cmd.exe's
        spelling of the same thing and reaches this file through the same shell. */
+    let switch = |w: &str| w.starts_with('-') || (cmd_verb(&verb) && is_cmd_switch(w));
     let recursive = words.iter().skip(1).any(|w| {
         let bare = w
             .trim_start_matches('/')
             .trim_start_matches('-')
             .trim_start_matches('-')
             .to_ascii_lowercase();
-        (w.starts_with('-') || w.starts_with('/')) && RECURSIVE.contains(&bare.as_str())
+        switch(w) && RECURSIVE.contains(&bare.as_str())
     });
     /* An operand is required: a bare `rm -rf` with nothing after it deletes
-       nothing and is almost always a half-written line. */
-    let names_something = words
-        .iter()
-        .skip(1)
-        .any(|w| !w.starts_with('-') && !w.starts_with('/'));
+       nothing and is almost always a half-written line.
+
+       **A leading `/` is a path far more often than it is a switch**, and this
+       read every one as a switch until 2026-09-30: `rm -rf /tmp/rv1` named
+       "nothing", so the guard let the delete that filed sink `b3d1036c` straight
+       through — as it would any absolute POSIX path. cmd's switches are one
+       letter (`/s`, `/q`), which is what `is_cmd_switch` asks, and only cmd's own
+       verbs take them: to `rm`, `/c` is Git Bash's whole C: drive. */
+    let names_something = words.iter().skip(1).any(|w| !switch(w));
 
     (recursive && names_something).then(|| Wipe { verb })
+}
+
+/// Is this one of cmd.exe's own deleting verbs, the only ones a `/s` is a
+/// switch to? PowerShell aliases them, but a card writing `rd /s /q` means cmd.
+fn cmd_verb(verb: &str) -> bool {
+    matches!(verb, "rd" | "rmdir" | "del" | "erase")
+}
+
+/// Is this word one of cmd.exe's switches — `/s`, `/q`, `/?` — rather than a path?
+fn is_cmd_switch(w: &str) -> bool {
+    let mut c = w.chars();
+    c.next() == Some('/')
+        && c.next().is_some_and(|x| x.is_ascii_alphabetic() || x == '?')
+        && c.next().is_none()
+}
+
+/* -- handing a shell delete to `remove` rather than refusing it ------------
+ *
+ * Sink `b3d1036c`. Refusing with the tool's name in the reason was the whole
+ * of this guard's first life, and it cost a turn every time: the card reads
+ * the refusal, then makes the call it was told to make. And a card that does
+ * not read closely enough does not make it at all — the item was filed by one.
+ *
+ * So where the command can be read exactly, the hook makes the call itself.
+ * It POSTs the paths to Volery (`ask::REMOVE_PATH`), which runs `remove`'s own
+ * decision — the refusals, the survey, the question on the card, the no-click
+ * tier for temp scratch — and blocks until there is an answer. The shell call
+ * is then *denied*, with what happened as the reason: the command must never
+ * run itself, whatever the answer was, since a yes has already deleted and a
+ * no means no.
+ *
+ * **"Read exactly" is the whole of the risk**, and `routable` is written to
+ * say no. It hands on literal paths and nothing it would have to interpret:
+ * no glob, no variable it does not know, no flag it has not heard of, no
+ * filter, no redirection. Anything else falls back to the refusal naming the
+ * tool, which is still right — just a turn slower. And it routes only when the
+ * delete is the *first* command on the line, because a `cd` before it would
+ * move the ground every relative path is measured from.
+ */
+
+/// A shell delete this hook can hand to `remove`: the literal operands, and
+/// whether anything was chained after it (which did not run either, and the
+/// card has to be told).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Routed {
+    pub operands: Vec<String>,
+    pub chained: bool,
+}
+
+/// Switches a delete may carry and still be read exactly. Lowercased, dashes
+/// off. `r` is `-Recurse` abbreviated as well as POSIX's `-r`.
+const PLAIN_SWITCHES: [&str; 17] = [
+    "r", "rf", "fr", "rfv", "fv", "vf", "rv", "vr", "f", "v", "d", "recurse", "recursive",
+    "force", "verbose", "dir", "confirm:$false",
+];
+
+/// PowerShell parameters whose value is the path itself.
+const PATH_PARAMS: [&str; 4] = ["path", "literalpath", "lp", "pspath"];
+
+/// Parameters whose value is not a path and changes nothing about what goes.
+const INERT_PARAMS: [&str; 2] = ["erroraction", "ea"];
+
+/// Can this delete be handed on exactly, and if so, what does it name?
+///
+/// `None` means "refuse as before", never "let it run". Pure.
+pub fn routable(command: &str, powershell: bool) -> Option<Routed> {
+    if command.contains('`') || command.contains("<<") {
+        return None;
+    }
+    /* The tokenizer is not either shell's, and these are where it disagrees
+       with one: Git Bash keeps a backslash inside double quotes that this
+       drops, and PowerShell's `''` is a quote inside a single-quoted string. */
+    if (!powershell && command.contains('\\')) || (powershell && command.contains("''")) {
+        return None;
+    }
+    let all = commands_as(command, !powershell);
+    let (first, rest) = all.split_first()?;
+    let words = first;
+    wipes_in(words)?;
+    let verb = words[0].to_ascii_lowercase();
+    let verb = verb.rsplit(['/', MS_SEP]).next().unwrap_or(&verb).to_string();
+    if verb == "find" {
+        /* `find X -delete` deletes what matches under X, not X. Handing X on
+           would delete more than was asked. */
+        return None;
+    }
+    let mut operands: Vec<String> = Vec::new();
+    let mut end_of_flags = false;
+    let mut i = 1;
+    while i < words.len() {
+        let w = &words[i];
+        i += 1;
+        if w.contains('>') || w.contains('<') {
+            return None;
+        }
+        if !end_of_flags && w == "--" {
+            end_of_flags = true;
+            continue;
+        }
+        let cmd_switch = cmd_verb(&verb) && is_cmd_switch(w);
+        if !end_of_flags && (w.starts_with('-') || cmd_switch) {
+            let bare = w.trim_start_matches(['-', '/']).to_ascii_lowercase();
+            if PLAIN_SWITCHES.contains(&bare.as_str()) || (cmd_switch && (bare == "s" || bare == "q")) {
+                continue;
+            }
+            if PATH_PARAMS.contains(&bare.as_str()) {
+                operands.push(words.get(i)?.clone());
+                i += 1;
+                continue;
+            }
+            if INERT_PARAMS.contains(&bare.as_str()) {
+                words.get(i)?;
+                i += 1;
+                continue;
+            }
+            return None;
+        }
+        operands.push(w.clone());
+    }
+    let literal = |o: &String| {
+        !o.is_empty() && !o.contains(['*', '?', '[', ']', '{', '}', ','])
+    };
+    if operands.is_empty() || !operands.iter().all(literal) {
+        return None;
+    }
+    /* Quoting is lost in the tokens, and it decides whether a variable is one:
+       `'$TEMP/x'` is a literal name to either shell and `"$TEMP/x"` is not. So a
+       variable or `~` on a line with any quote in it is not read at all. */
+    if command.contains(['\'', '"']) && operands.iter().any(|o| o.starts_with(['$', '~'])) {
+        return None;
+    }
+    Some(Routed {
+        operands,
+        chained: !rest.is_empty(),
+    })
+}
+
+/// One operand as an absolute path, or `None` if it cannot be read exactly.
+///
+/// `cwd` is the shell's own, off the payload. `var` reads this hook process's
+/// environment — it runs in the card's, so each name is the one the card's
+/// shell would expand, and each is read *by its own name*: `$env:TEMP` is
+/// `TEMP`, not `temp_dir()`, which reads `TMP` first. The Git Bash spellings are
+/// mapped the way Git for Windows mounts them: `/tmp` is the user's `TEMP`
+/// (`usertemp`) and `/c/…` is `C:/…`. Any other absolute POSIX path is `None`,
+/// since where `/usr` lands depends on an install this cannot see.
+///
+/// Refused rather than guessed: an unset variable (the shell would expand it to
+/// nothing and delete `/x`), PowerShell's `~` and `$HOME` (5.1 builds them from
+/// `HOMEDRIVE`+`HOMEPATH`, which need not be `USERPROFILE`), a drive-relative
+/// `C:x` or a root-relative `\x`, and — for PowerShell — any relative path,
+/// since whether the payload's `cwd` follows `Set-Location` is not measured.
+pub fn resolve(
+    raw: &str,
+    powershell: bool,
+    cwd: &str,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let vars: &[(&str, &str)] = if powershell {
+        &[("$env:temp", "TEMP"), ("$env:tmp", "TMP"), ("$env:userprofile", "USERPROFILE")]
+    } else {
+        &[
+            ("${tmpdir}", "TMPDIR"),
+            ("$tmpdir", "TMPDIR"),
+            ("${temp}", "TEMP"),
+            ("$temp", "TEMP"),
+            ("${tmp}", "TMP"),
+            ("$tmp", "TMP"),
+            ("${home}", "HOME"),
+            ("$home", "HOME"),
+            ("~", "HOME"),
+        ]
+    };
+    let mut p = raw.to_string();
+    for (spelled, name) in vars {
+        let Some(rest) = lower.strip_prefix(spelled) else { continue };
+        if !(rest.is_empty() || rest.starts_with(['/', MS_SEP])) {
+            continue;
+        }
+        let value = var(name).filter(|v| !v.is_empty())?;
+        p = format!("{}{}", value.trim_end_matches(['/', MS_SEP]), &raw[spelled.len()..]);
+        break;
+    }
+    /* A `~` is refused only where it leads: inside a path it is an 8.3 short
+       name (`LYSS~1.DEL`), which is what the temp variables hold here. */
+    if p.contains('$') || p.starts_with('~') {
+        return None;
+    }
+    let b = p.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == MS_SEP as u8);
+    if drive || p.starts_with(r"\\") && powershell {
+        return Some(p);
+    }
+    if p.contains(':') || p.starts_with(MS_SEP) || powershell {
+        return None;
+    }
+    if p.starts_with('/') {
+        if let Some(rest) = p.strip_prefix("/tmp") {
+            if rest.is_empty() || rest.starts_with('/') {
+                let temp = var("TEMP").filter(|v| !v.is_empty())?;
+                return Some(format!("{}{rest}", temp.trim_end_matches(['/', MS_SEP])));
+            }
+        }
+        let mut seg = p[1..].splitn(2, '/');
+        let letter = seg.next().unwrap_or("");
+        if letter.len() == 1 && letter.as_bytes()[0].is_ascii_alphabetic() {
+            let rest = seg.next().map(|r| format!("/{r}")).unwrap_or_else(|| "/".into());
+            return Some(format!("{}:{rest}", letter.to_ascii_uppercase()));
+        }
+        return None;
+    }
+    if cwd.is_empty() {
+        return None;
+    }
+    Some(format!("{}/{p}", cwd.trim_end_matches(['/', MS_SEP])))
+}
+
+/// What the card is told when its shell delete was handed to `remove`.
+pub fn routed_reason(r: &Routed, said: &str) -> String {
+    let rest = if r.chained {
+        " — the delete was the first command on your line, so nothing after it ran either; \
+         re-run the rest without it"
+    } else {
+        ""
+    };
+    format!(
+        "volery: this command did not run in your shell. Deleting a tree is the user's \
+         decision on this wall, so Volery took the delete out of your shell and handled it \
+         exactly as `mcp__skein__remove` would — the same refusals, and the user asked unless \
+         every path was your own scratch in the temp directory. What happened:\n\n{said}\n\n\
+         **The shell ran nothing**{rest}. Do not run the delete again: if the answer above \
+         says deleted, it is gone; if it was declined or refused, that is the answer — tell \
+         the user rather than looking for another spelling."
+    )
+}
+
+/// How long the hook waits on Volery for a handed-over delete. Above
+/// `ask::HAND_OFF_WAIT`, so Volery's own "still asking" arrives first, and under
+/// [`PRE_TOOL_TIMEOUT_S`], so the hook answers before the CLI kills it.
+pub const ROUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// Hand a routable delete to Volery and wait for what happened.
+///
+/// An error when Volery could not be asked, and the caller then refuses with
+/// `wipe_reason` as before — the one outcome that must not happen is the hook
+/// giving up *silently*, since a hook that prints nothing lets the command run.
+fn route(port: u16, card: &str, command: &str, paths: &[String]) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(3))
+        .timeout(ROUTE_TIMEOUT)
+        .build();
+    let url = format!("http://127.0.0.1:{port}{}{card}", crate::ask::REMOVE_PATH);
+    agent
+        .post(&url)
+        .send_json(serde_json::json!({ "command": command, "paths": paths }))
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())
 }
 
 /// What to say when a card deletes a tree from the shell.
@@ -2568,6 +2875,127 @@ mod tests {
                        skein: a guard for rm -rf and Remove-Item -Recurse -Force dist\n\
                        EOF";
         assert!(wipes(command).is_none());
+    }
+
+    /// An absolute POSIX path is an operand, not a cmd switch — the spelling
+    /// that filed sink `b3d1036c` went straight through while it was read as one.
+    #[test]
+    fn an_absolute_path_is_something_to_delete() {
+        assert!(wipes("rm -rf /tmp/rv1").is_some());
+        assert!(wipes("rm -rf /c/Users/lyss/workbench/nova/.next").is_some());
+        assert!(wipes("rmdir /s /q build").is_some());
+        /* And a cmd switch alone still names nothing — to cmd's verbs. To `rm`
+           a one-letter `/c` is Git Bash's whole C: drive. */
+        assert!(wipes("rmdir /s /q").is_none());
+        assert!(wipes("rm -rf /c").is_some());
+    }
+
+    fn routed(ops: &[&str], chained: bool) -> Option<Routed> {
+        Some(Routed { operands: ops.iter().map(|o| o.to_string()).collect(), chained })
+    }
+
+    /// What can be handed to `remove` exactly, and what has to be refused as
+    /// before because reading it would mean guessing.
+    #[test]
+    fn a_delete_is_handed_on_only_when_it_can_be_read_exactly() {
+        assert_eq!(routable("rm -rf /tmp/rv1", false), routed(&["/tmp/rv1"], false));
+        assert_eq!(routable("rm -rf a b", false), routed(&["a", "b"], false));
+        assert_eq!(routable("rm -r -f -- build", false), routed(&["build"], false));
+        /* First on the line, and the rest is said not to have run. */
+        assert_eq!(
+            routable("rm -rf /tmp/rv1 && echo removed; cd x", false),
+            routed(&["/tmp/rv1"], true)
+        );
+        /* PowerShell: backslashes are separators, named parameters carry the
+           path, and an inert one is skipped with its value. */
+        assert_eq!(
+            routable(r"Remove-Item -Recurse -Force C:\work\.next", true),
+            routed(&[r"C:\work\.next"], false)
+        );
+        assert_eq!(
+            routable(r"Remove-Item -LiteralPath 'C:\a b\x' -Recurse -ErrorAction SilentlyContinue", true),
+            routed(&[r"C:\a b\x"], false)
+        );
+        assert_eq!(routable(r"rmdir /s /q build", true), routed(&["build"], false));
+
+        /* Everything below is refused as before, never let through. */
+        for no in [
+            "cd sub && rm -rf build",        // a cd first moves the ground
+            "rm -rf *.log",                  // a glob
+            "rm -rf build{,2}",              // a brace expansion
+            "find . -name x -delete",        // deletes matches, not the operand
+            "rm -rf build > out.txt",        // a redirection
+            "rm -rf --no-preserve-root /x",  // a flag nobody has heard of
+            "rm -rf \"$TEMP/x\"",           // a quoted variable: expanded or not?
+            "rm -rf \"a\\b\"",               // bash keeps this backslash; we would not
+        ] {
+            assert_eq!(routable(no, false), None, "{no}");
+        }
+        for no in [
+            "Remove-Item -Recurse -Filter *.tmp C:\\x",
+            "Remove-Item -Recurse a,b",
+            "Remove-Item -Recurse `$x",
+            "Remove-Item -Recurse -WhatIf C:\\x",
+            "Remove-Item -Recurse 'it''s'",
+        ] {
+            assert_eq!(routable(no, true), None, "{no}");
+        }
+    }
+
+    /// Operands become absolute paths the way the card's shell would have read
+    /// them, or not at all.
+    #[test]
+    fn an_operand_resolves_the_way_its_shell_reads_it() {
+        let cwd = r"C:\w\nova";
+        let temp = r"C:\Users\LYSS~1.DEL\AppData\Local\Temp";
+        let env = |n: &str| match n {
+            "TEMP" => Some(temp.to_string()),
+            "TMP" => Some(r"C:\elsewhere".to_string()),
+            "HOME" | "USERPROFILE" => Some(r"C:\Users\lyss".to_string()),
+            _ => None,
+        };
+        let bash = |o: &str| resolve(o, false, cwd, &env);
+        let ps = |o: &str| resolve(o, true, cwd, &env);
+
+        /* Git Bash's mounts, and the 8.3 short name `temp_dir()` really returns. */
+        assert_eq!(bash("/tmp/rv1").as_deref(), Some(r"C:\Users\LYSS~1.DEL\AppData\Local\Temp/rv1"));
+        assert_eq!(bash("/c/Users/lyss/x").as_deref(), Some("C:/Users/lyss/x"));
+        assert_eq!(bash("$TEMP/rv1").as_deref(), Some(r"C:\Users\LYSS~1.DEL\AppData\Local\Temp/rv1"));
+        assert_eq!(bash("~/scratch").as_deref(), Some(r"C:\Users\lyss/scratch"));
+        assert_eq!(bash("build").as_deref(), Some(r"C:\w\nova/build"));
+        assert_eq!(bash("/usr/local/x"), None, "where /usr lands is not knowable here");
+        assert_eq!(bash("$OTHER/x"), None);
+        assert_eq!(bash("~bob/x"), None);
+
+        assert_eq!(bash("$TMPDIR/x"), None, "unset: the shell would delete /x");
+        assert_eq!(bash("$TMP/x").as_deref(), Some(r"C:\elsewhere/x"), "each variable by its own name");
+        assert_eq!(bash("C:x"), None, "drive-relative");
+
+        assert_eq!(ps(r"$env:TEMP\rv1").as_deref(), Some(r"C:\Users\LYSS~1.DEL\AppData\Local\Temp\rv1"));
+        assert_eq!(ps(r"C:\x\y").as_deref(), Some(r"C:\x\y"));
+        assert_eq!(ps(r"$env:APPDATA\x"), None);
+        assert_eq!(ps("/tmp/x"), None, "PowerShell has no /tmp");
+        assert_eq!(ps(r"\x"), None, "the current drive's root");
+        assert_eq!(ps("~/x"), None, "5.1 builds ~ from HOMEDRIVE+HOMEPATH");
+        assert_eq!(ps("build"), None, "a relative path needs a cwd nobody measured");
+
+        /* No cwd, no relative path — and no variable, no expansion. */
+        assert_eq!(resolve("build", false, "", &env), None);
+        assert_eq!(resolve("$TEMP/x", false, cwd, &|_: &str| None), None);
+    }
+
+    /// The card is told the shell ran nothing, and not to try again.
+    #[test]
+    fn a_handed_on_delete_says_the_shell_ran_nothing() {
+        let r = Routed { operands: vec!["/tmp/rv1".into()], chained: true };
+        let said = routed_reason(&r, "deleted, permanently");
+        assert!(said.starts_with("volery:"), "{said}");
+        assert!(said.contains("deleted, permanently"), "{said}");
+        assert!(said.contains("The shell ran nothing"), "{said}");
+        assert!(said.contains("re-run the rest without it"), "{said}");
+        assert!(said.contains("Do not run the delete again"), "{said}");
+        let alone = routed_reason(&Routed { chained: false, ..r }, "x");
+        assert!(!alone.contains("re-run"), "{alone}");
     }
 
     #[test]
