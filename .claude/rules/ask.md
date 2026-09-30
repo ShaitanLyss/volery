@@ -560,9 +560,20 @@ So a call carries `questions[]` and the panel walks you through them one at a ti
   hashes arrived as themselves. `Markdown.svelte` is renderable outside the panel (`--read`
   defaults to 1) so this costs an import, with `nav={false}` — a question in the dock is not a
   place in the transcript for the rails to travel to.
-- **`MAX_QUESTIONS` is 5, and the overflow is said out loud.** An agent that asked six things
-  and got five answers will act on the sixth regardless; silence there reads as "all of it was
-  asked".
+- **There is no cap on how many questions a call may carry, and there was one.** Five, on the
+  argument that a longer call is a survey rather than a question — with the excess drawn as a
+  note under the panel, since an agent that asked six things and got five answers will act on
+  the sixth regardless. Both halves were wrong. The note was drawn where only the *user* could
+  see it, so the reply the agent read was five answers that looked like the whole of it: a card
+  sent twelve questions after a round of worker reports, Lyss answered, and the card had to
+  notice its own missing answers (sink `4b076830`). **A cap the other side of the wire cannot
+  see is not a cap, it is data loss** — and batching decisions is the good use of one park, not
+  the abuse of it. Nothing in the panel needed the cap either: questions are stepped through one
+  at a time, the spine wraps, the panel scrolls. What a long call costs is reading time, and
+  that is bounded at `ANSWER_MAX`, which is a real constraint rather than a taste — the client's
+  own deadline is written into `--mcp-config` once at spawn, so a call that asked for longer
+  would be abandoned by the client with its own sentence. A twelve-question review saturates
+  there at forty-five minutes rather than being cut down to fit.
 - **The peek is named by headers, never by a truncated body** (`askHeadline`). That line is
   `white-space: nowrap` with an ellipsis, so a question body put there is a cut-off paragraph
   naming nothing — and a call carrying several would name only the first.

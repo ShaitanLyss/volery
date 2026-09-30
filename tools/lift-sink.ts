@@ -67,7 +67,6 @@ const ITEMS: [string, string][] = [
   [SINK, "const HOLD_STALE_MS"],
   [SINK, "const MAX_TITLE"],
   [SINK, "const MAX_NOTE"],
-  [SINK, "const MAX_GLOBS"],
   [SINK, "const KINDS"],
   [SINK, "fn hold_stale"],
   [SINK, "fn free"],

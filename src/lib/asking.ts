@@ -73,11 +73,6 @@ export type Answers = (string | null)[];
  *  reads as a bug. */
 export const NO_PREFERENCE = "no preference — your call";
 
-/** Past this many, a call is not asking a question, it is administering a
- *  survey. The excess is dropped rather than truncated silently mid-list: see
- *  `overflowOf`, which exists so the panel can say so. */
-export const MAX_QUESTIONS = 5;
-
 /* -- how long the whole call gets -----------------------------------------
  *
  * Mirrored in `ask.rs` — `ANSWER_BASE`, `ANSWER_PER_QUESTION`,
@@ -117,14 +112,18 @@ export const ANSWER_PER_OPTION = 20;
  *  written into the card's `--mcp-config` at spawn, so the *client's* deadline
  *  cannot scale with a call it has not received yet. It is set from this, and
  *  every call has to fit under it or the client gives up first and writes its own
- *  sentence instead of Skein's. */
+ *  sentence instead of Skein's.
+ *
+ *  It is also the only thing that bounds a long call, now that the question
+ *  count is not bounded: a twelve-question review saturates here rather than
+ *  being cut down to fit. */
 export const ANSWER_MAX = 2700;
 
 /** How long this call waits, in seconds, from what it is asking.
  *
- *  Takes the questions the panel will actually draw — so the cap, the dropped
- *  empties and the placeholder are all already applied by `normalizeAsk`, which
- *  is why this is the shorter half of the mirror. */
+ *  Takes the questions the panel will actually draw — so the dropped empties and
+ *  the placeholder are already applied by `normalizeAsk`, which is why this is
+ *  the shorter half of the mirror. */
 export function answerWindow(questions: AskQuestion[]): number {
   const n = Math.max(1, questions.length);
   const options = questions.reduce((t, q) => t + q.options.length, 0);
@@ -238,15 +237,24 @@ export function normalizeAsk(raw: {
     });
   }
 
-  return out.slice(0, MAX_QUESTIONS);
-}
-
-/** How many questions were dropped for being past the cap. The panel says so,
- *  because an agent that asked six things and got five answers will act on the
- *  sixth regardless, and you should know which one it is guessing at. */
-export function overflowOf(raw: { questions?: unknown }): number {
-  const n = Array.isArray(raw?.questions) ? raw.questions.length : 0;
-  return Math.max(0, n - MAX_QUESTIONS);
+  /* Every question the call carried, however many that is.
+   *
+   * There was a cap of five here, on the argument that a longer call is a
+   * survey rather than a question. It was wrong about what agents do with this
+   * tool: an orchestrating card batches decisions after a round of worker
+   * reports, eight or twelve at a time, and that is the *good* use of one park
+   * rather than the abuse of it. What the cap actually bought was a call of
+   * twelve answered as five, with the reply reading as complete — the agent had
+   * to notice its own missing answers, and the panel's note about the excess was
+   * drawn where only the user could see it (sink `4b076830`). A cap nothing on
+   * the other side of the wire can see is not a cap, it is a data loss.
+   *
+   * Nothing about the panel needed one: questions are asked one at a time, the
+   * spine wraps, and the whole thing scrolls. What a long call costs is reading
+   * time, and that is bounded where it belongs — `ANSWER_MAX`, which is a real
+   * constraint rather than a taste, since the client's deadline is written once
+   * at spawn. */
+  return out;
 }
 
 /** The size a preview is composed at.

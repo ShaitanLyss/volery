@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   ANSWER_MAX,
-  MAX_QUESTIONS,
   NO_ANSWER_NOTE,
   NO_PREFERENCE,
   PREVIEW_VIEWPORT,
@@ -15,7 +14,6 @@ import {
   isComplete,
   isScriptBuilt,
   normalizeAsk,
-  overflowOf,
   panelsOf,
   previewAside,
   previewDoc,
@@ -124,19 +122,17 @@ describe("normalizeAsk", () => {
     expect(out[0].question).toBe("(no question given)");
   });
 
-  test("the cap holds and the overflow is countable", () => {
+  test("a long list is drawn whole", () => {
+    /* There was a cap of five here, and a call of twelve came back answered as
+       five with the reply reading as complete (sink `4b076830`). An
+       orchestrating card batching decisions after a round of worker reports is
+       the good use of one park, not the abuse of it. */
     const raw = {
-      questions: Array.from({ length: MAX_QUESTIONS + 3 }, (_, i) => ({
-        question: `q${i}?`,
-      })),
+      questions: Array.from({ length: 12 }, (_, i) => ({ question: `q${i}?` })),
     };
-    expect(normalizeAsk(raw).length).toBe(MAX_QUESTIONS);
-    expect(overflowOf(raw)).toBe(3);
-  });
-
-  test("nothing over the cap means no overflow", () => {
-    expect(overflowOf({ questions: [{ question: "a?" }] })).toBe(0);
-    expect(overflowOf({})).toBe(0);
+    const out = normalizeAsk(raw);
+    expect(out.length).toBe(12);
+    expect(out[11].question).toBe("q11?");
   });
 });
 
@@ -301,7 +297,7 @@ describe("answerWindow", () => {
   });
 
   test("nothing can ask for longer than the client was told to wait", () => {
-    const everything = Array.from({ length: MAX_QUESTIONS }, (_, i) =>
+    const everything = Array.from({ length: 5 }, (_, i) =>
       q(
         `q${i}`,
         `q${i}`,
@@ -311,17 +307,20 @@ describe("answerWindow", () => {
     expect(answerWindow(everything)).toBe(ANSWER_MAX);
   });
 
-  test("the cap is applied before the arithmetic, not after", () => {
-    /* Questions past MAX_QUESTIONS are not drawn, so they buy no time and
-       neither do their options — `normalizeAsk` has already dropped them, which
-       is the whole reason this half of the mirror is the short one. */
+  test("a long list is paid for all the way down", () => {
+    /* Nine questions used to buy the time for five, because only five were
+       drawn. Now all of them are, and the ceiling is the only thing that
+       shortens a call. */
     const raw = {
       questions: Array.from({ length: 9 }, (_, i) => ({
         question: `q${i}`,
         options: [{ label: "a" }],
       })),
     };
-    expect(answerWindow(normalizeAsk(raw))).toBe(600 + 4 * 180 + 5 * 20);
+    expect(answerWindow(normalizeAsk(raw))).toBe(600 + 8 * 180 + 9 * 20);
+
+    const twenty = Array.from({ length: 20 }, (_, i) => q(`q${i}`, `q${i}`));
+    expect(answerWindow(twenty)).toBe(ANSWER_MAX);
   });
 });
 

@@ -150,8 +150,17 @@ const MAX_NOTE: usize = 400;
    that wrote it, which makes it the worst place on the wall to lose a tail.
 
    `store::MAX_SINK_BODY` is the one cap, enforced where the write happens,
-   through `crate::clip`. */
-const MAX_GLOBS: usize = 8;
+   through `crate::clip`.
+
+   The `paths` list had one too — eight, silently kept from the front — and it
+   went for the same reason one layer along. A path list is what lets somebody
+   working in a file find the item without reading the whole sink, so dropping
+   the ninth is dropping the reader it was written for, and nothing said so: the
+   receipt read `dropped`, the item carried eight of the eleven paths the author
+   believed they had filed. Same shape as `ask_user` answering five of twelve
+   questions and reading as complete (sink `4b076830`). An honest list for a
+   change touching a front end, a back end, a test and a manifest is longer than
+   eight, and it costs one line of a listing to carry. */
 
 /// The four an agent may set. `note` is the default and the least committal —
 /// nothing in Skein reads these except the widget's grouping and your own eye,
@@ -1309,7 +1318,7 @@ fn globs_from(v: Option<&Value>) -> String {
             .collect(),
         _ => Vec::new(),
     };
-    list.into_iter().take(MAX_GLOBS).collect::<Vec<_>>().join("\n")
+    list.join("\n")
 }
 
 /// What to add to a receipt when the write could not carry everything.
@@ -1916,6 +1925,12 @@ mod tests {
         assert_eq!(globs_from(Some(&json!("a.ts, b.ts"))), "a.ts\nb.ts");
         assert_eq!(globs_from(Some(&json!(["a.ts", "b.ts"]))), "a.ts\nb.ts");
         assert_eq!(globs_from(None), "");
+        /* All of them. There was a cap of eight that kept the first eight
+           silently, which drops the reader the ninth path was written for —
+           the same shape as `ask_user` answering five of twelve questions and
+           reading as complete (sink `4b076830`). */
+        let many: Vec<String> = (0..20).map(|i| format!("f{i}.ts")).collect();
+        assert_eq!(globs_from(Some(&json!(many))).lines().count(), 20);
     }
 
     #[test]

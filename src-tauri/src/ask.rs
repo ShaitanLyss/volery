@@ -64,12 +64,13 @@ const ANSWER_PER_OPTION: Duration = Duration::from_secs(20);
 /// the client's own deadline cannot scale with a call it has not received yet.
 /// It is therefore set from this, and every call's window has to fit under it
 /// or the client gives up first and writes its own sentence instead of ours.
+///
+/// It is also the whole of what bounds a long call now that the question count
+/// is not bounded: a twelve-question review saturates here rather than being
+/// cut down to something that fits. That is the right way round — forty-five
+/// minutes of reading is a long sitting, and the alternative was answering five
+/// of the twelve and letting the agent guess the rest.
 const ANSWER_MAX: Duration = Duration::from_secs(2700);
-
-/// Past this many, a call is not asking a question, it is administering a
-/// survey — and the panel draws only this many. `asking.ts::MAX_QUESTIONS` is
-/// the same number and the same cap; see `answer_window`.
-const ANSWER_MAX_QUESTIONS: usize = 5;
 
 const DISMISSED: &str =
     "The user dismissed the question. Proceed using your best judgement.";
@@ -107,9 +108,9 @@ fn timed_out(waited: Duration) -> String {
 /// The counting mirrors `normalizeAsk`, and only the parts that change a count:
 /// a `questions[]` entry needs a non-empty `question` to be drawn, the
 /// single-question sugar is *appended* rather than preferred, an empty call
-/// still draws one placeholder question, the list is capped, and an option needs
-/// a non-empty `label`. Options past the cap are not counted because they are not
-/// drawn.
+/// still draws one placeholder question, and an option needs a non-empty
+/// `label`. Nothing is dropped for being late in the list — see `ANSWER_MAX`,
+/// which is what a long call runs into instead.
 fn answer_window(args: &Value) -> Duration {
     let mut drawn: Vec<&Value> = Vec::new();
     if let Some(list) = args.get("questions").and_then(|v| v.as_array()) {
@@ -118,7 +119,6 @@ fn answer_window(args: &Value) -> Duration {
     if said(args.get("question")).is_some() {
         drawn.push(args);
     }
-    drawn.truncate(ANSWER_MAX_QUESTIONS);
 
     let options: usize = drawn
         .iter()
@@ -475,8 +475,10 @@ fn tool_schema() -> Value {
              with one click.\n\n\
              When you have more than one decision outstanding, put each in its own \
              entry of `questions` rather than fusing them into one. They are asked one \
-             at a time and answered separately. Fusing two decisions forces the options \
-             to be combinations of both — which is longer to read and, worse, silently \
+             at a time and answered separately, and there is no limit on how many a \
+             call may carry — a dozen decisions after a round of worker reports is a \
+             fine use of one call. Fusing two decisions forces the options to be \
+             combinations of both — which is longer to read and, worse, silently \
              leaves out the combinations you did not think to list.\n\n\
              When the decision is a visual one, do not describe the designs — give \
              each option a `preview` and they are drawn side by side, full size, for \
@@ -2691,13 +2693,15 @@ mod tests {
         /* Nothing answerable is still one placeholder question and still parks
            a turn, so it still gets the floor rather than nothing. */
         assert_eq!(answer_window(&json!({})).as_secs(), 600);
-        /* Past the cap nothing is drawn, so nothing past it is paid for. */
+        /* And a long list is paid for all the way down, because all of it is
+           drawn: nine questions used to buy the time for five (sink
+           `4b076830`). The ceiling is the only thing that shortens a call. */
         let many: Vec<Value> = (0..9)
             .map(|i| json!({ "question": format!("q{i}"), "options": [{"label":"a"}] }))
             .collect();
         assert_eq!(
             answer_window(&json!({ "questions": many })).as_secs(),
-            600 + 4 * 180 + 5 * 20
+            600 + 8 * 180 + 9 * 20
         );
     }
 
@@ -2719,6 +2723,13 @@ mod tests {
             client_timeout_ms() > w.as_millis() as u64,
             "ours must fire first, or the client writes the sentence"
         );
+
+        /* And the count alone reaches it now that the count is unbounded, which
+           is the one thing that changed when `ANSWER_MAX_QUESTIONS` went: the
+           ceiling is what a long call runs into, rather than a truncation. */
+        let twenty: Vec<Value> =
+            (0..20).map(|i| json!({ "question": format!("q{i}") })).collect();
+        assert_eq!(answer_window(&json!({ "questions": twenty })), ANSWER_MAX);
     }
 
     /// `asking.ts::UNANSWERED` matches this prefix off disk to tell Skein's

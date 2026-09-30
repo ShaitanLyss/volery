@@ -22,7 +22,6 @@ import {
   blankAnswers,
   composeAnswer,
   normalizeAsk,
-  overflowOf,
 } from "./asking";
 import {
   contextWindowFor,
@@ -486,7 +485,6 @@ export class Skein {
           askId: e.payload.ask_id,
           questions,
           answers: blankAnswers(questions),
-          dropped: overflowOf(raw),
           ours: e.payload.ours === true,
           since: Date.now(),
         };

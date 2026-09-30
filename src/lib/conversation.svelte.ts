@@ -380,9 +380,6 @@ export type PendingAsk = {
    *  not throw away the answers already given — the panel draws whichever card
    *  is blocked, so its own state would not survive the switch. */
   answers: Answers;
-  /** Questions the call carried past `MAX_QUESTIONS`. Drawn, because an agent
-   *  that asked six things and got five answers will guess at the sixth. */
-  dropped: number;
   /** Whether Skein composed this question rather than the agent asking it.
    *
    *  It changes nothing about how the panel draws and one thing about what the

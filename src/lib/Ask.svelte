@@ -346,16 +346,6 @@
     {/if}
   {/if}
 
-  {#if ask.dropped}
-    <!-- Said out loud, because the agent asked and will act on the answer it
-         did not get. Silence here reads as "all of it was asked". -->
-    <div class="foot over">
-      {ask.dropped} further question{ask.dropped === 1 ? "" : "s"} in this call {ask.dropped
-        === 1
-        ? "was"
-        : "were"} not shown — the agent will use its own judgement there
-    </div>
-  {/if}
 </div>
 
 {#if showing && panels.length}
@@ -688,8 +678,5 @@
   .foot.grow {
     flex: 1 1 auto;
     align-self: center;
-  }
-  .foot.over {
-    color: color-mix(in srgb, var(--st-ask) 55%, var(--paper-faint));
   }
 </style>

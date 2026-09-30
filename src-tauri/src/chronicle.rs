@@ -84,9 +84,14 @@ const FALLBACK_LEVEL: &str = "note";
 const MARK_MAX: usize = 120;
 const DETAIL_MAX: usize = 240;
 
-/// Same bound `sink` puts on globs, for the same reason: a list this long is not
-/// "which files" any more.
-const MAX_GLOBS: usize = 8;
+/* The `paths` list is *not* bounded, and it used to be — eight, silently kept
+   from the front, matching what `sink` did. Both went together. A path list is
+   read by whoever is working in one of those files; keeping the first eight
+   drops exactly the reader the ninth was for, and nothing anywhere says a list
+   was shortened. That is the shape `ask_user` was carrying when it answered
+   five of twelve questions and read as complete (sink `4b076830`).
+   `MARK_MAX`/`DETAIL_MAX` above stay, because those are about a line being a
+   line — a different argument, and one that clips visibly through `clip::keep`. */
 
 /// How many rows a card is given when it reads. Small on purpose — an agent
 /// reading the chronicle wants to know what has been going on, not to page
@@ -157,7 +162,6 @@ fn globs_from(v: Option<&Value>) -> String {
         _ => {}
     }
     out.retain(|s| !s.is_empty());
-    out.truncate(MAX_GLOBS);
     out.join("\n")
 }
 
@@ -590,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn globs_are_taken_as_one_or_many_and_bounded() {
+    fn globs_are_taken_as_one_or_many_and_not_bounded() {
         assert_eq!(globs_from(Some(&json!("a.ts"))), "a.ts");
         assert_eq!(globs_from(Some(&json!(["a.ts", "b.ts"]))), "a.ts\nb.ts");
         /* The empties are dropped rather than stored as blank lines, since
@@ -599,8 +603,11 @@ mod tests {
         assert_eq!(globs_from(Some(&json!(["a.ts", "", "  ", "b.ts"]))), "a.ts\nb.ts");
         assert_eq!(globs_from(None), "");
         assert_eq!(globs_from(Some(&json!(7))), "");
+        /* Every one of them. There was a cap of eight here and it kept the
+           first eight silently, which drops the reader the ninth path was for
+           (sink `4b076830`). */
         let many: Vec<String> = (0..20).map(|i| format!("f{i}.ts")).collect();
-        assert_eq!(globs_from(Some(&json!(many))).lines().count(), MAX_GLOBS);
+        assert_eq!(globs_from(Some(&json!(many))).lines().count(), 20);
     }
 
     /// A mark is a headline and the cap has to be small enough to mean it, while
