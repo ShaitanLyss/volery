@@ -412,6 +412,92 @@ fn asked_effort(args: &Value, model: Option<&str>) -> Result<Option<String>, Str
     Ok(Some(level))
 }
 
+/// Which account the caller asked the card to start on, or why nothing was
+/// opened. `seats` is the registry in waterfall order, as `(label, enabled,
+/// signed_in)` — tuples rather than `accounts::Seat` so this stays liftable.
+///
+/// **A name is a starting point, not a pin**, and that is the one decision here
+/// worth knowing about. The wall hands the label to `choose` as `stickTo`, which
+/// is exactly what every send already does with the account a card is on: used
+/// if it is ready, and the ladder otherwise. So a card asked onto a spent
+/// account starts on whatever the ladder would have picked, and a card started
+/// on a ready one stays there for as long as it stays ready — then swaps like
+/// any other. A strict pin would have to outlive the first send, since the
+/// second would otherwise move it, and that is a per-card policy the waterfall
+/// does not have.
+///
+/// What *is* refused is what can never land, for the reason [`asked_model`]
+/// refuses: a card the agent believes it put on `work` and that quietly ran
+/// somewhere else is the expensive surprise. A name that is not registered, one
+/// the user switched off, and one with no credential are all facts that waiting
+/// will not change, so they are answered before the id is minted, with the list
+/// of what would have worked. Allowance is not judged here — it moves by the
+/// minute and `accounts.ts` is the one place that weighs it.
+///
+/// Matched exactly, then case-folded if that is unambiguous: labels are typed
+/// by a person and repeated by a model, and `Work` for `work` is the same
+/// intention.
+fn asked_account(args: &Value, seats: &[(&str, bool, bool)]) -> Result<Option<String>, String> {
+    let Some(raw) = args.get("account").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let name = raw.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if seats.is_empty() {
+        return Err(format!(
+            "you asked for the {name:?} account, but this wall manages no accounts — every \
+             card runs as whoever Claude Code is signed in as here — so no card was opened. \
+             Leave `account` out."
+        ));
+    }
+    let folded: Vec<_> = seats
+        .iter()
+        .filter(|s| s.0.eq_ignore_ascii_case(name))
+        .collect();
+    let hit = seats
+        .iter()
+        .find(|s| s.0 == name)
+        .or(if folded.len() == 1 { Some(folded[0]) } else { None });
+    let offer = || {
+        seats
+            .iter()
+            .map(|&(l, enabled, signed)| match (enabled, signed) {
+                (false, _) => format!("{l} (switched off)"),
+                (true, false) => format!("{l} (not signed in)"),
+                (true, true) => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let Some(&(label, enabled, signed)) = hit else {
+        return Err(format!(
+            "there is no account called {raw:?} on this wall, so no card was opened. What is \
+             here, in the order work falls through them: {}. Name one of those exactly, or \
+             leave `account` out to let the card take whichever the ladder picks.",
+            offer()
+        ));
+    };
+    if !enabled {
+        return Err(format!(
+            "the {label} account is switched off in the accounts panel, so no card was \
+             opened — the user took it out of the ladder, and putting work on it is theirs \
+             to decide. Leave `account` out, or name another: {}.",
+            offer()
+        ));
+    }
+    if !signed {
+        return Err(format!(
+            "the {label} account is not signed in, so no card was opened — a card on it \
+             would fail its first turn. Tell the user it needs signing in, leave `account` \
+             out, or name another: {}.",
+            offer()
+        ));
+    }
+    Ok(Some(label.to_string()))
+}
+
 #[derive(Clone, Serialize)]
 struct SpawnAsked {
     /// The id the wall must use, so the handle in the receipt is the handle of
@@ -440,6 +526,10 @@ struct SpawnAsked {
     /// take whatever level goes with the family. Only ever set alongside
     /// `model`, and never on a family that has none; see [`asked_effort`].
     effort: Option<String>,
+    /// The account it should start on — a registered, switched-on, signed-in
+    /// label — or null to take whatever the ladder picks. A preference rather
+    /// than a pin; see [`asked_account`].
+    account: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -594,6 +684,20 @@ pub fn spawn_schema() -> Value {
                          cards, this is the knob that decides what the fan-out costs: a \
                          level spent on every lane is spent once per card, against \
                          whatever budget the user set."
+                },
+                "account": {
+                    "type": "string",
+                    "description":
+                        "Optional. Which of the wall's Claude accounts the card starts \
+                         on, by the label the user gave it in the accounts panel. \
+                         **Leave it out unless the user asked** — omitted, the card takes \
+                         whichever account the wall's ladder picks, which is the order and \
+                         the caps the user set, and is right for nearly every card.\n\n\
+                         Named, it is a starting point rather than a pin: if that account \
+                         has no room left when the card starts, or runs out later, the card \
+                         moves down the ladder like any other. A name that is not \
+                         registered, is switched off, or is not signed in is refused with \
+                         the list of what is here — so a guess costs one call, not a card."
                 }
             },
             "required": ["prompt"]
@@ -1276,6 +1380,22 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
                 user what you would have opened and let them do it."
             .into();
     }
+    /* Behind the chat refusal, because a chat card was never going to be
+       opened on any account; ahead of everything written down, for the reason
+       the model is. Under the same lock rather than a second one — the
+       registry is a handful of rows and a file check each, `usable_labels`'
+       bargain. */
+    let account = {
+        let seats = crate::accounts::registry(app, &conn);
+        let seats: Vec<(&str, bool, bool)> = seats
+            .iter()
+            .map(|s| (s.label.as_str(), s.enabled, s.signed_in))
+            .collect();
+        match asked_account(args, &seats) {
+            Ok(a) => a,
+            Err(why) => return why,
+        }
+    };
     /* Off, like the two numbers — see `ONE_GENERATION`, which is where the
        argument this used to make is kept. Behind the flag rather than deleted,
        and the query with it: a wall that does not bound generations does not ask
@@ -1384,6 +1504,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
             title: title.clone(),
             model: model.clone(),
             effort: effort.clone(),
+            account: account.clone(),
         },
     );
 
@@ -1414,6 +1535,18 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         (None, _) => " You named no model, so it opens on whatever Claude Code is set up for \
                       on this machine."
             .into(),
+    };
+    /* Said only when named, unlike the model: the ladder is the right answer for
+       nearly every card, and a line inviting the caller to second-guess it
+       would be the knob advertised in the one place it should be left alone.
+       Named, the caveat is the half worth hearing — it is a preference, and the
+       card that says where it actually landed is the child, not this receipt. */
+    let starts = match &account {
+        Some(a) => format!(
+            " It starts on the {a} account if that has room; if not, the wall puts it on \
+             the next account down the ladder, as it would any card."
+        ),
+        None => String::new(),
     };
     /* Said out loud, because it is the one thing about a card opened here that
        the caller cannot see and has to act on: two agents in one checkout is
@@ -1448,7 +1581,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              nothing else of yours. Tell the user you have opened it and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, which takes a \
-             moment.{called}{on}{sharing}{ate}"
+             moment.{called}{on}{starts}{sharing}{ate}"
         ),
         /* Said differently on purpose. A card in another repository is the one
            case where "it has the brief and nothing else" costs something real:
@@ -1464,7 +1597,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
              be in the brief. Tell the user you have opened it, where, and what for. You can \
              `mcp__skein__send` to it or `mcp__skein__recall` it by that handle; it will \
              not appear in `mcp__skein__list` until its process is up, and then only under \
-             `scope: \"skein\"`, since it is not in your project.{called}{on}{ate}"
+             `scope: \"skein\"`, since it is not in your project.{called}{on}{starts}{ate}"
         ),
     }
 }
@@ -2121,6 +2254,65 @@ mod tests {
         /* And the reason this is the caller's to get right, which is the thing
            no default can know. */
         assert!(d.contains("divided the job up"), "{d}");
+    }
+
+    /// A named account is judged against the registry: exact first, then
+    /// case-folded if that picks one, and omitted means the ladder.
+    #[test]
+    fn an_account_is_named_as_the_panel_names_it() {
+        let seats = [("work", true, true), ("perso", true, true)];
+        assert_eq!(asked_account(&json!({}), &seats), Ok(None));
+        assert_eq!(asked_account(&json!({ "account": "  " }), &seats), Ok(None));
+        assert_eq!(
+            asked_account(&json!({ "account": " work " }), &seats),
+            Ok(Some("work".into()))
+        );
+        assert_eq!(
+            asked_account(&json!({ "account": "Perso" }), &seats),
+            Ok(Some("perso".into()))
+        );
+        /* Two labels that differ only by case: the exact one wins, and a fold
+           that could mean either is not a match. */
+        let twins = [("Work", true, true), ("work", true, true)];
+        assert_eq!(
+            asked_account(&json!({ "account": "Work" }), &twins),
+            Ok(Some("Work".into()))
+        );
+        assert!(asked_account(&json!({ "account": "WORK" }), &twins).is_err());
+    }
+
+    /// What can never land is refused before anything is written, and every
+    /// refusal carries the list — the unknown project's shape.
+    #[test]
+    fn an_account_that_cannot_take_the_card_is_refused_with_the_list() {
+        let seats = [("work", true, true), ("off", false, true), ("fresh", true, false)];
+        let why = asked_account(&json!({ "account": "nope" }), &seats).unwrap_err();
+        assert!(why.contains("no card was opened"), "{why}");
+        assert!(why.contains("work, off (switched off), fresh (not signed in)"), "{why}");
+        assert!(why.contains("leave `account` out"), "{why}");
+
+        let why = asked_account(&json!({ "account": "off" }), &seats).unwrap_err();
+        assert!(why.contains("switched off"), "{why}");
+        let why = asked_account(&json!({ "account": "fresh" }), &seats).unwrap_err();
+        assert!(why.contains("not signed in"), "{why}");
+
+        /* A wall with no registry has nothing to choose between, and saying so
+           is better than a list that is empty. */
+        let why = asked_account(&json!({ "account": "work" }), &[]).unwrap_err();
+        assert!(why.contains("manages no accounts"), "{why}");
+    }
+
+    /// The field has to say the default is the ladder and that a name is not a
+    /// pin — an agent that believes it pinned a card reports the wrong account.
+    #[test]
+    fn the_account_field_says_it_is_a_starting_point() {
+        let d = spawn_schema()["inputSchema"]["properties"]["account"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(d.contains("Leave it out unless the user asked"), "{d}");
+        assert!(d.contains("ladder"), "{d}");
+        assert!(d.contains("starting point rather than a pin"), "{d}");
     }
 
     /// Fanning out work that *writes* is the reflex this tool has to catch, and

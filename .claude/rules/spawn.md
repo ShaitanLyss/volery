@@ -289,6 +289,32 @@ because the tool took a model and nothing else.
   haiku comes back on haiku next month. Same argument as `kind`, `worktree` and the rest: the
   one caller who would have had to remember is `wake`.
 
+#### Which account it starts on
+
+`account` takes a label from the accounts panel; omitted, the card goes through the ladder
+exactly as a card from the `+` does (`accounts.md`). Added 2026-09-30.
+
+- **A name is a starting point, not a pin.** `#openIn` hands it to `waterfall.next` as
+  `stickTo` — the very preference every send already expresses for the account a card is on:
+  used if ready, the tiers otherwise. A strict pin would have had to outlive the first send
+  (the second would move it anyway) and would be a per-card policy the waterfall does not
+  have. So a card asked onto a spent account starts wherever the ladder would have put it, and
+  the description and the receipt both say so, because an agent that believes it pinned a card
+  reports the wrong account to the user.
+- **What can never land is refused, with the list** — `asked_account`, before the id is
+  minted, for `asked_model`'s reason. Not registered, switched off, not signed in: facts that
+  waiting will not change. Allowance is *not* judged in Rust; it moves by the minute and
+  `accounts.ts` is the one place that weighs it. A wall with no accounts refuses any name,
+  since there is nothing to choose between.
+- **Matched exactly, then case-folded if that is unambiguous.** Labels are typed by a person
+  and repeated by a model.
+- **The receipt is silent when nothing was named**, unlike the model's line: the ladder is
+  the right answer for nearly every card, and advertising the knob there would invite
+  second-guessing the user's own order.
+- **Not on the row as a preset is.** Where a card is *spending* is `account_label`, written by
+  `#openIn` as for any card, and a wake re-runs the ladder sticking to it — which is the
+  preference outliving birth in the only sense the waterfall has one.
+
 ### And why building fans out to cards rather than to subagents
 
 The tool has always said it is not a subagent. What it did not say, and what agents crossed by

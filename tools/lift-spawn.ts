@@ -77,6 +77,9 @@ const ITEMS = [
   "const SPAWN_EFFORTS",
   "const EFFORTLESS",
   "fn asked_effort",
+  /* The account gate: a label judged against the registry, handed in as
+     tuples so nothing from `accounts.rs` has to come with it. */
+  "fn asked_account",
   "fn spawn_schema",
 ];
 
@@ -115,6 +118,9 @@ const TESTS = [
   "an_effort_that_cannot_land_is_refused_rather_than_dropped",
   "the_family_with_no_effort_is_one_of_the_three",
   "the_effort_field_says_when_to_leave_it_alone",
+  "an_account_is_named_as_the_panel_names_it",
+  "an_account_that_cannot_take_the_card_is_refused_with_the_list",
+  "the_account_field_says_it_is_a_starting_point",
 ];
 
 const src = readFileSync(SRC, "utf8");

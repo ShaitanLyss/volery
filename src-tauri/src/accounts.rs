@@ -225,18 +225,43 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
 /// cannot count the wall's accounts should say nothing about them, not refuse to
 /// answer the question it was actually asked.
 pub fn usable_labels(app: &AppHandle, conn: &rusqlite::Connection) -> Vec<String> {
+    registry(app, conn)
+        .into_iter()
+        .filter(|s| s.enabled && s.signed_in)
+        .map(|s| s.label)
+        .collect()
+}
+
+/// One registered account, as much of it as somebody outside this file needs
+/// to judge a name against: whether it exists, and if so whether it could take
+/// work at all. No caps and no allowance — those are `accounts.ts`'s to weigh,
+/// and a reading taken here would be a second waterfall.
+pub struct Seat {
+    pub label: String,
+    pub enabled: bool,
+    pub signed_in: bool,
+}
+
+/// Every registered account, in the order work falls through them. Degrades to
+/// empty for [`usable_labels`]' reason. `spawn.rs` is the second caller: a card
+/// naming the account a child should start on is answered from this, so a name
+/// that is not here is refused with the list of what is.
+pub fn registry(app: &AppHandle, conn: &rusqlite::Connection) -> Vec<Seat> {
     let Ok(mut stmt) =
-        conn.prepare(
-            "SELECT label FROM account WHERE enabled != 0 ORDER BY priority, rank, label",
-        )
+        conn.prepare("SELECT label, enabled FROM account ORDER BY priority, rank, label")
     else {
         return Vec::new();
     };
-    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) else {
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+    else {
         return Vec::new();
     };
     rows.filter_map(Result::ok)
-        .filter(|l| signed_in(app, l))
+        .map(|(label, enabled)| Seat {
+            signed_in: signed_in(app, &label),
+            enabled: enabled != 0,
+            label,
+        })
         .collect()
 }
 

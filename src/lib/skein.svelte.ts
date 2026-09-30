@@ -612,10 +612,15 @@ export class Skein {
          *  with no effort — `asked_effort` refuses both before a card is
          *  minted, so this arrives already paired or not at all. */
         effort: string | null;
+        /** A registered, switched-on, signed-in label to start on if it has
+         *  room, or null for the ladder — `asked_account` refuses anything
+         *  else before a card is minted. A preference, not a pin. */
+        account: string | null;
       }>(
         "spawn:asked",
         (e) => {
-          const { id, parent_id, cwd, worktree, prompt, title, model, effort } = e.payload;
+          const { id, parent_id, cwd, worktree, prompt, title, model, effort, account } =
+            e.payload;
           /* The root is recorded before the card is opened, and `born` is
              stamped here rather than read back off the row: this is the moment
              it happened, and a growth animation timed off a later query would
@@ -623,7 +628,7 @@ export class Skein {
              the row (`record_spawn`), so nothing is being claimed early — this
              is the same fact, in the frame that draws it. */
           this.kin = [...this.kin, { child: id, parent: parent_id, born: Date.now() }];
-          void this.openSpawned(id, cwd, worktree, prompt, title, model, effort);
+          void this.openSpawned(id, cwd, worktree, prompt, title, model, effort, account);
         },
       ),
     );
@@ -1126,7 +1131,12 @@ export class Skein {
    *  parent knew better — which it often does, being the thing that divided the
    *  job into lanes. The pairing rules (never without a model, never on a
    *  family that has none) are settled in `asked_effort` before this is
-   *  reached, so `presetForSpawn` only has to resolve, not judge. */
+   *  reached, so `presetForSpawn` only has to resolve, not judge.
+   *
+   *  `account` is where the card starts spending, or null for the ladder.
+   *  `asked_account` has already refused a label that could never take work;
+   *  whether it has *room* is only answerable here, and `#openIn` answers it
+   *  the way every send does — see `prefer` there. */
   async openSpawned(
     id: string,
     cwd: string,
@@ -1143,6 +1153,9 @@ export class Skein {
        level nobody wrote down applied to every spawned card on the wall —
        which is the bug this argument was added to fix (sink `564bd55d`). */
     effort: string | null,
+    /* Required for the same reason: a label that quietly failed to arrive is
+       a card on an account the parent did not choose. Null is the ladder. */
+    account: string | null,
   ): Promise<void> {
     const conv = await this.#openIn(
       cwd,
@@ -1150,6 +1163,7 @@ export class Skein {
       "project",
       id,
       presetForSpawn(model, effort),
+      account,
     );
     if (!conv) return;
     if (title) {
@@ -1181,6 +1195,11 @@ export class Skein {
     given: string | null = null,
     /** What the card is set up as, where something chose. See `presets.ts`. */
     preset?: Preset,
+    /** The account to start on if it has room, where something chose — only
+     *  `spawn.rs` does. Handed to the waterfall as `stickTo`, so it is exactly
+     *  the preference every send already expresses for the account a card is
+     *  on: taken if ready, the ladder otherwise. */
+    prefer: string | null = null,
   ): Promise<Conversation | null> {
     try {
       const project = await invoke<Project>("ensure_project", { rootPath: cwd });
@@ -1225,8 +1244,11 @@ export class Skein {
          `choose` with nothing to stick to. Resolved here rather than left to
          the first send so the card spawns on the right subscription once,
          instead of spawning and immediately being moved. Null when the wall
-         manages no accounts — every card before this feature. */
-      const opening = waterfall.list.length > 0 ? waterfall.next() : null;
+         manages no accounts — every card before this feature.
+         A spawned card may carry a preferred account, and `stickTo` is how it
+         is honoured without a second policy: ready wins over the tiers, and
+         anything else falls through them as a fresh card would. */
+      const opening = waterfall.list.length > 0 ? waterfall.next({ stickTo: prefer }) : null;
       const account = opening?.kind === "use" ? opening.label : null;
       /* No `worktree` here: `spawn_conversation` reads it back off the row for
          the reason it reads `kind` and the preset off the row. It was the one
