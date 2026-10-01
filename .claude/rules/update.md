@@ -108,15 +108,20 @@ answer is worth having. Three bounds, each doing a job:
   asks nothing. This is the whole of the cost argument.
 - **A floor between asks** (`FLOOR`, five minutes), so alt-tabbing forty times costs one
   question. The pending ask is *rescheduled*, never queued.
-- **It stops for good once there is something to say.** `unanswered` in `update.ts` is that
-  rule, and it is the tightest of the three — not a saving but the observation that no
-  further ask can change the answer.
+- **It stops when the button is pressed, not when there is something to say.** `watching` in
+  `update.ts` is that rule. It was once "stop at the first offer", on the argument that no
+  further ask can change the answer — and that was wrong: a wall left up for a day offered
+  0.30.18 for ever while later releases shipped, and its button either fetched the older one
+  or failed (`fetch_update` only takes a URL off the *newest* release). So `offered` and
+  `failed` keep asking; `fetching` and `armed` are past deciding. While an offer is in hand
+  the common tick must stay free, so `worthResolving` spends the API only for a tag newer
+  than the offer, and a newer one replaces it.
 
 `BACKSTOP` (fifteen minutes) covers the window you never look away from, where focus alone
 would never fire again. It runs only while focused, so the first bound contains it rather
 than sitting beside it: four questions an hour at the very most, against sixty.
 
-`unanswered` does a second job that is easy to miss and is why it is pure and tested: a
+`watching` does a second job that is easy to miss and is why it is pure and tested: a
 reply can be **in flight when you press the button**, so it is asked again *after* the answer
 comes back. Without that, an ask that started before the press would put `offered` back over
 a download already three megabytes in.

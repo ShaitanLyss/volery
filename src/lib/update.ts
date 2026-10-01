@@ -154,25 +154,42 @@ export type Stage = "quiet" | "offered" | "fetching" | "armed" | "failed";
  *  than at the two values somebody happened to think of. */
 export const STAGES: Stage[] = ["quiet", "offered", "fetching", "armed", "failed"];
 
-/** Is the question still open?
+/** Is there any reason to keep asking GitHub?
  *
- *  One predicate doing two jobs, because they are one idea. It decides whether
- *  to ask GitHub again, and it decides whether an answer may be written onto the
- *  header — and the second is the one with teeth. A reply can be in flight when
- *  you press the button, so an answer landing a moment later must not put
- *  `offered` back over a download that has already started, or the header would
- *  offer you an update you are three megabytes into fetching.
+ *  Yes until the button has been pressed. This used to stop at the first offer,
+ *  on the argument that no further ask could change the answer — and that was
+ *  wrong: a wall that has offered 0.30.18 and is left up for a day is a wall
+ *  whose newer release never arrives, and whose button, when finally pressed,
+ *  downloads the *older* one (or fails outright, since `fetch_update` only takes
+ *  a URL off the newest release). The answer can change; it can change to a
+ *  later version.
  *
- *  Every stage but `quiet` is closed, each for its own reason: `offered` already
- *  says the thing another ask could only say again, `fetching` and `armed` are
- *  past deciding, and `failed` is a button you pressed that did not work — which
- *  asking again cannot mend, since the offer is still in hand and the version you
- *  are on is still the one you have.
+ *  `failed` keeps asking for the same reason: a download that broke may have
+ *  broken *because* the offer went stale, and a newer tag is the one thing that
+ *  mends that. `fetching` and `armed` are past deciding.
+ *
+ *  It also decides whether an answer may be written onto the header, and that is
+ *  the half with teeth. A reply can be in flight when you press the button, so an
+ *  answer landing a moment later must not put `offered` back over a download that
+ *  has already started, or the header would offer you an update you are three
+ *  megabytes into fetching.
  *
  *  Note `quiet` covers the interesting failure too: no network, GitHub down, a
  *  rate limit. Those leave the stage alone, so the question stays open and the
- *  next ask picks it up — which is the one thing asking once a launch could never
- *  do. A wall opened on a train used to be a wall that never checked again. */
-export function unanswered(stage: Stage): boolean {
-  return stage === "quiet";
+ *  next ask picks it up. A wall opened on a train used to be a wall that never
+ *  checked again. */
+export function watching(stage: Stage): boolean {
+  return stage === "quiet" || stage === "offered" || stage === "failed";
+}
+
+/** Is `peek` worth the expensive question?
+ *
+ *  Only when the tag is newer than what is running **and** newer than what is
+ *  already on offer. With nothing offered that is the old rule; with an offer in
+ *  hand, the same tag again is the common tick and must stay free — it would
+ *  otherwise spend an API request every `RESOLVE_FLOOR` for an answer already on
+ *  the button. */
+export function worthResolving(peek: Peek, offer: Offer | null): boolean {
+  if (!isNewer(peek.tag, peek.running)) return false;
+  return !offer || isNewer(peek.tag, offer.tag);
 }

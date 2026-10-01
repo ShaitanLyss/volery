@@ -31,9 +31,12 @@
  *     monitor for a week asks nothing.
  *   - **A floor between asks** (`FLOOR`), so a burst of focus events is one
  *     question. The pending ask is rescheduled, never queued.
- *   - **It stops for good once there is something to say.** `unanswered` in
- *     `update.ts` is that rule, and it is the tightest bound of the three: not a
- *     saving, but the observation that no further ask can change the answer.
+ *   - **It stops once the button is pressed, and not before.** `watching` in
+ *     `update.ts` is that rule. It used to stop at the first offer, on the
+ *     argument that no further ask could change the answer — but a wall left up
+ *     for a day then offered 0.30.18 for ever while 0.30.19 and 0.30.20 shipped.
+ *     An offer is refreshed when a *later* tag appears (`worthResolving`), and
+ *     the same tag again stays free.
  *
  * `BACKSTOP` covers the wall you never look away from, where focus alone would
  * never fire again. It runs only while focused, so it is bounded by the first
@@ -78,10 +81,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  isNewer,
   offerFrom,
   sayProgress,
-  unanswered,
+  watching,
+  worthResolving,
   type Latest,
   type Offer,
   type Peek,
@@ -117,8 +120,8 @@ const FLOOR = 20 * 1000;
  *  have seen it. Averaging seven and a half minutes late is not what "asked when
  *  you are looking at it" ought to feel like.
  *
- *  Still only while the window is in front, and still stopping for good once
- *  there is something to say. */
+ *  Still only while the window is in front, and now still running while an
+ *  update is on offer — a newer one may land before the button is pressed. */
 const BACKSTOP = 60 * 1000;
 
 /** How often the *expensive* question may be asked, when the cheap one says
@@ -167,7 +170,7 @@ export class Releases {
    *  rescheduled rather than added to. */
   watch(focused: boolean) {
     this.#stop();
-    if (!focused || !unanswered(this.stage)) return;
+    if (!focused || !watching(this.stage)) return;
     /* Whatever is left of the floor, or nothing if it has already passed. A
        first call at launch therefore asks on this tick. */
     const wait = Math.max(0, FLOOR - (Date.now() - this.#askedAt));
@@ -178,7 +181,7 @@ export class Releases {
   async #tick() {
     this.#timer = null;
     await this.check();
-    if (!unanswered(this.stage)) return;
+    if (!watching(this.stage)) return;
     this.#timer = setTimeout(() => void this.#tick(), BACKSTOP);
   }
 
@@ -193,7 +196,7 @@ export class Releases {
          rather than anything on `api.github.com` — see its comment for why that
          distinction is the whole of why this can be asked once a minute. */
       const peek = await invoke<Peek | null>("latest_tag");
-      if (!peek || !isNewer(peek.tag, peek.running)) return;
+      if (!peek || !worthResolving(peek, this.offer)) return;
 
       /* There is something newer. Only now is the API worth spending, because
          only the API knows whether there is an installer this app can drive —
@@ -207,10 +210,11 @@ export class Releases {
       /* Asked again after the reply went out, not before: this is the guard
          against a question in flight when the button is pressed. Without it an
          answer landing a moment later would put `offered` back over a download
-         already three megabytes in. See `unanswered` in `update.ts`. */
-      if (offer && unanswered(this.stage)) {
+         already three megabytes in. See `watching` in `update.ts`. */
+      if (offer && watching(this.stage)) {
         this.offer = offer;
         this.stage = "offered";
+        this.note = null;
       }
     } catch (e) {
       /* The stage is deliberately untouched, so the question stays open and the
