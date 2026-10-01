@@ -769,6 +769,27 @@ export function completionForChoice(cmd: Command, choice: Choice): string {
   return `/${cmd.name} ${choice.value}`;
 }
 
+/** The effort a `/model` switch carries with it, or null to leave it alone.
+ *
+ *  Asked of the prompt text rather than of the CLI's answer: the answer names the
+ *  model by its marketing name ("Sonnet 5.5"), the prompt names the alias, and the
+ *  alias is what the table is keyed on. Only a `/model` with exactly one argument
+ *  counts — bare `/model` opens nothing here, and anything longer is not a switch.
+ *
+ *  The pairing is Lyss's rule of thumb, not the CLI's: the cheaper the model, the
+ *  less it needs pushing. `haiku` and `opusplan` are deliberately absent — haiku has
+ *  no effort levels to speak of, and `opusplan` is two models in one name, so any
+ *  single level would be wrong half the time. Left alone is the honest answer. */
+export function effortForModel(text: string): Effort | null {
+  const m = /^\/model\s+(\S+)\s*$/i.exec(text.trim());
+  if (!m) return null;
+  const family = m[1].toLowerCase().replace(/\[.*\]$/, "");
+  if (family === "sonnet") return "medium";
+  if (family === "opus") return "high";
+  if (family === "fable") return "xhigh";
+  return null;
+}
+
 /** The level out of the CLI's own answer to `/effort`, or null.
  *
  *  Why parse a sentence rather than remember what was typed: the answer is the

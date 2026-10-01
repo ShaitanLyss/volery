@@ -54,7 +54,7 @@ import { Flights, type SentEvent } from "./relay.svelte";
 import { Board } from "./board.svelte";
 import { Sink } from "./sink.svelte";
 import { Gates } from "./gates.svelte";
-import { cliCommand, isEffort, type SlashCommand } from "./commands";
+import { cliCommand, effortForModel, isEffort, type SlashCommand } from "./commands";
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, presetForSpawn, type Preset } from "./presets";
 import { BRIEF_FETCH, briefFor, type Trail } from "./handoff";
@@ -2702,6 +2702,18 @@ export class Skein {
   async send(conv: Conversation, text: string, turn?: Turn) {
     conv.echo(text, turn && { echo: turn.echo, shots: turn.shots });
     await this.#deliver(conv, text, turn);
+    /* A model switch carries its usual effort with it — see `effortForModel`.
+       Sent as a second prompt of its own because `/effort` is the CLI's and the
+       wire has no other way to set it (`set_effort` is refused); the transcript
+       then says what happened rather than the level changing silently. Skipped
+       when the `/model` is being held for an account, since the follow-up would
+       only collide with it in the one held slot. */
+    const effort = effortForModel(text);
+    if (effort && !conv.held) {
+      const line = `/effort ${effort}`;
+      conv.echo(line);
+      await this.#deliver(conv, line);
+    }
   }
 
   async #deliver(conv: Conversation, text: string, turn?: Turn) {

@@ -5,6 +5,7 @@ import {
   cliCommand,
   completeAt,
   effortAnswer,
+  effortForModel,
   completionFor,
   completionForChoice,
   matchChoices,
@@ -392,6 +393,25 @@ describe("/resume, the command that acts on no card", () => {
     expect(resolveCommand("/resuming")).toBeNull();
     /* A stray trailing space is still the command. */
     expect(resolveCommand("/resume  ")?.cmd).toBe(resume);
+  });
+});
+
+describe("the effort a model switch carries", () => {
+  test("sonnet medium, opus high, fable xhigh — tier suffix ignored", () => {
+    expect(effortForModel("/model sonnet")).toBe("medium");
+    expect(effortForModel("/model sonnet[1m]")).toBe("medium");
+    expect(effortForModel("/model opus")).toBe("high");
+    expect(effortForModel("/model opus[1m]")).toBe("high");
+    expect(effortForModel("/model Fable")).toBe("xhigh");
+  });
+
+  test("anything that is not a plain switch leaves effort alone", () => {
+    expect(effortForModel("/model")).toBeNull();
+    expect(effortForModel("/model haiku")).toBeNull();
+    expect(effortForModel("/model opusplan")).toBeNull();
+    expect(effortForModel("/model sonnet please")).toBeNull();
+    expect(effortForModel("use /model sonnet")).toBeNull();
+    expect(effortForModel("/effort high")).toBeNull();
   });
 });
 
