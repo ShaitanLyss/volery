@@ -635,14 +635,33 @@ const WEIGHT: Record<Tier, number> = { ask: 0, fail: 1, work: 2, soft: 3, rest: 
  * Running before finished, and among the running the *longest* running first —
  * a build twenty minutes in is either nearly done or stuck, and either way it
  * is the one to look at. Among the finished, newest first, which is the
- * ordinary reading of a log. */
+ * ordinary reading of a log.
+ *
+ * **A finished run only outranks by its colour while it is news.** Past
+ * `SETTLING_MS` it is history and sorts by when, whatever it says. Weighing
+ * every failure ever fetched above every pass put last Tuesday's red ahead of
+ * this morning's green, and the widget slices to the rows it has room for — so
+ * under `all` or `mine`, on any org with a few old failures, the list was
+ * nothing *but* failures, and the reading it gave was "everything is broken"
+ * about a tree that had built cleanly since. The same window already bounds
+ * what the header counts as failed (`tallyRuns`), so the order and the number
+ * now agree about what is current. */
 export function orderRuns(runs: Run[], now: number): Run[] {
   return [...runs].sort((a, b) => {
-    const w = WEIGHT[tierOf(a)] - WEIGHT[tierOf(b)];
+    const w = WEIGHT[weighed(a, now)] - WEIGHT[weighed(b, now)];
     if (w) return w;
     if (running(a) && running(b)) return elapsed(b, now) - elapsed(a, now);
     return (b.finishedAt || b.queuedAt) - (a.finishedAt || a.queuedAt);
   });
+}
+
+/** The tier a run is *sorted* by: its own while running or settling, `rest`
+ *  once it is history. Drawing still uses `tierOf` — an old failure stays rust
+ *  on its row, it just stops jumping the queue. */
+function weighed(r: Run, now: number): Tier {
+  const t = tierOf(r);
+  if (running(r) || t === "ask") return t;
+  return now - (r.finishedAt || r.queuedAt) < SETTLING_MS ? t : "rest";
 }
 
 /** Reviews, most worth looking at first. Within a tier, *oldest* first — the

@@ -356,6 +356,29 @@ describe("ordering", () => {
     expect(orderRuns([older, newer], NOW)[0]).toBe(newer);
   });
 
+  test("a failure outranks a pass only while it is news", () => {
+    /* The bug: every failure ever fetched sorted above every pass, the widget
+       sliced to its rows, and the list read as nothing but red. */
+    const fresh = run({ id: "fresh", result: "failed", finishedAt: NOW - 2 * MIN });
+    const pass = run({ id: "pass", finishedAt: NOW - 5 * MIN });
+    const stale = run({ id: "stale", result: "failed", finishedAt: NOW - 3 * 24 * 60 * MIN });
+    expect(orderRuns([stale, pass, fresh], NOW).map((r) => r.id)).toEqual([
+      "fresh",
+      "pass",
+      "stale",
+    ]);
+  });
+
+  test("a run waiting on a person does not age out of the top", () => {
+    const parkedRun = gh({
+      id: "parked",
+      result: "action_required",
+      finishedAt: NOW - 3 * 24 * 60 * MIN,
+    });
+    const pass = run({ id: "pass" });
+    expect(orderRuns([pass, parkedRun], NOW)[0].id).toBe("parked");
+  });
+
   test("reviews go oldest first within a tier — a stale one is worse", () => {
     /* Deliberately the opposite of the runs list: a stale pull request is a
        problem, where a stale build is merely history. */

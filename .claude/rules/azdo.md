@@ -203,6 +203,12 @@ own for how it is drawn (`list`, `lanes`, `dots`).
 - **`live` is not a strict in-progress filter.** A pipeline that failed ninety seconds ago is
   the single most useful row this widget can draw, and a strict filter makes it vanish at the
   moment it matters, so finished runs stay for `SETTLING_MS`.
+- **The same window bounds the ordering, and it did not until 2026-10-01.** `orderRuns`
+  weighed every failure above every pass however old, and the widget slices to the rows it
+  has room for — so under `all` or `mine` the list was nothing but red, last week's failures
+  standing over this morning's greens. A finished run now sorts by its colour only while it
+  is inside `SETTLING_MS` (`weighed`), then by recency like any history; it is still drawn
+  rust. A run waiting on a person (`ask`) never ages out, since nothing about it is history.
 - **Colour is status here exactly as everywhere else.** Azure DevOps' own UI has a colour per
   state; this has the wall's four, and introduces no hue. Runs order by how much they want you
   and then longest-running first; reviews order the same way and then **oldest** first — the
