@@ -207,6 +207,23 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     file: "src-tauri/src/remove.rs",
     items: ["const REMOVE_TOOL", "fn remove_schema"],
   },
+  /* Registered in `roster()` in 0.31 without a line here, which left this lift
+     failing to compile — so for that stretch nothing on this machine could
+     measure the loaded tier at all. */
+  {
+    file: "src-tauri/src/timeline.rs",
+    items: [
+      "const READ_TOOL",
+      "const SET_TOOL",
+      "const MARK_TOOL",
+      "const COMPLETE_TOOL",
+      "const SUB_SCHEMA",
+      "fn read_schema",
+      "fn set_schema",
+      "fn mark_schema",
+      "fn complete_schema",
+    ],
+  },
   /* Not a tool of ours at all — `mcp_config` hands Playwright's own server to a
      card that has the shared browser, and the roster assertions reach
      `mcp_config`, so the lift needs the function even though nothing here
@@ -460,6 +477,7 @@ const MODULES = [
   "status",
   "store",
   "supervisor",
+  "timeline",
 ];
 
 const body: string[] = [
