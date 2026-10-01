@@ -28,6 +28,8 @@ import {
   healDelayMs,
   withResendMark,
   healNote,
+  carryNote,
+  isCarryOn,
   HOLD_LINE,
   NUDGE_BUDGET,
   nudgeSkipFor,
@@ -2015,11 +2017,11 @@ export class Skein {
     conv.pendingSpent = null;
     conv.pendingSpentUntil = null;
     waterfall.markSpent(label, hint);
-    /* A limit that lands mid-turn is deliberately not re-sent (`mayHeal`), so
-       the card just stops on the refusal and reads as though switching had not
-       worked — the report this was written from. Say where the *next* message
-       goes. Only when nothing is about to be re-sent: a heal says its own piece,
-       and the swap note follows it. */
+    /* A limit that lands mid-turn is not re-sent (`mayHeal`) but is carried on
+       (`CARRY_ON_TEXT`), which arms a heal and so skips this. What reaches here
+       is the card whose carry budget is spent, or one with nothing to send: it
+       stops on the refusal and reads as though switching had not worked — the
+       report this was written from — so say where the *next* message goes. */
     if (conv.pendingHeal === null) {
       const next = waterfall.next({ bypass: conv.bypassCaps, stickTo: label });
       if (next.kind === "use" && next.label !== label) {
@@ -2104,7 +2106,9 @@ export class Skein {
       heal.kind === "overloaded"
         ? "overloaded — waiting…"
         : heal.kind === "limited"
-          ? "out of allowance — moving account…"
+          ? heal.carry
+            ? "out of allowance — carrying on…"
+            : "out of allowance — moving account…"
           : "trying again…";
     /* Rolled once, here, rather than inside the delay: the note the card writes
        has to name the same wait the timer is actually set to, or a card that
@@ -2114,7 +2118,11 @@ export class Skein {
       this.#heals.delete(conv.id);
       if (this.#gone) return;
       if (conv.working) return;
-      conv.note(healNote(heal.kind, heal.attempt, wait));
+      conv.note(
+        heal.carry
+          ? carryNote(heal.attempt, wait)
+          : healNote(heal.kind, heal.attempt, wait),
+      );
       /* Look before re-sending, and only on the first attempt.
          `wasMalformedRequest` cannot tell the two causes apart — a body cut
          short in transit clears on a retry, and one the *conversation* cannot
@@ -2133,7 +2141,16 @@ export class Skein {
          here anchors on a prompt's first words, so a prefix would stop the
          resume prompt folding behind `RESUME_CAP` on precisely the retry the
          mark exists to explain. See `resendMark`. */
-      void this.send(conv, withResendMark(heal.text, heal.kind, heal.attempt));
+      /* The carry-on goes out as it is. It is not a copy of anything — the mark
+         explains a duplicate, and there is none — and a re-send of one (a card
+         whose carry-on met an overload before reaching a model) must not gain
+         "attempt 2 of 4 at this prompt" over words that were never your prompt. */
+      void this.send(
+        conv,
+        heal.carry || isCarryOn(heal.text)
+          ? heal.text
+          : withResendMark(heal.text, heal.kind, heal.attempt),
+      );
     }, wait);
     this.#heals.set(conv.id, t);
   }

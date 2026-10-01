@@ -537,9 +537,21 @@ and every new one went back to be refused again. So the memory backs off
 stands is the same news rather than a second strike, a reset the server named
 (`classify.ts::refusalResetOf`) is preferred when longer, and a turn actually
 answered on the account clears it (`Waterfall.markServed`). Expired marks are
-kept for their strike count and ignored by `next`. What a refusal that is *not*
-re-sent leaves the user with is a card that has stopped on a limit message, so
-`#spend` says where the next message will go.
+kept for their strike count and ignored by `next`. **A limit that lands mid-turn is carried on, not re-sent.** The prompt still must
+not go again (`mayHeal`: the turn already acted), but stopping there made several
+accounts pointless — the card sat on a limit message until a person typed. So
+`Conversation` arms a heal whose text is `classify.ts::CARRY_ON_TEXT`: not a
+copy of anything, but a request to look at what is done (`git status`) and
+continue, saying plainly that the allowance and not the agent ended the turn and
+giving it a way to say it had finished. It goes through the ordinary send, so
+`#settleAccount` moves it to the next account or *holds* it, and `releaseHeld`
+sends it when one frees up — hands off in both cases, with the line drawn in the
+transcript and a `carryNote` beforehand. Bounded by `CARRY_BUDGET` (6) per run of
+turns that never finish cleanly, counted apart from `healAttempts`; a limit that
+answers the same on every account stops at the ordinary `limited` budget because
+the carry-on then reaches no model. A re-send of the carry-on goes out unmarked.
+Escape cancels it like any heal. `#spend` still says where the next message goes
+for the card whose budget is spent.
 
 **An idle account can be dead and still `signedIn`.** `signed_in` is a file
 check, and a reserve nothing runs on never refreshes: on this machine `personal`'s

@@ -2718,6 +2718,53 @@ export function mayHeal(kind: HealKind, producedOutput: boolean): boolean {
   return !producedOutput;
 }
 
+/** What a card is told when an allowance ran out *under* it and Volery carries
+ *  it on from another account.
+ *
+ *  **This is the one prompt on the wall that is deliberately not a repeat.**
+ *  A limit that lands mid-turn is held rather than re-sent (`mayHeal`), because
+ *  the turn already did things and asking for it twice would do them twice.
+ *  The cost of that rule was a card that stopped, said so, and waited for a
+ *  person — the opposite of what several accounts are for. Re-sending the old
+ *  prompt is still wrong; *continuing* is a different request, and it is the
+ *  agent that is asked to work out how far it got, because only it can.
+ *
+ *  Written for that: it says the cause was the allowance and not anything the
+ *  agent did (an agent told only "continue" will go looking for its own mistake),
+ *  sends it to look before it acts (`resumePrompt`'s lesson — a guess at
+ *  half-finished work looks finished), and gives it a way out if there was
+ *  nothing left to do, so a turn that had in fact completed does not invent more.
+ *  "skein:" opens it so a reader of the transcript can tell whose words it is. */
+export const CARRY_ON_TEXT =
+  "skein: your last turn was cut off because the account's allowance ran out — nothing you did. " +
+  "The session is now on an account with room. Carry on from where you stopped: check what is " +
+  "already done (git status, the files you were editing) before repeating any step, then finish " +
+  "the task you were on. Do not start it over or ask the user anything. If it was in fact " +
+  "already finished, say so in one line.";
+
+/** How many times in a row a card is carried on without a turn finishing.
+ *
+ *  A backstop and not what bounds it. Each carry needs an account that is *not*
+ *  refusing and a turn that got output before the next limit, so a wall runs out
+ *  of room long before it runs out of budget — and when nothing has room the
+ *  carry is held, not failed. The number is for the case no swap resolves: a
+ *  limit that answers the same on every account yet lets a few tokens through.
+ *  Reset by any turn that ends without an error, so a long task that meets the
+ *  limit on Monday and again on Wednesday is two stories rather than one. */
+export const CARRY_BUDGET = 6;
+
+/** Whether this text is the carry-on, however many marks it has since gained. */
+export function isCarryOn(text: string): boolean {
+  return stripResendMark(text).trim() === CARRY_ON_TEXT;
+}
+
+/** The person's half of it, said before the prompt goes. Like `healNote` and for
+ *  its reason: Skein spawns with `--dangerously-skip-permissions`, and nothing it
+ *  does on its own initiative may be invisible afterwards. */
+export function carryNote(attempt: number, waitMs: number): string {
+  return `the allowance ran out part-way through — carrying on from another account in ${saySoon(waitMs)} (${attempt} of ${CARRY_BUDGET})`;
+}
+
 export function healHeldNote(kind: HealKind): string {
   const why =
     kind === "limited"

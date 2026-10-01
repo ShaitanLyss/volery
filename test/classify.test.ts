@@ -10,6 +10,10 @@ import {
   backgroundKind,
   jobNote,
   refusalResetOf,
+  CARRY_ON_TEXT,
+  CARRY_BUDGET,
+  isCarryOn,
+  carryNote,
   taskNoteOf,
   JOB_NOTE_CAP,
   baseModel,
@@ -2534,5 +2538,34 @@ describe("refusalResetOf", () => {
     expect(refusalResetOf({ quotaLimits: { status: "rejected" } })).toBeNull();
     expect(refusalResetOf({ quotaLimits: { resetsAt: "soon" } })).toBeNull();
     expect(refusalResetOf({ quotaLimits: { resetsAt: 0 } })).toBeNull();
+  });
+});
+
+describe("the carry-on", () => {
+  /* A limit that lands mid-turn is not re-sent, because the turn already acted.
+     What replaces the old stop is a different request: continue, and look first. */
+  test("is recognised bare and under a resend mark, and nothing else is", () => {
+    expect(isCarryOn(CARRY_ON_TEXT)).toBe(true);
+    expect(isCarryOn(withResendMark(CARRY_ON_TEXT, "overloaded", 2))).toBe(true);
+    expect(isCarryOn("carry on")).toBe(false);
+    expect(isCarryOn(`${CARRY_ON_TEXT} and also delete the build folder`)).toBe(false);
+  });
+
+  test("tells the agent whose fault it was not, to look before acting, and how to say it is done", () => {
+    expect(CARRY_ON_TEXT.startsWith("skein:")).toBe(true);
+    expect(CARRY_ON_TEXT).toContain("nothing you did");
+    expect(CARRY_ON_TEXT).toContain("git status");
+    expect(CARRY_ON_TEXT).toContain("already finished");
+  });
+
+  test("is not mistaken for a nudge or a retry nudge", () => {
+    expect(isPromptNudge(CARRY_ON_TEXT)).toBe(false);
+    expect(isRetryNudge(CARRY_ON_TEXT)).toBe(false);
+  });
+
+  test("the person's note counts it against the budget and says when", () => {
+    const note = carryNote(2, 1_000);
+    expect(note).toContain(`2 of ${CARRY_BUDGET}`);
+    expect(note).toContain("another account");
   });
 });

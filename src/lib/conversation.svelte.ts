@@ -30,6 +30,8 @@ import {
   RETRY_NOTE,
   isApiErrorMessage,
   refusalResetOf,
+  CARRY_ON_TEXT,
+  CARRY_BUDGET,
   isImageNote,
   isRetryNudge,
   isPromptNudge,
@@ -974,7 +976,19 @@ export class Conversation {
    *  come to rest holding one: the wall's tick, the ledger and the persistence
    *  all run off this same `result`, and a re-send fired from inside `ingest`
    *  would land in the middle of them. */
-  pendingHeal = $state<{ text: string; attempt: number; kind: HealKind } | null>(null);
+  pendingHeal = $state<{
+    text: string;
+    attempt: number;
+    kind: HealKind;
+    /** A carry-on rather than a re-send: the text is `CARRY_ON_TEXT`, and the
+     *  `attempt` counts `carryAttempts` rather than `healAttempts`. */
+    carry?: boolean;
+  } | null>(null);
+  /** Carry-ons since a turn last finished cleanly — see `CARRY_BUDGET`. Counted
+   *  apart from `healAttempts` because the two answer different questions: that
+   *  one is "how many times has this request failed before reaching a model",
+   *  this is "how many times has the allowance cut the same piece of work off". */
+  carryAttempts = $state(0);
 
   /* ── which subscription this card spends ────────────────────────────────
    *
@@ -2560,7 +2574,10 @@ export class Conversation {
            life, and a counter that only ever went up would leave a long-lived
            card unable to heal because of something that happened to it hours
            ago. */
-        if (ending !== "error") this.healAttempts = 0;
+        if (ending !== "error") {
+          this.healAttempts = 0;
+          this.carryAttempts = 0;
+        }
 
         /* A turn that went well is the evidence a repair was right, and it is
            counted here rather than anywhere the *repair* can see, because what
@@ -2608,10 +2625,25 @@ export class Conversation {
             this.#lastSent !== null &&
             !mayHeal(kind, this.#producedOutput)
           ) {
-            /* Never silently. This is the third way a heal can end and it was
-               the one with no line: an error above and nothing following it
-               reads as a card that gave up for no reason. */
-            this.#push("meta", healHeldNote(kind));
+            if (kind === "limited" && this.accountLabel && this.carryAttempts < CARRY_BUDGET) {
+              /* The exception to the exception. Not the prompt again — that is
+                 what `mayHeal` forbids — but a different request, asking the
+                 agent to continue from wherever the session says it got to. The
+                 account is already marked refused (`pendingSpent` above), so
+                 the send goes to the next one or is held until one frees up. */
+              this.carryAttempts += 1;
+              this.pendingHeal = {
+                text: CARRY_ON_TEXT,
+                attempt: this.carryAttempts,
+                kind,
+                carry: true,
+              };
+            } else {
+              /* Never silently. This is the third way a heal can end and it was
+                 the one with no line: an error above and nothing following it
+                 reads as a card that gave up for no reason. */
+              this.#push("meta", healHeldNote(kind));
+            }
           } else if (kind && this.#lastSent !== null && this.healAttempts < HEAL_BUDGET[kind]) {
             this.healAttempts += 1;
             this.pendingHeal = { text: this.#lastSent, attempt: this.healAttempts, kind };
@@ -3029,6 +3061,7 @@ export class Conversation {
        repeating anything. */
     this.pendingHeal = null;
     this.healAttempts = 0;
+    this.carryAttempts = 0;
     /* Same argument one job over: the notification that stalled this card
        belonged to a session it no longer has, so nudging would be Skein asking
        a fresh conversation to pick up work it has never heard of. */
