@@ -974,6 +974,34 @@ pub(crate) fn roster() -> Vec<Value> {
             "what images has this card put on the wall, what have I pinned \
              already, list my pins before pinning another",
         ),
+        /* Timelines. Deferred, and the one prompt sentence that points at them
+           names a *search* rather than a tool — `supervisor::append_prompt` —
+           so these hints are what that search lands on. They carry the words
+           of the work rather than the noun: nobody thinks "timeline" when they
+           start an epic, they think "plan", "milestones", "show progress". */
+        found_by(
+            crate::timeline::set_schema(),
+            "timeline progress bar plan roadmap milestones epic phases stages \
+             steps sub-steps show the user how far along the work is, draw my \
+             plan on the wall, long multi-step task, parallel strands background \
+             work — not for a quick fix",
+        ),
+        found_by(
+            crate::timeline::mark_schema(),
+            "update timeline progress, mark a step done, tick off a milestone, \
+             advance the progress bar, set a sub-step active, move the plan \
+             along, go back a step",
+        ),
+        found_by(
+            reads_only(crate::timeline::read_schema()),
+            "read my timeline, how far along is another card's work, check the \
+             progress of a card I spawned, see a plan's steps and their paths",
+        ),
+        found_by(
+            crate::timeline::complete_schema(),
+            "finish the timeline, the epic is done, close out the plan, all \
+             milestones reached, mark the progress bar complete",
+        ),
         found_by(
             crate::spawn::spawn_schema(),
             "open another card, start a second conversation, delegate a separate \
@@ -1973,6 +2001,9 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             .or_else(|| crate::status::handle(&tool, &args))
                             .or_else(|| crate::later::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| crate::pin::handle(&app, &conversation_id, &tool, &args))
+                            .or_else(|| {
+                                crate::timeline::handle(&app, &conversation_id, &tool, &args)
+                            })
                             .or_else(|| crate::spawn::handle(&app, &conversation_id, &tool, &args))
                             /* Last in the chain and answered on this thread
                                like the rest of it, which is the thing to check
@@ -2317,7 +2348,7 @@ mod tests {
            `sink` do sweep expired rows on the read path, and `ask_user` spends
            the user's attention; both are argued at `reads_only`, and the rule
            for the next one is stated there. */
-        const READS: [&str; 17] = [
+        const READS: [&str; 18] = [
             "ask_user",
             "board",
             "sink",
@@ -2335,6 +2366,7 @@ mod tests {
             "reviews",
             "tasks",
             "records",
+            "timeline",
         ];
 
         let mut seen: Vec<String> = vec![];

@@ -39,7 +39,8 @@ export const LAPSE_MS = 1000;
  *  the machine below still learns none of them. */
 export type Verb =
   | { kind: "find"; mode: FindMode }
-  | { kind: "toy"; toy: ToyId };
+  | { kind: "toy"; toy: ToyId }
+  | { kind: "open"; what: "timelines" };
 
 /** One sequence the leader opens onto.
  *
@@ -64,6 +65,9 @@ export const CHORDS: readonly Chord[] = [
   { keys: "ff", label: "find file", verb: { kind: "find", mode: "files" } },
   { keys: "fw", label: "grep", verb: { kind: "find", mode: "grep" } },
   { keys: "ts", label: "synth", verb: { kind: "toy", toy: "synth" } },
+  /* `a` for the archive: one letter, because it is a place you go rather than
+     a family of things, and nothing else here begins with it. */
+  { keys: "a", label: "archived timelines", verb: { kind: "open", what: "timelines" } },
 ];
 
 /** What a keypress did to the leader sequence.

@@ -1719,6 +1719,16 @@ export class Control {
 
       close: async (op) => {
         const c = this.#card(op);
+        /* A card with a timeline in flight is closed only by somebody who has
+           been asked (`App.closeConv`), and this op asks nobody — it is a
+           test's hand or a spoken sentence, and a misheard one should not end
+           a plan the user is watching. `force` is the test's way past it. */
+        const live = h.skein.timelines.liveFor(c.id);
+        if (live && op.force !== true) {
+          throw new Error(
+            `${c.title} has the timeline “${live.title}” in flight — close it by hand, where you are asked first`,
+          );
+        }
         await h.skein.close(c);
         return { closed: c.id, remaining: h.skein.convs.length };
       },

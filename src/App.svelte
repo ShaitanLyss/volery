@@ -82,6 +82,10 @@
   import Themes from "./lib/Themes.svelte";
   import Accounts from "./lib/Accounts.svelte";
   import Keyring from "./lib/Keyring.svelte";
+  import Annals from "./lib/Annals.svelte";
+  import Unfinished from "./lib/Unfinished.svelte";
+  import { isReceipt, type Timeline } from "./lib/timeline";
+  import { handleOf as cardHandle } from "./lib/relay";
   import { Creds } from "./lib/creds.svelte";
   import { Asana } from "./lib/asana.svelte";
   import RunPanel from "./lib/Run.svelte";
@@ -377,6 +381,7 @@
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.toy === "synth") synth.show();
   });
+    else if (verb.kind === "open") showAnnals = true;
 
   /* The `!` line. Given a way to find a card and a way to say something to one,
      rather than the whole of `Skein` — the same injection `devops.roots` and
@@ -914,6 +919,12 @@
   /* The run whose insides are on screen, if any. The *row* rather than its id,
      because the panel draws the run's own heading — pipeline, branch, who, how
      long — out of the row it was opened from, and re-fetching a row we were
+  /* The timeline archive, behind `<space>a` and a header button that is only
+     there once something has been archived. */
+  let showAnnals = $state(false);
+  /* A close held back because the card has a timeline in flight — see
+     `closeConv`. The card and the timeline, so the question can name both. */
+  let unfinished = $state<{ conv: Conversation; t: Timeline } | null>(null);
      handed would be asking the network for something already in hand. The
      connection holds the stages; this holds which run they are of. */
   let openRun = $state<import("./lib/azdo").Run | null>(null);
@@ -2194,6 +2205,91 @@
     focusedId = null;
     studio.clearSelection();
   }
+  /** A timeline's owner as a plate draws it, or null when it is not on the
+   *  wall — which is what decides whether a step can be found in a transcript. */
+  function timelineOwner(id: string) {
+    const c = skein.convs.find((c) => c.id === id);
+    return c ? { tier: c.tier, handle: cardHandle(c.id) } : null;
+  }
+
+  /** A timeline step was clicked: land on its card and carry the transcript to
+   *  the write that finished it, or the one that put it on the plan.
+   *
+   *  The write is found by what it *said* — every timeline tool's answer ends
+   *  with its revision (`timeline.rs::receipt`) — so this works on history read
+   *  back off disk as well as on a live column. Retried for a few seconds
+   *  because a dormant card's history is still being read when it is focused;
+   *  giving up silently is fine, since landing on the card has already
+   *  happened and is most of what was asked. */
+  async function jumpToWrite(ownerId: string, timelineId: string, rev: number) {
+    const conv = skein.convs.find((c) => c.id === ownerId);
+    if (!conv) return;
+    focusCard(conv);
+    showDetail = true;
+    const wrote = (line: import("./lib/conversation.svelte").Line) =>
+      line.kind === "tool" &&
+      !!line.call?.name.startsWith("mcp__skein__timeline") &&
+      isReceipt(line.call.result?.text ?? "", timelineId, rev);
+    for (let tries = 0; tries < 24; tries++) {
+      await tick();
+      if (focusedId !== ownerId) return;
+      if (transcript?.reveal(wrote)) return;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+
+  /** Pick an archived timeline back up.
+   *
+   *  If its card is still on the wall — it was archived by hand — the timeline
+   *  simply goes back to it. Otherwise the session that drew it is adopted as a
+   *  card again, the same as `adopt` does for any closed card, and the timeline
+   *  is handed to that card; it remembers the plan, because it is the same
+   *  conversation. */
+  /** Timelines being picked back up, so a second click while the first is
+   *  still adopting cannot adopt the same session twice. */
+  const pickingUp = new Set<string>();
+
+  async function pickBackUp(t: Timeline) {
+    if (pickingUp.has(t.id)) return;
+    pickingUp.add(t.id);
+    try {
+      await pickUp(t);
+    } finally {
+      pickingUp.delete(t.id);
+    }
+  }
+
+  async function pickUp(t: Timeline) {
+    /* By the session that drew it, not by the card id: a card cleared since is
+       on another session and no longer remembers the plan, and a session
+       already adopted back through `adopt` is a card on the wall that does. */
+    const want = t.sessionId ?? t.ownerId;
+    let owner =
+      skein.convs.find((c) => c.sessionId === want) ??
+      (t.sessionId ? null : skein.convs.find((c) => c.id === t.ownerId)) ??
+      null;
+    if (!owner) {
+      const s = (await skein.importable()).find((x) => x.id === want);
+      if (!s) {
+        skein.fault = `the conversation that drew “${t.title}” is no longer on disk, so it cannot be picked back up`;
+        return;
+      }
+      const got = await skein.importSession(s);
+      if (typeof got === "string") {
+        skein.fault = got;
+        return;
+      }
+      owner = got;
+    }
+    const failed = await skein.timelines.resume(t.id, owner.id);
+    if (failed) {
+      skein.fault = failed;
+      return;
+    }
+    showAnnals = false;
+    focusCard(owner);
+  }
+
 
   function onDraftKey(e: KeyboardEvent) {
     /* A shell line borrows the same keys the palette does, and is checked first
@@ -2636,7 +2732,17 @@
          "give the wall the key back", not "throw away what I aimed this at".
          Letting go of the card there would leave a written prompt pointed at
          nothing, so the draft survives and a second press does the deselect. */
-      if (menu || showImport || showThemes || showAccounts || showKeyring || openRun || guiding)
+      if (
+        menu ||
+        showImport ||
+        showThemes ||
+        showAccounts ||
+        showKeyring ||
+        showAnnals ||
+        unfinished ||
+        openRun ||
+        guiding
+      )
         return;
       if (isTyping(e.target)) {
         (e.target as HTMLElement).blur();
@@ -2740,7 +2846,16 @@
   const HORIZON_FULL_USD = 20;
   const burn = $derived(Math.min(1, skein.spend / HORIZON_FULL_USD));
 
-  async function closeConv(conv: Conversation) {
+  async function closeConv(conv: Conversation, sure = false) {
+    /* A card with a timeline in flight asks first: closing it ends a plan you
+       have been watching on the glass, and the user asked to decide that. The
+       timeline is archived as left unfinished by the close itself
+       (`timeline::leave_for`), so saying yes needs nothing more from here. */
+    const t = skein.timelines.liveFor(conv.id);
+    if (t && !sure) {
+      unfinished = { conv, t };
+      return;
+    }
     /* Closing is not undoable — it takes an agent down, and see the boundary at
        the head of `undo.ts` — so anything on the stack about where this card
        stood is a press that would appear to do nothing. It goes with the card. */
@@ -2890,6 +3005,7 @@
     "guide",
     "token",
     "chime",
+    "timelines",
     "layout",
   ];
 
@@ -2933,6 +3049,7 @@
     "layout",
     "token",
     "zoom",
+    "timelines",
     "live",
     "spend",
     "tag",
@@ -2961,7 +3078,13 @@
   const barPresent = $derived(
     new Set(
       FOLD_ORDER.filter((k) =>
-        k === "spend" ? skein.spend > 0 : k === "live" ? skein.live > 0 : true,
+        k === "spend"
+          ? skein.spend > 0
+          : k === "live"
+            ? skein.live > 0
+            : k === "timelines"
+              ? skein.timelines.archivedCount > 0
+              : true,
       ),
     ),
   );
@@ -3107,6 +3230,15 @@
         title: "A shell over the middle of the wall (alt+I)",
         on: shell.open,
         press: () => shell.toggle(shellCwd()),
+      /* The timeline archive. Absent until something is in it — a button that
+         opens an empty list is a button asking to be pressed for nothing. */
+      {
+        key: "timelines",
+        label: "timelines",
+        title: "Archived timelines — the plans cards finished, or left (space then a)",
+        on: showAnnals,
+        press: () => (showAnnals = !showAnnals),
+      },
       },
       {
         key: "find",
@@ -3412,6 +3544,30 @@
   {#if procsFor}
     <Processes
       {meter}
+  {#if showAnnals}
+    <Annals
+      timelines={skein.timelines.archived}
+      ownerOf={timelineOwner}
+      onjump={(owner, id, rev) => {
+        showAnnals = false;
+        void jumpToWrite(owner, id, rev);
+      }}
+      onresume={(t) => void pickBackUp(t)}
+      onclose={() => (showAnnals = false)}
+    />
+  {/if}
+  {#if unfinished}
+    {@const held = unfinished}
+    <Unfinished
+      card={held.conv.title}
+      t={held.t}
+      onkeep={() => (unfinished = null)}
+      onclose={() => {
+        unfinished = null;
+        void closeConv(held.conv, true);
+      }}
+    />
+  {/if}
       id={procsFor.id}
       title={procsFor.title || 'conversation'}
       onclose={() => (showProcs = null)}
@@ -3525,7 +3681,15 @@
         }}
         onfocus={(id) => (focusedId = id)}
         {ondeselect}
-        onclose={closeConv}
+        onclose={(c) => void closeConv(c)}
+        timelines={skein.timelines.shown}
+        ontimelinepick={(id) => {
+          const c = skein.convs.find((c) => c.id === id);
+          if (c) focusCard(c);
+        }}
+        ontimelinejump={(owner, id, rev) => void jumpToWrite(owner, id, rev)}
+        ontimelinearchive={(id) => void skein.timelines.archive(id)}
+        ontimelineplace={(id, x, y) => void skein.timelines.place(id, x, y)}
         onpin={(id) => savePlacement(id)}
         onplace={(cwd, x, y) => skein.placeProject(cwd, x, y)}
         onsize={(cwd, cols) => skein.sizeProject(cwd, cols)}

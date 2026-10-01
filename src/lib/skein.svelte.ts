@@ -54,6 +54,7 @@ import { Flights, type SentEvent } from "./relay.svelte";
 import { Board } from "./board.svelte";
 import { Sink } from "./sink.svelte";
 import { Gates } from "./gates.svelte";
+import { Timelines } from "./timelines.svelte";
 import { cliCommand, effortForModel, isEffort, type SlashCommand } from "./commands";
 import { wireOf, type Gear } from "./gears";
 import { defaultPresetFor, presetForSpawn, type Preset } from "./presets";
@@ -295,6 +296,10 @@ export class Skein {
    *  recorder behind it is not a fourth poller. Owned here for `board`'s
    *  reason: this is the only place that talks to Rust. */
   gates = new Gates();
+
+  /** The timelines cards have drawn on the glass, and the archive behind
+   *  them. Fed by `timeline:changed`; owned here for `board`'s reason. */
+  timelines = new Timelines();
 
   /** Who opened whom, for the roots the wall draws behind its cards.
    *
@@ -582,6 +587,14 @@ export class Skein {
     );
 
     keep(
+      /* A timeline was written. The row comes with the event, so this folds it
+         rather than re-reading — `timeline.rs` emits on every write. */
+      listen<{ row: unknown; id: string }>("timeline:changed", (e) => {
+        this.timelines.ingest(e.payload);
+      }),
+    );
+
+    keep(
       /* And again for the gates — but carrying *which tree* moved, because this
          is the busiest table any widget reads: a card runs gates all day, so a
          wall with four territories on it must not re-fetch three of them every
@@ -751,6 +764,9 @@ export class Skein {
        Not awaited, and outside the try: it reports its own failure by leaving
        the last figure alone, and the wall is correct without it. */
     this.dayTick(Date.now());
+    /* Not awaited, for `dayTick`'s reason: the wall is correct without it, and
+       the plates arrive a beat after the cards rather than holding them up. */
+    void this.timelines.load();
 
     try {
       const s = await invoke<{

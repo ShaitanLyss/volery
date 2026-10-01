@@ -71,7 +71,8 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # bang,
                          # browser,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
-                         # shell, finding, leader, synth, voice, steward, office, styles, zoom
+                         # shell, finding, leader, synth, voice, steward, office, styles, zoom,
+                         # timeline
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -93,7 +94,8 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # project.rs,
                               # usage.rs,
                               # tunnel.rs, applog.rs,
-                              # limits.rs
+                              # limits.rs,
+                              # timeline.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 bun tools/probe-prices.ts          # whether usage.ts's price table still agrees with the
                                    # installed CLI's own rates, which it encodes as
@@ -211,6 +213,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `relay.md` | cards that can see each other: the roster, a message into another card's hands, reading a file's history or another card's words instead of costing it a turn, a note to yourself later, the guards that stop a spiral, and the braided light one is drawn as | `relay.rs`, `later.rs`, `relay.ts`, `relay.svelte.ts`, `flow.ts`, `Flow.svelte` |
 | `board.md` | the billboard: a standing notice about work in progress, the four ways one gets cleared up, and the globs that make one come and find the agent who needed it | `board.rs`, `board.ts`, `board.svelte.ts`, `Billboard.svelte` |
 | `sink.md` | the sink: somewhere a finding outlives the card that made it, why a hold expires where a notice is only marked, merging on the title without losing the count, and the face you work the pile from | `sink.rs`, `sink.ts`, `sink.svelte.ts`, `Basin.svelte` |
+| `timeline.md` | a card's plan drawn on the glass as a frise: one live timeline per card and parallel work as strands, the two writes priced differently, colour only on the live markers, the receipt that lets a clicked step find its write in the transcript, the close that asks whoever closes, picking one back up by adopting its session, and the inert layer that owes Canvas an exception | `timeline.rs`, `timeline.ts`, `timelines.svelte.ts`, `Frise.svelte`, `Lintel.svelte`, `Annals.svelte` |
 | `chronicle.md` | the chronicle: one record read as a wisp on the wall and as a row forever, why the geometry replaces a label, the level a card may not write, why the trim deletes seen rows first, and the one byte that left `wisp` deferred | `chronicle.ts`, `chronicle.svelte.ts`, `Register.svelte`, `chronicle.rs` |
 | `gates.md` | whether the tree builds: folding the gate runs cards already make rather than running any, why `PostToolUse` cannot see a failure, what a reading may honestly claim about a tree it only half-watched, and the two faces one record wears | `gates.ts`, `gates.svelte.ts`, `Gatehouse.svelte`, `tools/probe-gates.ts` |
 | `commands.md` | slash commands over three vocabularies — Volery's own, a project's `.claude/commands/`, and a card's skills — why Skein reads only its own names, why a skill may sit anywhere in a line, clearing a card, and a side question asked beside a conversation | `commands.ts`, `Dock.svelte`, `field.svelte.ts`, `slash.rs`, `aside.rs` |
@@ -338,7 +341,8 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `update.ts`,
 `unreallog.ts`,
 `gears.ts`, `handoff.ts`,
-`repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`) are pure
+`repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
+`timeline.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

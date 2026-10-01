@@ -246,6 +246,50 @@
     });
   }
 
+  /** The block a reveal last landed on, lit for a moment so the eye finds it
+   *  in a column that has just scrolled under it. Cleared by its own timer. */
+  let sought = $state<string | null>(null);
+  let soughtTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => () => {
+    if (soughtTimer) clearTimeout(soughtTimer);
+  });
+
+  /** Carry the view to the last line `want` matches, opening the fold it is in.
+   *
+   *  The last rather than the first, because what asks is a timeline step
+   *  looking for the write that finished it, and a receipt is unique — but a
+   *  caller with a looser test wants the most recent, which is the one nearest
+   *  where the reader already is. Answers whether anything matched, so a caller
+   *  whose card is still reading its history off disk can try again.
+   *
+   *  Lets go of the tail for `carry`'s reason: this is you choosing where the
+   *  view should be, and the follow would otherwise write the tail over it. */
+  export function reveal(want: (line: Line) => boolean): boolean {
+    if (!scroller) return false;
+    const blocks = [...past, ...live];
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i];
+      const lines = b.kind === "tools" ? b.lines : [b.line];
+      if (!lines.some(want)) continue;
+      stopGlide();
+      pinned = -1;
+      following = false;
+      if (b.kind === "tools" && !open[b.key]) open[b.key] = true;
+      if (b.kind === "long" && !open[b.key]) open[b.key] = true;
+      sought = b.key;
+      if (soughtTimer) clearTimeout(soughtTimer);
+      soughtTimer = setTimeout(() => (sought = null), 1800);
+      requestAnimationFrame(() => {
+        const wrap = scroller?.querySelector<HTMLElement>(`[data-hunt="${CSS.escape(b.key)}"]`);
+        /* The child, for `carry`'s reason: `.blk` has no box of its own. */
+        const el = wrap?.firstElementChild ?? wrap;
+        el?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+      return true;
+    }
+    return false;
+  }
+
   function stepMatch(by: number) {
     if (matches === 0) return;
     mark = stepTo(matches, mark, by);
@@ -1145,6 +1189,7 @@
       data-hunt={b.key}
       class:found={lit.has(b.key)}
       class:here={here === b.key}
+      class:sought={sought === b.key}
     >
     {#if b.kind === "line"}
       {@render one(b.line, lineKey(b.line, b.key))}
@@ -1629,6 +1674,29 @@
     background: color-mix(in srgb, var(--paper) 15%, transparent);
     outline: 1px solid var(--paper-faint);
     outline-offset: 1px;
+  }
+  /* Where a timeline step carried you: the find's own mark, fading out once
+     the eye has had it. Brighter rather than coloured, as `here` is. */
+  .blk.sought > :global(*) {
+    border-radius: 2px;
+    animation: sought 1.8s ease-out both;
+  }
+  @keyframes sought {
+    0%,
+    35% {
+      background: color-mix(in srgb, var(--paper) 15%, transparent);
+      outline: 1px solid var(--paper-faint);
+      outline-offset: 1px;
+    }
+    100% {
+      background: transparent;
+      outline: 1px solid transparent;
+      outline-offset: 1px;
+    }
+  }
+  :global(html[data-motion="still"]) .blk.sought > :global(*) {
+    animation: none;
+    background: color-mix(in srgb, var(--paper) 15%, transparent);
   }
   /* Quiet, achromatic, and clear of the 9px scrollbar. Opaque because it sits
      over the last lines of the answer, and raised off the well rather than

@@ -73,6 +73,9 @@
   import Seats from "./Seats.svelte";
   import ImageNode from "./ImageNode.svelte";
   import WidgetNode from "./WidgetNode.svelte";
+  import Lintel from "./Lintel.svelte";
+  import type { Timeline } from "./timeline";
+  import { handleOf as cardHandle } from "./relay";
 
   let {
     convs,
@@ -124,6 +127,11 @@
     onbuildrun,
     editors,
     oneditoropen,
+    timelines = [],
+    ontimelinepick,
+    ontimelinejump,
+    ontimelinearchive,
+    ontimelineplace,
     onadd,
   }: {
     convs: Conversation[];
@@ -266,6 +274,17 @@
     editors?: Editor[];
     /** Open a project's editor, MCP server and all. */
     oneditoropen?: (root: string) => void;
+    /** What cards have drawn on the glass. Laid out by `Lintel` and read by
+     *  nothing else here — the canvas only knows which pane they go on and
+     *  which card each belongs to. */
+    timelines?: Timeline[];
+    /** A plate was clicked: land on the card that drew it. */
+    ontimelinepick?: (ownerId: string) => void;
+    /** A step was clicked: land on the card and find the write in its
+     *  transcript. */
+    ontimelinejump?: (ownerId: string, timelineId: string, rev: number) => void;
+    ontimelinearchive?: (id: string) => void;
+    ontimelineplace?: (id: string, x: number | null, y: number | null) => void;
     /** New conversation in an existing project. `worktree` branches it. */
     onadd?: (cwd: string, worktree?: string) => void;
   } = $props();
@@ -966,6 +985,17 @@
   $effect(() => () => unwatch?.());
 
   function groundDown(e: PointerEvent) {
+    /* A timeline plate answers its own left press — it drags, and a press
+       that does not travel lands on its card — so the wall must not also read
+       it as a press on bare glass and let go of everything on the release.
+       The two buttons that pan still reach past it, as they reach past
+       everything. */
+    if (
+      e.button === 0 &&
+      (e.target as HTMLElement | null)?.closest?.("[data-timeline]")
+    ) {
+      return;
+    }
     const aim = handleOf(e.target);
     const panning = e.button === 1 || e.button === 2;
     /* Which frame, asked of the DOM rather than passed in: the pane is a
@@ -2397,6 +2427,24 @@
       {@render cardBody(n, "wall", 1)}
     </div>
   {/each}
+  <!-- The timelines cards have drawn. Over the cards stuck here, because a plan
+       is read across the whole pane and a card stuck at the top centre should
+       not hide one; under the wisps, which are traffic and pass over
+       everything. -->
+  {#if timelines.length}
+    <Lintel
+      {timelines}
+      pane={glassBox}
+      ownerOf={(id) => {
+        const c = convs.find((c) => c.id === id);
+        return c ? { tier: c.tier, handle: cardHandle(c.id) } : null;
+      }}
+      onpick={(id) => ontimelinepick?.(id)}
+      onjump={(t, rev) => ontimelinejump?.(t.ownerId, t.id, rev)}
+      onarchive={(id) => ontimelinearchive?.(id)}
+      onplace={(id, x, y) => ontimelineplace?.(id, x, y)}
+    />
+  {/if}
   <!-- Over everything standing on the wall, and last in the DOM for exactly
        that reason. `Lineage` is under the cards because a root is structure;
        this is over them because a wisp is traffic — the same layering argument
@@ -2534,6 +2582,13 @@
    * cause is this rule reaching across a component boundary and the exception
    * belongs beside it. `test/styles.test.ts` holds the pair together. */
   .glass > :global(.wisps) {
+    pointer-events: none;
+  }
+  /* And the timelines' layer, for exactly the same reason one component over:
+     `Lintel.svelte` is inert across the whole pane and only its plates take
+     events back, so the rule above claiming the layer would lay a transparent
+     sheet over the wall that ate every press — the 0.29.0 bug again. */
+  .glass > :global(.timelines) {
     pointer-events: none;
   }
   /* Except a territory's own boundary, which is mostly empty space. On the wall

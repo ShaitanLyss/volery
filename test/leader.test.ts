@@ -132,6 +132,7 @@ describe("the space leader", () => {
 describe("the which-key hint", () => {
   test("the leader alone offers every chord, by its whole letters", () => {
     expect(offers("")).toEqual([
+      { keys: "a", label: "archived timelines" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
       { keys: "ts", label: "synth" },

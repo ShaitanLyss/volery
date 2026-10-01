@@ -1006,6 +1006,29 @@ fn close_question(target: &str, handle: &str, by: &str, why: Option<&str>) -> Va
     })
 }
 
+/// Say in the question that the card has a timeline in flight, and what closing
+/// does to it.
+///
+/// Rewrites the question built by `close_question` rather than growing that
+/// function a seventh argument, because a timeline is the one thing that can
+/// make a card's *own* child need asking about — and that case has to open
+/// differently: the child is the caller's to close, so the sentence saying it is
+/// "not a card it opened" would be false.
+fn with_timeline(question: &mut Value, timeline: &str, opened_by_caller: bool) {
+    let Some(q) = question["questions"][0]["question"].as_str() else {
+        return;
+    };
+    let mut text = q.to_string();
+    if opened_by_caller {
+        text = text.replacen(", which is not a card it opened.", ", a card it opened.", 1);
+    }
+    text.push_str(&format!(
+        "\n\nIt has a timeline still in flight on the glass: {timeline}. Closing the card \
+         moves it to the archive as left unfinished, where it can be picked back up."
+    ));
+    question["questions"][0]["question"] = Value::String(text);
+}
+
 /// What the caller is told when the user says no, or says something else.
 ///
 /// The old refusal — "it is not yours to close, so say so and let the user do
@@ -1054,6 +1077,10 @@ struct Facts {
     /// How many cards the caller has opened that are still on the wall, this one
     /// included.
     children: i64,
+    /// Its timeline, if one is still in flight — `"store rollout", at step 3 of
+    /// 5 (52%)`. Closing it archives that as left unfinished, which the user
+    /// asked to be asked about whoever does the closing (`timeline.rs`).
+    timeline: Option<String>,
 }
 
 /// What the wall says about a card *right now*, addressed however the caller
@@ -1096,6 +1123,7 @@ fn facts(app: &AppHandle, caller: &str, want: &str) -> Result<Facts, String> {
         aside: crate::store::is_aside(&conn, &id),
         mid_turn,
         children: crate::store::live_children_of(&conn, caller),
+        timeline: crate::timeline::live_summary(&conn, &id),
         id,
         title,
     })
@@ -1128,9 +1156,14 @@ fn take_off(app: &AppHandle, caller: &str, f: &Facts, asked: bool) -> String {
            answers a question nobody asked. What is worth saying instead is whose
            decision it was, since the agent now owes the user a reply and has to
            attribute it correctly. */
+        let whose = if f.spawner.as_deref() == Some(caller) {
+            "one of your own, asked about because its timeline was still in flight"
+        } else {
+            "a card you did not open"
+        };
         return format!(
-            "the user approved it — closing {title:?} ({handle}), a card you did not open. \
-             {kept} Say in your reply that you asked and they agreed."
+            "the user approved it — closing {title:?} ({handle}), {whose}. {kept} Say in \
+             your reply that you asked and they agreed."
         );
     }
     let mine = f.children - 1;
@@ -1171,12 +1204,16 @@ pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
 
     match may_close(&f.id, f.spawner.as_deref(), caller, f.aside, f.mid_turn) {
         Reach::No(no) => Closing::Now(no.say(&f.title)),
-        Reach::Mine => Closing::Now(take_off(app, caller, &f, false)),
-        /* Both go to the user, and by the same path deliberately: the only
+        /* Your own child closes without asking — unless it has a timeline still
+           in flight. That one goes to the user like any other card's: closing
+           it ends a plan they have been watching on the glass, and the user
+           asked to be the one who decides that, whoever's hand is on the close. */
+        Reach::Mine if f.timeline.is_none() => Closing::Now(take_off(app, caller, &f, false)),
+        /* All three go to the user, and by the same path deliberately: the only
            difference between offering yourself and offering somebody else's card
            is how the sentence reads, which `close_question` decides from the two
            titles rather than from a second branch here. */
-        Reach::Theirs | Reach::Itself => {
+        Reach::Mine | Reach::Theirs | Reach::Itself => {
             let why = args
                 .get("why")
                 .and_then(Value::as_str)
@@ -1190,12 +1227,15 @@ pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
             let by = facts(app, caller, caller)
                 .map(|me| me.title)
                 .unwrap_or_else(|_| format!("card {}", crate::relay::handle_of(caller)));
-            let question = close_question(
+            let mut question = close_question(
                 &f.title,
                 &crate::relay::handle_of(&f.id),
                 &by,
                 why.as_deref(),
             );
+            if let Some(tl) = &f.timeline {
+                with_timeline(&mut question, tl, f.spawner.as_deref() == Some(caller));
+            }
 
             let caller = caller.to_string();
             let id = f.id.clone();
@@ -3021,5 +3061,22 @@ mod tests {
         assert!(d.contains("`close`"), "{d}");
         /* The bound that is still real must not be softened in the same breath. */
         assert!(d.contains("cannot point it at an arbitrary path"), "{d}");
+    }
+
+    #[test]
+    fn a_timeline_in_flight_is_named_and_a_child_is_not_called_somebody_elses() {
+        let mut q = close_question("release notes", "ab12cd34", "the orchestrator", None);
+        with_timeline(&mut q, "\"rollout\", at step 3 of 5 (52%)", true);
+        let text = q["questions"][0]["question"].as_str().unwrap();
+        assert!(text.contains("a card it opened."));
+        assert!(!text.contains("not a card it opened"));
+        assert!(text.contains("at step 3 of 5"));
+        assert!(text.contains("left unfinished"));
+
+        let mut q = close_question("release notes", "ab12cd34", "somebody", None);
+        with_timeline(&mut q, "\"rollout\", at step 1 of 2 (0%)", false);
+        let text = q["questions"][0]["question"].as_str().unwrap();
+        assert!(text.contains("not a card it opened"));
+        assert!(text.contains("archive"));
     }
 }

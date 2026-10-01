@@ -500,6 +500,32 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
              hold on a push is not yours to keep — do not promise the user one; \
              post it to the billboard, or work in a worktree.",
         );
+        /* Timelines, and the one sentence here that points at a **deferred**
+           tool — which `the_prompt_names_only_tools_whose_schemas_are_loaded`
+           exists to forbid, and this does not break. That rule's reason is that
+           a prompt naming an identifier whose schema was withheld sends an agent
+           to call something it has no description of. This names a *search*:
+           the agent is told what to look for, and `ask::roster`'s hints on the
+           four timeline tools are what the search lands on, with their full
+           descriptions loaded at that moment. So the referent is ToolSearch,
+           which is always loaded.
+
+           Here at all because the user chose it, as the one way a card reaches
+           for a timeline without being told to: a deferred tool's description
+           is read only by an agent that went looking, and nobody starting an
+           epic thinks "is there a progress-bar tool". The cost is this sentence
+           on every turn of every project card, accepted for that.
+
+           The "not for" half is the user's own limit, said here as well as in
+           `timeline_set`'s description because this is the copy every agent
+           reads before deciding to look. */
+        prompt.push_str(
+            "\n\nFor planned work with several distinct stages — an epic, a \
+             multi-stage refactor, a migration — draw the plan on the wall as a \
+             timeline and mark it as the work moves; search your tools for \
+             'timeline' to find them. Not for a small task or open-ended \
+             experimenting with no clear plan.",
+        );
         /* **There is no `drop` sentence here either, and the argument that put
            it here failed for its own case.** It read: "a description is only
            read by an agent that has thought to look for a tool, and the reflex

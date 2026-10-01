@@ -129,6 +129,10 @@ export const SKEIN_TOUCHED_TOOL = "mcp__skein__touched";
 export const SKEIN_PIN_TOOL = "mcp__skein__pin";
 export const SKEIN_PINNED_TOOL = "mcp__skein__pinned";
 export const SKEIN_REPIN_TOOL = "mcp__skein__repin";
+export const SKEIN_TIMELINE_TOOL = "mcp__skein__timeline";
+export const SKEIN_TIMELINE_SET_TOOL = "mcp__skein__timeline_set";
+export const SKEIN_TIMELINE_MARK_TOOL = "mcp__skein__timeline_mark";
+export const SKEIN_TIMELINE_COMPLETE_TOOL = "mcp__skein__timeline_complete";
 export const SKEIN_WISP_TOOL = "mcp__skein__wisp";
 export const SKEIN_CHRONICLE_TOOL = "mcp__skein__chronicle";
 export const SKEIN_DROP_TOOL = "mcp__skein__drop";
@@ -535,6 +539,24 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_PINNED_TOOL:
       return "checked what it has pinned";
+    case SKEIN_TIMELINE_TOOL:
+      return arg(input?.card) ? `read ${clip(arg(input?.card)!, 24)}'s timeline` : "read its timeline";
+    case SKEIN_TIMELINE_SET_TOOL: {
+      const title = arg(input?.title);
+      return title ? `drew the timeline ${clip(title, 32)}` : "redrew its timeline";
+    }
+    /* What moved, by the word that matters most: a finish is the news, so a
+       mark carrying any `done` is told as one even if it also started the
+       next thing. */
+    case SKEIN_TIMELINE_MARK_TOOL: {
+      const n = (k: string) => (Array.isArray(input?.[k]) ? (input[k] as unknown[]).length : 0);
+      if (n("done")) return n("done") === 1 ? "marked a step done" : `marked ${n("done")} steps done`;
+      if (n("active")) return "moved its timeline along";
+      if (n("todo")) return "took a step back on its timeline";
+      return "marked its timeline";
+    }
+    case SKEIN_TIMELINE_COMPLETE_TOOL:
+      return "completed its timeline";
     /* Named as specifically as `spawn` is, and for a sharper reason: a delete
        is the one thing on this card you would want an account of *without*
        opening the call, because by the time you have opened it the question

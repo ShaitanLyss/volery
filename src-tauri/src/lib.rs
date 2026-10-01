@@ -77,6 +77,7 @@ mod status;
 mod steward;
 mod store;
 mod supervisor;
+mod timeline;
 /* The IPv4-first loopback CONNECT tunnel librespot dials through. Beside
    `spotify` rather than inside it because it is a listener with a lifetime of
    its own; see its own header for the measurement that made it necessary. */
@@ -483,6 +484,11 @@ pub fn run() {
             board::relay_board,
             board::relay_post,
             board::relay_unpost,
+            timeline::read_timelines,
+            timeline::archived_timelines,
+            timeline::archive_timeline,
+            timeline::place_timeline,
+            timeline::resume_timeline,
             chronicle::read_chronicle,
             chronicle::chronicle_note,
             chronicle::chronicle_waiting,

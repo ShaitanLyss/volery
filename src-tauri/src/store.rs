@@ -300,7 +300,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 36;
+const SCHEMA_VERSION: i64 = 37;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -342,6 +342,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (34, migrate_v34),
     (35, migrate_v35),
     (36, migrate_v36),
+    (37, migrate_v37),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1794,6 +1795,58 @@ fn migrate_v36(conn: &Connection) -> Result<(), String> {
     add_column(conn, "server_group", "was_running", "INTEGER NOT NULL DEFAULT 1")
 }
 
+/// Timelines: a card's plan for a long piece of work, drawn on the glass.
+///
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: a new table
+/// with nothing to backfill. `timeline.rs` has what the states mean.
+///
+/// **No foreign key on `owner_id`**, for the chronicle's reason: a timeline
+/// outlives its card on purpose — that is what the archive is — and the card is
+/// soft-closed anyway, so a cascade would never fire. `owner_id` moves when a
+/// left timeline is picked back up by a card adopting the session that made it,
+/// which is why `session_id` is kept beside it rather than joined: by then the
+/// owner may have been cleared onto a different session.
+///
+/// `project` and `source` are resolved at write time and stored, the
+/// chronicle's argument again — the eyebrow of an archived timeline must go on
+/// naming where it came from after the card and even the territory are gone.
+///
+/// `plan_json` is **owned by Rust**, unlike the opaque JSON columns: `mark`
+/// has to read and rewrite it by path, so it is a typed document
+/// (`timeline::Plan`) serialised for storage rather than somebody else's text.
+/// `glass_x`/`glass_y` are null for a timeline that sits in the stack at the top
+/// of the glass, and set once the user has dragged it somewhere of their own.
+fn migrate_v37(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS timeline (
+            id          TEXT PRIMARY KEY,
+            owner_id    TEXT NOT NULL,
+            session_id  TEXT,
+            cwd         TEXT NOT NULL DEFAULT '',
+            project     TEXT NOT NULL DEFAULT '',
+            source      TEXT NOT NULL DEFAULT '',
+            title       TEXT NOT NULL,
+            plan_json   TEXT NOT NULL,
+            state       TEXT NOT NULL DEFAULT 'live',
+            archived_at INTEGER,
+            glass_x     REAL,
+            glass_y     REAL,
+            born_at     INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            ended_at    INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS timeline_owner ON timeline(owner_id);
+        CREATE INDEX IF NOT EXISTS timeline_archived ON timeline(archived_at);
+        -- One live timeline per card, held by the schema as well as by every
+        -- writer taking the store lock across its check and its write.
+        CREATE UNIQUE INDEX IF NOT EXISTS timeline_one_live
+            ON timeline(owner_id) WHERE state = 'live' AND archived_at IS NULL;
+        "#,
+    )
+    .map_err(|e| format!("migrate v37: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -2819,6 +2872,8 @@ pub fn clear_conversation(
        `migrate_v18`. */
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
+    /* And a timeline in flight is left: the agent that drew it is gone. */
+    crate::timeline::leave_for(&app, &id);
     Ok(())
 }
 
@@ -3525,6 +3580,9 @@ pub fn close_conversation_record(
     crate::board::clear_for(&app, &id);
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
+    /* And a timeline still in flight goes to the archive, left where it
+       stopped — the archive is where it is picked back up. */
+    crate::timeline::leave_for(&app, &id);
     Ok(())
 }
 
