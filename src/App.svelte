@@ -379,9 +379,9 @@
      without either of them knowing the other exists. */
   const leader = new Leader((verb) => {
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
+    else if (verb.kind === "open") showAnnals = true;
     else if (verb.toy === "synth") synth.show();
   });
-    else if (verb.kind === "open") showAnnals = true;
 
   /* The `!` line. Given a way to find a card and a way to say something to one,
      rather than the whole of `Skein` — the same injection `devops.roots` and
@@ -916,15 +916,15 @@
      `token` stays the key, because it is what `BAR_ORDER`, `FOLD_ORDER` and
      `chrome.test.ts` call it and renaming it buys nothing. */
   let showKeyring = $state(false);
-  /* The run whose insides are on screen, if any. The *row* rather than its id,
-     because the panel draws the run's own heading — pipeline, branch, who, how
-     long — out of the row it was opened from, and re-fetching a row we were
   /* The timeline archive, behind `<space>a` and a header button that is only
      there once something has been archived. */
   let showAnnals = $state(false);
   /* A close held back because the card has a timeline in flight — see
      `closeConv`. The card and the timeline, so the question can name both. */
   let unfinished = $state<{ conv: Conversation; t: Timeline } | null>(null);
+  /* The run whose insides are on screen, if any. The *row* rather than its id,
+     because the panel draws the run's own heading — pipeline, branch, who, how
+     long — out of the row it was opened from, and re-fetching a row we were
      handed would be asking the network for something already in hand. The
      connection holds the stages; this holds which run they are of. */
   let openRun = $state<import("./lib/azdo").Run | null>(null);
@@ -3230,6 +3230,7 @@
         title: "A shell over the middle of the wall (alt+I)",
         on: shell.open,
         press: () => shell.toggle(shellCwd()),
+      },
       /* The timeline archive. Absent until something is in it — a button that
          opens an empty list is a button asking to be pressed for nothing. */
       {
@@ -3238,7 +3239,6 @@
         title: "Archived timelines — the plans cards finished, or left (space then a)",
         on: showAnnals,
         press: () => (showAnnals = !showAnnals),
-      },
       },
       {
         key: "find",
@@ -3544,6 +3544,11 @@
   {#if procsFor}
     <Processes
       {meter}
+      id={procsFor.id}
+      title={procsFor.title || 'conversation'}
+      onclose={() => (showProcs = null)}
+    />
+  {/if}
   {#if showAnnals}
     <Annals
       timelines={skein.timelines.archived}
@@ -3566,11 +3571,6 @@
         unfinished = null;
         void closeConv(held.conv, true);
       }}
-    />
-  {/if}
-      id={procsFor.id}
-      title={procsFor.title || 'conversation'}
-      onclose={() => (showProcs = null)}
     />
   {/if}
 
