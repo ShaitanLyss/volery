@@ -341,15 +341,25 @@
    *  the fault bar all take a share of, and none of them by a number this file
    *  could know. Deliberately *not* narrowed by the transcript panel: covering
    *  that is the one thing the pane is allowed to do. */
-  let glassBox = $state({ w: 0, h: 0 });
+  let glassBox = $state<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: 0, h: 0 });
   $effect(() => {
     const el = glassEl;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
-      glassBox = { w: el.clientWidth, h: el.clientHeight };
-    });
+    /* The pane is `main.wall`'s box, read relative to the glass element. They
+       are the same box — offset zero — except while the studio is spread over
+       every screen, when the glass is re-fixed to the whole window so it keeps
+       sharing the surface's origin, and the wall's box is the home screen's
+       share of it. What is stuck to the glass stays on the home screen. */
+    const wall = el.parentElement ?? el;
+    const read = () => {
+      const g = el.getBoundingClientRect();
+      const w = wall.getBoundingClientRect();
+      glassBox = { x: w.left - g.left, y: w.top - g.top, w: wall.clientWidth, h: wall.clientHeight };
+    };
+    const ro = new ResizeObserver(read);
     ro.observe(el);
-    glassBox = { w: el.clientWidth, h: el.clientHeight };
+    ro.observe(wall);
+    read();
     return () => ro.disconnect();
   });
 
@@ -655,7 +665,7 @@
          and the menu does not offer this for one (see `held` in App). */
       const at = spotOf(studio.placements[id])
         ? null
-        : stickTo({ x: n.x, y: n.y, ...CARD_BOX[studio.lod] }, view, CARD_BOX.wall);
+        : stickTo({ x: n.x, y: n.y, ...CARD_BOX[studio.lod] }, view, CARD_BOX.wall, glassBox);
       const was = placementOf(id);
       studio.stick(id, at);
       onstick?.(id, at);
@@ -666,7 +676,7 @@
     } else if (kind === "region") {
       const r = model.regions.find((r) => r.cwd === id);
       if (!r) return;
-      const to = r.glass ? null : stickTo(r, view, { w: r.w, h: r.h });
+      const to = r.glass ? null : stickTo(r, view, { w: r.w, h: r.h }, glassBox);
       const was = standOf(id);
       onstickproject?.(id, to);
       /* The `now` is computed rather than read back: the project row is written
@@ -692,12 +702,12 @@
     } else if (kind === "image") {
       const i = board.images.find((i) => i.id === id);
       if (!i) return;
-      const at = spotOf(i) ? null : stickTo(i, view, { w: i.w, h: i.h });
+      const at = spotOf(i) ? null : stickTo(i, view, { w: i.w, h: i.h }, glassBox);
       board.update(id, { glassX: at?.x ?? null, glassY: at?.y ?? null });
     } else {
       const w = widgets.items.find((w) => w.id === id);
       if (!w) return;
-      const at = spotOf(w) ? null : stickTo(w, view, { w: w.w, h: w.h });
+      const at = spotOf(w) ? null : stickTo(w, view, { w: w.w, h: w.h }, glassBox);
       widgets.update(id, { glassX: at?.x ?? null, glassY: at?.y ?? null });
     }
   }
@@ -1305,21 +1315,25 @@
    *  the drawn spot is the honest origin. */
   function worldNow(glass: boolean): World {
     if (glass) {
+      /* Drawn positions carry the pane's offset (`glassAt`); what a drag writes
+         back is a stored spot, which does not. Zero unless spread. */
+      const ox = glassBox.x;
+      const oy = glassBox.y;
       return {
         cards: glassCards.map((n) => ({
           id: n.conv.id,
           cwd: n.conv.cwd,
-          x: n.x,
-          y: n.y,
+          x: n.x - ox,
+          y: n.y - oy,
           /* Nothing is carried by hand on the pane: a territory's members are
              laid at an offset from its glass origin (`drawnAt` in `layout`), so
              moving the origin moves all of them, pinned or flowing. That is the
              same branch `terrDown` had, arriving through the data instead. */
           pinned: false,
         })),
-        images: glassImages.map((i) => ({ id: i.id, x: i.x, y: i.y })),
-        widgets: glassWidgets.map((w) => ({ id: w.id, x: w.x, y: w.y })),
-        regions: glassRegions.map((r) => ({ id: r.cwd, x: r.x, y: r.y })),
+        images: glassImages.map((i) => ({ id: i.id, x: i.x - ox, y: i.y - oy })),
+        widgets: glassWidgets.map((w) => ({ id: w.id, x: w.x - ox, y: w.y - oy })),
+        regions: glassRegions.map((r) => ({ id: r.cwd, x: r.x - ox, y: r.y - oy })),
       };
     }
     return {

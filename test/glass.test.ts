@@ -90,6 +90,32 @@ describe("glassAt", () => {
   });
 });
 
+describe("a pane offset inside the glass (spread over every screen)", () => {
+  /* The glass covers every screen; the home screen's wall area starts 1200px
+     in and 56px down. A spot stored before the spread must draw at the same
+     place on the home screen after it. */
+  const pane = { x: 1200, y: 56, w: 1920, h: 1100 };
+
+  test("a stored spot is drawn at the pane's offset", () => {
+    expect(glassAt({ x: 40, y: 30 }, { w: 100, h: 100 }, pane)).toEqual({ x: 1240, y: 86 });
+  });
+
+  test("and clamped inside the pane, not inside the whole glass", () => {
+    expect(glassAt({ x: -500, y: 5000 }, { w: 100, h: 100 }, pane)).toEqual({ x: 1200, y: 56 + 1000 });
+  });
+
+  test("an unmeasured pane still offsets", () => {
+    expect(glassAt({ x: 1, y: 2 }, { w: 9, h: 9 }, { x: 10, y: 20, w: 0, h: 0 })).toEqual({ x: 11, y: 22 });
+  });
+
+  test("sticking stores the spot relative to the pane, so it round-trips", () => {
+    const view = { x: 0, y: 0, scale: 1 };
+    const at = stickTo({ x: 1300, y: 100, w: 200, h: 100 }, view, { w: 200, h: 100 }, pane);
+    expect(at).toEqual({ x: 100, y: 44 });
+    expect(glassAt(at, { w: 200, h: 100 }, pane)).toEqual({ x: 1300, y: 100 });
+  });
+});
+
 describe("spotOf", () => {
   test("needs both halves", () => {
     expect(spotOf({ glassX: 10, glassY: 20 })).toEqual({ x: 10, y: 20 });

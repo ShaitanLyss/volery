@@ -992,11 +992,10 @@
      opens. The width is decided by `panelWidth` (pure, tested) and lives with
      the viewport, which is the other half of how this window is divided. */
   let winW = $state(window.innerWidth);
-  let winH = $state(window.innerHeight);
   let dpr = $state(window.devicePixelRatio || 1);
   /** Where the home screen sits inside a window spread over every screen, or
    *  `null` when it is not. See `span.ts`. */
-  const spread = $derived(span.view ? homeInsets(span.view, dpr, { w: winW, h: winH }) : null);
+  const spread = $derived(span.view ? homeInsets(span.view, dpr) : null);
   /** The width the chrome actually has: the whole window, or the home screen's
    *  share of it while spread — a panel sized against three screens would be as
    *  wide as one of them. */
@@ -3359,7 +3358,6 @@
   onpaste={onPaste}
   onpointermove={trackPointer}
   bind:innerWidth={winW}
-  bind:innerHeight={winH}
   bind:devicePixelRatio={dpr}
 />
 

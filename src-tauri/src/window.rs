@@ -309,6 +309,8 @@ struct Spread {
     /// "current monitor" worth the name, and on a desk of three equal screens
     /// `MonitorFromRect` is a three-way tie.
     home: Area,
+    /// The home screen's scale factor — what the page is zoomed to render at.
+    home_scale: f64,
     /// Whether the window could be resized before, to give it back.
     resizable: bool,
     /// Puts-back in the current burst, and when the last one was. A budget per
@@ -329,12 +331,43 @@ const BURST: std::time::Duration = std::time::Duration::from_secs(1);
 pub struct SpanView {
     pub home: Area,
     pub screens: Vec<Area>,
+    /// The client area's size, so the home screen's far insets can be worked
+    /// out exactly rather than off `innerWidth`, which the page rounds.
+    pub client: (u32, u32),
     /// How far the client origin moved to spread, old minus new, so the wall
     /// can be panned to stay where it was on the glass rather than jumping a
     /// screen's width.
     pub shift: (i32, i32),
-    /// The window's scale factor once spread, which is what `shift` is drawn at.
+    /// The page's device pixel ratio once spread — the home screen's scale when
+    /// the counter-zoom took, the window's own otherwise. What every physical
+    /// figure above divides by.
     pub scale: f64,
+}
+
+/// Zoom the page so it renders at the home screen's scale whatever DPI Windows
+/// gave the window — returns the device pixel ratio the page now has.
+///
+/// A window has one DPI, and Windows gives a spread window the DPI of whichever
+/// monitor holds the most of it. On a desk of three equal screens that is a
+/// tie, and when the 150% laptop won it every 100% screen was drawn half again
+/// as large — spreading changed the size of everything, which it must not.
+/// The webview's zoom multiplies the rasterisation scale, so `home / window`
+/// puts `devicePixelRatio` back at the home screen's own and everything on it
+/// exactly where and as big as it was. Unused otherwise: Tauri leaves the zoom
+/// hotkeys off, and ctrl+0 is the transcript's (`App.svelte`).
+fn rezoom<R: Runtime>(window: &Window<R>, home_scale: f64) -> f64 {
+    let own = window.scale_factor().unwrap_or(1.0);
+    let Some(view) = window.app_handle().get_webview_window(window.label()) else { return own };
+    match view.set_zoom(home_scale / own) {
+        Ok(()) => home_scale,
+        Err(_) => own,
+    }
+}
+
+fn unzoom<R: Runtime>(window: &Window<R>) {
+    if let Some(view) = window.app_handle().get_webview_window(window.label()) {
+        let _ = view.set_zoom(1.0);
+    }
 }
 
 /// The smallest rectangle holding every area. `None` for none.
@@ -404,12 +437,9 @@ pub fn span_screens(
             /* Home is where the window is now, read before it moves — that is
                the screen you pressed the button on, so it is where the chrome
                is expected to stay. */
-            let home = window
-                .current_monitor()
-                .ok()
-                .flatten()
-                .map(|m| glass(&m))
-                .unwrap_or(screens[0]);
+            let here = window.current_monitor().ok().flatten();
+            let home = here.as_ref().map(glass).unwrap_or(screens[0]);
+            let home_scale = here.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
             let maximized = window.is_maximized().unwrap_or(false);
             if maximized {
                 /* So `frame_of` reads the size an un-maximise returns to, not
@@ -422,6 +452,7 @@ pub fn span_screens(
                 was: Frame { maximized, ..normal },
                 union: all,
                 home,
+                home_scale,
                 resizable: window.is_resizable().unwrap_or(true),
                 holds: 0,
                 last_hold: None,
@@ -443,16 +474,19 @@ pub fn span_screens(
 
     cover(&window, all);
     mark_fullscreen(&window, true);
+    let scale = rezoom(&window, spread.home_scale);
 
     /* Measured from where the client actually is rather than from `all`, so a
        window that came out a few pixels off its box is still described
        truthfully — the front end lays out against CSS 0, which is this. */
     let origin = window.inner_position().map_err(|e| e.to_string())?;
+    let client = window.inner_size().map_err(|e| e.to_string())?;
     Ok(Some(SpanView {
         home: within(spread.home, origin.x, origin.y),
         screens: screens.into_iter().map(|s| within(s, origin.x, origin.y)).collect(),
+        client: (client.width, client.height),
         shift: (before.x - origin.x, before.y - origin.y),
-        scale: window.scale_factor().unwrap_or(1.0),
+        scale,
     }))
 }
 
@@ -464,6 +498,7 @@ pub fn span_screens(
 /// unplugged — which is one of the two ways a spread ends without being asked.
 fn unspread<R: Runtime>(window: &Window<R>, s: Spread) {
     mark_fullscreen(window, false);
+    unzoom(window);
     let _ = window.set_shadow(true);
     let _ = window.set_resizable(s.resizable);
     let centre = (s.was.x as f64 + s.was.w as f64 / 2.0, s.was.y as f64 + s.was.h as f64 / 2.0);
@@ -561,8 +596,20 @@ fn reassert<R: Runtime>(w: &Window<R>) {
         }
     };
     match then {
-        Then::Nothing => {}
-        Then::Cover(a) => cover(w, a),
+        /* The zoom is put right on every pass, the quiet ones included: a DPI
+           change that leaves the window exactly over its box is still a page
+           now drawn at the wrong scale. */
+        Then::Nothing => {
+            if let Some(s) = span.0.lock().ok().and_then(|g| *g) {
+                rezoom(w, s.home_scale);
+            }
+        }
+        Then::Cover(a) => {
+            cover(w, a);
+            if let Some(s) = span.0.lock().ok().and_then(|g| *g) {
+                rezoom(w, s.home_scale);
+            }
+        }
         Then::Lose(s) => {
             unspread(w, s);
             let _ = w.emit("window:spread", Option::<SpanView>::None);

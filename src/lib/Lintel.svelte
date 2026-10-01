@@ -33,7 +33,10 @@
     onplace,
   }: {
     timelines: Timeline[];
-    pane: { w: number; h: number };
+    /** The part of the glass plates live in. `x`/`y` are its offset inside the
+     *  glass, non-zero only while the studio is spread over every screen —
+     *  the layer is placed over it, so everything below stays relative. */
+    pane: { x?: number; y?: number; w: number; h: number };
     /** The owning card's reading, or null when it is not on the wall. */
     ownerOf: (id: string) => { tier: Tier; handle: string } | null;
     onpick: (ownerId: string) => void;
@@ -178,7 +181,14 @@
   />
 {/snippet}
 
-<div class="timelines" bind:this={layer}>
+<div
+  class="timelines"
+  bind:this={layer}
+  style:left={pane.x ? `${pane.x}px` : undefined}
+  style:top={pane.y ? `${pane.y}px` : undefined}
+  style:width={pane.x || pane.y ? `${pane.w}px` : undefined}
+  style:height={pane.x || pane.y ? `${pane.h}px` : undefined}
+>
   <div class="stack">
     {#each stacked as t (t.id)}
       {#if drag?.id !== t.id}

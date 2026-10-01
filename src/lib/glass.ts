@@ -40,6 +40,16 @@ export type Size = { w: number; h: number };
 /** Where the wall is being looked at from: `Studio`'s viewport, structurally. */
 export type View = { x: number; y: number; scale: number };
 
+/** The part of the glass a stored spot is measured from, in glass pixels.
+ *
+ *  The whole pane, at its own origin, except while the studio is spread over
+ *  every screen (`span.ts`): the glass then covers every screen, so that it
+ *  keeps sharing an origin with the wall — but what was stuck to the glass
+ *  belongs to the home screen, and stays there. So spots are stored relative to
+ *  the pane, drawn at the pane's offset, and clamped inside the pane; `x`/`y`
+ *  are absent or zero whenever the pane and the glass are the same box. */
+export type Pane = Size & { x?: number; y?: number };
+
 /** Where a wall box lands on the glass, in glass pixels.
  *
  * The same place on screen it was already occupying — nothing jumps across the
@@ -47,10 +57,10 @@ export type View = { x: number; y: number; scale: number };
  * middle was, since at any zoom but 100% those two sizes differ. `size` is what
  * the thing draws at on the glass: `CARD_BOX.wall` for a card, its own `w`/`h`
  * for an image, a widget or a territory. */
-export function stickTo(box: Spot & Size, view: View, size: Size): Spot {
+export function stickTo(box: Spot & Size, view: View, size: Size, pane?: Pane): Spot {
   const cx = view.x + (box.x + box.w / 2) * view.scale;
   const cy = view.y + (box.y + box.h / 2) * view.scale;
-  return { x: cx - size.w / 2, y: cy - size.h / 2 };
+  return { x: cx - size.w / 2 - (pane?.x ?? 0), y: cy - size.h / 2 - (pane?.y ?? 0) };
 }
 
 /** Keep something stuck to the glass reachable in a window this size.
@@ -68,14 +78,16 @@ export function stickTo(box: Spot & Size, view: View, size: Size): Spot {
  *
  * Top-left wins for anything larger than the pane — the same choice `revealBox`
  * makes about a card taller than the viewport. Better its head than its foot. */
-export function glassAt(at: Spot, size: Size, view: Size): Spot {
+export function glassAt(at: Spot, size: Size, view: Pane): Spot {
+  const ox = view.x ?? 0;
+  const oy = view.y ?? 0;
   /* A pane nobody has measured yet is not a pane with no room in it. Without
      this, everything on the glass stacks in the top-left corner for the frame
      between the element mounting and the ResizeObserver's first call. */
-  if (view.w <= 0 || view.h <= 0) return at;
+  if (view.w <= 0 || view.h <= 0) return { x: at.x + ox, y: at.y + oy };
   return {
-    x: Math.min(Math.max(at.x, 0), Math.max(0, view.w - size.w)),
-    y: Math.min(Math.max(at.y, 0), Math.max(0, view.h - size.h)),
+    x: ox + Math.min(Math.max(at.x, 0), Math.max(0, view.w - size.w)),
+    y: oy + Math.min(Math.max(at.y, 0), Math.max(0, view.h - size.h)),
   };
 }
 
