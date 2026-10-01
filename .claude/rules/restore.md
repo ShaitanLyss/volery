@@ -614,18 +614,22 @@ adoptable sessions on it the list was still blank until you typed, and the secon
 four characters of CSS.
 
 `.panel` is a flex column with a `max-height`; `.rows` declared `overflow-y: auto` and no
-`flex`, which resolves to `flex: 0 1 auto` — **a flex-basis equal to its own content
-height**, about 20,000px at 450 rows against some 750px of room. Shrinkage is distributed in
-proportion to `shrink × basis`, so `.rows` absorbed essentially the whole overflow and
-collapsed to nothing while the header, the note, the filter and the footer kept their tiny
-bases. The panel drew as a search box with a void under it, and typing appeared to fix it
-because a shorter list fits. `flex: 1 1 0` moves the box from fighting for what is left to
-*being* what is left; short lists are unaffected, since an item with `flex-grow: 1`
-contributes its content height to an auto-height container's intrinsic size.
+`flex`. The diagnosis written here at the time was that an `auto` basis made `.rows` absorb
+the whole overflow and collapse, and the fix was `flex: 1 1 0`. **That fix is what broke it
+for good.** Reported 2026-10-01: footer count right, no rows at all, with or without a query.
+`.panel` has no definite height, so its height comes from its items' flex bases, and a zero
+basis contributes zero. The column came out as tall as the header, note, filter and footer,
+so `flex-grow` had no free space to give, and `.rows`, the only item with `min-height: 0`,
+sat at 0px. The loading line and "nothing matches" are inside it too, which is why fetching
+read as the panel saying `0`. Shrink shared out by basis takes an `auto` box down to the room
+that is left, never to nothing, so that diagnosis was wrong.
 
-Worth keeping for the shape rather than the property: **a scroller inside a flex column
-needs an explicit basis, and the failure is silent and total.** `min-height: 0` was already
-there, which is the half of this everybody knows, and on its own it does nothing here.
+`flex: 1 1 auto; min-height: 0` is the shape: the content height is the basis, so the panel
+grows to fit up to its `max-height`, and past that this is the one item allowed below its
+content, so it takes up the overflow and scrolls. **A scroller inside a flex column whose
+height is only a `max-height` wants an `auto` basis, not a zero one**, and either mistake is
+silent and total. The footer also says `reading…` rather than `0 of 0` while the catalogue
+loads.
 
 And one from the same sitting that belongs to no subsystem: `adopt.ts`'s `haystack` joined
 its fields on a **NUL**, which was a defensible separator and an indefensible byte. CLAUDE.md

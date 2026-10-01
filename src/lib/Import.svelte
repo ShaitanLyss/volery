@@ -188,7 +188,9 @@
     {/each}
 
     <footer>
-      <span>{shown.length} of {sessions.length}</span>
+      <!-- Not "0 of 0" while the catalogue is still being read: that is a
+           count, and it is a count of nothing yet. -->
+      <span>{loading ? "reading…" : `${shown.length} of ${sessions.length}`}</span>
       <span class="grow"></span>
       {#if taken.length}<span>{taken.length} adopted</span>{/if}
     </footer>
@@ -273,26 +275,28 @@
     color: var(--paper-faint);
   }
 
-  /* `flex: 1 1 0` and not the `0 1 auto` this resolved to for its whole life,
-     which is why the panel opened empty on any wall with real history in it.
-     With an `auto` basis this box's flex-basis *is* its content height — about
-     20,000px at 450 rows — and shrink is distributed in proportion to
-     `shrink x basis`, so it absorbed essentially the whole overflow and
-     collapsed to nothing while the header, the note, the filter and the footer
-     kept their tiny bases. The panel drew as a search box with a void under it,
-     and typing a query appeared to fix it because a shorter list fits.
+  /* An `auto` basis, and the `1 1 0` that was here is what drew the list as
+     nothing at all — count in the footer, no rows, query or not.
 
-     A zero basis moves the box from fighting for what is left to being what is
-     left: the column has free space to give, this takes it, and the content
-     overflows into the scroll it already declared. Short lists are unaffected —
-     a flex item with `flex-grow: 1` contributes its content height to an
-     auto-height container's intrinsic size, so three sessions still draw a
-     three-row panel rather than stretching one to 76vh. */
+     `.panel` has a `max-height` and no height, so its height is worked out
+     from its items' flex bases. A zero basis contributes zero: the column came
+     out exactly as tall as the header, note, filter and footer, there was no
+     free space for `flex-grow` to hand out, and this box — the only one with
+     `min-height: 0` — sat at 0px. The loading line and "nothing matches" live
+     in here too, which is why fetching looked like the panel saying `0`.
+
+     With `auto` the content height is the basis, so the panel grows to fit up
+     to its `max-height`. Past that, this is the one item allowed to shrink
+     below its content (`min-height: 0`; the others keep `min-height: auto`),
+     so it takes up the overflow and scrolls. That is the ordinary
+     scroller-in-a-flex-column shape. The comment this replaces blamed the
+     original empty panel on shrink being shared out by basis, but that shrinks
+     this box to the room that is left, not to nothing. */
   .rows {
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    flex: 1 1 0;
+    flex: 1 1 auto;
     min-height: 0;
   }
 
