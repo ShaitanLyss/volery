@@ -926,6 +926,14 @@ pub(crate) fn roster() -> Vec<Value> {
             "claim a sink item before starting it; hold, assign, take, release, \
              unclaim, is anyone already doing this",
         ),
+        /* Deferred: `sink`'s own answer names it in full beside the ids to hand
+           it, which is `servers`' argument for `server_log` — a tool result costs
+           nothing per turn, and the loaded tier had 576 bytes left. */
+        found_by(
+            reads_only(crate::sink::sink_read_schema()),
+            "read a sink item in full, its body and files and settling note, open \
+             the items the sink listed, look up a sink id, what does this finding say",
+        ),
         found_by(
             crate::sink::done_schema(),
             "mark a sink item finished, settled, resolved, close it out, tick it \
@@ -2348,10 +2356,11 @@ mod tests {
            `sink` do sweep expired rows on the read path, and `ask_user` spends
            the user's attention; both are argued at `reads_only`, and the rule
            for the next one is stated there. */
-        const READS: [&str; 18] = [
+        const READS: [&str; 19] = [
             "ask_user",
             "board",
             "sink",
+            "sink_read",
             "list",
             "allowance",
             "accounts",

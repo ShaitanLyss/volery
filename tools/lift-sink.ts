@@ -92,6 +92,26 @@ const ITEMS: [string, string][] = [
   [SINK, "fn twin_refusal"],
   [SINK, "fn long_note_refusal"],
   [SINK, "fn not_found"],
+  /* The index and the search (sink 5b039f69): the row an agent scans, the
+     ranking, the snippet, and the budget that keeps one read inside one tool
+     result. */
+  [SINK, "const SINK_READ_TOOL"],
+  [SINK, "const INDEX_BUDGET"],
+  [SINK, "const READ_BUDGET"],
+  [SINK, "fn sink_read_schema"],
+  [SINK, "fn listing"],
+  [SINK, "struct Budget"],
+  [SINK, "impl Budget"],
+  [SINK, "fn row"],
+  [SINK, "fn fold"],
+  [SINK, "fn fold_flat"],
+  [SINK, "fn terms_of"],
+  [SINK, "fn contains"],
+  [SINK, "fn find"],
+  [SINK, "fn score"],
+  [SINK, "fn snippet"],
+  [SINK, "fn addresses"],
+  [SINK, "fn read_out"],
 ];
 
 /** `Scopes`' pure half, reading by reading — `read` is the impure one and stays
@@ -127,7 +147,7 @@ const TESTS: string[] = [
   "the_note_property_states_the_cap_and_the_way_round_it",
   /* The words the tools are advertised in, including the convention an agent
      would otherwise have to infer off a listing. */
-  "the_four_tools_are_advertised_with_usable_schemas",
+  "the_sink_tools_are_advertised_with_usable_schemas",
   "drop_says_what_does_not_belong_in_the_sink",
   "drop_says_what_seconding_a_wall_wide_item_takes",
   "take_says_to_put_it_back",
@@ -145,10 +165,25 @@ const TESTS: string[] = [
   "a_settled_item_does_not_hold_its_title",
   "the_reading_says_when_you_have_reworded_an_agents_item",
   "your_own_item_says_nothing_about_being_reworded",
+  /* Sink 5b039f69: an index that fits, a search that ranks, and a read that
+     answers every address it was given. */
+  "an_index_row_is_one_line_without_the_body",
+  "the_index_names_the_tool_that_reads_in_full",
+  "a_quoted_phrase_is_one_term_and_the_rest_split_on_space",
+  "every_term_must_appear_and_a_title_hit_outranks_a_body_hit",
+  "a_search_ranks_hits_and_shows_where_the_body_matched",
+  "a_search_that_finds_nothing_says_how_to_widen_it",
+  "a_snippet_is_a_window_around_the_first_match",
+  "an_index_over_budget_counts_what_it_left_out",
+  "reading_answers_each_address_on_its_own",
+  "reading_past_its_budget_names_what_it_did_not_print",
+  "a_title_with_a_comma_is_one_address",
+  "a_shared_title_reads_every_item_under_it",
+  "a_phrase_matches_across_a_line_wrap",
 ];
 
 /** The helpers the tests build their fixtures with. */
-const HELPERS: string[] = ["fn item", "fn scopes", "fn one"];
+const HELPERS: string[] = ["fn item", "fn scopes", "fn one", "fn titled"];
 
 const cache = new Map<string, string[]>();
 function linesOf(file: string): string[] {

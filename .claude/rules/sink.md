@@ -14,8 +14,37 @@ afternoon — and it has exactly two honest options, both of which lose it: say 
 transcript nobody will scroll back through, or act on it now and blow the scope of the job it
 was asked to do. The commonest outcome is the third one, which is to say nothing.
 
-Four tools: `sink` reads it, `drop` puts something in, `take` claims one so two cards do not
-both do it, `done` takes it down.
+Five tools: `sink` lists and searches it, `sink_read` reads items in full, `drop` puts
+something in, `take` claims one so two cards do not both do it, `done` takes it down.
+
+### `sink` is an index, and `sink_read` is the read
+
+Until 2026-10-02 `sink` printed every item whole. At wall scope that was **554,510
+characters** over 270 open items, far past what one tool result can carry, so the client
+spilled it to a file and the reading card had to grep a dump instead of reading the sink
+(sink `5b039f69`). The bodies were what made it large, and they are rarely what a reader
+wants first: a pile is scanned for what is relevant, then a few items are read.
+
+- **`sink` answers one line per item** (`row`): id, scope, kind, voices, title, hold. No
+  body, no paths. The same pile is ~30,000 characters.
+- **`query` searches** title, body, paths and id, case-insensitively. Every term must appear;
+  a `"quoted phrase"` is one term. Hits are ranked (title 3, path 2, elsewhere 1) and each
+  carries a ~160-character snippet around where its body matched, so relevance can be judged
+  without a second call. No fuzzy matching, for the merge's reason below: folding two
+  different things together is worse than the miss it saves.
+- **`INDEX_BUDGET` (60,000)** stops the index at a row boundary and says how many it left out
+  and how to narrow the read. The settled pile only grows, and a listing that silently
+  overflowed again would be this bug back.
+- **`sink_read` takes ids** (or exact titles) and prints them whole through `render`, across
+  the whole wall, settled included: an id seen in a commit or another card's message is one
+  you should be able to read. Each address is answered on its own, so one typo costs one
+  line. Past `READ_BUDGET` (80,000) the rest are named, not dropped.
+- **`sink_read` is deferred, and `sink`'s answer names it.** The loaded tier had 576 bytes of
+  slack; `sink`'s description was tightened to pay for `query` (+26 bytes net). That is
+  `servers`' argument for `server_log`: a tool result costs nothing per turn.
+
+`listing`, `row`, `score`, `snippet` and `read_out` are pure and `tools/lift-sink.ts` runs
+them.
 
 ### It is the billboard's opposite, and every column follows from that
 
@@ -445,7 +474,7 @@ Three things follow, and each was wrong before:
 
 There is no MSVC toolchain here, so `sink.rs`'s `mod tests` typechecks and cannot run — and a
 green `check-gnu.sh --tests` reads exactly like a green test run. `tools/lift-sink.ts` lifts
-the pure half into a single-file `rustc --test` crate and executes it: 31 assertions, and the
+the pure half into a single-file `rustc --test` crate and executes it: 47 assertions, and the
 whole point is that nearly all of them are *strings*, which is the least testable-looking and
 most load-bearing thing in the file. The row an agent copies a title out of, and the sentences
 it is refused with, are the entire guard.

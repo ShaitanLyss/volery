@@ -137,6 +137,7 @@ export const SKEIN_WISP_TOOL = "mcp__skein__wisp";
 export const SKEIN_CHRONICLE_TOOL = "mcp__skein__chronicle";
 export const SKEIN_DROP_TOOL = "mcp__skein__drop";
 export const SKEIN_SINK_TOOL = "mcp__skein__sink";
+export const SKEIN_SINK_READ_TOOL = "mcp__skein__sink_read";
 export const SKEIN_TAKE_TOOL = "mcp__skein__take";
 export const SKEIN_DONE_TOOL = "mcp__skein__done";
 export const SKEIN_SPAWN_TOOL = "mcp__skein__spawn";
@@ -598,8 +599,17 @@ export function describeTool(name: string, input: any): string {
       const title = arg(input?.title);
       return title ? `dropped: ${clip(title, 30)}` : "dropped something in the sink";
     }
-    case SKEIN_SINK_TOOL:
+    case SKEIN_SINK_TOOL: {
+      const query = arg(input?.query);
+      if (query) return `searched the sink for ${clip(query, 24)}`;
       return input?.settled === true ? "read what the sink has settled" : "read the sink";
+    }
+    case SKEIN_SINK_READ_TOOL: {
+      const items = Array.isArray(input?.items) ? input.items : [input?.items];
+      const named = items.filter((i: unknown) => typeof i === "string" && i.trim());
+      if (named.length === 1) return `read sink item ${clip(String(named[0]), 24)}`;
+      return named.length ? `read ${named.length} sink items` : "read sink items";
+    }
     case SKEIN_TAKE_TOOL: {
       const item = arg(input?.item);
       if (input?.release === true) return item ? `put back ${clip(item, 24)}` : "put an item back";

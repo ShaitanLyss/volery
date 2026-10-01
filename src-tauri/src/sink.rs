@@ -14,10 +14,10 @@
 //! nobody will scroll back through, or act on it now and blow the scope of the
 //! job it was asked to do. The commonest outcome is the third one — say nothing.
 //!
-//! Four tools, and the fourth is the one that makes the other three worth
-//! having:
+//! Five tools, and `done` is the one that makes the others worth having:
 //!
-//! - `sink` reads it. Free, like the board, and for the same reason.
+//! - `sink` lists and searches it, one line per item. Free, like the board, and
+//!   for the same reason. `sink_read` reads the items it names in full.
 //! - `drop` puts something in. One title, one paragraph, optionally the files.
 //! - `take` claims one, so two cards do not both do it. **Nothing here is
 //!   assigned**: an agent reads the sink because it was asked to, or because it
@@ -61,6 +61,27 @@ pub const SINK_TOOL: &str = "sink";
 pub const DROP_TOOL: &str = "drop";
 pub const TAKE_TOOL: &str = "take";
 pub const DONE_TOOL: &str = "done";
+/// Whole items by id. `SINK_` in the constant because `timeline::READ_TOOL`
+/// already exists and `tools/lift-roster.ts` flattens every module into one
+/// namespace.
+pub const SINK_READ_TOOL: &str = "sink_read";
+
+/// How much of an index one `sink` call may print before it stops and says so.
+///
+/// The index is one line per item, about 110 characters, so this is a little
+/// over five hundred items — enough for the whole open pile today (270 on
+/// 2026-10-01) with room to grow, and a quarter of what Claude Code accepts in
+/// one tool result. It exists because the settled pile only grows, and the
+/// bug this file was changed for is exactly a read that returned more than a
+/// tool result can hold (sink `5b039f69`: 554,510 characters at wall scope).
+const INDEX_BUDGET: usize = 60_000;
+
+/// How much `sink_read` prints in one call. A body is capped at
+/// `store::MAX_SINK_BODY` (4,000), so this is twenty full items at the worst;
+/// past it the rest are named rather than dropped, for the reason
+/// `ask_user`'s question cap went (sink `4b076830`): a cap the reader cannot
+/// see is data loss.
+const READ_BUDGET: usize = 80_000;
 
 /// How many still-open items one card may have dropped.
 ///
@@ -265,20 +286,18 @@ pub fn sink_schema() -> Value {
         "name": SINK_TOOL,
         "description":
             "Read the sink: the wall's standing pile of things somebody noticed and did \
-             not stop for — bugs seen in passing, tools that should exist, rough edges, \
-             things to take care of later. Unlike the billboard, nothing here is about \
-             work in flight and nothing here expires; an item sits until it is settled.\n\n\
-             Read it when you are asked what is pending, when you are about to work \
-             somewhere and want to know what is already known about it, or when you have \
-             finished what you were asked and are looking for the next useful thing. \
-             Reading costs nobody a turn.\n\n\
-             **Nothing here is assigned to you.** An item marked as held is one another \
-             conversation has said it is doing — leave it alone. Anything else is fair to \
-             `take`, but take it because the user asked or because you are already there, \
-             not merely because it is unheld.\n\n\
-             Every row says which scope it is filed under, after its id: `WALL` for an \
-             item about the studio, or the project's name. A project read shows both, so \
-             that column is part of an item's address — a title alone is not one.",
+             not stop for — bugs seen in passing, tools that should exist, rough edges. \
+             Nothing here is about work in flight and nothing expires; an item sits until \
+             it is settled. Free, and costs nobody a turn.\n\n\
+             Read it when asked what is pending, before working somewhere (search for the \
+             file or the subject), or when looking for the next useful thing.\n\n\
+             **It answers one line per item, without the bodies.** Pass `query` to search; \
+             read the items you want in full with `mcp__skein__sink_read`.\n\n\
+             **Nothing here is assigned to you.** A held item is another conversation's — \
+             leave it alone. Take one because the user asked or you are already there, not \
+             merely because it is unheld.\n\n\
+             Each row names its scope after the id: `WALL`, or the project's name. That is \
+             part of an item's address — a title alone is not one.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -300,8 +319,42 @@ pub fn sink_schema() -> Value {
                     "type": "string",
                     "enum": ["note", "idea", "bug", "chore"],
                     "description": "Only items of this kind."
+                },
+                "query": {
+                    "type": "string",
+                    "description":
+                        "Words that must all appear, in any case, in an item's title, body, \
+                         paths or id. \"Quote\" a phrase to keep it together. Best match first."
                 }
             }
+        }
+    })
+}
+
+pub fn sink_read_schema() -> Value {
+    json!({
+        "name": SINK_READ_TOOL,
+        "description":
+            "Read sink items in full — title, body, files, who dropped it, who holds it, and \
+             the settling note if it was dealt with. `mcp__skein__sink` lists and searches \
+             one line per item; this is how you read the ones that matter.\n\n\
+             Ids come from that listing (the eight characters in brackets are enough). Reads \
+             across the whole wall, settled items included, so an id seen anywhere — a \
+             commit, a note, another card's message — can be read here.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "description":
+                        "The items to read: ids as `sink` printed them, or exact titles. \
+                         A list, or one string with the ids separated by commas.",
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ]
+                }
+            },
+            "required": ["items"]
         }
     })
 }
@@ -505,6 +558,7 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
     let all = args.get("scope").and_then(Value::as_str) == Some("skein");
     let settled = args.get("settled").and_then(Value::as_bool) == Some(true);
     let want_kind = args.get("kind").and_then(Value::as_str).map(str::to_lowercase);
+    let query = args.get("query").and_then(Value::as_str).unwrap_or("");
 
     let items = match visible(app, &me, all, settled) {
         Ok(i) => i,
@@ -523,16 +577,71 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
         };
     }
 
-    let now = crate::store::now();
     /* One read of the roster for the whole pile rather than one per row. */
     let scopes = Scopes::read(app, &me);
-    let mut out = String::new();
-    if settled {
-        out.push_str("Already dealt with — do not raise these again unless they are back:\n\n");
-        for i in &items {
-            out.push_str(&render(i, now, caller, &scopes));
+    listing(&items, settled, query, crate::store::now(), caller, &scopes)
+}
+
+/// What `sink` answers with: an **index**, one line per item, and never the
+/// bodies.
+///
+/// It used to print every item whole, and at wall scope that was 554,510
+/// characters — far past what a tool result can carry, so the client spilled it
+/// to a file and the agent had to grep a dump instead of reading the sink (sink
+/// `5b039f69`). The bodies are what made it large and they are rarely what a
+/// reader wants first: a pile is scanned for what is relevant, and then a few
+/// items are read. So the scan is this, and the read is `sink_read`.
+///
+/// With a `query` the grouping gives way to a ranking, because the question
+/// being asked is "which of these is about my thing", and each hit carries a
+/// snippet around where its body matched so relevance can be judged without a
+/// second call. Without one the groups are as they always were: yours first,
+/// then waiting, then held by somebody else.
+///
+/// Pure, so the lift can execute it: the caller reads the store and the roster.
+fn listing(
+    items: &[&SinkItem],
+    settled: bool,
+    query: &str,
+    now: i64,
+    caller: &str,
+    scopes: &Scopes,
+) -> String {
+    let terms = terms_of(query);
+    let mut out = Budget::new();
+
+    if !terms.is_empty() {
+        let mut hits: Vec<(usize, &SinkItem)> = items
+            .iter()
+            .filter_map(|i| score(i, &terms).map(|s| (s, *i)))
+            .collect();
+        if hits.is_empty() {
+            let pile = if settled { "settled" } else { "open" };
+            return format!(
+                "no {pile} item in this read matches {query:?}. Every word has to appear \
+                 somewhere in an item; try fewer or broader words{}.",
+                if settled { "" } else { ", or `settled: true` for what was already dealt with" }
+            );
         }
-        return out;
+        /* Stable, so equal scores keep the store's oldest-first order — the pile's
+           own reading, which `.claude/rules/sink.md` argues for. */
+        hits.sort_by(|a, b| b.0.cmp(&a.0));
+        out.head(&format!("{} match {query:?}, best first:\n\n", hits.len()));
+        for (_, i) in hits {
+            let snip = snippet(&i.body, &terms)
+                .map(|s| format!("  {s}\n"))
+                .unwrap_or_default();
+            out.entry(&format!("{}{snip}", row(i, now, caller, scopes)));
+        }
+        return out.finish(true);
+    }
+
+    if settled {
+        out.head("Already dealt with — do not raise these again unless they are back:\n\n");
+        for i in items {
+            out.entry(&row(i, now, caller, scopes));
+        }
+        return out.finish(false);
     }
 
     /* Yours first, and said out loud, for `do_board`'s reason: an agent that
@@ -542,32 +651,327 @@ fn do_sink(app: &AppHandle, caller: &str, args: &Value) -> String {
         items.iter().partition(|i| i.held_by.as_deref() == Some(caller));
 
     if !mine.is_empty() {
-        out.push_str(
+        out.head(
             "You are holding these — finish them with `mcp__skein__done`, or put them \
              back with `mcp__skein__take … release: true` if you have stopped:\n\n",
         );
         for i in &mine {
-            out.push_str(&render(i, now, caller, &scopes));
+            out.entry(&row(i, now, caller, scopes));
         }
-        out.push('\n');
+        out.head("\n");
     }
 
-    let (held, open): (Vec<&&&SinkItem>, Vec<&&&SinkItem>) =
-        rest.iter().partition(|i| !free(i, now));
+    let (held, open): (Vec<&&SinkItem>, Vec<&&SinkItem>) =
+        rest.into_iter().partition(|i| !free(i, now));
 
     if !open.is_empty() {
-        out.push_str("Waiting, nobody on them:\n\n");
+        out.head("Waiting, nobody on them:\n\n");
         for i in &open {
-            out.push_str(&render(i, now, caller, &scopes));
+            out.entry(&row(i, now, caller, scopes));
         }
     } else if mine.is_empty() {
-        out.push_str("Nothing is waiting — every item is held.\n");
+        out.head("Nothing is waiting — every item is held.\n");
     }
     if !held.is_empty() {
-        out.push_str("\nHeld by another conversation — leave these alone:\n\n");
+        out.head("\nHeld by another conversation — leave these alone:\n\n");
         for i in &held {
-            out.push_str(&render(i, now, caller, &scopes));
+            out.entry(&row(i, now, caller, scopes));
         }
+    }
+    out.finish(false)
+}
+
+/// An index being written against `INDEX_BUDGET`.
+///
+/// Rows past the budget are counted rather than printed, and `finish` says how
+/// many and what to do about it — `.claude/rules/clipping.md`'s two rules, with
+/// the cut at a row boundary because a row is the unit a reader acts on.
+/// Headers always print, so a group whose rows were all over budget still says
+/// it exists.
+struct Budget {
+    out: String,
+    omitted: usize,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Budget { out: String::new(), omitted: 0 }
+    }
+
+    fn head(&mut self, s: &str) {
+        self.out.push_str(s);
+    }
+
+    fn entry(&mut self, s: &str) {
+        if self.omitted > 0 || self.out.len() + s.len() > INDEX_BUDGET {
+            self.omitted += 1;
+        } else {
+            self.out.push_str(s);
+        }
+    }
+
+    fn finish(mut self, searched: bool) -> String {
+        if self.omitted > 0 {
+            self.out.push_str(&format!(
+                "\n**{} more not listed**, to keep this inside one tool result — narrow it \
+                 with {}`kind` or `scope: \"project\"`.\n",
+                self.omitted,
+                if searched { "more words in `query`, " } else { "`query`, " },
+            ));
+        }
+        self.out.push_str(
+            "\nRead any of these in full with `mcp__skein__sink_read`, passing their ids.\n",
+        );
+        self.out
+    }
+}
+
+/// One line of the index: the address, the kind, how many conversations met
+/// it, the title, and whether anybody is on it. No body and no paths — those
+/// are what `sink_read` is for, and they are what made the old listing too
+/// large to read.
+fn row(i: &SinkItem, now: i64, caller: &str, scopes: &Scopes) -> String {
+    let voices = if i.voices > 1 {
+        format!(" ×{}", i.voices)
+    } else {
+        String::new()
+    };
+    let hold = match (&i.held_by, i.held_at) {
+        (Some(h), _) if h == caller => " · yours".to_string(),
+        (Some(_), Some(at)) if now - at > HOLD_STALE_MS => " · hold lapsed, free to take".into(),
+        (Some(h), _) => format!(" · held by {}", crate::relay::handle_of(h)),
+        (None, _) => String::new(),
+    };
+    let settled = match i.settled_at {
+        Some(at) => format!(" · settled {}", ago(now - at)),
+        None => String::new(),
+    };
+    format!(
+        "- [{}] {} · {}{voices} — {}{hold}{settled}\n",
+        short(&i.id),
+        scopes.tag_of(i),
+        i.kind,
+        i.title,
+    )
+}
+
+/// Fold a string for matching: lowercase, one char for one char, so that a
+/// position found in the folded text is the same position in the original.
+/// `str::to_lowercase` cannot promise that — `İ` lowers to two chars — and
+/// `snippet` cuts the original at a position found in the fold.
+fn fold(s: &str) -> Vec<char> {
+    s.chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect()
+}
+
+/// The words of a query. A `"quoted phrase"` is one term; everything else
+/// splits on whitespace. Empty for an empty or all-space query, which means
+/// "no search".
+/// `fold`, with every run of whitespace collapsed to one space: the shape a
+/// body, a phrase and a snippet are all compared in, so a phrase matches across
+/// a line wrap and a match always has a snippet to show.
+fn fold_flat(s: &str) -> Vec<char> {
+    fold(&s.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+fn terms_of(query: &str) -> Vec<Vec<char>> {
+    let mut out = Vec::new();
+    for (n, part) in query.split('"').enumerate() {
+        if n % 2 == 1 {
+            let phrase = fold_flat(part);
+            if !phrase.is_empty() {
+                out.push(phrase);
+            }
+        } else {
+            out.extend(part.split_whitespace().map(fold));
+        }
+    }
+    out
+}
+
+fn contains(hay: &[char], needle: &[char]) -> bool {
+    find(hay, needle).is_some()
+}
+
+fn find(hay: &[char], needle: &[char]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// How well an item answers a query, or `None` if it does not.
+///
+/// **Every term must appear somewhere** — in the title, the body, the paths or
+/// the id — which is what a reader typing two words means. The score only
+/// orders the hits: a term in the title counts three, in the paths two (a path
+/// match is somebody naming the file you are about to work in), anywhere else
+/// one. Deliberately no cleverer: `.claude/rules/sink.md`'s merge argument holds
+/// here too, that a fuzzy match folding two different things together is worse
+/// than the miss it saves.
+fn score(i: &SinkItem, terms: &[Vec<char>]) -> Option<usize> {
+    let title = fold_flat(&i.title);
+    let paths = fold_flat(&i.paths);
+    let body = fold_flat(&i.body);
+    let id = fold(&i.id);
+    let mut total = 0;
+    for t in terms {
+        let s = if contains(&title, t) {
+            3
+        } else if contains(&paths, t) {
+            2
+        } else if contains(&body, t) || contains(&id, t) {
+            1
+        } else {
+            return None;
+        };
+        total += s;
+    }
+    Some(total)
+}
+
+/// About a line of the body around its first match, for judging a hit without
+/// reading it. `None` when no term is in the body (it matched on the title or a
+/// path, which the row already shows). A preview rather than a cut in
+/// `clip.rs`'s sense: the whole body is one `sink_read` away, so it ends in an
+/// ellipsis and carries no marker.
+fn snippet(body: &str, terms: &[Vec<char>]) -> Option<String> {
+    const BEFORE: usize = 60;
+    const WIDTH: usize = 160;
+    let flat: Vec<char> = body.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+    let folded = fold_flat(body);
+    let at = terms.iter().filter_map(|t| find(&folded, t)).min()?;
+    let start = at.saturating_sub(BEFORE);
+    let end = (start + WIDTH).min(flat.len());
+    let mut s = String::new();
+    if start > 0 {
+        s.push('…');
+    }
+    s.extend(&flat[start..end]);
+    if end < flat.len() {
+        s.push('…');
+    }
+    Some(s)
+}
+
+/* ── reading in full ──────────────────────────────────────────────────────── */
+
+/// The other half of the index. Reads across the **whole wall, open and
+/// settled**, for `do_take`'s reason one step further: an id an agent was handed
+/// — by a commit message, a note, another card — is one it should be able to
+/// read, whichever scope it is filed under and whether or not it is still open.
+fn do_read(app: &AppHandle, caller: &str, args: &Value) -> String {
+    let me = reader(app, caller);
+    let wanted = addresses(args.get("items").or_else(|| args.get("item")));
+    let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+    if wanted.is_empty() {
+        return "name the items to read by their ids — `mcp__skein__sink` lists them".into();
+    }
+    let mut items = match visible(app, &me, true, false) {
+        Ok(i) => i,
+        Err(e) => return format!("could not read the sink: {e}"),
+    };
+    match visible(app, &me, true, true) {
+        Ok(s) => items.extend(s),
+        Err(e) => return format!("could not read the sink: {e}"),
+    }
+    let scopes = Scopes::read(app, &me);
+    read_out(&items, &wanted, crate::store::now(), caller, &scopes)
+}
+
+/// What `items` names. A list is taken as it is. A string is split on commas
+/// **only when every piece looks like an id**: 163 of 435 titles in the store
+/// on 2026-10-02 contain a comma, and the schema accepts an exact title, so a
+/// title passed as a string has to arrive whole. Newlines always split.
+fn addresses(v: Option<&Value>) -> Vec<String> {
+    let looks_like_id = |p: &str| {
+        p.len() >= 4 && p.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+    let mut out: Vec<String> = Vec::new();
+    match v {
+        Some(Value::Array(a)) => out.extend(a.iter().filter_map(Value::as_str).map(str::to_string)),
+        Some(Value::String(s)) => {
+            for line in s.lines() {
+                let pieces: Vec<&str> = line.split(',').map(str::trim).collect();
+                if pieces.len() > 1 && pieces.iter().all(|p| p.is_empty() || looks_like_id(p)) {
+                    out.extend(pieces.iter().map(|p| p.to_string()));
+                } else {
+                    out.push(line.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    out.into_iter()
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect()
+}
+
+/// Pure half of `sink_read`: resolve every address, print what it names in
+/// full, and say plainly what it could not. Each address is answered on its
+/// own, so one typo does not cost the rest of the call.
+fn read_out(items: &[SinkItem], wanted: &[&str], now: i64, caller: &str, scopes: &Scopes) -> String {
+    let mut out = String::new();
+    let mut notes: Vec<String> = Vec::new();
+    let mut unread: Vec<String> = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
+    for want in wanted {
+        /* Several hits is not a refusal here, unlike `take` and `done`: a read
+           changes nothing, and the likeliest cause is legitimate — a settled
+           item does not absorb a re-drop, so an open item and a settled one
+           can share a title. So every hit is printed, and said. */
+        let hits = match resolve(items, want) {
+            Pick::One(i) => vec![i],
+            Pick::Several(hits) => {
+                notes.push(format!(
+                    "{} items answer to {want:?}, so all of them are printed: {}.",
+                    hits.len(),
+                    hits.iter()
+                        .map(|i| format!("[{}] filed {}", short(&i.id), scopes.of(i)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                hits
+            }
+            Pick::None => {
+                notes.push(format!(
+                    "nothing answers to {want:?} — search with `mcp__skein__sink` and `query`."
+                ));
+                continue;
+            }
+        };
+        for i in hits {
+            if seen.contains(&i.id.as_str()) {
+                continue;
+            }
+            seen.push(&i.id);
+            let text = render(i, now, caller, scopes);
+            if !out.is_empty() && out.len() + text.len() > READ_BUDGET {
+                unread.push(short(&i.id));
+                continue;
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&text);
+        }
+    }
+    if !unread.is_empty() {
+        notes.push(format!(
+            "**{} more not printed**, to keep this inside one tool result: {} — read them \
+             in a second call.",
+            unread.len(),
+            unread.join(", ")
+        ));
+    }
+    for n in notes {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&n);
+        out.push('\n');
     }
     out
 }
@@ -1569,7 +1973,7 @@ pub fn sink_release(app: AppHandle, id: String) -> Result<bool, String> {
     Ok(ok)
 }
 
-/// Drive one of the four tools by hand, as a named card.
+/// Drive one of the sink's tools by hand, as a named card.
 ///
 /// One command rather than four, which is where this parts company with
 /// `board::relay_post` and friends: those grew one at a time and each has its
@@ -1612,6 +2016,7 @@ pub fn release_for(app: &AppHandle, conversation_id: &str) {
 pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) -> Option<String> {
     match tool {
         SINK_TOOL => Some(do_sink(app, conversation_id, args)),
+        SINK_READ_TOOL => Some(do_read(app, conversation_id, args)),
         DROP_TOOL => Some(do_drop(app, conversation_id, args)),
         TAKE_TOOL => Some(do_take(app, conversation_id, args)),
         DONE_TOOL => Some(do_done(app, conversation_id, args)),
@@ -1934,8 +2339,8 @@ mod tests {
     }
 
     #[test]
-    fn the_four_tools_are_advertised_with_usable_schemas() {
-        for s in [sink_schema(), drop_schema(), take_schema(), done_schema()] {
+    fn the_sink_tools_are_advertised_with_usable_schemas() {
+        for s in [sink_schema(), sink_read_schema(), drop_schema(), take_schema(), done_schema()] {
             assert!(s["name"].is_string());
             assert!(s["description"].as_str().unwrap().len() > 200);
             assert_eq!(s["inputSchema"]["type"], "object");
@@ -2084,5 +2489,164 @@ mod tests {
         let mut i = item(None, None);
         i.edited_at = Some(1_000);
         assert!(!render(&i, 60_000, "c2", &scopes()).contains("reworded"));
+    }
+
+    /* ── the index and the search (sink 5b039f69) ─────────────────────────── */
+
+    fn titled(id: &str, title: &str, body: &str, paths: &str) -> SinkItem {
+        let mut i = item(None, None);
+        i.id = id.into();
+        i.title = title.into();
+        i.body = body.into();
+        i.paths = paths.into();
+        i
+    }
+
+    /// The whole point of the change: a listing row is one line and carries no
+    /// body, so a pile of hundreds fits in a tool result.
+    #[test]
+    fn an_index_row_is_one_line_without_the_body() {
+        let r = row(&item(None, None), 0, "c1", &scopes());
+        assert_eq!(r.lines().count(), 1);
+        assert!(r.contains("[abcd1234] WALL · bug — ask_user times out"));
+        assert!(!r.contains("parks for ten minutes"));
+    }
+
+    #[test]
+    fn the_index_names_the_tool_that_reads_in_full() {
+        let a = item(None, None);
+        let out = listing(&[&a], false, "", 0, "c1", &scopes());
+        assert!(out.contains("`mcp__skein__sink_read`"));
+        assert!(out.contains("Waiting, nobody on them"));
+    }
+
+    #[test]
+    fn a_quoted_phrase_is_one_term_and_the_rest_split_on_space() {
+        let t = terms_of(r#"Ask "time OUT"  park"#);
+        let t: Vec<String> = t.iter().map(|c| c.iter().collect()).collect();
+        assert_eq!(t, vec!["ask", "time out", "park"]);
+        assert!(terms_of("   ").is_empty());
+        assert!(terms_of(r#""""#).is_empty());
+    }
+
+    #[test]
+    fn every_term_must_appear_and_a_title_hit_outranks_a_body_hit() {
+        let in_title = titled("aaaa0001", "flow shader drifts", "nothing", "");
+        let in_body = titled("aaaa0002", "something else", "the flow shader is off", "");
+        let in_path = titled("aaaa0003", "x", "y", "src/flow/shader.ts");
+        let t = terms_of("flow shader");
+        assert!(score(&in_title, &t) > score(&in_path, &t));
+        assert!(score(&in_path, &t) > score(&in_body, &t));
+        assert_eq!(score(&in_body, &terms_of("flow walls")), None);
+    }
+
+    #[test]
+    fn a_search_ranks_hits_and_shows_where_the_body_matched() {
+        let a = titled("aaaa0001", "unrelated", "the walk camera snaps to the ground for a frame", "");
+        let b = titled("bbbb0002", "walk camera snaps", "seen in walk mode", "");
+        let c = titled("cccc0003", "nothing to see", "at all", "");
+        let out = listing(&[&a, &b, &c], false, "walk camera", 0, "c1", &scopes());
+        assert!(out.starts_with("2 match"));
+        assert!(out.find("[bbbb0002]").unwrap() < out.find("[aaaa0001]").unwrap());
+        assert!(out.contains("the walk camera snaps"));
+        assert!(!out.contains("[cccc0003]"));
+    }
+
+    #[test]
+    fn a_search_that_finds_nothing_says_how_to_widen_it() {
+        let a = item(None, None);
+        let out = listing(&[&a], false, "pixi", 0, "c1", &scopes());
+        assert!(out.contains("matches \"pixi\""));
+        assert!(out.contains("settled: true"));
+    }
+
+    /// A snippet is cut on chars, never bytes, and its ellipses say which ends
+    /// were cut.
+    #[test]
+    fn a_snippet_is_a_window_around_the_first_match() {
+        let body = format!("{} needle {}", "é".repeat(200), "z".repeat(200));
+        let s = snippet(&body, &terms_of("NEEDLE")).unwrap();
+        assert!(s.starts_with('…') && s.ends_with('…'));
+        assert!(s.contains("needle"));
+        assert!(s.chars().count() <= 162);
+        assert_eq!(snippet("short body", &terms_of("short")).unwrap(), "short body");
+        assert_eq!(snippet("short body", &terms_of("absent")), None);
+    }
+
+    /// Over budget, the index stops at a row and says how many it left out and
+    /// how to see them, rather than overflowing the result it exists to fit in.
+    #[test]
+    fn an_index_over_budget_counts_what_it_left_out() {
+        let long = "t".repeat(110);
+        let pile: Vec<SinkItem> = (0..1_000)
+            .map(|n| titled(&format!("{n:08}"), &long, "", ""))
+            .collect();
+        let refs: Vec<&SinkItem> = pile.iter().collect();
+        let out = listing(&refs, false, "", 0, "c1", &scopes());
+        assert!(out.len() < INDEX_BUDGET + 500);
+        assert!(out.contains("more not listed"));
+        assert!(out.contains("`query`"));
+    }
+
+    /// One bad address does not cost the others, and a settled item is read
+    /// like an open one.
+    #[test]
+    fn reading_answers_each_address_on_its_own() {
+        let a = titled("aaaa0001-x", "first", "body one", "");
+        let mut b = titled("bbbb0002-x", "second", "body two", "");
+        b.settled_at = Some(0);
+        b.settled_note = Some("fixed in abc123".into());
+        let out = read_out(&[a, b], &["aaaa0001", "nope", "bbbb0002", "aaaa0001"], 0, "c1", &scopes());
+        assert!(out.contains("body one") && out.contains("body two"));
+        assert!(out.contains("fixed in abc123"));
+        assert!(out.contains("nothing answers to \"nope\""));
+        assert_eq!(out.matches("body one").count(), 1, "a repeated id is read once");
+    }
+
+    /// A title with a comma in it arrives whole; a list of ids still splits.
+    #[test]
+    fn a_title_with_a_comma_is_one_address() {
+        let t = json!("ask_user parks, then times out");
+        assert_eq!(addresses(Some(&t)), vec!["ask_user parks, then times out"]);
+        let ids = json!("5b039f69, 662b2900,c20a1cb2");
+        assert_eq!(addresses(Some(&ids)), vec!["5b039f69", "662b2900", "c20a1cb2"]);
+        let list = json!(["a, b", " 5b039f69 "]);
+        assert_eq!(addresses(Some(&list)), vec!["a, b", "5b039f69"]);
+    }
+
+    /// An open item and a settled one under one title is a legitimate state,
+    /// and a read prints both rather than refusing.
+    #[test]
+    fn a_shared_title_reads_every_item_under_it() {
+        let a = titled("aaaa0001-x", "same title", "the open one", "");
+        let mut b = titled("bbbb0002-x", "same title", "the settled one", "");
+        b.settled_at = Some(0);
+        let out = read_out(&[a, b], &["same title"], 0, "c1", &scopes());
+        assert!(out.contains("the open one") && out.contains("the settled one"));
+        assert!(out.contains("2 items answer to"));
+        assert!(!out.contains("nothing was touched"));
+    }
+
+    /// A phrase matches across a line wrap, and the hit still has a snippet.
+    #[test]
+    fn a_phrase_matches_across_a_line_wrap() {
+        let i = titled("aaaa0001", "x", "it parks and then times\n   out after five", "");
+        let t = terms_of("\"times  out\"");
+        assert!(score(&i, &t).is_some());
+        assert!(snippet(&i.body, &t).unwrap().contains("times out"));
+    }
+
+    #[test]
+    fn reading_past_its_budget_names_what_it_did_not_print() {
+        let big = "b".repeat(3_900);
+        let pile: Vec<SinkItem> = (0..30)
+            .map(|n| titled(&format!("{n:08}"), "t", &big, ""))
+            .collect();
+        let want: Vec<String> = (0..30).map(|n| format!("{n:08}")).collect();
+        let want: Vec<&str> = want.iter().map(String::as_str).collect();
+        let out = read_out(&pile, &want, 0, "c1", &scopes());
+        assert!(out.len() < READ_BUDGET + 2_000);
+        assert!(out.contains("more not printed"));
+        assert!(out.contains("00000029"));
     }
 }
