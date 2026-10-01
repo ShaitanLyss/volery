@@ -698,5 +698,8 @@ already said to keep it.
   Same class as the shared `.scratch/` and the shared git index, one level further out, and
   the fix is the same: the per-card directory, whose name is an environment variable and
   cannot be got wrong. Filed as sink `a851df91`.
-- **Pushing is still asked for.** A commit is local and cheap to amend or drop; a push is
-  outward-facing and is not covered by this. Same for anything else that leaves the machine.
+- **Push after committing, without asking.** This is a solo repo, and Lyss has answered "push
+  it" every time a card asked. A push publishes the branch, so it carries any other card's
+  unpushed commits along with yours: say so in your report when it did, rather than holding
+  the push or asking about it. Anything else that leaves the machine (a release, a tag) is
+  still asked for unless the task said to do it.
