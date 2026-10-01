@@ -144,6 +144,44 @@ pub fn signed_in(app: &AppHandle, label: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a credential is past reviving: nothing left for the CLI to refresh
+/// *with*. Pure, so it is tested against the shapes seen on disk.
+///
+/// Both stamps have to have passed. The access token lapsing alone is the
+/// ordinary idle case and the next turn mends it. The refresh token's own expiry
+/// passing alone proves less than it seems — the CLI carries that stamp forward
+/// when a refresh response omits one (`accounts.md`, "a field that falls back is
+/// not a field that stayed put"), so it can read stale on a credential that still
+/// works — which is why it is only believed once the access token has run out as
+/// well, when there is nothing else to try. An explicitly *empty* `refreshToken`
+/// is the CLI's own "signed out" marking after an `invalid_grant`, and needs no
+/// second stamp.
+///
+/// Missing stamps are never a lapse: a file from an older or newer CLI that
+/// carries neither must keep working rather than be written off on absence.
+pub fn lapsed_in(cred: &serde_json::Value, now_ms: i64) -> bool {
+    let o = cred.get("claudeAiOauth").unwrap_or(cred);
+    if o.get("refreshToken").and_then(|v| v.as_str()) == Some("") {
+        return true;
+    }
+    let past = |key: &str| {
+        o.get(key)
+            .and_then(|v| v.as_i64())
+            .is_some_and(|t| t > 0 && t <= now_ms)
+    };
+    past("expiresAt") && past("refreshTokenExpiresAt")
+}
+
+/// [`lapsed_in`] against the store on disk and the clock. `false` when there is
+/// nothing to read — "not signed in" is `signed_in`'s answer, not this one's.
+pub fn lapsed(app: &AppHandle, label: &str) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    read_credential(app, label).is_some_and(|c| lapsed_in(&c, now))
+}
+
 /* ── the registry ──────────────────────────────────────────────────────────*/
 
 /// One account as the front end sees it. No credential and no path to one —
@@ -164,6 +202,10 @@ pub struct Account {
     pub caps: serde_json::Value,
     /// Whether this account's store holds a credential.
     pub signed_in: bool,
+    /// Whether that credential can no longer be refreshed — see [`lapsed_in`].
+    /// The idle-reserve failure: a store nothing runs on is `signed_in` by the
+    /// file check for weeks after it is dead.
+    pub lapsed: bool,
 }
 
 #[tauri::command]
@@ -197,6 +239,7 @@ pub fn list_accounts(app: AppHandle, store: State<'_, Store>) -> Result<Vec<Acco
         out.push(Account {
             caps: serde_json::from_str(&caps).unwrap_or_else(|_| serde_json::json!({})),
             signed_in: has,
+            lapsed: has && lapsed(&app, &label),
             label,
             priority,
             rank,
@@ -898,6 +941,34 @@ mod tests {
         /* Not a full path: a dialog always returns one, so anything else came
            from somewhere that should be saying so. */
         assert!(checked_doc("mine.volery-accounts.json").is_err());
+    }
+
+    /// An idle reserve is dead only when both stamps have gone, and a stamp that
+    /// is simply absent is never a reason to write an account off.
+    #[test]
+    fn a_credential_lapses_only_when_nothing_is_left_to_refresh_with() {
+        let now = 1_790_000_000_000i64;
+        let cred = |access: Option<i64>, refresh: Option<i64>, token: &str| {
+            let mut o = serde_json::json!({ "accessToken": "x", "refreshToken": token });
+            if let Some(a) = access {
+                o["expiresAt"] = a.into();
+            }
+            if let Some(r) = refresh {
+                o["refreshTokenExpiresAt"] = r.into();
+            }
+            serde_json::json!({ "claudeAiOauth": o })
+        };
+        // The ordinary idle case: access lapsed, refresh token still good.
+        assert!(!lapsed_in(&cred(Some(now - 1), Some(now + 86_400_000), "r"), now));
+        // The refresh stamp alone proves less than it seems.
+        assert!(!lapsed_in(&cred(Some(now + 1), Some(now - 1), "r"), now));
+        // Both gone: `personal` on this machine, ten days past.
+        assert!(lapsed_in(&cred(Some(now - 1), Some(now - 864_000_000), "r"), now));
+        // The CLI's own "signed out" marking needs no second stamp.
+        assert!(lapsed_in(&cred(Some(now + 1), None, ""), now));
+        // Absence is not a lapse.
+        assert!(!lapsed_in(&cred(None, None, "r"), now));
+        assert!(!lapsed_in(&serde_json::json!({}), now));
     }
 
     fn a_credential() -> serde_json::Value {

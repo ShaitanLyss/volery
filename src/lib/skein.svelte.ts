@@ -456,7 +456,7 @@ export class Skein {
         /* Before `#heal`, which is the ordering the old in-`#heal` call had for
            the same reason: `choose` must have stopped offering the refused
            account by the time anything re-sends. */
-        this.#spend(c);
+        this.#spend(c, e.payload.event);
         this.#heal(c);
         this.#nudge(c);
         this.#settleRepair(c);
@@ -1994,11 +1994,40 @@ export class Skein {
    *  server refusing this subscription is news whether or not the prompt is
    *  going to be sent again, and folding it into the resend meant a 429 that
    *  landed mid-turn never marked anything. See `Conversation.pendingSpent`. */
-  #spend(conv: Conversation) {
+  #spend(conv: Conversation, ev: any) {
     const label = conv.pendingSpent;
-    if (!label) return;
+    if (!label) {
+      /* The other direction, and what keeps the back-off honest: a turn that
+         reached a model and came back whole proves the account is taking work,
+         whatever refused it earlier. `num_turns: 0` is the CLI answering a slash
+         command itself, which proves nothing about the server. */
+      if (
+        ev?.type === "result" &&
+        ev.is_error !== true &&
+        ev.num_turns !== 0 &&
+        conv.accountLabel
+      ) {
+        waterfall.markServed(conv.accountLabel);
+      }
+      return;
+    }
+    const hint = conv.pendingSpentUntil;
     conv.pendingSpent = null;
-    waterfall.markSpent(label);
+    conv.pendingSpentUntil = null;
+    waterfall.markSpent(label, hint);
+    /* A limit that lands mid-turn is deliberately not re-sent (`mayHeal`), so
+       the card just stops on the refusal and reads as though switching had not
+       worked — the report this was written from. Say where the *next* message
+       goes. Only when nothing is about to be re-sent: a heal says its own piece,
+       and the swap note follows it. */
+    if (conv.pendingHeal === null) {
+      const next = waterfall.next({ bypass: conv.bypassCaps, stickTo: label });
+      if (next.kind === "use" && next.label !== label) {
+        conv.note(`${label} refused — your next message goes to ${next.label}`);
+      } else if (next.kind === "hold") {
+        conv.note(`${label} refused and nothing else is free — your next message will wait for an account`);
+      }
+    }
   }
 
   /** Try a turn again that broke before it reached a model.

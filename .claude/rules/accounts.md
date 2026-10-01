@@ -526,12 +526,32 @@ of what a 429 tells us — it is full, and it did not say for how long. The hold
 that follows therefore waits on the next poll rather than on a countdown
 invented here.
 
-The mark **expires** rather than being cleared by a poll, after five minutes.
-Rust's floor means the next real reading is at most a minute out and will show
-the account full on its own, so this only has to bridge that gap; if the account
-genuinely is out for hours the poll keeps it blocked long after the mark has
-lapsed, and if the 429 was a fluke the account quietly comes back. Nothing has
-to remember to undo it, which is the property being bought.
+The mark **expires** rather than being cleared by a poll, and it was a flat five
+minutes until 2026-10-01 — on the argument that the next real reading would show
+the account full on its own. **That argument is false for a spend cap**, which is
+not a window: `You've hit your individual spend limit` arrives as a 429 with
+`overageDisabledReason: org_spend_cap_reached` while `/api/oauth/usage` reads the
+weekly figure at 35%. The mark lapsed, the poll said ready, and the sticky card
+and every new one went back to be refused again. So the memory backs off
+(`accounts.ts::refuse`: 5m, 10m, 20m … to six hours), a refusal arriving while one
+stands is the same news rather than a second strike, a reset the server named
+(`classify.ts::refusalResetOf`) is preferred when longer, and a turn actually
+answered on the account clears it (`Waterfall.markServed`). Expired marks are
+kept for their strike count and ignored by `next`. What a refusal that is *not*
+re-sent leaves the user with is a card that has stopped on a limit message, so
+`#spend` says where the next message will go.
+
+**An idle account can be dead and still `signedIn`.** `signed_in` is a file
+check, and a reserve nothing runs on never refreshes: on this machine `personal`'s
+refresh token was ten days past its expiry, which read `ready · unmeasured`, which
+`spentOf` counts as *empty* — the account the balancer preferred in its tier.
+`accounts.rs::lapsed_in` marks a credential `lapsed` when both stamps have passed
+(or the CLI itself emptied `refreshToken`), and `standingOf` makes that
+`unusable`. Both stamps, because the refresh stamp alone can be a carried-forward
+stale value on a credential that still works. **Not built: a keep-alive.** A
+periodic cheap turn on each idle account would stop them lapsing at all, but it
+spends a model turn per account on a schedule and is a Rust spawn nothing here can
+test; the panel's "sign in again" is the recovery.
 
 **The account is settled before the card is woken**, and the order is
 load-bearing: `#moveTo` ends the process to change the account, so settling

@@ -29,6 +29,7 @@ import {
   isCompactSummary,
   RETRY_NOTE,
   isApiErrorMessage,
+  refusalResetOf,
   isImageNote,
   isRetryNudge,
   isPromptNudge,
@@ -1166,6 +1167,14 @@ export class Conversation {
    *  prompt again is a policy about the prompt. Nothing about the second should
    *  be able to suppress the first. */
   pendingSpent = $state<string | null>(null);
+  /** The reset that refusal named, if any — epoch ms. Rides with
+   *  `pendingSpent` and is cleared with it; see `refusalResetOf`. */
+  pendingSpentUntil: number | null = null;
+  /** A reset heard on an event *before* the `result` that carries the refusal:
+   *  the synthetic assistant message and `rate_limit_event` both arrive first.
+   *  Consumed by the refusal and dropped, so a warning heard on an ordinary turn
+   *  cannot colour one weeks later. */
+  #refusalHint: number | null = null;
 
   /** `TaskCreate` calls whose receipt has not yet named their number. */
   #creating = new Map<string, { subject: string; activeForm: string }>();
@@ -2284,7 +2293,10 @@ export class Conversation {
            instead of dropping it, since a session file carries no `result` for
            the error line to have come from. One predicate, two folds, which is
            what stops the halves drifting; see sink 999cadb7. */
-        if (isApiErrorMessage(ev)) break;
+        if (isApiErrorMessage(ev)) {
+          this.#refusalHint = refusalResetOf(ev) ?? this.#refusalHint;
+          break;
+        }
 
         /* Asked once, of the whole message, and before the blocks are drawn —
            the judgement is arithmetic rather than drawing, so it excludes the
@@ -2582,7 +2594,9 @@ export class Conversation {
              news whatever is then done about the prompt. */
           if (kind === "limited" && this.accountLabel) {
             this.pendingSpent = this.accountLabel;
+            this.pendingSpentUntil = refusalResetOf(ev) ?? this.#refusalHint;
           }
+          this.#refusalHint = null;
           /* The turn's own shape decides this, not the failure's kind — the
              licensing condition `turns.md` has always stated and nothing here
              used to check. A turn that already got text or a tool call out of
@@ -2948,6 +2962,7 @@ export class Conversation {
         const status = ev.rate_limit?.status ?? ev.status;
         if (typeof status === "string" && !/^(ok|allowed|nominal)$/i.test(status)) {
           this.#push("meta", `rate limit: ${status}`);
+          this.#refusalHint = refusalResetOf(ev) ?? this.#refusalHint;
         }
         break;
       }

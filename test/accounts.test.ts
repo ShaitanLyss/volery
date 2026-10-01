@@ -18,6 +18,9 @@ import {
   mergeAccounts,
   ordered,
   planSignins,
+  refuse,
+  REFUSAL_BASE,
+  REFUSAL_MAX,
   sayBlocked,
   sayCeiling,
   sayCarried,
@@ -1583,5 +1586,76 @@ describe("carrying the sign-ins with them", () => {
     expect(sayInstalled(0, 1)).toBe("1 waiting on you");
     expect(sayInstalled(2, 1)).toBe("signed in 2, 1 waiting on you");
     expect(sayInstalled(0, 0)).toBe("no sign-ins in that file");
+  });
+});
+
+describe("a refusal the readings cannot see", () => {
+  /* The report: a spend-cap 429 on an account whose weekly figure read 35%. The
+     flat five-minute memory lapsed, the poll said ready, and the sticky card and
+     every new one went straight back to be refused again. */
+  test("the first refusal is distrusted for the base, and doubles each time it lapses", () => {
+    const first = refuse(undefined, T0);
+    expect(first).toEqual({ until: T0 + REFUSAL_BASE, strikes: 1 });
+    const t1 = first.until + 1;
+    const second = refuse(first, t1);
+    expect(second).toEqual({ until: t1 + 2 * REFUSAL_BASE, strikes: 2 });
+    const t2 = second.until + 1;
+    expect(refuse(second, t2)).toEqual({ until: t2 + 4 * REFUSAL_BASE, strikes: 3 });
+  });
+
+  test("the back-off stops at the ceiling however many times it is refused", () => {
+    let r = refuse(undefined, T0);
+    let now = T0;
+    for (let i = 0; i < 40; i++) {
+      now = r.until + 1;
+      r = refuse(r, now);
+    }
+    expect(r.until - now).toBe(REFUSAL_MAX);
+  });
+
+  test("a refusal arriving while one stands is the same news, not a second strike", () => {
+    const first = refuse(undefined, T0);
+    const again = refuse(first, T0 + MIN);
+    expect(again).toEqual(first);
+  });
+
+  test("a reset the server named is preferred when longer, and capped when absurd", () => {
+    expect(refuse(undefined, T0, T0 + HOUR).until).toBe(T0 + HOUR);
+    /* Shorter than the back-off: the back-off wins. */
+    expect(refuse(undefined, T0, T0 + MIN).until).toBe(T0 + REFUSAL_BASE);
+    /* A monthly reset quoted for a weekly sentence must still be rechecked. */
+    expect(refuse(undefined, T0, T0 + 20 * 24 * HOUR).until).toBe(T0 + REFUSAL_MAX);
+    /* In the past, or nonsense, is no hint at all. */
+    expect(refuse(undefined, T0, T0 - HOUR).until).toBe(T0 + REFUSAL_BASE);
+    expect(refuse(undefined, T0, Number.NaN).until).toBe(T0 + REFUSAL_BASE);
+  });
+
+  test("a hint can lengthen a standing refusal but never shorten it", () => {
+    const first = refuse(undefined, T0, T0 + 2 * HOUR);
+    expect(refuse(first, T0 + MIN, T0 + 3 * HOUR).until).toBe(T0 + 3 * HOUR);
+    expect(refuse(first, T0 + MIN, T0 + HOUR).until).toBe(T0 + 2 * HOUR);
+  });
+});
+
+describe("an idle account whose credential has lapsed", () => {
+  /* `personal` on the machine this was found on: signed in by the file check,
+     refresh token ten days dead. Read as `ready · unmeasured` it counts as empty,
+     so inside its tier it was the account the balancer preferred. */
+  test("is unusable rather than ready, and says to sign in again", () => {
+    const s = standingOf(acct("personal", { lapsed: true }), undefined, false);
+    expect(s.state).toBe("unusable");
+    expect((s as any).why).toContain("sign in");
+  });
+
+  test("is not counted as an account that could take work", () => {
+    const list = [acct("a"), acct("b", { lapsed: true })];
+    expect(usable(list).map((a) => a.label)).toEqual(["a"]);
+    expect(several(list)).toBe(false);
+  });
+
+  test("is stepped over inside its own tier instead of being preferred", () => {
+    const list = [acct("lapsed", { lapsed: true, rank: 0 }), acct("live", { rank: 1 })];
+    const c = choose(list, { live: spent(60) }, {});
+    expect(c).toEqual({ kind: "use", label: "live", swapFrom: null });
   });
 });

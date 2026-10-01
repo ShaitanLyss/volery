@@ -28,11 +28,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   choose,
   keptThrough,
+  refuse,
   several,
   usable,
   type Account,
   type Allowance,
   type Choice,
+  type Refusal,
 } from "./accounts";
 import type { Report } from "./limits";
 
@@ -65,9 +67,6 @@ const EVERY = 180_000;
  *  well would be two clocks disagreeing about one, which is the trap
  *  `Ledger.#askAllowance` names. */
 const SOON = 65_000;
-
-/** How long a `429` outranks the last reading. See `markSpent`. */
-const SPENT_FOR = 5 * 60_000;
 
 /** What `find_claude` answers. Mirrors `claude.rs::Presence`. */
 export type Presence =
@@ -211,7 +210,9 @@ export class Waterfall {
    *  that changed nothing about any of them. */
   async poll() {
     if (this.#busy) return;
-    const labels = this.list.filter((a) => a.signedIn && a.enabled).map((a) => a.label);
+    const labels = this.list
+      .filter((a) => a.signedIn && a.enabled && !a.lapsed)
+      .map((a) => a.label);
     if (labels.length === 0) {
       this.allowances = {};
       this.#retime(false);
@@ -247,8 +248,7 @@ export class Waterfall {
     }
   }
 
-  /** Accounts the server has refused more recently than we have polled, and
-   *  when to start believing the poll again.
+  /** Accounts the server has refused, until when, and how many times running.
    *
    *  A 429 outranks our last reading, because it is newer and because it is the
    *  actual refusal rather than a percentage that implies one. Without this the
@@ -256,17 +256,25 @@ export class Waterfall {
    *  it hands back the very account that just refused — because the reading it
    *  is looking at is up to a minute old and still says 82%.
    *
-   *  It expires rather than being cleared by a poll. Rust's floor means the
-   *  next real reading is at most a minute out and will show the account full
-   *  on its own, so this only has to bridge that gap; five minutes is slack for
-   *  a hush. If the account genuinely is out for hours, the poll keeps it
-   *  blocked long after this has lapsed, and if it was a fluke the account
-   *  quietly comes back. */
-  #spent = new Map<string, number>();
+   *  **It cannot be a flat five minutes, which is what it was.** A spend cap is
+   *  not a window, so the poll goes on reading a calm percentage on an account
+   *  the server is refusing, and the mark lapsing was the poll's contradiction
+   *  winning by default: the sticky card and every new card went back and spent a
+   *  turn each being refused again. `refuse` backs the memory off instead (5m,
+   *  10m, 20m … to six hours) and `markServed` clears it, so the account comes
+   *  back the moment a turn is actually answered there. Expired entries are
+   *  *kept* — the strike count is the memory — and merely ignored by `next`. */
+  #refused = new Map<string, Refusal>();
 
-  /** Distrust one account until the reading catches up. */
-  markSpent(label: string) {
-    this.#spent.set(label, Date.now() + SPENT_FOR);
+  /** Distrust one account until a reading — or a served turn — says otherwise.
+   *  `hint` is a reset the server named, in epoch ms, when one was heard. */
+  markSpent(label: string, hint: number | null = null) {
+    this.#refused.set(label, refuse(this.#refused.get(label), Date.now(), hint));
+  }
+
+  /** A turn was answered on this account, so whatever refused it has lifted. */
+  markServed(label: string) {
+    this.#refused.delete(label);
   }
 
   /** Which account the next turn would go to, right now.
@@ -274,20 +282,17 @@ export class Waterfall {
    *  Straight through to the pure chooser — this class decides nothing — except
    *  for overlaying the refusals above, which is a *fact* about an account
    *  rather than a policy about it. A distrusted account is presented as a
-   *  window at 100% with no named reset, which is the honest shape of what a
-   *  429 tells us: it is full, and it did not say for how long. `availableAt`
-   *  then reports unknown and the hold waits on the poll rather than on a
-   *  countdown invented here. */
+   *  window at 100% that resets when our distrust lapses (`refuse`) — not a
+   *  claim about when the server's own window rolls, but it is what a hold
+   *  should aim its retry at, since a poll cannot see a spend cap and so cannot
+   *  be what releases one. */
   next(opts: { bypass?: boolean; stickTo?: string | null } = {}): Choice {
     const now = Date.now();
     let allowances = this.allowances;
-    if (this.#spent.size > 0) {
+    if (this.#refused.size > 0) {
       const overlaid: Record<string, Allowance> = { ...allowances };
-      for (const [label, until] of this.#spent) {
-        if (until <= now) {
-          this.#spent.delete(label);
-          continue;
-        }
+      for (const [label, mark] of this.#refused) {
+        if (mark.until <= now) continue;
         overlaid[label] = {
           ok: true,
           at: now,
@@ -297,7 +302,7 @@ export class Waterfall {
               group: "session",
               used: 100,
               severity: "rejected",
-              resetsAt: null,
+              resetsAt: mark.until,
               scope: null,
               active: true,
             },

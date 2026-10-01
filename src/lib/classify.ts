@@ -2291,6 +2291,34 @@ export function wasConnectionDropped(result: any): boolean {
   );
 }
 
+/** The reset a refusal named, in epoch ms, or null when it named none.
+ *
+ *  Read off whatever carries one, because where it sits on the *wire* has only
+ *  been observed on disk: a synthetic refusal record there has
+ *  `quotaLimits: { status: "rejected", resetsAt: 1789880400 (seconds),
+ *  rateLimitType, overageStatus, overageResetsAt, overageDisabledReason }`, and
+ *  the stream's `rate_limit_event` is the same data under another name. So the
+ *  containers are tried in turn and the stamp is accepted as seconds, millis or
+ *  an ISO string. Anything else is no hint, which is safe: `refuse` backs off by
+ *  itself and only *prefers* a longer stated reset to its own guess.
+ *
+ *  Only `resetsAt`, not `overageResetsAt`. The first is what the CLI quotes to
+ *  the user in the sentence ("your weekly limit resets Sep 20"), and a wrong one
+ *  costs a recheck within `REFUSAL_MAX` rather than a stranded account. */
+export function refusalResetOf(ev: any): number | null {
+  const q = ev?.quotaLimits ?? ev?.quota_limits ?? ev?.rate_limit_info ?? ev?.rate_limit;
+  if (!q || typeof q !== "object") return null;
+  const raw = q.resetsAt ?? q.resets_at;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return raw < 1e12 ? raw * 1000 : raw;
+  }
+  if (typeof raw === "string") {
+    const t = Date.parse(raw);
+    return Number.isFinite(t) ? t : null;
+  }
+  return null;
+}
+
 /** Which of the four this was, or null for a failure a card must not touch.
  *
  *  Rate limiting is tested **first**. A 429 that also happened to carry the

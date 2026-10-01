@@ -9,6 +9,7 @@ import {
   SKEIN_ASK_TOOL,
   backgroundKind,
   jobNote,
+  refusalResetOf,
   taskNoteOf,
   JOB_NOTE_CAP,
   baseModel,
@@ -2508,5 +2509,30 @@ describe("nudgeSkipFor", () => {
     const hold = nudgeSkipFor("hold", "prompt", null);
     const none = nudgeSkipFor("none", "prompt", "not signed in — sign in to this account");
     expect(hold?.note).not.toBe(none?.note);
+  });
+});
+
+describe("refusalResetOf", () => {
+  /* Shape from a real refusal record on disk (nova a1228fb1, 2026-09-18): the
+     reset is in seconds, under `quotaLimits`. */
+  test("reads seconds out of quotaLimits as epoch millis", () => {
+    expect(refusalResetOf({ quotaLimits: { status: "rejected", resetsAt: 1789880400 } })).toBe(
+      1789880400_000,
+    );
+  });
+
+  test("takes millis and ISO strings, under either container's spelling", () => {
+    expect(refusalResetOf({ rate_limit_info: { resetsAt: 1789880400_000 } })).toBe(1789880400_000);
+    expect(refusalResetOf({ rate_limit: { resets_at: "2026-09-20T05:00:00Z" } })).toBe(
+      Date.parse("2026-09-20T05:00:00Z"),
+    );
+  });
+
+  test("no hint is null, never zero or NaN", () => {
+    expect(refusalResetOf({})).toBeNull();
+    expect(refusalResetOf(null)).toBeNull();
+    expect(refusalResetOf({ quotaLimits: { status: "rejected" } })).toBeNull();
+    expect(refusalResetOf({ quotaLimits: { resetsAt: "soon" } })).toBeNull();
+    expect(refusalResetOf({ quotaLimits: { resetsAt: 0 } })).toBeNull();
   });
 });

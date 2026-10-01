@@ -62,6 +62,17 @@ export type Account = {
    *  work. Absent means no ceiling of yours, which leaves the server's. */
   caps: Record<string, number>;
   signedIn: boolean;
+  /** The credential is there but cannot be revived: its *refresh* token's own
+   *  expiry has passed and the access token has too, so the CLI has nothing to
+   *  refresh with and the next turn on it fails at the door. Optional, since a
+   *  build that predates the field — and every fixture — is simply not lapsed.
+   *
+   *  This is the idle-account failure mode. A reserve nothing runs on never
+   *  refreshes, so after a couple of weeks it is `signedIn` by the file check and
+   *  dead by the clock, and without this the waterfall counted it as `ready ·
+   *  unmeasured` — which `spentOf` reads as *empty*, so inside its tier it was
+   *  the account preferred for the next turn. See `standingOf`. */
+  lapsed?: boolean;
 };
 
 /** The last allowance reading for one account, or why there isn't one. Mirrors
@@ -369,6 +380,12 @@ export function standingOf(
   if (!account.signedIn) {
     return { state: "unusable", label, why: "not signed in — sign in to this account" };
   }
+  /* Unlike "could not be measured", this one is a fact about the credential and
+     not about a network: there is nothing left to refresh with. Counting it
+     ready would hand the next turn to the account guaranteed to refuse it. */
+  if (account.lapsed) {
+    return { state: "unusable", label, why: "sign-in has lapsed — sign in to this account again" };
+  }
   if (!allowance) {
     return { state: "ready", label, unmeasured: "its allowance has not been read yet" };
   }
@@ -385,7 +402,58 @@ export function standingOf(
  *  and a switched-off one will not be asked to, so neither is a subscription
  *  this wall is choosing between. */
 export function usable(accounts: Account[]): Account[] {
-  return accounts.filter((a) => a.enabled && a.signedIn);
+  return accounts.filter((a) => a.enabled && a.signedIn && !a.lapsed);
+}
+
+/* ── remembering a refusal ───────────────────────────────────────────────*/
+
+/** First distrust, and the ceiling it doubles towards. Five minutes is what a
+ *  hush-sized blip is worth; six hours is a window's order of magnitude without
+ *  being so long that a mis-read refusal strands an account for a day. */
+export const REFUSAL_BASE = 5 * MINUTE;
+export const REFUSAL_MAX = 6 * 60 * MINUTE;
+
+/** An account the server has refused, until when, and how many times running. */
+export type Refusal = { until: number; strikes: number };
+
+/** What a refusal does to what is already known about an account.
+ *
+ *  **A refusal used to be believed for a flat five minutes, and then the poll
+ *  contradicted it.** The poll reads `/api/oauth/usage`, whose windows are
+ *  percentages of a *plan* — and a spend cap (the org's, or an individual's:
+ *  "You've hit your individual spend limit", `overageDisabledReason:
+ *  org_spend_cap_reached`) is not a window at all. Observed: 429 on every turn
+ *  while the account's weekly figure read 35%. So five minutes later the reading
+ *  said ready, the sticky card went back to the refusing account, so did every
+ *  new card, and each of them spent a turn being told no. A fixed memory cannot
+ *  be right about a refusal the reading cannot see, so the memory backs off
+ *  instead: each refusal *after the last one lapsed* doubles the distrust, up to
+ *  `REFUSAL_MAX`, and a turn that is actually served on the account clears it
+ *  (`Waterfall.markServed`).
+ *
+ *  `hint` is a reset the server named, in epoch ms — used when it is longer than
+ *  the back-off and capped by the same ceiling, because a stated reset is better
+ *  evidence than a guess but a wrong one (a weekly reset quoted for a monthly
+ *  cap) must still be rechecked within hours.
+ *
+ *  A refusal arriving *while one stands* is the same news from another card on
+ *  the account, not a second strike: twenty cards hitting one wall inside a
+ *  minute must not read as twenty failures and take the back-off to its ceiling. */
+export function refuse(
+  held: Refusal | undefined,
+  now: number,
+  hint: number | null = null,
+): Refusal {
+  const hinted =
+    hint !== null && Number.isFinite(hint) && hint > now
+      ? Math.min(hint, now + REFUSAL_MAX)
+      : 0;
+  if (held && held.until > now) {
+    return { until: Math.max(held.until, hinted), strikes: held.strikes };
+  }
+  const strikes = (held?.strikes ?? 0) + 1;
+  const backoff = Math.min(REFUSAL_BASE * 2 ** Math.min(strikes - 1, 16), REFUSAL_MAX);
+  return { until: Math.max(now + backoff, hinted), strikes };
 }
 
 /** Whether there is a choice of account to be made at all.
