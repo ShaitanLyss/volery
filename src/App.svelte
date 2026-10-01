@@ -2239,6 +2239,7 @@
     focusedId = null;
     studio.clearSelection();
   }
+
   /** A timeline's owner as a plate draws it, or null when it is not on the
    *  wall — which is what decides whether a step can be found in a transcript. */
   function timelineOwner(id: string) {
@@ -2323,7 +2324,6 @@
     showAnnals = false;
     focusCard(owner);
   }
-
 
   function onDraftKey(e: KeyboardEvent) {
     /* A shell line borrows the same keys the palette does, and is checked first
@@ -3027,6 +3027,7 @@
     "live",
     "zoom",
     "register",
+    "timelines",
     "fit",
     "servers",
     "shell",
@@ -3039,7 +3040,6 @@
     "guide",
     "token",
     "chime",
-    "timelines",
     "layout",
   ];
 
@@ -3071,6 +3071,7 @@
     "adopt",
     "read",
     "register",
+    "timelines",
     "servers",
     "shell",
     "find",
@@ -3083,7 +3084,6 @@
     "layout",
     "token",
     "zoom",
-    "timelines",
     "live",
     "spend",
     "tag",
