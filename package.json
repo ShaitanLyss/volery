@@ -1,7 +1,7 @@
 {
   "name": "volery",
   "private": true,
-  "version": "0.30.19",
+  "version": "0.30.20",
   "type": "module",
   "scripts": {
     "dev": "vite",
