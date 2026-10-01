@@ -13,6 +13,7 @@ import {
   needsRousing,
   resumePrompt,
   rouseOrder,
+  rousePromptFor,
 } from "../src/lib/rousing";
 import { withResendMark } from "../src/lib/classify";
 
@@ -139,6 +140,27 @@ describe("needsRousing", () => {
         expect(admitted).toBe(interrupted || jobs > 0);
       }
     }
+  });
+});
+
+describe("rousePromptFor", () => {
+  test("a lost turn over a session on disk is resumed", () => {
+    expect(rousePromptFor(true, true, 0)).toBe("resume");
+    expect(rousePromptFor(true, true, 2)).toBe("resume");
+  });
+
+  test("a lost turn over a session with no transcript is not", () => {
+    /* The card cleared while a spawn was in flight: its row pointed at a fresh
+       session flagged mid-turn, and the resume prompt told an agent with no
+       history that everything above was its own. */
+    expect(rousePromptFor(true, false, 0)).toBe("nothing");
+  });
+
+  test("lost jobs are still reported when there is no turn to resume", () => {
+    /* A different claim, and `jobsPrompt` makes no promise about a cut-off turn. */
+    expect(rousePromptFor(true, false, 1)).toBe("jobs");
+    expect(rousePromptFor(false, true, 1)).toBe("jobs");
+    expect(rousePromptFor(false, false, 1)).toBe("jobs");
   });
 });
 

@@ -22,7 +22,7 @@
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
   import { askShown } from "./asking";
-  import { completionForChoice, slashAt, typingChoice, type Command } from "./commands";
+  import { completionForChoice, slashAt, stirsCard, typingChoice, type Command } from "./commands";
   import { nameBesideProject } from "./naming";
   import { promptPath } from "./shell";
   import { BANG, isBang, kindLabel, tokens, type Completion, type Match } from "./bang";
@@ -155,7 +155,7 @@
    *  `#deliver` as it reaches them. */
   function edited() {
     caretMoved();
-    if (field.banging || !field.text) return;
+    if (field.banging || !stirsCard(field.text)) return;
     skein.stir(focused);
   }
 

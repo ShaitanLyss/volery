@@ -104,6 +104,7 @@
     paletteExtras,
     resolveCommand,
     stillWriting,
+    stirsCard,
     type Command,
   } from "./lib/commands";
   import { isGear, planFile, planRoot } from "./lib/gears";
@@ -2805,7 +2806,7 @@
        which is why the emptiness check is here rather than inside `stir`. */
     setDraft: (t) => {
       field.put(t);
-      if (t && !field.banging) skein.stir(focused);
+      if (stirsCard(t) && !field.banging) skein.stir(focused);
     },
     commands: () => field.commands,
     choices: () => field.choices.map((c) => c.value),

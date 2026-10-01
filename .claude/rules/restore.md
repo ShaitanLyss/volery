@@ -134,6 +134,17 @@ onto time you were spending anyway. Five things about where that hook is:
 - **A `!` line and an empty box wake nothing.** A shell line reaches `bang.rs` and no agent at
   all, so a card you only ever run commands in stays dormant; an empty draft is one you have
   just cleared, which is the opposite of turning towards the card.
+- **Nor does a slash-name still being typed, or one of Volery's own commands**
+  (`commands.ts::stirsCard`), and the first of those is a correctness rule. A stir reads the
+  card's `sessionId` as it starts, and the spawn takes seconds. Typing `/clear` into a dormant
+  card stirred it off `/c`; Enter then ran `Skein.clear`, which saw `dormant` still true,
+  killed nothing and repointed the row — and the spawn landed `--resume` on the session just
+  cleared away. The card drew empty while every prompt after went into the old conversation
+  with all its context, and the next wake started the new session from nothing, met by a
+  resume prompt claiming a history it did not have. Found 2026-10-01 on card `96e29669`.
+  Three guards now, one per link: `clear` awaits `#waking` before asking `dormant`, `stir`
+  skips commands, and `rousePromptFor` sends no resume prompt to a session with no
+  transcript — it notes it and puts the flag down instead.
 
 `stir` is once-per-card-per-failure rather than once per keystroke. `#spawn` is single-flight
 and returns `"already"` the moment `dormant` is false, so the second character costs a

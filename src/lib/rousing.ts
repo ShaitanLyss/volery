@@ -106,6 +106,33 @@ export function needsRousing(card: Rousable, jobs: number): boolean {
   return card.interrupted || jobs > 0;
 }
 
+/** Which prompt a card the gate let through is owed, or none at all.
+ *
+ *  `resumePrompt` tells the agent *this is the same session resumed, everything
+ *  above is yours* — which is only true of a session with something on disk. A
+ *  card flagged `interrupted` over a session with no transcript has nothing to
+ *  resume: the spawn starts it from nothing, and the prompt then sends a fresh
+ *  agent looking for half-finished work it never did, on the strength of a
+ *  history it cannot see. Found on a card cleared while a spawn was in flight,
+ *  whose row ended up pointing at a fresh session marked mid-turn (see
+ *  `Skein.clear`), but the rule does not depend on how a card gets there.
+ *
+ *  Jobs are a different claim — work that started and was never reported on —
+ *  and they still deserve their prompt, which says nothing about a cut-off turn.
+ *  `"nothing"` is a card the queue should leave dormant and stop flagging. */
+export function rousePromptFor(
+  lost: boolean,
+  hasTranscript: boolean,
+  jobs: number,
+): "resume" | "jobs" | "nothing" {
+  if (lost && hasTranscript) return "resume";
+  return jobs > 0 ? "jobs" : "nothing";
+}
+
+/** Said instead of a resume prompt to a card with nothing on disk to resume. */
+export const NOTHING_TO_RESUME_NOTE =
+  "not resumed by skein — this session has nothing on disk to pick up";
+
 /** What the resumed prompt says while it is folded away.
  *
  *  A resumed card shows a `you` line you did not write, which is the one thing

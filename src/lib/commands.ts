@@ -336,6 +336,25 @@ export function typingName(draft: string): string | null {
   return m ? m[1].toLowerCase() : null;
 }
 
+/** Whether typing this draft should wake the card it is aimed at (`Skein.stir`).
+ *
+ *  Not while a bare name is still being written — `/c` could yet be `/clear`,
+ *  and nothing can say which until the name is finished — and not for one of
+ *  Volery's own commands, which this window carries out and no process reads.
+ *  The second is a saving; the first is a correctness rule. A stir reads the
+ *  card's session when it starts, and `/clear` changes that session underneath
+ *  it: the spawn it set off landed `--resume` on the conversation being cleared
+ *  away, and every prompt afterwards went into the old context while the card
+ *  drew empty. A CLI or project command loses only its head start — the send
+ *  still wakes the card, through `#deliver`. */
+export function stirsCard(draft: string): boolean {
+  if (!draft || typingName(draft) !== null) return false;
+  const head = /^\/([a-z0-9-]+)(?:\s|$)/i.exec(draft);
+  if (!head) return true;
+  const name = head[1].toLowerCase();
+  return !COMMANDS.some((c) => c.by === "skein" && c.name === name);
+}
+
 /** A slash-name sitting in a draft, and where it starts and stops.
  *
  *  `from` is the slash itself and `to` is one past the last character of the

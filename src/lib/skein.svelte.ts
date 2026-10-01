@@ -67,7 +67,9 @@ import {
   resumePrompt,
   unansweredRousePrompt,
   ALREADY_ROUSED_NOTE,
+  NOTHING_TO_RESUME_NOTE,
   needsRousing,
+  rousePromptFor,
   rouseOrder,
 } from "./rousing";
 import {
@@ -1717,6 +1719,21 @@ export class Skein {
            off a file that has not arrived. `loadHistory` shares its in-flight
            read, so this is the same one read either way. */
         await this.loadHistory(conv);
+        /* `"none"` is the file not being there, or holding nothing a fold
+           keeps; `"error"` is not knowing, and keeps the old behaviour rather
+           than withholding a resume on a read that merely failed. */
+        const owed = rousePromptFor(lost, conv.historyState !== "none", jobs.length);
+        if (owed === "nothing") {
+          /* Interrupted, with no session to resume. Left dormant, said once,
+             and the flag put down — there is no process here for `set_mid_turn`
+             to race, and left standing it would say this at every launch. */
+          conv.note(NOTHING_TO_RESUME_NOTE);
+          conv.interrupted = false;
+          void invoke("update_conversation", { id: conv.id, interrupted: false }).catch(
+            () => {},
+          );
+          continue;
+        }
         if (unansweredRousePrompt(conv.history) !== null) {
           /* Said rather than done silently, for the reason every other thing
              Skein does on its own behalf is said: a card left deliberately
@@ -1770,7 +1787,7 @@ export class Skein {
              `lost || jobs.length`, so one of the two always applies. */
           await this.send(
             conv,
-            lost ? resumePrompt(jobs, Date.now()) : jobsPrompt(jobs, Date.now()),
+            owed === "resume" ? resumePrompt(jobs, Date.now()) : jobsPrompt(jobs, Date.now()),
           );
           await this.#toldAboutJobs(conv, jobs);
         }
@@ -2869,11 +2886,23 @@ export class Skein {
    *  Order matters: `retiring` before the kill, or the exit code from our own
    *  `close_conversation` lands as a crash on the fresh session that replaced
    *  it. It is only set when there is a child to kill, since nothing would
-   *  clear it otherwise and a later genuine crash would go unreported. */
+   *  clear it otherwise and a later genuine crash would go unreported.
+   *
+   *  **And a spawn in flight is waited out first**, or `dormant` answers for a
+   *  process that is seconds from existing. Typing `/clear` into a dormant card
+   *  is itself what used to start one — `stir` on the first keystroke, reading
+   *  the *old* `sessionId` as it went — so the clear saw a dormant card, killed
+   *  nothing, repointed the row, and the spawn then landed `--resume` on the
+   *  session that had just been cleared away. The card drew empty while every
+   *  prompt after it went into the old conversation with the whole old context,
+   *  and the next wake started the new session from nothing. `stir` no longer
+   *  fires on a command (`stirsCard`); this is the guard for every other path
+   *  into `#spawn` — the rouse queue, a relay wake, a click. */
   async clear(conv: Conversation) {
     this.#dropHeal(conv);
     this.#dropNudge(conv);
     try {
+      await this.#waking.get(conv.id)?.catch(() => {});
       if (!conv.dormant) {
         conv.retiring = true;
         await invoke("close_conversation", { id: conv.id });

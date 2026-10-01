@@ -14,6 +14,7 @@ import {
   slashAt,
   spansWhole,
   stillWriting,
+  stirsCard,
   vocabRow,
   typingChoice,
   typingName,
@@ -22,6 +23,30 @@ import {
 const names = (draft: string) => matchCommands(draft).map((c) => c.name);
 const values = (draft: string) => matchChoices(draft).map((c) => c.value);
 const named = (name: string) => COMMANDS.find((c) => c.name === name)!;
+
+describe("which drafts wake the card they are typed into", () => {
+  test("prose does, and an empty draft does not", () => {
+    expect(stirsCard("fix the build")).toBe(true);
+    expect(stirsCard("")).toBe(false);
+  });
+
+  test("not while a name is still being typed — /c could yet be /clear", () => {
+    /* The bug: a stir off `/c` read the old session and landed `--resume` on it
+       after `/clear` had repointed the card, so the clear never took. */
+    for (const d of ["/", "/c", "/cle", "/clear", "/compact"]) expect(stirsCard(d)).toBe(false);
+  });
+
+  test("not for one of Volery's own, which no process reads", () => {
+    expect(stirsCard("/rename the auth work")).toBe(false);
+    expect(stirsCard("/btw what was that flag")).toBe(false);
+    expect(stirsCard("/gear planning")).toBe(false);
+  });
+
+  test("a command the agent reads does, once its name is finished", () => {
+    expect(stirsCard("/compact keep the plan")).toBe(true);
+    expect(stirsCard("/commit the fix")).toBe(true);
+  });
+});
 
 describe("the palette opens on a slash and closes on a space", () => {
   test("a bare slash offers everything there is", () => {
