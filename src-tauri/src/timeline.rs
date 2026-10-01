@@ -355,10 +355,10 @@ fn state_in(v: Option<&Value>, what: &str) -> Option<Result<State, String>> {
     match v {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(State::parse(s).ok_or_else(|| {
-            format!("{what}: {s:?} is not a state — use `todo`, `active` or `done`")
+            format!("{what}: {s:?} is not a state — use \"todo\", \"active\" or \"done\"")
         })),
         Some(other) => Some(Err(format!(
-            "{what}: a state is one of the words `todo`, `active` or `done`, not {other}"
+            "{what}: a state is one of the words \"todo\", \"active\" or \"done\", not {other}"
         ))),
     }
 }
@@ -759,7 +759,7 @@ fn render(t: &Row) -> String {
 /* ── the tools ───────────────────────────────────────────────────────────── */
 
 const SUB_SCHEMA: &str = "A sub-step: a short title string, or {\"title\", \"state\"} with \
-                          state `todo` | `active` | `done`.";
+                          state \"todo\" | \"active\" | \"done\".";
 
 pub fn read_schema() -> Value {
     json!({
@@ -1023,7 +1023,7 @@ fn do_mark(app: &AppHandle, caller: &str, args: &Value) -> String {
         }
     }
     if marks.is_empty() {
-        return "nothing to mark — give paths under `done`, `active` or `todo`".into();
+        return "nothing to mark — give paths under \"done\", \"active\" or \"todo\"".into();
     }
 
     let store = app.state::<Store>();

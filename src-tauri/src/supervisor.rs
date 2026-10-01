@@ -3536,6 +3536,7 @@ mod tests {
         ("spawn.rs", include_str!("spawn.rs")),
         ("status.rs", include_str!("status.rs")),
         ("supervisor.rs", include_str!("supervisor.rs")),
+        ("timeline.rs", include_str!("timeline.rs")),
     ];
 
     /// **The list above is hand-written, so this is what keeps it honest.**
