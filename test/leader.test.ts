@@ -136,6 +136,7 @@ describe("the which-key hint", () => {
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
       { keys: "ts", label: "synth" },
+      { keys: "ws", label: "every screen / one screen" },
     ]);
   });
 
@@ -148,6 +149,10 @@ describe("the which-key hint", () => {
 
   test("the toy shelf is its own branch", () => {
     expect(offers("t")).toEqual([{ keys: "s", label: "synth" }]);
+  });
+
+  test("so is the window", () => {
+    expect(offers("w")).toEqual([{ keys: "s", label: "every screen / one screen" }]);
   });
 
   test("a completed chord offers nothing — there is nothing left to press", () => {

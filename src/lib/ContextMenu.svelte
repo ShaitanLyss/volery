@@ -146,8 +146,8 @@
   <div
     class="menu"
     bind:this={el}
-    style:left="{left}px"
-    style:top="{top}px"
+    style:left="calc({left}px - var(--span-x, 0px))"
+    style:top="calc({top}px - var(--span-y, 0px))"
     onpointerdown={(e) => e.stopPropagation()}
     role="menu"
     tabindex="-1"
@@ -241,9 +241,17 @@
 </div>
 
 <style>
+  /* The whole window rather than `inset: 0`, which while the studio is spread
+     over every screen would be the home screen only — the studio root is then
+     the containing block for anything fixed inside it (`span.ts`), and a press
+     on another screen has to close this too. The two are the same box when
+     nothing is spread, since the offsets are then zero. */
   .catch {
     position: fixed;
-    inset: 0;
+    left: calc(-1 * var(--span-x, 0px));
+    top: calc(-1 * var(--span-y, 0px));
+    width: 100vw;
+    height: 100vh;
     z-index: 60;
   }
 

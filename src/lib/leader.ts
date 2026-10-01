@@ -40,7 +40,8 @@ export const LAPSE_MS = 1000;
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ToyId }
-  | { kind: "open"; what: "timelines" };
+  | { kind: "open"; what: "timelines" }
+  | { kind: "window"; act: "span" };
 
 /** One sequence the leader opens onto.
  *
@@ -68,6 +69,11 @@ export const CHORDS: readonly Chord[] = [
   /* `a` for the archive: one letter, because it is a place you go rather than
      a family of things, and nothing else here begins with it. */
   { keys: "a", label: "archived timelines", verb: { kind: "open", what: "timelines" } },
+  /* `w` is the window, after nvim's `<C-w>` family: what the studio window
+     itself does rather than anything on the wall. A family rather than a
+     letter, because placing a window is several verbs (maximise, minimise,
+     which screen) and they want to sit together in the hint. */
+  { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
 ];
 
 /** What a keypress did to the leader sequence.

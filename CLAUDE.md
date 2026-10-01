@@ -72,7 +72,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # browser,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
                          # shell, finding, leader, synth, voice, steward, office, styles, zoom,
-                         # timeline
+                         # timeline, span
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -528,6 +528,15 @@ these apply when you open almost anything.
   owes the same scrub**, and the cheapest way to owe it is to go through `clip::keep`, which is
   already on every capped field. It is silent on purpose — see `.claude/rules/clipping.md` for
   why the marker rule next door does not reach it.
+- **Something `position: fixed` at viewport coordinates owes `--span-*`.** Spread over every
+  screen, the studio root sits over the home screen with `contain: layout`, which makes it the
+  containing block for every fixed descendant — that is what lands each centred dialog on the
+  home screen for free, and what shifts anything placed at a `clientX` or a
+  `getBoundingClientRect` by the home screen's offset. `ContextMenu` and `Overflow` subtract
+  `var(--span-x/-y/-r, 0px)`, and a full-window click-catcher is sized off them rather than
+  `inset: 0`. The variables are zero when nothing is spread. And a dialog sized off the
+  window sizes in `cqh`/`cqw`, not `vh`/`vw`: the root is also a size container while spread,
+  and `vh` would still mean all three screens. See `span.ts` and `window.rs`.
 - **Nothing standing on the wall may be transparent.** The backdrop draws behind everything,
   so whatever stands on the wall is the only thing occluding it — a dormant card was
   `background: transparent` and a leaf drifted through the middle of one. The deliberate
@@ -612,6 +621,21 @@ arms return errors rather than silently no-oping.
   achromatic and **colour is reserved for status** — celadon working, amber asking, rust
   failed. Don't introduce decorative colour.
 - Prose in the UI is lowercase, quiet, and sentence-shaped ("dormant — will wake on send").
+- **The keyboard reaches everything; the mouse is optional.** Every action and every menu
+  ships with a keyboard path, nvim style — not as a follow-up. That is Lyss's standing
+  requirement, and a button with no key is an unfinished feature. In order of preference:
+  - **A leader chord** in `leader.ts`'s `CHORDS`: `<space>` then a family letter then a verb
+    (`ff` find file, `ts` synth, `ws` every screen). Group by family rather than spending a
+    top-level letter, so the which-key hint (`Which.svelte`) reads as a menu. The label goes
+    beside the chord and `test/leader.test.ts` holds the table.
+  - **A direct binding** in `App.svelte`'s `onGlobalKey`, only for something used constantly
+    or that must work mid-draft (Escape, `alt+I`, `ctrl+shift+T`). Read it against
+    `onDraftKey` first, because the two ladders share every key.
+  - **Inside a menu or panel**: `j`/`k` or the arrows move, Enter takes, Escape closes,
+    and focus lands somewhere useful when it opens.
+
+  Say the chord where the mouse user will see it, in the control's `title`, in the house form
+  `"… (space then w s)"`. Older surfaces still have no key; close the gap when you are in one.
 - **Project conversations** spawn with `--dangerously-skip-permissions`, so a broadcast is the
   most destructive gesture in the app; that is why it costs a modifier (Ctrl+Enter) and warns
   when targets share a working tree. **Chat conversations** (`conversation.kind`) spawn with

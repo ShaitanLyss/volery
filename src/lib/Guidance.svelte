@@ -401,8 +401,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
-    width: min(84ch, 94vw);
-    height: min(38rem, 84vh);
+    width: min(84ch, 94cqw);
+    height: min(38rem, 84cqh);
     border: 1px solid var(--edge);
     border-radius: 5px;
     background: var(--surface);

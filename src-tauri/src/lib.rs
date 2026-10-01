@@ -295,6 +295,9 @@ pub fn run() {
            answer: a quit in the first seconds of a launch has nothing to
            warn about. See `quit.rs`. */
         .manage(Quit::default())
+        /* Whether the studio is spread over every screen, and the frame it came
+           from. See `window.rs`. */
+        .manage(window::Span::default())
         /* Recent pins per card, for the rate in `pin.rs`. Nothing survives a
            quit on purpose: it is a rate over one minute, and a rate that
            outlived a restart would be a restart that cost you the wall. */
@@ -387,6 +390,16 @@ pub fn run() {
          * exit. The only way out was Task Manager. */
         .on_window_event(|window, event| {
             if window.label() == "main" {
+                /* A spread window that something moved goes back over its box.
+                   `hold` is a no-op while it is not spread. */
+                if matches!(
+                    event,
+                    tauri::WindowEvent::Moved(_)
+                        | tauri::WindowEvent::Resized(_)
+                        | tauri::WindowEvent::ScaleFactorChanged { .. }
+                ) {
+                    window::hold(window);
+                }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     /* Where it was, for the next launch. Here rather than on every
                        `Moved`/`Resized`, which on a dragged window is a database
@@ -397,7 +410,7 @@ pub fn run() {
                        held back still moved the window to wherever it is now, and
                        a frame saved only on the way out would forget every quit
                        somebody thought better of. */
-                    if let Some(frame) = window::frame_of(window) {
+                    if let Some(frame) = window::frame_to_keep(window) {
                         if let Some(store) = window.app_handle().try_state::<Store>() {
                             if let Ok(conn) = store.0.lock() {
                                 let _ = store::save_window_frame(&conn, &frame);
@@ -428,6 +441,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            window::span_screens,
             supervisor::spawn_conversation,
             supervisor::send_prompt,
             supervisor::interrupt_conversation,

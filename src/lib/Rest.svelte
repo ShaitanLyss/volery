@@ -88,9 +88,21 @@
 </div>
 
 <style>
+  /* Every screen, but its words on the home one. Spread over every monitor the
+     studio root is the containing block for anything fixed (`span.ts`), so
+     `inset: 0` would black out the home screen and leave the wall on the
+     others free to be worked — a break offered rather than taken. The box is
+     sized to the whole window and padded back in to the home screen, which is
+     where `place-items: center` then centres the card. All four offsets are
+     zero when nothing is spread. */
   .rest {
     position: fixed;
-    inset: 0;
+    left: calc(-1 * var(--span-x, 0px));
+    top: calc(-1 * var(--span-y, 0px));
+    width: 100vw;
+    height: 100vh;
+    box-sizing: border-box;
+    padding: var(--span-y, 0px) var(--span-r, 0px) var(--span-b, 0px) var(--span-x, 0px);
     /* Above everything, the panel and the dock included — this is the one thing
        in the app that is allowed to be. */
     z-index: 9000;

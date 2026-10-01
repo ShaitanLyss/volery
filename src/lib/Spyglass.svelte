@@ -644,8 +644,8 @@
     z-index: 50;
     display: flex;
     flex-direction: column;
-    width: min(150ch, 90vw);
-    height: min(74vh, 780px);
+    width: min(150ch, 90cqw);
+    height: min(74cqh, 780px);
     border: 1px solid var(--rule);
     border-radius: 5px;
     /* Opaque, like everything else standing on this wall. */

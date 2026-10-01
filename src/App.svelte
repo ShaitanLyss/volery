@@ -162,6 +162,8 @@
   import { Synth } from "./lib/synth.svelte";
   import { Editor } from "./lib/nvim.svelte";
   import WindowControls from "./lib/WindowControls.svelte";
+  import { span } from "./lib/span.svelte";
+  import { homeInsets, spreadPan } from "./lib/span";
 
   const studio = new Studio();
   const skein = new Skein(studio);
@@ -380,6 +382,7 @@
   const leader = new Leader((verb) => {
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.kind === "open") showAnnals = true;
+    else if (verb.kind === "window") void span.toggle();
     else if (verb.toy === "synth") synth.show();
   });
 
@@ -989,7 +992,38 @@
      opens. The width is decided by `panelWidth` (pure, tested) and lives with
      the viewport, which is the other half of how this window is divided. */
   let winW = $state(window.innerWidth);
-  const panelPx = $derived(panelWidth(studio.panelW, winW));
+  let winH = $state(window.innerHeight);
+  let dpr = $state(window.devicePixelRatio || 1);
+  /** Where the home screen sits inside a window spread over every screen, or
+   *  `null` when it is not. See `span.ts`. */
+  const spread = $derived(span.view ? homeInsets(span.view, dpr, { w: winW, h: winH }) : null);
+  /** The width the chrome actually has: the whole window, or the home screen's
+   *  share of it while spread — a panel sized against three screens would be as
+   *  wide as one of them. */
+  const roomW = $derived(spread ? winW - spread.x - spread.r : winW);
+
+  /* Spreading moves the surface's origin a screen's width and a header's height
+     — so without this, everything you were looking at would jump onto another
+     monitor at the press. Panned by the same amount back on the way out, which
+     includes a spread Rust ended on its own. Plain rather than `$state`: it is
+     bookkeeping for the next transition and nothing draws from it. */
+  let spreadShift: { x: number; y: number } | null = null;
+  $effect(() => {
+    const view = span.view;
+    untrack(() => {
+      if (view && !spreadShift) {
+        spreadShift = spreadPan(view, bar?.offsetHeight ?? 0);
+        studio.x += spreadShift.x;
+        studio.y += spreadShift.y;
+      } else if (!view && spreadShift) {
+        studio.x -= spreadShift.x;
+        studio.y -= spreadShift.y;
+        spreadShift = null;
+      } else return;
+      studio.save();
+    });
+  });
+  const panelPx = $derived(panelWidth(studio.panelW, roomW));
   let grip = $state<{ x: number; w: number } | null>(null);
 
   function gripDown(e: PointerEvent) {
@@ -1012,7 +1046,7 @@
   function gripMove(e: PointerEvent) {
     if (!grip) return;
     /* The panel is on the right: leftwards is wider. */
-    studio.panelW = panelWidth(grip.w + (grip.x - e.clientX), winW);
+    studio.panelW = panelWidth(grip.w + (grip.x - e.clientX), roomW);
   }
 
   function gripUp() {
@@ -3325,11 +3359,18 @@
   onpaste={onPaste}
   onpointermove={trackPointer}
   bind:innerWidth={winW}
+  bind:innerHeight={winH}
+  bind:devicePixelRatio={dpr}
 />
 
 <div
   class="studio"
+  class:spanning={!!spread}
   style:--burn={burn}
+  style:--span-x={spread ? `${spread.x}px` : undefined}
+  style:--span-y={spread ? `${spread.y}px` : undefined}
+  style:--span-r={spread ? `${spread.r}px` : undefined}
+  style:--span-b={spread ? `${spread.b}px` : undefined}
   oncontextmenu={onContextMenu}
   role="presentation"
 >
@@ -3377,7 +3418,21 @@
 
   <!-- This bar IS the title bar. Undecorated window, so dragging, double-click
        to maximise, and the window buttons all live here. -->
-  <header class="bar" data-tauri-drag-region bind:this={bar}>
+  <!-- While spread, the bar stops being a title bar: a drag would carry a window
+       the size of every screen off them, and a double-click would maximise it
+       onto one. Tauri's drag script listens on `document`, so stopping the
+       press here is the whole of the switch. Not a control, so no role: it is
+       the banner, and the handler only ever *declines* a gesture. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <header
+    class="bar"
+    data-tauri-drag-region
+    bind:this={bar}
+    onmousedown={(e) =>
+      spread &&
+      (e.target as HTMLElement).hasAttribute?.("data-tauri-drag-region") &&
+      e.stopPropagation()}
+  >
     <!-- Never drawn, never reachable, and the only honest place to read a
          natural width from: measuring the real items would mean measuring the
          thing the measurement is about to change, which is how a fold gets into
@@ -4101,4 +4156,66 @@
     line-height: 1.5;
   }
 
+
+  /* ── spread over every screen ──────────────────────────────────────────────
+     One window over every monitor (`window.rs`), the wall across the whole of
+     it, the chrome on the home screen. The studio root is placed over the home
+     screen and given `contain: layout`, which makes it the containing block for
+     everything `position: fixed` inside it — so every centred panel and dialog
+     lands on the home screen with no change of its own, rather than in the
+     middle of the union, which on an L-shaped desk is a seam between two
+     screens or nowhere at all. The two things placed at viewport coordinates,
+     the context menu and the header's overflow, subtract `--span-*` instead.
+
+     The wall escapes the other way: the three layers `Canvas` hangs off
+     `main.wall` — the surface, the strands and the glass — are fixed to the
+     whole window. Reached from here by class rather than given a prop, because
+     the point is that `Canvas` keeps measuring its own box and needs to know
+     nothing; `getBoundingClientRect` already answers for wherever it is. */
+  .studio.spanning {
+    position: fixed;
+    left: var(--span-x);
+    top: var(--span-y);
+    right: var(--span-r);
+    bottom: var(--span-b);
+    height: auto;
+    contain: layout;
+    /* And a size container, so a dialog sized in `cqh`/`cqw` is sized against
+       the home screen rather than the whole spread — `vh` always means the
+       window, which on a 150% window over three screens is taller than the home
+       screen is. With no container (nothing spread) those units fall back to
+       the viewport, so the dialogs are unchanged on one screen. */
+    container-type: size;
+  }
+  .studio.spanning .wall > :global(.surface),
+  .studio.spanning .wall > :global(canvas.flow),
+  .studio.spanning .wall > :global(.glass) {
+    position: fixed;
+    left: calc(-1 * var(--span-x));
+    top: calc(-1 * var(--span-y));
+    right: auto;
+    bottom: auto;
+    width: 100vw;
+    height: 100vh;
+  }
+  /* Under the bar and the dock now, where it used to be beside them. */
+  .studio.spanning .wall {
+    z-index: 0;
+  }
+  /* The horizon would otherwise be painted after the wall at the same level,
+     tinting the cards on the home screen. */
+  .studio.spanning::after {
+    z-index: -1;
+  }
+  /* The wall runs under all three now, and nothing standing on it may be
+     transparent. The surface is out of the flow, so the panel is pushed to the
+     edge it used to be pushed to by the surface's width. */
+  .studio.spanning .bar,
+  .studio.spanning .side,
+  .studio.spanning :global(.dock) {
+    background: var(--ink);
+  }
+  .studio.spanning .side {
+    margin-left: auto;
+  }
 </style>

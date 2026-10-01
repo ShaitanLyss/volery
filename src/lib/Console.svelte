@@ -154,8 +154,8 @@
     z-index: 50;
     display: flex;
     flex-direction: column;
-    width: min(118ch, 84vw);
-    height: min(62vh, 620px);
+    width: min(118ch, 84cqw);
+    height: min(62cqh, 620px);
     border: 1px solid var(--rule);
     border-radius: 5px;
     /* Opaque, like everything else standing on this wall — the backdrop draws

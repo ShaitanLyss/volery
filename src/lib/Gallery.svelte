@@ -840,8 +840,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.7rem;
-    width: min(94vw, 116rem);
-    height: min(92vh, 76rem);
+    width: min(94cqw, 116rem);
+    height: min(92cqh, 76rem);
     padding: 0.8rem;
     border: 1px solid var(--rule);
     border-radius: 6px;

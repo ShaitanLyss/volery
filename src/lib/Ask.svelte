@@ -380,7 +380,7 @@
        length would otherwise push the field it is to be answered in off the
        bottom of the window. Stepping through the questions is most of what
        keeps this from being reached; this is the floor under it. */
-    max-height: min(52vh, 30rem);
+    max-height: min(52cqh, 30rem);
     overflow-y: auto;
   }
 

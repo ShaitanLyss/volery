@@ -390,8 +390,8 @@
     display: flex;
     flex-direction: column;
     gap: 0.55rem;
-    width: min(78ch, 94vw);
-    max-height: 80vh;
+    width: min(78ch, 94cqw);
+    max-height: 80cqh;
     border: 1px solid var(--edge);
     border-radius: 5px;
     background: var(--surface);

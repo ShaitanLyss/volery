@@ -90,15 +90,15 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding-top: 7vh;
+    padding-top: 7cqh;
     background: color-mix(in srgb, var(--ink) 78%, transparent);
   }
 
   .annals {
     display: flex;
     flex-direction: column;
-    width: min(900px, 92vw);
-    max-height: 84vh;
+    width: min(900px, 92cqw);
+    max-height: 84cqh;
     background: var(--surface);
     border: 1px solid var(--edge);
     border-radius: 6px;
