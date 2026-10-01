@@ -752,6 +752,112 @@ schema and spawning the real server only on the first `tools/call` — takes the
 roughly a small Rust process, and subsumes the hook. It costs an MCP server implementation, a
 schema cache and a version-drift story, which is why it is named here rather than built.
 
+## One stuck tab is everybody's timeout, and the hook says which
+
+Sink e7431978, from a nova card on the evening of 2026-09-30: every `mcp__browser__*` call
+failed after thirty seconds with `TimeoutError: async initializeServer: Timeout 30000ms
+exceeded`, the trace ending at `<ws connected>`. The browser was up, the port answered, the
+socket opened — and nothing said what it was waiting for. The card fell back to its own
+playwright and lost the user's sign-ins with it.
+
+**The wait is playwright's own, and it is for every tab.** playwright-core 1.64's
+`CRBrowser.connect` auto-attaches to every target and then `_waitForAllPagesToBeInitialized`,
+so one page that never finishes initialising holds the connect of every card, and every retry
+spends the same thirty seconds. `tools/probe-cdp-stall.ts` built the suspects one at a time on
+a private Chrome, repeated across four runs:
+
+```text
+healthy page            playwright connected in 202ms
+alert() left open       playwright FAILED (8s cap)   -> close that tab -> connected in 123ms
+renderer in a loop      playwright FAILED (8s cap)   -> close that tab -> connected in 917ms
+held by a stuck client  playwright connected in 96ms
+```
+
+So a dialog or a hung page does it, closing that one tab over `/json/close` fixes it while it
+is still stuck, and a CDP client that holds `waitForDebuggerOnStart` and never lets go — the
+third suspect, since the nova card was running its own playwright scripts that night — does
+not.
+
+**And then it happened live, the same afternoon, and the culprit was not anything an agent
+opened.** After a Volery restart every `mcp__browser__*` call hung exactly as reported, and
+asking each tab directly found one that answered nothing at all, not even `Page.enable`: the
+*"Log in with Atlassian account"* tab. Closing that one tab was the whole fix; the next
+`browser_tabs` answered at once. Nobody opened it. A **machine Chrome policy**
+(`RestoreOnStartupURLs`, `RestoreOnStartup=4`) puts Reach and the Confluence wiki — which
+redirects to that Atlassian login — into every Chrome that runs its normal startup. Playwright's
+own browsers never had them, because playwright launches with `--no-startup-window` and opens
+its pages over CDP.
+
+**What is built is an explanation, not a fix, and it only runs after a failure.** The user
+ruled out a check in front of every call — ~10–30ms on each one to explain the rare one —
+and the CLI has an event that costs nothing on success. `tools/probe-tool-failure.ts`,
+2.1.285: an MCP result carrying `isError: true` fires **`PostToolUseFailure`** and not
+`PostToolUse`, hands the server's text over verbatim as `error`, and its `additionalContext`
+reaches the model. So `hooks::settings` registers that event with no matcher, `reply` routes
+it, and `hooks::diagnoses_browser` lets through only a call under `mcp__browser__` whose error
+says `initializeServer`. Once playwright *is* connected it speaks for itself — a dialog
+becomes a modal state it names — so a second voice there would say less than the first.
+
+`browser::stalled_tabs` then asks each `page` and `iframe` target over its own socket for
+three things under a 2s budget: `Page.enable`, `Runtime.evaluate("1")`, and a promise only a
+timer can resolve. **The third is the check**; the other two are what playwright's attach
+needs first:
+
+- **`evaluate("1")` alone is not enough.** V8 serves an inspector evaluate on an interrupt,
+  mid-loop, and an early run had it answer for the looping page. A promise resolved by
+  `setTimeout(0)` needs the event loop to turn, and a stuck page's does not.
+- **A dialog cannot be told from a hang.** A fresh session on a stuck tab gets no answer even
+  to `Page.enable` and is not re-told about a dialog already open, so the note says *not
+  answering* and names both causes rather than guessing one.
+- **A silent tab is asked twice before it is named.** A page mid-way through a cross-site SSO
+  redirect can miss a window and answer the next. Two rounds and the list fit in the ten
+  seconds the hook is given, and `the_failure_hook_is_registered_broad_and_outlasts_the_look`
+  holds that.
+- **Time spent getting through is not silence.** Every wait is measured against one deadline,
+  and if connecting and the handshake leave less than half of it, the tab reads as *unasked*,
+  never as stuck — on a loaded machine (and a stuck tab means every card's hook is running at
+  once) a handshake that leaves a few milliseconds would otherwise name a healthy tab, twice.
+  A tab is only named when it was asked and said nothing, because the next thing an agent may
+  do with the name is close it.
+- **Three readings, not two.** *Stuck* is nothing answered, which is both measured stalls and
+  the live one. *Frozen* is the protocol answering and the timer never firing — a background
+  tab Chrome has frozen probably looks like this, and whether it holds playwright is **not**
+  measured, so it is named as a weaker suspect and never as the cause. *Unasked* is counted,
+  so a reading where nothing could be asked is never reported as "every tab answered". The
+  adversarial review found both of the last two would have been.
+
+**The note hands over the close and the reason not to use it blindly.** Each tab comes with
+`curl.exe -s -X PUT http://127.0.0.1:9222/json/close/<id>`, and with the sentence that a tab
+the agent did not open may be the user's. The title and URL are the *page's* words, about to
+be read by an agent holding a shell, so they are scrubbed (`crate::clean`), clipped, stripped
+of quotes and newlines and set inside quotes after Volery's own sentence —
+`a_tab_title_cannot_break_out_of_its_quotes` holds that, including the Unicode lookalikes — curly
+quotes, U+2028/2029/0085, bidi controls — and the backtick, which would open a code span running
+into the close command. Nothing in the check closes, dismisses or navigates anything.
+
+**Proven and not.** The check's logic is proven against real stalls by the probe, which runs
+the same three requests in TypeScript. The Rust is type-checked, and `tools/lift-browser.ts`
+runs the decision and the note for real. Not run: `stalled_tabs` itself against a live
+Chrome, and the hook end to end on a card. This machine cannot link the app.
+
+### And the browser no longer starts with them
+
+The diagnosis names a stuck tab; it does not stop the policy putting one back on the next
+start. So `raw_spawn` passes **`--no-startup-window`**, the same flag playwright does, and
+`open_first_page` puts one `about:blank` up over `/json/new` once the port answers — a parked
+browser needs a window to park and an agent a page to drive, and a mandatory policy beats any
+URL on the command line, so this is the one spelling that keeps the policy's pages out. Probed
+against headed Chrome 154 on its own profile: no policy page at start, and `/json/new` opens an
+ordinary one. `park_soon` gives that window up to a second to become enumerable, since
+`/json/new` answering is a beat ahead of its `HWND`; a miss is still caught by the re-park each
+new target triggers. The widget's own restore of the page you were looking at goes through
+`browser_open` as before, so nothing here duplicates it. Sink `da073ea8`, settled by this.
+
+Not covered by the probe: the *parked* path end to end (window created by `/json/new`, then
+parked), headless with the flag, and a person closing the parked window — with no startup window
+Chrome stays up on its debugging port, which is what playwright relies on, but nothing here
+watched that. The running app is several builds behind and cannot be rebuilt on this machine.
+
 ## What is not built
 
 - **No navigation bar.** The agent navigates, and `Page.navigate` is wired in `pane.svelte.ts`

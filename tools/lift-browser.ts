@@ -68,6 +68,7 @@ const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
 const HOOKS = "src-tauri/src/hooks.rs";
 const ASK = "src-tauri/src/ask.rs";
 const BROWSER = "src-tauri/src/browser.rs";
+const CLEAN = "src-tauri/src/clean.rs";
 
 /** What the wake decisions are built out of, in declaration order. */
 const HOOKS_ITEMS = [
@@ -79,6 +80,8 @@ const HOOKS_ITEMS = [
   "const WAKE_TIMEOUT",
   "fn wakes_browser",
   "fn after",
+  "fn diagnoses_browser",
+  "fn stall_note",
   "const PRE_TOOL_TIMEOUT_S",
   "fn settings",
 ];
@@ -102,13 +105,30 @@ const BROWSER_ITEMS = [
   "const SHARED_START_WAIT",
   "fn address",
   "fn mcp_server",
+  /* What the failure hook reports, and the budget its ceiling is held to. The
+     network half, `stalled_tabs`, stays behind: it dials a real Chrome, and
+     `tools/probe-cdp-stall.ts` is where that half is measured. */
+  "struct Stall",
+  "struct Reading",
+  "const STALL_BUDGET",
 ];
+
+/** `stall_note` scrubs a page's own words through this, and the scrub is half
+ *  of what `a_tab_title_cannot_break_out_of_its_quotes` asserts — so it is the
+ *  real one, not a stand-in that passes text through. */
+const CLEAN_ITEMS = ["fn impossible", "fn scrub"];
 
 const TESTS = [
   "only_the_shared_browsers_tools_wake_a_browser",
   "the_wake_prefix_is_the_server_the_config_registers",
   "the_hook_outlives_the_wait_it_may_have_to_do",
   "a_chat_card_gets_no_port_to_wake_anything_with",
+  "the_failure_hook_is_registered_broad_and_outlasts_the_look",
+  "only_the_shared_browsers_silent_timeout_is_diagnosed",
+  "a_stall_note_names_the_tab_and_how_to_close_it",
+  "a_tab_title_cannot_break_out_of_its_quotes",
+  "a_clean_reading_and_a_dead_browser_say_different_things",
+  "what_could_not_be_asked_and_what_is_frozen_are_not_all_clear",
 ];
 
 /** The per-file machinery, closed over one file's lines. */
@@ -139,6 +159,7 @@ function reader(file: string) {
 const hk = reader(HOOKS);
 const ask = reader(ASK);
 const br = reader(BROWSER);
+const cl = reader(CLEAN);
 
 /** The `serde_json` rlib cargo already built, found by hash rather than named. */
 function serdeJsonRlib(): string {
@@ -168,6 +189,11 @@ const body: string[] = [
   "",
   "pub mod browser {",
   ...BROWSER_ITEMS.map((i) => br.find(i)),
+  "}",
+  "",
+  "pub mod clean {",
+  "    use std::borrow::Cow;",
+  ...CLEAN_ITEMS.map((i) => cl.find(i)),
   "}",
   "",
   "pub mod ask {",

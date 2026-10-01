@@ -470,6 +470,256 @@ pub fn park_windows(_pid: u32) -> usize {
     0
 }
 
+/* ── asking each tab whether it still answers ──────────────────────────── */
+
+/// A tab in the shared browser that did not answer, as the hook names it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stall {
+    /// The target to close: the tab itself, or for a frame the page holding
+    /// it, since closing a frame target closes nothing a person would see.
+    pub close: String,
+    pub title: String,
+    pub url: String,
+}
+
+/// How long one tab gets to answer, per asking.
+///
+/// `tools/probe-cdp-stall.ts`, Chrome 154: a healthy tab answers all three
+/// requests in milliseconds, and a tab with an `alert()` open or a renderer in
+/// a loop answers none of them, ever. In between sits a page part-way through a
+/// cross-site SSO redirect — this machine's Chrome policy opens two of those in
+/// every browser — which can miss a 3s window once and answer the next. So a
+/// silent tab is asked twice before it is named, and two of these plus the list
+/// stay well inside the ten seconds the hook is given.
+pub(crate) const STALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Which tabs of the shared browser do not answer — the thing `@playwright/mcp`
+/// cannot say about its own `initializeServer` timeout (sink e7431978).
+///
+/// **Why one tab is the whole wall's problem.** playwright-core 1.64's
+/// `CRBrowser.connect` auto-attaches to every target and then
+/// `_waitForAllPagesToBeInitialized`, so a single page that never finishes
+/// initialising holds the connect of every card for as long as it stays — and
+/// each retry waits the same thirty seconds. Measured, not read: an `alert()`
+/// left open and a renderer stuck in a loop both stall `connectOverCDP`, and
+/// closing that one tab over `/json/close` frees the next connect in ~100ms.
+/// A client that holds `waitForDebuggerOnStart` and never lets go, the third
+/// suspect, does not stall it at all.
+///
+/// Each tab is asked over its own socket for `Page.enable`, `Runtime.evaluate`
+/// of `1`, and a promise only a timer can resolve. The third is the one that
+/// matters: V8 serves an inspector evaluate on an interrupt, mid-loop, so a
+/// plain `evaluate` can answer for a page whose event loop is not turning. A
+/// fresh session is *not* told about a dialog that is already open, so this
+/// cannot say "dialog" rather than "not answering", and the note does not
+/// pretend to.
+///
+/// Read-only throughout — nothing here closes, dismisses or navigates. Run only
+/// from the hook, after a failure, so a call that works pays nothing for it.
+pub fn stalled_tabs() -> Result<Reading, String> {
+    let body = get(
+        &format!("http://{HOST}:{DEFAULT_PORT}/json/list"),
+        std::time::Duration::from_secs(1),
+    )?;
+    let list: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let tabs: Vec<&serde_json::Value> = list
+        .iter()
+        .filter(|t| matches!(t["type"].as_str(), Some("page" | "iframe")))
+        .collect();
+
+    let first = ask_all(&tabs);
+    let doubtful: Vec<&serde_json::Value> = first
+        .iter()
+        .filter(|(_, a)| matches!(a, Answer::Silent | Answer::Frozen))
+        .map(|(t, _)| *t)
+        .collect();
+    let mut reading = Reading {
+        unasked: first.iter().filter(|(_, a)| *a == Answer::Unknown).count(),
+        ..Reading::default()
+    };
+    if doubtful.is_empty() {
+        return Ok(reading);
+    }
+    /* The second asking decides. A tab that could not be asked this time was
+       nonetheless doubtful the first, so it counts as unasked rather than
+       vanishing — "every tab answered" must never be said on its account. */
+    for (t, a) in ask_all(&doubtful) {
+        let into = match a {
+            Answer::Silent => &mut reading.stalls,
+            Answer::Frozen => &mut reading.frozen,
+            Answer::Unknown => {
+                reading.unasked += 1;
+                continue;
+            }
+            Answer::Yes => continue,
+        };
+        let s = stall_of(t, &list);
+        /* A page and a frame inside it, both silent, are one tab to close. */
+        if !into.iter().any(|x| x.close == s.close) {
+            into.push(s);
+        }
+    }
+    Ok(reading)
+}
+
+/// What `stalled_tabs` found, and what it could not find out.
+#[derive(Debug, Default, PartialEq)]
+pub struct Reading {
+    /// Answered nothing at all — not even `Page.enable`. Both measured stalls
+    /// (an open `alert()`, a renderer in a loop) look like this, and it is what
+    /// holds playwright's attach.
+    pub stalls: Vec<Stall>,
+    /// Answered the protocol but never ran a timer. A background tab Chrome has
+    /// frozen or throttled looks like this, and whether one holds playwright is
+    /// *not* measured — so it is named as a weaker suspect, never as the cause.
+    pub frozen: Vec<Stall>,
+    /// How many tabs could not be asked at all — a refused or slow handshake.
+    /// Counted so that a reading where nothing could be asked is never
+    /// reported as one where everything answered.
+    pub unasked: usize,
+}
+
+/// Ask every tab at once, so the wait is one budget however many there are.
+fn ask_all<'a>(tabs: &[&'a serde_json::Value]) -> Vec<(&'a serde_json::Value, Answer)> {
+    std::thread::scope(|s| {
+        let asked: Vec<_> = tabs
+            .iter()
+            .map(|t| {
+                let ws = t["webSocketDebuggerUrl"].as_str().unwrap_or_default().to_string();
+                (*t, s.spawn(move || answers(&ws, STALL_BUDGET)))
+            })
+            .collect();
+        asked
+            .into_iter()
+            .map(|(t, h)| (t, h.join().unwrap_or(Answer::Unknown)))
+            .collect()
+    })
+}
+
+#[derive(Debug, PartialEq)]
+enum Answer {
+    Yes,
+    /// Not even `Page.enable` came back.
+    Silent,
+    /// `Page.enable` came back and the timer never fired.
+    Frozen,
+    /// The question could not be put — no socket, a refused or slow handshake.
+    /// Never named as stuck: a tab is only named when it was asked and said
+    /// nothing, since the next thing an agent may do with the name is close it.
+    Unknown,
+}
+
+fn answers(ws: &str, budget: std::time::Duration) -> Answer {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use tungstenite::Message;
+
+    let deadline = std::time::Instant::now() + budget;
+    let Some(addr) = ws
+        .strip_prefix("ws://")
+        .and_then(|r| r.split('/').next())
+        .and_then(|a| a.to_socket_addrs().ok()?.next())
+    else {
+        return Answer::Unknown;
+    };
+    /* Every wait below is measured against the one deadline, so a round costs
+       one budget however the time is split — which is what keeps two rounds
+       and the list inside the hook's ten seconds. And time spent *getting
+       through* to a tab is not the tab's silence: if getting through used more
+       than half the budget, what is left is too short a question to accuse
+       anybody with, and the answer is `Unknown`. On a loaded machine — and a
+       stuck tab means every card's hook is running at once — a handshake that
+       leaves a few milliseconds would otherwise name a healthy tab, twice. */
+    let left = |deadline: std::time::Instant| deadline.saturating_duration_since(std::time::Instant::now());
+    let enough = budget / 2;
+    let Ok(stream) = TcpStream::connect_timeout(&addr, budget) else {
+        return Answer::Unknown;
+    };
+    if left(deadline) < enough {
+        return Answer::Unknown;
+    }
+    let _ = stream.set_read_timeout(Some(left(deadline)));
+    let _ = stream.set_write_timeout(Some(left(deadline)));
+    let Ok((mut sock, _)) = tungstenite::client(ws, stream) else {
+        return Answer::Unknown;
+    };
+    if left(deadline) < enough {
+        return Answer::Unknown;
+    }
+
+    let asks = [
+        serde_json::json!({ "id": 1, "method": "Page.enable" }),
+        serde_json::json!({ "id": 2, "method": "Runtime.evaluate",
+            "params": { "expression": "1", "returnByValue": true } }),
+        serde_json::json!({ "id": 3, "method": "Runtime.evaluate",
+            "params": { "expression": "new Promise(r => setTimeout(() => r(1), 0))",
+                        "awaitPromise": true, "returnByValue": true } }),
+    ];
+    for a in &asks {
+        if sock.send(Message::text(a.to_string())).is_err() {
+            return Answer::Unknown;
+        }
+    }
+
+    let mut seen = [false; 3];
+    let unanswered = |seen: &[bool; 3]| if seen[0] { Answer::Frozen } else { Answer::Silent };
+    loop {
+        let rest = left(deadline);
+        if rest.is_zero() {
+            return unanswered(&seen);
+        }
+        let _ = sock.get_ref().set_read_timeout(Some(rest));
+        match sock.read() {
+            Ok(Message::Text(t)) => {
+                let id = serde_json::from_str::<serde_json::Value>(t.as_str())
+                    .ok()
+                    .and_then(|v| v["id"].as_u64());
+                if let Some(i @ 1..=3) = id {
+                    seen[i as usize - 1] = true;
+                }
+                if seen.iter().all(|s| *s) {
+                    let _ = sock.close(None);
+                    return Answer::Yes;
+                }
+            }
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return unanswered(&seen);
+            }
+            Err(_) => return Answer::Unknown,
+        }
+    }
+}
+
+/// Name a silent target by the tab a person would recognise: a frame is
+/// reported as the page that holds it, walking `parentId` up — bounded, so a
+/// cycle in what Chrome sent cannot spin the hook.
+fn stall_of(t: &serde_json::Value, list: &[serde_json::Value]) -> Stall {
+    let mut top = t;
+    for _ in 0..8 {
+        if top["type"] == "page" {
+            break;
+        }
+        match top["parentId"]
+            .as_str()
+            .and_then(|p| list.iter().find(|x| x["id"] == p))
+        {
+            Some(parent) => top = parent,
+            None => break,
+        }
+    }
+    let field = |k: &str| top[k].as_str().unwrap_or_default().to_string();
+    Stall {
+        close: field("id"),
+        title: field("title"),
+        url: field("url"),
+    }
+}
+
 /* ── asking the port whether it is up ──────────────────────────────────── */
 
 fn get(url: &str, timeout: std::time::Duration) -> Result<String, String> {
@@ -1084,12 +1334,14 @@ fn spawn_browser(
         }
     }
 
+    open_first_page(port);
+
     /* Parking is deliberately not fatal. A Chrome you can see is not the
        browser you asked for; it is still a working browser, and refusing to
        give you one because it could not be moved would be the wrong trade. It
        goes on the face instead. */
     let warning = if mode == Mode::Parked {
-        match park_windows(child.id()) {
+        match park_soon(child.id()) {
             0 => Some(
                 "the browser started but its window could not be parked off-screen — \
                  it is on your desktop"
@@ -1111,6 +1363,48 @@ fn spawn_browser(
         on_desktop: mode == Mode::Window || warning.is_some(),
         warning,
     })
+}
+
+/// Give a browser started with `--no-startup-window` its first page.
+///
+/// Nothing else would: there is no window until a target is asked for, so a
+/// parked browser would have nothing to park and the widget nothing to show.
+/// `about:blank` rather than any remembered page — the widget puts back what
+/// you were looking at itself, through `browser_open`, and a second copy of it
+/// here would be a duplicate tab on every launch. Skipped when a page already
+/// exists, and never fatal: a browser with no page is still one a tool call can
+/// open a page in.
+fn open_first_page(port: u16) {
+    let list = format!("http://{HOST}:{port}/json/list");
+    if let Ok(body) = get(&list, std::time::Duration::from_secs(1)) {
+        let pages: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap_or_default();
+        if pages.iter().any(|t| t["type"] == "page") {
+            return;
+        }
+    }
+    let opened = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .put(&format!("http://{HOST}:{port}/json/new?about:blank"))
+        .call();
+    if let Err(e) = opened {
+        log::warn!("browser: started with no page and could not open one: {e}");
+    }
+}
+
+/// `park_windows`, given a moment for the window `open_first_page` just asked
+/// for to exist. `/json/new` answering is the target existing, which is a beat
+/// ahead of its `HWND` being enumerable; bounded at a second, and a miss is
+/// still caught by the re-park every new target triggers.
+fn park_soon(pid: u32) -> usize {
+    for _ in 0..10 {
+        let moved = park_windows(pid);
+        if moved > 0 {
+            return moved;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    0
 }
 
 /// The `CreateProcess` half, with the arguments each mode adds.
@@ -1140,7 +1434,21 @@ fn raw_spawn(
            bubble, or default-browser nagging in a window somebody is
            driving through a screencast. */
         .arg("--disable-session-crashed-bubble")
-        .arg("--hide-crash-restore-bubble");
+        .arg("--hide-crash-restore-bubble")
+        /* **No startup tabs, and on this machine that is not cosmetic.** A
+           Chrome policy (`RestoreOnStartupURLs`) opens two corporate SSO pages
+           in every Chrome that runs its normal startup, and one of them — the
+           Atlassian login — went silent and held every card's playwright
+           connect for thirty seconds a call: sink e7431978, caught live on
+           2026-10-01, and freed by closing that tab alone. Playwright's own
+           launches never had them because it passes this flag
+           (playwright-core's `coreBundle.js`) and opens its pages over CDP.
+           Probed: headed Chrome 154 with this flag comes up holding no policy
+           page, and `/json/new` then opens an ordinary one — which
+           `open_first_page` does, since a parked mode needs a window to park
+           and an agent a page to drive. A mandatory policy beats a URL on the
+           command line, so this is the one spelling that keeps them out. */
+        .arg("--no-startup-window");
 
     match mode {
         /* Identical, and that is a *finding* rather than an oversight. Parked

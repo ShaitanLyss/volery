@@ -86,6 +86,12 @@ ureq = { version = "2", default-features = false, features = ["tls", "native-cer
 # without it says "not found in `log`" and names no feature, which is the usual
 # shape of a missing one.
 log = { version = "0.4", features = ["std"] }
+# The one CDP socket Rust opens: asking each tab of the shared browser whether
+# it still answers, after playwright timed out waiting on all of them
+# (`browser::stalled_tabs`). Already in the graph at this version through
+# librespot's `tokio-tungstenite`, so this is the blocking API of a crate that is
+# compiled anyway; no TLS, since CDP is loopback.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 webpki-roots = "0.26"
 rustls-native-certs = "0.7"
 # nvim own UI protocol, which is msgpack-RPC over three pipes — see `nvim.rs`.

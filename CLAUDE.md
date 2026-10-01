@@ -117,6 +117,12 @@ bun tools/probe-lazy-browser.ts    # when `@playwright/mcp` dials its `--cdp-end
 bun tools/probe-mcp-hook.ts        # whether a PreToolUse hook sees an MCP tool call and
                                    # whether the CLI *waits* for it before running the tool.
                                    # Two real turns, pinned to Haiku
+bun tools/probe-tool-failure.ts    # which hook hears an MCP call that FAILED, what it is
+                                   # handed, and whether its additionalContext reaches the
+                                   # model. One real turn, pinned to Haiku
+node --experimental-strip-types tools/probe-cdp-stall.ts   # what makes playwright hang
+                                   # in initializeServer — a dialog, a hung page — and that
+                                   # the hook's check names it. No API turn; Chrome on 19222
 bun tools/probe-guidance.ts        # whether --append-system-prompt lands, and survives --resume
 bun tools/probe-image.ts           # whether an image on stdin reaches the model, interleaved
                                    # with text and in order. Generates its own two pictures,

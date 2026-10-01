@@ -658,3 +658,19 @@ actually runs it.
 port is `ask::start`'s to know. A chat card is given none, since it is given no browser server
 and a loopback port that starts a 450 MB Chrome would be the largest hole anybody had put in
 `chat.md`'s promise.
+
+## And one event that only fires on a failure
+
+`PostToolUseFailure` is the fourth event in `settings`, and the first that is not about the
+call in front of the model. It is there for one thing: playwright's
+`initializeServer` timeout on the shared browser, which reports no cause, while Volery can
+find one by asking the same Chrome which tab will not answer (`browser.md`, "One stuck tab is
+everybody's timeout"). `tools/probe-tool-failure.ts` is what it rests on. An MCP result
+carrying `isError: true` fires this event and **not** `PostToolUse`. The server's text
+arrives verbatim under `error`, and `additionalContext` reaches the model.
+
+It is registered broad, like the other three, and that costs nothing it would not anyway:
+the event never fires on a call that worked. The routing sits above the `PreToolUse` body
+because a failure payload carries the same `tool_input`, and falling through would hand an
+event that has already happened to the shell compensator. Everything except the one browser
+error leaves after a string comparison.
