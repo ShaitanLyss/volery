@@ -58,6 +58,7 @@ mod servers;
 mod sessions;
 mod signin;
 mod shell;
+mod sketch;
 mod sink;
 /// Everything under the dock's slash that is *not* Volery's own: the CLI's
 /// built-ins, a project's `.claude/commands/`, and every skill. Asked of a
@@ -641,6 +642,12 @@ pub fn run() {
             presence::set_presence,
             presence::deferred_asks,
             presence::take_deferred_ask,
+            sketch::sketch_json,
+            sketch::sketch_cache,
+            sketch::sketch_have,
+            sketch::sketch_drop,
+            sketch::sketch_folder,
+            sketch::sketch_adopt,
             open::open_external,
             open::show_in_explorer,
             find::find_files,

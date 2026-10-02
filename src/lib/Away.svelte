@@ -29,6 +29,7 @@
    * screen adds exactly one rAF to an idle machine and nothing else. */
 
   import { onDestroy } from "svelte";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   import { clock } from "./conversation.svelte";
   import { AWAY_SCREENS } from "./presence";
@@ -44,12 +45,19 @@
   import { makePiece, type Env, type Hand, type Piece, type RGB } from "./pieces";
   import { lasted } from "./presence";
   import type { Presence } from "./presence.svelte";
+  import type { Sketchbook } from "./sketch.svelte";
+  import { SOURCES, type SourceId } from "./sketch";
 
   let {
     presence,
+    sketchbook,
     onback,
   }: {
     presence: Presence;
+    /** Edited here, drawn from by the gate. The one knob on this screen that is
+     *  not about this screen, and it is here because it is the same half-hour:
+     *  what you want to draw in the morning is decided the evening you go. */
+    sketchbook: Sketchbook;
     /** The way back. Not called by anything the pointer does to a piece. */
     onback: () => void;
   } = $props();
@@ -78,6 +86,20 @@
    *  decision about the same half-hour and splitting it across two surfaces
    *  would be worse than it being slightly out of place. */
   let tuning = $state(false);
+
+  /** The croquis settings, open. Its own flag rather than part of `tuning`,
+   *  because it is four controls and a text box against everything else's one
+   *  line, and a tray that long would bury the two knobs people actually
+   *  reach for. */
+  let drawing = $state(false);
+
+  async function pickFolder() {
+    const picked = await openDialog({ directory: true, multiple: false });
+    if (typeof picked === "string") {
+      sketchbook.setFolder(picked);
+      await sketchbook.adoptFolder();
+    }
+  }
 
   const READINGS: Record<(typeof AWAY_SCREENS)[number], string> = {
     takeover: "cover the wall",
@@ -441,7 +463,56 @@
             onclick={() => presence.setToys(!presence.toys)}
             >{presence.toys ? "puzzle on the way back" : "no puzzle"}</button
           >
+          {#if presence.toys}
+            <button class="chip" class:on={drawing} onclick={() => (drawing = !drawing)}
+              >croquis · {sketchbook.have.length}</button
+            >
+          {/if}
         </div>
+
+        {#if presence.toys && drawing}
+          <!-- What there is to draw. Edited here and fetched *now* rather than
+               in the morning: the gate never goes to the network, which is the
+               rule the whole toy rests on. -->
+          <div class="line">
+            {#each SOURCES as src (src.id)}
+              <button
+                class="chip"
+                class:on={sketchbook.sources.includes(src.id)}
+                title={src.about}
+                onclick={() => sketchbook.toggleSource(src.id as SourceId)}>{src.label}</button
+              >
+            {/each}
+          </div>
+          <textarea
+            class="terms"
+            rows="4"
+            spellcheck="false"
+            placeholder="one per line — an artist, or a thing to draw"
+            value={sketchbook.termText}
+            onchange={(e) => sketchbook.setTerms(e.currentTarget.value)}
+          ></textarea>
+          <span class="what">
+            {sketchbook.usingDefaults ? "these are the defaults — edit to make them yours" : "yours"}
+            · open-access collections only, so a living artist's work is not here —
+            point a folder at your own references instead
+          </span>
+          <div class="line">
+            <button class="chip" onclick={() => void sketchbook.topUp()}>fetch some now</button>
+            <button class="chip" onclick={() => void pickFolder()}
+              >{sketchbook.folder ? "change folder" : "use a folder of mine"}</button
+            >
+            {#if sketchbook.folder}
+              <button class="chip" onclick={() => void sketchbook.adoptFolder()}>take them in</button>
+            {/if}
+          </div>
+          {#if sketchbook.folder}
+            <span class="what">{sketchbook.folder}</span>
+          {/if}
+          {#if sketchbook.fault}
+            <span class="what fault">{sketchbook.fault}</span>
+          {/if}
+        {/if}
       </div>
     {:else if screen === "peek"}
       <span class="hint">hold any key to see the wall</span>
@@ -597,6 +668,25 @@
     padding: 0.22rem 0.5rem;
   }
   .chip.on {
+    color: var(--paper);
+    border-color: color-mix(in srgb, var(--paper) 45%, transparent);
+  }
+  .what.fault {
+    color: var(--st-fail);
+  }
+  .terms {
+    font-family: var(--util);
+    font-size: 0.6rem;
+    line-height: 1.6;
+    color: var(--paper-dim);
+    background: color-mix(in srgb, var(--paper) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--paper) 20%, transparent);
+    border-radius: 3px;
+    padding: 0.35rem 0.45rem;
+    resize: vertical;
+  }
+  .terms:focus {
+    outline: none;
     color: var(--paper);
     border-color: color-mix(in srgb, var(--paper) 45%, transparent);
   }

@@ -32,6 +32,20 @@ describe("the catalogue", () => {
     }
   });
 
+  test("only what is on offer", () => {
+    /* `sketch` has nothing to draw until something has been fetched, and a gate
+       that offered it anyway would be a gate with an empty frame in it. */
+    for (const roll of [0, 0.3, 0.7, 0.99]) {
+      expect(pickToy(null, roll, ["motus", "rotate"])).not.toBe("sketch");
+    }
+    expect(pickToy(null, 0.5, ["sketch"])).toBe("sketch");
+    /* Offering one toy and having just had it: you get it again rather than
+       nothing, because the alternative is a gate that cannot be drawn. */
+    expect(pickToy("sketch", 0.5, ["sketch"])).toBe("sketch");
+    /* An empty offer falls back to the whole table rather than to nothing. */
+    expect(TOYS.some((t) => t.id === pickToy(null, 0.5, []))).toBe(true);
+  });
+
   test("an unknown id is not a toy", () => {
     expect(isToyId("motus")).toBe(true);
     expect(isToyId("sudoku")).toBe(false);

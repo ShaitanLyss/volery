@@ -20,7 +20,7 @@
 
 /* ── the catalogue ────────────────────────────────────────────────────────── */
 
-export type ToyId = "motus" | "calculus" | "rotate";
+export type ToyId = "motus" | "calculus" | "rotate" | "sketch";
 
 export type ToySpec = {
   id: ToyId;
@@ -35,6 +35,11 @@ export const TOYS: readonly ToySpec[] = [
   { id: "motus", label: "motus", about: "six letters, the first one free" },
   { id: "calculus", label: "dérivée", about: "differentiate it, or integrate it" },
   { id: "rotate", label: "casse-tête", about: "same shape, or its mirror?" },
+  /* The odd one out, and the only toy here with no right answer. It is also the
+     only one that can be *unavailable* — there is nothing to draw until
+     something has been fetched — which is why `pickToy` takes what is on offer
+     rather than reading this table. */
+  { id: "sketch", label: "croquis", about: "draw this, on paper. no marking" },
 ];
 
 export function isToyId(v: unknown): v is ToyId {
@@ -44,11 +49,17 @@ export function isToyId(v: unknown): v is ToyId {
 /** Which one you get. Never the one you had last, so two mornings in a row are
  *  two different puzzles — the rotation `away.ts` makes for the same reason one
  *  layer out. */
-export function pickToy(last: ToyId | null, roll: number): ToyId {
-  const from = TOYS.filter((t) => t.id !== last);
-  const pool = from.length ? from : TOYS;
-  const i = Math.min(pool.length - 1, Math.max(0, Math.floor(roll * pool.length)));
-  return pool[i].id;
+export function pickToy(
+  last: ToyId | null,
+  roll: number,
+  offered: readonly ToyId[] = TOYS.map((t) => t.id),
+): ToyId {
+  const live = TOYS.filter((t) => offered.includes(t.id));
+  const pool = live.length ? live : TOYS;
+  const from = pool.filter((t) => t.id !== last);
+  const take = from.length ? from : pool;
+  const i = Math.min(take.length - 1, Math.max(0, Math.floor(roll * take.length)));
+  return take[i].id;
 }
 
 /* ── motus ────────────────────────────────────────────────────────────────── */

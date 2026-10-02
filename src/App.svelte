@@ -13,6 +13,7 @@
   import Vigil from "./lib/Vigil.svelte";
   import Away from "./lib/Away.svelte";
   import Gate from "./lib/Gate.svelte";
+  import { Sketchbook } from "./lib/sketch.svelte";
   import type { Tier } from "./lib/classify";
   import {
     READ_REST,
@@ -409,6 +410,11 @@
   async function togglePresence() {
     if (!presence.away) {
       await presence.goAway();
+      /* Going away is the moment to fetch: the machine is idle, nobody is
+         waiting, and the gate itself must never go to the network — see
+         `sketch.svelte.ts`. Not awaited; it is minutes of someone else's
+         bandwidth and nothing depends on it. */
+      if (presence.toys) void sketchbook.topUp();
       return;
     }
     if (presence.toys) {
@@ -453,6 +459,10 @@
   /* Where the user is. Before `Attention`, which asks it on every tick — and
      the only thing on this wall that silences the whole notification ladder. */
   const presence = new Presence();
+  /* References to draw from. Built here because two surfaces read it — the gate
+     draws one, the away screen's knobs edit the list — and because the top-up
+     is driven from `togglePresence`, which is neither of them. */
+  const sketchbook = new Sketchbook();
 
   const attention = new Attention(
     () => skein.convs,
@@ -3665,13 +3675,14 @@
        indistinguishable from a crashed one, and saying the wall is away is the
        screen's first job. `animate` decides only whether anything moves. -->
   {#if presence.away}
-    <Away {presence} onback={() => void togglePresence()} />
+    <Away {presence} {sketchbook} onback={() => void togglePresence()} />
   {/if}
   <!-- Over the away screen, and the only thing that is. Away mode is still on
        underneath: the gate's way through is what ends it. -->
   {#if gating}
     <Gate
       {presence}
+      {sketchbook}
       onthrough={() => {
         gating = false;
         void presence.comeBack();

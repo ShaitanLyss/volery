@@ -10,6 +10,9 @@ paths:
   - "src/lib/Away.svelte"
   - "src/lib/gate.ts"
   - "src/lib/Gate.svelte"
+  - "src/lib/sketch.ts"
+  - "src/lib/sketch.svelte.ts"
+  - "src-tauri/src/sketch.rs"
 ---
 
 # Being away: questions that wait, and a wall that goes quiet
@@ -316,6 +319,62 @@ of the guards found a real bug on the first run:
 Motus's marking is the other classic: a letter appearing twice in the guess and once in the
 answer earns one mark, not two, so it is two passes — exact positions first, then the leftovers
 against what is left. A single pass teaches the player something false.
+
+### The fourth toy has an outside
+
+`croquis` is a reference on the screen, a pencil and paper in front of you, and a button that
+says you are done. Nothing marks it — it is the only toy here with no right answer, and that
+is the point. Lyss's reasoning: *"i want real photographs to sketch, and I also want sometimes
+pieces from artists I like … to copy style in order to build on my drawing knowledge …
+basically I want to get better at drawing and find my own style"*.
+
+**The gate never fetches.** That is the rule the whole toy rests on. A morning with no network
+is still a morning you wanted to draw, and a gate that went to the internet for its picture
+would hang for twenty seconds on a train and then show an error — so the fetching happens
+while you are *going away*, when the machine is idle and nobody is waiting, and the gate only
+ever opens a file. `topUp` is called from `togglePresence`, never from `Gate.svelte`.
+
+The timer counts **up**. A timer running out is a thing you watch, and five minutes spent
+watching a clock is not a drawing — `Rest.svelte`'s argument about the break screen, one
+surface over. The number exists so you know afterwards how long it took.
+
+A reference is **dropped from the cache when you say you are done**, which is what makes
+twelve of them two weeks of mornings rather than the same twelve pictures for ever.
+
+### What it can and cannot get you, which is a real limit and not a gap
+
+The two museum sources are open-access collections — the Art Institute of Chicago and the Met
+both publish public-domain works with an API and no key, so Hokusai, Mucha, Klimt, Sargent and
+several thousand others are one search term away. The third is Picsum, for photographs, which
+is a different exercise: value and foreshortening rather than somebody else's line.
+
+**A living artist's work is in none of them.** Yoshitaka Amano — the Final Fantasy covers, and
+the case this was asked about — is in copyright, and a built-in fetcher that went and got his
+paintings would be Volery redistributing somebody's work rather than finding you a reference.
+So the honest route is `sketch_folder` / `sketch_adopt`: point the setting at a directory of
+images you already have and they are drawn alongside the rest. It costs one path and it is the
+only answer that is both useful and defensible. Say so rather than quietly returning a
+different painter.
+
+### Two things `sketch.rs` is careful about
+
+- **It is not a general-purpose fetcher.** A Tauri command that fetched any URL and wrote the
+  answer to disk is a hole whatever it is called, so every request is checked against
+  `ALLOWED` by exact host or registrable suffix. The cost of that list being short is the
+  right cost: a new source is a commit here rather than a URL typed into a settings box. The
+  tests cover the three shapes the check is usually broken in — a lookalike suffix, a URL with
+  the allowed host in its *query*, and `https://api.artic.edu@evil.example/`.
+- **The bytes decide what an image is**, not the `Content-Type`. The name `sniff` returns is
+  what the asset protocol serves a content type from, and the bytes come off somebody else's
+  CDN — so a header is a claim and the magic number is the fact. It also catches the captive
+  portal answering an HTML login page with a 200, which would otherwise be cached as a picture
+  and drawn as a broken image at seven in the morning. `sketch.ts::safeParse` is the same
+  guard one layer up, for the JSON.
+
+The cache lives under `references/sketch/`, inside the one directory the asset protocol will
+serve from. `store::sweep_orphans` walks that directory and deliberately leaves subdirectories
+alone — *"nothing puts one here, so one that exists is somebody else's and not ours to
+collect"* — so this is the case that comment was written for.
 
 ### What was deliberately left out
 

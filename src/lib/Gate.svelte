@@ -16,7 +16,9 @@
    * good is on it, because a thing you cannot refuse is a thing you stop
    * enjoying. */
 
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
+
+  import { clock } from "./conversation.svelte";
 
   import {
     checkSum,
@@ -32,18 +34,31 @@
     type ToyId,
   } from "./gate";
   import type { Presence } from "./presence.svelte";
+  import type { Sketchbook } from "./sketch.svelte";
+  import { drawn } from "./sketch";
 
   let {
     presence,
+    sketchbook,
     onthrough,
   }: {
     presence: Presence;
+    /** What there is to draw. Read, never filled — the gate does not fetch, for
+     *  the reason `sketch.svelte.ts` opens with. */
+    sketchbook: Sketchbook;
     /** Through the gate — by solving it, by skipping it, or by Escape. The
      *  caller is what actually ends away mode; this only says you are here. */
     onthrough: () => void;
   } = $props();
 
-  let id = $state<ToyId>(pickToy(null, Math.random()));
+  /** Which toys can be offered at all. `sketch` only once something has been
+   *  fetched: a gate offering an empty frame is worse than a gate with three
+   *  puzzles in it. */
+  const offered = $derived<ToyId[]>(
+    sketchbook.ready ? ["motus", "calculus", "rotate", "sketch"] : ["motus", "calculus", "rotate"],
+  );
+
+  let id = $state<ToyId>(pickToy(null, Math.random(), ["motus", "calculus", "rotate"]));
   const spec = $derived(TOYS.find((t) => t.id === id) ?? TOYS[0]);
 
   /** Solved. Held for a beat before going through, so the thing you got right
@@ -58,7 +73,7 @@
   }
 
   function another() {
-    id = pickToy(id, Math.random());
+    id = pickToy(id, Math.random(), offered);
     reset();
   }
 
@@ -181,6 +196,35 @@
     return `${x0} ${y0} ${Math.max(...xs) - x0 + pad} ${Math.max(...ys) - y0 + pad}`;
   }
 
+  /* ── croquis ──────────────────────────────────────────────────────────── */
+
+  /* `untrack`, because this is a one-off pick at mount rather than something
+     that should re-run when the cache changes under it — a reference swapping
+     itself out while you are drawing it is the one thing this toy must not
+     do. */
+  let drawing = $state(untrack(() => sketchbook.take(Math.random())));
+  /** When the pencil started. Counting *up*: a timer running out is a thing you
+   *  watch, and five minutes spent watching a clock is not a drawing. See
+   *  `sketch.ts::drawn`. */
+  let since = $state(Date.now());
+  const took = $derived(drawn(clock.t - since));
+
+  function nextReference() {
+    drawing = sketchbook.take(Math.random());
+    since = Date.now();
+  }
+
+  /** Done — which is you saying so, since nothing here marks anything.
+   *
+   *  The reference is dropped from the cache on the way through. That is what
+   *  makes a dozen of them two weeks of mornings rather than the same twelve
+   *  pictures for ever, and it is the one place this toy writes anything. */
+  async function finished() {
+    const d = drawing;
+    through();
+    if (d) await sketchbook.drop(d.id);
+  }
+
   /* ── shared ───────────────────────────────────────────────────────────── */
 
   function reset() {
@@ -192,6 +236,7 @@
     word = motusWord(Math.random());
     sum = makeSum(Math.random());
     puzzle = makePuzzle(Math.random());
+    nextReference();
   }
 
   function key(e: KeyboardEvent) {
@@ -285,6 +330,17 @@
           <code>ln(x)</code>, <code>sqrt(x)</code>
         {/if}
       </p>
+    {:else if id === "sketch"}
+      {#if drawing}
+        <img class="reference" src={sketchbook.src(drawing)} alt={drawing.title} />
+        <p class="said">{drawing.credit}</p>
+        <div class="choices">
+          <button onclick={() => void finished()}>done — {took}</button>
+          <button onclick={nextReference}>another reference</button>
+        </div>
+      {:else}
+        <p class="said">nothing has been fetched to draw yet.</p>
+      {/if}
     {:else}
       <div class="figures">
         {#each [puzzle.a, puzzle.b] as f, i (i)}
@@ -472,6 +528,18 @@
   }
   .answer.wrong {
     border-color: var(--st-fail);
+  }
+
+  /* croquis */
+  .reference {
+    max-width: min(46rem, 80cqw);
+    max-height: 56cqh;
+    object-fit: contain;
+    border-radius: 3px;
+    /* A reference is drawn from across the room, and a border around it reads
+       as a frame — which is a thing to copy rather than a thing to look
+       through. Nothing but the picture. */
+    box-shadow: 0 18px 50px -24px rgba(0, 0, 0, 0.9);
   }
 
   /* the casse-tête */
