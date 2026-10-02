@@ -5,6 +5,9 @@ paths:
   - "src/lib/presence.svelte.ts"
   - "src/lib/Vigil.svelte"
   - "src/lib/attention.svelte.ts"
+  - "src/lib/away.ts"
+  - "src/lib/pieces.ts"
+  - "src/lib/Away.svelte"
 ---
 
 # Being away: questions that wait, and a wall that goes quiet
@@ -189,6 +192,72 @@ a wake is a card's note to itself, where this is a person at the wall deliberate
 The claim comes **before** the send, `later::serve_due`'s ordering and its reasoning: an
 interruption between the two loses an answer, where the other way round hands a card the same
 decision twice, and that is the worse failure.
+
+## The away screen
+
+`Away.svelte`, and it stands whenever the wall is away — **including with the
+animation switched off**, because a dark window is indistinguishable from a crashed one and
+saying *the wall is away* is the screen's first job. The setting decides only whether anything
+moves.
+
+### Touching it does not bring you back
+
+The pieces answer the pointer, and that is most of why they are worth having. Lyss asked for
+it in as many words: *"imagine we're showing a ball bouncing from one edge to another,
+clicking could bounce it back or send it in another random direction, grabbing and holding
+would allow to seize it and move it, and then release it with a flick to give it momentum"*.
+A screen that fled on the first click could not be played with at all.
+
+So the three gestures are the same in all four pieces — **tap** does something to the thing
+under the pointer, **hold** seizes it, **release** throws it at the speed your hand had — and
+the way back is the button or Escape, which is a thing you mean rather than a thing you brush.
+
+`flick` is where a drag becomes a throw, and it has two rules that are each a bug that would
+otherwise only show up overnight. It measures the **last 90ms** rather than the whole gesture,
+because carrying something slowly and then snapping your wrist averages to the wall ignoring
+you. And it refuses to divide by zero, clamps, and `pieces.ts::sane` catches whatever gets
+past: **one `Infinity` in a velocity is a thing that leaves the universe on a screen nobody is
+watching, so it is still gone in the morning.**
+
+### Colour, and the clause that became a condition
+
+`toys.md` records the one standing exception to *colour means status*: the synth is full of
+hue, confined by two things — nothing touches `tokens.css`, and the toy occludes the wall
+outright, so at no moment is a status colour and a decorative one on screen together.
+
+The away screen inherits that bargain and inherits the second clause **as a condition rather
+than as a fact**, because one of its three readings deliberately does not occlude the wall.
+`hueAllowed` is the whole rule: `takeover` and `peek` may use hue, `dimmed` may not, and
+`pieces.ts::tone` is the one place either branch is written, so a piece is authored once and
+reads correctly in both. Even the hue arc is short on purpose — amber through rose to violet,
+skipping the greens and reds that mean *working* and *failed* on the wall.
+
+### The three readings are a setting because the answer is genuinely taste
+
+Asked, and the answer was *"not sure so i'd make it a setting too"*. `takeover` is a
+screensaver; `dimmed` leaves the cards legible behind, for walking past and seeing that work
+is happening; `peek` covers and fades out while you hold any key, for the glance that does not
+end away mode. The knobs live in the screen's own corner rather than in a panel, which is
+`Effects.svelte`'s argument about the ambience: the whole point of editing a backdrop live is
+that you are looking at the thing you are adjusting.
+
+### What it costs, and the three things that bound it
+
+An away screen runs for hours unattended, which is the worst case `motion.md` describes.
+
+- **It honours the motion setting**, read off `document.documentElement.dataset.motion` — the
+  same channel every stylesheet reads, rather than a second one to keep in step. `still` draws
+  one frame and stops the loop outright; `spare` runs at 20fps.
+- **Rotation is folded onto `clock.t`**, the wall's existing one-second tick, so an away
+  screen adds exactly one rAF to an idle machine and no timer at all. `HOLD_MS` is nine
+  minutes: long enough that walking past twice in an evening shows the same thing, short
+  enough that a night is not one piece. `nextPiece` never repeats the current one and prefers
+  a mood it does not have, so an evening moves between fun and cute and artistic instead of
+  taking three artistic ones in a row by chance.
+- **One canvas per piece, not one canvas.** A canvas cannot change its context kind once it
+  has one and `tide` is WebGL2 where the others are 2D, so the `{#key}` is the whole of that:
+  a new piece gets a new element and the old context goes with the old one. A machine with no
+  WebGL2 falls back to `flock` rather than showing a black rectangle for nine minutes.
 
 ### What was deliberately left out
 

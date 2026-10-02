@@ -11,6 +11,7 @@
   import { Presence } from "./lib/presence.svelte";
   import { lasted } from "./lib/presence";
   import Vigil from "./lib/Vigil.svelte";
+  import Away from "./lib/Away.svelte";
   import type { Tier } from "./lib/classify";
   import {
     READ_REST,
@@ -3642,6 +3643,13 @@
       title={procsFor.title || 'conversation'}
       onclose={() => (showProcs = null)}
     />
+  {/if}
+  <!-- The wall with nobody at it. Above everything including the rest screen.
+       It stands whether or not the animation is on: a dark window is
+       indistinguishable from a crashed one, and saying the wall is away is the
+       screen's first job. `animate` decides only whether anything moves. -->
+  {#if presence.away}
+    <Away {presence} onback={() => void togglePresence()} />
   {/if}
   {#if presence.showing}
     <Vigil
