@@ -237,6 +237,61 @@ export type Flight = {
  *  a store carried off one machine onto another) counts as in flight rather than
  *  as expired: the alternative is an entry that is never a wisp and never
  *  explains why, and `portage.ts` means rows really do arrive from elsewhere. */
+/** How far into its flight a wisp already was when its element mounted, in ms.
+ *
+ *  **Frozen on first sight, and that is the whole of this function.** The flight
+ *  is a CSS animation — `rise`, six seconds — and the element can mount up to a
+ *  second late, because which entries are in the air is computed from the wall's
+ *  one-second tick rather than from a timer per wisp. `animation-delay: -age`
+ *  is what makes the flight exact wherever that tick happened to fall.
+ *
+ *  The trap is that `age` was recomputed from the same ticking clock *for the
+ *  whole life of the element*. Rewriting `animation-delay` on a **running**
+ *  animation re-resolves its timeline: every second the delay grew by 1000ms
+ *  while real time had also advanced 1000ms, so the animation leapt an extra
+ *  second forward on every tick. A six-second drift finished in about three, in
+ *  discrete jumps — reported as *"they show up, then don't move, or sometimes
+ *  staggeredly, then end up in the register"*.
+ *
+ *  So the value has to be a fact about the **mount**, not about now. Memoised
+ *  against a map the caller owns, which is also what makes it testable: given
+ *  the same map and the same entry it answers the same thing for ever, which is
+ *  the property the animation needs and the one a type cannot state.
+ *
+ *  `at` is passed rather than read from `Date.now()` so the first sighting is
+ *  the caller's to decide — and the caller passes the *real* clock rather than
+ *  the snapped one-second tick, since being half a second out is visible over a
+ *  six-second flight. */
+export function flightAge(
+  seen: Map<string, number>,
+  id: string,
+  born: number,
+  at: number,
+): number {
+  const had = seen.get(id);
+  if (had !== undefined) return had;
+  const age = Math.max(0, at - born);
+  seen.set(id, age);
+  return age;
+}
+
+/** Forget every frozen age but these, so the map does not outlive the flight.
+ *
+ *  Called with the ids currently in the air. Without it this is a map that only
+ *  grows, one entry per record ever written on a wall that is left up for days.
+ *  Returns how many were dropped, which is what a test can hold on to. */
+export function keepFlying(seen: Map<string, number>, ids: readonly string[]): number {
+  if (seen.size === 0) return 0;
+  const live = new Set(ids);
+  let gone = 0;
+  for (const id of [...seen.keys()]) {
+    if (live.has(id)) continue;
+    seen.delete(id);
+    gone++;
+  }
+  return gone;
+}
+
 export function flying(
   entries: readonly Entry[],
   now: number,

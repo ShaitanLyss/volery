@@ -131,6 +131,28 @@ costs an animation and never a record.
 Anything added here animates `transform` and `opacity` only. `box-shadow` is what cost ~8% of
 the GPU per working card, and it is the first thing to reach for when a wisp needs a glow.
 
+### And the negative delay must be written once, not recomputed
+
+The flight is a CSS animation, and `animation-delay: -age` is what makes it exact wherever the
+one-second tick happened to fall — an element can mount up to a second after the entry was
+written. `age` was recomputed from that same ticking clock for the whole life of the element,
+which rewrote `animation-delay` on a **running** animation once a second. That re-resolves the
+animation's timeline: the delay grew by 1000ms while real time had also advanced 1000ms, so
+the flight leapt an extra second forward on every tick. A six-second drift was over in about
+three, in discrete jumps — reported as *"they show up, then don't move, or sometimes
+staggeredly, then end up in the register"*.
+
+`chronicle.ts::flightAge` freezes it on first sight, memoised against a map `Wisps.svelte`
+owns, and `keepFlying` prunes it so the map does not grow one entry per record ever written.
+The fix is not computing the number differently — **it is not touching it again**: frozen, the
+`style:` directive writes the attribute once and the animation is left alone.
+
+It is worth reading beside the away screen's own version of this (`away.md`), because they are
+the same mistake twice: **the wall's one-second tick reaching something whose motion belongs to
+the browser's clock.** There it restarted a `requestAnimationFrame` loop and rebuilt the scene;
+here it yanked a CSS animation's timeline. The tick is the right thing to decide *which*
+entries are in the air and the wrong thing to drive *where* any of them is.
+
 ## `wisp` is loaded, and it cost a byte of somebody else's budget
 
 `chronicle.rs`'s doc comment on `wisp_schema` carries the full measurement. The short version:

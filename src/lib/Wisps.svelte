@@ -49,7 +49,16 @@
 
   import { clock } from "./conversation.svelte";
   import { chronicle } from "./chronicle.svelte";
-  import { MAX_FLYING, WISP_MS, flying, place, statusOf, type Entry } from "./chronicle";
+  import {
+    MAX_FLYING,
+    WISP_MS,
+    flightAge,
+    flying,
+    keepFlying,
+    place,
+    statusOf,
+    type Entry,
+  } from "./chronicle";
   import type { Box } from "./layout";
 
   let {
@@ -83,12 +92,44 @@
 
   type Drawn = { e: Entry; x: number; y: number; dx: number; dy: number; age: number };
 
+  /** Each wisp's age at the moment its element mounted, frozen.
+   *
+   *  `drawn` recomputes every second — it has to, since `flying` decides from
+   *  the tick who is still in the air — and for a while `age` was recomputed
+   *  with it. That rewrote `animation-delay` on a **running** animation once a
+   *  second, which re-resolves its timeline: the delay grew by 1000ms while
+   *  real time had also advanced 1000ms, so the flight leapt an extra second
+   *  forward on every tick and a six-second drift was over in about three, in
+   *  jumps.
+   *
+   *  Frozen, the value never changes, so Svelte's `style:` directive writes the
+   *  attribute once and the animation is left alone — which is the actual fix:
+   *  not computing it differently, but not touching it again. `chronicle.ts`
+   *  holds the arithmetic and the test. */
+  const ages = new Map<string, number>();
+
   const drawn = $derived.by(() => {
     const out: Drawn[] = [];
     for (const e of air.wisps) {
       const p = place(e.from ? (boxes.get(e.from) ?? null) : null, target, viewport);
-      if (p?.at === "card") out.push({ e, x: p.x, y: p.y, dx: p.dx, dy: p.dy, age: now - e.at });
+      if (p?.at === "card") {
+        out.push({
+            e,
+            x: p.x,
+            y: p.y,
+            dx: p.dx,
+            dy: p.dy,
+            /* `Date.now()` rather than `now`, which is the tick snapped to the
+               second: half a second is visible over a six-second flight, and
+               this is read once per wisp rather than once per second. */
+            age: flightAge(ages, e.id, e.at, Date.now()),
+          });
+      }
     }
+    /* Nothing that is no longer in the air keeps a frozen age: this map would
+       otherwise grow one entry per record ever written, on a wall that is left
+       up for days. */
+    keepFlying(ages, out.map((d) => d.e.id));
     return out;
   });
 

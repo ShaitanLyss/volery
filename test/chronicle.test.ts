@@ -13,7 +13,9 @@ import {
   byNewest,
   clip,
   digest,
+  flightAge,
   flying,
+  keepFlying,
   newest,
   normalize,
   normalizeAll,
@@ -410,5 +412,57 @@ describe("placing a wisp", () => {
     expect((far as { along: number }).along).toBeGreaterThanOrEqual(0);
     const low = place(card(-900, 2000), null, view);
     expect((low as { along: number }).along).toBeLessThanOrEqual(view.h);
+  });
+});
+
+describe("a wisp's age is frozen when it mounts", () => {
+  /* The flight is a CSS animation and `animation-delay: -age` is what makes it
+     exact wherever the wall's one-second tick happened to fall. Rewriting that
+     delay on a *running* animation re-resolves its timeline — which is what
+     made a six-second drift finish in about three, in jumps: "they show up,
+     then don't move, or sometimes staggeredly, then end up in the register". */
+  test("the same entry answers the same for ever", () => {
+    const seen = new Map<string, number>();
+    const born = 1_000_000;
+    expect(flightAge(seen, "a", born, born + 400)).toBe(400);
+    /* A second later, and a second after that. The value must not move. */
+    expect(flightAge(seen, "a", born, born + 1400)).toBe(400);
+    expect(flightAge(seen, "a", born, born + 5400)).toBe(400);
+  });
+
+  test("each entry is frozen on its own first sighting", () => {
+    const seen = new Map<string, number>();
+    expect(flightAge(seen, "a", 100, 300)).toBe(200);
+    expect(flightAge(seen, "b", 100, 900)).toBe(800);
+    expect(flightAge(seen, "a", 100, 900)).toBe(200);
+  });
+
+  test("an entry seen before it was written is not negative", () => {
+    /* `clock.t` is snapped to the nearest second, so a caller passing it could
+       be half a second ahead of the record. A negative delay the other way
+       round would start the animation in the future and draw nothing. */
+    const seen = new Map<string, number>();
+    expect(flightAge(seen, "a", 1000, 600)).toBe(0);
+  });
+
+  test("the map does not outlive the flight", () => {
+    const seen = new Map<string, number>();
+    flightAge(seen, "a", 0, 10);
+    flightAge(seen, "b", 0, 10);
+    flightAge(seen, "c", 0, 10);
+    expect(seen.size).toBe(3);
+    expect(keepFlying(seen, ["b"])).toBe(2);
+    expect([...seen.keys()]).toEqual(["b"]);
+    /* Idempotent, since it runs on every recompute. */
+    expect(keepFlying(seen, ["b"])).toBe(0);
+    expect(keepFlying(new Map(), ["b"])).toBe(0);
+  });
+
+  test("a wisp that leaves and is seen again starts fresh", () => {
+    /* Which is right: it is a new element, mounting now. */
+    const seen = new Map<string, number>();
+    expect(flightAge(seen, "a", 0, 500)).toBe(500);
+    keepFlying(seen, []);
+    expect(flightAge(seen, "a", 0, 9000)).toBe(9000);
   });
 });
