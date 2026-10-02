@@ -973,3 +973,48 @@ describe("where a completion lands", () => {
     expect(done.text.slice(0, done.caret)).toBe("/dataviz ");
   });
 });
+
+describe("/account, the one row whose values come off the wall", () => {
+  const two = [{ value: "lyss" }, { value: "tx-team", summary: "ready" }];
+
+  test("it is not in the fixed table, because it cannot always be typed", () => {
+    /* `COMMANDS` is asserted elsewhere to be a set where every row resolves and
+       runs with nothing else in hand. This one needs the registry, so keeping
+       it out is what lets that claim stay true. */
+    expect(COMMANDS.map((c) => c.name)).not.toContain("account");
+  });
+
+  test("no accounts and one account both offer nothing to choose", () => {
+    expect(names("/")).not.toContain("account");
+    expect(matchCommands("/", null, [], []).map((c) => c.name)).not.toContain("account");
+    expect(matchCommands("/", null, [], [{ value: "lyss" }]).map((c) => c.name)).not.toContain(
+      "account",
+    );
+  });
+
+  test("two accounts put the row in the palette", () => {
+    expect(matchCommands("/", null, [], two).map((c) => c.name)).toContain("account");
+    expect(matchCommands("/acc", null, [], two).map((c) => c.name)).toEqual(["account"]);
+  });
+
+  test("the values are the labels, and the palette stays up past the space", () => {
+    expect(matchChoices("/account ", two).map((c) => c.value)).toEqual(["lyss", "tx-team"]);
+    expect(matchChoices("/account tx", two).map((c) => c.value)).toEqual(["tx-team"]);
+    expect(typingChoice("/account ", two)?.cmd.name).toBe("account");
+    /* And without them there is no command to be choosing values for. */
+    expect(matchChoices("/account ")).toEqual([]);
+    expect(typingChoice("/account ")).toBeNull();
+  });
+
+  test("a label resolves; a word that is not one falls through to the agent", () => {
+    expect(resolveCommand("/account tx-team", two)?.arg).toBe("tx-team");
+    expect(resolveCommand("/account nobody", two)).toBeNull();
+    /* The bare name resolves too — it is what Enter turns into an open palette,
+       which is `/gear`'s rule and the reason that arm exists at all. */
+    expect(resolveCommand("/account", two)?.arg).toBe("");
+    expect(stillWriting(resolveCommand("/account", two)!.cmd, "")).toBe(true);
+    /* And with nothing registered the name is not ours, so it goes to the agent
+       as the words it is rather than being swallowed. */
+    expect(resolveCommand("/account tx-team")).toBeNull();
+  });
+});

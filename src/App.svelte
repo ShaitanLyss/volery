@@ -106,6 +106,7 @@
      answer to "is that folder on this machine": a territory pointing nowhere is
      offered nothing to show in Explorer. */
   import { adrift, Portage } from "./lib/portage.svelte";
+  import { sayBlocked, standingOf, usable } from "./lib/accounts";
   import { waterfall } from "./lib/waterfall.svelte";
   import {
     completeAt,
@@ -1242,6 +1243,14 @@
           aside: conv.aside,
           bypassing: conv.bypassCaps,
           accounts: waterfall.list.length > 0,
+          /* The same list `/account` offers and for the same reasons — see the
+             effect that fills `field.accounts`. `menu.ts` drops the submenu
+             below two, so a wall with one account grows no row. */
+          accountPicks: usable(waterfall.list).map((a) => ({
+            id: a.label,
+            label: a.label,
+            on: a.label === conv.accountLabel,
+          })),
           /* Only where there is a plan to hand on — see menu.ts. The field is
              cleared when a card goes back into making, so a plan that has been
              acted on stops being offered as one that has not. */
@@ -1258,6 +1267,8 @@
           else if (id === "wake") void skein.wake(conv);
           else if (id === "aside") skein.setAside(conv, !conv.aside);
           else if (id === "bypass") skein.setBypass(conv, !conv.bypassCaps);
+          else if (id.startsWith("account:"))
+            void skein.putOnAccount(conv, id.slice(8));
           /* The session id is what `--resume` takes, and this is the only place
              the UI hands it over — see the note on adoption in CLAUDE.md. It is
              `sessionId` rather than `id`, or a cleared card would hand over a
@@ -1983,6 +1994,34 @@
     );
   });
 
+  /** The accounts `/account` offers, which are the wall's rather than a card's.
+   *
+   *  `usable` and not the registry, for the reason `#settleAccount` spawns
+   *  against the same list: a row with no credential cannot run a card and a
+   *  switched-off one will not be asked to, so neither is a subscription this
+   *  wall is choosing between — and offering one would complete a draft whose
+   *  send is then refused. The summary is each account's own standing in the
+   *  words the panel uses for the same fact, so the palette and the accounts
+   *  panel cannot come to disagree about which one has room. */
+  $effect(() => {
+    field.accounts = usable(waterfall.list).map((a) => {
+      const standing = standingOf(
+        a,
+        waterfall.allowances[a.label],
+        dockCard?.bypassCaps ?? false,
+      );
+      return {
+        value: a.label,
+        summary:
+          standing.state === "blocked"
+            ? sayBlocked(standing.blockers)
+            : standing.state === "ready" && standing.unmeasured
+              ? standing.unmeasured
+              : "ready",
+      };
+    });
+  });
+
   /* ── the `!` line ──────────────────────────────────────────────────────
    *
    * `bang.ts` owns what a draft means and how it is coloured; `Bang` owns the
@@ -2136,6 +2175,17 @@
          is easy to find and hard to undo would be a worse trade than the one
          that made this exist. */
       for (const c of on) await skein.setGear(c, "planning");
+    } else if (cmd.name === "account") {
+      /* The value is one of the registry's labels, since `withAccounts` fills
+         this command's choices off the wall — but the palette is a help rather
+         than a gate, and `resolveCommand` already refuses a word that is not
+         one of them, so what arrives here is a label. `putOnAccount` does the
+         rest of the checking, because the menu reaches it too and a rule that
+         lives at one of two call sites is a rule the other one does not have.
+         Sequential rather than `Promise.all`, like every other arm: each move
+         ends a process and spawns nothing, and five at once is a herd aimed at
+         the one thing on this wall that is already the slowest. */
+      for (const c of on) await skein.putOnAccount(c, arg);
     } else if (cmd.name === "gear") {
       /* The value is one of `GEAR_CHOICES`, since a command with `choices` is
          incomplete until it has one — but the palette is a help rather than a

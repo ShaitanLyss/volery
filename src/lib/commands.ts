@@ -552,12 +552,13 @@ export function matchCommands(
   draft: string,
   caret?: number | null,
   extra: readonly Command[] = [],
+  accounts: readonly Choice[] = [],
 ): Command[] {
   const span = slashAt(draft, caret);
   if (span === null) return [];
   const pool =
     span.from === 0
-      ? [...COMMANDS, ...extra]
+      ? [...withAccounts(accounts), ...extra]
       : extra.filter((c) => c.by === "skill");
   const name = span.name;
   if (!name) return pool;
@@ -599,9 +600,55 @@ export function matchCommands(
  *
  *  Case-folded, since the palette completes in lowercase but nothing stops you
  *  typing it yourself. */
-function byName(name: string): Command | null {
+/** The one command this window has whose *values* come off the wall.
+ *
+ *  **Deliberately not in `COMMANDS`**, which is the fixed vocabulary and is
+ *  asserted as one — every row in it can be typed, resolved and carried out
+ *  with nothing else in hand. This row cannot: with no accounts registered it
+ *  has no values, so `resolveCommand` would refuse the very name the palette
+ *  had just offered. Keeping it apart is what lets both claims stay true.
+ *
+ *  It is also why the detail says what it costs. The move ends the card's
+ *  process and brings it back against the same session, so the next turn pays
+ *  for the whole conversation uncached — the one thing somebody choosing an
+ *  account from a menu has no way to know. */
+const ACCOUNT_COMMAND: Command = {
+  name: "account",
+  summary: "put this card on a particular subscription",
+  detail:
+    "the waterfall picks for you and this overrides it — the card's process ends and comes back against the same session, so it keeps everything it has read and re-reads it uncached. the wall still moves it off an account that has no room",
+  needsCard: true,
+  by: "skein",
+  choices: [],
+};
+
+/** Volery's own commands, plus the dynamic one where there is one to have.
+ *
+ *  **The only vocabulary in this file that is not knowledge about the CLI**,
+ *  and it is threaded as an argument rather than read from a store because this
+ *  file is pure and is tested as such. The caller has the registry; everything
+ *  in here only has to decide what to do with it.
+ *
+ *  Fewer than two accounts and the row is not there at all. That is `accounts
+ *  .ts::accountChoice`'s rule, applied to the palette for the reason it is
+ *  applied to the wall: with one account there is nothing to choose, and with
+ *  none the gesture has nothing behind it. It is also what keeps `stillWriting`
+ *  honest — a `choices` command whose choices are empty is one where Enter
+ *  opens an empty palette and the draft can never be completed. `menu.ts`'s
+ *  standing answer, one file over: offering nothing is a real answer.
+ *
+ *  Appended rather than slotted in, and that is the honest place for it: it is
+ *  the one row in the palette that may not be there, and the bare-slash order
+ *  is the only order it affects — `matchCommands` sorts into bands the moment a
+ *  name is typed. */
+function withAccounts(accounts: readonly Choice[]): Command[] {
+  if (accounts.length < 2) return [...COMMANDS];
+  return [...COMMANDS, { ...ACCOUNT_COMMAND, choices: [...accounts] }];
+}
+
+function byName(name: string, accounts: readonly Choice[] = []): Command | null {
   const want = name.trim().toLowerCase();
-  return COMMANDS.find((c) => c.name === want) ?? null;
+  return withAccounts(accounts).find((c) => c.name === want) ?? null;
 }
 
 /** A command whose name is settled and whose *value* is being typed.
@@ -618,17 +665,21 @@ function byName(name: string): Command | null {
  *  been picked too. */
 export function typingChoice(
   draft: string,
+  accounts: readonly Choice[] = [],
 ): { cmd: Command; part: string } | null {
   const m = /^\/([a-z0-9-]+) ([^\s]*)$/i.exec(draft);
   if (!m) return null;
-  const cmd = byName(m[1]);
+  const cmd = byName(m[1], accounts);
   if (!cmd?.choices) return null;
   return { cmd, part: m[2].toLowerCase() };
 }
 
 /** What the palette should offer once a command with values is named. */
-export function matchChoices(draft: string): Choice[] {
-  const at = typingChoice(draft);
+export function matchChoices(
+  draft: string,
+  accounts: readonly Choice[] = [],
+): Choice[] {
+  const at = typingChoice(draft, accounts);
   if (!at) return [];
   const all = at.cmd.choices ?? [];
   if (!at.part) return [...all];
@@ -673,14 +724,17 @@ export type Resolved = {
  *
  *  The name and the argument come out of one parse rather than two, so nothing
  *  can decide this is `/rename` and then disagree about where the name starts. */
-export function resolveCommand(draft: string): Resolved | null {
+export function resolveCommand(
+  draft: string,
+  accounts: readonly Choice[] = [],
+): Resolved | null {
   /* Anchored rather than trimmed at the front, because leading whitespace says
      prose: a line beginning with a space is a sentence that happens to contain
      a slash. Trailing whitespace is nothing of the kind, hence `\s*$` — a
      `/clear ` is the command with a stray space after it. */
   const m = /^\/([a-z0-9-]+)(?:\s+([\s\S]+?))?\s*$/i.exec(draft);
   if (!m) return null;
-  const cmd = byName(m[1]);
+  const cmd = byName(m[1], accounts);
   if (cmd?.by !== "skein") return null;
   /* Trimmed rather than trusted to the pattern, which gets this wrong on its
      own: the lazy group hands back a single space for `/rename    `, and an

@@ -678,3 +678,31 @@ describe("families in the menu that hangs things up", () => {
     expect(hung.length).toBe(WIDGETS.length);
   });
 });
+
+describe("putting a card on a particular account", () => {
+  const accountOf = (items: MenuItem[]) => {
+    const row = items.find((i) => i.kind === "more" && i.id === "account");
+    return row && row.kind === "more" ? row : null;
+  };
+  const picks = [
+    { id: "lyss", label: "lyss", on: false },
+    { id: "tx-team", label: "tx-team", on: true },
+  ];
+
+  test("one account is not a choice, and none is not a gesture", () => {
+    expect(accountOf(menuFor({ kind: "card", accounts: true }))).toBeNull();
+    expect(
+      accountOf(menuFor({ kind: "card", accounts: true, accountPicks: [picks[0]!] })),
+    ).toBeNull();
+  });
+
+  test("two put a submenu up, with the one it is on marked", () => {
+    const row = accountOf(menuFor({ kind: "card", accounts: true, accountPicks: picks }))!;
+    expect(row).not.toBeNull();
+    expect(ids(row.items)).toEqual(["account:lyss", "account:tx-team"]);
+    const on = row.items.filter(
+      (i): i is Extract<MenuItem, { kind: "item" }> => i.kind === "item" && !!i.on,
+    );
+    expect(on.map((i) => i.id)).toEqual(["account:tx-team"]);
+  });
+});

@@ -336,6 +336,53 @@ A card that is bypassing says so on its face for as long as it is. The rule is
 thing an app like that owes you is that nothing it does on its own is invisible
 afterwards. A card quietly spending a reserve you set aside is precisely that.
 
+### Choosing one by hand
+
+The waterfall picks for every card that has not been told otherwise, and
+`/account <label>` and the card's right-click `put it on…` are the telling.
+`Skein.putOnAccount` is the one route; the command and the menu are two ways to
+reach it, because a rule living at one of two call sites is a rule the other one
+does not have.
+
+**There is no third policy, and that is the whole of why this was cheap.**
+`choose`'s `stickTo` already keeps a card on the account it is on while that
+account is ready — written for the opposite reason, so a card that moved at 4pm
+does not move back the moment its window rolls and pay the uncached re-read
+twice. A deliberate choice of a ready account is simply that rule holding from
+then on.
+
+- **A blocked account is honoured and then warned about, rather than refused.**
+  Refusing is the answer that looks careful and is not: the reading behind "no
+  room" is up to a minute old by `limits.rs`'s own floor and cannot see a spend
+  cap at all, so it is this window's belief rather than the server's answer —
+  and the one gesture a person has for overriding the waterfall must not be
+  vetoed by the waterfall's own guess. What is owed is the warning, and it is
+  owed *before* the next send rather than discovered after it, which is the one
+  thing `#settleAccount` cannot do. The card still moves on the next send if the
+  block is real; the note says so in advance.
+- **The one refusal is not about allowance.** An account switched off or not
+  signed in has no credential to spawn against, so honouring that choice is a
+  card that fails to start rather than one spending the wrong subscription.
+  `spawn_now` refuses it too; this says so where the gesture was made.
+- **It says so in the transcript**, by `swapNote`'s rule and `healNote`'s before
+  it. The move ends the card's process, and nothing that ends a process may be
+  silent about it. `putOnNote` is its own sentence rather than `swapNote`'s
+  because that one's reason half is `#whyLeft` — a reading of what the account
+  being left could no longer do — and here it could do fine. It keeps the second
+  clause verbatim, which is the part that matters: the next turn re-reads the
+  whole conversation uncached, and that is the price of the gesture.
+- **The palette's values come off the wall, so they are not in `COMMANDS`.**
+  That table is the fixed vocabulary and is asserted as one — every row in it
+  resolves and runs with nothing else in hand. `/account` cannot: with nothing
+  registered it has no values, so `resolveCommand` would refuse the very name
+  the palette had just offered. `commands.ts::withAccounts` appends it instead,
+  and only past two accounts, which is `accountChoice`'s rule and `menu.ts`'s
+  standing answer arriving at the same place: with one account there is nothing
+  to choose, and with none the gesture has nothing behind it.
+- **The menu marks rather than labels.** "lyss (current)" is a sentence where a
+  tick is a glance, and the mark is also what makes the list a *choice* rather
+  than four things it is not clear you are already doing one of.
+
 ### Being held, and coming back
 
 When no account is allowed to work, a send is **held** rather than failed. The

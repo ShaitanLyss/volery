@@ -14,7 +14,16 @@
  * to before the queue reaches it is simply skipped, so the two never fight. */
 
 import { invoke } from "@tauri-apps/api/core";
-import { blockersFor, bypassNote, sayBlocked, swapNote, type Choice } from "./accounts";
+import {
+  blockersFor,
+  bypassNote,
+  putOnBlockedNote,
+  putOnNote,
+  sayBlocked,
+  standingOf,
+  swapNote,
+  type Choice,
+} from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -2579,6 +2588,57 @@ export class Skein {
     if (!allowance?.ok) return allowance?.fault ?? "that account could not be asked about";
     const blockers = blockersFor(acct, allowance.windows, conv.bypassCaps);
     return blockers.length > 0 ? sayBlocked(blockers) : "that account stopped taking work";
+  }
+
+  /** Put a card on a particular subscription, because you said so.
+   *
+   *  The waterfall picks for every card that has not been told otherwise, and
+   *  this is the telling. `/account <label>` and the card's right-click both
+   *  reach it; there is no third policy, because `choose`'s `stickTo` already
+   *  is one — a card stays on the account it is on while that account is ready,
+   *  so a deliberate choice of a ready account is simply kept from then on.
+   *
+   *  **A choice of a *blocked* account is honoured and then warned about**,
+   *  rather than refused. Refusing is the answer that looks careful and is not:
+   *  the reading behind "no room" is up to a minute old by `limits.rs`'s own
+   *  floor and cannot see a spend cap at all, so it is this window's belief
+   *  rather than the server's answer — and the one gesture a person has for
+   *  overriding the waterfall must not be vetoed by the waterfall's guess. What
+   *  is owed is the warning, and it is owed *before* the next send rather than
+   *  after it, which is the one thing `#settleAccount` cannot do.
+   *
+   *  Says so either way, by `swapNote`'s rule and `healNote`'s before it: Skein
+   *  spawns with `--dangerously-skip-permissions`, and the move ends the card's
+   *  process. Nothing that ends a process may be silent about it. */
+  async putOnAccount(conv: Conversation, to: string) {
+    const acct = waterfall.list.find((a) => a.label === to);
+    if (!acct) {
+      this.fault = `there is no account called ${to} on this wall`;
+      return;
+    }
+    const standing = standingOf(acct, waterfall.allowances[to], conv.bypassCaps);
+    if (standing.state === "unusable") {
+      /* The one refusal, and it is not about allowance at all: an account that
+         is switched off or not signed in has no credential to spawn against, so
+         honouring the choice would be a card that fails to start rather than a
+         card spending the wrong subscription. `spawn_now` refuses it too — this
+         is the same answer given where the gesture was made. */
+      this.fault = `${to} cannot take work — ${standing.why}`;
+      return;
+    }
+    const from = conv.accountLabel;
+    if (from === to) {
+      conv.note(`this card is already on ${to}`);
+      return;
+    }
+    await this.#moveTo(conv, to, null);
+    /* `#moveTo` is given no `from`, so it writes no `swapNote` — that sentence
+       is the *waterfall's*, and its reason half says what the old account could
+       no longer do, which here is nothing. This one is said instead. */
+    conv.note(putOnNote(to, from));
+    if (standing.state === "blocked") {
+      conv.note(putOnBlockedNote(to, sayBlocked(standing.blockers)));
+    }
   }
 
   /** Keep a prompt until an account can take it.

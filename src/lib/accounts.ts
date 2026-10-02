@@ -747,6 +747,35 @@ export function swapNote(from: string, to: string, why: string): string {
   return `moved from ${from} to ${to} — ${why}. the next turn re-reads this conversation uncached`;
 }
 
+/** The same move, when you asked for it rather than the waterfall.
+ *
+ *  Said in its own words rather than `swapNote`'s, because the reason half of
+ *  that sentence is `#whyLeft` — a reading of what the account it is leaving
+ *  could no longer do — and here the account it is leaving could do fine. "You
+ *  said so" is the whole of the why.
+ *
+ *  It keeps the second clause verbatim, and that is the part worth keeping: the
+ *  process ends and comes back against the same session, so the next turn pays
+ *  for the whole conversation uncached. That is the price of the gesture and
+ *  the one thing somebody pressing a menu item has no way to know. */
+export function putOnNote(to: string, from: string | null): string {
+  const leaving = from ? `moved from ${from} to ${to}` : `put on ${to}`;
+  return `${leaving} — you asked for it. the next turn re-reads this conversation uncached`;
+}
+
+/** And when the account you asked for cannot take work.
+ *
+ *  The card is moved anyway and this says what will happen next, rather than
+ *  the gesture being refused. Refusing would be the honest-looking answer and
+ *  the wrong one: an allowance reading is up to a minute old and does not see a
+ *  spend cap at all, so "that account has no room" is a thing this window
+ *  believes rather than knows — and the one gesture a person has for overriding
+ *  the waterfall should not be vetoed by the waterfall's own guess. What is
+ *  owed instead is the warning, before the send rather than after it. */
+export function putOnBlockedNote(to: string, why: string): string {
+  return `${to} is not taking work — ${why}. this card is on it, and the wall will move it on the next send unless that clears`;
+}
+
 /** And the line when a card is bypassing the caps you set, which it says for as
  *  long as it is doing it rather than once when you asked for it. */
 export function bypassNote(on: boolean): string {

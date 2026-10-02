@@ -432,6 +432,26 @@ only way to see from outside that a clear repointed it), the palette's current `
 and its `choices` — reported apart, because the two stages are never both up and an empty
 `commands` is otherwise a palette that is down and one that has moved on to the values.
 
+### `/account` — the first command whose values are not in this file
+
+`COMMANDS` is fixed because it is this window's vocabulary. `/account`'s
+*values* are not: they are whichever subscriptions are signed in on this wall,
+so the row is built by `withAccounts` and appended rather than stored, and it is
+not there at all below two accounts.
+
+That is not tidiness. The catalogue is asserted to be a set where every row can
+be typed, resolved and carried out with nothing else in hand — and a row with no
+values is one `resolveCommand` refuses by the name the palette had just offered.
+Keeping it out is what lets both claims stay true, and the registry is threaded
+as an argument through `byName`, `typingChoice`, `matchChoices`,
+`resolveCommand` and `matchCommands` rather than read from a store, because this
+file is pure and is tested as such.
+
+`.claude/rules/accounts.md` owns what the command *does* — why a blocked account
+is honoured and warned about rather than refused, why there is no second policy
+beside `choose`'s stickiness, and why the card's right-click reaches the same
+one function.
+
 ### `/btw` — a question asked beside the conversation
 
 *"Ask a quick side question without interrupting the main conversation"*, which is the CLI's

@@ -39,6 +39,12 @@ export type MenuTarget = {
    *  "ignore the caps" would be a gesture with nothing behind it, and menu.ts's
    *  standing rule is that offering nothing is a real answer. */
   accounts?: boolean;
+  /** The subscriptions this card could be put on, one marked as the one it is
+   *  on. Fewer than two and the submenu is left off entirely — `accounts.ts
+   *  ::accountChoice`'s rule, which is this file's own standing answer arriving
+   *  from somewhere else: with one account there is nothing to choose, and a
+   *  row that opens a list of one is a gesture that leads nowhere. */
+  accountPicks?: Pick[];
   /* card / image / widget / region: already stuck to the glass, so the item is
      the way back onto the wall rather than the way off it. One item with two
      labels, the shape `pinned` and `aside` already have — it is one state with
@@ -322,6 +328,23 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            Only where there are accounts to have caps on. */
         t.accounts
           ? item("bypass", t.bypassing ? "respect the account caps" : "ignore the account caps")
+          : null,
+        /* And which subscription it spends, beside the caps that govern it —
+           two halves of one question, and the only two gestures on this wall
+           that are about a card's account at all.
+           A submenu rather than rows, for `offerItems`' reason: the account
+           names are a family, and four of them inline would push `close` off
+           the bottom of a menu whose last two rows are the ones that end a
+           conversation. Marked rather than labelled (`chosen`), since "lyss
+           (current)" is a sentence where a tick is a glance — and the mark is
+           what makes the list a *choice* rather than a list of four things it
+           is not clear you are already doing one of. */
+        (t.accountPicks?.length ?? 0) > 1
+          ? more(
+              "account",
+              "put it on…",
+              t.accountPicks!.map((p) => chosen(`account:${p.id}`, p.label, p.on)),
+            )
           : null,
         /* Beside pinning for the same reason `aside` is: all three are things
            you decide about the card rather than things you do to the
