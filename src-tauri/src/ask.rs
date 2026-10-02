@@ -299,6 +299,16 @@ struct Parked {
     conversation_id: String,
     args: Value,
     ours: bool,
+    /// The *request* behind a question Volery composed — the tool and the
+    /// arguments the card gave — so that going away can file it as a deferred
+    /// act rather than leaving it to expire.
+    ///
+    /// `None` for `ask_user`, which has no request behind it beyond the
+    /// question itself. The distinction is the one `presence.rs` draws between
+    /// a pile of questions and a pile of things to do: an answer to the first
+    /// is handed to the agent, and an answer to the second re-enters the
+    /// decision, which needs the arguments rather than the drawn question.
+    act: Option<(String, Value)>,
 }
 
 #[derive(Default)]
@@ -377,16 +387,34 @@ impl Asks {
 ///
 /// Removed from `pending` as they are taken, so the answer path and this cannot
 /// both claim one; the caller is then the only thing holding the channel.
-pub(crate) fn take_parked_questions(asks: &Asks) -> Vec<(String, Value, Sender<String>)> {
+pub(crate) struct Taken {
+    pub conversation_id: String,
+    /// The question as it was drawn.
+    pub question: Value,
+    /// The request behind it, for one Volery composed. See `Parked::act`.
+    pub act: Option<(String, Value)>,
+    pub tx: Sender<String>,
+}
+
+pub(crate) fn take_parked_questions(asks: &Asks) -> Vec<Taken> {
     let mut pending = asks.pending.lock().unwrap();
+    /* Everything an agent asked, and everything Volery asked that carries a
+       request it can be re-entered from. What is left behind is the third case
+       — a question Volery composed whose caller is gone — and there is nothing
+       to file it under. */
     let ids: Vec<String> = pending
         .iter()
-        .filter(|(_, p)| !p.ours)
+        .filter(|(_, p)| !p.ours || p.act.is_some())
         .map(|(id, _)| id.clone())
         .collect();
     ids.into_iter()
         .filter_map(|id| pending.remove(&id))
-        .map(|p| (p.conversation_id, p.args, p.tx))
+        .map(|p| Taken {
+            conversation_id: p.conversation_id,
+            question: p.args,
+            act: p.act,
+            tx: p.tx,
+        })
         .collect()
 }
 
@@ -631,6 +659,7 @@ fn open_ask(
     conversation_id: &str,
     args: &Value,
     ours: bool,
+    act: Option<(String, Value)>,
 ) -> (String, Receiver<String>) {
     let ask_id = crate::store::uuid_v4();
     let (tx, rx) = mpsc::channel::<String>();
@@ -641,6 +670,7 @@ fn open_ask(
             conversation_id: conversation_id.to_string(),
             args: args.clone(),
             ours,
+            act,
         },
     );
 
@@ -703,8 +733,9 @@ fn park_and_stream(
     progress: Option<Value>,
     req: tiny_http::Request,
     settle: Option<Settle>,
+    act: Option<(String, Value)>,
 ) {
-    let (ask_id, rx) = open_ask(app, asks, conversation_id, args, settle.is_some());
+    let (ask_id, rx) = open_ask(app, asks, conversation_id, args, settle.is_some(), act);
     let forget = || {
         asks.pending.lock().unwrap().remove(&ask_id);
     };
@@ -1008,9 +1039,10 @@ pub(crate) fn roster() -> Vec<Value> {
            hands when it searches. */
         found_by(
             crate::presence::schema(),
-            "the user said they are leaving, off to bed, going out, away for the \
-             evening, back tomorrow, finishing for the night — stop notifying them \
-             and queue questions instead of parking on them",
+            "the user said they are stepping away — out for lunch, back in twenty, \
+             off to the gym, taking a break, leaving for the evening, going to bed, \
+             back tomorrow — stop notifying them and queue questions instead of \
+             parking on them",
         ),
         found_by(
             crate::sink::take_schema(),
@@ -1645,7 +1677,33 @@ fn hand_off(app: &AppHandle, card: &str, command: &str, paths: Vec<String>) -> S
         let said = match crate::remove::from_shell(&app2, &card2, &cmd2, &paths) {
             crate::remove::Writing::Now(said) => said,
             crate::remove::Writing::Ask { question, settle } => {
-                park_and_wait(&app2, &app2.state::<Asks>(), &card2, &question, settle)
+                /* Away: queued as a request rather than parked, and the thread
+                   is free. This is the path that mattered most to queue — a
+                   card tidying up its own `.scratch-<handle>/` after an
+                   experiment, which is the commonest delete on this wall and
+                   the one a night of refusals leaves lying around. */
+                if crate::presence::away(&app2) {
+                    crate::presence::defer_act(
+                        &app2,
+                        &card2,
+                        crate::presence::REMOVE_ACT,
+                        &crate::remove::shell_args(&cmd2, &paths),
+                        &question,
+                        "deleting what your shell line named",
+                    )
+                } else {
+                    park_and_wait(
+                        &app2,
+                        &app2.state::<Asks>(),
+                        &card2,
+                        &question,
+                        settle,
+                        Some((
+                            crate::presence::REMOVE_ACT.to_string(),
+                            crate::remove::shell_args(&cmd2, &paths),
+                        )),
+                    )
+                }
             }
         };
         let taken = reply2.lock().ok().and_then(|mut r| r.take());
@@ -1688,8 +1746,9 @@ fn park_and_wait(
     conversation_id: &str,
     question: &Value,
     settle: Settle,
+    act: Option<(String, Value)>,
 ) -> String {
-    let (ask_id, rx) = open_ask(app, asks, conversation_id, question, true);
+    let (ask_id, rx) = open_ask(app, asks, conversation_id, question, true, act);
     let window = answer_window(question);
     let answer = match rx.recv_timeout(window) {
         Ok(a) => Some(a),
@@ -1868,6 +1927,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 progress,
                                 req,
                                 None,
+                                None,
                             );
                             return;
                         }
@@ -1895,6 +1955,35 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                     );
                                 }
                                 crate::spawn::Closing::Ask { question, settle } => {
+                                    /* Away: this does not park either, and
+                                       unlike a question it is queued as a
+                                       *request* — the settle is dropped on the
+                                       floor and `presence::answer_deferred_act`
+                                       builds a fresh one by asking this same
+                                       function again when the user is back.
+                                       That is what "if it is still relevant"
+                                       means, and it is why the arguments are
+                                       stored rather than the decision. */
+                                    if crate::presence::away(&app) {
+                                        let note = crate::presence::defer_act(
+                                            &app,
+                                            &conversation_id,
+                                            crate::spawn::CLOSE_TOOL,
+                                            &args,
+                                            &question,
+                                            "closing that card",
+                                        );
+                                        respond(
+                                            req,
+                                            json!({
+                                                "jsonrpc": "2.0", "id": id,
+                                                "result": { "content": [
+                                                    { "type": "text", "text": note }
+                                                ] }
+                                            }),
+                                        );
+                                        return;
+                                    }
                                     let asks = app.state::<Asks>();
                                     park_and_stream(
                                         &app,
@@ -1905,6 +1994,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                         progress,
                                         req,
                                         Some(settle),
+                                        Some((crate::spawn::CLOSE_TOOL.to_string(), args.clone())),
                                     );
                                 }
                             }
@@ -1935,6 +2025,35 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                     );
                                 }
                                 crate::board::Unposting::Ask { question, settle } => {
+                                    /* Away: this does not park either, and
+                                       unlike a question it is queued as a
+                                       *request* — the settle is dropped on the
+                                       floor and `presence::answer_deferred_act`
+                                       builds a fresh one by asking this same
+                                       function again when the user is back.
+                                       That is what "if it is still relevant"
+                                       means, and it is why the arguments are
+                                       stored rather than the decision. */
+                                    if crate::presence::away(&app) {
+                                        let note = crate::presence::defer_act(
+                                            &app,
+                                            &conversation_id,
+                                            crate::board::UNPOST_TOOL,
+                                            &args,
+                                            &question,
+                                            "taking that notice down",
+                                        );
+                                        respond(
+                                            req,
+                                            json!({
+                                                "jsonrpc": "2.0", "id": id,
+                                                "result": { "content": [
+                                                    { "type": "text", "text": note }
+                                                ] }
+                                            }),
+                                        );
+                                        return;
+                                    }
                                     let asks = app.state::<Asks>();
                                     park_and_stream(
                                         &app,
@@ -1945,6 +2064,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                         progress,
                                         req,
                                         Some(settle),
+                                        Some((crate::board::UNPOST_TOOL.to_string(), args.clone())),
                                     );
                                 }
                             }
@@ -1985,6 +2105,11 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                     );
                                 }
                                 crate::smith::Writing::Ask { question, settle } => {
+                                    /* Not deferred while away, deliberately:
+                                       these write to somebody else's service,
+                                       where `presence.rs`'s re-entry can check
+                                       nothing about what has changed overnight.
+                                       See `away.md`. */
                                     let asks = app.state::<Asks>();
                                     park_and_stream(
                                         &app,
@@ -1995,6 +2120,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                         progress,
                                         req,
                                         Some(settle),
+                                        None,
                                     );
                                 }
                             }
@@ -2063,6 +2189,35 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                     );
                                 }
                                 crate::remove::Writing::Ask { question, settle } => {
+                                    /* Away: this does not park either, and
+                                       unlike a question it is queued as a
+                                       *request* — the settle is dropped on the
+                                       floor and `presence::answer_deferred_act`
+                                       builds a fresh one by asking this same
+                                       function again when the user is back.
+                                       That is what "if it is still relevant"
+                                       means, and it is why the arguments are
+                                       stored rather than the decision. */
+                                    if crate::presence::away(&app) {
+                                        let note = crate::presence::defer_act(
+                                            &app,
+                                            &conversation_id,
+                                            crate::presence::REMOVE_ACT,
+                                            &args,
+                                            &question,
+                                            "deleting what you named",
+                                        );
+                                        respond(
+                                            req,
+                                            json!({
+                                                "jsonrpc": "2.0", "id": id,
+                                                "result": { "content": [
+                                                    { "type": "text", "text": note }
+                                                ] }
+                                            }),
+                                        );
+                                        return;
+                                    }
                                     let asks = app.state::<Asks>();
                                     park_and_stream(
                                         &app,
@@ -2073,6 +2228,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                         progress,
                                         req,
                                         Some(settle),
+                                        Some((crate::presence::REMOVE_ACT.to_string(), args.clone())),
                                     );
                                 }
                             }
@@ -2095,6 +2251,11 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                     );
                                 }
                                 crate::docket::Writing::Ask { question, settle } => {
+                                    /* Not deferred while away, deliberately:
+                                       these write to somebody else's service,
+                                       where `presence.rs`'s re-entry can check
+                                       nothing about what has changed overnight.
+                                       See `away.md`. */
                                     let asks = app.state::<Asks>();
                                     park_and_stream(
                                         &app,
@@ -2105,6 +2266,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                         progress,
                                         req,
                                         Some(settle),
+                                        None,
                                     );
                                 }
                             }

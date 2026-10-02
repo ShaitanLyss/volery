@@ -20,9 +20,11 @@ import { listen } from "@tauri-apps/api/event";
 import { normalizeAsk, blankAnswers } from "./asking";
 import { Listeners } from "./listeners";
 import {
+  gateOnReturn,
   isAwayScreen,
   pileOf,
   waitingCount,
+  type Act,
   type AwayScreen,
   type Deferred,
   type Pile,
@@ -36,6 +38,14 @@ type DeferredRow = {
   id: string;
   conversation_id: string;
   ask: Record<string, unknown>;
+  asked_at: number;
+};
+
+type ActRow = {
+  id: string;
+  conversation_id: string;
+  tool: string;
+  question: Record<string, unknown>;
   asked_at: number;
 };
 
@@ -66,6 +76,10 @@ export class Presence {
 
   /** Everything owed an answer. */
   asks = $state<Deferred[]>([]);
+  /** Everything owed a decision — the three things Volery asks about itself.
+   *  Apart from `asks` because answering one re-enters the decision in Rust
+   *  rather than handing words to an agent; see `presence.ts::Act`. */
+  acts = $state<Act[]>([]);
 
   /** Whether the wall animates while away. On by default: a dark window is
    *  indistinguishable from a crashed one, and the whole of what away mode
@@ -110,8 +124,15 @@ export class Presence {
     return this.awaySince === null ? 0 : Math.max(0, now - this.awaySince);
   }
 
-  pile = $derived<Pile>(pileOf(this.asks));
-  waiting = $derived(waitingCount(this.asks));
+  /** Whether coming back now should put a puzzle up. See `gateOnReturn` — the
+   *  short answer is that away mode is not a night mode, and a puzzle after a
+   *  five-minute break is the thing that would end the feature. */
+  gates(now: number): boolean {
+    return gateOnReturn(this.toys, this.elapsed(now));
+  }
+
+  pile = $derived<Pile>(pileOf(this.asks, this.acts));
+  waiting = $derived(waitingCount(this.asks, this.acts));
 
   async #load() {
     try {
@@ -149,6 +170,7 @@ export class Presence {
         () => void this.refresh(),
       ),
     );
+    keep(listen("act:deferred", () => void this.refresh()));
   }
 
   /** Re-read the pile. Cheap — it is a table with tens of rows at worst, and
@@ -177,11 +199,44 @@ export class Presence {
       /* Leave the pile as it was. An empty list here would read as "nothing
          was asked", which is the one wrong answer. */
     }
+    try {
+      const rows = await invoke<ActRow[]>("deferred_acts");
+      this.acts = rows.map((r) => ({
+        id: r.id,
+        conversationId: r.conversation_id,
+        tool: r.tool,
+        questions: normalizeAsk(r.question ?? {}),
+        askedAt: r.asked_at,
+      }));
+    } catch {
+      /* Same reasoning. */
+    }
   }
 
   /** Everything this card asked while you were out. */
   forCard(id: string): Deferred[] {
     return this.asks.filter((a) => a.conversationId === id);
+  }
+
+  /** Decide one of the three things Volery asks about itself.
+   *
+   *  Rust takes the row and re-enters the decision in one call, which is why
+   *  this has no `claim` beside it the way an answered question does: an act
+   *  performed twice is worse than one lost, so the row is gone before the act
+   *  is attempted and the two cannot be separated by anything happening in
+   *  here. What comes back is what actually happened, which may well be
+   *  "nothing, the wall has moved on" — and that sentence is the feature
+   *  rather than a failure. */
+  async decide(id: string, answer: string): Promise<string> {
+    try {
+      const said = await invoke<string>("answer_deferred_act", { id, answer });
+      this.acts = this.acts.filter((a) => a.id !== id);
+      if (!this.asks.length && !this.acts.length) this.showing = false;
+      return said;
+    } catch (err) {
+      this.acts = this.acts.filter((a) => a.id !== id);
+      return String(err);
+    }
   }
 
   async goAway(note?: string) {
@@ -212,8 +267,9 @@ export class Presence {
       await this.#load();
     }
     await this.refresh();
-    this.showing = this.asks.length > 0;
-    return this.asks.length > 0;
+    const anything = this.asks.length > 0 || this.acts.length > 0;
+    this.showing = anything;
+    return anything;
   }
 
   /** Claim one, so it cannot be answered twice. The answer is sent *after*
@@ -224,7 +280,7 @@ export class Presence {
     try {
       const took = await invoke<boolean>("take_deferred_ask", { id });
       if (took) this.asks = this.asks.filter((a) => a.id !== id);
-      if (!this.asks.length) this.showing = false;
+      if (!this.asks.length && !this.acts.length) this.showing = false;
       return took;
     } catch {
       return false;

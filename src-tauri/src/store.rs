@@ -300,7 +300,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 38;
+const SCHEMA_VERSION: i64 = 39;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -344,6 +344,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (36, migrate_v36),
     (37, migrate_v37),
     (38, migrate_v38),
+    (39, migrate_v39),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1898,6 +1899,46 @@ fn migrate_v38(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v38: {e}"))
+}
+
+/// The other half of the away pile: the things a card asked Volery to *do*.
+///
+/// `deferred_ask` holds questions an agent asked, whose answer is information.
+/// This holds the three Volery composes itself — closing a card, taking down a
+/// dead card's notice, deleting a path — whose answer is an **act**.
+///
+/// That distinction is why it is a second table rather than a `kind` column on
+/// the first, and the difference is not cosmetic. An answer to a question is
+/// replayed by handing it to the agent. An answer to one of these is replayed
+/// by *re-entering the decision* — `spawn::close`, `board::unpost`,
+/// `remove::from_shell` are called again with the stored arguments, twelve
+/// hours later, and may well refuse. So what has to be kept is the **request**,
+/// not the decision: `tool` and `args_json` are what the card originally asked
+/// for, and `question_json` is only what was drawn at the time, kept so the
+/// pile can be read without re-entering anything.
+///
+/// Storing the decision instead was the obvious shape and is the trap. A
+/// `Settle` closure cannot be serialised, and even a serialised *outcome* would
+/// mean performing an act against a wall that has moved on: a card that has
+/// since started a turn, a notice whose author came back, a directory now
+/// holding somebody's unwritten work. The re-entry is what makes "if it is
+/// still relevant" mean something.
+fn migrate_v39(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS deferred_act (
+            id               TEXT PRIMARY KEY,
+            conversation_id  TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            tool             TEXT NOT NULL,
+            args_json        TEXT NOT NULL,
+            question_json    TEXT NOT NULL,
+            asked_at         INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS deferred_act_card
+            ON deferred_act(conversation_id);
+        "#,
+    )
+    .map_err(|e| format!("migrate v39: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -6343,6 +6384,95 @@ pub fn drop_deferred_asks_of(conn: &Connection, conversation_id: &str) {
         "DELETE FROM deferred_ask WHERE conversation_id = ?1",
         params![conversation_id],
     );
+    let _ = conn.execute(
+        "DELETE FROM deferred_act WHERE conversation_id = ?1",
+        params![conversation_id],
+    );
+}
+
+/// One thing a card asked Volery to do while you were out. See `migrate_v39`.
+pub struct DeferredAct {
+    pub id: String,
+    pub conversation_id: String,
+    pub tool: String,
+    pub args_json: String,
+    pub question_json: String,
+    pub asked_at: i64,
+}
+
+pub fn defer_act(
+    conn: &Connection,
+    id: &str,
+    conversation_id: &str,
+    tool: &str,
+    args_json: &str,
+    question_json: &str,
+    asked_at: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO deferred_act
+             (id, conversation_id, tool, args_json, question_json, asked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![id, conversation_id, tool, args_json, question_json, asked_at],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("defer act: {e}"))
+}
+
+pub fn deferred_acts(conn: &Connection) -> Vec<DeferredAct> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, conversation_id, tool, args_json, question_json, asked_at
+           FROM deferred_act ORDER BY asked_at",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok(DeferredAct {
+            id: r.get(0)?,
+            conversation_id: r.get(1)?,
+            tool: r.get(2)?,
+            args_json: r.get(3)?,
+            question_json: r.get(4)?,
+            asked_at: r.get(5)?,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+/// Read one and take it off the pile in the same breath.
+///
+/// **A single call, where the ask's two are a claim and then a send**, and the
+/// reason is the direction the failure runs in. An answer lost is a card that
+/// waits; an *act* performed twice is a card closed that somebody reopened, or
+/// a directory deleted after it was put back. So the row is gone before the act
+/// is attempted, and what it took comes back in the same call so the attempt
+/// has something to work from.
+pub fn take_deferred_act(conn: &Connection, id: &str) -> Option<DeferredAct> {
+    let got = conn
+        .query_row(
+            "SELECT id, conversation_id, tool, args_json, question_json, asked_at
+               FROM deferred_act WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(DeferredAct {
+                    id: r.get(0)?,
+                    conversation_id: r.get(1)?,
+                    tool: r.get(2)?,
+                    args_json: r.get(3)?,
+                    question_json: r.get(4)?,
+                    asked_at: r.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let gone = conn
+        .execute("DELETE FROM deferred_act WHERE id = ?1", params![id])
+        .unwrap_or(0);
+    if gone > 0 { Some(got) } else { None }
 }
 
 

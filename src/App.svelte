@@ -413,11 +413,17 @@
       /* Going away is the moment to fetch: the machine is idle, nobody is
          waiting, and the gate itself must never go to the network — see
          `sketch.svelte.ts`. Not awaited; it is minutes of someone else's
-         bandwidth and nothing depends on it. */
+         bandwidth and nothing depends on it. Started on every away rather than
+         only on a long one, because which this is cannot be known at the
+         start: you do not say how long you are going for, and a ten-minute
+         break that turns into an afternoon is the normal case. */
       if (presence.toys) void sketchbook.topUp();
       return;
     }
-    if (presence.toys) {
+    /* Only past `GATE_AFTER_MS`. Away mode is not a night mode — it is worth
+       throwing for a cup of tea — and a puzzle on the way back from one is the
+       thing `gate.ts` says would end the feature. */
+    if (presence.gates(clock.t)) {
       gating = true;
       return;
     }

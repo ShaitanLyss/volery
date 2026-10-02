@@ -38,6 +38,14 @@ describe("the catalogue", () => {
     expect(DEFAULT_TERMS.length).toBeGreaterThan(5);
     expect(new Set(DEFAULT_TERMS).size).toBe(DEFAULT_TERMS.length);
   });
+
+  test("there is a source that can reach a living artist", () => {
+    /* The whole reason the fourth source exists. A catalogue of open-access
+       collections cannot answer "Amano", and answering it is not an
+       infringement — looking at a picture is what a browser does. */
+    expect(SOURCES.some((s) => s.id === "search" && s.takesTerm)).toBe(true);
+    expect(DEFAULT_TERMS.some((t) => /amano/i.test(t))).toBe(true);
+  });
 });
 
 describe("choosing what to fetch", () => {
@@ -175,6 +183,82 @@ describe("photographs", () => {
   test("an empty page is null rather than a broken reference", async () => {
     const get = stub({ "/v2/list": "[]" });
     expect(await photo.find(get, 0.5, null)).toBe(null);
+  });
+});
+
+describe("the image search", () => {
+  const search = sourceById("search")!;
+  const results = (n: number, w = 1200) =>
+    JSON.stringify({
+      results: Array.from({ length: n }, (_, i) => ({
+        title: `Amano ${i}`,
+        image: `https://cdn.example/${i}.jpg`,
+        url: "https://www.sabukaru.online/articles/amano",
+        width: w,
+        height: w + 300,
+      })),
+    });
+
+  test("the token is taken from the page, then the results", async () => {
+    const get = stub({
+      "duckduckgo.com/?q=": 'something vqd="" more <a vqd="4-12345678">',
+      "/i.js": results(3),
+    });
+    const ref = await search.find(get, 0, "Yoshitaka Amano");
+    expect(get.asked.length).toBe(2);
+    expect(get.asked[1]).toContain("vqd=4-12345678");
+    expect(ref?.source).toBe("search");
+    expect(ref?.url).toContain("cdn.example");
+    /* The credit names where it was found, so it can be looked up afterwards —
+       half of what studying a painter is. */
+    expect(ref?.credit).toContain("sabukaru.online");
+    expect(ref?.credit).toContain("found by search");
+  });
+
+  test("the bare vqd= earlier in the page is not the token", async () => {
+    /* The actual bug this guards: matching the first `vqd=` finds an empty
+       string, and the results request then answers nothing at all. */
+    const get = stub({
+      "duckduckgo.com/?q=": "vqd= and later vqd=4-99",
+      "/i.js": results(1),
+    });
+    const ref = await search.find(get, 0, "x");
+    expect(get.asked[1]).toContain("vqd=4-99");
+    expect(ref).not.toBe(null);
+  });
+
+  test("no token is null rather than a second request", async () => {
+    const get = stub({ "duckduckgo.com/?q=": "<html>nothing here</html>" });
+    expect(await search.find(get, 0, "x")).toBe(null);
+    expect(get.asked.length).toBe(1);
+  });
+
+  test("thumbnails are not references", async () => {
+    /* A 200px result is not something to draw from, and the answer carries its
+       dimensions, so the filter is free. */
+    const get = stub({
+      "duckduckgo.com/?q=": 'vqd="4-1"',
+      "/i.js": results(5, 200),
+    });
+    expect(await search.find(get, 0.5, "x")).toBe(null);
+  });
+
+  test("the same picture twice gets the same id", async () => {
+    /* Which is what stops it being fetched twice across two evenings — a search
+       has no id of its own, so the URL is what identifies it. */
+    const get = stub({ "duckduckgo.com/?q=": 'vqd="4-1"', "/i.js": results(1) });
+    const a = await search.find(get, 0, "x");
+    const b = await search.find(get, 0, "x");
+    expect(a?.id).toBe(b!.id);
+    expect(a?.id).toMatch(/^search-[0-9a-z]+$/);
+  });
+
+  test("a captive portal is not a crash here either", async () => {
+    const get = stub({
+      "duckduckgo.com/?q=": 'vqd="4-1"',
+      "/i.js": "<!DOCTYPE html>sign in",
+    });
+    expect(await search.find(get, 0, "x")).toBe(null);
   });
 });
 

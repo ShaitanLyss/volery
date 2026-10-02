@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  actVerb,
   answerEnvelope,
+  gateOnReturn,
+  GATE_AFTER_MS,
   isAwayScreen,
   lasted,
   pileOf,
   stood,
   waitingCount,
+  type Act,
   type Deferred,
 } from "../src/lib/presence";
 import { blankAnswers, normalizeAsk, NO_PREFERENCE } from "../src/lib/asking";
@@ -22,6 +26,54 @@ function ask(id: string, card: string, at: number, text = "ship it?"): Deferred 
     askedAt: at,
   };
 }
+
+function act(id: string, card: string, at: number, tool = "mcp__skein__close"): Act {
+  return {
+    id,
+    conversationId: card,
+    tool,
+    questions: normalizeAsk({ question: "close it?", options: ["yes", "no"] }),
+    askedAt: at,
+  };
+}
+
+describe("things to do, beside things to answer", () => {
+  test("an act is named by what it does, not by its tool", () => {
+    expect(actVerb("mcp__skein__close")).toBe("close a card");
+    expect(actVerb("mcp__skein__unpost")).toBe("take a notice down");
+    /* The shell delete arrives under a bare name, since it is not a tool call
+       at all — it is a hook handing over a line somebody typed. */
+    expect(actVerb("remove")).toBe("delete a path");
+    expect(actVerb("something_new")).toBe("something_new");
+  });
+
+  test("they group with the same card's questions", () => {
+    const pile = pileOf([ask("1", "alpha", 200)], [act("a", "alpha", 100)]);
+    expect(pile.length).toBe(1);
+    expect(pile[0].asks.length).toBe(1);
+    expect(pile[0].acts.length).toBe(1);
+    /* The group counts from whichever came first, whichever kind it was. */
+    expect(pile[0].since).toBe(100);
+  });
+
+  test("a card with only acts still has a group", () => {
+    const pile = pileOf([], [act("a", "beta", 50)]);
+    expect(pile.map((g) => g.conversationId)).toEqual(["beta"]);
+  });
+
+  test("an act is one decision whatever it drew", () => {
+    expect(waitingCount([], [act("a", "x", 1), act("b", "x", 2)])).toBe(2);
+    expect(waitingCount([ask("q", "x", 1)], [act("a", "x", 2)])).toBe(2);
+  });
+
+  test("groups still read in the order they accumulated", () => {
+    const pile = pileOf(
+      [ask("q", "beta", 500)],
+      [act("a", "alpha", 100), act("b", "gamma", 900)],
+    );
+    expect(pile.map((g) => g.conversationId)).toEqual(["alpha", "beta", "gamma"]);
+  });
+});
 
 describe("the pile", () => {
   test("groups by card, oldest card first", () => {
@@ -151,6 +203,33 @@ describe("the answer handed back to the card", () => {
        waits for the call to return, which it did hours ago. */
     const text = answerEnvelope(d.questions, ["yes"], 1000);
     expect(text).toContain("nothing is parked");
+  });
+});
+
+describe("away mode is not a night mode", () => {
+  /* "I could be away for lunch, away for toilets, away for sport for 2 hours" —
+     the switch has to be worth throwing for five minutes, which means coming
+     back from five minutes cannot cost you a puzzle. */
+  test("a short away costs nothing on the way back", () => {
+    expect(gateOnReturn(true, 0)).toBe(false);
+    expect(gateOnReturn(true, 2 * 60 * 1000)).toBe(false);
+    expect(gateOnReturn(true, GATE_AFTER_MS - 1)).toBe(false);
+  });
+
+  test("a real absence does put a puzzle up", () => {
+    expect(gateOnReturn(true, GATE_AFTER_MS)).toBe(true);
+    expect(gateOnReturn(true, 9 * 3600 * 1000)).toBe(true);
+  });
+
+  test("the setting still wins over the clock", () => {
+    expect(gateOnReturn(false, 9 * 3600 * 1000)).toBe(false);
+  });
+
+  test("the line is a break rather than a night", () => {
+    /* If this ever grew to hours it would be a night mode again, which is the
+       thing the whole file is written against. */
+    expect(GATE_AFTER_MS).toBeGreaterThan(5 * 60 * 1000);
+    expect(GATE_AFTER_MS).toBeLessThanOrEqual(45 * 60 * 1000);
   });
 });
 

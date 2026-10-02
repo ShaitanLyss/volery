@@ -61,7 +61,7 @@ export class Sketchbook {
   /** What is on disk, ready to draw. */
   have = $state<Cached[]>([]);
   /** Which sources are on. */
-  sources = $state<SourceId[]>(["artic", "met", "photo"]);
+  sources = $state<SourceId[]>(["artic", "met", "photo", "search"]);
   /** What you are working on. Empty means `DEFAULT_TERMS`, so clearing the box
    *  is "surprise me" rather than "fetch nothing" — which is the reading
    *  somebody emptying a list of search terms actually wants. */

@@ -471,9 +471,9 @@
           <button
             class="chip"
             class:on={presence.toys}
-            title="A short puzzle between you and the wall when you come back — a word, a derivative, a shape to turn, something to draw"
+            title="A short puzzle between you and the wall when you come back, if you have been away more than twenty minutes — a word, a derivative, a shape to turn, something to draw"
             onclick={() => presence.setToys(!presence.toys)}
-            >{presence.toys ? "puzzle on the way back" : "no puzzle"}</button
+            >{presence.toys ? "puzzle after a long away" : "no puzzle"}</button
           >
           {#if presence.toys}
             <button class="chip" class:on={drawing} onclick={() => (drawing = !drawing)}
@@ -484,8 +484,8 @@
 
         {#if presence.toys && drawing}
           <!-- What there is to draw. Edited here and fetched *now* rather than
-               in the morning: the gate never goes to the network, which is the
-               rule the whole toy rests on. -->
+               when you come back: the gate never goes to the network, which is
+               the rule the whole toy rests on. -->
           <div class="line">
             {#each SOURCES as src (src.id)}
               <button
@@ -505,9 +505,10 @@
             onchange={(e) => sketchbook.setTerms(e.currentTarget.value)}
           ></textarea>
           <span class="what">
-            {sketchbook.usingDefaults ? "these are the defaults — edit to make them yours" : "yours"}
-            · open-access collections only, so a living artist's work is not here —
-            point a folder at your own references instead
+            {sketchbook.usingDefaults
+              ? "these are the defaults — edit to make them yours"
+              : "yours"} · an artist, a pose, a kind of light. the search reaches
+            anything; the museums only what is out of copyright
           </span>
           <div class="line">
             <button class="chip" onclick={() => void sketchbook.topUp()}>fetch some now</button>

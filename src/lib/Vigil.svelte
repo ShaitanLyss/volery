@@ -34,7 +34,7 @@
   import { clock } from "./conversation.svelte";
   import { nameBesideProject } from "./naming";
   import type { Presence } from "./presence.svelte";
-  import { answerEnvelope, lasted, stood, type Deferred } from "./presence";
+  import { actVerb, answerEnvelope, lasted, stood, type Act, type Deferred } from "./presence";
   import type { Skein } from "./skein.svelte";
   import { isComplete } from "./asking";
 
@@ -121,6 +121,23 @@
     if (!presence.asks.length) onclose();
   }
 
+  /** What came of an act, once decided. Keyed by the act's id and kept after
+   *  the row goes, because the sentence is the whole point: an approval here is
+   *  "ask again now and do it if the answer is still yes", so *what actually
+   *  happened* is news — and quite often it is "nothing, the wall has moved
+   *  on". A panel that removed the row and said nothing would leave you
+   *  believing a card was closed that is still open. */
+  let became = $state<Record<string, string>>({});
+  let deciding = $state<string | null>(null);
+
+  async function decide(a: Act, yes: boolean) {
+    if (deciding) return;
+    deciding = a.id;
+    const said = await presence.decide(a.id, yes ? "yes, do it" : "no, leave it");
+    became = { ...became, [a.id]: said };
+    deciding = null;
+  }
+
   /** Leave one unanswered and gone. The agent was told nothing is decided, so
    *  dropping a question is the user saying it is not worth one — which is a
    *  real answer and is why it is offered rather than only achievable by
@@ -180,7 +197,8 @@
       <nav class="rail">
         {#each pile as group (group.conversationId)}
           {@const who = whoOf(group.conversationId)}
-          {@const n = group.asks.reduce((t, a) => t + a.questions.length, 0)}
+          {@const n =
+            group.asks.reduce((t, a) => t + a.questions.length, 0) + group.acts.length}
           <button
             class="who"
             class:on={group.conversationId === here?.conversationId}
@@ -195,6 +213,35 @@
 
       <div class="asks">
         {#if here}
+          {#each here.acts as a (a.id)}
+            <!-- Drawn above the questions, and differently. An act is not a
+                 question with buttons: approving it means Volery asks itself
+                 the same question again *now* and acts only if the answer is
+                 still yes, so the row says that rather than implying a
+                 decision taken while you were out is simply carried out. -->
+            <div class="act" class:sending={deciding === a.id}>
+              <div class="actbar">
+                <span class="verb">{actVerb(a.tool)}</span>
+                <span class="when">{stood(clock.t - a.askedAt)}</span>
+              </div>
+              {#each a.questions as q (q.question)}
+                <p class="asked">{q.question}</p>
+              {/each}
+              {#if became[a.id]}
+                <p class="became">{became[a.id]}</p>
+              {:else}
+                <div class="foot">
+                  <button class="go" onclick={() => void decide(a, true)}>do it</button>
+                  <button class="drop" onclick={() => void decide(a, false)}>leave it</button>
+                  <span class="grow"></span>
+                  <span class="caveat">
+                    checked again before anything happens — if the reason has gone, it
+                    won't
+                  </span>
+                </div>
+              {/if}
+            </div>
+          {/each}
           {#each here.asks as d (d.id)}
             {@const who = whoOf(d.conversationId)}
             <div class="one" class:sending={sending === d.id}>
@@ -224,6 +271,9 @@
               </div>
             </div>
           {/each}
+          {#if !here.asks.length && !here.acts.length}
+            <p class="note">this card is settled.</p>
+          {/if}
         {:else}
           <p class="note">nothing is waiting.</p>
         {/if}
@@ -362,6 +412,61 @@
     flex-direction: column;
     gap: 0.3rem;
   }
+  .act {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    border: 1px solid color-mix(in srgb, var(--edge) 80%, var(--ink));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--ink) 5%, transparent);
+    padding: 0.55rem 0.65rem;
+  }
+  .act.sending {
+    opacity: 0.55;
+    pointer-events: none;
+  }
+  .actbar {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-family: var(--util);
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+  }
+  .verb {
+    color: var(--ink-on-surface, var(--ink));
+  }
+  .asked {
+    margin: 0;
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+  .became {
+    margin: 0;
+    font-size: 0.74rem;
+    line-height: 1.5;
+    color: var(--faint);
+  }
+  .caveat {
+    font-family: var(--util);
+    font-size: 0.56rem;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+    text-align: right;
+  }
+  .go {
+    border: 1px solid color-mix(in srgb, var(--st-ask) 55%, var(--edge));
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--st-ask) 10%, transparent);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    padding: 0.15rem 0.5rem;
+  }
+  .go:hover {
+    border-color: var(--st-ask);
+  }
+
   .one.sending {
     opacity: 0.55;
     pointer-events: none;

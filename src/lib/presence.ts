@@ -29,6 +29,33 @@ export type Deferred = {
   askedAt: number;
 };
 
+/** One thing a card asked Volery to *do* while you were out.
+ *
+ *  Kept apart from a question because the answer means something different. An
+ *  answer to a question is handed to the agent, which then decides. An answer
+ *  to one of these **re-enters the decision** in Rust — `spawn::close`,
+ *  `board::unpost`, `remove::remove` are asked again with the arguments the
+ *  card gave, twelve hours later, and may well refuse. So the panel has to say
+ *  so: approving one is not "it will happen", it is "ask again now, and do it
+ *  if the answer is still yes". */
+export type Act = {
+  id: string;
+  conversationId: string;
+  /** `mcp__skein__close`, `mcp__skein__unpost`, or `remove` for a shell line
+   *  the hook stopped. Drawn as a verb by `actVerb`. */
+  tool: string;
+  questions: AskQuestion[];
+  askedAt: number;
+};
+
+/** What an act is, in a word, for the row that lists it. */
+export function actVerb(tool: string): string {
+  if (tool.endsWith("close")) return "close a card";
+  if (tool.endsWith("unpost")) return "take a notice down";
+  if (tool.endsWith("remove")) return "delete a path";
+  return tool;
+}
+
 /** The pile, grouped the way it is read: one card, everything it asked, oldest
  *  first.
  *
@@ -44,33 +71,50 @@ export type Deferred = {
 export type Pile = {
   conversationId: string;
   asks: Deferred[];
+  /** What this card wants *done*, drawn under its questions. One group per
+   *  card whichever kind it asked, because the unit of attention is still the
+   *  card: deciding whether its scratch directory may go is the same context
+   *  as answering what it asked about the work. */
+  acts: Act[];
   /** When this card first asked. The group's sort key, and what the heading
    *  counts from. */
   since: number;
 }[];
 
-export function pileOf(asks: Deferred[]): Pile {
-  const by = new Map<string, Deferred[]>();
-  for (const a of asks) {
-    const list = by.get(a.conversationId);
-    if (list) list.push(a);
-    else by.set(a.conversationId, [a]);
-  }
+export function pileOf(asks: Deferred[], acts: Act[] = []): Pile {
+  const cards = new Set([
+    ...asks.map((a) => a.conversationId),
+    ...acts.map((a) => a.conversationId),
+  ]);
   const out: Pile = [];
-  for (const [conversationId, group] of by) {
-    const asksSorted = [...group].sort((a, b) => a.askedAt - b.askedAt);
+  for (const conversationId of cards) {
+    const mine = asks
+      .filter((a) => a.conversationId === conversationId)
+      .sort((a, b) => a.askedAt - b.askedAt);
+    const doing = acts
+      .filter((a) => a.conversationId === conversationId)
+      .sort((a, b) => a.askedAt - b.askedAt);
     out.push({
       conversationId,
-      asks: asksSorted,
-      since: asksSorted[0]?.askedAt ?? 0,
+      asks: mine,
+      acts: doing,
+      since: Math.min(
+        mine[0]?.askedAt ?? Number.POSITIVE_INFINITY,
+        doing[0]?.askedAt ?? Number.POSITIVE_INFINITY,
+      ),
     });
   }
   return out.sort((a, b) => a.since - b.since);
 }
 
-/** How many questions are waiting, over the whole pile. */
-export function waitingCount(asks: Deferred[]): number {
-  return asks.reduce((n, a) => n + a.questions.length, 0);
+/** How many decisions are waiting, over the whole pile.
+ *
+ *  Questions are counted by the decisions inside them — a call carrying three
+ *  is three things to decide, and a pile counted by *rows* would say "1
+ *  question" to somebody with three to make. An act is one decision whatever
+ *  it drew. */
+export function waitingCount(asks: Deferred[], acts: Act[] = []): number {
+  return asks.reduce((n, a) => n + a.questions.length, 0) + acts.length;
 }
 
 /** How long something has stood, in the shape a person reads.
@@ -141,6 +185,32 @@ export function answerEnvelope(
     `waiting on you except the work. Pick up from wherever you left it: say what you had ` +
     `held back on this, and carry on with it now.)`
   );
+}
+
+/** How long you must have been away before a puzzle stands in the way.
+ *
+ *  Away mode is not a night mode. *"I could be away for lunch, away for
+ *  toilets, away for sport for 2 hours"* — so the switch has to be worth
+ *  throwing for five minutes, and a brain-waking puzzle after a five-minute
+ *  break is precisely the thing `gate.ts` says would end the feature: a gate
+ *  you resent is a gate you turn off, and then you have neither.
+ *
+ *  Twenty minutes is the line because of what the gate is *for*. It exists to
+ *  mark a boundary — you were doing something else and now you are back at
+ *  work — and a trip to the kettle is not one. Under it, coming back is
+ *  nothing at all: the screen goes and the wall is there.
+ *
+ *  Not a setting. The toggle you want for "never" already exists on the gate
+ *  itself, and a second knob that is a *duration* is a knob nobody can answer
+ *  without trying three values. */
+export const GATE_AFTER_MS = 20 * 60 * 1000;
+
+/** Whether coming back should put a puzzle up.
+ *
+ *  Both halves matter and they fail differently: the setting off is you having
+ *  said no, and a short away is Volery not asking a question worth asking. */
+export function gateOnReturn(toys: boolean, awayMs: number): boolean {
+  return toys && awayMs >= GATE_AFTER_MS;
 }
 
 /** What the away screen does while nobody is watching.

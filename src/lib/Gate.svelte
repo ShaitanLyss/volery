@@ -372,7 +372,10 @@
     {/if}
 
     {#if won}
-      <p class="said good">bonjour</p>
+      <!-- Not a greeting with a time of day in it. Away mode is thrown for
+           lunch as readily as for a night, so "good morning" is wrong more
+           often than it is right. -->
+      <p class="said good">there you are</p>
     {/if}
 
     <footer>

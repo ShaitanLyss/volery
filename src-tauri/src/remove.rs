@@ -985,7 +985,11 @@ pub(crate) fn writes(
     (tool == REMOVE_TOOL).then(|| remove(app, caller, args))
 }
 
-fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
+/// `pub(crate)` for one caller besides this file's own: `presence::reenter`,
+/// which calls it again with the arguments a card gave hours earlier when you
+/// come back and answer. That is the whole of why a deferred delete is re-asked
+/// rather than replayed — see `away.md`.
+pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
     let g = match ground(app, caller) {
         Ok(g) => g,
         Err(why) => return Writing::Now(why),
@@ -1101,18 +1105,26 @@ fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
 /// `paths` are absolute — the hook resolved them against the shell's own `cwd`,
 /// which for a card that has `cd`-ed is not the row's.
 pub(crate) fn from_shell(app: &AppHandle, caller: &str, command: &str, paths: &[String]) -> Writing {
+    remove(app, caller, &shell_args(command, paths))
+}
+
+/// The arguments `from_shell` builds, on their own.
+///
+/// Its own function because away mode has to *store* them: a shell delete
+/// queued while the user is away is re-entered through the function below with
+/// these, so what is kept
+/// has to be the same value the live path would have passed. Two places
+/// composing the same JSON is two places for the reason sentence to drift, and
+/// the reason is what the user reads when they decide.
+pub(crate) fn shell_args(command: &str, paths: &[String]) -> Value {
     let shown = crate::clip::preview(command.trim(), 200);
-    remove(
-        app,
-        caller,
-        &json!({
-            "paths": paths,
-            "reason": format!(
-                "no reason given — it ran `{shown}` in its shell, and Volery stopped that and \
-                 put it to you instead"
-            ),
-        }),
-    )
+    json!({
+        "paths": paths,
+        "reason": format!(
+            "no reason given — it ran `{shown}` in its shell, and Volery stopped that and \
+             put it to you instead"
+        ),
+    })
 }
 
 /// Tell a card what came of a shell delete whose question outlasted the hook.

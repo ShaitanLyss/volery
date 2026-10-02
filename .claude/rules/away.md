@@ -15,6 +15,12 @@ paths:
   - "src-tauri/src/sketch.rs"
 ---
 
+> **Away mode is not a night mode.** *"I could be away for lunch, away for toilets, away for
+> sport for 2 hours."* It has to be worth throwing for five minutes, which is a constraint on
+> every surface below: the tool's description names lunch before it names bed, nothing in the
+> prose says *morning*, and the gate does not put a puzzle in front of a five-minute break
+> (`GATE_AFTER_MS`). The pile and the silence work the same at both scales.
+
 # Being away: questions that wait, and a wall that goes quiet
 
 ### The failure this exists for
@@ -275,6 +281,21 @@ Lyss's reasoning, in her words: *"unlock toys are fun actions to do when i'm bac
 unlock volery and get back to work … the idea is to get fun and stimulate the brain, it
 shouldn't take too long, 5 mins max"*.
 
+### It does not meet a short absence at all
+
+`gateOnReturn` is two conditions and the second is the one that was missed first time. The
+setting being on is you having said yes; **having been away twenty minutes** is Volery
+deciding the question is worth asking at all. Under that, coming back is nothing: the screen
+goes and the wall is there.
+
+The gate exists to mark a boundary — you were doing something else and now you are back at
+work — and a trip to the kettle is not one. A puzzle after a five-minute break is exactly the
+thing the next paragraph says would end the feature, and it would end it *faster*, because it
+happens several times a day.
+
+It is deliberately **not a setting**. The knob for "never" is already on the gate, and a
+second knob that is a *duration* is one nobody can answer without trying three values.
+
 ### It is not a lock, and that is a design decision rather than a weakness
 
 The bypass is on screen from the first frame, small and quiet — asked for in those words when
@@ -341,20 +362,50 @@ surface over. The number exists so you know afterwards how long it took.
 A reference is **dropped from the cache when you say you are done**, which is what makes
 twelve of them two weeks of mornings rather than the same twelve pictures for ever.
 
-### What it can and cannot get you, which is a real limit and not a gap
+### Four sources, and why the fourth had to exist
 
-The two museum sources are open-access collections — the Art Institute of Chicago and the Met
-both publish public-domain works with an API and no key, so Hokusai, Mucha, Klimt, Sargent and
-several thousand others are one search term away. The third is Picsum, for photographs, which
-is a different exercise: value and foreshortening rather than somebody else's line.
+Two are open-access collections — the Art Institute of Chicago and the Met both publish
+public-domain works with an API and no key, so Hokusai, Mucha, Klimt and Sargent are one
+search term away. One is Picsum, for photographs, which is a different exercise: value and
+foreshortening rather than somebody else's line.
 
-**A living artist's work is in none of them.** Yoshitaka Amano — the Final Fantasy covers, and
-the case this was asked about — is in copyright, and a built-in fetcher that went and got his
-paintings would be Volery redistributing somebody's work rather than finding you a reference.
-So the honest route is `sketch_folder` / `sketch_adopt`: point the setting at a directory of
-images you already have and they are drawn alongside the rest. It costs one path and it is the
-only answer that is both useful and defensible. Say so rather than quietly returning a
-different painter.
+The fourth is **an image search**, and the first version of this file refused to build one on
+copyright grounds. That was wrong, and the correction is worth keeping because the reasoning
+error is a common one. Lyss: *"about Amano, I understand there's copyright, but I'm not asking
+to steal his work, just show it like a normal Google search would so that I can look at it and
+sketch it, that's no copyright infringement"*. Fetching an image to **look at** is what every
+browser does on every page; drawing from a reference is what every art student has always
+done. What copyright bears on is publishing or selling the result, and nothing here does
+either — the picture is cached locally, shown to one person, and deleted when they say they
+have drawn it. Refusing was mistaking *where the work came from* for *what is being done with
+it*.
+
+So `search` is two requests to DuckDuckGo — a page, for the token its results endpoint
+demands, and then the results — probed 2026-10-02 at 58 results for *yoshitaka amano*, each
+with a full-size URL, its dimensions, a title and the page it was found on. **It is the most
+fragile thing in this subsystem and says so**: neither request is a published interface, so it
+returns `null` rather than throwing, `topUp` moves on, and the other three go on working. If
+it ever stops, that is what has happened — not the cache and not the network.
+
+`folder` stays, for the one thing a search is bad at: references you chose deliberately and
+want to come back to.
+
+### Two checks, not one, because they are different questions
+
+`sketch_json` keeps the exact host allowlist: a *question* goes to one of a handful of
+services whose shapes `sketch.ts` knows, and widening that is a commit.
+
+`sketch_cache` cannot have a list — an image search names a different CDN every time — so it
+checks the **shape** of the host instead. `public_only` refuses anything but https, and
+refuses loopback, private and link-local addresses, which is what stops a command reachable
+from the webview being used to read `http://192.168.1.1/` or a service bound to localhost. It
+is not airtight: a name that resolves to a private address at connect time is not caught,
+since this reads the URL and not the socket. That is written down rather than implied, and for
+a personal desktop app fetching pictures the user asked for it is the proportionate check.
+
+What actually protects the disk is the three things that apply to every byte either way — the
+magic-number sniff, the size cap, and a file name that cannot climb out of the cache. A host
+list was never what made those true.
 
 ### Two things `sketch.rs` is careful about
 
@@ -391,6 +442,53 @@ focus when they arrive. Two bugs, and neither is visible from reading either fil
   motus guess would also have been typed into a prompt nobody can see, and `onDraftKey` would
   have acted on it. The blur belongs in the arriving layer, since it is the layer arriving
   that makes it true.
+
+## Acts, and what "if it is still relevant" means
+
+Three tools compose their own question — `close`, `unpost`, and the delete `remove` handles,
+including the shell line a hook stops. For away mode's first day these went on timing out, on
+the argument that their unanswered behaviour is already the conservative one.
+
+**That argument was wrong about what gets lost.** Lyss: *"close unpost remove should be queued
+somehow instead, if still relevant, otherwise we're going to miss a lot of cleanup — often
+cards want to remove scratch temp folders they built for their experiments"*. A refusal is
+safe in the sense that nothing wrong happens, and unsafe in the sense that matters: a night of
+refusals is a tree full of other cards' `.scratch-<handle>/` directories and a board full of
+notices nobody can take down, and nobody goes back for them.
+
+### The request is stored, never the decision
+
+`deferred_act` holds `tool` and the **arguments the card gave**. Answering calls
+`presence::reenter`, which asks `spawn::close` / `board::unpost` / `remove::remove` *again*,
+now, and gets a fresh `Settle` — or `Stale`, meaning the tool no longer wants to ask, which is
+reported as *"it did not happen — the wall has moved on"*.
+
+That is the whole of the qualifier. A card that has since started a turn is refused; a notice
+whose author came back is refused; a directory now holding somebody's unwritten work is
+refused, because `remove`'s own settle re-checks that too. **Storing the outcome instead was
+the obvious shape and is the trap** — a closure cannot be serialised, and a serialised
+*verdict* would mean performing an act against a wall nobody has re-read.
+
+Three consequences worth knowing before touching it:
+
+- **`Parked` carries the request beside the question**, so flipping the switch with one
+  already on the wall files it as an act rather than leaving it to expire.
+- **The row is taken and the act attempted in one call**, which is the opposite ordering from
+  a deferred question. An answer lost is a card that waits; an act performed twice is a card
+  closed that somebody reopened. `store::take_deferred_act` returns what it took, so the
+  attempt has something to work from.
+- **The card is told and not roused.** It asked for something to be done, not for an answer it
+  stopped on, so `later.rs`'s rule holds — `tell_late` is `remove::deliver_late`'s shape
+  generalised, under `RELAY_MARK`'s *from the wall —*, which is honest here in a way it is not
+  for an answer you composed yourself.
+
+`smith` and `docket` still time out, and that is the line: they write to somebody else's
+service, where re-entry can check nothing about what changed while you were out.
+
+The panel says so rather than implying a decision is simply carried out — *"checked again
+before anything happens — if the reason has gone, it won't"* — and it keeps the sentence that
+came back, because quite often it is *nothing happened*, and a row that vanished silently
+would leave you believing a card was closed that is still open.
 
 ### What was deliberately left out
 

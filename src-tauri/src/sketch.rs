@@ -11,13 +11,25 @@
 //!
 //! ## Two things this is careful about
 //!
-//! **It is not a general-purpose fetcher.** A Tauri command that fetched any
-//! URL and wrote the answer to disk is a hole, whatever it is called — so every
-//! request is checked against `ALLOWED`, by exact host or by registrable suffix,
-//! and nothing else is tried. The list is short on purpose and the cost of it
-//! being short is the right cost: a source this file has never heard of does
-//! not work until somebody adds it *here*, in a commit, rather than by typing a
-//! URL into a settings box.
+//! **The two halves are checked differently, and the asymmetry is the point.**
+//! A *question* goes to one of a handful of services whose shapes `sketch.ts`
+//! knows, so `ALLOWED` is an exact list and widening it is a commit. An
+//! *image* can come from anywhere — that is what an image search is — so there
+//! is no list it could be on, and the check is instead about where a fetch may
+//! not go: `public_only` refuses anything but https and refuses loopback,
+//! private and link-local addresses, so this cannot be used as a way to reach
+//! the machine's own services or the network it sits on.
+//!
+//! That is a smaller guarantee than a list and it is the honest one for the
+//! feature. What actually protects the disk is three things that apply to every
+//! byte either way: the magic-number sniff, the size cap, and a file name that
+//! cannot climb out of the cache directory. A host list was never what made
+//! those true.
+//!
+//! It is not airtight — a name that resolves to a private address at connect
+//! time is not caught, since this reads the URL and not the socket — and that
+//! is written down rather than implied. For a personal desktop app fetching
+//! pictures the user asked for, it is the proportionate check.
 //!
 //! **The cache lives under `references/sketch/`**, inside the one directory the
 //! asset protocol will serve from (`tauri.conf.json`), which is what lets the
@@ -46,7 +58,22 @@ const ALLOWED: &[&str] = &[
     "images.metmuseum.org",
     "picsum.photos",
     ".picsum.photos",
+    /* The image search. Two requests to this host — a page, for the token its
+       results endpoint demands, and then the results — and nothing else. The
+       *pictures* it names are fetched under `public_only`, since an image
+       search that only returned pictures from a list would not be one. */
+    "duckduckgo.com",
+    "html.duckduckgo.com",
 ];
+
+/// A browser's user agent, because the search answers differently without one.
+///
+/// Not a trick: the endpoint behind the image search is a page a browser asks
+/// for, and a client that declines to say what it is gets a different answer or
+/// none. Probed 2026-10-02 — `curl` with this header returns the token page and
+/// then 58 results; this is the same request from Rust.
+const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                  (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// The most a single reference may weigh. The sources are asked for ~850px on
 /// the long edge, which lands around 200KB; eight megabytes is the point at
@@ -59,21 +86,39 @@ const MAX_JSON: usize = 4 * 1024 * 1024;
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
-fn allowed(url: &str) -> Result<(), String> {
+/// The host a URL names, lower-cased, or an error for anything that is not an
+/// https URL at all.
+///
+/// The `@` is the part worth knowing: `https://api.artic.edu@evil.example/` is
+/// `evil.example` with a username on it, and reading up to the first `/` would
+/// have called it allowed.
+fn host_of(url: &str) -> Result<String, String> {
     let rest = url
         .strip_prefix("https://")
         .ok_or_else(|| format!("only https, and that is not: {url}"))?;
-    let host = rest
+    let authority = rest
         .split('/')
         .next()
         .unwrap_or("")
         .split('@')
         .next_back()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+        .unwrap_or("");
+    /* A literal IPv6 address is bracketed and full of colons, so the port can
+       only be stripped after the bracket closes. Everything else splits on the
+       first one. */
+    let host = if authority.starts_with('[') {
+        match authority.find(']') {
+            Some(i) => &authority[..=i],
+            None => authority,
+        }
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    Ok(host.to_ascii_lowercase())
+}
+
+fn allowed(url: &str) -> Result<(), String> {
+    let host = host_of(url)?;
     let ok = ALLOWED.iter().any(|a| {
         if let Some(suffix) = a.strip_prefix('.') {
             host == suffix || host.ends_with(a)
@@ -93,10 +138,46 @@ fn allowed(url: &str) -> Result<(), String> {
     }
 }
 
+/// Where an *image* may come from: anywhere on the public internet, over https,
+/// and nowhere on this machine or its network.
+///
+/// The list cannot do this job — an image search names a different CDN every
+/// time — so what is checked is the shape of the host rather than its identity.
+/// What it is really for is that this command is reachable from the webview and
+/// writes what it fetches to disk, which without a check would be a way to ask
+/// Volery to go and read `http://192.168.1.1/` or a service bound to localhost.
+fn public_only(url: &str) -> Result<(), String> {
+    let host = host_of(url)?;
+    let private = host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.ends_with(".home.arpa")
+        || host == "0.0.0.0"
+        || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("169.254.")
+        || host.starts_with("[::1")
+        || host.starts_with("[fc")
+        || host.starts_with("[fd")
+        /* 172.16.0.0/12 is the one that needs arithmetic rather than a prefix. */
+        || host
+            .strip_prefix("172.")
+            .and_then(|r| r.split('.').next())
+            .and_then(|o| o.parse::<u16>().ok())
+            .is_some_and(|o| (16..=31).contains(&o));
+    if private {
+        Err(format!("{host} is not somewhere on the public internet"))
+    } else {
+        Ok(())
+    }
+}
+
 fn get(url: &str, cap: usize) -> Result<Vec<u8>, String> {
-    allowed(url)?;
     let res = ureq::AgentBuilder::new()
         .timeout(TIMEOUT)
+        .user_agent(UA)
         .build()
         .get(url)
         .call()
@@ -117,6 +198,7 @@ fn get(url: &str, cap: usize) -> Result<Vec<u8>, String> {
 #[tauri::command]
 pub async fn sketch_json(url: String) -> Result<String, String> {
     crate::off_main(move || {
+        allowed(&url)?;
         let body = get(&url, MAX_JSON)?;
         String::from_utf8(body).map_err(|_| format!("{url} did not answer with text"))
     })
@@ -193,6 +275,7 @@ pub async fn sketch_cache(
 ) -> Result<Cached, String> {
     let into = dir(&store);
     crate::off_main(move || {
+        public_only(&url)?;
         let bytes = get(&url, MAX_BYTES)?;
         let Some(ext) = sniff(&bytes) else {
             return Err(format!("{url} did not answer with an image"));
@@ -376,6 +459,34 @@ mod tests {
            username on it, and reading up to the first `/` without taking the
            part after `@` would have called it allowed. */
         assert!(allowed("https://api.artic.edu@evil.example/x.png").is_err());
+    }
+
+    #[test]
+    fn an_image_may_come_from_anywhere_public_and_nowhere_private() {
+        /* The point of the whole split: an image search names a different CDN
+           every time, so there is no list these could be on. */
+        assert!(public_only("https://i.pinimg.com/originals/8a/x.jpg").is_ok());
+        assert!(public_only("https://images.squarespace-cdn.com/content/x.jpg").is_ok());
+        assert!(public_only("https://tse1.mm.bing.net/th/id/OIP.x").is_ok());
+
+        /* And the thing it is actually for: this command is reachable from the
+           webview and writes what it fetches to disk. */
+        assert!(public_only("http://example.com/x.png").is_err(), "https only");
+        assert!(public_only("https://localhost/x.png").is_err());
+        assert!(public_only("https://127.0.0.1:8080/x.png").is_err());
+        assert!(public_only("https://192.168.1.1/x.png").is_err());
+        assert!(public_only("https://10.0.0.5/x.png").is_err());
+        assert!(public_only("https://169.254.169.254/latest/meta-data").is_err());
+        assert!(public_only("https://[::1]/x.png").is_err());
+        assert!(public_only("https://nas.local/x.png").is_err());
+        /* 172.16/12 is the range that needs arithmetic rather than a prefix —
+           and 172.32 is outside it and must stay allowed. */
+        assert!(public_only("https://172.16.0.1/x.png").is_err());
+        assert!(public_only("https://172.31.255.254/x.png").is_err());
+        assert!(public_only("https://172.32.0.1/x.png").is_ok());
+        assert!(public_only("https://172.15.0.1/x.png").is_ok());
+        /* The userinfo trick, one check over. */
+        assert!(public_only("https://example.com@127.0.0.1/x.png").is_err());
     }
 
     #[test]

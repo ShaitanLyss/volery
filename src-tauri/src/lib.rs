@@ -642,6 +642,8 @@ pub fn run() {
             presence::set_presence,
             presence::deferred_asks,
             presence::take_deferred_ask,
+            presence::deferred_acts,
+            presence::answer_deferred_act,
             sketch::sketch_json,
             sketch::sketch_cache,
             sketch::sketch_have,

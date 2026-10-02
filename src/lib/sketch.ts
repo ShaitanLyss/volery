@@ -19,22 +19,29 @@
  *   working on this month — gesture, drapery, faces, one painter's line — so
  *   the terms are a setting, and a source is a named thing you can switch off.
  *
- * ## What this can and cannot get you
+ * ## The four sources, and why the fourth exists
  *
- * The two museum sources are **open-access collections**: the Art Institute of
- * Chicago and the Met both publish public-domain works with an API and no key,
- * which is how Hokusai, Mucha, Klimt, Sargent and several thousand others are
- * one search term away. The photo source is Picsum, which is Unsplash-licensed
- * photography.
+ * Two are **open-access collections** — the Art Institute of Chicago and the
+ * Met both publish public-domain works with an API and no key, which is how
+ * Hokusai, Mucha, Klimt and Sargent are one search term away. One is Picsum,
+ * for photographs, which is a different exercise: value and foreshortening
+ * rather than somebody else's line.
  *
- * **A living artist's work is in none of them, and that is not an oversight
- * this file can fix.** Yoshitaka Amano — the Final Fantasy covers — is in
- * copyright, and a built-in fetcher that went and got his paintings would be
- * Volery redistributing somebody's work rather than finding you a reference. So
- * the honest answer for the artists you want to study is `localFolder`: point
- * this at a directory of images you already have, and it draws from those
- * alongside the rest. It costs one path in a setting and it is the only route
- * that is both useful and defensible.
+ * The fourth is **an image search**, and it is here because the first three
+ * cannot answer the question that was actually asked. Lyss: *"about Amano, I
+ * understand there's copyright, but I'm not asking to steal his work, just show
+ * it like a normal Google search would so that I can look at it and sketch it,
+ * that's no copyright infringement"*. That is right, and the first version of
+ * this file was wrong to refuse on those grounds: fetching an image to *look
+ * at* is what every browser does on every page, and drawing from a reference is
+ * what every art student has always done. What copyright would bear on is
+ * publishing or selling the result, and nothing here does either — the picture
+ * is cached locally, shown to one person, and deleted when they say they have
+ * drawn it.
+ *
+ * So a living artist is reachable now, and `folder` is still here for the one
+ * thing a search is bad at: a set of references you have chosen deliberately
+ * and want to come back to.
  *
  * The network half is `sketch.rs`, which fetches and caches and knows nothing
  * about what a source is. This file holds every source's shape, which is the
@@ -62,7 +69,7 @@ export type Reference = {
   source: SourceId;
 };
 
-export type SourceId = "artic" | "met" | "photo" | "folder";
+export type SourceId = "artic" | "met" | "photo" | "search" | "folder";
 
 export type Fetcher = (url: string) => Promise<string>;
 
@@ -88,6 +95,11 @@ export type Source = {
  *  returns haystacks. The painters that are here are here for their line —
  *  which is the thing you can actually steal. */
 export const DEFAULT_TERMS: readonly string[] = [
+  /* The ones that are here for their *line*, which is the thing you can
+     actually steal. Amano is first because he is the case this list was
+     rewritten for — the image search reaches him where the museums cannot. */
+  "Yoshitaka Amano",
+  "Yoshitaka Amano watercolour",
   "Hokusai",
   "Mucha",
   "Sargent portrait",
@@ -96,6 +108,8 @@ export const DEFAULT_TERMS: readonly string[] = [
   "Klimt drawing",
   "Rembrandt etching",
   "Greek sculpture",
+  /* And the ones that are a *thing to draw* rather than somebody to copy. A
+     reference earns its place by having a figure, a fold or a face in it. */
   "drapery study",
   "hands study",
   "horse",
@@ -217,7 +231,65 @@ const photo: Source = {
   },
 };
 
-export const SOURCES: readonly Source[] = [artic, met, photo];
+/** An image search, which is the source that can answer "Amano".
+ *
+ *  Two requests to DuckDuckGo: a page, because its results endpoint demands a
+ *  token (`vqd`) that only appears in the HTML, and then the results
+ *  themselves. Probed 2026-10-02 — 58 results for *yoshitaka amano*, each with
+ *  a full-size image URL, its dimensions, a title and the page it was found on.
+ *
+ *  **It is the most fragile thing in this file and that is stated rather than
+ *  hidden.** Nothing about those two requests is a published interface, so a
+ *  change at the other end breaks this and nothing else; it returns `null`
+ *  rather than throwing, `topUp` moves on to another source, and the museums,
+ *  the photographs and your own folder go on working. If it ever stops, that is
+ *  what has happened — not the cache, and not the network.
+ *
+ *  Small images are dropped. A thumbnail is not something to draw from, and the
+ *  results carry their dimensions, so the filter is free. */
+const search: Source = {
+  id: "search",
+  label: "image search",
+  about: "anything you can name — a living artist, a pose, a kind of light",
+  takesTerm: true,
+  async find(get, roll, term) {
+    const q = encodeURIComponent(term ?? "figure drawing");
+    const page = await get(`https://duckduckgo.com/?q=${q}&iax=images&ia=images`);
+    /* The bare `vqd=` appears earlier in the document with nothing after it, so
+       the token's own shape is part of the pattern rather than an afterthought
+       — matching the first `vqd=` finds an empty string and the results request
+       then answers nothing. */
+    const vqd = /vqd=["']?(4-[0-9]+)/.exec(page)?.[1];
+    if (!vqd) return null;
+    const body = await get(
+      `https://duckduckgo.com/i.js?l=us-en&o=json&q=${q}&vqd=${vqd}&f=,,,&p=1`,
+    );
+    const json = safeParse(body);
+    const results = Array.isArray(json?.results) ? json.results : [];
+    const big = results.filter((r: Record<string, unknown>) => {
+      const w = typeof r.width === "number" ? r.width : 0;
+      const h = typeof r.height === "number" ? r.height : 0;
+      return typeof r.image === "string" && Math.max(w, h) >= 700;
+    });
+    const got = pick(big, roll) as Record<string, unknown> | null;
+    if (!got) return null;
+    const title = str(got.title).trim() || term || "reference";
+    const where = str(got.url);
+    return {
+      /* The URL rather than an id, because a search has none — hashed so the
+         file name is short and stable, which is what stops the same picture
+         being fetched twice across two evenings. */
+      id: `search-${hash(str(got.image))}`,
+      title,
+      artist: term ?? "",
+      credit: `${title}${where ? ` · ${host(where)}` : ""} · found by search`,
+      url: str(got.image),
+      source: "search",
+    };
+  },
+};
+
+export const SOURCES: readonly Source[] = [artic, met, photo, search];
 
 export function sourceById(id: string): Source | null {
   return SOURCES.find((s) => s.id === id) ?? null;
@@ -248,7 +320,7 @@ export function wanted(
 
 /** How many references are worth having on disk.
  *
- *  Twelve is about two weeks of mornings, which is the horizon that matters:
+ *  Twelve is about a fortnight of sittings, which is the horizon that matters:
  *  the cache exists so that a week with no network is still a week you can
  *  draw. Past that it is a folder of pictures nobody looks at, and each one is
  *  roughly a quarter of a megabyte. */
@@ -285,6 +357,24 @@ function safeParse(body: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/** A short stable name for a URL. Not a security hash — it names a file in a
+ *  cache, and what it has to be is the same every time for the same picture. */
+function hash(s: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** Where a picture was found, for the credit line. Degrades to the whole string
+ *  rather than throwing: a result with a malformed URL is still a picture. */
+function host(url: string): string {
+  const m = /^https?:\/\/([^/?#]+)/i.exec(url);
+  return m ? m[1].replace(/^www\./, "") : url;
 }
 
 function str(v: unknown): string {

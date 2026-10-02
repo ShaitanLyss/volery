@@ -262,21 +262,34 @@ pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value) -> String {
 /// which is the exact loss away mode exists to prevent, five minutes before it
 /// was switched on.
 ///
-/// **A question Volery composed is not converted**, and the asymmetry is about
-/// what an answer *is* rather than about effort. An `ask_user` answer is
-/// information: it goes back to the agent as a turn, and the agent decides what
-/// to do with it with its own context in hand. `close`, `unpost` and the
-/// `remove` hand-off carry a `Settle` — the answer is a *decision*, and
-/// approving one twelve hours later means Volery performing an irreversible act
-/// against a wall that has moved on, with no agent left to tell and nothing to
-/// catch it if the premise changed. Their unanswered behaviour is already the
-/// conservative one — the card stays, the notice stays, the delete is refused —
-/// and "nobody was there" is the right input to those, where it is the wrong
-/// input to a product question.
+/// **The two piles are different and a question Volery composed goes to the
+/// other one.** An `ask_user` answer is information: it goes back to the agent
+/// as a turn and the agent decides what to do with it. `close`, `unpost` and
+/// the `remove` hand-off carry a `Settle` — the answer is a *decision*, and
+/// replaying one twelve hours later would mean Volery performing an
+/// irreversible act against a wall that has moved on. So those are filed as
+/// requests and re-entered on the way out rather than replayed; see
+/// `defer_act`, which is where that whole argument lives.
+///
+/// What is left parked after this is the third case: a question Volery composed
+/// with no request stored beside it, which is `smith` and `docket` — writes to
+/// somebody else's service, where re-entry could check nothing about what
+/// changed overnight. Those still time out, and their unanswered behaviour is
+/// the conservative one.
 fn defer_parked(app: &AppHandle) {
     let Some(asks) = app.try_state::<crate::ask::Asks>() else { return };
-    for (conversation_id, args, tx) in crate::ask::take_parked_questions(&asks) {
-        let note = defer(app, &conversation_id, &args);
+    for taken in crate::ask::take_parked_questions(&asks) {
+        let crate::ask::Taken { conversation_id, question, act, tx } = taken;
+        /* A question Volery composed goes to the *act* pile, which is what the
+           request stored beside it is for: its answer is a decision rather than
+           a message, and replaying a decision twelve hours later is the thing
+           away mode refuses to do. See `defer_act`. */
+        let note = match act {
+            Some((tool, args)) => {
+                defer_act(app, &conversation_id, &tool, &args, &question, "it")
+            }
+            None => defer(app, &conversation_id, &question),
+        };
         /* The park is listening on this channel and recognises the opening, so
            what the agent reads is the note and what the wall draws is a
            question taken down rather than one nobody answered. A send that
@@ -380,8 +393,10 @@ pub fn schema() -> Value {
     json!({
         "name": AWAY_TOOL,
         "description":
-            "Tell the wall the user has gone — they said they are off, going to bed, \
-             out for the evening. Call it the moment they say so, in whatever words.\n\n\
+            "Tell the wall the user has stepped away — for ten minutes or for the night. \
+             Call it the moment they say so, in whatever words: out for lunch, back in \
+             twenty, off to the gym, finishing for the day, going to bed. It is the same \
+             switch either way and it costs nothing to use for a short one.\n\n\
              It changes what happens to every card here, not just yours: no card \
              raises a window, rings or flashes the taskbar, and `mcp__skein__ask_user` stops \
              parking. A question asked while away is **queued** instead and your turn \
@@ -398,9 +413,9 @@ pub fn schema() -> Value {
                 "note": {
                     "type": "string",
                     "description":
-                        "Optional. What they said, in their words — 'off for the \
-                         night', 'back around nine'. Shown on the away screen, so \
-                         whoever walks past knows what the wall is waiting for."
+                        "Optional. What they said, in their words — 'back in twenty', \
+                         'out for lunch', 'off for the night'. Shown on the away screen, \
+                         so whoever walks past knows what the wall is waiting for."
                 }
             },
             "additionalProperties": false
@@ -435,14 +450,280 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
              with the work you were given, and ask what you need to ask — that is what \
              the queue is for. If you are about to stop for want of a decision, queue \
              the decision first: a question in the pile is one they can answer at a \
-             glance in the morning, where a card stopped with nothing filed is a \
-             morning spent working out what you wanted.\n\n\
+             glance when they are back, where a card stopped with nothing filed is \
+             somebody working out what you wanted before they can answer it.\n\n\
              Say in your closing line what you got through and what is waiting on an \
              answer."
                 .into(),
         ),
         Err(e) => Some(format!("the wall could not be put into away mode: {e}")),
     }
+}
+
+/* ── the other pile: things to *do* ───────────────────────────────────────── */
+
+/// What Volery itself asks about, as opposed to what an agent asks.
+///
+/// Three tools compose their own question — closing a card, taking down a dead
+/// card's notice, deleting a path — and for away mode's first day these
+/// deliberately went on timing out, on the argument that their unanswered
+/// behaviour is already the conservative one.
+///
+/// **That argument was wrong about what gets lost.** Lyss: *"close unpost
+/// remove should be queued somehow instead, if still relevant, otherwise we're
+/// going to miss a lot of cleanup — often cards want to remove scratch temp
+/// folders they built for their experiments"*. A refusal is safe in the sense
+/// that nothing wrong happens, and not safe in the sense that matters: a night
+/// of refusals is a tree full of other cards' scratch directories and a board
+/// full of notices nobody can take down, and nobody goes back for them.
+///
+/// The qualifier is the whole design. An act is queued as a **request** — the
+/// tool and the arguments the card gave — and answering it **re-enters the
+/// decision** rather than replaying it, so twelve hours later the same function
+/// that decided to ask is the one that decides what to do, against the wall as
+/// it is now. A card that has since started a turn is refused. A notice whose
+/// author came back is refused. A directory now holding somebody's unwritten
+/// work is refused, because `remove`'s own settle re-checks that too.
+pub const ACT_TOOLS: &[&str] =
+    &[crate::spawn::CLOSE_TOOL, crate::board::UNPOST_TOOL, REMOVE_ACT];
+
+/// The shell delete has no tool name of its own — it arrives over
+/// `ask::REMOVE_PATH` from a hook rather than as a `tools/call` — so the pile
+/// needs one to file it under.
+pub const REMOVE_ACT: &str = "remove";
+
+/// What a re-entered decision turned out to be.
+pub(crate) enum Reentry {
+    /// It no longer wants to ask. The string is what the tool would have
+    /// answered on the spot, and it is the honest outcome: the premise changed
+    /// while you were out.
+    Stale(String),
+    /// Still worth asking, and this settle is what performs it.
+    Live(crate::ask::Settle),
+}
+
+/// Ask the tool again, with what the card originally said.
+fn reenter(app: &AppHandle, tool: &str, caller: &str, args: &Value) -> Reentry {
+    if tool == crate::spawn::CLOSE_TOOL {
+        return match crate::spawn::close(app, caller, args) {
+            crate::spawn::Closing::Now(said) => Reentry::Stale(said),
+            crate::spawn::Closing::Ask { settle, .. } => Reentry::Live(settle),
+        };
+    }
+    if tool == crate::board::UNPOST_TOOL {
+        return match crate::board::unpost(app, caller, args) {
+            crate::board::Unposting::Now(said) => Reentry::Stale(said),
+            crate::board::Unposting::Ask { settle, .. } => Reentry::Live(settle),
+        };
+    }
+    if tool == REMOVE_ACT {
+        return match crate::remove::remove(app, caller, args) {
+            crate::remove::Writing::Now(said) => Reentry::Stale(said),
+            crate::remove::Writing::Ask { settle, .. } => Reentry::Live(settle),
+        };
+    }
+    Reentry::Stale(format!("volery no longer knows how to do `{tool}`"))
+}
+
+/// What the asking card is told when its act goes in the pile.
+///
+/// Unlike a deferred question, the card is **not** waiting for this: the call
+/// returns, the turn carries on, and whatever happens arrives later as a
+/// message. So the note's job is to stop it doing the thing by hand — a card
+/// told "not now" about deleting its own scratch directory will reach for a
+/// shell next, which is the one outcome worse than waiting.
+fn act_note(what: &str) -> String {
+    format!(
+        "{DEFERRED_OPENING} The user is not at the wall, so {what} was **queued** for them \
+         rather than refused — nothing has happened yet, and nothing is waiting on your \
+         turn.\n\n\
+         When they are back they will be shown it and decide. Volery asks itself the same \
+         question again at that moment, against the wall as it is then, so if the reason has \
+         gone by the time they are back it simply will not happen — there is nothing you \
+         need to do to cancel it.\n\n\
+         What you must not do is go around it. Do not retry, and do not reach for a shell to \
+         do it by hand: that is the one way this ends badly, and it is exactly what the queue \
+         exists to make unnecessary. Carry on with the rest of your work — a message will \
+         arrive saying what came of it."
+    )
+}
+
+#[derive(Clone, Serialize)]
+struct ActDeferred {
+    conversation_id: String,
+    id: String,
+    tool: String,
+    asked_at: i64,
+}
+
+/// Queue one act, and say what the asking card is told.
+pub(crate) fn defer_act(
+    app: &AppHandle,
+    conversation_id: &str,
+    tool: &str,
+    args: &Value,
+    question: &Value,
+    what: &str,
+) -> String {
+    /* A tool `reenter` does not know would queue an act that can never be
+       performed, and the user would read "the wall has moved on" about
+       something that had simply never been wired up. Refused at the door
+       instead, where the caller is the one that can fix it. */
+    if !ACT_TOOLS.contains(&tool) {
+        return format!(
+            "{DEFERRED_OPENING} The user is away, and `{tool}` is not something Volery can \
+             queue for them — so nothing happened and nothing was filed. Leave it, and say \
+             in your closing line that it is still waiting."
+        );
+    }
+    let Some(store) = app.try_state::<Store>() else {
+        return format!(
+            "{DEFERRED_OPENING} The user is away and Volery could not file {what} for them, \
+             so nothing happened and nothing is queued. Leave it alone, say so in your \
+             closing line, and let them deal with it."
+        );
+    };
+    let id = crate::store::uuid_v4();
+    let at = crate::store::now();
+    {
+        let Ok(conn) = store.0.lock() else {
+            return act_note(what);
+        };
+        let mine = crate::store::deferred_acts(&conn)
+            .iter()
+            .filter(|d| d.conversation_id == conversation_id)
+            .count();
+        /* The same bound the questions have, and a second reason for it here: a
+           pile of a hundred queued deletes is one nobody can read, and a pile
+           nobody reads is a pile approved in bulk. */
+        if mine >= MAX_PER_CARD {
+            return pile_full();
+        }
+        if crate::store::defer_act(
+            &conn,
+            &id,
+            conversation_id,
+            tool,
+            &args.to_string(),
+            &question.to_string(),
+            at,
+        )
+        .is_err()
+        {
+            return pile_full();
+        }
+    }
+    let _ = app.emit(
+        "act:deferred",
+        ActDeferred {
+            conversation_id: conversation_id.to_string(),
+            id: id.clone(),
+            tool: tool.to_string(),
+            asked_at: at,
+        },
+    );
+    act_note(what)
+}
+
+#[derive(Serialize)]
+pub struct DeferredActRow {
+    pub id: String,
+    pub conversation_id: String,
+    pub tool: String,
+    /// What was drawn when the card asked. Normalized by `asking.ts` exactly as
+    /// a question is — the pile draws it without re-entering anything, because
+    /// re-entry reads the whole wall and listing a pile must not.
+    pub question: Value,
+    pub asked_at: i64,
+}
+
+#[tauri::command]
+pub fn deferred_acts(store: State<'_, Store>) -> Vec<DeferredActRow> {
+    let Ok(conn) = store.0.lock() else { return Vec::new() };
+    crate::store::deferred_acts(&conn)
+        .into_iter()
+        .map(|d| DeferredActRow {
+            id: d.id,
+            conversation_id: d.conversation_id,
+            tool: d.tool,
+            question: serde_json::from_str(&d.question_json).unwrap_or_else(|_| json!({})),
+            asked_at: d.asked_at,
+        })
+        .collect()
+}
+
+/// Answer one. Answers back with what came of it, for the panel to show.
+///
+/// The row is taken first and the act attempted second — `store::take_deferred_act`
+/// says why, and it is the opposite ordering from a deferred *question*: an
+/// answer lost is a card that waits, where an act performed twice is a card
+/// closed that somebody had reopened.
+#[tauri::command]
+pub async fn answer_deferred_act(
+    app: AppHandle,
+    id: String,
+    answer: String,
+) -> Result<String, String> {
+    crate::off_main(move || {
+        let Some(store) = app.try_state::<Store>() else {
+            return Err("no store on this wall".to_string());
+        };
+        let took = {
+            let Ok(conn) = store.0.lock() else {
+                return Err("the store is busy".to_string());
+            };
+            crate::store::take_deferred_act(&conn, &id)
+        };
+        let Some(act) = took else {
+            return Err("that is no longer waiting".into());
+        };
+        let args: Value = serde_json::from_str(&act.args_json).unwrap_or_else(|_| json!({}));
+
+        /* Re-entered rather than replayed, and this is the line the whole
+           feature turns on: the function that decided to ask is the function
+           that decides what to do, now, with the wall as it is — so an act
+           whose reason has gone simply does not happen, and says so. */
+        let said = match reenter(&app, &act.tool, &act.conversation_id, &args) {
+            Reentry::Stale(said) => {
+                format!("it did not happen — the wall has moved on since you were asked. {said}")
+            }
+            Reentry::Live(settle) => settle(&app, Some(answer.as_str())),
+        };
+        /* The card is told what came of it, and is **not** roused for it: it
+           asked for something to be done rather than for an answer it is
+           blocked on, so `later.rs`'s rule holds — spending a process and an
+           API turn on a sleeping card with nobody asking is the wrong default.
+           A deferred *question* is the deliberate exception, because there you
+           are answering something the agent stopped for. */
+        tell_late(&app, &act.conversation_id, &act.tool, &said);
+        Ok(said)
+    })
+    .await?
+}
+
+/// Tell a card what came of something it asked for hours ago.
+///
+/// `remove::deliver_late`'s shape generalised to the three acts: a prompt under
+/// `RELAY_MARK`'s `from the wall —` heading, which `relay.ts` already draws as
+/// *this was not you* — and which is honest here in a way it would not be for
+/// an answer to a question, since this genuinely is the wall speaking rather
+/// than the user. Dormant, it goes to the inbox a spawn drains.
+fn tell_late(app: &AppHandle, card: &str, tool: &str, said: &str) {
+    let text = format!(
+        "{mark} from the wall —\n\nThe `{tool}` you asked for while the user was away has \
+         been put to them, and this is what came of it:\n\n{said}\n\n(This came from the \
+         wall rather than from anybody, so nobody is waiting on a reply. Volery asked itself \
+         the question again before acting, so if it says nothing happened, nothing did. If \
+         this changes nothing about what you are doing, do nothing.)",
+        mark = crate::relay::RELAY_MARK
+    );
+    if crate::supervisor::deliver(app, card, &text).is_ok() {
+        return;
+    }
+    let Some(store) = app.try_state::<Store>() else { return };
+    let Ok(conn) = store.0.lock() else { return };
+    let id = crate::store::uuid_v4();
+    let _ = crate::store::record_relay(&conn, &id, card, card, &text, &id, 0, false);
 }
 
 #[cfg(test)]
