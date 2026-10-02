@@ -364,6 +364,11 @@ const TESTS: Array<{ file: string; names: string[] }> = [
       "the_prompt_names_only_tools_whose_schemas_are_loaded",
       "no_tool_is_named_without_its_server_prefix",
       "a_chat_card_is_told_only_about_the_question",
+      /* The scanner the two result guards below are built on. Its own tests
+         because when it loses its place those guards keep *passing* while
+         scanning a fraction of what they claim — see sink `ca00f3fa`. */
+      "a_raw_string_does_not_swallow_the_rest_of_the_file",
+      "the_hashed_raw_forms_and_the_raw_identifier",
       /* The paragraph that contradicts the client's own notice — the only one
          here whose subject is something already in the prompt. */
       "a_connector_that_needs_authorizing_is_not_the_last_word",

@@ -3752,7 +3752,9 @@ mod tests {
     ///
     /// Comments go, because a backtick in one is a note to whoever is reading
     /// the file rather than anything an agent will ever see — and the doc
-    /// comments on this server are full of bare names on purpose. Everything
+    /// comments on this server are full of bare names on purpose. **A comment
+    /// that reaches a caller of this is a sign the scan has lost its place**,
+    /// not a sign the rule changed; see the raw-string arm. Everything
     /// from `#[cfg(test)]` on goes for the same reason: a test's own assertion
     /// text is not prose anybody is served.
     fn literals(src: &str) -> Vec<(usize, String)> {
@@ -3798,6 +3800,53 @@ mod tests {
                     } else {
                         i += 1;
                     }
+                }
+                /* A raw string, where **there are no escapes at all** — and
+                   that is not a nicety, it is the one shape that can invert
+                   this whole scan. `r"\\?\"` ends in `\"`, which is an
+                   escaped quote in an ordinary string and is simply a
+                   backslash and a terminator here. Read as an escape it
+                   swallows its own closing quote, and from that point every
+                   gap between literals is returned as a literal and every real
+                   literal is skipped as a gap.
+
+                   Both halves cost something and the quiet one costs more.
+                   Loudly, `no_tool_result_names_a_tool_a_card_cannot_call`
+                   asserts against code and doc comments and names a file that
+                   is innocent. Quietly, **every genuine tool result after the
+                   desync stops being scanned**, so the guard goes on passing
+                   while covering a fraction of what it claims — which is this
+                   whole module's own failure mode, the one `SPEAKING_SOURCES`
+                   has a derived check for, wearing a different coat.
+
+                   Two sites had it when this was written (sink `ca00f3fa`):
+                   `remove.rs`'s `trim_start_matches(r"\\?\")` and `plain()`
+                   twenty lines below here. Both are Windows path prefixes, and
+                   this file is Windows-first, so there will be more. */
+                b'r' if matches!(s.get(i + 1), Some(b'"') | Some(b'#')) => {
+                    let mut j = i + 1;
+                    let mut hashes = 0usize;
+                    while s.get(j) == Some(&b'#') {
+                        hashes += 1;
+                        j += 1;
+                    }
+                    if s.get(j) != Some(&b'"') {
+                        /* An identifier that merely starts with `r`, or a
+                           `r#type` raw identifier. Not a string. */
+                        i += 1;
+                        continue;
+                    }
+                    let from = i;
+                    j += 1;
+                    let close: Vec<u8> =
+                        std::iter::once(b'"').chain(std::iter::repeat_n(b'#', hashes)).collect();
+                    let end = s[j..]
+                        .windows(close.len())
+                        .position(|w| w == close.as_slice())
+                        .map(|p| j + p)
+                        .unwrap_or(s.len());
+                    out.push((from, String::from_utf8_lossy(&s[j..end]).into_owned()));
+                    i = (end + close.len()).min(s.len());
                 }
                 b'"' => {
                     let from = i;
@@ -3847,6 +3896,53 @@ mod tests {
     /// So the scan is scoped by where the text lives rather than by what it
     /// says: inside a `*_schema()` is a description, everywhere else is a
     /// result.
+    /// A raw string does not end its own scan, and a quote inside one does not
+    /// start another.
+    ///
+    /// The guard above cannot prove this, which is why it is its own test: when
+    /// `literals` loses its place the assertion keeps *passing* on the files
+    /// where nothing happens to collide, while silently scanning a fraction of
+    /// what it claims. So this asserts the scanner directly, on the exact shape
+    /// that broke it — a Windows path prefix, of which this Windows-first
+    /// codebase has several (sink `ca00f3fa`).
+    #[test]
+    fn a_raw_string_does_not_swallow_the_rest_of_the_file() {
+        /* `r"\\?\"` ends in `\"`. Read as an escaped quote it eats the
+           terminator, and everything up to the next quote in the file — code,
+           doc comments, the lot — comes back as one "literal". */
+        let src = "fn plain(p: &str) -> String {\n    \
+                   p.strip_prefix(r\"\\\\?\\\").unwrap_or(p).to_string()\n}\n\
+                   fn said() -> &'static str { \"after\" }\n";
+        let got = literals(src);
+        assert_eq!(
+            got.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(),
+            vec!["\\\\?\\", "after"],
+            "the raw string is one literal and the one after it is still found"
+        );
+    }
+
+    /// The hashed forms, and the identifier that only looks like one.
+    #[test]
+    fn the_hashed_raw_forms_and_the_raw_identifier() {
+        assert_eq!(
+            literals("let a = r#\"he said \"hi\" twice\"#; let b = \"plain\";")
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>(),
+            vec!["he said \"hi\" twice", "plain"],
+            "a quote inside a hashed raw string is not a terminator"
+        );
+        /* `r#type` is a raw *identifier*, not a string, and reading it as one
+           would take the rest of the file with it. */
+        assert_eq!(
+            literals("let r#type = 1; let s = \"kept\";")
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kept"]
+        );
+    }
+
     #[test]
     fn no_tool_result_names_a_tool_a_card_cannot_call() {
         let known = advertised();
