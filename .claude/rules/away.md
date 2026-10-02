@@ -265,6 +265,32 @@ An away screen runs for hours unattended, which is the worst case `motion.md` de
   enough that a night is not one piece. `nextPiece` never repeats the current one and prefers
   a mood it does not have, so an evening moves between fun and cute and artistic instead of
   taking three artistic ones in a row by chance.
+- **The frame loop's dependencies are stated, and everything else is untracked.** This is the
+  bug the away screen shipped with, and it is worth reading before touching any effect here.
+  `start()` ended by noting when the piece went up — `since = clock.t`, a read of the wall's
+  one-second `$state` tick, **inside a tracked `$effect` body**. So every second the effect
+  tore the loop down and built a new piece, and a piece's `resize` is how it is *built*: the
+  flock scattered to new positions, the orbs were re-placed, the lanterns re-hung. With the
+  motion setting at `still` — where the loop deliberately draws one frame and stops — those
+  were the only frames left, and the screen ran at **exactly one frame per second with nothing
+  in the same place twice**. Reported as *"the animation runs at 1FPS … no smooth animation,
+  no smooth interactions"*, and the first guess from across the room was that the machine
+  could not keep up. It was a dependency.
+
+  `untrack(start)` is the fix rather than mending that one line, because the line was not
+  wrong in itself: anything `start` reaches may read a rune — `readTones`, `size`, `env`, a
+  piece's own `resize` — and a fix that mended only the read that happened to bite would leave
+  the next one to be found the same way. **An effect whose body calls into the rest of the
+  file should state its dependencies and untrack the call.** The two other effects here are on
+  the same tick and got the same treatment, one of which was a near miss.
+- **`size()` resizes the piece only when the box moved.** Same hazard from the other side: the
+  `ResizeObserver` fires once on observe and again on every layout settle, and each call was
+  throwing the scene away and starting a new one.
+- **Anything but full motion says so in the corner** (`heldBack`). *Not animating* and *broken*
+  look identical from the sofa, and the first is a setting somebody chose months ago for a
+  different reason. `spare` also went from 20fps to 24: this is one full-screen canvas with
+  nothing else on the wall drawing, and 20 is inside the range where a person sees steps
+  rather than movement — the point of `spare` is to cost less than `full`, not to look broken.
 - **One canvas per piece, not one canvas.** A canvas cannot change its context kind once it
   has one and `tide` is WebGL2 where the others are 2D, so the `{#key}` is the whole of that:
   a new piece gets a new element and the old context goes with the old one. A machine with no

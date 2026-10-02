@@ -28,13 +28,15 @@
    * every card; the corner reads it rather than starting a timer, so an away
    * screen adds exactly one rAF to an idle machine and nothing else. */
 
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   import { clock } from "./conversation.svelte";
   import { AWAY_SCREENS } from "./presence";
   import {
     awayLine,
+    frameFloor,
+    heldBack,
     HOLD_MS,
     hueAllowed,
     nextPiece,
@@ -106,6 +108,12 @@
     dimmed: "dim the wall",
     peek: "cover, hold a key to see",
   };
+
+  /** What the motion setting is doing to this screen, or null. Read off the
+   *  root attribute on the clock tick rather than taken as a prop: that
+   *  attribute is what every stylesheet in the app already reads, and a second
+   *  channel for the same answer is a second thing to keep in step. */
+  let held = $state<string | null>(null);
 
   const line = $derived(
     awayLine(lasted(presence.elapsed(clock.t)), presence.waiting, presence.note),
@@ -246,8 +254,15 @@
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
     if (g) g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    /* Only when the box actually moved. `resize` is how a piece *is built* —
+       it scatters the flock, places the orbs, hangs the lanterns — so calling
+       it on a size that has not changed throws the whole scene away and starts
+       a new one. The ResizeObserver fires once on observe and again on every
+       layout settle, so this guard is the difference between a screen that
+       drifts and a screen that keeps restarting. */
+    const moved = sized.w !== w || sized.h !== h;
     sized = { w, h };
-    piece?.resize(env(0));
+    if (moved) piece?.resize(env(0));
   }
 
   function env(dt: number): Env {
@@ -269,10 +284,7 @@
    *  what every stylesheet in the app already reads, and a second channel for
    *  the same answer is a second thing to keep in step. */
   function pace(): number {
-    const m = document.documentElement.dataset.motion;
-    if (m === "still") return Infinity;
-    if (m === "spare") return 1000 / 20;
-    return 0;
+    return frameFloor(document.documentElement.dataset.motion);
   }
 
   function start() {
@@ -345,10 +357,30 @@
      effect's cleanup is what tears the old one down, which is also what runs
      when the screen goes. */
   $effect(() => {
+    /* The three things that genuinely mean *build a new piece*, named here and
+       read here. Everything else this effect touches is behind `untrack`.
+
+       **That is structural rather than tidy, and it is the bug this file
+       shipped with.** `start()` ends by noting when the piece went up, and did
+       it with `since = clock.t` — a read of the wall's one-second `$state`
+       tick, inside a tracked effect body. So every second the effect tore the
+       loop down and built a new piece, whose `resize` put every bird somewhere
+       else. With the motion setting at `still` — where the loop deliberately
+       draws one frame and stops — the only frames left were those, and the away
+       screen ran at exactly one frame per second with nothing in the same place
+       twice. It looked like a performance problem and was a dependency.
+
+       `untrack(start)` is the fix rather than rewriting that one line, because
+       the line was not wrong in itself: anything `start` reaches may read a
+       rune — `readTones`, `size`, `env`, a piece's `resize` — and a fix that
+       only mended the read that happened to bite would leave the next one to be
+       found the same way. The general shape, which this codebase has met
+       before: **an effect whose body calls into the rest of the file should
+       state its dependencies and untrack the call.** */
     void id;
     void canvas;
     void presence.animate;
-    start();
+    untrack(start);
     return stop;
   });
 
@@ -358,7 +390,11 @@
   $effect(() => {
     if (!presence.animate) return;
     if (clock.t - since < HOLD_MS) return;
-    id = nextPiece(id, Math.random());
+    /* Untracked: `nextPiece` reads nothing reactive today and this effect must
+       not start depending on whatever it reads tomorrow — it is on the wall's
+       one-second tick, so a new dependency here is a new restart every second,
+       which is precisely how this file broke the first time. */
+    id = untrack(() => nextPiece(id, Math.random()));
   });
 
   $effect(() => {
@@ -373,7 +409,11 @@
      `getComputedStyle` reads a second against a frame loop. */
   $effect(() => {
     void clock.t;
-    readTones();
+    /* Untracked for the reason above, and this one is the near miss: it runs
+       every second, and `readTones` reading one rune would make it a second
+       restart engine. */
+    untrack(readTones);
+    held = heldBack(document.documentElement.dataset.motion);
   });
 
   function key(e: KeyboardEvent) {
@@ -529,6 +569,11 @@
       </div>
     {:else if screen === "peek"}
       <span class="hint">hold any key to see the wall</span>
+    {/if}
+    {#if held && presence.animate}
+      <!-- Because *not animating* and *broken* look identical from across the
+           room, and the first is a setting somebody chose months ago. -->
+      <span class="hint">{held}</span>
     {/if}
   </div>
 </div>

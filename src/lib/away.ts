@@ -191,6 +191,41 @@ function clampSpeed(v: number): number {
   return Math.max(-FLICK_MAX, Math.min(FLICK_MAX, v));
 }
 
+/* ── how fast it is allowed to draw ───────────────────────────────────────── */
+
+/** The shortest gap between frames, in ms, for a motion setting. `Infinity`
+ *  means draw one frame and stop.
+ *
+ *  Pure, and here rather than inline in the component, because it is the number
+ *  that decides whether the screen looks alive — and a wrong one is
+ *  indistinguishable from the whole thing being broken. Which is what happened:
+ *  at `still` the loop drew one frame and stopped, and a *second* fault
+ *  restarted the loop once a second with the piece rebuilt from scratch, so the
+ *  pair produced a slideshow at exactly 1fps with every object in a new random
+ *  place. Either alone is survivable. Together they are unusable, and nothing
+ *  in a type or a typecheck says so.
+ *
+ *  `spare` is 24 rather than the 20 it shipped as. This is one full-screen
+ *  canvas with nothing else on the wall drawing, and 20 is inside the range
+ *  where a person sees steps rather than movement — the point of `spare` is to
+ *  cost less than `full`, not to look broken. */
+export function frameFloor(motion: string | undefined): number {
+  if (motion === "still") return Infinity;
+  if (motion === "spare") return 1000 / 24;
+  return 0;
+}
+
+/** Whether a motion setting is holding the screen back, said in the corner.
+ *
+ *  Null at full motion. It exists because *no motion* and *the animation is
+ *  broken* look identical from across the room, and the first is a setting
+ *  somebody chose months ago for a different reason. */
+export function heldBack(motion: string | undefined): string | null {
+  if (motion === "still") return "held still by the motion setting";
+  if (motion === "spare") return "drawn sparely by the motion setting";
+  return null;
+}
+
 /* ── what the corner says ─────────────────────────────────────────────────── */
 
 export type AwayLine = {

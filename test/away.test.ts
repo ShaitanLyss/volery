@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import {
   awayLine,
   flick,
+  frameFloor,
+  heldBack,
   FLICK_MAX,
   hueAllowed,
   isPieceId,
@@ -74,6 +76,39 @@ describe("colour", () => {
     expect(hueAllowed("takeover")).toBe(true);
     expect(hueAllowed("peek")).toBe(true);
     expect(hueAllowed("dimmed")).toBe(false);
+  });
+});
+
+describe("how fast it may draw", () => {
+  test("full motion means every frame the browser offers", () => {
+    expect(frameFloor("full")).toBe(0);
+    /* Unset is full. A wall that has never touched the setting must not get
+       the throttled reading by default. */
+    expect(frameFloor(undefined)).toBe(0);
+    expect(frameFloor("something newer")).toBe(0);
+  });
+
+  test("spare is slower than full and still reads as movement", () => {
+    const spare = frameFloor("spare");
+    expect(spare).toBeGreaterThan(0);
+    /* It shipped at 20fps (50ms), which is inside the range where a person sees
+       steps rather than motion — the point of `spare` is to cost less than
+       full, not to look broken. */
+    expect(spare).toBeLessThanOrEqual(1000 / 24);
+  });
+
+  test("still draws once and stops", () => {
+    expect(frameFloor("still")).toBe(Infinity);
+  });
+
+  test("anything but full says so, because quiet and broken look the same", () => {
+    /* The bug this is here for ran at exactly 1fps with every object in a new
+       place, and the first guess from the sofa was that the machine could not
+       keep up. A screen that is deliberately not moving has to say it is. */
+    expect(heldBack("still")).not.toBe(null);
+    expect(heldBack("spare")).not.toBe(null);
+    expect(heldBack("full")).toBe(null);
+    expect(heldBack(undefined)).toBe(null);
   });
 });
 
