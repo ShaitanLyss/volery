@@ -623,11 +623,12 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>)
     let payload: serde_json::Value = serde_json::from_str(raw).ok()?;
 
     /* **Which hook this is, decided here rather than by a matcher.** Four
-       events are registered now and all four are registered against
-       everything, for the reason recorded at the top of this file: a matcher is
-       a tool or event name written into configuration where no test can reach
-       it, and when it stops matching it says nothing at all. So the routing is
-       code.
+       events are registered now, and *which event* is never a matcher's
+       business: three of the four carry none at all, and the fourth's
+       (`PreToolUse`) narrows only which **tools** reach us, never which event
+       does. The reason is the one recorded at the top of this file — a name
+       written into configuration is a name no test can reach, and when it stops
+       matching it says nothing at all — so the routing stays code.
 
        A payload with no `hook_event_name` falls through to the `PreToolUse`
        body below, which is what a build that does not send the field should
@@ -650,11 +651,13 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>)
        asked first or it is never asked.
 
        Cheap in the case that is nearly all of them: one string comparison
-       against a prefix, on a payload already parsed. The hook fires on every
-       tool call of every card (`settings` registers no matcher, for the reason
-       recorded at the top of this file), so anything here that cost real work
-       would be a tax on the whole wall. Only a call under this prefix reaches
-       the network, and there are none on a wall nobody is driving a UI on. */
+       against a prefix, on a payload already parsed. The hook no longer fires
+       on *every* tool call — `settings` carries a negative matcher since
+       2026-10-02 — but it still fires on every call that is not in
+       `UNHOOKED_TOOLS`, which is every MCP call of every server, so anything
+       here that cost real work would still be a tax on the whole wall. Only a
+       call under this prefix reaches the network, and there are none on a wall
+       nobody is driving a UI on. */
     if wakes_browser(payload.get("tool_name").and_then(serde_json::Value::as_str)) {
         return wake_browser(ask_port);
     }
@@ -3377,10 +3380,47 @@ mod tests {
     fn settings_carry_the_hook_in_exec_form() {
         let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
         let h = &v["hooks"]["PreToolUse"][0];
-        /* No matcher: the Windows shell tool was renamed once already and a
-           matcher that stops matching says nothing when it does. See the
-           module note. */
-        assert!(h.get("matcher").is_none(), "a matcher is a name that can rot");
+        /* **A matcher, and the three things that make it safe to have one.**
+           This asserted `matcher.is_none()` until 2026-10-02, which was the
+           2026-08-25 lesson written down: the Windows shell tool was renamed
+           once already and a matcher that stops matching says nothing when it
+           does. What changed is not the lesson but the price — the hook was
+           measured at ~350-800ms and 38.5MB per tool call rather than the ~5ms
+           that decision was bought with (see `settings`, sink a6ebe5ee).
+
+           So the narrowing is allowed, and these assertions are what keep it
+           from becoming the old bug again. The regex's *behaviour* is probed
+           against the real CLI (`tools/probe-matcher.ts`); what is checked here
+           is its shape, which is the half a probe cannot catch cheaply. */
+        let m = h["matcher"].as_str().expect("a matcher");
+
+        /* Anchored at both ends. An unanchored negative lookahead fails **open**
+           and reads as correct: `.test()` retries at every offset, so
+           `(?!(Read)$).*` matches "Read" from position 1 and the tool is hooked
+           after all. This is the assertion that catches a careless edit. */
+        assert!(m.starts_with("^(?!("), "must be anchored and negative: {m}");
+        assert!(m.ends_with(")$).*$"), "must be anchored at the end: {m}");
+
+        /* Every excluded name is in it, and the list is not empty — an empty
+           alternation would build `^(?!()$).*$`, which excludes only the empty
+           string and so quietly reverts to firing on everything. */
+        assert!(!UNHOOKED_TOOLS.is_empty(), "an empty list is a matcher that does nothing");
+        for t in UNHOOKED_TOOLS {
+            assert!(m.contains(t), "{t} is in the list but not in the matcher: {m}");
+        }
+
+        /* **And the one that matters most: no shell tool, and no browser tool,
+           may ever be excluded.** Adding one here is the 2026-08-25 bug exactly
+           — the guards stop running and nothing says so — and it is a one-word
+           edit away, which is why it is asserted by name rather than reasoned
+           about. `reply` acts on a shell call and on `mcp__browser__*`; those
+           two must always reach it. */
+        for forbidden in ["Bash", "PowerShell", "mcp__browser__"] {
+            assert!(
+                !UNHOOKED_TOOLS.contains(&forbidden),
+                "{forbidden} must never be unhooked — that is the guard switching itself off",
+            );
+        }
         assert_eq!(h["hooks"][0]["type"], "command");
         assert_eq!(h["hooks"][0]["args"][0], FLAG);
         assert_eq!(h["hooks"][0]["args"].as_array().unwrap().len(), 1);
