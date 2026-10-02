@@ -253,11 +253,19 @@
   }
 
   let field = $state<HTMLInputElement | undefined>();
-  onMount(() => field?.focus());
+  /* The calculus toy has a field and wants it; the other three read the window
+     and want whatever had focus to let go of it — the dock's draft otherwise
+     collects every letter of a motus guess behind the gate. `Away.svelte` makes
+     the same move for the same reason. */
+  onMount(() => {
+    if (field) field.focus();
+    else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
 
   $effect(() => {
     void id;
-    field?.focus();
+    if (field) field.focus();
+    else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
 </script>
 

@@ -376,6 +376,22 @@ serve from. `store::sweep_orphans` walks that directory and deliberately leaves 
 alone — *"nothing puts one here, so one that exists is somebody else's and not ours to
 collect"* — so this is the case that comment was written for.
 
+## The keyboard, while either screen is up
+
+`onGlobalKey` returns early on `presence.away || gating`, and both surfaces blur whatever had
+focus when they arrive. Two bugs, and neither is visible from reading either file alone:
+
+- **Escape would have done two things.** Further down the wall's ladder it stops a turn, and
+  it is also the way back from both of these — so the one keypress that ends away mode would
+  have interrupted whatever the focused card was in the middle of. It is swallowed as a whole
+  rather than Escape alone, because the gate *is* a keyboard surface: `motus` reads every
+  letter, and a ladder underneath that still answered `f` or `/` would be the wall acting on a
+  word you were spelling.
+- **A full-window layer covers the draft field; it does not blur it.** So every letter of a
+  motus guess would also have been typed into a prompt nobody can see, and `onDraftKey` would
+  have acted on it. The blur belongs in the arriving layer, since it is the layer arriving
+  that makes it true.
+
 ### What was deliberately left out
 
 - **Partial answers are still lost on a live timeout.** That is `ask.md`'s own open item and a

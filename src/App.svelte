@@ -2551,6 +2551,21 @@
   }
 
   async function onGlobalKey(e: KeyboardEvent) {
+    /* The away screen and the gate own the keyboard outright while either is
+       up, and for exactly the toy's reason one branch down — **Escape is the
+       key this exists for.** Further down this ladder Escape stops a turn,
+       which is a gesture worth a great deal and precisely the one you do not
+       want to make by reaching for the way back from a screensaver. It is also
+       what both of those surfaces use as their own way out, so without this the
+       one keypress that ends away mode would also interrupt whatever the
+       focused card was in the middle of.
+
+       Swallowed as a whole rather than Escape alone, because the gate *is* a
+       keyboard surface: `motus` reads every letter, and a ladder underneath it
+       that still answered `f` or `/` would be the wall acting on a word you
+       were spelling. The two surfaces keep their own `svelte:window` handlers,
+       which still run — this only stops the wall's. */
+    if (presence.away || gating) return;
     /* The toy owns the whole keyboard while it is up, and that is the point
        rather than an inconvenience — thirty keys are an instrument and the rest
        are its controls, so there is nothing left for the wall to be given.

@@ -28,7 +28,7 @@
    * every card; the corner reads it rather than starting a timer, so an away
    * screen adds exactly one rAF to an idle machine and nothing else. */
 
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
   import { clock } from "./conversation.svelte";
@@ -390,6 +390,18 @@
   function keyUp() {
     peeking = false;
   }
+
+  /* Whatever had the keyboard gives it up.
+   *
+   *  The dock's draft field is the case: a full-window layer covers it but does
+   *  not blur it, so a key pressed at the away screen would still be typed into
+   *  a prompt nobody can see — and `onDraftKey` would act on it. Letting go of
+   *  focus is the whole fix, and it belongs here rather than in `App.svelte`
+   *  because it is this layer arriving that makes it true. */
+  onMount(() => {
+    const had = document.activeElement;
+    if (had instanceof HTMLElement) had.blur();
+  });
 
   onDestroy(stop);
 </script>

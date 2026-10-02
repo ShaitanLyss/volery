@@ -526,18 +526,32 @@ export class Skein {
       }),
     );
     keep(
-      listen<{ ask_id: string; answered: boolean }>("ask:closed", (e) => {
-        for (const c of this.#byId.values()) {
-          if (c.pendingAsk?.askId !== e.payload.ask_id) continue;
-          const ours = c.pendingAsk.ours;
-          c.pendingAsk = null;
-          /* Same bargain one case over: a question Skein put up reports its own
-             outcome through the tool result, which says "nobody answered, so it
-             stays" in more useful words than this note has — and unlike this
-             note, says it in the transcript a restart can reproduce. */
-          if (!e.payload.answered && !ours) c.note(NO_ANSWER_NOTE);
-        }
-      }),
+      listen<{ ask_id: string; answered: boolean; deferred?: boolean }>(
+        "ask:closed",
+        (e) => {
+          for (const c of this.#byId.values()) {
+            if (c.pendingAsk?.askId !== e.payload.ask_id) continue;
+            const ours = c.pendingAsk.ours;
+            c.pendingAsk = null;
+            /* Same bargain one case over: a question Skein put up reports its
+               own outcome through the tool result, which says "nobody
+               answered, so it stays" in more useful words than this note has —
+               and unlike this note, says it in the transcript a restart can
+               reproduce.
+
+               `deferred` is the third outcome and strikes the identical
+               bargain. A question that went into the away pile was not
+               unanswered, and writing "nobody answered" into the card would be
+               flatly untrue — the tool result already says it was queued, in
+               better words, in a place a restart can reproduce. Optional in the
+               payload so the control surface's synthetic `ask:closed` keeps
+               meaning what it always meant. */
+            if (!e.payload.answered && !e.payload.deferred && !ours) {
+              c.note(NO_ANSWER_NOTE);
+            }
+          }
+        },
+      ),
     );
 
     keep(
