@@ -235,7 +235,7 @@
     return fallback;
   }
 
-  function size() {
+  function size(fresh = false) {
     if (!canvas || !host) return;
     const r = host.getBoundingClientRect();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -246,15 +246,24 @@
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
     if (g) g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    /* Only when the box actually moved. `resize` is how a piece *is built* —
-       it scatters the flock, places the orbs, hangs the lanterns — so calling
-       it on a size that has not changed throws the whole scene away and starts
-       a new one. The ResizeObserver fires once on observe and again on every
-       layout settle, so this guard is the difference between a screen that
-       drifts and a screen that keeps restarting. */
+    /* `resize` is how a piece *is built* — it scatters the flock, places the
+       orbs, hangs the lanterns — so it has to run for a piece that has never
+       been built, and must not run again on a size that has not changed.
+       Those are two different questions and conflating them broke it both
+       ways in turn.
+
+       First the ResizeObserver, which fires once on observe and again on every
+       layout settle, was rebuilding the scene each time. Guarding on `moved`
+       fixed that and introduced the opposite bug: switching pieces keeps the
+       same window, so `moved` was false and **the new piece was never built at
+       all** — a blank canvas for every piece after the first, including the
+       first one come back to, since that is a fresh instance too. Reported as
+       "only the first i'm away animation plays, the others are blank".
+
+       So `fresh` is the second question, asked only by `start`. */
     const moved = sized.w !== w || sized.h !== h;
     sized = { w, h };
-    if (moved) piece?.resize(env(0));
+    if (fresh || moved) piece?.resize(env(0));
   }
 
   function env(dt: number): Env {
@@ -302,7 +311,7 @@
     lastFrame = startedAt;
     since = clock.t;
     readTones();
-    size();
+    size(true);
     /* One frame immediately, so the first thing on screen is the piece rather
        than a blank window for however long the browser takes to offer a
        frame. */
