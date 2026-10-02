@@ -703,5 +703,50 @@ already said to keep it.
 - **Push after committing, without asking.** This is a solo repo, and Lyss has answered "push
   it" every time a card asked. A push publishes the branch, so it carries any other card's
   unpushed commits along with yours: say so in your report when it did, rather than holding
-  the push or asking about it. Anything else that leaves the machine (a release, a tag) is
-  still asked for unless the task said to do it.
+  the push or asking about it.
+
+## Releasing
+
+**Finish the work, cut the release. Don't ask first.** This is the committing rule one step
+further out, and it is here because the old line said the opposite — *a release is still asked
+for* — which cost Lyss a "cut a release" message after every single piece of work, on a
+decision she had already made every previous time.
+
+The reason it matters more than tidiness: **a fix on `main` has not reached anybody.** The
+installed app is what she works in all day, and `update.md`'s whole offer is built on a tag
+existing. Work that is committed, pushed, and unreleased is invisible in exactly the way
+uncommitted work is invisible — which is the failure the section above exists to prevent,
+wearing a different coat.
+
+- **When.** The thing you were asked for is *done* — the whole of it, not a step of it — the
+  gates are green, and `git log <last-tag>..HEAD` holds something a person would notice.
+  Finishing your last task with nothing else queued is the moment; you do not need to be told.
+- **Group rather than drip.** Several pieces finished in one sitting are one release, and work
+  that is about to land in the same session should land first. One release per unit of
+  *attention*, never one per commit.
+- **Nothing to ship is a real answer.** Rules, comments, tests, scratch tooling and refactors
+  with no user-visible change do not earn a tag by themselves. They ride along with the next
+  thing that does.
+- **Patch or minor comes out of the log, not out of habit.** A new feature is a minor bump;
+  fixes only is a patch. Read `git log <last-tag>..HEAD` and decide from what is in it rather
+  than copying the shape of the last few releases — that mistake cost a deleted tag and a
+  cancelled build on 2026-10-01.
+- **Anything already on `main` is fair to ship**, including another card's commits in the
+  range. That is safe *by construction* rather than by luck: the rule above is that a card
+  commits only when its work stands up. Say in your report whose work the release carried
+  besides your own.
+- **One build at a time.** Do not cut while a build for the same tree is still running, and do
+  not re-cut to add one more commit — let it finish and cut the next one.
+- **The mechanics**, which `project.rs::version_files` enumerates and `tools/lift-project.ts`
+  holds: bump the version line in `package.json`, `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml` and the `skein` entry of `src-tauri/Cargo.lock`; commit as
+  `skein: X.Y.Z`; tag `vX.Y.Z`, lightweight; push `main` and the tag. `release.yml` does the
+  rest and takes about twenty minutes.
+- **Do not re-run the gates for the bump itself.** They were green on the commit you are
+  tagging — that is exactly what the committing rule above guarantees — and four version
+  strings cannot change it. Running `check`, the suite and a build again costs minutes on a
+  machine that usually has ten agents competing for it, and buys a result you already have.
+- **Then say what you cut and what it carries**, in the report — a version number on its own
+  is not news. If a build fails afterwards, that *is* worth interrupting for: the tag is
+  published, so a red build means there is no installer behind it and the in-app update offer
+  points at nothing.
