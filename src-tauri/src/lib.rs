@@ -237,6 +237,80 @@ fn complain(message: &str) {
     }
 }
 
+/// One wall on one database, or refuse to start.
+///
+/// Two Volery processes over one `%APPDATA%` folder is not a tidiness problem.
+/// They race the WAL; both try to bind `ask::start`'s port, so the loser's cards
+/// get a hook pointed at a port nobody answers; both write `set_mid_turn`
+/// against the same turns; and — the expensive one — each **rouses every dormant
+/// card it finds**, which is a `claude` process and possibly an API turn apiece.
+/// Paid for on 2026-10-02, when a mistyped hook flag opened ~18 of them against
+/// the live wall at once and took it down. `hooks::intercept` refuses that typo
+/// now; this is the guard that does not depend on having anticipated it.
+///
+/// **A named mutex rather than a lockfile**, because the kernel releases it when
+/// the process dies *however* it dies. A PID file survives a crash and locks you
+/// out of your own wall — a worse failure than the one it prevents, and one
+/// whose recovery is editing a file by hand, which this codebase has already
+/// paid for once (see `store::migrate`).
+///
+/// **Keyed on the identifier, not the binary**, so `bun run lab`
+/// (`dev.skein.lab`) is a wall of its own and still runs alongside. The cost is
+/// that a debug build and the installed app *do* collide, since both are
+/// `dev.skein.studio` — deliberate, and the same hazard `store::may_migrate`
+/// already refuses the schema half of. `VOLERY_SECOND=1` is the way out when two
+/// are genuinely wanted.
+///
+/// `Local\` rather than `Global\`: the scope is one login session, so two users
+/// on one machine get a wall each, and it needs no privilege to create.
+#[cfg(windows)]
+fn claim_wall(identifier: &str) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    if std::env::var("VOLERY_SECOND").as_deref() == Ok("1") {
+        return Ok(());
+    }
+
+    let name = HSTRING::from(format!("Local\\{identifier}"));
+    /* `false` for the initial owner: what locks here is the kernel object's
+       *existence*, not its ownership — ownership would have to be released, and
+       there is no moment in this process's life where that would be right.
+
+       SAFETY: a null security descriptor and a null-terminated wide name that
+       outlives the call. The handle is deliberately never closed; its lifetime
+       is the process's, and the OS reclaiming it is exactly the release we
+       want. */
+    let _handle = unsafe { CreateMutexW(None, false, &name) }
+        .map_err(|e| format!("could not create the wall lock: {e}"))?;
+    /* Immediately after the call and before anything else that could touch the
+       thread's last-error: on success `CreateMutexW` leaves it alone, and this
+       is the only thing that distinguishes "made it" from "joined it". */
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        return Err(format!(
+            "Volery is already running on this wall.\n\n\
+             Only one studio may hold {identifier} at a time: two race the \
+             database, fight over the ask server's port, and each rouses every \
+             dormant card — a claude process and an API turn apiece.\n\n\
+             Close the running wall first. `bun run lab` is a wall of your own, \
+             and VOLERY_SECOND=1 forces a second one if you really mean it."
+        ));
+    }
+    Ok(())
+}
+
+/// Windows is the only platform with a wall to protect, so this guard is not
+/// implemented elsewhere — and says so rather than returning an error, which
+/// here would mean refusing to start at all. The convention that a non-Windows
+/// arm errors rather than no-ops is about *capabilities*, where a silent no-op
+/// is a false promise; a guard that does not fire on a platform the app does not
+/// ship on is merely unguarded.
+#[cfg(not(windows))]
+fn claim_wall(_identifier: &str) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -320,6 +394,15 @@ pub fn run() {
                cannot itself fail in a way worth stopping for — see
                `applog::install`. */
             applog::install(app.handle().clone());
+
+            /* Before the store, before the browser's session file, and before
+               anything can spawn: everything below this line assumes it is the
+               only process holding this wall. Second, rather than first, only so
+               that the refusal reaches the app log. See `claim_wall`. */
+            claim_wall(&app.config().identifier).map_err(|e| {
+                complain(&e);
+                e
+            })?;
 
             /* Before any card can spawn, because a card's seeded browser is
                pointed at this file by a static argument and a path that does

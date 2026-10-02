@@ -201,6 +201,38 @@ pub fn intercept() -> bool {
     }
 
     if !args.iter().any(|a| a == FLAG) {
+        /* **A studio takes no arguments, so argv naming neither mode is not a
+           launch — it is a mistake, and opening a wall is the one answer it must
+           not get.** This binary is three things and only two of them are
+           spelled on the command line; everything else fell through to `run()`,
+           which is a second studio against the live database.
+
+           Paid for on 2026-10-02. A card timing this hook wrote `--hook` for
+           `--bash-hook` and put ~18 full walls on one `dev.skein.studio`, each
+           rousing every dormant card it found. `settings` below had warned about
+           exactly this shape from the other direction — "a build that ignored
+           `args` … would open a second Skein for every shell command a card
+           ran" — which is the argument for refusing here rather than trusting
+           the spelling. The sole-instance lock in `lib.rs` is the other half and
+           not a substitute: it stops the second wall, this stops the first one
+           being opened by a typo at all.
+
+           **Exit 2, and stderr rather than `complain`.** Two is the code a
+           `PreToolUse` hook blocks a call with and its stderr is what reaches
+           the model, so a misfired hook refuses the tool call and says why —
+           instead of the silent allow that printing nothing buys. No dialog:
+           argv is only non-empty when something spawned us programmatically,
+           and a programmatic spawn has pipes. A person double-clicking passes
+           no arguments and never lands here. */
+        if let Some(unknown) = args.first() {
+            eprintln!(
+                "skein: `{unknown}` is not a flag this binary answers to.\n\
+                 the studio takes no arguments; the hook is `{FLAG}` and the \
+                 credential server is `{FLAG_SECRET}`.\n\
+                 refusing rather than opening a second studio on the live wall."
+            );
+            std::process::exit(2);
+        }
         return false;
     }
 
