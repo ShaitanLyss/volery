@@ -2697,8 +2697,16 @@ fn effort_from(path: &std::path::Path, from: u64) -> Option<String> {
 ///
 /// The map entry is taken and the lock let go before any of the blocking work,
 /// which is worth keeping whatever thread this runs on.
+/// **Answers whether there was anything to close**, which is a fact only this
+/// map holds. The front end's `conv.dormant` is a *belief* about a process, and
+/// the two diverge — `#moveTo`'s backstop forces it true when the exit it waited
+/// for never landed. A caller that has to be sure the old child is gone before
+/// spawning a replacement (the account swap is the one that bites) can therefore
+/// ask for the close unconditionally and read the answer, instead of guarding on
+/// a flag that can be wrong in exactly the direction that costs money. See
+/// `skein.svelte.ts::#moveTo` and sink `bee98f47`.
 #[tauri::command]
-pub async fn close_conversation(app: AppHandle, id: String) -> Result<(), String> {
+pub async fn close_conversation(app: AppHandle, id: String) -> Result<bool, String> {
     crate::off_main(move || {
         let taken = app.state::<Supervisor>().0.lock().unwrap().remove(&id);
         if let Some(mut conv) = taken {
@@ -2709,6 +2717,9 @@ pub async fn close_conversation(app: AppHandle, id: String) -> Result<(), String
             drop(conv.job.take());
             let _ = conv.child.kill();
             let _ = conv.child.wait();
+            true
+        } else {
+            false
         }
     })
     .await

@@ -2523,16 +2523,43 @@ export class Skein {
    *  you were holding in reserve is precisely that. */
   async #moveTo(conv: Conversation, to: string, from: string | null) {
     try {
-      if (!conv.dormant) {
-        conv.retiring = true;
-        await invoke("close_conversation", { id: conv.id });
+      /* **Unconditionally, and that is the whole of the bug this once had.**
+         This used to be `if (!conv.dormant)`, which asks the *front end's
+         belief* about a process whose existence is Rust's to know — and the two
+         diverge, because the backstop three lines down forces `dormant = true`
+         when `#awaitDormant` times out on a child that did not in fact die.
+         After that one divergence the card is pinned for life: every later move
+         skips the close, rewrites the label, writes an honest-looking swap note,
+         and then `#deliver` wakes it — `spawn_conversation` answers "already
+         open", `#spawnNow` reads that as "it is awake after all", and the prompt
+         goes down the *original* child's stdin with the *original* account's
+         `CLAUDE_SECURESTORAGE_CONFIG_DIR` still on it. The wall says it moved,
+         the subscription never changes, and the card is refused by the spent
+         account until somebody closes it by hand.
+         Measured 2026-10-02 on card `54c105dc`: `/api/oauth/usage` puts lyss's
+         five hours resetting at 2:00pm and tx-team's at 2:20pm, and every
+         refusal for the seventeen minutes *after* the swap note named 2pm. A
+         relay landed in that child mid-way — relays queue for a dormant card
+         and are written into a live one's stdin — which is the second proof the
+         process was still there. Sink `bee98f47`.
+         Costs nothing to ask for always: `close_conversation` is a no-op on an
+         id the supervisor map does not hold, so a genuinely dormant card pays
+         one IPC hop for a guarantee the belief could not give. */
+      conv.retiring = true;
+      const closed = await invoke<boolean>("close_conversation", { id: conv.id });
+      if (closed) {
         /* `markExited` sets `dormant` when the exit lands; this is the backstop
            for the timeout, where it did not. A card that would not die is not a
            reason to swallow the prompt — `#awaitDormant` says so — so the wake
            below still happens either way. */
         await this.#awaitDormant(conv);
-        conv.dormant = true;
+      } else {
+        /* There was no child, so no exit is coming, so `markExited` will never
+           clear the flag set a moment ago — and a card stuck `retiring` is one
+           the reaper's survey skips and the face draws as going away. */
+        conv.retiring = false;
       }
+      conv.dormant = true;
       conv.accountLabel = to;
       void invoke("set_conversation_account", { id: conv.id, accountLabel: to });
       if (from) conv.note(swapNote(from, to, this.#whyLeft(conv, from)));
@@ -2581,7 +2608,27 @@ export class Skein {
        prompt back after a door turned out to be shut, and it needs the timer
        re-armed. */
     if (conv.held && conv.held.text !== text) return;
-    const blocked = choice.standings.find((st) => st.state === "blocked");
+    /* **This card's own account first, and that is the whole of the fix.** It
+       was `standings.find(st => st.state === "blocked")` — the first blocked
+       account in `ordered`, i.e. priority then rank then label — which is a
+       different account from the one the card is on for every card not sitting
+       on the lowest-ranked row. So a card genuinely running on the second
+       account, with room on it, held and then said "the 5 hours is spent" in
+       the *first* account's words: a reading taken from a subscription this
+       card has never touched, on the face of one that had. Reported as cards
+       "on the free account suddenly reporting out of allowance", which is
+       exactly what it looks like from outside. Sink `bee98f47`.
+       The fall-back is kept and is not a lesser answer: a card whose own
+       account is blocked says why *it* stopped, and one whose account is not in
+       the registry at all — unlabelled, or pointing at a row since removed —
+       falls to the first blocked account, which is the nearest true thing there
+       is to say about a wall where everything is blocked. `HOLD_LINE` covers
+       the rest. */
+    const mine = choice.standings.find((st) => st.label === conv.accountLabel);
+    const blocked =
+      mine?.state === "blocked"
+        ? mine
+        : choice.standings.find((st) => st.state === "blocked");
     conv.held = {
       text,
       why: blocked?.state === "blocked" ? sayBlocked(blocked.blockers) : HOLD_LINE,
