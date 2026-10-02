@@ -12,6 +12,7 @@
   import { lasted } from "./lib/presence";
   import Vigil from "./lib/Vigil.svelte";
   import Away from "./lib/Away.svelte";
+  import Gate from "./lib/Gate.svelte";
   import type { Tier } from "./lib/classify";
   import {
     READ_REST,
@@ -396,16 +397,31 @@
    *  One verb for both directions, because it is one switch and a wall that
    *  needed two gestures would be a wall where you can be in neither state.
    *
-   *  Coming back opens the pile where there is one — `Presence.comeBack`
-   *  answers whether anything was waiting, and sets `showing` itself, so the
-   *  one place that decides it is the one place that knows. */
+   *  Coming back is the half with steps. The gate goes up first where one is
+   *  wanted, and **away mode is still on while you stand in front of it** —
+   *  `Presence.comeBack` is called from the gate's way through, not from here.
+   *  That ordering is what stops a half-woken wall firing every notification
+   *  that accumulated overnight at the moment you reach for a key.
+   *
+   *  Coming back then opens the pile where there is one: `comeBack` answers
+   *  whether anything was waiting and sets `showing` itself, so the one place
+   *  that decides it is the one place that knows. */
   async function togglePresence() {
     if (!presence.away) {
       await presence.goAway();
       return;
     }
+    if (presence.toys) {
+      gating = true;
+      return;
+    }
     await presence.comeBack();
   }
+
+  /** The puzzle is up. Only ever on the way back, and only with the setting on
+   *  — which the gate itself can turn off, since a thing you cannot refuse is a
+   *  thing you stop enjoying. */
+  let gating = $state(false);
 
   /* The `!` line. Given a way to find a card and a way to say something to one,
      rather than the whole of `Skein` — the same injection `devops.roots` and
@@ -3650,6 +3666,17 @@
        screen's first job. `animate` decides only whether anything moves. -->
   {#if presence.away}
     <Away {presence} onback={() => void togglePresence()} />
+  {/if}
+  <!-- Over the away screen, and the only thing that is. Away mode is still on
+       underneath: the gate's way through is what ends it. -->
+  {#if gating}
+    <Gate
+      {presence}
+      onthrough={() => {
+        gating = false;
+        void presence.comeBack();
+      }}
+    />
   {/if}
   {#if presence.showing}
     <Vigil

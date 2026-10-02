@@ -8,6 +8,8 @@ paths:
   - "src/lib/away.ts"
   - "src/lib/pieces.ts"
   - "src/lib/Away.svelte"
+  - "src/lib/gate.ts"
+  - "src/lib/Gate.svelte"
 ---
 
 # Being away: questions that wait, and a wall that goes quiet
@@ -258,6 +260,62 @@ An away screen runs for hours unattended, which is the worst case `motion.md` de
   has one and `tide` is WebGL2 where the others are 2D, so the `{#key}` is the whole of that:
   a new piece gets a new element and the old context goes with the old one. A machine with no
   WebGL2 falls back to `flock` rather than showing a black rectangle for nine minutes.
+
+## The gate on the way back
+
+`Gate.svelte`, and away mode is **still on while you stand in front of it** — `comeBack` is
+called from the gate's way through rather than from the toggle. That ordering is what stops a
+half-woken wall firing every notification that accumulated overnight at the moment you reach
+for a key.
+
+Lyss's reasoning, in her words: *"unlock toys are fun actions to do when i'm back to actually
+unlock volery and get back to work … the idea is to get fun and stimulate the brain, it
+shouldn't take too long, 5 mins max"*.
+
+### It is not a lock, and that is a design decision rather than a weakness
+
+The bypass is on screen from the first frame, small and quiet — asked for in those words when
+the alternative was offered. It is right for a reason beyond preference: **a gate that
+actually held the door would be a gate you resent on the morning you are late**, and one
+morning of that is the end of the feature. It works because you want it to, and the only thing
+the design owes you is that wanting it is easy.
+
+Everything follows from that. No score, no streak, no timer counting you down. Getting it
+right says so and lets you through; getting it wrong costs nothing and offers another. The
+switch that turns it off for good is *on the gate itself*, because a thing you cannot refuse
+is a thing you stop enjoying — and the away screen's own knobs turn it back on.
+
+### Three puzzles, and the two bugs the tests caught
+
+| | what it is | why this one |
+|---|---|---|
+| `motus` | six letters, the first one given | the French game rather than Wordle, and the free letter is what makes six letters reasonable before coffee |
+| `calculus` | differentiate or integrate | the one that is actually *work*, in the way a warm-up is |
+| `rotate` | Shepard–Metzler: same shape, or its mirror? | needs no vocabulary and no maths, and the time it takes rises linearly with the angle, which is as close as a puzzle gets to being measurably a rotation in your head |
+
+**A generated puzzle that cannot be solved looks exactly like you being bad at it**, which is
+why every generator here is a function of a seed and is asserted rather than eyeballed. Both
+of the guards found a real bug on the first run:
+
+- **The answer is checked numerically, not symbolically.** String comparison would reject `2x`
+  for `2*x` and `x^2/2` for `0.5x²` — a gate that fails you for being right. So `parseExpr` is
+  sixty lines of recursive descent and `sameFunction` compares at five sample points. An
+  integral accepts **any** antiderivative, by comparing the difference against a constant:
+  demanding the particular spelling in the table would be marking a convention rather than the
+  calculus.
+- **Letters are matched as a prefix, longest token first.** With whitespace stripped, `2x
+  sin(x)` is `2xsin(x)`, and the greedy word match this started with read `xsin` — not x, not
+  a function, not anything. Two correct answers in the bank were unparseable and therefore
+  unpassable. Functions are tried before `pi` and `x` so that `exp` beats `e`.
+- **A figure whose mirror is also a rotation of it is chiral in name only**, and asking *same
+  or mirror?* about one has two right answers — so the gate marks you wrong for the true one.
+  `makePuzzle` grows until the figure is genuinely handed, and if it gives up it offers a
+  rotation pair, since *mirror* is the only answer that can be wrong about a shape we are not
+  sure of.
+
+Motus's marking is the other classic: a letter appearing twice in the guess and once in the
+answer earns one mark, not two, so it is two passes — exact positions first, then the leftovers
+against what is left. A single pass teaches the player something false.
 
 ### What was deliberately left out
 
