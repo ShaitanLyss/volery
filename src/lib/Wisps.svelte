@@ -27,10 +27,21 @@
    *   working card and is the first thing anybody will reach for when a wisp
    *   wants a glow. The glow here is a static `box-shadow` on a non-animating
    *   property and a pseudo-element carrying the fade.
-   * - **`html[data-motion]` gates it in CSS**, the way `Card.svelte` gates the
-   *   status glow, so `still` genuinely means nothing moves. The element is
-   *   still drawn — it fades in place instead of drifting — because turning
-   *   motion off must cost you an animation and never a record.
+   * - **The motion enum does not reach this**, and that is a correction rather
+   *   than an oversight. It used to: `spare` replaced the drift with a
+   *   `steps(4)` appear-hold-vanish and `still` switched the animation off, so
+   *   on either setting a wisp showed up, sat still and was gone — which is
+   *   precisely how it was reported. That enum was measured against
+   *   `Card.svelte`'s status glow, which runs on every working card for ever
+   *   while you are trying to read the wall, and Lyss's rule is that it is for
+   *   that and nothing else. A six-second drift, three at most, is not an
+   *   always-on pulse.
+   *
+   *   The cost argument against this is real and was weighed: `motion.md`'s
+   *   measurement is that the dominant term is the *present rate*, so a wall
+   *   with wisps going constantly is near-continuous motion whatever their
+   *   size. It loses on what is at stake — the record is kept either way, and
+   *   what the gate was buying was six seconds of a dot moving.
    * - **Capped at `MAX_FLYING`**, and that cap is for the eye rather than the
    *   GPU: three wisps cost what one costs. Thirty is simply unreadable, so the
    *   rest are a count.
@@ -267,35 +278,6 @@
     }
   }
 
-  /* `spare` keeps the reading and drops the travel: it appears, holds, and goes,
-     with no continuous motion in between. `steps()` is what made the status glow
-     1.3% against 12.2% — the present rate falls because the compositor has
-     nothing to interpolate. */
-  :global(html[data-motion="spare"]) .wisp {
-    animation-name: holdthen;
-    animation-timing-function: steps(4, end);
-  }
-
-  @keyframes holdthen {
-    0% {
-      opacity: 0;
-    }
-    12%,
-    78% {
-      opacity: 1;
-    }
-    100% {
-      opacity: 0;
-    }
-  }
-
-  /* And `still` means still. The wisp is drawn, does not move, and is gone when
-     `flying` stops returning it — you lose the flight, never the record. */
-  :global(html[data-motion="still"]) .wisp {
-    animation: none;
-    opacity: 1;
-  }
-
   .dot {
     width: 6px;
     height: 6px;
@@ -389,10 +371,6 @@
     100% {
       opacity: 0;
     }
-  }
-
-  :global(html[data-motion="still"]) .tab {
-    animation: none;
   }
 
   /* What did not fit. A count rather than a fourth box, because the cap is for

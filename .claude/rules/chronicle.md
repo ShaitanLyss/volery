@@ -124,9 +124,23 @@ costs what a card-sized glow costs.
 
 So three wisps cost what one costs, and thirty cost the same again. The cap is therefore for
 the **eye** and the `life` is for the **GPU**, and they are two parameters because they are
-two arguments. A wall set to `still` passes `life: 0` and gets no flight at all — which is
-what "no motion" has to mean — and the entry still lands as a row, so turning motion off
-costs an animation and never a record.
+two arguments.
+
+**The motion enum does not reach the flight, and that is a reversal.** It used to: `spare`
+replaced the drift with a `steps(4)` appear-hold-vanish, `still` switched the animation off
+outright, and the argument was that *turning motion off must cost you an animation and never a
+record*. The record half still holds and always will. The animation half was wrong, because
+the enum is not a wall-wide motion budget — it was measured against `Card.svelte`'s status
+glow, which runs on every working card for ever while you are trying to read the wall, and
+that is what it is for. Lyss's rule, after a wisp was reported as *"they show up, then don't
+move"* at less motion: **a six-second drift, three at most, is not an always-on pulse on an
+active card.**
+
+The cost argument against the reversal is real and was weighed rather than waved off:
+`motion.md`'s measurement is that the dominant term is the *present rate* rather than the
+painted area, so a wall with wisps going constantly is near-continuous motion whatever their
+size. It loses on what is at stake. The entry lands as a row either way; what the gate bought
+was six seconds of a dot not moving.
 
 Anything added here animates `transform` and `opacity` only. `box-shadow` is what cost ~8% of
 the GPU per working card, and it is the first thing to reach for when a wisp needs a glow.
