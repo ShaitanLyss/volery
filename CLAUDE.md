@@ -119,6 +119,14 @@ bun tools/probe-lazy-browser.ts    # when `@playwright/mcp` dials its `--cdp-end
 bun tools/probe-mcp-hook.ts        # whether a PreToolUse hook sees an MCP tool call and
                                    # whether the CLI *waits* for it before running the tool.
                                    # Two real turns, pinned to Haiku
+bun tools/probe-matcher.ts         # whether the PreToolUse matcher narrowing holds: the CLI
+                                   # treats it as a JS regex, so `^(?!(Read|…)$).*$` skips the
+                                   # tools that can carry no shell command while anything
+                                   # renamed or new still fires. Takes the list out of
+                                   # `hooks.rs` so the two cannot drift, and runs a no-matcher
+                                   # CONTROL turn first — without it, a matcher that fires for
+                                   # nothing reads exactly like a working narrowing. Two real
+                                   # turns, pinned to Haiku
 bun tools/probe-tool-failure.ts    # which hook hears an MCP call that FAILED, what it is
                                    # handed, and whether its additionalContext reaches the
                                    # model. One real turn, pinned to Haiku

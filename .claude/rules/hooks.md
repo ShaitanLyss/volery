@@ -188,6 +188,69 @@ Hence the shape the module now has:
 - The cost is a ~5ms process per tool call rather than per shell call. Paid deliberately: the
   alternative is a guard that is correct and not running.
 
+#### And then the price turned out to be wrong by two orders of magnitude
+
+The bullet above is kept because its *argument* is still the right one; only its last line was
+false, and it was the line holding the design up. Measured 2026-10-02 against the installed
+0.32.2 (PowerShell `Stopwatch`, median of three, two different machine loads):
+
+```text
+cmd /c exit           323-500 ms    peak working set 14.3 MB
+volery --bash-hook    348-800 ms    peak working set 38.5 MB
+node --version        577 ms        peak working set 53.5 MB
+```
+
+Not ~5ms. Two things make it up, and they are worth telling apart because only one is ours:
+
+- **This machine taxes every process creation**, by roughly 300-500ms. Defender is not doing
+  it — `Get-MpPreference` fails `0x800106ba` and `RealTimeProtectionEnabled` is `False`, which
+  is Defender standing down for a third-party EDR on a corp-managed box. Everything pays it:
+  the hook, the `bash.exe` behind every Bash call, every stdio MCP server at spawn. An EDR
+  exclusion is the biggest single win available and is not a code change.
+- **The binary is 34.6MB and load-time imports 22MB of speech runtime it never uses here.**
+  `objdump -p skein.exe` names `sherpa-onnx-c-api.dll`, which imports `onnxruntime.dll`;
+  `intercept` returns long before anything in `voice.rs`, but the loader maps and initialises
+  both regardless. `/DELAYLOAD:` would take it off this path while keeping one binary, which
+  `settings` needs since it spells the hook as `current_exe()` — unverified, because it has to
+  hold on the GNU toolchain `build-gnu.ps1` uses as well as on MSVC.
+
+Multiply either by every tool call of every card — `Read`, `Grep`, `TodoWrite`, and
+`ToolSearch`, which is the first thing a turn does — and by ten cards, and it is most of why
+tools felt slow. See sink `a6ebe5ee`.
+
+**So the matcher is back, negatively**, which is this file's own escape clause taken up rather
+than abandoned: *arrange for the broad case to be the default and narrow inside your own code.*
+`hooks::UNHOOKED_TOOLS` names the tools that provably carry no `tool_input.command` and are not
+`mcp__browser__*`, and `unhooked_matcher` builds `^(?!(…)$).*$` from it. The asymmetry is the
+whole point and is the opposite of the 2026-08-25 bug:
+
+| | old `matcher: "Bash"` | `^(?!(Read|…)$).*$` |
+|---|---|---|
+| a shell tool is renamed | guards silently stop | **still fires** |
+| a new tool ships | guards silently stop | **still fires** |
+| a name in the list is wrong | — | one tool costs ~400ms it didn't need |
+
+A positive matcher fails towards silence; this one fails towards waste. That is the direction a
+guard protecting a shared git index and `rm -rf` has to fail in.
+
+**Anchored at both ends, and that is load-bearing.** The CLI tests the matcher as a JS regex, so
+an *unanchored* negative lookahead reads as correct and fails open: `.test()` retries at every
+offset, and `(?!(Read)$).*` matches `Read` from position 1.
+
+Probed before shipping rather than reasoned about, because the failure mode is silence —
+`tools/probe-matcher.ts`. It takes the list **out of `hooks.rs`** so the two cannot drift, and
+runs a no-matcher control turn first, so that a matcher firing for *nothing* cannot be mistaken
+for a working narrowing. Against claude 2.1.241 on 2026-10-02:
+
+```text
+control: no matcher          hook saw  Read, Bash
+narrowed: negative lookahead hook saw  Bash
+```
+
+The general shape, which is the 2026-08-25 lesson refined rather than replaced: **a filter
+configured by a name you do not own still cannot report that it stopped matching — so write it
+so that the thing it stops matching is the thing you did not need.**
+
 The general shape, and it reaches past this module: **a filter configured by matching on a
 name that something else owns has no way to report that it stopped matching.** Anywhere a
 matcher, a glob or a tool name is written into configuration, the failure is silence — so

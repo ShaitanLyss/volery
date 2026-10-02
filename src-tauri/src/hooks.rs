@@ -922,19 +922,49 @@ pub fn settings(
                    second list and two two-second askings. */
                 "PostToolUseFailure": [entry],
                 "PreToolUse": [{
-                    /* **No matcher, and that is the whole of a bug this module
-                       shipped with.** It was `"Bash"`, which is the name the
-                       Windows shell tool had when this was written and does not
-                       have now: probed 2026-08-25 against 2.1.241, a fresh
-                       `claude` on this machine calls it `PowerShell`, so the
-                       matcher matched nothing and every hook here was a silent
-                       no-op — for however many versions it had been true, since
-                       nothing announces that a matcher stopped matching. Both
-                       names are live on this machine at once, which is what
-                       decides it: a matcher is a name written down twice, and
-                       the copy in the settings layer cannot be tested. Firing on
-                       everything and leaving in `reply` costs a process per tool
-                       call — ~5ms, measured — and cannot rot. */
+                    /* **A matcher that can only rot in the cheap direction.**
+                       This was `"Bash"` once, which is the name the Windows
+                       shell tool had when it was written and does not have now:
+                       probed 2026-08-25 against 2.1.241, a fresh `claude` calls
+                       it `PowerShell`, so the matcher matched nothing and every
+                       hook here was a silent no-op for an unknowable number of
+                       versions. The fix was to register against everything and
+                       decide in `reply`, where a test can reach the decision —
+                       paid for with "a process per tool call, ~5ms, measured".
+
+                       **That price was wrong by two orders of magnitude.**
+                       Measured 2026-10-02 on the installed 0.32.2, PowerShell
+                       Stopwatch, median of three at two different machine
+                       loads: ~350-800ms wall and **38.5MB** peak working set per
+                       invocation, against 14.3MB for `cmd /c exit`. Most of the
+                       memory is this binary's own load-time import of
+                       `sherpa-onnx-c-api.dll` → `onnxruntime.dll` (22MB of
+                       speech runtime that `intercept` never touches), and most
+                       of the wall time is that this machine's EDR taxes every
+                       process creation. It fires on *every* tool call of every
+                       card — `Read`, `Grep`, `TodoWrite`, and `ToolSearch`,
+                       which is the first thing a turn does — while `reply`'s
+                       body below only ever acts on a shell call or on
+                       `mcp__browser__*`. Ten cards at that rate is most of why
+                       tools felt slow (sink a6ebe5ee).
+
+                       So the matcher is back, **negatively**, which is the shape
+                       `hooks.md` itself asks for when it says to arrange for the
+                       broad case to be the default and narrow inside your own
+                       code. A tool that is renamed, or one that ships next
+                       month, is not in `UNHOOKED_TOOLS` and therefore still
+                       fires: the guards cannot be switched off by somebody
+                       else's rename, and the only thing a stale list costs is
+                       milliseconds on a tool that did not need us. That is the
+                       direction this failure has to point.
+
+                       Probed before shipping — `tools/probe-matcher.ts`, which
+                       takes the list out of this file so the two cannot drift,
+                       and runs a no-matcher control turn first so that a matcher
+                       firing for *nothing* cannot be mistaken for a working
+                       narrowing. 2026-10-02, claude 2.1.241: control saw
+                       `Read, Bash`; narrowed saw `Bash` alone. */
+                    "matcher": unhooked_matcher(),
                     "hooks": [{
                         "type": "command",
                         "command": exe.to_string_lossy(),
@@ -961,6 +991,49 @@ pub fn settings(
 /// hook — `WAKE_TIMEOUT`, `ROUTE_TIMEOUT` — has to answer inside it, because a
 /// hook the CLI kills prints nothing and printing nothing *allows the call*.
 pub const PRE_TOOL_TIMEOUT_S: u64 = 50;
+
+/// The tools the `PreToolUse` hook is deliberately **not** registered for.
+///
+/// Every name here is one that provably carries no `tool_input.command` and is
+/// not under `mcp__browser__` — which between them are the only two things
+/// `reply`'s `PreToolUse` body acts on. So skipping these loses nothing, and
+/// each costs a ~350-800ms process and 38.5MB if left in (see `settings`).
+///
+/// **The list is an allowlist for skipping, never for firing**, and that is the
+/// whole safety argument: anything not named here still fires, so a renamed
+/// shell tool, a second shell tool, or a tool that ships next month keeps the
+/// git-index and `rm` guards running. Adding a name is a claim that the tool
+/// cannot carry a shell command; removing one only costs time.
+///
+/// `ToolSearch` earns its place twice over — `probe-mcp-hook.ts` measured it as
+/// the first thing a turn does, so it was paying for the whole module before the
+/// model had called a single real tool.
+pub const UNHOOKED_TOOLS: &[&str] = &[
+    "Read",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+    "TodoWrite",
+    "Task",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "ExitPlanMode",
+];
+
+/// `UNHOOKED_TOOLS` as the matcher the settings layer carries.
+///
+/// Anchored at both ends on purpose. The CLI tests this as a JS regex, and an
+/// *unanchored* negative lookahead is a trap that reads as correct: `.test()`
+/// retries at every offset, so `(?!(Read)$).*` matches "Read" at position 1 and
+/// the tool is hooked after all. `^…$` is what makes the exclusion mean the
+/// whole name — and it stays correct if the CLI ever wraps the matcher in
+/// anchors of its own, since `^` and `$` are zero-width.
+fn unhooked_matcher() -> String {
+    format!("^(?!({})$).*$", UNHOOKED_TOOLS.join("|"))
+}
 
 /* ── the one git index behind a shared working tree ───────────────────────── */
 
