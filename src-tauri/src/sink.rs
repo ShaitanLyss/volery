@@ -104,7 +104,7 @@ fn pile_note(open_before: i64, merged: bool) -> String {
     }
     format!(
         " (This card now has {} unsettled items in the sink. It was written anyway — \
-         but if some of them are already dealt with, `done` them so the pile stays one \
+         but if some of them are already dealt with, settle them with `mcp__skein__done` so the pile stays one \
          somebody reads.)",
         open_before + 1
     )
