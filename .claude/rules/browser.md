@@ -161,6 +161,26 @@ with no browser up, gets a connection refused and has to call a browser tool to 
 hook cannot help there: it fires on tool names, and starting a 450 MB browser because a shell
 command happened to mention a variable is not a trade worth making.
 
+## A server that failed at spawn is asked again
+
+The CLI gives the `browser` stdio server thirty seconds to answer `initialize` and, if it does
+not (`CONNECT_TIMEOUT` — `npx` cold, or the Chrome hung on a dialog), marks it `failed` **for
+the rest of the session and never retries**. The card then has no `mcp__browser__*`, the browser
+coming back changes nothing, and it cannot call a tool to wake one because the lazy start hangs
+off a `PreToolUse` on a tool that does not exist. Reported 2026-10-02 from an orchestrator whose
+browser was down at spawn.
+
+The CLI accepts `control_request { subtype: "mcp_reconnect", serverName }` (the SDK's
+`reconnectMcpServer`; in the binary's dispatcher beside `mcp_status` and `mcp_toggle`), so
+`supervisor.rs` asks again at the only two moments the answer can have changed: the shared
+browser **comes up** (`browser::ensure_running` → `reconnect_stranded`), and a card reports
+`failed` in `system/init` **while the browser is already up**, once per failure — init is per
+turn, and a card that stays failed must not be re-asked every turn. Only `failed` counts;
+`pending` is a server still connecting. It is event-driven rather than a poll: both moments are
+events this process already sees. **Untested against a live card**: the request line and the
+`system/init` reading are asserted (`browser_reconnect_tests`), and the subtype is read out of the
+installed 2.1.285 binary, but no real `CONNECT_TIMEOUT` was provoked here.
+
 ## The two flags that are load-bearing, both found the hard way
 
 - **`--remote-allow-origins`.** Chrome 111 began closing CDP WebSocket upgrades whose

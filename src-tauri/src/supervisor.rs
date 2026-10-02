@@ -1558,6 +1558,12 @@ fn spawn_now(
                                 persist_turn(&app, &id, open);
                             }
                         }
+                        /* Whether the shared browser's tools reached this card.
+                           See `note_browser`: a server that failed at start
+                           stays failed for the session unless asked again. */
+                        if let Some(down) = browser_down(&event) {
+                            note_browser(&app, &id, down);
+                        }
                         let _ = app.emit(
                             "conv:event",
                             ConvEvent {
@@ -1599,6 +1605,7 @@ fn spawn_now(
                case the mark exists for: killing every child is how quitting
                works, and a clear here would undo the flag on the way out. */
             turn.store(false, Ordering::Relaxed);
+            forget_browser(&id);
             if !app.state::<Supervisor>().going_away() {
                 persist_turn(&app, &id, false);
             }
@@ -1644,6 +1651,112 @@ fn spawn_now(
        while it slept first — which is the order the two actually happened in. */
     crate::relay::drain_inbox(&app, &id);
     Ok(())
+}
+
+/* ── a browser server that did not connect ─────────────────────────────────
+ *
+ * `browser` is a stdio MCP server the CLI starts with the card, and it has
+ * thirty seconds to answer `initialize` (`CONNECT_TIMEOUT` otherwise). When it
+ * does not — `npx` cold, or the shared Chrome hung on a dialog — the CLI marks
+ * it `failed` **for the rest of the session and never tries again**, so the
+ * card has no `mcp__browser__*` at all, the browser coming back changes
+ * nothing, and the card cannot even call a tool to wake it: the lazy start
+ * (`ask::WAKE_PATH`) hangs off a `PreToolUse` on a tool that is not there.
+ * Reported 2026-10-02 from an orchestrator whose browser was down at spawn.
+ *
+ * The CLI does accept `control_request { subtype: "mcp_reconnect", serverName }`
+ * (the Agent SDK's `reconnectMcpServer`; present in the installed binary's
+ * dispatcher beside `mcp_status` and `mcp_toggle`), so Volery can ask again. It
+ * does so at the two moments the answer can have changed, and no others:
+ *
+ * - the shared browser **comes up** (`reconnect_stranded`, called from
+ *   `browser::ensure_running`) — every card whose last `system/init` said
+ *   `failed` is asked once;
+ * - a card reports `failed` **while the browser is already up** — the server
+ *   lost a race rather than a browser, so it is asked straight away, once per
+ *   failure (`system/init` is per turn, and a card that stays failed must not be
+ *   re-asked every turn).
+ *
+ * It is event-driven, not a poll: the init event already arrives, and the
+ * browser coming up is something this process does itself. */
+
+fn stranded() -> &'static Mutex<HashSet<String>> {
+    static SET: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Whether a `system/init` says the `browser` server failed to start.
+///
+/// `None` for any other event, and for an init that does not name a `browser`
+/// server at all (a chat card has none, and a wall that supplies none must not
+/// be read as one that failed). Only `failed` counts: `pending` is a server
+/// still connecting, and asking it again would restart a start that is going
+/// fine.
+pub(crate) fn browser_down(event: &serde_json::Value) -> Option<bool> {
+    if event.get("type")?.as_str()? != "system" || event.get("subtype")?.as_str()? != "init" {
+        return None;
+    }
+    let server = event
+        .get("mcp_servers")?
+        .as_array()?
+        .iter()
+        .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("browser"))?;
+    Some(server.get("status").and_then(|s| s.as_str()) == Some("failed"))
+}
+
+/// The line that asks the CLI to try a named MCP server again. The id carries
+/// a prefix of its own so nothing that reads `control_response`s mistakes the
+/// receipt for a gear change's.
+fn reconnect_request(server: &str) -> String {
+    static N: AtomicU64 = AtomicU64::new(0);
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": format!("skein-mcp-reconnect-{}", N.fetch_add(1, Ordering::Relaxed)),
+        "request": { "subtype": "mcp_reconnect", "serverName": server }
+    })
+    .to_string()
+}
+
+fn write_reconnect(app: &AppHandle, id: &str) -> Result<(), String> {
+    let sup = app.state::<Supervisor>();
+    let mut map = sup.0.lock().unwrap();
+    let conv = map
+        .get_mut(id)
+        .ok_or_else(|| format!("no open conversation {id}"))?;
+    writeln!(conv.stdin, "{}", reconnect_request("browser"))
+        .and_then(|()| conv.stdin.flush())
+        .map_err(|e| format!("write to claude stdin: {e}"))
+}
+
+/// Fold one card's `system/init` into the set of cards waiting for a browser.
+fn note_browser(app: &AppHandle, id: &str, down: bool) {
+    let first = {
+        let mut set = stranded().lock().unwrap();
+        if !down {
+            set.remove(id);
+            return;
+        }
+        set.insert(id.to_string())
+    };
+    if first && crate::browser::is_up(app) && write_reconnect(app, id).is_ok() {
+        stranded().lock().unwrap().remove(id);
+    }
+}
+
+/// A card's process is gone, so it is no longer waiting for anything.
+fn forget_browser(id: &str) {
+    stranded().lock().unwrap().remove(id);
+}
+
+/// The shared browser is up: ask every card that was told it failed to try
+/// again. A card whose write fails stays in the set for the next time.
+pub fn reconnect_stranded(app: &AppHandle) {
+    let ids: Vec<String> = stranded().lock().unwrap().iter().cloned().collect();
+    for id in ids {
+        if write_reconnect(app, &id).is_ok() {
+            stranded().lock().unwrap().remove(&id);
+        }
+    }
 }
 
 /// What one event off the wire says about whether a turn is open on this child.
@@ -3527,6 +3640,7 @@ mod tests {
         ("later.rs", include_str!("later.rs")),
         ("limits.rs", include_str!("limits.rs")),
         ("pin.rs", include_str!("pin.rs")),
+        ("presence.rs", include_str!("presence.rs")),
         ("relay.rs", include_str!("relay.rs")),
         ("remove.rs", include_str!("remove.rs")),
         ("selector.rs", include_str!("selector.rs")),
@@ -4770,5 +4884,44 @@ impl Supervisor {
             let _ = conv.child.wait();
         }
         lost
+    }
+}
+
+#[cfg(test)]
+mod browser_reconnect_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn an_init_naming_a_failed_browser_is_down_and_a_connected_one_is_not() {
+        let init = |status: &str| {
+            json!({ "type": "system", "subtype": "init", "mcp_servers": [
+                { "name": "skein", "status": "connected" },
+                { "name": "browser", "status": status },
+            ]})
+        };
+        assert_eq!(browser_down(&init("failed")), Some(true));
+        assert_eq!(browser_down(&init("connected")), Some(false));
+        /* Still connecting is not failure — asking again would restart it. */
+        assert_eq!(browser_down(&init("pending")), Some(false));
+    }
+
+    #[test]
+    fn no_browser_server_or_no_init_says_nothing() {
+        let no_browser = json!({ "type": "system", "subtype": "init",
+            "mcp_servers": [{ "name": "skein", "status": "connected" }] });
+        assert_eq!(browser_down(&no_browser), None);
+        assert_eq!(browser_down(&json!({ "type": "assistant" })), None);
+        assert_eq!(browser_down(&json!({ "type": "system", "subtype": "other" })), None);
+    }
+
+    #[test]
+    fn the_request_names_the_server_and_carries_its_own_prefix() {
+        let v: serde_json::Value = serde_json::from_str(&reconnect_request("browser")).unwrap();
+        assert_eq!(v["type"], "control_request");
+        assert_eq!(v["request"]["subtype"], "mcp_reconnect");
+        assert_eq!(v["request"]["serverName"], "browser");
+        assert!(v["request_id"].as_str().unwrap().starts_with("skein-mcp-reconnect-"));
+        assert!(!v["request_id"].as_str().unwrap().starts_with(MODE_REQUEST_PREFIX));
     }
 }

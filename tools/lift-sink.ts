@@ -67,6 +67,8 @@ const ITEMS: [string, string][] = [
   [SINK, "const HOLD_STALE_MS"],
   [SINK, "const MAX_TITLE"],
   [SINK, "const MAX_NOTE"],
+  [SINK, "const OPEN_PER_CARD_NUDGE"],
+  [SINK, "fn pile_note"],
   [SINK, "const KINDS"],
   [SINK, "fn hold_stale"],
   [SINK, "fn free"],
@@ -180,6 +182,7 @@ const TESTS: string[] = [
   "a_title_with_a_comma_is_one_address",
   "a_shared_title_reads_every_item_under_it",
   "a_phrase_matches_across_a_line_wrap",
+  "a_long_pile_is_told_and_never_refused",
 ];
 
 /** The helpers the tests build their fixtures with. */

@@ -72,20 +72,35 @@ pub const SEND_TOOL: &str = "send";
 ///
 /// `chain` and `hops` are still carried and still stored. They cost nothing,
 /// the broadcast guard reads `hops`, and `relay.ts` draws a chain.
-const MAX_SENDS: usize = 6;
+///
+/// **Two numbers now, and only the high one refuses** (2026-10-02). It was six
+/// a minute, and an orchestrator briefing ten workers hit it with its seventh
+/// message — which was lost, since a refused send is not queued. `SOFT_SENDS` is
+/// where the receipt starts saying the card is sending fast; `MAX_SENDS` is the
+/// runaway loop, which no deliberate fan-out of individual sends reaches.
+const SOFT_SENDS: usize = 6;
+const MAX_SENDS: usize = 30;
 const SEND_WINDOW: Duration = Duration::from_secs(60);
 
-/// The most a message may carry.
+/// The most a *notice* arriving in an envelope may carry. **A message has no
+/// cap any more** (2026-10-02): a long report was cut at 4,000 characters and
+/// arrived "clipped by the wall" at the card that needed all of it, with a
+/// remedy — ask the sender — that cost the sender a turn to answer. The
+/// argument that retired it is `spawn::MAX_PROMPT`'s and `sink::MAX_NOTE`'s
+/// neighbour: the text arrived as MCP `tools/call` arguments, so it was written
+/// inside the sender's own output budget and is already paid for, and the
+/// recipient reads it once. `SOFT_BODY` is the receipt-side signal for a message
+/// large enough to be worth a sentence.
 ///
-/// A relay is a message, not a transfer: the recipient shares the machine and
-/// can read the file. Truncated rather than refused, since a message that is
-/// mostly right is worth delivering and an agent that had its send bounced will
-/// send it again slightly shorter, twice.
-///
-/// Visible to the crate so `later.rs` can hold its own cap against it: a note a
-/// card writes to itself costs nobody else a turn, so it has no business being
-/// tighter than a message that does.
+/// What still reads this: `board_envelope`, whose notice body is capped at
+/// `board::MAX_BODY` (2,400) and so never reaches it, and `later.rs`'s test that
+/// a note to yourself is no tighter than the thing beside it.
 pub(crate) const MAX_BODY: usize = 4_000;
+
+/// A message past this many characters (~5,000 tokens) gets a sentence on the
+/// sender's receipt saying what it just put in the recipient's context. A
+/// warning, never a refusal: the send has already happened by then.
+const SOFT_BODY: usize = 20_000;
 
 /// The first line of every delivered message, and the whole of how the front
 /// end knows one when it sees it.
@@ -230,12 +245,9 @@ pub(crate) fn resolve<'a>(rows: &'a [RosterRow], want: &str) -> Result<&'a Roste
 /// less thing for two parsers in two languages to agree about.
 pub fn envelope(from: &RosterRow, body: &str) -> String {
     let name = from.title.replace('"', "'");
-    let body = clip(
-        body,
-        MAX_BODY,
-        "Ask the card that sent this for the rest with `mcp__skein__send` — it still \
-         holds what it wrote. Do not infer what was cut.",
-    );
+    /* Not clipped — see `MAX_BODY`. Only the characters that cannot be sent at
+       all come out, which `clip::keep` would also have done. */
+    let body = crate::clean::scrub(body);
     format!(
         "{RELAY_MARK} from \"{name}\" ({}) in {} —\n\n{body}\n\n\
          (This came from another agent on the Skein wall, not from the user. \
@@ -625,12 +637,18 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
        is still counted, because the broadcast guard below is a different
        question and needs it. */
 
-    if let Some(wait) = throttled(&relays, caller) {
-        return format!(
-            "this card has sent {MAX_SENDS} messages in the last minute, which is the \
-             limit. Nothing was sent; try again in {wait}s if it still matters."
-        );
-    }
+    let sent_this_minute = match throttled(&relays, caller) {
+        Ok(n) => n,
+        Err(wait) => {
+            return format!(
+                "this card has sent {MAX_SENDS} messages in the last minute, which is \
+                 the runaway limit — nobody briefs that many cards one at a time on \
+                 purpose, so this looks like a loop. Nothing was sent; try again in \
+                 {wait}s if it still matters, and use `project` or `skein` to reach \
+                 everyone in one call."
+            );
+        }
+    };
 
     let (ids, broadcast) = match targets(&rows, caller, to) {
         Ok(t) => t,
@@ -724,21 +742,46 @@ fn do_send(app: &AppHandle, caller: &str, args: &Value) -> String {
             },
         );
     }
+    if let Some(note) = soft_note(sent_this_minute, body.chars().count()) {
+        receipts.push(note);
+    }
     receipts.join("\n")
 }
 
-/// Whether this card has spent its minute, and how long is left of it.
-fn throttled(relays: &Relays, caller: &str) -> Option<u64> {
+/// What a send that went through is told about how it went. Empty for an
+/// ordinary one. Never a reason to have refused: both are about a message that
+/// has already been delivered.
+fn soft_note(sent_this_minute: usize, body_chars: usize) -> Option<String> {
+    let mut out = Vec::new();
+    if sent_this_minute > SOFT_SENDS {
+        out.push(format!(
+            "that was send {sent_this_minute} this minute — each one costs its \
+             recipient a turn, so if you are briefing several cards the same thing, \
+             one `project` broadcast is a single call"
+        ));
+    }
+    if body_chars > SOFT_BODY {
+        out.push(format!(
+            "that message was {body_chars} characters, all of it now in the recipient's \
+             context — a file path they can read costs them nothing"
+        ));
+    }
+    (!out.is_empty()).then(|| format!("(note: {}.)", out.join("; ")))
+}
+
+/// Whether this card has spent its minute: `Ok` with how many sends it has made
+/// inside the window (this one included), or `Err` with how long is left of it.
+fn throttled(relays: &Relays, caller: &str) -> Result<usize, u64> {
     let now = Instant::now();
     let mut recent = relays.recent.lock().unwrap();
     let times = recent.entry(caller.to_string()).or_default();
     times.retain(|t| now.duration_since(*t) < SEND_WINDOW);
     if times.len() >= MAX_SENDS {
         let oldest = times[0];
-        return Some((SEND_WINDOW - now.duration_since(oldest)).as_secs() + 1);
+        return Err((SEND_WINDOW - now.duration_since(oldest)).as_secs() + 1);
     }
     times.push(now);
-    None
+    Ok(times.len())
 }
 
 /// Mark a card as acting inside a chain, so what it sends next is counted.
@@ -911,7 +954,11 @@ const TOUCH_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 
 /// How many of a card's last turns `recall` hands back.
 const RECALL_TURNS: usize = 6;
-const MAX_RECALL_CHARS: usize = 3_000;
+/// One speech of a card's, as `recall` hands it back. Was 3,000 and cut a
+/// finished card's only report short (2026-09-03, again 2026-10-02 for a long
+/// orchestrator report); 24,000 is a reading's worth of context rather than a
+/// cut that a report has to be written to fit.
+const MAX_RECALL_CHARS: usize = 24_000;
 
 pub fn touched_schema() -> Value {
     json!({
@@ -1693,34 +1740,38 @@ mod tests {
         assert_eq!(e.matches('"').count(), 2);
     }
 
-    /// A message too long to carry is cut, not refused — and the cut says how
-    /// much went and who still has it.
-    ///
-    /// The marker used to read `[…truncated by skein at N characters]`, which
-    /// named the budget and neither the loss nor a next move. `crate::clip`
-    /// supplies all three; this asserts the two that a reader can act on. A run
-    /// of `x` has no boundary in it, so the cut lands exactly on the cap — which
-    /// is the branch of the boundary rule this case is pinning.
+    /// A long message arrives whole. It used to be cut at 4,000 characters and
+    /// marked "clipped by the wall", which left a card holding half a report
+    /// and a sender who had to spend a turn answering "send the rest".
     #[test]
-    fn an_overlong_message_is_clipped_rather_than_refused() {
-        let long = "x".repeat(MAX_BODY + 500);
+    fn a_long_message_arrives_whole() {
+        let long = "x".repeat(MAX_BODY * 10);
         let e = envelope(&wall()[0], &long);
-        assert!(e.contains("clipped by the wall"), "{e}");
-        assert!(e.contains("500 of"), "the loss was not named: {e}");
-        assert!(e.contains("`mcp__skein__send`"), "no way to ask for the rest: {e}");
-        assert!(e.matches('x').count() == MAX_BODY);
+        assert!(!e.contains("clipped by the wall"), "{e}");
+        assert_eq!(e.matches('x').count(), MAX_BODY * 10);
     }
 
     #[test]
-    fn the_rate_limit_lets_six_through_and_then_says_how_long_to_wait() {
+    fn the_rate_limit_is_a_runaway_guard_and_says_how_long_to_wait() {
         let relays = Relays::default();
-        for _ in 0..MAX_SENDS {
-            assert!(throttled(&relays, "a").is_none());
+        for i in 1..=MAX_SENDS {
+            assert_eq!(throttled(&relays, "a"), Ok(i));
         }
-        let wait = throttled(&relays, "a").expect("the seventh is refused");
+        let wait = throttled(&relays, "a").expect_err("past the runaway limit is refused");
         assert!(wait > 0 && wait <= SEND_WINDOW.as_secs() + 1);
         // Per card, not per wall — one busy card must not silence another.
-        assert!(throttled(&relays, "b").is_none());
+        assert_eq!(throttled(&relays, "b"), Ok(1));
+        // Ten individual briefings is a deliberate fan-out and must not hit it.
+        assert!(10 < MAX_SENDS);
+    }
+
+    #[test]
+    fn a_fast_or_large_send_is_told_never_refused() {
+        assert_eq!(soft_note(SOFT_SENDS, 100), None);
+        let fast = soft_note(SOFT_SENDS + 1, 100).expect("past the soft number");
+        assert!(fast.contains("send 7") && fast.contains("`project`"), "{fast}");
+        let big = soft_note(1, SOFT_BODY + 1).expect("past the soft size");
+        assert!(big.contains("characters"), "{big}");
     }
 
     #[test]

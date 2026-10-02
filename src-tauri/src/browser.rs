@@ -1131,7 +1131,18 @@ pub fn ensure_running(app: &AppHandle) -> Result<(), String> {
     }
     /* And *now* it is running, so say so where a crash cannot unsay it. */
     remember(app, mode, true);
+    /* Cards whose `browser` server failed to connect at spawn never retry on
+       their own; this is the moment their answer can have changed. See
+       `supervisor::reconnect_stranded`. */
+    crate::supervisor::reconnect_stranded(app);
     Ok(())
+}
+
+/// Whether the shared browser is running right now.
+pub fn is_up(app: &AppHandle) -> bool {
+    app.try_state::<Browser>()
+        .and_then(|s| s.inner.lock().ok().map(|g| g.is_some()))
+        .unwrap_or(false)
 }
 
 /// Wait out a start another caller claimed, and say whether it worked.

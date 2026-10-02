@@ -78,10 +78,7 @@ const ITEMS: [string, string][] = [
   [BOARD, "fn clip"],
   [BOARD, "fn tail_of"],
   [BOARD, "fn lost"],
-  [BOARD, "fn yours"],
-  [BOARD, "fn at_stake"],
-  [BOARD, "fn refuse_full"],
-  [BOARD, "fn refuse_bare"],
+  [BOARD, "fn crowded"],
   [BOARD, "fn expired"],
   [BOARD, "fn render"],
   [BOARD, "fn expiry_note"],
@@ -118,12 +115,9 @@ const TESTS: string[] = [
   "a_truncation_says_how_much_it_took",
   "a_receipt_is_silent_about_what_fitted_and_loud_about_what_did_not",
   "the_tail_shows_where_it_stopped_even_for_something_short",
-  "a_refused_claim_says_what_the_claim_was_holding",
-  "a_refused_announcement_does_not_claim_to_have_lost_a_file",
-  "a_refusal_hands_back_the_notice_likeliest_to_be_finished_with",
   "a_claim_is_capped_more_generously_than_a_broadcast",
-  "being_out_of_slots_altogether_names_the_files_it_left_unguarded",
-  "being_out_of_bare_slots_points_at_the_form_that_still_has_room",
+  "a_crowded_card_is_told_and_never_refused",
+  "a_crowd_of_bare_notices_points_at_paths",
   /* Expiry and cross-card unpost (sink `b5453473` / `86e0f8b0`). Every one of
      these was written and then not listed here, so twelve new assertions about
      the only behaviour that changed were sitting unexecuted — which on a machine

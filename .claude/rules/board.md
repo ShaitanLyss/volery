@@ -96,6 +96,17 @@ every write every card makes.
 
 ### Caps, and what a cap does when it is reached
 
+**The two per-card numbers below no longer refuse (2026-10-02).** `crowded` appends a sentence
+to the receipt of a post that took a card past them, and the post lands. The refusals this
+section and the next describe were the guard for a failure — a card carrying on unclaimed
+because it judged the work small — that a refusal could only ever *cause*: a claim that is not
+posted does not exist. An orchestrator running a nine-way split legitimately wants more
+notices than a card writing prose, and the cost of one card papering the board is a thing the
+board's own reading shows and `unpost` undoes. The bare-notice nudge still points at `paths`,
+because that is still the only form of claim that reaches somebody rather than everybody. The
+history below is kept because it is the argument for why the refusal was so loud, and the
+argument for dropping it is in `board.rs`'s `being crowded` note.
+
 Two numbers, not one: **eight notices per card, of which at most four may carry no `paths`.**
 120 characters of subject, 2400 of body, 8 globs. Posting the same subject twice **replaces**
 rather than adding — which is what keeps an agent that re-posts once a turn from papering the
@@ -116,7 +127,7 @@ writing a covered file and to nobody else, so its cost falls on the one agent it
 for. Those are numerous, short-lived and mechanical, and a card coordinating a nine-way split
 legitimately wants more than four of them. Pricing them together squeezed out the useful one.
 
-### A refusal is the whole of the guard here
+### A refusal was the whole of the guard here (it no longer refuses — see above)
 
 This is the part worth carrying past this file. `relay.rs` states the rule where `MAX_HOPS`
 used to be: **a refusal must carry its reasoning and a way forward, because an agent told only

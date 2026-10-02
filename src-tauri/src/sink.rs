@@ -83,15 +83,32 @@ const INDEX_BUDGET: usize = 60_000;
 /// see is data loss.
 const READ_BUDGET: usize = 80_000;
 
-/// How many still-open items one card may have dropped.
-///
-/// Twelve. Higher than the board's four, because these accumulate honestly over
-/// a long session where notices do not, and low enough that a card which has
-/// started narrating every thought into the sink is stopped while the box is
-/// still readable. Refused rather than rotated, for `board::MAX_PER_CARD`'s
-/// reason: an agent whose oldest item was silently dropped would go on
-/// believing it had been written down.
-const MAX_OPEN_PER_CARD: i64 = 12;
+/// How many still-open items one card may have dropped before the receipt says
+/// so. **A nudge, not a limit** — it used to refuse at twelve, and on 2026-10-02
+/// an orchestrator running five to ten workers on a refactor was refused a real
+/// bug and lost it (the item was never written anywhere else). A refusal that
+/// costs the finding is the one failure this table exists to prevent, and the
+/// thing the cap guarded — a card narrating every thought into the pile — is
+/// visible to the user in the Basin and is cheaply `done`. So past this the
+/// write still lands and the receipt carries a sentence about the size of the
+/// pile; see `pile_note`.
+const OPEN_PER_CARD_NUDGE: i64 = 12;
+
+/// The soft half of what `MAX_OPEN_PER_CARD` used to be: a sentence on the
+/// receipt of a drop that lands, once this card has a long tail of its own
+/// unsettled items. Empty below the threshold, and empty on a merge, which adds
+/// no row.
+fn pile_note(open_before: i64, merged: bool) -> String {
+    if merged || open_before < OPEN_PER_CARD_NUDGE {
+        return String::new();
+    }
+    format!(
+        " (This card now has {} unsettled items in the sink. It was written anyway — \
+         but if some of them are already dealt with, `done` them so the pile stays one \
+         somebody reads.)",
+        open_before + 1
+    )
+}
 
 /// How many items one card may hold at once.
 ///
@@ -1107,13 +1124,9 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Ok(conn) = store.0.lock() else {
         return "the store is unavailable".into();
     };
-    if crate::store::sink_dropped_count(&conn, caller) >= MAX_OPEN_PER_CARD {
-        return format!(
-            "this card has already left {MAX_OPEN_PER_CARD} unsettled items in the \
-             sink, which is the limit. Read the sink and settle or narrow what is \
-             already there before adding more — a pile this long is one nobody reads."
-        );
-    }
+    /* Counted before the write so the receipt can say it, and never a reason to
+       refuse: see `OPEN_PER_CARD_NUDGE`. */
+    let open_before = crate::store::sink_dropped_count(&conn, caller);
     /* The scope the merge uses and the scope the read uses are not the same one,
        and this is where that stops being silent.
 
@@ -1168,7 +1181,11 @@ fn do_drop(app: &AppHandle, caller: &str, args: &Value) -> String {
                thing in hand, which is the only moment anything can be done
                about it. `board.rs` has said it this way since it was written —
                this is that pattern, finally applied here too. */
-            let cuts = clipped_note(&title_cut, p.body_omitted);
+            let cuts = format!(
+                "{}{}",
+                clipped_note(&title_cut, p.body_omitted),
+                pile_note(open_before, p.merged)
+            );
             if p.merged {
                 let voices = if p.voices > 1 {
                     format!(" {} conversations have now met it.", p.voices)
@@ -2028,6 +2045,19 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
 mod tests {
     use super::*;
     use crate::store::SinkItem;
+
+    /// A long pile is a sentence on the receipt and never a refusal: the cap
+    /// that used to be here lost an orchestrator's real bug on 2026-10-02.
+    #[test]
+    fn a_long_pile_is_told_and_never_refused() {
+        assert_eq!(pile_note(0, false), "");
+        assert_eq!(pile_note(OPEN_PER_CARD_NUDGE - 1, false), "");
+        let note = pile_note(OPEN_PER_CARD_NUDGE, false);
+        assert!(note.contains(&format!("{} unsettled items", OPEN_PER_CARD_NUDGE + 1)), "{note}");
+        assert!(note.contains("written anyway"), "{note}");
+        /* A merge adds no row, so it has nothing to say about the pile. */
+        assert_eq!(pile_note(OPEN_PER_CARD_NUDGE + 5, true), "");
+    }
 
     fn item(held_by: Option<&str>, held_at: Option<i64>) -> SinkItem {
         SinkItem {

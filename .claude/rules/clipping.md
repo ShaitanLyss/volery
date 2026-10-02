@@ -140,6 +140,10 @@ question-shortener were both previews and both already right; they are left alon
 
 ## Where the caps actually live
 
+- **A relay message has no cap (2026-10-02).** `relay::envelope` scrubs and does not cut; the
+  table above predates that. Same argument as a sink body's: written inside the sender's own
+  output budget, so already paid for. `recall` raised to 24,000 per speech.
+
 - **A sink body has one cap and it is `store::MAX_SINK_BODY` (4,000).** It used to have two —
   `sink.rs` clipped to 1,200 before the store, which had its own 4,000 for the same field, so
   the tighter one silently won and was 3.3× off. The tool-layer cap is gone. The argument that

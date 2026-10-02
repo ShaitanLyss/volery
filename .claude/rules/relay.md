@@ -94,19 +94,27 @@ and an API call apiece, with nothing on the wall saying where the allowance went
   exact — two relays inside one turn leave it off by one — and the direction of the error is
   chosen: what a lost mark costs is one card getting to broadcast once, where a mark that
   never cleared would silently forbid a card from broadcasting ever again.
-- **Storms.** Six `send` calls per card per minute. Counted per *call* and not per recipient,
-  which is the whole reason a broadcast is one call: fanning out to twelve cards deliberately
-  is something somebody asked for, and twelve separate sends in a second is a card in a loop
-  that has not noticed.
+- **Storms.** Counted per *call* and not per recipient, which is the whole reason a broadcast is
+  one call. **Two numbers since 2026-10-02:** past six in a minute the receipt says so
+  (`soft_note`, and points at `project`); only at thirty does a send refuse. Six refused an
+  orchestrator briefing ten workers one by one, and a refused send is not queued — the seventh
+  briefing was simply lost. Thirty is a loop, which no deliberate series of individual sends
+  reaches.
 - **Broadcast is hop 0 only.** `project` and `skein` reach everyone, with no cap on the
   fan-out — that was asked for. The thing that must not happen is a broadcast whose recipients
   each broadcast, which is N² turns and then N³, and the hop limit does not touch it because
   the *branching* is the problem rather than the depth. So: broadcasting is something you
   started; relaying is something you were told about. A card acting on a message replies point
   to point.
-- **4k of body**, clipped rather than refused. A relay is a message, not a transfer — the
-  recipient shares the machine and can read the file. Refusing would get the same message sent
-  again slightly shorter, twice.
+- **No cap on a message's body, since 2026-10-02.** It was 4,000 and clipped rather than refused,
+  and a long report arrived "clipped by the wall" at the card that needed all of it, with a
+  remedy (ask the sender) that cost the sender a turn. The argument that retired it is
+  `spawn::MAX_PROMPT`'s: the text arrived as MCP arguments, so it was written inside the
+  sender's own output budget and is already paid for. Control characters are still scrubbed. A
+  message past `SOFT_BODY` (20,000) gets a sentence on the sender's receipt saying what it put in
+  the recipient's context. `MAX_BODY` survives only for the notice envelope, which `board::MAX_BODY`
+  already holds well under it. `recall`'s per-speech cut went from 3,000 to 24,000 for the same
+  reason.
 - **Never yourself.** A self-send is a send that should have been a thought, and in a
   broadcast it would be a card handing itself a turn forever.
 

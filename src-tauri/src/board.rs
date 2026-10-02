@@ -719,122 +719,48 @@ fn ago(ms: i64) -> String {
     format!("{}d ago", hours / 24)
 }
 
-/* -- being refused ---------------------------------------------------------
+/* -- being crowded ---------------------------------------------------------
  *
- * `relay.rs` states the rule these are written to, where `MAX_HOPS` used to be:
- * **a refusal must carry its reasoning and a way forward, because an agent told
- * only "no" will try a different phrasing of the same message.** A quota
- * message is the degenerate case of that -- it does not even give the agent a
- * different phrasing to try, so what it gets instead is the agent deciding the
- * announcement was optional and making the edit anyway.
+ * These were refusals until 2026-10-02, and the refusal was the whole of the
+ * guard: `relay.rs` states the rule where `MAX_HOPS` used to be -- a refusal
+ * must carry its reasoning and a way forward -- and the notice and the edit it
+ * announces are two separate acts, so a card refused here carried on unclaimed.
+ * That is how a hundred lines of somebody's work landed in the wrong commit on
+ * 2026-08-27. Lyss's verdict on the limit that did it, same day, was that it
+ * "only gets in the way of real work": an orchestrator running a nine-way split
+ * legitimately wants more notices than a card writing prose does, and a post
+ * that is refused is a claim that does not exist.
  *
- * And there is a second thing worth naming, because it is what makes this
- * particular refusal dangerous rather than merely unhelpful. A `PreToolUse`
- * deny stops the tool call. This stops an *announcement about* a call the agent
- * then makes regardless: the notice and the edit are two separate acts and only
- * one of them was refused. Nothing downstream can recover that, so the whole of
- * the guard is what these strings say.
+ * So the numbers stay and the door does not shut. What they guard is a card
+ * papering the board, which the board's own reading shows and `unpost` cheaply
+ * undoes -- and that is a thing to *say*, on the receipt of a post that landed.
  */
 
-/// Your own notices, likeliest-finished first, a line each.
+/// The receipt sentence for a post that took a card past `MAX_PER_CARD`, or
+/// past `MAX_UNPATHED` with no files named. Empty below both, so an ordinary
+/// post reads exactly as before.
 ///
-/// The listing is the "way forward" half, and it is here rather than left to
-/// the agent because being told "take one down" costs a `board` read to act on,
-/// and an agent that has just been refused is an agent about to do something
-/// else. Stale first and then longest-untouched, since the refusal's job is to
-/// hand back the notice most likely to be finished with -- which, at ninety
-/// minutes untouched, is what stale means.
-fn yours(mine: &[&Notice], seen: &HashMap<String, i64>, now: i64) -> String {
-    let mut rows: Vec<&&Notice> = mine.iter().collect();
-    rows.sort_by_key(|n| (!stale(n, seen_of(seen, n), now), n.touched_at));
-    rows.iter()
-        .map(|n| {
-            let globs = globs_of(n);
-            format!(
-                "  - {:?} — untouched {}{} — {}\n",
-                n.subject,
-                ago(now - n.touched_at),
-                if stale(n, seen_of(seen, n), now) { ", STALE" } else { "" },
-                if globs.is_empty() {
-                    "no files named".into()
-                } else {
-                    globs.join(", ")
-                },
-            )
-        })
-        .collect()
-}
-
-/// What being refused actually costs, in the terms the caller will feel it.
-///
-/// Split on whether the notice named files, because the two losses are not the
-/// same one. A notice about the work is an announcement nobody heard. A notice
-/// about *files* is a claim that does not exist -- and that is the sentence the
-/// four-notice cap needed and did not have.
-fn at_stake(paths: &str) -> String {
-    if paths.is_empty() {
-        return "Nothing was posted, so the wall has not been told what you are \
-                doing."
-            .into();
+/// Pure, so the words are asserted: the nudge for a bare notice points at
+/// `paths`, because that is the form that reaches somebody rather than
+/// everybody -- which is the only reason the bare number is the lower one.
+fn crowded(mine: usize, bare: usize, bare_post: bool) -> String {
+    if mine + 1 > MAX_PER_CARD {
+        return format!(
+            " (This card now has {} notices up. It went up anyway, but a board one card \
+             fills is one the others skim — `mcp__skein__unpost` what is finished.)",
+            mine + 1
+        );
     }
-    format!(
-        "Nothing was posted, so **you do not have {}**. That is not bookkeeping. \
-         A claim on this board is the only thing standing between two cards and a \
-         mixed commit: `git commit -- <path>` guards the index, not the file — it \
-         commits the *working-tree* content of that path, so a sibling committing \
-         one of these takes your uncommitted edits to it along with their own, \
-         under their message. Do not carry on unclaimed on the grounds that the \
-         edit is small. That is exactly how a hundred lines of somebody's work \
-         landed in the wrong commit on 2026-08-27, and it is the reason this \
-         refusal is a paragraph rather than a number.",
-        paths.lines().collect::<Vec<_>>().join(" or ")
-    )
-}
-
-/// Out of slots altogether.
-///
-/// Pure over the caller's own notices, so the words an agent is actually
-/// stopped by are asserted in `#[cfg(test)]` rather than only reachable through
-/// a live wall. That matters more here than for most strings on the board: this
-/// text *is* the guard — there is nothing downstream of it, since the edit it
-/// hopes to prevent is a separate tool call nobody refused.
-fn refuse_full(mine: &[&Notice], paths: &str, seen: &HashMap<String, i64>, now: i64) -> String {
-    format!(
-        "this card already has {MAX_PER_CARD} notices up, which is the limit. {}\n\n\
-         Take one down with `mcp__skein__unpost` and post this again — or post it under a \
-         subject you already have up, which replaces that notice rather than \
-         adding one and costs nothing. Yours, likeliest-finished first:\n{}",
-        at_stake(paths),
-        yours(mine, seen, now),
-    )
-}
-
-/// Out of *bare* slots, with room left under the total.
-///
-/// The one refusal here that is also an argument for a feature. An agent that
-/// hits this is one paragraph away from `paths`, which is the mechanism
-/// `board.md` calls the single most useful thing on a notice and the only form
-/// of claim this wall has — so the refusal spends its words pushing there
-/// rather than on the number. Only reachable while the total has room, or the
-/// way forward it offers would not work; `do_post` checks in that order.
-fn refuse_bare(bare: &[&Notice], seen: &HashMap<String, i64>, now: i64) -> String {
-    format!(
-        "this card already has {MAX_UNPATHED} notices up with no `paths` on them, \
-         which is the limit for those. {}\n\n\
-         **A notice that names files is capped at {MAX_PER_CARD}, not \
-         {MAX_UNPATHED}, and you have room.** The low cap is for notices about \
-         nothing in particular: every card that reads the board reads one of \
-         those, and it reaches nobody who does not think to look. A notice with \
-         globs on it is served straight to the card that writes a file it covers \
-         and costs the rest of the wall nothing — which is also the only form of \
-         claim this wall has. So if this is about particular files, and a notice \
-         announcing work almost always is, name them in `paths` and post it \
-         again.\n\n\
-         Otherwise take one of these down with `mcp__skein__unpost` — yours with no files \
-         named, likeliest-finished first:\n{}",
-        at_stake(""),
-        yours(bare, seen, now),
-    )
+    if bare_post && bare + 1 > MAX_UNPATHED {
+        return format!(
+            " (This card now has {} notices up that name no files. It went up anyway; if \
+             this one is about particular files, name them in `paths` — that form is \
+             served to the card that edits them instead of asking every reader of the \
+             board to notice it.)",
+            bare + 1
+        );
+    }
+    String::new()
 }
 
 fn do_post(app: &AppHandle, caller: &str, args: &Value) -> String {
@@ -886,30 +812,14 @@ fn do_post(app: &AppHandle, caller: &str, args: &Value) -> String {
        long piece of work says it is still true, and refusing it would make the
        `touched_at` refresh unreachable for exactly the card that most needs it. */
     let replacing = mine.iter().any(|n| n.subject == subject);
-    if !replacing {
-        let now = crate::store::now();
-        let seen = seen_map(&conn);
-        /* The total first, and the order matters. The unpathed refusal below
-           tells the agent that adding `paths` would let this through, and that
-           is only true while there is room under the total — offering it at
-           eight would be a way forward that does not work, which is the failure
-           this whole change is about wearing a friendlier face. */
-        if mine.len() >= MAX_PER_CARD {
-            let refusal = refuse_full(&mine, &paths, &seen, now);
-            drop(conn);
-            return refusal;
-        }
-        let bare: Vec<&Notice> = mine
-            .iter()
-            .copied()
-            .filter(|n| globs_of(n).is_empty())
-            .collect();
-        if paths.is_empty() && bare.len() >= MAX_UNPATHED {
-            let refusal = refuse_bare(&bare, &seen, now);
-            drop(conn);
-            return refusal;
-        }
-    }
+    /* Never a refusal any more — see `crowded`. The count is taken here, before
+       the write, because `mine` borrows `all` and the connection goes back below. */
+    let crowd = if replacing {
+        String::new()
+    } else {
+        let bare = mine.iter().filter(|n| globs_of(n).is_empty()).count();
+        crowded(mine.len(), bare, paths.is_empty())
+    };
 
     let id = crate::store::uuid_v4();
     let put = crate::store::put_notice(
@@ -942,7 +852,7 @@ fn do_post(app: &AppHandle, caller: &str, args: &Value) -> String {
                  `mcp__skein__unpost` as soon as it is no longer true — a notice left up \
                  after the work is done stops somebody else for no reason.",
                 if skein { "wall-wide" } else { "project" },
-                lost(&subject, subject_cut, &body, body_cut),
+                format!("{}{crowd}", lost(&subject, subject_cut, &body, body_cut)),
             )
         }
     }
@@ -1941,64 +1851,10 @@ mod tests {
         assert_eq!(tail_of(&"x".repeat(100)).chars().count(), 49);
     }
 
-    /// **The whole of the item.** A refusal that says only "you are at the
-    /// limit" is one an agent reads, judges the work small, and proceeds past
-    /// — and it then makes the edit it was never refused, because the notice
-    /// and the edit are two separate acts. `relay.rs` states the rule where
-    /// `MAX_HOPS` used to be: a refusal must carry its reasoning and a way
-    /// forward.
-    #[test]
-    fn a_refused_claim_says_what_the_claim_was_holding() {
-        let out = at_stake("src-tauri/src/hooks.rs\n.claude/rules/hooks.md");
-        assert!(out.contains("you do not have"));
-        /* Both files named, so there is no doubt which are unguarded. */
-        assert!(out.contains("hooks.rs") && out.contains("hooks.md"));
-        /* The consequence, in the terms it will actually arrive in. */
-        assert!(out.contains("mixed commit"));
-        assert!(out.contains("git commit -- <path>"));
-        assert!(out.contains("working-tree"));
-        /* And the reflex it exists to stop, said out loud. */
-        assert!(out.contains("edit is small"));
-    }
-
-    /// A notice about the work loses something different from a claim, and
-    /// telling an agent it had lost a file it never named would be the same
-    /// defect pointed the other way.
-    #[test]
-    fn a_refused_announcement_does_not_claim_to_have_lost_a_file() {
-        let out = at_stake("");
-        assert!(out.contains("has not been told"));
-        assert!(!out.contains("you do not have"));
-    }
-
     fn subject(s: &str, paths: &str, touched: i64) -> Notice {
         let mut n = notice(paths, touched);
         n.subject = s.into();
         n
-    }
-
-    /// The way forward has to be actionable without a second call. Being told
-    /// "take one down" costs a `board` read to act on, and an agent that has
-    /// just been refused is an agent about to do something else.
-    #[test]
-    fn a_refusal_hands_back_the_notice_likeliest_to_be_finished_with() {
-        let now = STALE_AFTER_MS * 3;
-        let fresh = subject("the azdo write side", "azdo.rs", now - 60_000);
-        let old = subject("reworking the store", "", now - STALE_AFTER_MS * 2);
-        let middling = subject("the flow", "layout.ts", now - 60 * 60_000);
-        let mine: Vec<&Notice> = vec![&fresh, &old, &middling];
-
-        let out = yours(&mine, &nobody(), now);
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 3);
-        /* Stale first, then longest-untouched. */
-        assert!(lines[0].contains("reworking the store"));
-        assert!(lines[0].contains("STALE"));
-        assert!(lines[1].contains("the flow"));
-        assert!(lines[2].contains("the azdo write side"));
-        /* Each says what it is holding, so the one safe to drop is visible. */
-        assert!(lines[0].contains("no files named"));
-        assert!(lines[2].contains("azdo.rs"));
     }
 
     /// Two numbers rather than one, because the two notices cost different
@@ -2010,39 +1866,26 @@ mod tests {
         assert_eq!(MAX_UNPATHED, 4);
     }
 
+    /// A post past the cap still goes up; the receipt is what says so, and it
+    /// is silent until then.
     #[test]
-    fn being_out_of_slots_altogether_names_the_files_it_left_unguarded() {
-        let now = 0;
-        let held = subject("holding the panel", "Transcript.svelte", 0);
-        let mine: Vec<&Notice> = vec![&held];
-        let out = refuse_full(&mine, "src-tauri/src/hooks.rs", &nobody(), now);
-        assert!(out.contains(&format!("{MAX_PER_CARD} notices up")));
-        assert!(out.contains("you do not have"));
-        assert!(out.contains("hooks.rs"));
-        /* Both ways out, and the cheap one said to be cheap. */
-        assert!(out.contains("unpost"));
-        assert!(out.contains("replaces that notice"));
-        /* The listing, so `unpost` can be called without reading the board. */
-        assert!(out.contains("holding the panel"));
+    fn a_crowded_card_is_told_and_never_refused() {
+        assert_eq!(crowded(0, 0, true), "");
+        assert_eq!(crowded(MAX_PER_CARD - 1, 0, false), "");
+        let over = crowded(MAX_PER_CARD, 0, false);
+        assert!(over.contains(&format!("{} notices up", MAX_PER_CARD + 1)), "{over}");
+        assert!(over.contains("went up anyway"), "{over}");
+        assert!(over.contains("unpost"), "{over}");
     }
 
-    /// The one refusal that is also an argument for a feature: an agent out of
-    /// bare slots is one paragraph away from the mechanism that actually
-    /// reaches, so the words go there rather than on the number.
+    /// The bare nudge points at the form that reaches somebody rather than
+    /// everybody, and only fires for a post that is itself bare.
     #[test]
-    fn being_out_of_bare_slots_points_at_the_form_that_still_has_room() {
-        let a = subject("a thought", "", 0);
-        let bare: Vec<&Notice> = vec![&a];
-        let out = refuse_bare(&bare, &nobody(), 0);
-        assert!(out.contains(&format!("capped at {MAX_PER_CARD}")));
-        assert!(out.contains("name them in `paths`"));
-        assert!(out.contains("only form of claim this wall has"));
-        /* It must not say a file was lost — this call named none. */
-        assert!(!out.contains("you do not have"));
-        /* And it must not advise `paths` if that would not in fact help. The
-           guarantee is `do_post`'s ordering; what is asserted here is that the
-           two numbers differ, since equal ones make the advice a lie. */
-        assert!(MAX_PER_CARD > MAX_UNPATHED);
+    fn a_crowd_of_bare_notices_points_at_paths() {
+        let out = crowded(MAX_UNPATHED, MAX_UNPATHED, true);
+        assert!(out.contains("name them in `paths`"), "{out}");
+        assert!(out.contains("went up anyway"), "{out}");
+        assert_eq!(crowded(MAX_UNPATHED, MAX_UNPATHED, false), "");
     }
 
     /// Marked, never removed. A long refactor is a real thing, and deleting a

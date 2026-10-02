@@ -321,14 +321,20 @@ through.
 
 ### The caps, and what they are each protecting
 
-- `MAX_OPEN_PER_CARD` (12) — higher than the board's four, because findings accumulate
-  honestly over a long session where notices do not. It stops a card that has started
-  narrating its every thought into the sink while the box is still readable.
+- `OPEN_PER_CARD_NUDGE` (12) — **a nudge, not a limit, since 2026-10-02.** It was
+  `MAX_OPEN_PER_CARD` and refused the thirteenth drop, and an orchestrator running five to ten
+  workers on a refactor was refused a real bug and lost it: the finding existed nowhere else.
+  A sink exists so that a finding is not lost, and a refusal that costs the finding is that
+  failure with better manners. What the cap guarded — a card narrating its every thought into
+  the pile — is visible in the Basin and cheaply `done`, so past twelve the write lands and
+  the receipt says how long this card's tail is (`pile_note`). Silent on a merge, which adds
+  no row.
 - `MAX_HELD` (3) — an agent doing three things at once is doing none of them, and every item
   it holds is one no other card will touch.
 
-Both refuse rather than rotate, for `board::MAX_PER_CARD`'s reason: an agent whose oldest item
-was silently dropped would go on believing it had been written down.
+`MAX_HELD` still refuses rather than rotates: a hold that was silently dropped would leave an
+agent believing it had a claim it does not. Nothing is lost by that refusal, since the item
+is still in the sink to be read.
 
 ### A settling note is refused rather than clipped, because settling shuts the door
 
