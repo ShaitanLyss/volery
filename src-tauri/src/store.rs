@@ -300,7 +300,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 37;
+const SCHEMA_VERSION: i64 = 38;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -343,6 +343,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (35, migrate_v35),
     (36, migrate_v36),
     (37, migrate_v37),
+    (38, migrate_v38),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1847,6 +1848,58 @@ fn migrate_v37(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v37: {e}"))
 }
 
+/// Being away, and the questions that piled up while you were.
+///
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: two new
+/// tables with nothing to backfill. `.claude/rules/away.md` has what away mode
+/// is for; what matters here is why either of these is on disk at all.
+///
+/// **`presence` is one nullable column and that is the whole table.** Away is a
+/// *timestamp*, not a flag, because the morning pile wants to say how long it
+/// stood — and it is in SQLite rather than localStorage because the state is
+/// read by Rust, on the thread answering an `ask_user`, before any webview is
+/// involved. It also has to survive a restart in the one direction that
+/// matters: a wall that crashes at 2am and comes back thinking you are at it
+/// would resume parking questions against a deadline nobody is going to meet,
+/// which is the exact failure the mode exists to prevent. Everything *cosmetic*
+/// about away mode — whether the screen animates, which pieces, whether a toy
+/// guards the way back — stays in localStorage with the motion setting and the
+/// theme skin, per this app's rule that per-machine and disposable lives there.
+/// That is also what keeps this table from growing a column per knob.
+///
+/// **`deferred_ask` is the queue, and it is a queue rather than a log**: a row
+/// exists while a question is owed an answer and is deleted when one is given,
+/// the same bargain `wake` strikes. `ask_json` is the raw `tools/call`
+/// arguments, opaque to Rust exactly as `AskOpened::ask` is — `asking.ts`
+/// normalizes on every read, so a question shape that changes costs no
+/// migration here either.
+///
+/// The foreign key *does* cascade, unlike `timeline`'s owner: a question put by
+/// a card that has since been deleted outright has nobody to hand the answer
+/// to. Note that closing a card is a soft close (`closed_at`), so the ordinary
+/// overnight case — the asking card goes dormant — keeps its row and is roused
+/// by the answer.
+fn migrate_v38(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS presence (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            away_since  INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS deferred_ask (
+            id               TEXT PRIMARY KEY,
+            conversation_id  TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            ask_json         TEXT NOT NULL,
+            asked_at         INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS deferred_ask_card
+            ON deferred_ask(conversation_id);
+        "#,
+    )
+    .map_err(|e| format!("migrate v38: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -2872,6 +2925,11 @@ pub fn clear_conversation(
        `migrate_v18`. */
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
+    /* Queued questions go the same way a wake does: an answer is worth nothing
+       once there is nobody left to hand it to. The cascade on `deferred_ask`
+       does not cover this — closing a card is a soft close, and clearing one
+       keeps the row. */
+    crate::presence::clear_for(&app, &id);
     /* And a timeline in flight is left: the agent that drew it is gone. */
     crate::timeline::leave_for(&app, &id);
     Ok(())
@@ -3580,6 +3638,11 @@ pub fn close_conversation_record(
     crate::board::clear_for(&app, &id);
     crate::sink::release_for(&app, &id);
     crate::later::clear_for(&app, &id);
+    /* Queued questions go the same way a wake does: an answer is worth nothing
+       once there is nobody left to hand it to. The cascade on `deferred_ask`
+       does not cover this — closing a card is a soft close, and clearing one
+       keeps the row. */
+    crate::presence::clear_for(&app, &id);
     /* And a timeline still in flight goes to the archive, left where it
        stopped — the archive is where it is picked back up. */
     crate::timeline::leave_for(&app, &id);
@@ -6182,6 +6245,102 @@ pub fn drop_wakes_of(conn: &Connection, conversation_id: &str) {
     let _ = conn.execute("DELETE FROM wake WHERE conversation_id = ?1", params![conversation_id]);
     let _ = conn.execute(
         "DELETE FROM wake_served WHERE conversation_id = ?1",
+        params![conversation_id],
+    );
+}
+
+
+/* -- being away ------------------------------------------------------------- */
+
+/// When you went away, or `None` for here. See `migrate_v38`.
+///
+/// Every failure is `None`, the reading `read_browser_state` takes and for a
+/// sharper reason: the fallback is "you are at the wall", which is how this app
+/// behaved for its whole life before away mode existed. A database that cannot
+/// answer must not be able to silence the notifications.
+pub fn read_away_since(conn: &Connection) -> Option<i64> {
+    conn.query_row("SELECT away_since FROM presence WHERE id = 1", [], |r| {
+        r.get::<_, Option<i64>>(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+    .flatten()
+}
+
+pub fn save_away_since(conn: &Connection, away_since: Option<i64>) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO presence (id, away_since) VALUES (1, ?1)
+         ON CONFLICT(id) DO UPDATE SET away_since = excluded.away_since",
+        params![away_since],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("save presence: {e}"))
+}
+
+/// One question that was put while you were out.
+pub struct DeferredAsk {
+    pub id: String,
+    pub conversation_id: String,
+    /// The raw `tools/call` arguments. Opaque here — `asking.ts` owns what a
+    /// question is, exactly as it does for a live one.
+    pub ask_json: String,
+    pub asked_at: i64,
+}
+
+pub fn defer_ask(
+    conn: &Connection,
+    id: &str,
+    conversation_id: &str,
+    ask_json: &str,
+    asked_at: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO deferred_ask (id, conversation_id, ask_json, asked_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![id, conversation_id, ask_json, asked_at],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("defer ask: {e}"))
+}
+
+/// Everything owed an answer, oldest first — which is the order the pile is
+/// read in, since a question asked at seven is the one that has been waiting
+/// longest for you.
+pub fn deferred_asks(conn: &Connection) -> Vec<DeferredAsk> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, conversation_id, ask_json, asked_at FROM deferred_ask
+          ORDER BY asked_at",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok(DeferredAsk {
+            id: r.get(0)?,
+            conversation_id: r.get(1)?,
+            ask_json: r.get(2)?,
+            asked_at: r.get(3)?,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+/// Settle one. The DELETE is the claim, `take_wake`'s reasoning one table over:
+/// the answer is handed to the card *after* this returns true, so an
+/// interruption between the two loses an answer rather than delivering it
+/// twice, and a card prompted twice with the same decision is the worse of the
+/// two failures.
+pub fn take_deferred_ask(conn: &Connection, id: &str) -> bool {
+    conn.execute("DELETE FROM deferred_ask WHERE id = ?1", params![id])
+        .unwrap_or(0)
+        > 0
+}
+
+pub fn drop_deferred_asks_of(conn: &Connection, conversation_id: &str) {
+    let _ = conn.execute(
+        "DELETE FROM deferred_ask WHERE conversation_id = ?1",
         params![conversation_id],
     );
 }

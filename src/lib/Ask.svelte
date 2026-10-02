@@ -16,9 +16,10 @@
    * HTTP request and gets one reply. So nothing is sent until the last question
    * is answered, and `composeAnswer` puts the sheet back together. */
 
-  import type { Conversation } from "./conversation.svelte";
+  import type { PendingAsk } from "./conversation.svelte";
   import { clock } from "./conversation.svelte";
   import { nameBesideProject } from "./naming";
+  import { stood } from "./presence";
   import Markdown from "./Markdown.svelte";
   import Gallery from "./Gallery.svelte";
   import { parseMarkdown } from "./markdown";
@@ -31,14 +32,37 @@
     stepAt,
   } from "./asking";
 
+  /* It takes the *ask* rather than the card that is asking, and the second
+     surface is why. A question that piled up while the user was away is the
+     same thing with no card blocked behind it — nothing is parked, nothing is
+     counting down, and the conversation it came from may have gone dormant
+     hours ago. Threading a `Conversation` through would have meant inventing
+     one for the pile, so the four facts this panel actually read off the card
+     are props instead: who asked, whether scripts may run in a preview, and
+     the sheet itself. `Vigil.svelte` is the other caller. */
   let {
-    conv,
+    ask,
+    project,
+    title,
+    scripts = true,
+    parked = true,
     elsewhere = false,
     onanswer,
     onselect,
     onlink,
   }: {
-    conv: Conversation;
+    ask: PendingAsk;
+    project: string;
+    title: string;
+    /** Whether a preview may run its `js`. Decided by what kind of card asked
+     *  and never by the payload — the rule `spawn_conversation` follows when it
+     *  reads `kind_of` rather than taking a capability as an argument. */
+    scripts?: boolean;
+    /** Whether an agent is actually stopped on this. False for a question out
+     *  of the pile: the call returned hours ago, so there is no deadline to
+     *  count down to and counting one down would be an instrument reporting a
+     *  pressure that does not exist. */
+    parked?: boolean;
     /** Whether the card being asked is not the card in the ring — see the
      *  button in the head. */
     elsewhere?: boolean;
@@ -55,9 +79,8 @@
 
   /* The separator goes with the name: a card nothing has named yet would
      otherwise read "skein · " with the dot left hanging. */
-  const name = $derived(nameBesideProject(conv.title));
+  const name = $derived(nameBesideProject(title));
 
-  const ask = $derived(conv.pendingAsk!);
   const questions = $derived(ask.questions);
   const many = $derived(questions.length > 1);
 
@@ -104,6 +127,12 @@
   );
   const mins = $derived(Math.floor(left / 60));
   const secs = $derived(String(left % 60).padStart(2, "0"));
+
+  /* What stands where the countdown does when nothing is parked. A question out
+     of the pile has no deadline, and the fact worth having in its place is how
+     long it has been waiting — which is the one thing that makes a pile of them
+     readable in any order. */
+  const waited = $derived(stood(clock.t - ask.since));
 
   /** The sheet, answered, with nothing sent yet.
    *
@@ -189,8 +218,8 @@
 
 <div class="ask">
   <div class="head">
-    <span class="mark">Waiting on you</span>
-    <span class="who">{conv.project}{name ? ` · ${name}` : ""}</span>
+    <span class="mark">{parked ? "Waiting on you" : "Asked while you were away"}</span>
+    <span class="who">{project}{name ? ` · ${name}` : ""}</span>
     {#if elsewhere}
       <!-- The dock draws whichever card is blocked, and that need not be the
            card in the ring: so the question here and the transcript filling the
@@ -211,7 +240,11 @@
     {#if many}
       <span class="of">{reviewing ? "all answered" : `${step + 1} of ${questions.length}`}</span>
     {/if}
-    <span class="clockleft" class:urgent={left < 120}>{mins}:{secs}</span>
+    {#if parked}
+      <span class="clockleft" class:urgent={left < 120}>{mins}:{secs}</span>
+    {:else}
+      <span class="clockleft waited" title="This was asked while you were away">{waited}</span>
+    {/if}
   </div>
 
   {#if many}
@@ -357,7 +390,7 @@
   <Gallery
     {panels}
     header={current.header}
-    scripts={conv.kind !== "chat"}
+    {scripts}
     onchoose={chose}
     onclose={() => (showing = false)}
   />

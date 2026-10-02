@@ -129,14 +129,36 @@ describe("the space leader", () => {
   });
 });
 
+describe("away mode has two spellings of one verb", () => {
+  /* The only chord in the table written twice, and the duplication is the
+     point: `z` is what a hand reaches for and `ia` is what a head derives from
+     the name. A table that let them drift would give you two features. */
+  test("z and ia fire the same thing", () => {
+    expect(chord("", "z")).toMatchObject({
+      kind: "fire",
+      verb: { kind: "presence", act: "toggle" },
+    });
+    expect(chord("i", "a")).toMatchObject({
+      kind: "fire",
+      verb: { kind: "presence", act: "toggle" },
+    });
+  });
+
+  test("i alone is a prefix rather than a chord", () => {
+    expect(chord("", "i")).toMatchObject({ kind: "pending", open: "i" });
+  });
+});
+
 describe("the which-key hint", () => {
   test("the leader alone offers every chord, by its whole letters", () => {
     expect(offers("")).toEqual([
       { keys: "a", label: "archived timelines" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
+      { keys: "ia", label: "I'm away / back" },
       { keys: "ts", label: "synth" },
       { keys: "ws", label: "every screen / one screen" },
+      { keys: "z", label: "away / back" },
     ]);
   });
 

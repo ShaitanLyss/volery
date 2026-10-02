@@ -41,7 +41,8 @@ export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ToyId }
   | { kind: "open"; what: "timelines" }
-  | { kind: "window"; act: "span" };
+  | { kind: "window"; act: "span" }
+  | { kind: "presence"; act: "toggle" };
 
 /** One sequence the leader opens onto.
  *
@@ -74,6 +75,17 @@ export const CHORDS: readonly Chord[] = [
      letter, because placing a window is several verbs (maximise, minimise,
      which screen) and they want to sit together in the hint. */
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
+  /* Away mode, and it has two chords on purpose. `z` is the one you reach for
+     — one key, zzz, and nothing else here begins with it. `ia` is the one you
+     *think of*: "I'm away" is what the thing is called in the user's own
+     words, and a chord you can derive from the name is one you do not have to
+     have learned. They are the same verb, which is what makes a second spelling
+     cost a row here and nothing else.
+
+     The `i` family has no other member yet. That is fine — `t` was a family of
+     one for a while too, and a letter spent on a family is spent once. */
+  { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
+  { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];
 
 /** What a keypress did to the leader sequence.

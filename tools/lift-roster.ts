@@ -152,6 +152,20 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     items: ["const WAKE_TOOL", "const CANCEL_TOOL", "fn wake_schema", "fn cancel_schema"],
   },
   {
+    file: "src-tauri/src/presence.rs",
+    /* `AWAY_TOOL` and the schema, plus the two prose functions the schema's
+       own assertions read. `DEFERRED_OPENING` comes with them because both
+       notes are formatted from it. */
+    items: [
+      "const AWAY_TOOL",
+      "const MAX_PER_CARD",
+      "const DEFERRED_OPENING",
+      "fn deferred_note",
+      "fn pile_full",
+      "fn schema",
+    ],
+  },
+  {
     file: "src-tauri/src/limits.rs",
     items: ["const ALLOWANCE_TOOL", "const ACCOUNTS_TOOL", "fn allowance_schema", "fn accounts_schema"],
   },
@@ -467,6 +481,7 @@ const MODULES = [
   "browser",
   "later",
   "limits",
+  "presence",
   "pin",
   "relay",
   "remove",

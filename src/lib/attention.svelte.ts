@@ -9,7 +9,11 @@
  * app wearing somebody else's design, and it disappears before you've read it.
  *
  * A rung countdown is the one item on this ladder that is *not* about being
- * away, and it is the exception in both directions — see `#alarm`. */
+ * away, and it is the exception in both directions — see `#alarm`.
+ *
+ * All three go quiet when the user has said they are not here at all. That is
+ * away mode (`presence.svelte.ts`), and it is the one thing that silences the
+ * countdown as well — see `sync`. */
 
 import { emit, listen } from "@tauri-apps/api/event";
 import { askHeadline } from "./asking";
@@ -82,6 +86,13 @@ export class Attention {
      *  may own the other. Defaulted, so nothing that constructs an `Attention`
      *  without a wall has to invent one. */
     private instruments: () => PeekItem[] = () => [],
+    /** Whether the user has said they are not here.
+     *
+     *  Injected for `instruments`' reason, and defaulted to "here" for a
+     *  sharper one: every failure in `presence.svelte.ts` resolves to being at
+     *  the wall, and a constructor that could not be given this must not be
+     *  the thing that silences the ladder. */
+    private isAway: () => boolean = () => false,
   ) {
     this.#wire();
   }
@@ -252,7 +263,7 @@ export class Attention {
    * that reads as broken.
    *
    * Both rules about *when* are in `timing.ts::ring`, where they are testable. */
-  #alarm(items: PeekItem[]): boolean {
+  #alarm(items: PeekItem[], mute = false): boolean {
     const alarms = items
       .filter((i) => i.kind === "rang")
       .map((i) => ({ id: i.id, overrun: i.waitedSeconds }));
@@ -265,18 +276,46 @@ export class Attention {
     /* One bell for however many went off together: two overlapping chimes is
        noise rather than two pieces of news. */
     if (!fresh.length) return false;
-    sound("rang");
+    if (!mute) sound("rang");
     return true;
   }
 
   /** Called on a tick from the studio. Idempotent — it only acts on change. */
   async sync() {
     if (!this.enabled) return;
+
     const items = this.items;
+
+    /* Away mode, and it silences the whole ladder rather than one rung of it.
+       `enabled` is a preference about whether Skein may interrupt you; this is
+       a statement that there is nobody to interrupt — so it takes the rung
+       countdown too, which `#alarm` is otherwise deliberately exempt from. That
+       exemption is argued from "an alarm you only hear if you had wandered off
+       is not an alarm", and the argument runs out here: away is not having
+       wandered off, it is having gone home, and a bell in an empty room is
+       noise for whoever *is* in the room.
+
+       **It is muted rather than skipped**, which is the half that is not
+       obvious. `ring` answers "what is newly overrun" by comparing against what
+       has already sounded, so a pass that does not run leaves every alarm that
+       went off overnight looking fresh — and the first tick after you come back
+       would play all of them at once, hours late, which is the one thing worse
+       than ringing in an empty room. Muting keeps the bookkeeping and drops
+       only the sound. */
+    const away = this.isAway();
 
     /* Before the focused early-return below, which is what makes an alarm
        audible while you are at the wall. */
-    const rang = this.#alarm(items);
+    const rang = this.#alarm(items, away);
+
+    if (away) {
+      /* Hidden rather than merely not shown: going away with a peek on screen
+         must take it down, or away mode begins with the exact thing it exists
+         to prevent still sitting in the corner. */
+      if (this.#shown) await this.hide();
+      this.#lastSignature = "";
+      return;
+    }
 
     const sig = this.#signature(items);
 

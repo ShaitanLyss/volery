@@ -145,6 +145,14 @@ export const SKEIN_CLOSE_TOOL = "mcp__skein__close";
 export const SKEIN_WAKE_TOOL = "mcp__skein__wake_me";
 export const SKEIN_CANCEL_WAKE_TOOL = "mcp__skein__cancel_wake";
 export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
+/** The user has gone, and the card was the one told.
+ *
+ *  The only tool on this server that changes what happens to *every other card
+ *  on the wall* — no notifications anywhere, and `ask_user` queues instead of
+ *  parking. So the line it draws names the wall rather than the card, which is
+ *  the one place a reader would otherwise go looking for the cause of a wall
+ *  that had gone quiet by itself. */
+export const SKEIN_AWAY_TOOL = "mcp__skein__away";
 /** Every account on the wall by label, for `spawn`'s `account`. */
 export const SKEIN_ACCOUNTS_TOOL = "mcp__skein__accounts";
 /** Whether Claude itself is up — the agent's half of the status widget.
@@ -642,6 +650,10 @@ export function describeTool(name: string, input: any): string {
     }
     case SKEIN_ALLOWANCE_TOOL:
       return "checked the allowance";
+    case SKEIN_AWAY_TOOL: {
+      const note = arg(input?.note);
+      return note ? `put the wall away — ${clip(note, 30)}` : "put the wall into away mode";
+    }
     case SKEIN_ACCOUNTS_TOOL:
       return "listed the accounts";
     /* Deliberately says what was *asked*, not what came back. Every other line

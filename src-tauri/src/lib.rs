@@ -43,6 +43,7 @@ mod open;
 mod perf;
 mod pin;
 mod portage;
+mod presence;
 mod project;
 mod reap;
 mod quit;
@@ -254,6 +255,7 @@ pub fn run() {
         .manage(browser::Browser::default())
         .manage(Runs::default())
         .manage(Asks::default())
+        .manage(presence::Presence::default())
         .manage(aside::Asides::default())
         /* The one open microphone, and never more than one. Default is closed:
            nothing here opens an ear at launch, because an always-on microphone
@@ -376,6 +378,11 @@ pub fn run() {
                reason above: a card that asked to be woken at ten past has to be
                woken at ten past whether or not anybody is looking at the wall. */
             later::spawn_waker(app.handle().clone());
+            /* After the store is managed, and before anything can ask a
+               question: a wall that went down while away has to come back away,
+               or the first card to reach `ask_user` parks on a deadline nobody
+               is going to meet. See `presence::load`. */
+            presence::load(app.handle());
             Ok(())
         })
         /* Closing the studio closes the app.
@@ -630,6 +637,10 @@ pub fn run() {
             actions::close_process,
             actions::process_alive,
             ask::answer_ask,
+            presence::presence_read,
+            presence::set_presence,
+            presence::deferred_asks,
+            presence::take_deferred_ask,
             open::open_external,
             open::show_in_explorer,
             find::find_files,

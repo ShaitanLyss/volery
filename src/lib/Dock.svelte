@@ -232,7 +232,10 @@
   {#if skein.blocked.length}
     {@const target = askShown(focused, skein.blocked)!}
     <Ask
-      conv={target}
+      ask={target.pendingAsk!}
+      project={target.project}
+      title={target.title}
+      scripts={target.kind !== "chat"}
       elsewhere={target !== focused}
       onanswer={() => skein.answerAsk(target)}
       onselect={() => onselect(target)}

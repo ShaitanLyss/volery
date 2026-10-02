@@ -8,6 +8,9 @@
   import type { Conversation } from "./lib/conversation.svelte";
   import { clock } from "./lib/conversation.svelte";
   import { Attention } from "./lib/attention.svelte";
+  import { Presence } from "./lib/presence.svelte";
+  import { lasted } from "./lib/presence";
+  import Vigil from "./lib/Vigil.svelte";
   import type { Tier } from "./lib/classify";
   import {
     READ_REST,
@@ -383,8 +386,25 @@
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.kind === "open") showAnnals = true;
     else if (verb.kind === "window") void span.toggle();
+    else if (verb.kind === "presence") void togglePresence();
     else if (verb.toy === "synth") synth.show();
   });
+
+  /** Go away, or come back.
+   *
+   *  One verb for both directions, because it is one switch and a wall that
+   *  needed two gestures would be a wall where you can be in neither state.
+   *
+   *  Coming back opens the pile where there is one — `Presence.comeBack`
+   *  answers whether anything was waiting, and sets `showing` itself, so the
+   *  one place that decides it is the one place that knows. */
+  async function togglePresence() {
+    if (!presence.away) {
+      await presence.goAway();
+      return;
+    }
+    await presence.comeBack();
+  }
 
   /* The `!` line. Given a way to find a card and a way to say something to one,
      rather than the whole of `Skein` — the same injection `devops.roots` and
@@ -413,6 +433,10 @@
     if (named.some((n) => !n || n === FOLLOW)) return Object.keys(actions.facts);
     return named;
   };
+  /* Where the user is. Before `Attention`, which asks it on every tick — and
+     the only thing on this wall that silences the whole notification ladder. */
+  const presence = new Presence();
+
   const attention = new Attention(
     () => skein.convs,
     (id) => {
@@ -428,6 +452,7 @@
       studio.selectOnly(id);
     },
     () => rungTimers(),
+    () => presence.away,
   );
 
   /** Countdowns that have run out, as things wanting your attention.
@@ -470,6 +495,7 @@
     shell.detach();
     finder.detach();
     leader.detach();
+    presence.detach();
     synth.release();
     editor.detach();
     bang.detach();
@@ -3030,6 +3056,7 @@
     "fit",
     "servers",
     "shell",
+    "away",
     "find",
     "ambience",
     "read",
@@ -3082,6 +3109,7 @@
     "chime",
     "layout",
     "token",
+    "away",
     "zoom",
     "live",
     "spend",
@@ -3272,6 +3300,19 @@
         title: "Archived timelines — the plans cards finished, or left (space then a)",
         on: showAnnals,
         press: () => (showAnnals = !showAnnals),
+      },
+      /* Away mode. It stays in the bar at every width this app is usable at —
+         see FOLD_ORDER, where it is given up late: it is the one switch whose
+         *state* is information even when you are not using it, since a wall
+         that is quiet for a reason looks exactly like a wall that is broken. */
+      {
+        key: "away",
+        label: presence.away ? "away" : "i'm away",
+        title: presence.away
+          ? `Away since ${lasted(clock.t - (presence.awaySince ?? clock.t))} ago — come back (space then z)`
+          : "Queue questions and silence every notification until you say you are back (space then z)",
+        on: presence.away,
+        press: () => void togglePresence(),
       },
       {
         key: "find",
@@ -3600,6 +3641,18 @@
       id={procsFor.id}
       title={procsFor.title || 'conversation'}
       onclose={() => (showProcs = null)}
+    />
+  {/if}
+  {#if presence.showing}
+    <Vigil
+      {presence}
+      {skein}
+      onclose={() => (presence.showing = false)}
+      onselect={(c) => {
+        focusedId = c.id;
+        studio.selectOnly(c.id);
+      }}
+      onlink={(href) => void skein.openLink(href)}
     />
   {/if}
   {#if showAnnals}

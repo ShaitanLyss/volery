@@ -282,10 +282,29 @@ pub fn mcp_config(port: u16, conversation_id: &str, shared_browser: Option<&str>
     json!({ "mcpServers": servers })
 }
 
+/// A question currently on the wall, and enough about it to put it somewhere
+/// else.
+///
+/// It was a bare `Sender<String>` for most of this file's life, which was all
+/// the answer path ever needed. Going away is what wanted more: flipping the
+/// switch at seven in the evening has to turn whatever is *already* parked into
+/// a deferred question, and a channel on its own cannot say which card asked or
+/// what it asked — so the switch would have had to leave them parked, to time
+/// out against a deadline nobody was going to meet. That is precisely the loss
+/// away mode exists to prevent, five minutes before it was switched on.
+///
+/// `ours` is the one that is not converted. See `presence::defer_parked`.
+struct Parked {
+    tx: Sender<String>,
+    conversation_id: String,
+    args: Value,
+    ours: bool,
+}
+
 #[derive(Default)]
 pub struct Asks {
     port: Mutex<u16>,
-    pending: Mutex<HashMap<String, Sender<String>>>,
+    pending: Mutex<HashMap<String, Parked>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -324,6 +343,17 @@ struct AskOpened {
 struct AskClosed {
     ask_id: String,
     answered: bool,
+    /// The question did not go unanswered — it went into the pile.
+    ///
+    /// A third outcome rather than a shade of `answered`, because the panel
+    /// does something different for each. An ask that closed with nobody
+    /// answering gets `NO_ANSWER_NOTE` written into the card, since the agent
+    /// went on regardless and a panel that showed a question and then nothing
+    /// would leave that unaccounted for. A *deferred* one needs no such note:
+    /// the tool result says it was queued, in better words than a note has, and
+    /// unlike a note it says them in the transcript a restart can reproduce.
+    /// That is the same bargain `ours` strikes one field up.
+    deferred: bool,
 }
 
 impl Asks {
@@ -335,16 +365,44 @@ impl Asks {
     }
 }
 
+/// Take every agent-asked question off the wall, so somewhere else can hold it.
+///
+/// Written for `presence::defer_parked` and deliberately knowing nothing about
+/// why: this file stays the transport, and what a question *means* once it is
+/// no longer parked is away mode's business. What is kept here is the rule that
+/// is about parking — **a question carrying a `Settle` is not drained**, since
+/// the settle lives on the parked thread and is the only thing that can
+/// perform it. `presence.rs` has the argument for why that is the right
+/// boundary and not merely the convenient one.
+///
+/// Removed from `pending` as they are taken, so the answer path and this cannot
+/// both claim one; the caller is then the only thing holding the channel.
+pub(crate) fn take_parked_questions(asks: &Asks) -> Vec<(String, Value, Sender<String>)> {
+    let mut pending = asks.pending.lock().unwrap();
+    let ids: Vec<String> = pending
+        .iter()
+        .filter(|(_, p)| !p.ours)
+        .map(|(id, _)| id.clone())
+        .collect();
+    ids.into_iter()
+        .filter_map(|id| pending.remove(&id))
+        .map(|p| (p.conversation_id, p.args, p.tx))
+        .collect()
+}
+
 /// Hand the UI's answer back to the parked HTTP request.
 #[tauri::command]
 pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Result<(), String> {
-    let tx = asks
+    let parked = asks
         .pending
         .lock()
         .unwrap()
         .remove(&ask_id)
         .ok_or("that question is no longer waiting")?;
-    tx.send(answer).map_err(|_| "the asking turn has gone".to_string())
+    parked
+        .tx
+        .send(answer)
+        .map_err(|_| "the asking turn has gone".to_string())
 }
 
 /// A design the user can look at instead of imagine.
@@ -576,7 +634,15 @@ fn open_ask(
 ) -> (String, Receiver<String>) {
     let ask_id = crate::store::uuid_v4();
     let (tx, rx) = mpsc::channel::<String>();
-    asks.pending.lock().unwrap().insert(ask_id.clone(), tx);
+    asks.pending.lock().unwrap().insert(
+        ask_id.clone(),
+        Parked {
+            tx,
+            conversation_id: conversation_id.to_string(),
+            args: args.clone(),
+            ours,
+        },
+    );
 
     let _ = app.emit(
         "ask:opened",
@@ -642,12 +708,13 @@ fn park_and_stream(
     let forget = || {
         asks.pending.lock().unwrap().remove(&ask_id);
     };
-    let closed = |answered: bool| {
+    let closed = |answered: bool, deferred: bool| {
         let _ = app.emit(
             "ask:closed",
             AskClosed {
                 ask_id: ask_id.clone(),
                 answered,
+                deferred,
             },
         );
     };
@@ -667,7 +734,7 @@ fn park_and_stream(
         .is_err()
     {
         forget();
-        closed(false);
+        closed(false, false);
         return;
     }
 
@@ -716,14 +783,21 @@ fn park_and_stream(
                        blocking park did for its whole life, being unable to tell
                        a listener from a dropped connection. */
                     forget();
-                    closed(false);
+                    closed(false, false);
                     return;
                 }
             }
         }
     };
 
-    let real = !answer.starts_with(TIMED_OUT_OPENING) && answer != DISMISSED;
+    /* Three ways this is not an answer, and the third is the newest: away mode
+       converting a question that was already on the wall (`presence::flip`).
+       Matched on the opening rather than on a sentinel, which is the idiom this
+       loop already uses for the timeout — the string the agent reads and the
+       string this thread recognises are one thing, so there is no second
+       vocabulary to keep in step. */
+    let deferred = answer.starts_with(crate::presence::DEFERRED_OPENING);
+    let real = !deferred && !answer.starts_with(TIMED_OUT_OPENING) && answer != DISMISSED;
     /* The settle runs *here*, on the parking thread, after the answer is in and
        before the reply goes out — which is what makes a `close` genuinely
        deferred rather than merely delayed. It is also the last moment at which
@@ -732,7 +806,13 @@ fn park_and_stream(
        So `spawn::close` re-reads all of it rather than trusting what it saw
        when it composed the question. */
     let reply = match settle {
-        Some(decide) => decide(app, if real { Some(answer.as_str()) } else { None }),
+        /* Never on a deferral — a settle is an *act*, and `defer_parked` is why
+           a question carrying one is not converted in the first place. Guarded
+           here as well because the two facts live in different files, and the
+           one that would be wrong here is a close performed because the wall
+           went quiet. */
+        Some(decide) if !deferred => decide(app, if real { Some(answer.as_str()) } else { None }),
+        Some(_) => answer.clone(),
         None => answer.clone(),
     };
     let delivered = chunk(
@@ -749,7 +829,7 @@ fn park_and_stream(
     /* Answered, but only if it arrived: a click whose reply never left is not
        something the agent can act on, and the note the transcript keeps for a
        question that closed without one is true of both. */
-    closed(real && delivered);
+    closed(real && delivered, deferred);
 }
 
 /// Mark a tool as wanted on every turn, whatever tool search would otherwise do.
@@ -921,6 +1001,17 @@ pub(crate) fn roster() -> Vec<Value> {
         always(reads_only(crate::servers::servers_schema())),
         always(crate::chronicle::wisp_schema()),
         // ── discoverable: a card knows from its prompt whether it wants these ──
+        /* Deferred, and the hint carries the *words* rather than the noun: a
+           card reaching for this has just been told "I'm off to bed", "going
+           out", "back tomorrow" — nobody says "set presence". What makes it
+           findable at all is that the user's own sentence is in the card's
+           hands when it searches. */
+        found_by(
+            crate::presence::schema(),
+            "the user said they are leaving, off to bed, going out, away for the \
+             evening, back tomorrow, finishing for the night — stop notifying them \
+             and queue questions instead of parking on them",
+        ),
         found_by(
             crate::sink::take_schema(),
             "claim a sink item before starting it; hold, assign, take, release, \
@@ -1615,6 +1706,9 @@ fn park_and_wait(
         AskClosed {
             ask_id,
             answered: real,
+            /* `park_and_wait` only ever carries a settle, and a question
+               carrying one is never converted. */
+            deferred: false,
         },
     );
     reply
@@ -1743,6 +1837,27 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            costs nothing here, and the client already trusts this
                            endpoint. */
                         if tool == "ask_user" {
+                            /* Away mode, and the whole of what it changes here:
+                               the call does not park at all. Nobody is going to
+                               answer inside any of the three deadlines this
+                               file spends two thousand words on, so holding the
+                               request open buys nothing and costs the card its
+                               turn. The question goes in the pile and the agent
+                               is told what that means. */
+                            if crate::presence::away(&app) {
+                                let note =
+                                    crate::presence::defer(&app, &conversation_id, &args);
+                                respond(
+                                    req,
+                                    json!({
+                                        "jsonrpc": "2.0", "id": id,
+                                        "result": { "content": [
+                                            { "type": "text", "text": note }
+                                        ] }
+                                    }),
+                                );
+                                return;
+                            }
                             let asks = app.state::<Asks>();
                             park_and_stream(
                                 &app,
@@ -2008,6 +2123,9 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                answer is the same for every card on the wall. */
                             .or_else(|| crate::status::handle(&tool, &args))
                             .or_else(|| crate::later::handle(&app, &conversation_id, &tool, &args))
+                            .or_else(|| {
+                                crate::presence::handle(&app, &conversation_id, &tool, &args)
+                            })
                             .or_else(|| crate::pin::handle(&app, &conversation_id, &tool, &args))
                             .or_else(|| {
                                 crate::timeline::handle(&app, &conversation_id, &tool, &args)
