@@ -178,10 +178,39 @@ has** — the same reason the dock was cut out of `App.svelte`. It lived in `Spy
 until the leader stopped being the finder's, at which point the hint for the toy shelf was a
 caption drawn by the file finder: true of the code and nonsense as an arrangement.
 
+### The shelf carries the away gate's puzzles too
+
+`<space>t` is five rows now: `ts` the synth, and `tm` `td` `tc` `tk` — motus, the dérivée, the
+casse-tête and croquis, which are the puzzles `away.md`'s gate puts in your way when you come
+back from a long absence.
+
+**The same surface, not a copy.** `Gate.svelte` takes `mode: "gate" | "play"`, and a puzzle
+met on the way back to work and one opened because you wanted it are the same puzzle — two
+implementations would be two places for motus to mark a doubled letter wrongly. What differs
+is three things, and each is about who is waiting:
+
+- **The footer.** In the way: *skip*, *another*, and the switch that turns the gate off for
+  good. Chosen: the whole shelf as a row, because having picked one puzzle is the state in
+  which you are most likely to want a different one, and *close*. There is no *skip* on the
+  shelf — you opened it.
+- **What winning does.** In the way, getting it right is what moves you past it, so it closes.
+  Chosen, getting it right is the whole of what you came for, so nothing closes.
+- **Whether croquis may fetch.** The gate never goes to the network — you are standing in
+  front of it waiting, and `away.md` has the rule. From the shelf nobody is waiting, so an
+  empty cache says so and offers to go and get some.
+
+`leader.ts::ShelfId` is `synth.ts`'s `ToyId` joined to `gate.ts`'s, deliberately joined at the
+shelf rather than merged: neither of those files has any business knowing the other exists,
+and what they have in common is only that both are things to do with your hands — which is a
+fact about the shelf, so the shelf is where it is said.
+
+`tk` for croquis is the one chord that is not a mnemonic; `tc` and `td` earned theirs first.
+The hint carries the label beside the chord, which is what the hint is for.
+
 ### Adding a second toy
 
-One row in `leader.ts`'s `CHORDS` with a `{ kind: "toy" }` verb, a member in `ToyId`, an arm in
-`App.svelte`'s dispatch, and a component. If the shelf ever carries more than about half a
+One row in `leader.ts`'s `CHORDS` with a `{ kind: "toy" }` verb, a member in `ShelfId`, an arm
+in `App.svelte`'s dispatch, and a component. If the shelf ever carries more than about half a
 dozen, `offers` is the one function that changes — it returns whole remainders today, which
 reads perfectly at this size and becomes a wall of them at thirty.
 

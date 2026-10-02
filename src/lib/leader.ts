@@ -17,6 +17,7 @@
 
 import type { FindMode } from "./finding";
 import type { ToyId } from "./synth";
+import type { ToyId as PuzzleId } from "./gate";
 
 /** The leader key, and it is the space bar because that is where these hands
  *  learned it (nvchad). It is free on this wall for one reason worth stating:
@@ -37,9 +38,18 @@ export const LAPSE_MS = 1000;
  *  and the dispatcher should not be parsing names. Adding a third kind is a
  *  member here, a row in `CHORDS`, and an arm wherever the wall dispatches —
  *  the machine below still learns none of them. */
+/** Everything on the shelf.
+ *
+ *  Two vocabularies, deliberately joined here rather than merged: `synth.ts`
+ *  owns what an instrument is and `gate.ts` owns what a puzzle is, and neither
+ *  has any business knowing the other exists. What they have in common is only
+ *  that both are things to do with your hands, which is a fact about the
+ *  *shelf* — so the shelf is where it is stated. */
+export type ShelfId = ToyId | PuzzleId;
+
 export type Verb =
   | { kind: "find"; mode: FindMode }
-  | { kind: "toy"; toy: ToyId }
+  | { kind: "toy"; toy: ShelfId }
   | { kind: "open"; what: "timelines" }
   | { kind: "window"; act: "span" }
   | { kind: "presence"; act: "toggle" };
@@ -67,6 +77,21 @@ export const CHORDS: readonly Chord[] = [
   { keys: "ff", label: "find file", verb: { kind: "find", mode: "files" } },
   { keys: "fw", label: "grep", verb: { kind: "find", mode: "grep" } },
   { keys: "ts", label: "synth", verb: { kind: "toy", toy: "synth" } },
+  /* The puzzles the away gate puts in your way, available without being away.
+     They were built to mark a boundary on the way back to work, and that is a
+     worse reason to meet one than simply wanting to: a word you cannot get is
+     a fine thing to be doing while a card thinks, and the whole argument for
+     this shelf is that it is where the hands go while something else runs.
+     Four rows here is what `toys.md` asks of a second toy, four times over, and
+     it costs nothing else — the gate surface already draws all of them.
+
+     `tk` for croquis is the one letter that is not a mnemonic: `tc` is the
+     casse-tête and `td` the dérivée, both of which earned theirs first. The
+     hint carries the label beside the chord, which is what that is for. */
+  { keys: "tm", label: "motus", verb: { kind: "toy", toy: "motus" } },
+  { keys: "td", label: "dérivée", verb: { kind: "toy", toy: "calculus" } },
+  { keys: "tc", label: "casse-tête", verb: { kind: "toy", toy: "rotate" } },
+  { keys: "tk", label: "croquis", verb: { kind: "toy", toy: "sketch" } },
   /* `a` for the archive: one letter, because it is a place you go rather than
      a family of things, and nothing else here begins with it. */
   { keys: "a", label: "archived timelines", verb: { kind: "open", what: "timelines" } },

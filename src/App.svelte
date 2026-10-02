@@ -13,6 +13,7 @@
   import Vigil from "./lib/Vigil.svelte";
   import Away from "./lib/Away.svelte";
   import Gate from "./lib/Gate.svelte";
+  import type { ToyId as PuzzleId } from "./lib/gate";
   import { Sketchbook } from "./lib/sketch.svelte";
   import type { Tier } from "./lib/classify";
   import {
@@ -392,7 +393,16 @@
     else if (verb.kind === "window") void span.toggle();
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.toy === "synth") synth.show();
+    /* The rest of the shelf is the away gate's puzzles, opened on purpose
+       rather than met on the way back to work. Same surface, `mode="play"` —
+       see `Gate.svelte`, which is why this is one line and not a component. */
+    else playing = verb.toy;
   });
+
+  /** A puzzle opened from the shelf, or null. Distinct from `gating`, which is
+   *  the same surface standing in the way: one of them ends away mode on the
+   *  way out and the other closes. */
+  let playing = $state<PuzzleId | null>(null);
 
   /** Go away, or come back.
    *
@@ -2621,7 +2631,7 @@
        that still answered `f` or `/` would be the wall acting on a word you
        were spelling. The two surfaces keep their own `svelte:window` handlers,
        which still run — this only stops the wall's. */
-    if (presence.away || gating) return;
+    if (presence.away || gating || playing) return;
     /* The toy owns the whole keyboard while it is up, and that is the point
        rather than an inconvenience — thirty keys are an instrument and the rest
        are its controls, so there is nothing left for the wall to be given.
@@ -3758,6 +3768,18 @@
         gating = false;
         void presence.comeBack();
       }}
+    />
+  {:else if playing}
+    <!-- The same surface, chosen rather than met. Mutually exclusive with the
+         gate rather than stacked: one puzzle at a time is the whole shape of
+         it, and a shelf opened behind a gate would be two Escapes deep for no
+         reason. -->
+    <Gate
+      {presence}
+      {sketchbook}
+      mode="play"
+      start={playing}
+      onthrough={() => (playing = null)}
     />
   {/if}
   {#if presence.showing}

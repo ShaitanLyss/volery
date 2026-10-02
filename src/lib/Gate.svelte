@@ -40,25 +40,70 @@
   let {
     presence,
     sketchbook,
+    mode = "gate",
+    start = null,
     onthrough,
   }: {
     presence: Presence;
-    /** What there is to draw. Read, never filled — the gate does not fetch, for
-     *  the reason `sketch.svelte.ts` opens with. */
+    /** What there is to draw. Read, and filled only from the shelf — the *gate*
+     *  never fetches, for the reason `sketch.svelte.ts` opens with: you are
+     *  standing in front of it waiting. Opened from the shelf you are waiting
+     *  for nothing, so there the offer to go and get some is the right one. */
     sketchbook: Sketchbook;
+    /** Whether this is in the way, or chosen.
+     *
+     *  The same surface either way, and that is the point rather than a saving:
+     *  a puzzle you meet on the way back to work and a puzzle you opened
+     *  because you wanted one are the same puzzle, and two implementations
+     *  would be two places for motus to mark a doubled letter wrongly. What
+     *  differs is the footer, what winning does, and whether croquis may go and
+     *  fetch. */
+    mode?: "gate" | "play";
+    /** Which one, when the shelf named it. `null` picks. */
+    start?: ToyId | null;
     /** Through the gate — by solving it, by skipping it, or by Escape. The
      *  caller is what actually ends away mode; this only says you are here. */
     onthrough: () => void;
   } = $props();
 
-  /** Which toys can be offered at all. `sketch` only once something has been
-   *  fetched: a gate offering an empty frame is worse than a gate with three
-   *  puzzles in it. */
+  /** Which toys may be offered.
+   *
+   *  `sketch` only once something has been fetched, because a *gate* offering
+   *  an empty frame is worse than a gate with three puzzles in it — and the
+   *  gate fetches nothing itself, so an empty cache stays empty.
+   *
+   *  On the shelf it is always offered: you asked for it by name, nothing is
+   *  waiting on you, and an empty one can say so and offer to go and get
+   *  some. */
   const offered = $derived<ToyId[]>(
-    sketchbook.ready ? ["motus", "calculus", "rotate", "sketch"] : ["motus", "calculus", "rotate"],
+    mode === "play" || sketchbook.ready
+      ? ["motus", "calculus", "rotate", "sketch"]
+      : ["motus", "calculus", "rotate"],
   );
 
-  let id = $state<ToyId>(pickToy(null, Math.random(), ["motus", "calculus", "rotate"]));
+  /** The one in hand.
+   *
+   *  `untrack`, because this is the pick at mount rather than something that
+   *  should re-run when the cache changes under it. **The first version of this
+   *  line left `sketch` out unconditionally**, which is how croquis came to be
+   *  in the table and almost never on the screen: it could only be reached by
+   *  pressing *another*. The reason was real — reading `sketchbook.ready` here
+   *  reactively would make the puzzle change under your hands the moment a
+   *  fetch landed — and the fix was wrong. What it needed was to be read once,
+   *  not to be left out. */
+  let id = $state<ToyId>(
+    untrack(
+      () =>
+        start ??
+        pickToy(
+          null,
+          Math.random(),
+          sketchbook.ready
+            ? ["motus", "calculus", "rotate", "sketch"]
+            : ["motus", "calculus", "rotate"],
+        ),
+    ),
+  );
   const spec = $derived(TOYS.find((t) => t.id === id) ?? TOYS[0]);
 
   /** Solved. Held for a beat before going through, so the thing you got right
@@ -69,7 +114,11 @@
   function through() {
     if (won) return;
     won = true;
-    setTimeout(onthrough, 700);
+    /* In the way: getting it right is what moves you past it, held for a beat
+       so the thing you got right is something you saw being right. Chosen from
+       the shelf: getting it right is the whole of what you came for, so
+       nothing closes — it says so, and the footer offers another. */
+    if (mode === "gate") setTimeout(onthrough, 700);
   }
 
   function another() {
@@ -209,6 +258,17 @@
   let since = $state(Date.now());
   const took = $derived(drawn(clock.t - since));
 
+  let fetching = $state(false);
+
+  /** Go and get some. Reachable from the shelf only — see `offered`. */
+  async function fetchSome() {
+    if (fetching) return;
+    fetching = true;
+    await sketchbook.topUp();
+    nextReference();
+    fetching = false;
+  }
+
   function nextReference() {
     drawing = sketchbook.take(Math.random());
     since = Date.now();
@@ -271,7 +331,7 @@
 
 <svelte:window on:keydown={key} />
 
-<div class="gate" class:won>
+<div class="gate" class:won={won && mode === "gate"}>
   <div class="card">
     <header>
       <span class="what">{spec.label}</span>
@@ -346,6 +406,16 @@
           <button onclick={() => void finished()}>done — {took}</button>
           <button onclick={nextReference}>another reference</button>
         </div>
+      {:else if mode === "play"}
+        <!-- Chosen rather than met, so nobody is waiting and the offer to go
+             and get some is the right one. The gate never makes it. -->
+        <p class="said">nothing has been fetched to draw yet.</p>
+        <div class="choices">
+          <button onclick={() => void fetchSome()} disabled={fetching}>
+            {fetching ? "fetching…" : "fetch some now"}
+          </button>
+        </div>
+        {#if sketchbook.fault}<p class="said">{sketchbook.fault}</p>{/if}
       {:else}
         <p class="said">nothing has been fetched to draw yet.</p>
       {/if}
@@ -375,23 +445,43 @@
       <!-- Not a greeting with a time of day in it. Away mode is thrown for
            lunch as readily as for a night, so "good morning" is wrong more
            often than it is right. -->
-      <p class="said good">there you are</p>
+      <p class="said good">{mode === "gate" ? "there you are" : "got it"}</p>
     {/if}
 
     <footer>
-      <!-- Always here, always small. The whole design rests on this being
-           available and unembarrassing to press. -->
-      <button class="skip" onclick={onthrough}>skip</button>
-      <button class="skip" onclick={another}>another</button>
-      <span class="grow"></span>
-      <button
-        class="skip off"
-        title="Stop putting a puzzle in the way when you come back. The away screen's own settings turn it back on."
-        onclick={() => {
-          presence.setToys(false);
-          onthrough();
-        }}>not any more</button
-      >
+      {#if mode === "gate"}
+        <!-- Always here, always small. The whole design rests on this being
+             available and unembarrassing to press. -->
+        <button class="skip" onclick={onthrough}>skip</button>
+        <button class="skip" onclick={another}>another</button>
+        <span class="grow"></span>
+        <button
+          class="skip off"
+          title="Stop putting a puzzle in the way when you come back. They stay on the toy shelf either way — space then t."
+          onclick={() => {
+            presence.setToys(false);
+            onthrough();
+          }}>not any more</button
+        >
+      {:else}
+        <!-- Nothing to skip: you opened this. The whole shelf is here instead,
+             because having chosen one puzzle is the state in which you are
+             most likely to want a different one. -->
+        {#each TOYS as t (t.id)}
+          <button
+            class="skip"
+            class:here={t.id === id}
+            title={t.about}
+            onclick={() => {
+              id = t.id;
+              reset();
+            }}>{t.label}</button
+          >
+        {/each}
+        <button class="skip" onclick={another}>another</button>
+        <span class="grow"></span>
+        <button class="skip" onclick={onthrough}>close</button>
+      {/if}
     </footer>
   </div>
 </div>
@@ -605,5 +695,13 @@
   }
   .skip:hover {
     color: var(--paper-dim);
+  }
+  /* Which one is in hand, on the shelf's own row of them. */
+  .skip.here {
+    color: var(--paper);
+  }
+  .choices button:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

@@ -309,13 +309,29 @@ right says so and lets you through; getting it wrong costs nothing and offers an
 switch that turns it off for good is *on the gate itself*, because a thing you cannot refuse
 is a thing you stop enjoying — and the away screen's own knobs turn it back on.
 
-### Three puzzles, and the two bugs the tests caught
+### They are on the toy shelf as well, and croquis was nearly never on either
+
+`<space>t` carries all four, through the same component at `mode="play"` — see `toys.md` for
+what differs. They were built to mark a boundary on the way back to work, and that turns out
+to be a *worse* reason to meet one than simply wanting to: a word you cannot get is a fine
+thing to be doing while a card thinks.
+
+The shelf also surfaced a real defect. `sketch` was in `TOYS` and could not be the puzzle you
+were given: the initial pick named the other three explicitly, so croquis was reachable only
+by pressing *another*. The reason was real — reading `sketchbook.ready` reactively there would
+swap the puzzle under your hands the moment a fetch landed — and the fix was wrong, because
+what it needed was to be read **once** (`untrack`), not to be left out. The general shape, and
+it is one this codebase keeps meeting: **a value that must not change under you wants to be
+read once, not avoided.**
+
+### Four puzzles, and the two bugs the tests caught
 
 | | what it is | why this one |
 |---|---|---|
 | `motus` | six letters, the first one given | the French game rather than Wordle, and the free letter is what makes six letters reasonable before coffee |
 | `calculus` | differentiate or integrate | the one that is actually *work*, in the way a warm-up is |
 | `rotate` | Shepard–Metzler: same shape, or its mirror? | needs no vocabulary and no maths, and the time it takes rises linearly with the angle, which is as close as a puzzle gets to being measurably a rotation in your head |
+| `sketch` | a reference, and a button saying you drew it | the only one with no right answer, and the only one that can be unavailable — see below |
 
 **A generated puzzle that cannot be solved looks exactly like you being bad at it**, which is
 why every generator here is a function of a seed and is asserted rather than eyeballed. Both

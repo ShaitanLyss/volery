@@ -156,6 +156,10 @@ describe("the which-key hint", () => {
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
       { keys: "ia", label: "I'm away / back" },
+      { keys: "tc", label: "casse-tête" },
+      { keys: "td", label: "dérivée" },
+      { keys: "tk", label: "croquis" },
+      { keys: "tm", label: "motus" },
       { keys: "ts", label: "synth" },
       { keys: "ws", label: "every screen / one screen" },
       { keys: "z", label: "away / back" },
@@ -170,7 +174,33 @@ describe("the which-key hint", () => {
   });
 
   test("the toy shelf is its own branch", () => {
-    expect(offers("t")).toEqual([{ keys: "s", label: "synth" }]);
+    /* The shelf is why `t` is a family rather than a letter — it was one toy
+       for a while and is five now, and none of them cost anything but a row.
+       `toys.md` states the bargain; this is it being taken. */
+    expect(offers("t")).toEqual([
+      { keys: "c", label: "casse-tête" },
+      { keys: "d", label: "dérivée" },
+      { keys: "k", label: "croquis" },
+      { keys: "m", label: "motus" },
+      { keys: "s", label: "synth" },
+    ]);
+  });
+
+  test("the shelf carries the away gate's puzzles, by the same names", () => {
+    /* A puzzle met on the way back to work and one opened because you wanted
+       it are the same puzzle — so the shelf's verbs are `gate.ts`'s own ids
+       rather than a second vocabulary that could drift from it. */
+    expect(chord("t", "m")).toMatchObject({
+      kind: "fire",
+      verb: { kind: "toy", toy: "motus" },
+    });
+    expect(chord("t", "k")).toMatchObject({
+      kind: "fire",
+      verb: { kind: "toy", toy: "sketch" },
+    });
+    for (const id of ["motus", "calculus", "rotate", "sketch"]) {
+      expect(CHORDS.some((c) => c.verb.kind === "toy" && c.verb.toy === id)).toBe(true);
+    }
   });
 
   test("so is the window", () => {
