@@ -35,8 +35,6 @@
   import { AWAY_SCREENS } from "./presence";
   import {
     awayLine,
-    frameFloor,
-    heldBack,
     HOLD_MS,
     hueAllowed,
     nextPiece,
@@ -108,12 +106,6 @@
     dimmed: "dim the wall",
     peek: "cover, hold a key to see",
   };
-
-  /** What the motion setting is doing to this screen, or null. Read off the
-   *  root attribute on the clock tick rather than taken as a prop: that
-   *  attribute is what every stylesheet in the app already reads, and a second
-   *  channel for the same answer is a second thing to keep in step. */
-  let held = $state<string | null>(null);
 
   const line = $derived(
     awayLine(lasted(presence.elapsed(clock.t)), presence.waiting, presence.note),
@@ -278,14 +270,12 @@
     };
   }
 
-  /** How often the loop is allowed to draw, from the motion setting.
-   *
-   *  Read off the root rather than taking `Motion` as a prop: the attribute is
-   *  what every stylesheet in the app already reads, and a second channel for
-   *  the same answer is a second thing to keep in step. */
-  function pace(): number {
-    return frameFloor(document.documentElement.dataset.motion);
-  }
+  /* There is no `pace()` any more, and that is the point — see the note in
+     `away.ts` where it used to live. The away screen draws at whatever rate the
+     browser offers and consults the wall's motion setting about nothing: that
+     enum is for the always-on pulsing on active cards, and this is a screen
+     that only exists when nobody is at the wall. Its own switch is
+     `presence.animate`. */
 
   function start() {
     if (!canvas) return;
@@ -313,10 +303,11 @@
     since = clock.t;
     readTones();
     size();
-    /* One frame immediately, so `still` motion still shows something and the
-       first frame is not a blank window for however long the next tick is. */
+    /* One frame immediately, so the first thing on screen is the piece rather
+       than a blank window for however long the browser takes to offer a
+       frame. */
     draw(performance.now());
-    if (pace() !== Infinity) raf = requestAnimationFrame(loop);
+    raf = requestAnimationFrame(loop);
   }
 
   function draw(now: number) {
@@ -335,12 +326,7 @@
   }
 
   function loop(now: number) {
-    const floor = pace();
-    if (floor === Infinity) {
-      raf = 0;
-      return;
-    }
-    if (now - lastFrame >= floor) draw(now);
+    draw(now);
     raf = requestAnimationFrame(loop);
   }
 
@@ -413,7 +399,6 @@
        every second, and `readTones` reading one rune would make it a second
        restart engine. */
     untrack(readTones);
-    held = heldBack(document.documentElement.dataset.motion);
   });
 
   function key(e: KeyboardEvent) {
@@ -569,11 +554,6 @@
       </div>
     {:else if screen === "peek"}
       <span class="hint">hold any key to see the wall</span>
-    {/if}
-    {#if held && presence.animate}
-      <!-- Because *not animating* and *broken* look identical from across the
-           room, and the first is a setting somebody chose months ago. -->
-      <span class="hint">{held}</span>
     {/if}
   </div>
 </div>

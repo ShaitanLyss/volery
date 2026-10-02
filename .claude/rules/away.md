@@ -256,9 +256,23 @@ that you are looking at the thing you are adjusting.
 
 An away screen runs for hours unattended, which is the worst case `motion.md` describes.
 
-- **It honours the motion setting**, read off `document.documentElement.dataset.motion` — the
-  same channel every stylesheet reads, rather than a second one to keep in step. `still` draws
-  one frame and stops the loop outright; `spare` runs at 20fps.
+- **It does not honour the wall's motion setting, and the first version did.** That was wrong,
+  and the correction is Lyss's: *"that enum is for the always on pulsing animation on active
+  cards"*. It was measured against the status glow — which runs on every working card, for
+  ever, while you are trying to read the wall — so everything about it answers *how much should
+  the wall move while I work*. An away screen is opt-in, runs only when nobody is there, and in
+  two of its three readings covers the wall outright, so there is no glow on screen to compete
+  with and no work being read over it.
+
+  What the gate actually did, which is the part worth keeping written down: at `spare` the
+  screensaver ran at 20fps, and at `still` **the loop drew one frame and stopped**. So a wall
+  set to no motion got a frozen picture, and a wall set to less motion got something visibly
+  stepping — with nothing on screen to say a setting had done either. Together with the
+  restart bug above it produced the exact 1fps that was reported, and fixing the restart alone
+  would have left a `still` wall staring at a single frame.
+
+  The away screen's own switch is `presence.animate`, in its own corner, and that is the right
+  one: a knob about the away screen belongs to the away screen.
 - **Rotation is folded onto `clock.t`**, the wall's existing one-second tick, so an away
   screen adds exactly one rAF to an idle machine and no timer at all. `HOLD_MS` is nine
   minutes: long enough that walking past twice in an evening shows the same thing, short
@@ -286,11 +300,6 @@ An away screen runs for hours unattended, which is the worst case `motion.md` de
 - **`size()` resizes the piece only when the box moved.** Same hazard from the other side: the
   `ResizeObserver` fires once on observe and again on every layout settle, and each call was
   throwing the scene away and starting a new one.
-- **Anything but full motion says so in the corner** (`heldBack`). *Not animating* and *broken*
-  look identical from the sofa, and the first is a setting somebody chose months ago for a
-  different reason. `spare` also went from 20fps to 24: this is one full-screen canvas with
-  nothing else on the wall drawing, and 20 is inside the range where a person sees steps
-  rather than movement — the point of `spare` is to cost less than `full`, not to look broken.
 - **One canvas per piece, not one canvas.** A canvas cannot change its context kind once it
   has one and `tide` is WebGL2 where the others are 2D, so the `{#key}` is the whole of that:
   a new piece gets a new element and the old context goes with the old one. A machine with no

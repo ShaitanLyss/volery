@@ -193,38 +193,26 @@ function clampSpeed(v: number): number {
 
 /* ── how fast it is allowed to draw ───────────────────────────────────────── */
 
-/** The shortest gap between frames, in ms, for a motion setting. `Infinity`
- *  means draw one frame and stop.
+/* Nothing here, deliberately, and the absence is the decision.
  *
- *  Pure, and here rather than inline in the component, because it is the number
- *  that decides whether the screen looks alive — and a wrong one is
- *  indistinguishable from the whole thing being broken. Which is what happened:
- *  at `still` the loop drew one frame and stopped, and a *second* fault
- *  restarted the loop once a second with the piece rebuilt from scratch, so the
- *  pair produced a slideshow at exactly 1fps with every object in a new random
- *  place. Either alone is survivable. Together they are unusable, and nothing
- *  in a type or a typecheck says so.
+ * The away screen used to read `html[data-motion]` and throttle itself: 24fps
+ * at `spare`, one frame and stop at `still`. That was wrong, and Lyss named the
+ * reason — **that enum is for the always-on pulsing on active cards.** It was
+ * measured against the status glow, which runs on every working card, for ever,
+ * while you are trying to read the wall. Everything about it is an answer to
+ * "how much should the wall move *while I work*".
  *
- *  `spare` is 24 rather than the 20 it shipped as. This is one full-screen
- *  canvas with nothing else on the wall drawing, and 20 is inside the range
- *  where a person sees steps rather than movement — the point of `spare` is to
- *  cost less than `full`, not to look broken. */
-export function frameFloor(motion: string | undefined): number {
-  if (motion === "still") return Infinity;
-  if (motion === "spare") return 1000 / 24;
-  return 0;
-}
-
-/** Whether a motion setting is holding the screen back, said in the corner.
+ * An away screen is none of that. It is opt-in, it runs only when nobody is at
+ * the wall, and in two of its three readings it occludes the wall entirely — so
+ * there is no status glow on screen to be competing with, and no work being
+ * read over the top of it. Applying a setting chosen for the working wall to it
+ * produced exactly the failure reported: a screensaver frozen or stepping,
+ * with nothing on screen to say a setting had done it.
  *
- *  Null at full motion. It exists because *no motion* and *the animation is
- *  broken* look identical from across the room, and the first is a setting
- *  somebody chose months ago for a different reason. */
-export function heldBack(motion: string | undefined): string | null {
-  if (motion === "still") return "held still by the motion setting";
-  if (motion === "spare") return "drawn sparely by the motion setting";
-  return null;
-}
+ * It has its own switch, which is the right one and is in its own corner:
+ * `presence.animate`. A wall that should not be drawing while you are away says
+ * so there.
+ */
 
 /* ── what the corner says ─────────────────────────────────────────────────── */
 

@@ -3,8 +3,6 @@ import { describe, expect, test } from "bun:test";
 import {
   awayLine,
   flick,
-  frameFloor,
-  heldBack,
   FLICK_MAX,
   hueAllowed,
   isPieceId,
@@ -79,36 +77,20 @@ describe("colour", () => {
   });
 });
 
-describe("how fast it may draw", () => {
-  test("full motion means every frame the browser offers", () => {
-    expect(frameFloor("full")).toBe(0);
-    /* Unset is full. A wall that has never touched the setting must not get
-       the throttled reading by default. */
-    expect(frameFloor(undefined)).toBe(0);
-    expect(frameFloor("something newer")).toBe(0);
-  });
+describe("the wall's motion setting is not this screen's business", () => {
+  /* It used to be: `frameFloor` threw 24fps at `spare` and one frame at
+     `still`, and `heldBack` said so in the corner. Both are gone. That enum was
+     measured against the status glow — the always-on pulse on working cards,
+     read over while you work — and an away screen is opt-in, runs only when
+     nobody is there, and in two of three readings covers the wall outright.
 
-  test("spare is slower than full and still reads as movement", () => {
-    const spare = frameFloor("spare");
-    expect(spare).toBeGreaterThan(0);
-    /* It shipped at 20fps (50ms), which is inside the range where a person sees
-       steps rather than motion — the point of `spare` is to cost less than
-       full, not to look broken. */
-    expect(spare).toBeLessThanOrEqual(1000 / 24);
-  });
-
-  test("still draws once and stops", () => {
-    expect(frameFloor("still")).toBe(Infinity);
-  });
-
-  test("anything but full says so, because quiet and broken look the same", () => {
-    /* The bug this is here for ran at exactly 1fps with every object in a new
-       place, and the first guess from the sofa was that the machine could not
-       keep up. A screen that is deliberately not moving has to say it is. */
-    expect(heldBack("still")).not.toBe(null);
-    expect(heldBack("spare")).not.toBe(null);
-    expect(heldBack("full")).toBe(null);
-    expect(heldBack(undefined)).toBe(null);
+     There is nothing left to assert about them, which is the assertion: this
+     module exports no frame-rate knob, and the only switch for whether the away
+     screen moves is `presence.animate`. */
+  test("no frame-rate vocabulary is exported", async () => {
+    const mod: Record<string, unknown> = await import("../src/lib/away");
+    expect(Object.keys(mod)).not.toContain("frameFloor");
+    expect(Object.keys(mod)).not.toContain("heldBack");
   });
 });
 
