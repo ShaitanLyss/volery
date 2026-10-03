@@ -2472,7 +2472,13 @@
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
-    overflow: hidden;
+    /* `clip`, not `hidden`: a `hidden` box is still a scroll container, and
+       the browser scrolls it to bring a focused or selected card into view. The
+       pan is a translate, which makes scrollable overflow on that side, so
+       selecting a card moved the box under its own absolutely-placed canvases
+       and the ambience, the roots and the strands were left drawn on a
+       fraction of the screen. `clip` cannot be scrolled by anything. */
+    overflow: clip;
     /* An arrow, because the left button no longer takes hold of the wall: it
        draws a selection band. A grabbing hand over ground you cannot grab is a
        cursor telling you the wrong thing about the gesture you are about to
@@ -2561,7 +2567,7 @@
   .glass {
     position: absolute;
     inset: 0;
-    overflow: hidden;
+    overflow: clip;
     z-index: 4;
     pointer-events: none;
     /* The same rule `.surface` states and for the same reason: a press-and-move
