@@ -18,6 +18,7 @@ import {
   pinSpot,
 } from "./layout";
 import { NO_SCRIBE, type Scribe } from "./undo";
+import type { Spots } from "./widgets.svelte";
 import { NO_PICKS, type Picker } from "./pick";
 
 /** A point in canvas space. */
@@ -332,6 +333,25 @@ export class Board {
    *  images. */
   bringToFront(id: string) {
     this.update(id, { z: nextFrontZ(this.#stack()) });
+  }
+
+  /** Move every reference to where it stands in the arrangement just adopted.
+   *  Unrecorded and silent — see `Widgets.adoptGlass`, which this is the twin
+   *  of, including why it schedules a save it does not strictly need. */
+  adoptGlass(spots: Spots): string[] {
+    const moved: string[] = [];
+    for (let i = 0; i < this.images.length; i++) {
+      const img = this.images[i];
+      const at = spots[img.id];
+      const x = at ? at[0] : null;
+      const y = at ? at[1] : null;
+      if (img.glassX === x && img.glassY === y) continue;
+      moved.push(img.id);
+      const next = { ...img, glassX: x, glassY: y };
+      this.images[i] = next;
+      this.#saveSoon(next);
+    }
+    return moved;
   }
 
   #stack(): number[] {

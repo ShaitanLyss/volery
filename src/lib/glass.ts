@@ -42,12 +42,23 @@ export type View = { x: number; y: number; scale: number };
 
 /** The part of the glass a stored spot is measured from, in glass pixels.
  *
- *  The whole pane, at its own origin, except while the studio is spread over
- *  every screen (`span.ts`): the glass then covers every screen, so that it
- *  keeps sharing an origin with the wall — but what was stuck to the glass
- *  belongs to the home screen, and stays there. So spots are stored relative to
- *  the pane, drawn at the pane's offset, and clamped inside the pane; `x`/`y`
- *  are absent or zero whenever the pane and the glass are the same box. */
+ *  The whole pane, at its own origin. Spots are stored relative to it, drawn at
+ *  its offset and clamped inside it; `x`/`y` are absent or zero whenever the
+ *  pane and the glass are the same box, which they are on one screen.
+ *
+ *  **The pane is every screen while the studio is spread**, which is what lets
+ *  something stuck to the glass be dragged onto the second monitor and found
+ *  there again. It used to be the home screen's share of the window even then,
+ *  so the glass was confined to one monitor however many the wall was over —
+ *  and the reason that could not simply be widened is that one set of spots
+ *  cannot describe two rooms. It can now because there are two sets: a spot
+ *  belongs to a *screen arrangement* (`arrange.ts`), so spread and unspread
+ *  remember their own, and widening the room here cannot disturb the
+ *  one-screen arrangement it used to have to share.
+ *
+ *  What still hangs off the home screen is anything with no position of its own
+ *  — the timeline stack — because centring a default across every screen puts
+ *  it on a seam between two monitors. See `Lintel.svelte`'s `home`. */
 export type Pane = Size & { x?: number; y?: number };
 
 /** Where a wall box lands on the glass, in glass pixels.

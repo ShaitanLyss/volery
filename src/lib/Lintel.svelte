@@ -27,6 +27,7 @@
   let {
     timelines,
     pane,
+    home,
     ownerOf,
     onpick,
     onjump,
@@ -34,10 +35,20 @@
     onplace,
   }: {
     timelines: Timeline[];
-    /** The part of the glass plates live in. `x`/`y` are its offset inside the
-     *  glass, non-zero only while the studio is spread over every screen —
-     *  the layer is placed over it, so everything below stays relative. */
+    /** The part of the glass plates live in — the whole of it, including the
+     *  other screens while the studio is spread. `x`/`y` are its offset inside
+     *  the glass; the layer is placed over it, so everything below stays
+     *  relative. */
     pane: { x?: number; y?: number; w: number; h: number };
+    /** The home screen's share of the pane, which is where the stack hangs.
+     *
+     *  A *moved* plate may be anywhere, including on another monitor — that is
+     *  the whole of what the pane being the whole glass buys. One that has
+     *  never been moved has no position of its own, and centring those across
+     *  every screen would hang them on the seam between two monitors, which on
+     *  an L-shaped desk is sometimes nowhere at all. So the default position is
+     *  the home screen's, for the reason every dialog's is (`span.ts`). */
+    home: { x: number; y: number; w: number; h: number };
     /** The owning card's reading, or null when it is not on the wall. */
     ownerOf: (id: string) => { tier: Tier; handle: string } | null;
     onpick: (ownerId: string) => void;
@@ -207,7 +218,7 @@
   style:width={pane.x || pane.y ? `${pane.w}px` : undefined}
   style:height={pane.x || pane.y ? `${pane.h}px` : undefined}
 >
-  <div class="stack">
+  <div class="stack" style:left="{home.x}px" style:top="{home.y + 14}px" style:width="{home.w}px">
     {#each stacked as t (t.id)}
       {#if drag?.id !== t.id}
         <div
@@ -259,11 +270,10 @@
     z-index: 1500;
     isolation: isolate;
   }
+  /* Placed inline from `home` — the home screen's share of the pane. See the
+     note on the prop; it must not be given a position here as well. */
   .stack {
     position: absolute;
-    top: 14px;
-    left: 0;
-    right: 0;
     display: flex;
     flex-direction: column;
     align-items: center;

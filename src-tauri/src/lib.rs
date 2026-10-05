@@ -2,6 +2,7 @@ mod actions;
 /* The app's own log. Installed first thing in `setup`, because anything said
    before it lands nowhere — see the module's own note. */
 mod applog;
+mod arrange;
 mod attach;
 mod asana;
 mod aside;
@@ -632,6 +633,8 @@ pub fn run() {
             store::overlapping_conversations,
             store::files_handled_by,
             store::save_placement,
+            arrange::known_arrangements,
+            arrange::adopt_arrangement,
             store::place_project,
             store::stick_project,
             store::size_project,

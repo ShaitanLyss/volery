@@ -341,20 +341,36 @@
    *  the fault bar all take a share of, and none of them by a number this file
    *  could know. Deliberately *not* narrowed by the transcript panel: covering
    *  that is the one thing the pane is allowed to do. */
-  let glassBox = $state<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: 0, h: 0 });
+  let homeBox = $state<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: 0, h: 0 });
+  /** The whole pane, which is the room anything stuck to it may live in.
+   *
+   *  The same box as `homeBox` on one screen — the glass element *is* the wall
+   *  there — and the whole window while the studio is spread, which is the
+   *  difference that lets a widget be dragged onto the second monitor and found
+   *  there again. It used to be `homeBox` in both cases, so the glass was
+   *  confined to the home screen however many screens the wall was over, and
+   *  everything you dragged onto another one was clamped straight back.
+   *
+   *  That is only honest because a spot is now stored per screen arrangement
+   *  (`arrange.ts`): spread and unspread are two rooms with two sets of spots,
+   *  so widening the room here cannot disturb the one-screen arrangement. */
+  let paneBox = $state<{ x: number; y: number; w: number; h: number }>({ x: 0, y: 0, w: 0, h: 0 });
   $effect(() => {
     const el = glassEl;
     if (!el) return;
-    /* The pane is `main.wall`'s box, read relative to the glass element. They
-       are the same box — offset zero — except while the studio is spread over
-       every screen, when the glass is re-fixed to the whole window so it keeps
-       sharing the surface's origin, and the wall's box is the home screen's
-       share of it. What is stuck to the glass stays on the home screen. */
+    /* `main.wall`'s box, read relative to the glass element. They are the same
+       box — offset zero — except while the studio is spread over every screen,
+       when the glass is re-fixed to the whole window so it keeps sharing the
+       surface's origin, and the wall's box is the home screen's share of it.
+       What hangs off the home screen rather than off the pane — the timeline
+       stack, which would otherwise be centred on a seam between two monitors —
+       is drawn against this. */
     const wall = el.parentElement ?? el;
     const read = () => {
       const g = el.getBoundingClientRect();
       const w = wall.getBoundingClientRect();
-      glassBox = { x: w.left - g.left, y: w.top - g.top, w: wall.clientWidth, h: wall.clientHeight };
+      homeBox = { x: w.left - g.left, y: w.top - g.top, w: wall.clientWidth, h: wall.clientHeight };
+      paneBox = { x: 0, y: 0, w: el.clientWidth, h: el.clientHeight };
     };
     const ro = new ResizeObserver(read);
     ro.observe(el);
@@ -520,7 +536,7 @@
   const glassRegions = $derived(
     model.regions
       .filter((r) => r.glass)
-      .map((r) => ({ ...r, ...glassAt(r.glass!, { w: r.w, h: r.h }, glassBox) })),
+      .map((r) => ({ ...r, ...glassAt(r.glass!, { w: r.w, h: r.h }, paneBox) })),
   );
   const wallCards = $derived(model.laid.filter((n) => !n.glass));
   const glassCards = $derived(
@@ -529,7 +545,7 @@
       /* At `wall` density, because the glass is 1:1 and that is the density 1:1
          gives. A card whose box changed with the wall's zoom while its position
          did not would be a thing in screen space measured in canvas units. */
-      .map((n) => ({ ...n, ...glassAt(n.glass!, CARD_BOX.wall, glassBox) })),
+      .map((n) => ({ ...n, ...glassAt(n.glass!, CARD_BOX.wall, paneBox) })),
   );
   /** Every card's box in **screen pixels**, which is the one frame a strand can
    *  reach both a card on the wall and a card stuck to the glass in.
@@ -579,7 +595,7 @@
     /* On the glass the pane is 1:1, so its own coordinates already are screen
        coordinates — the bargain `glassCards` strikes in `cardBoxes`. */
     if (spot) {
-      const at = glassAt(spot, { w: w.w, h: w.h }, glassBox);
+      const at = glassAt(spot, { w: w.w, h: w.h }, paneBox);
       return { x: at.x, y: at.y, w: w.w, h: w.h };
     }
     return screenBox({ x: w.x, y: w.y, w: w.w, h: w.h }, view);
@@ -598,13 +614,13 @@
   const glassImages = $derived(
     board.images
       .filter((i) => spotOf(i))
-      .map((i) => ({ ...i, ...glassAt(spotOf(i)!, { w: i.w, h: i.h }, glassBox) })),
+      .map((i) => ({ ...i, ...glassAt(spotOf(i)!, { w: i.w, h: i.h }, paneBox) })),
   );
   const wallWidgets = $derived(widgets.items.filter((w) => !spotOf(w)));
   const glassWidgets = $derived(
     widgets.items
       .filter((w) => spotOf(w))
-      .map((w) => ({ ...w, ...glassAt(spotOf(w)!, { w: w.w, h: w.h }, glassBox) })),
+      .map((w) => ({ ...w, ...glassAt(spotOf(w)!, { w: w.w, h: w.h }, paneBox) })),
   );
   /** A patch aimed at a thing on the pane. `ImageNode` and `WidgetNode` know
    *  one pair of coordinates and are handed the glass ones, so what comes back
@@ -665,7 +681,7 @@
          and the menu does not offer this for one (see `held` in App). */
       const at = spotOf(studio.placements[id])
         ? null
-        : stickTo({ x: n.x, y: n.y, ...CARD_BOX[studio.lod] }, view, CARD_BOX.wall, glassBox);
+        : stickTo({ x: n.x, y: n.y, ...CARD_BOX[studio.lod] }, view, CARD_BOX.wall, paneBox);
       const was = placementOf(id);
       studio.stick(id, at);
       onstick?.(id, at);
@@ -676,7 +692,7 @@
     } else if (kind === "region") {
       const r = model.regions.find((r) => r.cwd === id);
       if (!r) return;
-      const to = r.glass ? null : stickTo(r, view, { w: r.w, h: r.h }, glassBox);
+      const to = r.glass ? null : stickTo(r, view, { w: r.w, h: r.h }, paneBox);
       const was = standOf(id);
       onstickproject?.(id, to);
       /* The `now` is computed rather than read back: the project row is written
@@ -702,12 +718,12 @@
     } else if (kind === "image") {
       const i = board.images.find((i) => i.id === id);
       if (!i) return;
-      const at = spotOf(i) ? null : stickTo(i, view, { w: i.w, h: i.h }, glassBox);
+      const at = spotOf(i) ? null : stickTo(i, view, { w: i.w, h: i.h }, paneBox);
       board.update(id, { glassX: at?.x ?? null, glassY: at?.y ?? null });
     } else {
       const w = widgets.items.find((w) => w.id === id);
       if (!w) return;
-      const at = spotOf(w) ? null : stickTo(w, view, { w: w.w, h: w.h }, glassBox);
+      const at = spotOf(w) ? null : stickTo(w, view, { w: w.w, h: w.h }, paneBox);
       widgets.update(id, { glassX: at?.x ?? null, glassY: at?.y ?? null });
     }
   }
@@ -1317,8 +1333,8 @@
     if (glass) {
       /* Drawn positions carry the pane's offset (`glassAt`); what a drag writes
          back is a stored spot, which does not. Zero unless spread. */
-      const ox = glassBox.x;
-      const oy = glassBox.y;
+      const ox = paneBox.x;
+      const oy = paneBox.y;
       return {
         cards: glassCards.map((n) => ({
           id: n.conv.id,
@@ -2387,7 +2403,7 @@
      message. `main.wall` is `display: flex` with `.surface` its first child, so
      the two boxes share an origin and one set of screen coordinates serves
      both. -->
-<Flow {flights} boxes={cardBoxes} pane={glassBox} />
+<Flow {flights} boxes={cardBoxes} pane={paneBox} />
 
 <!-- ── the glass ──────────────────────────────────────────────────────────
      The pane, and the one thing about this feature that is a matter of where
@@ -2448,7 +2464,8 @@
   {#if timelines.length}
     <Lintel
       {timelines}
-      pane={glassBox}
+      pane={paneBox}
+      home={homeBox}
       ownerOf={(id) => {
         const c = convs.find((c) => c.id === id);
         return c ? { tier: c.tier, handle: cardHandle(c.id) } : null;
@@ -2464,7 +2481,7 @@
        this is over them because a wisp is traffic — the same layering argument
        the note above `Lineage` makes, from the other side. Screen space, and
        `cardBoxes` is the same map both are handed. -->
-  <Wisps boxes={cardBoxes} target={registerBox} viewport={glassBox} />
+  <Wisps boxes={cardBoxes} target={registerBox} viewport={paneBox} />
 </div>
 
 <style>

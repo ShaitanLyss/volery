@@ -59,6 +59,15 @@ resize them, and they go over the transcript panel but never over the dock or th
   to be drawn on the pane and only one of them is something you did to the card; "put it back
   on the wall" is a promise it cannot keep while its territory is still carrying it. Offering
   nothing is a real answer here, as it is for prose with no selection.
+- **The pane is every screen while the studio is spread**, and a spot belongs to a *screen
+  arrangement* rather than to the wall. Those two are one change: the pane used to be the home
+  screen's share of the window even over three monitors, on the argument that what was stuck to
+  the glass belongs to the home screen and stays there — which was right **given one set of
+  spots**, since one set cannot describe two rooms and the alternative was that spreading
+  scattered an arrangement you had made. `.claude/rules/arrange.md` is the other half, and
+  widening the pane without it is the bug that argument was avoiding. What still hangs off the
+  home screen is anything with no position of its own: the timeline stack, since centring a
+  default across every screen puts it on a seam between two monitors.
 - **Clamped where it is drawn, not where it is stored** (`glassAt`). The pane has edges where
   the wall has none, so a spot that was fine yesterday can be off it today — a narrower
   window, a wider panel, a smaller screen. Squeezing the window borrows a thing back from the
@@ -92,7 +101,9 @@ resize them, and they go over the transcript panel but never over the dock or th
 
 Screen pixels in SQLite is unlike everything else in `store.rs`, and they are still studio
 data rather than viewport state: where you put a thing is something you *made*, unlike where
-you happen to be looking. What depends on the window is handled where it is drawn.
+you happen to be looking. What depends on the window is handled where it is drawn — and what
+depends on the *screens* is handled by storing a set of spots per arrangement, which is the
+same argument one step out.
 
 The control surface has a `glass` op (`kind` + an id; with `x`/`y` it moves something already
 on the pane, without them it is the menu item), and `snapshot` carries `glass` on each card's

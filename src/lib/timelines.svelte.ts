@@ -12,6 +12,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { timelineOf, type Timeline } from "./timeline";
+import type { Spots } from "./widgets.svelte";
 
 /** `Array.prototype.with`, which ES2022 does not have. */
 function swap<T>(list: T[], at: number, value: T): T[] {
@@ -81,6 +82,22 @@ export class Timelines {
     const at = this.shown.findIndex((t) => t.id === id);
     if (at !== -1) this.shown = swap(this.shown, at, { ...this.shown[at], glassX: x, glassY: y });
     await this.#call("place_timeline", { id, x, y });
+  }
+
+  /** Move every plate to where it stands in the arrangement just adopted.
+   *
+   *  No write of its own, unlike its four siblings: `place` is the only thing
+   *  that persists a plate's spot and Rust has already written these columns.
+   *  Nothing here is on the undo stack either, so there is nothing to forget. */
+  adoptGlass(spots: Spots) {
+    for (let i = 0; i < this.shown.length; i++) {
+      const t = this.shown[i];
+      const at = spots[t.id];
+      const x = at ? at[0] : null;
+      const y = at ? at[1] : null;
+      if (t.glassX === x && t.glassY === y) continue;
+      this.shown = swap(this.shown, i, { ...t, glassX: x, glassY: y });
+    }
   }
 
   /** Hand a left timeline to the card that has just adopted its session. */

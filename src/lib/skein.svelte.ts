@@ -3545,6 +3545,24 @@ export class Skein {
     }).catch(() => {});
   }
 
+  /** Move every territory to where it stands in the arrangement just adopted.
+   *
+   *  No write: Rust has already written `project.glass_x`, and the caller is
+   *  the thing that asked it to. Answers the roots it moved, so the undo stack
+   *  can forget what it knows about them — see `Studio.adoptGlass`. */
+  adoptProjectGlass(spots: Record<string, [number, number]>): string[] {
+    const moved: string[] = [];
+    this.projects = this.projects.map((p) => {
+      const at = spots[p.root_path];
+      const x = at ? at[0] : null;
+      const y = at ? at[1] : null;
+      if (p.glassX === x && p.glassY === y) return p;
+      moved.push(p.root_path);
+      return { ...p, glassX: x, glassY: y };
+    });
+    return moved;
+  }
+
   /* ── where the territories sit ────────────────────────────────────────
    *
    * The wall reads a territory's position off the project row, so this updates

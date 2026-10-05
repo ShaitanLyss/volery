@@ -260,6 +260,39 @@ export class Studio {
     };
   }
 
+  /** Move every card to where it stands in the arrangement just adopted.
+   *
+   *  One pass over the record rather than a `stick` apiece, because this is one
+   *  gesture about the screens and not many about cards — and because `stick`
+   *  would create a placement for every card the new room has nothing to say
+   *  about, which is a wall-position-of-record for a card that has none.
+   *
+   *  Nothing is written: Rust has already written these columns, and the caller
+   *  is the thing that asked it to. Answers the ids it moved, so the undo stack
+   *  can forget them — their history names another room's coordinates now. */
+  adoptGlass(spots: Record<string, [number, number]>): string[] {
+    const moved: string[] = [];
+    const next = { ...this.placements };
+    for (const [id, p] of Object.entries(next)) {
+      const at = spots[id];
+      const x = at ? at[0] : null;
+      const y = at ? at[1] : null;
+      if (p.glassX === x && p.glassY === y) continue;
+      moved.push(id);
+      next[id] = { ...p, glassX: x, glassY: y };
+    }
+    /* A card with no placement at all can still be stuck to the glass here —
+       flowing on the wall and pinned to the pane is a real state (`stick` makes
+       it). The loop above cannot see one, because there is no record to walk. */
+    for (const [id, at] of Object.entries(spots)) {
+      if (id in next) continue;
+      moved.push(id);
+      next[id] = { x: 0, y: 0, pinned: false, glassX: at[0], glassY: at[1] };
+    }
+    if (moved.length) this.placements = next;
+    return moved;
+  }
+
   zoomAt(screenX: number, screenY: number, factor: number) {
     const next = clamp(this.scale * factor, MIN_SCALE, MAX_SCALE);
     if (next === this.scale) return;

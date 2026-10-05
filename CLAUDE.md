@@ -53,7 +53,7 @@ bun run check            # svelte-check + tsc over src/**
 bun run build            # vite build → dist/
 bun run tauri build      # bundle
 
-bun run test             # the pure suites: ansi, classify, adopt, layout, pick, wheel, glass, specs, history, menu,
+bun run test             # the pure suites: ansi, classify, adopt, layout, pick, wheel, glass, arrange, specs, history, menu,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
                          # hunt,
                          # presets,
@@ -95,7 +95,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # usage.rs,
                               # tunnel.rs, applog.rs,
                               # limits.rs,
-                              # timeline.rs
+                              # timeline.rs, arrange.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 bun tools/probe-prices.ts          # whether usage.ts's price table still agrees with the
                                    # installed CLI's own rates, which it encodes as
@@ -207,6 +207,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `restore.md` | painting the wall from SQLite, rousing dormant cards, setting one aside, scrollback and adopting sessions Skein did not start | `rousing.ts`, `skein.svelte.ts`, `history.ts`, `sessions.rs` |
 | `theme.md` | how the reading is set: a theme as a diff against `tokens.css`, the revert guarantee, the eleven knobs and why each is arguable, deriving and carrying one off the machine | `theme.ts`, `theme.svelte.ts`, `Themes.svelte`, `tokens.css` |
 | `panel.md` | the transcript: markdown parsing, folding tool calls, opening one to see its arguments and result, panel width, reading size, the two rails, keyboard scrolling, following the tail, finding a word in it | `Transcript.svelte`, `Markdown.svelte`, `markdown.ts`, `outline.ts`, `follow.ts`, `transcript.ts`, `toolcall.ts`, `ToolCall.svelte`, `copy.ts`, `hunt.ts` |
+| `arrange.md` | one glass per room: what a screen arrangement is and why it is a shape rather than a set of monitors, the alignment search that replaced trusting the normalisation, the columns as a cache of the room you are in, and why a copy is shifted by the pane's origin | `arrange.ts`, `arrange.svelte.ts`, `arrange.rs` |
 | `layout.md` | territories, the flow, pinning, the two-box viewport, `CARD_BOX`, the three pointer gestures, one selection over four kinds and the band that draws it, and an agent putting an image on the wall beside its card | `layout.ts`, `pick.ts`, `Canvas.svelte`, `studio.svelte.ts`, `images.svelte.ts`, `pin.rs` |
 | `undo.md` | taking it back: one shape for four realms, the boundary that keeps prompts and the viewport off the stack, why a drag is one press, and the image file that is no longer deleted with its row | `undo.ts`, `undo.svelte.ts` |
 | `widgets.md` | the widget catalogue and its knobs, the clock, the performance meter, and the four logs over one substrate — including the app's own, and why it had none until 2026-08-28 | `widgets.ts`, `WidgetNode.svelte`, `Clock.svelte`, `perf.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`, `unreallog.ts`, `applog.ts`, `applog.rs` |
@@ -352,7 +353,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `unreallog.ts`,
 `gears.ts`, `handoff.ts`,
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
-`timeline.ts`) are pure
+`timeline.ts`, `arrange.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

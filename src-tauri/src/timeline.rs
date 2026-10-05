@@ -1229,6 +1229,7 @@ pub fn place_timeline(
             params![id, x, y],
         )
         .map_err(|e| e.to_string())?;
+        crate::arrange::note(&conn, crate::arrange::TIMELINE, &id, x, y);
     }
     changed(&app, &id);
     Ok(())

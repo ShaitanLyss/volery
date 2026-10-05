@@ -171,6 +171,7 @@
   import { Editor } from "./lib/nvim.svelte";
   import WindowControls from "./lib/WindowControls.svelte";
   import { span } from "./lib/span.svelte";
+  import { arrangements } from "./lib/arrange.svelte";
   import { homeInsets, spreadPan } from "./lib/span";
 
   const studio = new Studio();
@@ -1095,6 +1096,55 @@
       studio.save();
     });
   });
+  /* ── which room the glass is in ───────────────────────────────────────
+     Where you put something on the glass is a fact about the screens in front
+     of you, and this window has two quite different sets of them: unspread it
+     is one screen's worth, spread it is every monitor at once. Those are not
+     one room with more furniture in it, so a spot is stored per *arrangement*
+     and the glass follows the screens — see `arrange.ts` for what an
+     arrangement is, `arrange.rs` for what is on the glass in one.
+
+     Asked off `attention.focused` rather than on a clock, for the reason the
+     release check next door is: nothing emits an event when a monitor is
+     plugged in or the window is dragged onto another screen, but coming back
+     to the window is when the answer can have changed and is also when it is
+     worth having. The spread is the other trigger, and that one *is* an event.
+     Everything past the first question is bounded by `settle`, which returns
+     nothing at all unless the fingerprint actually moved. */
+  $effect(() => {
+    if (!skein.loaded) return;
+    const spreading = !!span.view;
+    void attention.focused;
+    untrack(() => void settleArrangement(spreading));
+  });
+
+  async function settleArrangement(spreading: boolean) {
+    /* Where the pane's own top-left is inside the glass. The glass *is* the
+       wall on one screen, so zero; spread, it is fixed to the whole window and
+       the wall is the home screen's share of it, which starts below the header.
+       Derived rather than measured off `Canvas`, which reads it with a
+       ResizeObserver that may not have run yet when the spread lands — and the
+       store only uses it to shift a copied arrangement, where a few pixels of
+       chrome either way is nothing a clamp does not absorb. */
+    const origin: [number, number] = spread
+      ? [spread.x, spread.y + (bar?.offsetHeight ?? 0)]
+      : [0, 0];
+    const spots = await arrangements.settle(spreading, origin);
+    if (!spots) return;
+    /* Each holder answers what it actually moved, and the stack is told to
+       forget those records. Not `undo.clear()`: the stack also holds renames
+       and deletions that have nothing to do with screens, and losing the
+       ability to undo a closed card because you pressed the spread button
+       would be a worse bug than the one this fixes. But a glass position *is*
+       a room's coordinates, so an act holding one from the room you have just
+       left can never be written back honestly. */
+    for (const id of studio.adoptGlass(spots.cards)) undo.drop("placement", id);
+    for (const cwd of skein.adoptProjectGlass(spots.projects)) undo.drop("territory", cwd);
+    for (const id of board.adoptGlass(spots.images)) undo.drop("image", id);
+    for (const id of widgets.adoptGlass(spots.widgets)) undo.drop("widget", id);
+    skein.timelines.adoptGlass(spots.timelines);
+  }
+
   const panelPx = $derived(panelWidth(studio.panelW, roomW));
   let grip = $state<{ x: number; w: number } | null>(null);
 

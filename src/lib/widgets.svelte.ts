@@ -32,6 +32,10 @@ import { NO_PICKS, type Picker } from "./pick";
  *  timer had been going. See `timing.ts::bank`. */
 const BEAT_MS = 60_000;
 
+/** Where each thing on the glass sits in the arrangement just adopted, by id.
+ *  Anything absent is on the wall there. See `arrange.svelte.ts`. */
+export type Spots = Record<string, [number, number]>;
+
 export class Widgets {
   items = $state<Widget[]>([]);
   fault = $state<string | null>(null);
@@ -186,6 +190,32 @@ export class Widgets {
 
   bringToFront(id: string) {
     this.update(id, { z: nextFrontZ(this.#stack()) });
+  }
+
+  /** Move every widget to where it stands in the arrangement just adopted.
+   *
+   *  Unrecorded, for the reason `beat` is: nobody asked for this, it is one
+   *  gesture about the *screens* rather than about any widget, and an undo that
+   *  rewound half of it would leave the wall in a room that does not exist.
+   *  Answers the ids it actually moved, so the stack can forget what it knows
+   *  about them — their history is in another room's coordinates now.
+   *
+   *  It goes through `#patch`, so it supersedes a drag's queued save rather
+   *  than racing it: `#saveSoon` clears the timer it finds. The write it
+   *  schedules is redundant — Rust wrote these columns itself — and that is
+   *  cheaper than the alternative, which is a stale debounced save landing
+   *  after the switch and writing the last room's spot into this one. */
+  adoptGlass(spots: Spots): string[] {
+    const moved: string[] = [];
+    for (const w of [...this.items]) {
+      const at = spots[w.id];
+      const x = at ? at[0] : null;
+      const y = at ? at[1] : null;
+      if (w.glassX === x && w.glassY === y) continue;
+      moved.push(w.id);
+      this.#patch(w.id, { glassX: x, glassY: y });
+    }
+    return moved;
   }
 
   async remove(id: string) {

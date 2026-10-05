@@ -300,7 +300,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 39;
+const SCHEMA_VERSION: i64 = 40;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -345,6 +345,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (37, migrate_v37),
     (38, migrate_v38),
     (39, migrate_v39),
+    (40, migrate_v40),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1941,6 +1942,44 @@ fn migrate_v39(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v39: {e}"))
 }
 
+/// Glass spots, kept per screen arrangement.
+///
+/// A CREATE rather than an ALTER, per the note on `SCHEMA_VERSION`: two new
+/// tables, and the five `glass_x`/`glass_y` column pairs are deliberately left
+/// exactly where they are. They become a cache of whichever arrangement is in
+/// front of you, so every read path in the app is untouched — `arrange.rs` has
+/// the whole of the bargain.
+///
+/// **Nothing is seeded here, and nothing is made current.** The key an existing
+/// wall's spots belong to is the shape of the screens, which is a question only
+/// the front end can answer and only once the monitors have. So the first
+/// `adopt_arrangement` of the first launch finds its row missing, finds nothing
+/// to clone from, and takes a copy of the columns — which is this migration's
+/// other half, written where the answer is actually available.
+fn migrate_v40(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS arrangement (
+            key          TEXT PRIMARY KEY,
+            screens_json TEXT NOT NULL,
+            seen_at      INTEGER NOT NULL,
+            current      INTEGER NOT NULL DEFAULT 0,
+            origin_x     REAL NOT NULL DEFAULT 0,
+            origin_y     REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS glass_spot (
+            arrangement  TEXT NOT NULL,
+            kind         TEXT NOT NULL,
+            ref          TEXT NOT NULL,
+            x            REAL NOT NULL,
+            y            REAL NOT NULL,
+            PRIMARY KEY (arrangement, kind, ref)
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v40: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -2442,6 +2481,7 @@ fn stick_row(
         params![root_path, x, y],
     )
     .map_err(|e| e.to_string())?;
+    crate::arrange::note(conn, crate::arrange::PROJECT, root_path, x, y);
     Ok(())
 }
 
@@ -3646,6 +3686,7 @@ pub fn save_placement(
         params![conversation_id, x, y, pinned as i64, glass_x, glass_y],
     )
     .map_err(|e| e.to_string())?;
+    crate::arrange::note(&conn, crate::arrange::CARD, &conversation_id, glass_x, glass_y);
     Ok(())
 }
 
@@ -4273,6 +4314,7 @@ pub fn save_image(store: tauri::State<'_, Store>, image: RefImage) -> Result<(),
         ],
     )
     .map_err(|e| e.to_string())?;
+    crate::arrange::note(&conn, crate::arrange::IMAGE, &image.id, image.glass_x, image.glass_y);
     Ok(())
 }
 
@@ -4640,6 +4682,7 @@ fn save_widget_row(conn: &Connection, w: &Widget) -> Result<(), String> {
         ],
     )
     .map_err(|e| e.to_string())?;
+    crate::arrange::note(conn, crate::arrange::WIDGET, &w.id, w.glass_x, w.glass_y);
     Ok(())
 }
 
