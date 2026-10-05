@@ -180,6 +180,49 @@ or away mode begins with the exact thing it exists to prevent still sitting in t
   not exist. What is worth knowing instead is how long it has stood, which is what makes a
   pile readable in any order.
 
+### The pile had no door of its own, and that is a class of bug
+
+`presence.showing` was written in exactly two places for the whole of away mode's first life:
+`comeBack`, which opened it, and the panel's own close. The panel also shuts on a `mousedown`
+anywhere on its scrim — which is right, and is how `Ask.svelte`'s sheet behaves — so the pile
+could be dismissed with one stray click and then had **no way back in**. The only route was
+going away again and coming back, which is `z` twice and is a gesture nobody would guess from
+looking at the wall. Lyss hit it on 2026-10-05 with two cards' questions in the queue and
+reasonably asked whether they were gone.
+
+They were not, and the distinction is the useful part: **nothing about this was a data bug.**
+A `deferred_ask` row is deleted by `store::take_deferred_ask` when the question is answered
+and by `drop_deferred_asks_of` when the asking card is closed, and by nothing else — not by
+the panel, not by a restart, not by presence changing. `showing` is a reading of the queue and
+never the queue. So the whole of the loss was in the gesture, and the whole of the fix is a
+way to make it again.
+
+The general shape is worth stating, because away mode is the subsystem most prone to it:
+**a surface whose only door is the event that created it is a surface you get one look at.**
+Anything else that opens itself in response to something happening — and this file is full of
+them — owes a second way in that does not require the event to happen twice.
+
+What it got is the two the house style asks for, both going through one verb
+(`Presence.openPile`, so the button and the chord cannot disagree):
+
+- **A chrome button, absent until something is in it.** It is `register`'s argument verbatim —
+  a thing that happened while you were away leaves no mark on the wall, so the count has
+  nowhere else to be — and the stronger case of the two, since the chronicle is a thing to
+  read and this is a card waiting on you. Achromatic anyway, for `register`'s reason. It folds
+  later than `away` and before the readings: when something is waiting it is the most
+  important item in the bar, and giving it up for the zoom would be the fold inverted.
+- **`<space>p`**, for the pile. Deliberately not in the `i` family — `i` is *"I'm …"*, a claim
+  about where you are, and this is not one — and deliberately not a second spelling of `z`,
+  since coming back and reading the pile being one gesture is the bug. `q` was the obvious
+  letter and is left free: `test/leader.test.ts` spends it as its example of a key that
+  completes no chord, after nvim's `<space>q`.
+
+**An empty pile does not open**, from either door, and that is not tidiness: `Vigil.svelte`
+*is* the pile, so an empty one is not a smaller version of that panel — it is a panel
+reporting "0 questions from 0 cards", which is an instrument reading nothing. `pileOpens` in
+`presence.ts` is the whole rule, pure and asserted, for the purity boundary's reason: what a
+gesture does is testable and the rune holding the answer is not.
+
 ### The answer is yours, so it is drawn as yours
 
 `answerEnvelope` deliberately carries **no relay mark**. `relay.ts` recognises five shapes

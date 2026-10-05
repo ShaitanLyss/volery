@@ -50,7 +50,7 @@ export type ShelfId = ToyId | PuzzleId;
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
-  | { kind: "open"; what: "timelines" }
+  | { kind: "open"; what: "timelines" | "pile" }
   | { kind: "window"; act: "span" }
   | { kind: "presence"; act: "toggle" };
 
@@ -95,6 +95,19 @@ export const CHORDS: readonly Chord[] = [
   /* `a` for the archive: one letter, because it is a place you go rather than
      a family of things, and nothing else here begins with it. */
   { keys: "a", label: "archived timelines", verb: { kind: "open", what: "timelines" } },
+  /* `p` for the pile of questions that built up while you were away. One
+     letter, on the same argument `a` makes — a place you go rather than a
+     family of things, and nothing else here begins with it. `q` was the
+     obvious letter and is deliberately left free: `test/leader.test.ts` spends
+     it as its example of a key that completes no chord, after nvim, where
+     `<space>q` leaves you holding a `q`.
+
+     It is not in the `i` family with `ia`, and that is not arbitrary: `i` is
+     *"I'm …"*, a claim about where you are, and this is not one. It is also
+     deliberately not a second spelling of `z` — coming back and reading the
+     pile were one gesture for as long as the pile could only be opened by
+     coming back, which is the gap this closes. */
+  { keys: "p", label: "questions that piled up", verb: { kind: "open", what: "pile" } },
   /* `w` is the window, after nvim's `<C-w>` family: what the studio window
      itself does rather than anything on the wall. A family rather than a
      letter, because placing a window is several verbs (maximise, minimise,

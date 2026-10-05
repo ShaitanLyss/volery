@@ -117,6 +117,21 @@ export function waitingCount(asks: Deferred[], acts: Act[] = []): number {
   return asks.reduce((n, a) => n + a.questions.length, 0) + acts.length;
 }
 
+/** Whether the pile button, or the `p` chord, opens anything.
+ *
+ *  A press is a toggle while the panel is up and a *refusal* while the pile is
+ *  empty — `Vigil.svelte` draws the pile and nothing else, so an empty one is
+ *  not a smaller version of that panel, it is a panel reporting that nothing
+ *  happened in the words "0 questions from 0 cards".
+ *
+ *  Pure and here rather than beside the `$state` it sets, for the reason the
+ *  purity boundary gives: the arithmetic of what a gesture does is testable and
+ *  the rune holding the answer is not. `presence.svelte.ts::openPile` is the
+ *  one caller. */
+export function pileOpens(showing: boolean, asks: Deferred[], acts: Act[] = []): boolean {
+  return !showing && waitingCount(asks, acts) > 0;
+}
+
 /** How long something has stood, in the shape a person reads.
  *
  *  Its own function rather than `later.rs::said`'s, which is the same idea in

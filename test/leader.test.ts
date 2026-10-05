@@ -156,6 +156,7 @@ describe("the which-key hint", () => {
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
       { keys: "ia", label: "I'm away / back" },
+      { keys: "p", label: "questions that piled up" },
       { keys: "tc", label: "casse-tête" },
       { keys: "td", label: "dérivée" },
       { keys: "tk", label: "croquis" },

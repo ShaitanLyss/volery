@@ -389,7 +389,10 @@
      without either of them knowing the other exists. */
   const leader = new Leader((verb) => {
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
-    else if (verb.kind === "open") showAnnals = true;
+    else if (verb.kind === "open") {
+      if (verb.what === "pile") presence.openPile();
+      else showAnnals = true;
+    }
     else if (verb.kind === "window") void span.toggle();
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.toy === "synth") synth.show();
@@ -3164,6 +3167,7 @@
     "fit",
     "servers",
     "shell",
+    "pile",
     "away",
     "find",
     "ambience",
@@ -3218,6 +3222,12 @@
     "layout",
     "token",
     "away",
+    /* Given up after `away` and before the readings, which is as late as a verb
+       gets here. It is only in the bar at all when something is waiting, and
+       when something is waiting it is the most important thing in the bar —
+       giving it up to make room for the zoom would be the fold getting the
+       priority exactly backwards. */
+    "pile",
     "zoom",
     "live",
     "spend",
@@ -3240,10 +3250,10 @@
    *  overflow is what stops it looking broken in the meantime. */
   let measured = $state(false);
 
-  /** The foldable items that are in the bar at all right now — `spend` and
-   *  `live` come and go with the wall. Decided in one place, because the ruler
-   *  and the bar disagreeing about what exists is a measurement of something
-   *  that is not there. */
+  /** The foldable items that are in the bar at all right now — `spend`,
+   *  `live` and the pile come and go with the wall. Decided in one place,
+   *  because the ruler and the bar disagreeing about what exists is a
+   *  measurement of something that is not there. */
   const barPresent = $derived(
     new Set(
       FOLD_ORDER.filter((k) =>
@@ -3253,7 +3263,9 @@
             ? skein.live > 0
             : k === "timelines"
               ? skein.timelines.archivedCount > 0
-              : true,
+              : k === "pile"
+                ? presence.waiting > 0
+                : true,
       ),
     ),
   );
@@ -3413,6 +3425,24 @@
          see FOLD_ORDER, where it is given up late: it is the one switch whose
          *state* is information even when you are not using it, since a wall
          that is quiet for a reason looks exactly like a wall that is broken. */
+      /* The pile's own door, and `register`'s argument verbatim one subsystem
+         over: a question asked while you were out leaves no mark on the wall,
+         so the count has nowhere else to be. It is the stronger case of the two
+         — the chronicle is a thing to read and this is a card waiting on you.
+         Achromatic anyway, for `register`'s reason: colour on this wall is
+         status, this is a count, and an amber chrome item would be a second
+         answer to how Volery gets your attention.
+         **Absent until something is in it**, like `timelines`: a button that
+         opens an empty pile is a button asking to be pressed for nothing, and
+         `openPile` refuses that call from the keyboard side for the same
+         reason. */
+      {
+        key: "pile",
+        label: `${presence.waiting} waiting`,
+        title: `${presence.waiting} ${presence.waiting === 1 ? "question" : "questions"} queued while you were away — read them (space then q)`,
+        on: presence.showing,
+        press: () => presence.openPile(),
+      },
       {
         key: "away",
         label: presence.away ? "away" : "i'm away",

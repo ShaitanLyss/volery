@@ -23,6 +23,7 @@ import {
   gateOnReturn,
   isAwayScreen,
   pileOf,
+  pileOpens,
   waitingCount,
   type Act,
   type AwayScreen,
@@ -90,8 +91,8 @@ export class Presence {
   /** Whether a small puzzle stands between you and the wall on the way back. */
   toys = $state(stored(TOYS_KEY, true));
 
-  /** The pile is open. Set when away ends with something waiting, and by the
-   *  header button; cleared when the last question is answered or you shut it.
+  /** The pile is open. Set when away ends with something waiting, and by
+   *  `openPile`; cleared when the last question is answered or you shut it.
    *  Held here rather than in `App.svelte` because `endAway` is what opens it
    *  and that is a verb on this class. */
   showing = $state(false);
@@ -270,6 +271,28 @@ export class Presence {
     const anything = this.asks.length > 0 || this.acts.length > 0;
     this.showing = anything;
     return anything;
+  }
+
+  /** Open the pile, or shut it again. The header button's and the `q` chord's
+   *  one verb, which is why it lives here rather than being two expressions in
+   *  `App.svelte`.
+   *
+   *  **It was once only reachable through `comeBack`**, and that was the bug:
+   *  nothing but coming back set `showing`, so shutting the panel — or a
+   *  mousedown landing on its scrim — stranded a pile that was still sitting in
+   *  `deferred_ask` behind a round trip out of presence and back into it. The
+   *  data was never at risk; the way back in did not exist. The class of
+   *  mistake is worth naming, since away mode is the one subsystem prone to it:
+   *  **a surface whose only door is the event that created it is a surface you
+   *  get one look at.**
+   *
+   *  It opens onto nothing when the pile is empty, and refuses rather than
+   *  drawing "0 questions from 0 cards" — the panel *is* the pile, so an empty
+   *  one is not a smaller version of this panel. Returns whether it opened,
+   *  which is what lets a caller say so. */
+  openPile(): boolean {
+    this.showing = pileOpens(this.showing, this.asks, this.acts);
+    return this.showing;
   }
 
   /** Claim one, so it cannot be answered twice. The answer is sent *after*

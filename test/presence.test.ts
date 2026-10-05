@@ -8,6 +8,7 @@ import {
   isAwayScreen,
   lasted,
   pileOf,
+  pileOpens,
   stood,
   waitingCount,
   type Act,
@@ -117,6 +118,35 @@ describe("the pile", () => {
     /* One row in the table, three decisions in front of you. A pile counted by
        rows would say "1 question" to somebody with three to make. */
     expect(waitingCount([d, ask("y", "beta", 1)])).toBe(4);
+  });
+});
+
+describe("the pile's own door", () => {
+  /* It had none until 2026-10-05: `showing` was written by `comeBack` and by
+     the panel's close, so shutting it — or a mousedown landing on the scrim —
+     put a pile that was still sitting in `deferred_ask` behind a round trip out
+     of presence and back into it. Nothing was ever lost; the way back in did
+     not exist. */
+  test("something waiting, and a press opens it", () => {
+    expect(pileOpens(false, [ask("1", "alpha", 100)])).toBe(true);
+  });
+
+  test("already up, and a press shuts it", () => {
+    expect(pileOpens(true, [ask("1", "alpha", 100)])).toBe(false);
+  });
+
+  test("an empty pile does not open", () => {
+    /* `Vigil.svelte` *is* the pile, so an empty one is not a smaller version of
+       that panel — it is a panel saying "0 questions from 0 cards", which is a
+       reading of nothing. The bar button is absent for the same reason. */
+    expect(pileOpens(false, [])).toBe(false);
+  });
+
+  test("an act on its own is enough to open it", () => {
+    /* The two halves of the pile are counted together everywhere else, and a
+       door that only answered to questions would strand a card waiting on a
+       close or an unpost. */
+    expect(pileOpens(false, [], [act("1", "alpha", 100)])).toBe(true);
   });
 });
 
