@@ -279,6 +279,19 @@ export function nudgeReading(stored: number | null, deltaY: number): number {
 export const Z_CARD = 1000;
 export const Z_CHIP = 1001;
 export const Z_FRONT = 2000;
+/** The ceiling of the front band, and the floor of what rides over it.
+ *
+ * The front band had no top: `nextFrontZ` returned `max + 1` for ever, so after
+ * enough "bring to front"s nothing could name a number above everything
+ * standing on the wall. That is not a theoretical gap — `Lintel`'s layer sits
+ * deliberately *under* the front band (a widget brought forward should cover a
+ * plate at rest), and the layer isolates, so a timeline's hover card could not
+ * escape it and was drawn behind whichever widget had last been raised. With a
+ * ceiling the question "over everything standing" has an answer that keeps
+ * being true. `nextBackZ` already clamps for the same reason one band down, and
+ * pays the same price: two things at the ceiling are ordered by the document
+ * rather than by which was raised last. */
+export const Z_TOP = 2500;
 
 /** The next z for an image that should stay behind the wall's furniture. */
 export function nextBackZ(zs: number[]): number {
@@ -290,7 +303,8 @@ export function nextBackZ(zs: number[]): number {
 
 /** The next z for an image that should be in front of everything. */
 export function nextFrontZ(zs: number[]): number {
-  return Math.max(Z_FRONT, ...zs) + 1;
+  /* Never past the ceiling — see `Z_TOP`. */
+  return Math.min(Math.max(Z_FRONT, ...zs) + 1, Z_TOP - 1);
 }
 
 /** How big a card actually is at each density, in canvas units.

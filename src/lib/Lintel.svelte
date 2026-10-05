@@ -21,6 +21,7 @@
 
   import type { Tier } from "./classify";
   import Frise from "./Frise.svelte";
+  import { Z_TOP } from "./layout";
   import type { Timeline } from "./timeline";
 
   let {
@@ -51,6 +52,21 @@
 
   const stacked = $derived(timelines.filter((t) => t.glassX === null || t.glassY === null));
   const placed = $derived(timelines.filter((t) => t.glassX !== null && t.glassY !== null));
+
+  /** Which plate has a hover card open, if any.
+   *
+   *  The layer sits under the front band on purpose — a widget brought forward
+   *  should cover a plate that is merely standing there — and it isolates, so
+   *  `.hc`'s z-index cannot reach past it. The consequence was a hover card
+   *  drawn *behind* a raised widget, which is the one moment the plate is not
+   *  merely standing there: you are reading it. So while a card is open the
+   *  whole layer rides over the front band and goes back the moment it closes.
+   *  Bounded by the pointer, which is the same bargain `.plate:hover` strikes
+   *  one level in. */
+  let reading = $state<string | null>(null);
+  /** Guarded against a plate that went away while it was being read — a lifted
+   *  layer with nothing open in it would quietly cover every widget. */
+  const lifted = $derived(reading !== null && timelines.some((t) => t.id === reading));
 
   let layer = $state<HTMLDivElement | null>(null);
   /** Measured sizes, for keeping a moved plate fully on the pane. */
@@ -178,12 +194,14 @@
     canJump={!!owner}
     onjump={(rev) => onjump(t, rev)}
     onarchive={() => onarchive(t.id)}
+    onreading={(open) => (reading = open ? t.id : reading === t.id ? null : reading)}
   />
 {/snippet}
 
 <div
   class="timelines"
   bind:this={layer}
+  style:z-index={lifted ? Z_TOP : undefined}
   style:left={pane.x ? `${pane.x}px` : undefined}
   style:top={pane.y ? `${pane.y}px` : undefined}
   style:width={pane.x || pane.y ? `${pane.w}px` : undefined}

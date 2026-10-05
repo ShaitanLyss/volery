@@ -35,6 +35,7 @@
     onjump,
     onarchive,
     onresume,
+    onreading,
   }: {
     t: Timeline;
     /** The owning card's status — the one colour the plate is allowed, and
@@ -51,6 +52,11 @@
     onjump?: (rev: number) => void;
     onarchive?: () => void;
     onresume?: () => void;
+    /** Whether a hover card is open, for whoever holds the layer this plate is
+     *  drawn in. A card being read has to ride over everything standing on the
+     *  wall, and a layer that isolates is the only thing that can lift it —
+     *  `.hc`'s own z-index orders it among its siblings and nowhere else. */
+    onreading?: (open: boolean) => void;
   } = $props();
 
   const rail = $derived(width ?? railWidth(t.plan.steps.length));
@@ -61,6 +67,13 @@
   const railH = $derived(fr.height + 22);
 
   let hovered = $state<number | null>(null);
+  $effect(() => {
+    const open = hovered !== null;
+    onreading?.(open);
+    /* Unmounting while hovered would otherwise leave the layer lifted with
+       nothing in it to read. */
+    return () => open && onreading?.(false);
+  });
 
   const HC_W = 272;
   /** The card's left edge relative to its span, kept inside the plate. */

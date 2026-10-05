@@ -31,6 +31,7 @@ import {
   lodFor,
   nextBackZ,
   nextFrontZ,
+  Z_TOP,
   READ_MAX,
   READ_MIN,
   READ_REST,
@@ -656,6 +657,16 @@ describe("one stacking order for the whole wall", () => {
       expect(z).toBeGreaterThan(Math.max(...zs));
       zs = [...zs, z];
     }
+  });
+
+  test("the front band never climbs past the ceiling", () => {
+    /* It used to return max+1 for ever, so nothing could name a number above
+       everything standing on the wall — and `Lintel`'s layer, which has to go
+       over the front band while a hover card is being read, had no number to
+       use. A timeline's hover card was drawn behind the last-raised widget. */
+    expect(nextFrontZ([Z_TOP - 1])).toBeLessThan(Z_TOP);
+    expect(nextFrontZ([Z_TOP + 400])).toBeLessThan(Z_TOP);
+    expect(nextFrontZ([1, 2, 3])).toBeLessThan(Z_TOP);
   });
 
   test("a new image lands behind the work, not over it", () => {
