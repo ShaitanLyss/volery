@@ -93,7 +93,16 @@ const REMOVE_ITEMS = [
   "fn paths_from",
   "fn narrow_temp",
   "fn reserved",
+  "fn untouched",
+  "fn in_temp",
+  "const SCRATCH_WORDS",
+  "fn scratch_seg",
+  "fn scratch_named",
+  "fn others_scratch",
+  "fn ignore_source",
+  "fn ignored_scratch",
   "fn unasked",
+  "fn why_unasked",
   "const REMOVE_TOOL",
 ];
 
@@ -153,6 +162,12 @@ const REMOVE_TESTS = [
   "the_schema_promises_no_self_serve_tier_and_no_way_back",
   "fn temp_root",
   "only_untouched_scratch_inside_temp_goes_unasked",
+  "a_scratch_name_is_the_whole_segment",
+  "the_name_is_looked_for_in_directories_below_the_repository_root",
+  "the_shared_and_the_other_cards_scratch_are_not_mine",
+  "an_ignore_rule_is_traced_to_the_file_it_came_from",
+  "an_ignored_scratch_directory_inside_a_repository_goes_unasked",
+  "the_no_click_result_names_the_tier",
   "a_temp_directory_pointed_somewhere_broad_is_not_one",
 ];
 

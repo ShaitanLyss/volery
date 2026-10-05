@@ -130,6 +130,95 @@ of it, or contains a territory. Roots are canonicalized before comparison — `t
 form (`LYSS~1.DEL`) on this machine, and the targets are long-form. The refusals all still run
 first; the tier only decides whether the question is worth putting.
 
+### And then a second, where the authority is the repository
+
+The temp tier could not reach the case that actually hurts, and the reason is a convention this
+repo *instructs*: `CLAUDE.md` tells every card to put its working files in
+`.scratch-$SKEIN_CARD/` **at the repo root**, not in `%TEMP%`. So `in_temp`'s
+`repo_root.is_none()` — correct for what it was built for — refuses every path the convention
+produces. On 2026-10-05 that meant a click on `workbench\nova\.scratch-9589a966\old`: a card's
+own scratch directory, inside a repository that disowns the whole family by three separate
+`.gitignore` lines, holding an aside the same card had made ten minutes earlier.
+
+`ignored_scratch` spends that tier, and it is the first tier's argument made by a different
+authority. The temp tier's claim is *the OS says scratch goes here*. This one's is **the
+repository says this is not part of itself** — plus a *name* saying what the directory is,
+because the ignore is not sufficient alone: `.env` is ignored and irreplaceable,
+`node_modules` is ignored and enormous. Two statements, and the point of both is that neither
+is the agent's. The judgement §"Everything asks" refuses to spend is still unspent — no card
+is trusted to say "it is only a build cache".
+
+What it deliberately does not cover: an *untracked* `nova\old`. Untracked is how new work looks
+before anybody writes it down. And outside a repository the name carries nothing at all —
+somebody's `C:\work\old-photos` is not this app's to take, and with no `repo_root` there is no
+authority to appeal to.
+
+### Both of its statements were weaker than they read, and a review found it
+
+This tier was written, typechecked, lifted green, and *then* reviewed adversarially. Four
+findings, two of them holes you could drive a delete through, and none of them visible from the
+tests the tier shipped with. The whole section is here because the pattern is general.
+
+- **The card writes the file it is being judged by.** `check-ignore -q` answers *is this
+  ignored*, not *who said so*. A project card has file tools and
+  `--dangerously-skip-permissions`, so one append to `.git/info/exclude` — or to a tracked
+  `.gitignore`, whose modification `refuse` cannot see because `s.dirty` is scoped to the
+  *target* path — flipped `ignored` from false to true with nothing else in the survey moving.
+  The card then had an un-clicked permanent delete of exactly the case the tier says it does
+  not cover, and the result sentence told the user *"the project says this is not part of
+  it"* when the project had said no such thing. **It does not take a malicious card**, which
+  is the part worth internalising: *"stop tracking `old/` and clean it up"* produces that
+  sequence benignly.
+
+  `project_ignore` traces the rule with `check-ignore -v` and requires the source to be
+  something the card cannot have authored: a `.gitignore` inside the work tree (so
+  `.git/info/exclude` and an absolute global `core.excludesFile` are both out), tracked, and
+  unmodified against `HEAD`. `ignore_source` is the parse, and it is cut at the first
+  `:<digits>:` rather than `rsplit(':')` because a Windows source carries a drive letter and a
+  pattern may contain a colon.
+
+  **The general shape: evidence is only worth what its author could not have forged.** A tier
+  resting on a file the subject can write is resting on the subject, and nothing about the code
+  looks wrong — `check-ignore` is exactly the right question, asked of the wrong number of
+  things.
+
+- **It inherited temp's sharing hazard and not temp's guard.** `in_temp` has `reserved` because
+  temp is shared by every card on the machine. A repo root is shared by every card in the
+  *tree*, and this repo's `.gitignore` disowns `/.scratch` and `/.scratch-*` alike — so
+  `<repo>\.scratch` (which `CLAUDE.md` describes as shared by every card on the wall) and
+  `<repo>\.scratch-<somebody else's handle>` both satisfied *ignored and scratch-named*, with
+  only the `writers` list in front of them. That list is weaker here than for temp and
+  measurably so: `other_writers` needles `touches_near` on the **last** path segment and takes
+  600 rows, so for `.scratch` the needle matches every card's `.scratch-<handle>` traffic and an
+  older file in the shared directory falls out of the window. Shell writes are never recorded
+  at all. That is sink `f1e1a8a2` — a card tidying up and deleting another card's in-flight
+  files — with the confirmation taken away, and *"reclaim disk, these scratch dirs are stale"*
+  would have done three cards at once. `others_scratch` reads the per-card form by name against
+  the caller's own handle.
+
+- **`old.sql` named itself scratch.** `scratch_seg` allowed a `.` qualifier, justified by
+  `old.2`; applied to a *file's* own last segment that admits every extension, so `old.zip`,
+  `tmp.pem`, `scratch.db` and `secrets\tmp.pem` were all scratch — the
+  ignored-but-irreplaceable class the tier exists not to touch, arrived at through the very test
+  that was supposed to separate `.env` from `.next/`. A file is now judged by the *directories*
+  above it: an ignored dump inside `.scratch-9589a966/` is still covered, `data/old.sql` is not.
+
+- **A qualifier has to be an id, not a noun.** The suffix was unbounded, so the rule was really
+  *word + separator + anything*: `old-photos`, `tmp-keys`, `temp-reports`. The doc comment said
+  the point was to exclude "a different word that happens to start with the same letters" and
+  then admitted `old-photos`, which is no closer to scratch than `oldies` is. The qualifier must
+  now contain a digit — `.scratch-9589a966` is a handle, `old.2` is a second aside,
+  `tmp-keys` is a directory of private keys. A crude test for *serial number, not noun*, crude
+  in the safe direction: a qualifier it refuses costs one click.
+
+Two things survived the review and are worth recording as *checked* rather than assumed.
+Omitting `--no-index` is load-bearing — a directory holding a force-added file reports *not
+ignored* **and** shows up in `ls-files`, so it is blocked twice — and `git()` mapping every
+non-zero exit to `None` means a missing binary, a wedged repo and a dubious-ownership refusal
+all answer *not ignored*, which is the answer that asks. The `in_temp` refactor was checked
+conjunct by conjunct against the function it replaced; `untouched` holds the five shared
+conditions so the two tiers cannot drift.
+
 ## The delete is permanent, and the confirmation is the whole of the safety
 
 Considered and rejected: `SHFileOperationW` with `FOF_ALLOWUNDO`, which puts the tree in the

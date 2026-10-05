@@ -2,10 +2,11 @@
  *
  * `mcp__skein__remove` takes a path and a reason, says everything it can find
  * out about what is there, and waits for a person. Nothing here is undoable, and
- * the one thing that does not ask is scratch in the OS temp directory that git
- * does not know and no other card wrote (`unasked`) — see
- * `.claude/rules/remove.md` for the whole argument, and the header below for the
- * facts it turns on.
+ * the only things that do not ask are scratch the *machine* vouches for: a path
+ * in the OS temp directory, and a path in a scratch-named directory a
+ * repository's own committed `.gitignore` disowns (`unasked`, and the two tiers
+ * under it) — see `.claude/rules/remove.md` for the whole argument, and the
+ * header below for the facts it turns on.
  *
  * ## Why a tool rather than a permission
  *
@@ -54,6 +55,31 @@
  * the shared-`.scratch/` hazard one level out — temp is shared by every card on
  * the machine, so "in temp" alone would be a card sweeping another card's
  * in-flight files. Anything failing a condition is asked about as before.
+ *
+ * **A second tier was spent on 2026-10-05, and the authority is the repository
+ * rather than the OS.** The first could not reach the case that actually hurts,
+ * because `CLAUDE.md` *instructs* every card to put its working files in
+ * `.scratch-$SKEIN_CARD/` at the repo root rather than in `%TEMP%` — so
+ * `in_temp`'s `repo_root.is_none()` refuses every path the convention produces,
+ * and the click arrived on `workbench\nova\.scratch-9589a966\old`. The tier is
+ * the same argument made by a different authority: **git says the path is
+ * ignored by a `.gitignore` the project has committed**, which is the project
+ * stating this is not part of itself, and the directory's *name* says what it
+ * is. Two statements, neither of them the agent's.
+ *
+ * Both halves of that were weaker than they read, and the adversarial review
+ * found them rather than a user did. `check-ignore -q` would have accepted a
+ * rule the card wrote itself a minute earlier — one append to
+ * `.git/info/exclude` is a no-click delete of anything, and *"stop tracking
+ * `old/` and clean it up"* produces that by accident — so `project_ignore`
+ * traces the rule to its file and requires a tracked, unmodified `.gitignore`
+ * inside the work tree. And the name test had no `reserved`: this repo disowns
+ * `/.scratch` and `/.scratch-*` alike, so the directory shared by every card
+ * and every *other* card's were both going silently, which is sink `f1e1a8a2`
+ * with the click removed. `others_scratch` is that guard. The general shape is
+ * worth carrying: **evidence is only worth what its author could not have
+ * forged**, and a tier resting on a file the subject can write is resting on
+ * the subject.
  *
  * ## What the confirmation has to carry
  *
@@ -251,6 +277,10 @@ pub(crate) struct Survey {
     pub(crate) nested_git: bool,
     /// The target is a symlink or junction, and it is the *link* that goes.
     pub(crate) is_link: bool,
+    /// git, asked about this exact path, says it is ignored — so the repository
+    /// itself says this is not part of the project. False outside a repository
+    /// and false on any failure, both of which mean the question gets asked.
+    pub(crate) ignored: bool,
     /// Other cards on this wall that have *written* to something under it.
     pub(crate) writers: Vec<String>,
     /// Dev server groups currently up in a territory that contains it.
@@ -410,30 +440,306 @@ pub(crate) fn reserved(t: &str, path: &str) -> bool {
 
 /// Does this target delete without a click?
 ///
+/// Two tiers, and they are the same argument made by two different authorities:
+/// `in_temp` is the OS saying scratch goes here, `ignored_scratch` is a
+/// repository saying this is not part of itself. Neither is the *agent* saying
+/// it — which is what keeps both clear of the judgement the section above
+/// refuses to spend, since "it is only a build cache" is exactly the call an
+/// agent gets wrong and `.env` and `.next/` are both invisible to git while
+/// only one of them is replaceable.
+///
+/// `refuse` has already run; this only decides whether the question is worth
+/// putting.
+///
+/// **Both tiers are evidence of absence, and that is their shared limit.** A
+/// card's writes are recorded when it uses the file tools; a card's *shell*
+/// writes are not, so "no other writer" means none on record. The adversarial
+/// review of the first tier said so first, and the answer was the hard
+/// conditions below rather than a claim of ownership nothing here can make.
+pub(crate) fn unasked(s: &Survey, temps: &[String], handle: &str) -> bool {
+    in_temp(s, temps) || ignored_scratch(s, handle)
+}
+
 /// Strictly inside a temp root — the root itself is asked about, since it is
 /// every card's scratch at once — outside the parts of it something live keeps
 /// (`reserved`), and nothing about it a person would want to weigh: not in a
 /// repository and holding none (`nested_git`, walked in full), no other card on
-/// this wall has written under it, no dev server runs over it. `refuse` has
-/// already run; this only decides whether the question is worth putting.
-///
-/// **It is evidence of absence, and that is its limit.** A card's writes are
-/// recorded when it uses the file tools; a card's *shell* writes are not, so
-/// "no other writer" means none on record. The adversarial review of this tier
-/// said so first, and the answer was the three hard conditions above rather
-/// than a claim of ownership nothing here can make.
-pub(crate) fn unasked(s: &Survey, temps: &[String]) -> bool {
+/// this wall has written under it, no dev server runs over it.
+pub(crate) fn in_temp(s: &Survey, temps: &[String]) -> bool {
     s.exists
         && temps
             .iter()
             .any(|t| under(t, &s.path) && !same(t, &s.path) && !reserved(t, &s.path))
-        && s.tracked == 0
         && s.repo_root.is_none()
+        && untouched(s)
+}
+
+/// The words a directory uses to say it is scratch.
+///
+/// Four, and `old` is the one that does real work in practice — a card tidying
+/// up after itself moves a thing aside before removing it, and the aside is
+/// called `old`. It is also the loosest of the four as a word, which is why the
+/// tier below does not rest on the name alone.
+const SCRATCH_WORDS: [&str; 4] = ["scratch", "temp", "tmp", "old"];
+
+/// Does this one path segment *cleanly* name itself scratch?
+///
+/// Clean means the segment **is** the word: optionally hidden behind a leading
+/// `.`, and optionally carrying a qualifier after a `-`, `_` or `.`. Everything
+/// else is a different word that happens to start with the same letters —
+/// `oldies`, `temporary`, `scratchpad` — and a directory called `skein-old` is
+/// not named `old` at all, which is the `starts_with` mistake `under` was
+/// written to avoid one level up.
+///
+/// **A qualifier has to be an identifier rather than a word**, and that is the
+/// adversarial review's finding rather than a nicety. The first version allowed
+/// any suffix, which made `old-photos`, `tmp-keys` and `temp-reports` scratch —
+/// semantically no closer to it than `oldies` is, and the second of those is a
+/// directory of private keys. So the qualifier must contain a digit:
+/// `.scratch-9589a966` is a card handle, `old.2` and `tmp_1` are a second and
+/// third aside, and `old-photos` is a photo album. It is a crude test for
+/// *"this is a serial number, not a noun"* and it is crude in the safe
+/// direction — a qualifier it refuses costs one click.
+pub(crate) fn scratch_seg(seg: &str) -> bool {
+    let seg = seg.to_lowercase();
+    let s = seg.strip_prefix('.').unwrap_or(&seg);
+    SCRATCH_WORDS.iter().any(|w| {
+        s.strip_prefix(*w).is_some_and(|rest| match rest.chars().next() {
+            None => true,
+            Some(c) if matches!(c, '-' | '_' | '.') => {
+                let q = &rest[1..];
+                !q.is_empty()
+                    && q.chars().any(|c| c.is_ascii_digit())
+                    && q.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            }
+            _ => false,
+        })
+    })
+}
+
+/// Does any *directory* on this path, below the repository root, name it
+/// scratch?
+///
+/// **Below the root, which is the first half that is easy to miss.** A
+/// repository checked out at `C:\temp-builds\myrepo` has the word in its
+/// ancestry and nothing inside it is scratch because of that; the question is
+/// what the project calls this directory, so only the part of the path the
+/// project owns is read. A root that is a filesystem root owns nothing and is
+/// refused outright — `key("C:\\")` is `"c:"`, so without that check
+/// `C:\old` would read as scratch inside a repository cloned at the drive root.
+///
+/// **And only directories, which is the second half and was a real hole.** With
+/// the final segment of a *file* counted, every extension became a qualifier:
+/// `old.zip`, `tmp.pem`, `scratch.db` and `old.sql` all named themselves
+/// scratch, which is precisely the "ignored but irreplaceable" class this tier
+/// exists not to touch. A file is now judged by the directories above it, so an
+/// ignored dump inside `.scratch-9589a966/` is still covered and `data/old.sql`
+/// is not.
+pub(crate) fn scratch_named(path: &str, repo_root: &str, is_dir: bool) -> bool {
+    if is_root(repo_root) {
+        return false;
+    }
+    let (p, r) = (key(path), key(repo_root));
+    let Some(rest) = p.strip_prefix(&r).and_then(|x| x.strip_prefix('/')) else {
+        return false;
+    };
+    let mut segs: Vec<&str> = rest.split('/').collect();
+    if !is_dir {
+        segs.pop();
+    }
+    segs.iter().any(|s| scratch_seg(s))
+}
+
+/// Is this inside a scratch directory that is *somebody else's*?
+///
+/// `reserved`'s job, one tier over, and the review found it missing. This repo's
+/// `.gitignore` disowns `/.scratch` and `/.scratch-*` alike, so without this
+/// check `<repo>\.scratch` — which `CLAUDE.md` describes as shared by every card
+/// on the wall — and `<repo>\.scratch-<someone else's handle>` both satisfied
+/// *ignored and scratch-named*, and the only thing left between them and a
+/// silent `remove_dir_all` was the `writers` list.
+///
+/// **Which is not enough, and for a measurable reason rather than a cautious
+/// one.** `other_writers` needles `touches_near` on the *last* path segment and
+/// takes 600 rows; for `.scratch` that needle matches every card's
+/// `.scratch-<handle>` traffic, so the window fills with other directories and
+/// an older file in the shared one falls out of it. Shell writes are never
+/// recorded at all. That is sink `f1e1a8a2` — a card tidying up and deleting
+/// another card's in-flight files — with the click taken away.
+///
+/// So the per-card form is read by name: `.scratch-<my handle>` is mine, bare
+/// `.scratch` is everyone's, and `.scratch-<anything else>` is somebody's.
+/// The other three words carry no per-card convention and are not affected.
+pub(crate) fn others_scratch(path: &str, repo_root: &str, handle: &str) -> bool {
+    let (p, r, h) = (key(path), key(repo_root), handle.to_lowercase());
+    let Some(rest) = p.strip_prefix(&r).and_then(|x| x.strip_prefix('/')) else {
+        return false;
+    };
+    rest.split('/').any(|seg| {
+        let s = seg.strip_prefix('.').unwrap_or(seg);
+        match s.strip_prefix("scratch") {
+            /* Bare `.scratch` is the shared one. */
+            Some("") => true,
+            Some(q) if q.starts_with(['-', '_']) => q[1..] != h,
+            _ => false,
+        }
+    })
+}
+
+/// Which file an ignore rule came out of, from one line of `check-ignore -v`.
+///
+/// The format is `<source>:<line>:<pattern>\t<pathname>`, and it cannot be read
+/// with `rsplit(':')` from either end: a source on Windows carries a drive
+/// letter (`C:/…/.gitignore:1:junk/`) and a pattern may contain a colon. So the
+/// cut is made at the first `:<digits>:`, which is the line number and is the
+/// one field whose shape is known.
+///
+/// Pure, so `tools/lift-remove.ts` holds it — this parse is what decides whether
+/// a no-click delete is allowed, and a version that returned the whole left side
+/// would compile.
+pub(crate) fn ignore_source(line: &str) -> Option<String> {
+    let left = line.split('\t').next()?;
+    let mut from = 0;
+    while let Some(off) = left[from..].find(':') {
+        let at = from + off;
+        let rest = &left[at + 1..];
+        let digits = rest.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0 && rest[digits..].starts_with(':') {
+            return (at > 0).then(|| left[..at].to_string());
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// Is this ignore source one the *project* committed, rather than one the card
+/// could have written a minute ago?
+///
+/// **This is the fix for the review's first blocker, and the hole it closes was
+/// one `Write` call wide.** A project card has file tools and
+/// `--dangerously-skip-permissions`, so appending `old/` to `.git/info/exclude`
+/// — or to a tracked `.gitignore`, whose modification `refuse` cannot see
+/// because `s.dirty` is scoped to the *target* path — flipped `s.ignored` from
+/// false to true with nothing else in the survey moving. The card then had a
+/// permanent un-clicked delete of exactly the case the tier says it does not
+/// cover, and the result sentence told the user *"the project says this is not
+/// part of it"* when the project had said no such thing. It does not take a
+/// malicious card: *"stop tracking `old/` and clean it up"* produces that
+/// sequence by accident, in a tree this wall shares.
+///
+/// So the authority has to be one the card cannot be the author of:
+///
+/// - **A `.gitignore` inside the work tree.** `.git/info/exclude` is rejected —
+///   machine-local, card-writable, and not the project — and so is an absolute
+///   source, which is what a global `core.excludesFile` reports as.
+/// - **Tracked**, so it is a file the repository knows about.
+/// - **Unmodified against `HEAD`**, staged or not, which is the half that makes
+///   "committed" mean anything.
+///
+/// `source` arrives relative to the work tree root, so it is joined to the root
+/// rather than used against the subdirectory `git` is being run from.
+fn project_ignore(dir: &Path, path: &str, repo_root: &str) -> bool {
+    let Some(out) = git(dir, &["check-ignore", "-v", "--", path]) else {
+        return false;
+    };
+    let Some(src) = out.lines().next().and_then(ignore_source) else {
+        return false;
+    };
+    /* `.git/info/exclude` and anything else under the directory git owns. */
+    if touches_git_dir(&src) || Path::new(&src).is_absolute() {
+        return false;
+    }
+    if key(&src).rsplit('/').next() != Some(".gitignore") {
+        return false;
+    }
+    let abs = Path::new(repo_root).join(&src);
+    let abs = abs.to_string_lossy().to_string();
+    git(dir, &["ls-files", "--error-unmatch", "--", &abs]).is_some()
+        && git(dir, &["diff", "HEAD", "--name-only", "--", &abs])
+            .is_some_and(|o| o.trim().is_empty())
+}
+
+/// The second tier: a scratch directory a repository has disowned.
+///
+/// Spent on 2026-10-05, on `workbench\nova\.scratch-9589a966\old` — a card's
+/// own per-card scratch directory, inside a repository, holding an aside it had
+/// made itself, and a click nobody could weigh. The first tier could not reach
+/// it for one reason: `in_temp` requires `repo_root.is_none()`, and the
+/// convention `CLAUDE.md` *instructs* every card to follow puts scratch at the
+/// repo root rather than in `%TEMP%`.
+///
+/// So the authority is the repository's own: **git says this path is ignored**,
+/// which is the project stating that nothing here is part of it. That is not
+/// sufficient on its own and the tier does not rest on it — `.env` is ignored
+/// and irreplaceable, `node_modules` is ignored and large — so the *name* has
+/// to say what the directory is as well (`scratch_named`). Two independent
+/// statements, neither of them the agent's, and the remaining conditions are
+/// `in_temp`'s verbatim.
+///
+/// What this deliberately does **not** cover is an unignored directory that
+/// merely has the name: `nova\old` holding files nobody has committed is
+/// untracked rather than ignored, and untracked is how new work looks before
+/// anybody writes it down.
+pub(crate) fn ignored_scratch(s: &Survey, handle: &str) -> bool {
+    s.exists
+        && s.ignored
+        && s.repo_root.as_deref().is_some_and(|r| {
+            scratch_named(&s.path, r, s.is_dir) && !others_scratch(&s.path, r, handle)
+        })
+        && untouched(s)
+}
+
+/// The conditions both tiers share: nothing here is anybody's but yours.
+///
+/// Pulled out so the two tiers cannot drift — the first had all of these and
+/// the second needs every one for the same reasons, and a tier that quietly
+/// dropped `writers` would be the shared-`.scratch/` hazard with a no-click
+/// delete behind it.
+fn untouched(s: &Survey) -> bool {
+    s.tracked == 0
         && !s.nested_git
         /* A capped walk may have stopped short of the `.git` it would have seen. */
         && !s.capped
         && s.writers.is_empty()
         && s.servers.is_empty()
+}
+
+/// Why nothing was asked, in the words of whichever authority allowed it.
+///
+/// It names the tier rather than saying "it was fine", and that is for the
+/// agent reading the result: a card that deleted something with no click and
+/// cannot tell *why* has no way to know that the next path, one directory over,
+/// will ask. Pure, so `tools/lift-remove.ts` can hold the wording.
+///
+/// **The two tiers are mutually exclusive per path** — `in_temp` wants
+/// `repo_root.is_none()` and `ignored_scratch` wants it to be `Some` — so a
+/// single path always lands in one of the first two arms, and the third is
+/// reached only by a call that named some of each. The review caught an earlier
+/// comment here claiming the third arm was also the both-tiers case, which a
+/// worktree in `%TEMP%` cannot produce: having a work tree is exactly what
+/// disqualifies it from the first tier.
+pub(crate) fn why_unasked(surveys: &[Survey], temps: &[String], handle: &str) -> String {
+    let one = surveys.len() == 1;
+    let was = if one { "it was" } else { "every path was" };
+    if surveys.iter().all(|s| in_temp(s, temps)) {
+        format!(
+            "{was} inside the OS temp directory, untracked by git, and written by no other \
+             card on this wall."
+        )
+    } else if surveys.iter().all(|s| ignored_scratch(s, handle)) {
+        format!(
+            "{was} named as scratch and ignored by a `.gitignore` this repository has \
+             committed — so the project says this is not part of it and the name says what \
+             it is — with nothing tracked under it, no other card's scratch on the path, and \
+             no other card on this wall having written there."
+        )
+    } else {
+        "they were scratch by the account of something other than the card that asked — the \
+         OS temp directory for some, a repository's own committed ignore rules for the rest \
+         — with nothing tracked under them and no other card on this wall having written \
+         there."
+            .to_string()
+    }
 }
 
 /// Every spelling of the OS temp directory this process can find, canonical.
@@ -611,9 +917,22 @@ pub fn remove_schema() -> Value {
              many files, whether git tracks it, whether another card on this wall has been \
              writing in it, and whether a dev server is running out of that tree. Then they \
              press a button. There is no 'it's only a build cache' tier — say what you want \
-             gone and let them decide. **The one exception is your own scratch in the OS temp \
-             directory**: a path inside it that git does not track and no other card wrote \
-             is deleted at once, with no click.\n\n\
+             gone and let them decide. **The two exceptions are both scratch, and in both the \
+             claim is something other than yours**: a path inside the OS temp directory, and \
+             a path inside a *scratch-named directory* that a `.gitignore` the repository has \
+             committed disowns. Scratch-named means a directory called `scratch`, `temp`, \
+             `tmp` or `old`, optionally dotted, optionally with an id after it — so \
+             `.scratch-<your handle>/old` and anything in it is covered, `src/old` is not \
+             (not ignored), `old-photos` is not (a word, not an id), and another card's \
+             `.scratch-<their handle>` is not (not yours). Either way it is deleted at once \
+             with no click, provided git tracks nothing under it, no other card on this wall \
+             has written there, no repository is nested inside it and no dev server runs over \
+             it. The result says which applied.\n\n\
+             **Do not try to put a path into one of those tiers.** Writing a `.gitignore` \
+             rule, or an `exclude` line, to make a delete go unasked is defeating the \
+             confirmation rather than earning it — the check requires the rule to be in a \
+             tracked, unmodified `.gitignore`, so it will not work, and the act is the same \
+             act as reaching for a shell spelling around the deny.\n\n\
              **It is permanent.** Nothing goes to the recycle bin, nothing is undoable, and \
              the confirmation says so. Treat a yes as final.\n\n\
              Refused outright, with a click or without one: a path holding uncommitted \
@@ -830,6 +1149,19 @@ fn survey(app: &AppHandle, caller: &str, abs: &Path) -> Survey {
                 .collect()
         })
         .unwrap_or_default();
+        /* `check-ignore` exits 1 for not-ignored and 128 on error, and `git`
+           maps every non-zero exit to `None` — so a missing binary, a wedged
+           repo, a dubious-ownership refusal and a plainly-unignored path all
+           answer the same way, which is the answer that asks. It also reports a
+           *tracked* path as not ignored (there is a `--no-index` to turn that
+           off, and it is deliberately not passed), so this is a second reading
+           of `s.tracked` rather than an independent one. `project_ignore` is
+           what decides whether the rule came from an authority the card could
+           not have written. */
+        s.ignored = s
+            .repo_root
+            .as_deref()
+            .is_some_and(|root| project_ignore(ask_from, &path, root));
     }
 
     s.writers = other_writers(app, caller, &path);
@@ -1073,11 +1405,15 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
        going anyway is a question about the wrong thing, and deleting three and
        asking about two is two answers to one call. */
     let temps = temp_roots(&g);
-    if surveys.iter().all(|s| unasked(s, &temps)) {
+    /* The second tier reads the caller's *handle*, since `.scratch-$SKEIN_CARD`
+       is the per-card convention and the question "is this scratch mine" can
+       only be answered against it. See `others_scratch`. */
+    let mine = crate::relay::handle_of(caller);
+    if surveys.iter().all(|s| unasked(s, &temps, &mine)) {
         return Writing::Now(format!(
-            "{}\nnobody was asked: every path was inside the OS temp directory, untracked by \
-             git, and written by no other card on this wall.",
-            settle_delete(app, &targets)
+            "{}\nnobody was asked: {}",
+            settle_delete(app, &targets),
+            why_unasked(&surveys, &temps, &mine),
         ));
     }
     let q = question(reason, &surveys);
@@ -1569,9 +1905,11 @@ mod tests {
            want to leave out — it is the sentence the user decides on. */
         let req = remove_schema()["inputSchema"]["required"].clone();
         assert_eq!(req, json!(["paths", "reason"]));
-        /* And the one exception, said where the promise is — a card told only
-           "every call asks" would be surprised by a delete that did not. */
+        /* And both exceptions, said where the promise is — a card told only
+           "every call asks" would be surprised by a delete that did not, and a
+           card told about only one of them would be surprised by the other. */
         assert!(d.contains("OS temp"), "{d}");
+        assert!(d.contains(".gitignore"), "{d}");
     }
 
     fn temp_root() -> &'static str {
@@ -1584,37 +1922,260 @@ mod tests {
     #[test]
     fn only_untouched_scratch_inside_temp_goes_unasked() {
         let temps = vec![temp_root().to_string()];
+        const MINE: &str = "9589a966";
         let scratch = dir("C:\\Users\\lyss\\AppData\\Local\\Temp\\rv1");
-        assert!(unasked(&scratch, &temps));
+        assert!(unasked(&scratch, &temps, MINE));
         /* Case and separators, since the canonical spellings disagree. */
-        assert!(unasked(&dir("c:/users/lyss/appdata/local/temp/rv1/deep"), &temps));
+        assert!(unasked(&dir("c:/users/lyss/appdata/local/temp/rv1/deep"), &temps, MINE));
 
-        assert!(!unasked(&dir(temp_root()), &temps), "the root is every card's scratch at once");
-        assert!(!unasked(&dir("C:\\Users\\lyss\\AppData\\Local\\Temp-old\\x"), &temps));
-        assert!(!unasked(&dir("C:\\Users\\lyss\\workbench\\skein\\.next"), &temps));
-        assert!(!unasked(&scratch, &[]), "no temp root found means everything asks");
+        assert!(!unasked(&dir(temp_root()), &temps, MINE), "the root is every card's scratch at once");
+        assert!(!unasked(&dir("C:\\Users\\lyss\\AppData\\Local\\Temp-old\\x"), &temps, MINE));
+        assert!(!unasked(&dir("C:\\Users\\lyss\\workbench\\skein\\.next"), &temps, MINE));
+        assert!(!unasked(&scratch, &[], MINE), "no temp root found means everything asks");
 
         let tracked = Survey { tracked: 3, ..scratch.clone() };
-        assert!(!unasked(&tracked, &temps));
+        assert!(!unasked(&tracked, &temps, MINE));
         let theirs = Survey { writers: vec!["\"lane B\" (3f2a9c1e)".into()], ..scratch.clone() };
-        assert!(!unasked(&theirs, &temps), "temp is shared by every card on the machine");
+        assert!(!unasked(&theirs, &temps, MINE), "temp is shared by every card on the machine");
         let served = Survey { servers: vec!["web".into()], ..scratch.clone() };
-        assert!(!unasked(&served, &temps));
+        assert!(!unasked(&served, &temps, MINE));
         let gone = Survey { exists: false, ..scratch.clone() };
-        assert!(!unasked(&gone, &temps));
+        assert!(!unasked(&gone, &temps, MINE));
         /* The review's two blockers: a repository nested under the target, and
            the CLI's own live state in temp. */
         let clone = Survey { nested_git: true, ..scratch.clone() };
-        assert!(!unasked(&clone, &temps), "a clone inside it is somebody's unpushed work");
+        assert!(!unasked(&clone, &temps, MINE), "a clone inside it is somebody's unpushed work");
         let inside = Survey { repo_root: Some("C:/x".into()), ..scratch.clone() };
-        assert!(!unasked(&inside, &temps));
+        assert!(!unasked(&inside, &temps, MINE));
         let capped = Survey { capped: true, ..scratch.clone() };
-        assert!(!unasked(&capped, &temps), "a capped walk may have missed a .git");
+        assert!(!unasked(&capped, &temps, MINE), "a capped walk may have missed a .git");
         for live in ["claude\\C--w\\s1\\tasks", "skein-bump-x", "volery-lab"] {
             let p = format!("{}\\{live}", temp_root());
-            assert!(!unasked(&dir(&p), &temps), "{p}");
+            assert!(!unasked(&dir(&p), &temps, MINE), "{p}");
         }
-        assert!(unasked(&dir(&format!("{}\\claude-notes", temp_root())), &temps));
+        assert!(unasked(&dir(&format!("{}\\claude-notes", temp_root())), &temps, MINE));
+    }
+
+    /// A segment names itself scratch, or it merely begins with the letters.
+    #[test]
+    fn a_scratch_name_is_the_whole_segment() {
+        for yes in [
+            "scratch",
+            ".scratch",
+            ".scratch-9589a966",
+            "Scratch-9589A966",
+            "scratch_1",
+            "old",
+            ".old",
+            "old.2",
+            "old-v2",
+            "temp",
+            "tmp",
+            ".TMP",
+            "tmp-20261005",
+        ] {
+            assert!(scratch_seg(yes), "{yes}");
+        }
+        /* A qualifier has to be an id rather than a noun, which is the review's
+           fourth finding: the first cut allowed any suffix, so `old-photos` was
+           a photo album that deleted itself and `tmp-keys` was a directory of
+           private keys that did the same. */
+        for word in ["old-photos", "tmp-keys", "temp-reports", "old_archive", "scratch-X"] {
+            assert!(!scratch_seg(word), "{word}");
+        }
+        /* A different word that starts the same way, and the `starts_with`
+           mistake in the other direction: `skein-old` is not named `old`. */
+        for no in [
+            "oldies",
+            "golden",
+            "temporary",
+            "templates",
+            "scratchpad",
+            "skein-old",
+            "node_modules",
+            ".env",
+            ".next",
+            "",
+            ".",
+            "..",
+        ] {
+            assert!(!scratch_seg(no), "{no}");
+        }
+    }
+
+    /// Only directories, and only the part of the path the project owns.
+    #[test]
+    fn the_name_is_looked_for_in_directories_below_the_repository_root() {
+        let root = "C:\\Users\\lyss\\workbench\\nova";
+        assert!(scratch_named(&format!("{root}\\.scratch-9589a966"), root, true));
+        assert!(scratch_named(&format!("{root}\\.scratch-9589a966\\old"), root, true));
+        /* Deep, and with the separators and case the canonical spellings
+           disagree about. */
+        assert!(scratch_named("c:/users/lyss/workbench/nova/a/b/tmp/c", root, true));
+        assert!(!scratch_named(&format!("{root}\\src\\components"), root, true));
+        assert!(!scratch_named(root, root, true), "the root itself is not a segment below it");
+        /* The ancestry does not count: a checkout under a directory with the
+           word in it does not make the whole project scratch. */
+        let under_temp = "C:\\temp-builds\\myrepo";
+        assert!(!scratch_named(&format!("{under_temp}\\src"), under_temp, true));
+        assert!(scratch_named(&format!("{under_temp}\\.scratch-1"), under_temp, true));
+        /* A path that is not inside the root at all answers no rather than
+           reading the root's own segments. */
+        assert!(!scratch_named("C:\\elsewhere\\old", root, true));
+        /* A repository cloned at a drive root owns nothing, and `key("C:\\")`
+           is `"c:"` — so without the guard `C:\old` would read as scratch. */
+        assert!(!scratch_named("C:\\old", "C:\\", true));
+
+        /* **A file is judged by the directories above it**, which is the
+           review's third finding: with its own segment counted, every extension
+           became a qualifier and `data\old.zip`, `secrets\tmp.pem` and
+           `dumps\old.2` all named themselves scratch — exactly the
+           ignored-but-irreplaceable class this tier exists not to touch. */
+        for f in ["data\\old.zip", "secrets\\tmp.pem", "old.7z", "dumps\\old.2"] {
+            assert!(!scratch_named(&format!("{root}\\{f}"), root, false), "{f}");
+        }
+        /* An ignored dump inside a genuine scratch directory still is. */
+        assert!(scratch_named(&format!("{root}\\.scratch-9589a966\\dump.sql"), root, false));
+    }
+
+    /// `reserved`'s job, one tier over: another card's scratch is not yours.
+    #[test]
+    fn the_shared_and_the_other_cards_scratch_are_not_mine() {
+        let root = "C:\\Users\\lyss\\workbench\\nova";
+        let mine = "9589a966";
+        let at = |seg: &str| format!("{root}\\{seg}");
+        assert!(others_scratch(&at(".scratch"), root, mine), "shared by every card");
+        assert!(others_scratch(&at(".scratch-3f2a9c1e"), root, mine));
+        assert!(others_scratch(&at(".scratch-3f2a9c1e\\old"), root, mine));
+        assert!(others_scratch(&at("scratch_3f2a9c1e"), root, mine));
+        /* Mine, in either spelling the canonical paths come in. */
+        assert!(!others_scratch(&at(".scratch-9589a966"), root, mine));
+        assert!(!others_scratch(&at(".scratch-9589a966\\old"), root, mine));
+        assert!(!others_scratch("c:/users/lyss/workbench/nova/.scratch-9589A966", root, mine));
+        /* The other three words carry no per-card convention, so nothing is
+           anybody's by name under them. */
+        for seg in ["old", "tmp", "temp-1", ".next", "src"] {
+            assert!(!others_scratch(&at(seg), root, mine), "{seg}");
+        }
+    }
+
+    /// Which file an ignore rule came out of, read off `check-ignore -v`.
+    ///
+    /// Measured against git 2.53.0.windows.1: the source is reported relative
+    /// to the work tree root, `.git/info/exclude` reports itself literally, a
+    /// global `core.excludesFile` reports an absolute path, and the pathname
+    /// after the tab is quoted when it needs to be.
+    #[test]
+    fn an_ignore_rule_is_traced_to_the_file_it_came_from() {
+        let seen = |s: &str| ignore_source(s).unwrap_or_default();
+        assert_eq!(seen(".gitignore:20:**/.scratch*\t\"C:\\w\\nova\\.scratch-1\""), ".gitignore");
+        assert_eq!(seen(".git/info/exclude:7:sub/\tC:/w/r/sub"), ".git/info/exclude");
+        /* A drive letter is a colon and is not the line number, which is why
+           this is not an `rsplit` from either end. */
+        assert_eq!(
+            seen("C:/Users/lyss/.gitignore_global:3:old\tC:/w/r/old"),
+            "C:/Users/lyss/.gitignore_global"
+        );
+        /* And a pattern may carry one. The *first* `:<digits>:` is the cut. */
+        assert_eq!(seen(".gitignore:4:a:b\tC:/w/r/x"), ".gitignore");
+        for junk in ["", "no colons at all", ":1:x\tC:/w/r/x", ".gitignore:x:y\tz"] {
+            assert_eq!(ignore_source(junk), None, "{junk}");
+        }
+    }
+
+    /// The second tier: disowned by the project *and* named *and* yours, with
+    /// `in_temp`'s conditions kept.
+    ///
+    /// Spent on `workbench\nova\.scratch-9589a966\old`, which the first tier
+    /// could not reach because `CLAUDE.md` instructs every card to put its
+    /// scratch at the repo root rather than in `%TEMP%`.
+    #[test]
+    fn an_ignored_scratch_directory_inside_a_repository_goes_unasked() {
+        let root = "C:\\Users\\lyss\\workbench\\nova";
+        let mine = "9589a966";
+        let aside = Survey {
+            ignored: true,
+            repo_root: Some(root.to_string()),
+            ..dir(&format!("{root}\\.scratch-9589a966\\old"))
+        };
+        assert!(ignored_scratch(&aside, mine));
+        /* And through the front door, with no temp root in sight — which is the
+           whole of why this tier exists. */
+        assert!(unasked(&aside, &[], mine));
+
+        /* Ignored but not named: `.env` and `node_modules` are both ignored and
+           neither is disposable, which is why the name is required. */
+        let env = Survey { path: format!("{root}\\.env"), is_dir: false, ..aside.clone() };
+        assert!(!ignored_scratch(&env, mine));
+        let modules = Survey { path: format!("{root}\\node_modules"), ..aside.clone() };
+        assert!(!ignored_scratch(&modules, mine));
+
+        /* Named but not ignored, which is the case this tier deliberately does
+           not cover: untracked is how new work looks before anybody writes it
+           down, and `nova\old` full of uncommitted files is exactly that. */
+        let unignored = Survey { ignored: false, path: format!("{root}\\old"), ..aside.clone() };
+        assert!(!ignored_scratch(&unignored, mine));
+
+        /* Outside a repository the name carries nothing at all — somebody's
+           `C:\work\old-photos` is not this app's to take, and with no
+           `repo_root` there is no authority to appeal to. */
+        let loose = Survey {
+            repo_root: None,
+            path: "C:\\work\\old-photos".to_string(),
+            ..aside.clone()
+        };
+        assert!(!ignored_scratch(&loose, mine));
+        assert!(!unasked(&loose, &[], mine));
+
+        /* The review's second blocker. This repo's `.gitignore` disowns
+           `/.scratch` and `/.scratch-*` alike, so the shared directory and
+           every other card's were ignored *and* scratch-named, and the only
+           thing in front of them was a `writers` list that cannot see a shell
+           write and whose needle for `.scratch` matches every card at once. */
+        for theirs in [".scratch", ".scratch-3f2a9c1e", ".scratch-3f2a9c1e\\old"] {
+            let s = Survey { path: format!("{root}\\{theirs}"), ..aside.clone() };
+            assert!(!ignored_scratch(&s, mine), "{theirs}");
+            assert!(!unasked(&s, &[], mine), "{theirs}");
+        }
+
+        /* `in_temp`'s conditions, every one, because a tier that dropped one
+           would be the shared-tree hazard with no click in front of it. */
+        for broken in [
+            Survey { tracked: 2, ..aside.clone() },
+            Survey { nested_git: true, ..aside.clone() },
+            Survey { capped: true, ..aside.clone() },
+            Survey { writers: vec!["\"lane B\" (3f2a9c1e)".into()], ..aside.clone() },
+            Survey { servers: vec!["web".into()], ..aside.clone() },
+            Survey { exists: false, ..aside.clone() },
+        ] {
+            assert!(!ignored_scratch(&broken, mine), "{broken:?}");
+        }
+    }
+
+    /// The result names which authority allowed it, since a card that cannot
+    /// tell why has no way to know the next path will ask.
+    #[test]
+    fn the_no_click_result_names_the_tier() {
+        let temps = vec![temp_root().to_string()];
+        let mine = "9589a966";
+        let in_t = dir(&format!("{}\\rv1", temp_root()));
+        let root = "C:\\Users\\lyss\\workbench\\nova";
+        let aside = Survey {
+            ignored: true,
+            repo_root: Some(root.to_string()),
+            ..dir(&format!("{root}\\.scratch-9589a966\\old"))
+        };
+        let temp_said = why_unasked(&[in_t.clone()], &temps, mine);
+        assert!(temp_said.contains("OS temp directory"), "{temp_said}");
+        assert!(temp_said.starts_with("it was"), "one path reads singular: {temp_said}");
+        let scratch_said = why_unasked(&[aside.clone()], &temps, mine);
+        assert!(scratch_said.contains("committed"), "{scratch_said}");
+        /* The two tiers are mutually exclusive per path — one wants no work
+           tree and the other wants one — so a single path always lands in one
+           of the first two arms, and a mixed call is the only way the third is
+           ever reached. */
+        let mixed = why_unasked(&[in_t, aside], &temps, mine);
+        assert!(mixed.contains("for some"), "{mixed}");
     }
 
     /// `TEMP` is an environment variable, and one pointed at a root or at home
