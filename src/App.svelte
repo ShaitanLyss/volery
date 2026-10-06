@@ -4221,6 +4221,9 @@
         gates={skein.gates}
         {pane}
         {beacon}
+        homeScreen={spread
+          ? { x: spread.x, y: spread.y, w: roomW, h: Math.max(0, winH - spread.y - spread.b) }
+          : null}
         {focusedId}
         draft={field.preview}
         draftIds={targetIds}

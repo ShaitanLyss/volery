@@ -104,6 +104,7 @@
     gates,
     pane,
     beacon,
+    homeScreen = null,
     focusedId,
     draft = "",
     draftIds = [],
@@ -136,6 +137,15 @@
     onadd,
   }: {
     convs: Conversation[];
+    /** Where the home screen is inside the glass, in glass pixels, or null
+     *  while the studio is on one screen and the two are the same box.
+     *
+     *  Only used to work out what the chrome covers — the strips of the home
+     *  screen the wall does *not* occupy are the header and the dock, and those
+     *  are opaque and painted over the glass. Handed down rather than measured
+     *  here because it is `App.svelte`'s arithmetic (`span.ts`), and `Canvas`
+     *  measuring a box it does not own is how two numbers drift apart. */
+    homeScreen?: { x: number; y: number; w: number; h: number } | null;
     /** Cards an agent has just closed, for as long as their fade lasts.
      *
      *  Deliberately **not** part of `convs` and never laid out: they have left
@@ -380,6 +390,25 @@
     return () => ro.disconnect();
   });
 
+  /** What the chrome covers, in glass pixels: the strips of the home screen
+   *  the wall does not occupy.
+   *
+   *  Empty on one screen, where the glass *is* the wall and there is nothing it
+   *  can reach. While spread, the pane is the whole window — that is what lets
+   *  something be dragged onto another monitor — and the header and the dock
+   *  then sit over two bands of it. See `glassAt`'s `keepout`, which rescues
+   *  only what disappears completely under one. */
+  const keepout = $derived.by(() => {
+    const home = homeScreen;
+    if (!home || homeBox.h <= 0) return [];
+    const top = homeBox.y - home.y;
+    const foot = home.y + home.h - (homeBox.y + homeBox.h);
+    return [
+      top > 0 ? { x: home.x, y: home.y, w: home.w, h: top } : null,
+      foot > 0 ? { x: home.x, y: homeBox.y + homeBox.h, w: home.w, h: foot } : null,
+    ].filter((r) => r !== null);
+  });
+
   /** Screen point → glass point. `toCanvas`'s counterpart, and much the
    *  shorter of the two: the glass neither pans nor zooms, so this is a
    *  subtraction and nothing else. */
@@ -537,7 +566,7 @@
   const glassRegions = $derived(
     model.regions
       .filter((r) => r.glass)
-      .map((r) => ({ ...r, ...glassAt(r.glass!, { w: r.w, h: r.h }, paneBox) })),
+      .map((r) => ({ ...r, ...glassAt(r.glass!, { w: r.w, h: r.h }, paneBox, keepout) })),
   );
   const wallCards = $derived(model.laid.filter((n) => !n.glass));
   const glassCards = $derived(
@@ -546,7 +575,7 @@
       /* At `wall` density, because the glass is 1:1 and that is the density 1:1
          gives. A card whose box changed with the wall's zoom while its position
          did not would be a thing in screen space measured in canvas units. */
-      .map((n) => ({ ...n, ...glassAt(n.glass!, CARD_BOX.wall, paneBox) })),
+      .map((n) => ({ ...n, ...glassAt(n.glass!, CARD_BOX.wall, paneBox, keepout) })),
   );
   /** Every card's box in **screen pixels**, which is the one frame a strand can
    *  reach both a card on the wall and a card stuck to the glass in.
@@ -596,7 +625,7 @@
     /* On the glass the pane is 1:1, so its own coordinates already are screen
        coordinates — the bargain `glassCards` strikes in `cardBoxes`. */
     if (spot) {
-      const at = glassAt(spot, { w: w.w, h: w.h }, paneBox);
+      const at = glassAt(spot, { w: w.w, h: w.h }, paneBox, keepout);
       return { x: at.x, y: at.y, w: w.w, h: w.h };
     }
     return screenBox({ x: w.x, y: w.y, w: w.w, h: w.h }, view);
@@ -615,13 +644,13 @@
   const glassImages = $derived(
     board.images
       .filter((i) => spotOf(i))
-      .map((i) => ({ ...i, ...glassAt(spotOf(i)!, { w: i.w, h: i.h }, paneBox) })),
+      .map((i) => ({ ...i, ...glassAt(spotOf(i)!, { w: i.w, h: i.h }, paneBox, keepout) })),
   );
   const wallWidgets = $derived(widgets.items.filter((w) => !spotOf(w)));
   const glassWidgets = $derived(
     widgets.items
       .filter((w) => spotOf(w))
-      .map((w) => ({ ...w, ...glassAt(spotOf(w)!, { w: w.w, h: w.h }, paneBox) })),
+      .map((w) => ({ ...w, ...glassAt(spotOf(w)!, { w: w.w, h: w.h }, paneBox, keepout) })),
   );
   /** A patch aimed at a thing on the pane. `ImageNode` and `WidgetNode` know
    *  one pair of coordinates and are handed the glass ones, so what comes back

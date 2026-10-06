@@ -68,6 +68,14 @@ resize them, and they go over the transcript panel but never over the dock or th
   widening the pane without it is the bug that argument was avoiding. What still hangs off the
   home screen is anything with no position of its own: the timeline stack, since centring a
   default across every screen puts it on a seam between two monitors.
+- **And the widened pane gave away the one thing the old one did for free**, which was that
+  it was the wall's box and so could not reach the header or the dock. Those are opaque and
+  painted over the glass, so something dropped into the strip one of them occupies on the home
+  screen is simply gone — no handle to drag back, no menu to right-click, and unlike a card
+  nothing in the reading order to Tab to. `glassAt` takes a `keepout` for that, and it moves
+  **only what is entirely covered**: half under the header is something you can still take hold
+  of, and shoving that would be the wall rearranging itself under a position you chose, which
+  is the thing this file exists to promise it will not do. A rescue, not a layout rule.
 - **Clamped where it is drawn, not where it is stored** (`glassAt`). The pane has edges where
   the wall has none, so a spot that was fine yesterday can be off it today — a narrower
   window, a wider panel, a smaller screen. Squeezing the window borrows a thing back from the

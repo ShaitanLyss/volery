@@ -89,17 +89,58 @@ export function stickTo(box: Spot & Size, view: View, size: Size, pane?: Pane): 
  *
  * Top-left wins for anything larger than the pane — the same choice `revealBox`
  * makes about a card taller than the viewport. Better its head than its foot. */
-export function glassAt(at: Spot, size: Size, view: Pane): Spot {
+export function glassAt(at: Spot, size: Size, view: Pane, keepout: Rect[] = []): Spot {
   const ox = view.x ?? 0;
   const oy = view.y ?? 0;
   /* A pane nobody has measured yet is not a pane with no room in it. Without
      this, everything on the glass stacks in the top-left corner for the frame
      between the element mounting and the ResizeObserver's first call. */
   if (view.w <= 0 || view.h <= 0) return { x: at.x + ox, y: at.y + oy };
-  return {
+  const spot = {
     x: ox + Math.min(Math.max(at.x, 0), Math.max(0, view.w - size.w)),
     y: oy + Math.min(Math.max(at.y, 0), Math.max(0, view.h - size.h)),
   };
+  return nudged(spot, size, view, keepout);
+}
+
+/** A rectangle in glass pixels that something opaque is drawn over. */
+export type Rect = Spot & Size;
+
+/** Out from under the chrome, if it had vanished completely underneath it.
+ *
+ *  The pane became the *whole window* while the studio is spread, which is what
+ *  lets something stuck to the glass be dragged onto another monitor — and it
+ *  gave away the one thing the old pane did for free, which was that it was the
+ *  wall's box and so could not reach the header or the dock. Those are opaque
+ *  and painted above the wall, so a widget dropped into the strip one of them
+ *  occupies on the home screen is simply gone: no handle to drag back, no menu
+ *  to right-click, and (unlike a card) nothing in the reading order to Tab to.
+ *
+ *  **Only what is *entirely* covered is moved**, and that bound is the whole
+ *  design. Something half under the header is something you can still take hold
+ *  of, and shoving it would be the wall rearranging itself under a position you
+ *  chose — which is the thing `glass.md` exists to promise it will not do. So
+ *  this is a rescue, not a layout rule, and it fires on the case where there is
+ *  nothing left to rescue it with.
+ *
+ *  Downwards first because the two bands are the top and the bottom of a screen
+ *  and down is where the room is under a header; up if that would not fit. */
+function nudged(spot: Spot, size: Size, view: Pane, keepout: Rect[]): Spot {
+  const oy = view.y ?? 0;
+  for (const k of keepout) {
+    const hidden =
+      spot.x >= k.x &&
+      spot.y >= k.y &&
+      spot.x + size.w <= k.x + k.w &&
+      spot.y + size.h <= k.y + k.h;
+    if (!hidden) continue;
+    const below = k.y + k.h;
+    const above = k.y - size.h;
+    const floor = oy;
+    const ceil = oy + view.h - size.h;
+    spot = { ...spot, y: below <= ceil ? below : Math.max(floor, above) };
+  }
+  return spot;
 }
 
 /** The spot a thing is stuck at, or null for one that is on the wall.

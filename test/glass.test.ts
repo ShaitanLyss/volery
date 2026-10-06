@@ -229,3 +229,52 @@ test("a card on the pane is drawn at wall density", () => {
      glass is 1:1, and `wall` is the density 1:1 gives (`lodFor(1)`). */
   expect(CARD_BOX.wall).toEqual({ w: 208, h: 78 });
 });
+
+describe("out from under the chrome", () => {
+  /* Spread, the pane is the whole window — which is what lets something be
+     dragged onto another monitor — so it can reach the two strips of the home
+     screen the header and the dock occupy. Those are opaque and painted over
+     the glass, so a widget entirely inside one is gone: no handle, no menu,
+     and nothing in the reading order to Tab to. */
+  const PANE = { w: 4000, h: 1600 };
+  /* The home screen sits 1080 across; its header is 60 tall and its dock 90. */
+  const HEADER = { x: 1080, y: 0, w: 2560, h: 60 };
+  const DOCK = { x: 1080, y: 1510, w: 2560, h: 90 };
+
+  test("something entirely under the header comes out below it", () => {
+    const at = glassAt({ x: 1200, y: 10 }, { w: 180, h: 40 }, PANE, [HEADER, DOCK]);
+    expect(at.y).toBe(60);
+    expect(at.x).toBe(1200);
+  });
+
+  test("something entirely under the dock comes out above it", () => {
+    // Below the dock is off the pane, so the other way is the only way.
+    const at = glassAt({ x: 1200, y: 1520 }, { w: 180, h: 40 }, PANE, [HEADER, DOCK]);
+    expect(at.y).toBe(1510 - 40);
+  });
+
+  test("something only half covered is left exactly where it was put", () => {
+    /* The bound is the whole design: half under the header is something you
+       can still take hold of, and shoving it would be the wall rearranging
+       itself under a position you chose. */
+    const at = glassAt({ x: 1200, y: 40 }, { w: 180, h: 120 }, PANE, [HEADER, DOCK]);
+    expect(at.y).toBe(40);
+  });
+
+  test("something on another monitor is not touched", () => {
+    // The chrome is the home screen's; the rest of the glass has none.
+    const at = glassAt({ x: 100, y: 10 }, { w: 180, h: 40 }, PANE, [HEADER, DOCK]);
+    expect(at).toEqual({ x: 100, y: 10 });
+  });
+
+  test("no chrome, no rescue — which is every unspread window", () => {
+    expect(glassAt({ x: 1200, y: 10 }, { w: 180, h: 40 }, PANE)).toEqual({ x: 1200, y: 10 });
+  });
+
+  test("the rescue stays on the pane", () => {
+    const tall = { w: 2000, h: 1500 };
+    const at = glassAt({ x: 0, y: 0 }, tall, PANE, [{ x: 0, y: 0, w: 4000, h: 1600 }]);
+    expect(at.y).toBeGreaterThanOrEqual(0);
+    expect(at.y).toBeLessThanOrEqual(PANE.h - tall.h);
+  });
+});
