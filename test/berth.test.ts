@@ -19,44 +19,60 @@ const ROOM = { x: 0, y: 0, w: 1600, h: 900 };
    does not start at the window's origin. */
 const HOME = { x: 1080, y: 60, w: 2560, h: 1380 };
 
+/* The two surfaces as boxes, because a site is decided by where the *thing* is
+   and not by where the finger is. A dock is a line — wide and short — which is
+   the whole of why that distinction mattered. */
+const panelBox = (x: number, y = 0) => ({ x, y, w: 420, h: 880 });
+const dockBox = (x: number, y: number) => ({ x, y, w: 1200, h: 90 });
+
 describe("where a drop moors", () => {
+  test("the dock takes the edge it was dropped near", () => {
+    expect(dockSiteAt(dockBox(200, 0), ROOM)).toBe("top");
+    expect(dockSiteAt(dockBox(200, ROOM.h - 90), ROOM)).toBe("bottom");
+  });
+
   test("the panel takes the edge it was dropped near", () => {
-    expect(dockSiteAt({ x: 800, y: 4 }, ROOM)).toBe("top");
-    expect(dockSiteAt({ x: 800, y: 896 }, ROOM)).toBe("bottom");
+    expect(panelSiteAt(panelBox(0), ROOM)).toBe("left");
+    expect(panelSiteAt(panelBox(ROOM.w - 420), ROOM)).toBe("right");
+    expect(panelSiteAt(panelBox(600), ROOM)).toBe("float");
   });
 
   test("a drop in the middle floats", () => {
-    expect(dockSiteAt({ x: 800, y: 450 }, ROOM)).toBe("float");
+    expect(dockSiteAt(dockBox(200, 400), ROOM)).toBe("float");
   });
 
-  test("the panel takes the edge it was dropped near", () => {
-    expect(panelSiteAt({ x: 4, y: 450 }, ROOM)).toBe("left");
-    expect(panelSiteAt({ x: 1596, y: 450 }, ROOM)).toBe("right");
-    expect(panelSiteAt({ x: 800, y: 450 }, ROOM)).toBe("float");
+  test("a surface sitting where it is moored reads as moored there", () => {
+    /* The bug this signature exists for. It used to take the *cursor*, and the
+       dock's handle is on its top edge — so a dock moored along the bottom had
+       its cursor a whole dock-height above the window's bottom, further than
+       `EDGE`, and the first pixel of a drag un-moored it and it floated. */
+    expect(dockSiteAt(dockBox(0, ROOM.h - 90), ROOM)).toBe("bottom");
+    expect(panelSiteAt(panelBox(ROOM.w - 420), ROOM)).toBe("right");
   });
 
   test("the edges are the room's, not the window's", () => {
     /* Spread, the chrome lives on the home screen, so the left edge of the
        room is 1080 across. Without this the panel would moor left whenever it
        was dropped anywhere on the first monitor. */
-    expect(panelSiteAt({ x: HOME.x + 4, y: 800 }, HOME)).toBe("left");
-    expect(panelSiteAt({ x: 4, y: 800 }, HOME)).toBe("float");
+    expect(panelSiteAt(panelBox(HOME.x + 4, 800), HOME)).toBe("left");
+    expect(panelSiteAt(panelBox(4, 800), HOME)).toBe("float");
   });
 
-  test("a drop on another screen floats, however near that screen's edge", () => {
-    /* The nearness tests are distances with no far side, so a drop on the
-       monitor above the home screen was negative pixels from its top edge and
-       moored there — the one drop that most obviously meant "over there". */
-    expect(dockSiteAt({ x: 2000, y: HOME.y + 4 }, HOME)).toBe("top");
-    expect(dockSiteAt({ x: 2000, y: 4 }, HOME)).toBe("float");
-    expect(panelSiteAt({ x: HOME.x - 4, y: 800 }, HOME)).toBe("float");
-    expect(dockSiteAt({ x: 2000, y: HOME.y + HOME.h + 40 }, HOME)).toBe("float");
+  test("a surface on another screen floats, however near that screen's edge", () => {
+    /* The nearness tests are distances with no far side, so a surface dragged
+       onto the monitor above the home screen was negative pixels from its top
+       edge and moored there — the one drop that most obviously meant "over
+       there". */
+    expect(dockSiteAt(dockBox(2000, HOME.y + 4), HOME)).toBe("top");
+    expect(dockSiteAt(dockBox(2000, 4), HOME)).toBe("float");
+    expect(panelSiteAt(panelBox(HOME.x - 4, 800), HOME)).toBe("float");
+    expect(dockSiteAt(dockBox(2000, HOME.y + HOME.h + 40), HOME)).toBe("float");
   });
 
   test("the band is wide enough to aim at", () => {
     // "Put it over there", not "hit this line".
-    expect(dockSiteAt({ x: 800, y: EDGE - 1 }, ROOM)).toBe("top");
-    expect(dockSiteAt({ x: 800, y: EDGE + 1 }, ROOM)).toBe("float");
+    expect(dockSiteAt(dockBox(200, EDGE - 1), ROOM)).toBe("top");
+    expect(dockSiteAt(dockBox(200, EDGE + 1), ROOM)).toBe("float");
   });
 });
 
@@ -109,6 +125,18 @@ describe("a floating berth stays reachable", () => {
     const b = floatBox({ x: 0, y: 0, w: 10, h: 10 }, { w: 1600, h: 900 });
     expect(b.w).toBe(MIN_W);
     expect(b.h).toBe(MIN_H);
+  });
+
+  test("a surface whose height is not the berth's can say so", () => {
+    /* `MIN_H` is the panel's floor. The dock's height is the draft's — the
+       berth does not own it — and clamping a 90px dock's `y` against a 160px
+       floor left it unable to reach the bottom of the window: dropped there it
+       jumped up and sat with a gap under it, which reads as a failed drop. */
+    const tall = floatBox({ x: 0, y: 1000, w: 600, h: 90 }, { w: 1600, h: 900 });
+    expect(tall.y).toBe(900 - MIN_H);
+    const dock = floatBox({ x: 0, y: 1000, w: 600, h: 90 }, { w: 1600, h: 900 }, 0);
+    expect(dock.y).toBe(900 - 90);
+    expect(dock.h).toBe(90);
   });
 
   test("an unmeasured room clamps nothing", () => {

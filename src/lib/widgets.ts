@@ -23,6 +23,7 @@ import {
   type Run,
 } from "./timing";
 import { spotOf } from "./glass";
+import { Z_TOP } from "./layout";
 /* Same bargain as `timing`: the arithmetic stays import-free and this file is
    the bridge between a flat config and the shapes it reads. */
 import { paceOf, type Pace } from "./clock";
@@ -1868,7 +1869,13 @@ export function normalizeWidget(raw: unknown): Widget | null {
     y: num(r.y, 0),
     w: Math.max(spec.min.w, num(r.w, spec.box.w)),
     h: Math.max(spec.min.h, num(r.h, spec.box.h)),
-    z: Math.round(num(r.z, 0)),
+    /* Capped under the ceiling on the way *in*, not only on the way out.
+       `nextFrontZ` was unbounded until `Z_TOP` arrived, so a wall where "bring
+       to front" had been pressed a few hundred times carries widgets above it —
+       and a layer riding at `Z_TOP` to be over everything standing would be
+       under those, which is the bug `Z_TOP` exists to fix surviving in the
+       data. This is the only place that reaches a row an older build wrote. */
+    z: Math.min(Z_TOP - 1, Math.round(num(r.z, 0))),
     /* Both or neither — half a pair is a row an older build wrote, and reads as
        being on the wall. Deliberately not clamped to the window the way a
        `number` knob is clamped to its range: a widget stuck to the glass on a

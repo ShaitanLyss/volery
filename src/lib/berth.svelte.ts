@@ -88,14 +88,16 @@ class Berths {
   }
 
   #write(m: Moorings) {
+    /* **Written under the empty key rather than dropped**, which the early
+       return here used to do on the argument that a bucket nothing reads is
+       worse than a gesture nothing remembers. Both halves of that were wrong:
+       `now` reads through to `#seed()`, which is the value *before* the
+       gesture, so `cyclePanel` was a silent no-op that returned a site it had
+       not applied — on a brand-new wall before the first `settle`, and for ever
+       on a machine where `availableMonitors` keeps failing. And the bucket is
+       read: `#last` is the empty key too, so the first real arrangement seeds
+       itself from exactly what you did while nobody knew which room it was. */
     const key = this.key;
-    if (!key) {
-      /* Before the monitors have answered there is no room to write to, and
-         inventing one would leave a bucket under the empty key that nothing
-         ever reads again. The gesture still lands — `now` reads through to the
-         seed — it simply is not remembered until the arrangement settles. */
-      return;
-    }
     this.#rooms = { ...this.#rooms, [key]: m };
     this.#last = key;
   }

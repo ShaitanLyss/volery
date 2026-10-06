@@ -2810,6 +2810,14 @@ fn forget_row(conn: &Connection, root_path: &str) -> Result<bool, String> {
     let gone = conn
         .execute("DELETE FROM project WHERE root_path = ?1", params![root_path])
         .map_err(|e| e.to_string())?;
+    /* And off the glass in every room. A project's glass spot is keyed on its
+       `root_path`, which is the one id in `arrange::KINDS` that gets *reused* —
+       so without this, a territory stuck to the glass, removed, and then added
+       back from the same folder came back still stuck, at the old one's spot,
+       in a room nobody had put it in. See `arrange::forget`. */
+    if gone > 0 {
+        crate::arrange::forget(conn, crate::arrange::PROJECT, root_path);
+    }
     Ok(gone > 0)
 }
 
@@ -4420,6 +4428,11 @@ pub fn delete_image(store: tauri::State<'_, Store>, id: String) -> Result<(), St
     let conn = store.0.lock().unwrap();
     conn.execute("DELETE FROM reference_image WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    /* And out of every arrangement. An id here is a uuid, so what this prevents
+       is dead weight rather than a resurrection — but the table is written by
+       every room and swept by nobody, so without it the only thing that ever
+       removes a row is the thing being put back on the wall first. */
+    crate::arrange::forget(&conn, crate::arrange::IMAGE, &id);
     Ok(())
 }
 
@@ -4691,6 +4704,7 @@ pub fn delete_widget(store: tauri::State<'_, Store>, id: String) -> Result<(), S
     let conn = store.0.lock().unwrap();
     conn.execute("DELETE FROM widget WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    crate::arrange::forget(&conn, crate::arrange::WIDGET, &id);
     Ok(())
 }
 

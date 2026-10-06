@@ -17,6 +17,7 @@
   import { Sketchbook } from "./lib/sketch.svelte";
   import type { Tier } from "./lib/classify";
   import {
+    DRAG_SLOP,
     READ_REST,
     REGION_COLS,
     Studio,
@@ -1125,6 +1126,15 @@
     untrack(() => void settleArrangement(spreading));
   });
 
+  /* And the way back in for a settle that arrived while one was already in
+     flight. `settle` keeps a flag rather than a queue and calls this once the
+     first pass has landed; the live `span.view` is read here, because the whole
+     point of the second pass is that the first one's was stale. */
+  $effect(() => {
+    arrangements.rerun = () => void settleArrangement(!!span.view);
+    return () => (arrangements.rerun = null);
+  });
+
   async function settleArrangement(spreading: boolean) {
     /* Where the pane's own top-left is inside the glass. The glass *is* the
        wall on one screen, so zero; spread, it is fixed to the whole window and
@@ -1137,6 +1147,10 @@
       ? [spread.x, spread.y + (bar?.offsetHeight ?? 0)]
       : [0, 0];
     const spots = await arrangements.settle(spreading, origin);
+    /* Said out loud rather than kept in a field nobody reads. The glass quietly
+       no longer following the screens is the failure this is hardest to notice
+       from the outside, which is exactly the one that has to be reported. */
+    if (arrangements.fault) skein.fault = arrangements.fault;
     if (!spots) return;
     /* Each holder answers what it actually moved, and the stack is told to
        forget those records. Not `undo.clear()`: the stack also holds renames
@@ -1183,9 +1197,10 @@
    *  only `x`, `y` and `w` of this are read. `MIN_H` stands in for the frame
    *  before it has been measured, so the clamp has a box to work with. */
   let dockH = $state(0);
-  const dockAt = $derived(
-    floatBox({ ...berths.dock, h: dockH || MIN_H }, windowRoom),
-  );
+  /* `0` as the floor, not `MIN_H`: the dock's height is the draft's and the
+     berth does not own it, so clamping its y against a 160px panel floor left
+     a surface ninety pixels tall unable to reach the bottom of the window. */
+  const dockAt = $derived(floatBox({ ...berths.dock, h: dockH }, windowRoom, 0));
 
   /** Which side the transcript's outline rails hang off.
    *
@@ -1204,16 +1219,31 @@
           : "right",
   );
 
-  /** A mooring drag in flight: which surface, and where inside it the grip was
-   *  taken hold of, so the surface follows the cursor rather than jumping its
-   *  top-left corner under it. */
-  let mooring = $state<{ what: "panel" | "dock"; dx: number; dy: number } | null>(null);
+  /** A mooring drag in flight: which surface, where inside it the grip was
+   *  taken hold of (so the surface follows the cursor rather than jumping its
+   *  top-left corner under it), where the press landed, and whether it has
+   *  travelled far enough to be a drag at all. */
+  let mooring = $state<{
+    what: "panel" | "dock";
+    dx: number;
+    dy: number;
+    fromX: number;
+    fromY: number;
+    moved: boolean;
+  } | null>(null);
 
   function moorDown(what: "panel" | "dock", e: PointerEvent) {
     if (e.button !== 0) return;
     const grab = e.currentTarget as HTMLElement;
     const r = grab.closest(what === "panel" ? "aside" : "footer")?.getBoundingClientRect();
-    mooring = { what, dx: e.clientX - (r?.left ?? 0), dy: e.clientY - (r?.top ?? 0) };
+    mooring = {
+      what,
+      dx: e.clientX - (r?.left ?? 0),
+      dy: e.clientY - (r?.top ?? 0),
+      fromX: e.clientX,
+      fromY: e.clientY,
+      moved: false,
+    };
     /* Captured for the reason `gripDown` captures: the cursor is not going to
        stay on an 18px handle, and the whole gesture is about leaving. */
     grab.setPointerCapture(e.pointerId);
@@ -1226,21 +1256,39 @@
   function moorMove(e: PointerEvent) {
     const m = mooring;
     if (!m) return;
-    const p = { x: e.clientX, y: e.clientY };
-    const at = { x: p.x - m.dx, y: p.y - m.dy };
+    /* The press is a click until it has travelled — the wall's rule, the wall's
+       four pixels, stated once in `Canvas.groundDown` for everything standing
+       on it and owed here too. Without it a twitch on the handle moved the
+       surface, which on the dock meant un-mooring it: its handle is on its top
+       edge, a whole dock-height from the bottom it is moored to. */
+    if (!m.moved) {
+      if (Math.abs(e.clientX - m.fromX) < DRAG_SLOP && Math.abs(e.clientY - m.fromY) < DRAG_SLOP) {
+        return;
+      }
+      m.moved = true;
+    }
+    /* Where the *surface* would be, not where the finger is. A site is decided
+       by the box's own edges — see `berth.ts`. */
+    const at = { x: e.clientX - m.dx, y: e.clientY - m.dy };
     if (m.what === "panel") {
-      const site = panelSiteAt(p, chromeRoom);
+      const box = { ...at, w: panelAfloat ? panelAt.w : panelPx, h: panelAt.h };
+      const site = panelSiteAt(box, chromeRoom);
       berths.setPanel(site === "float" ? { site, ...at } : { site });
     } else {
-      const site = dockSiteAt(p, chromeRoom);
+      const box = { ...at, w: dockAt.w, h: dockH };
+      const site = dockSiteAt(box, chromeRoom);
       berths.setDock(site === "float" ? { site, ...at } : { site });
     }
   }
 
   function moorUp() {
     if (!mooring) return;
+    const moved = mooring.moved;
     mooring = null;
-    berths.save();
+    /* A press that never travelled changed nothing, so there is nothing to
+       write — and writing anyway would stamp this room's berths into the store
+       on every stray click of the handle. */
+    if (moved) berths.save();
   }
 
   /** Back to the edge it has always been on. The same offer `gripReset` makes,

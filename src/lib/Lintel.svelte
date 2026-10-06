@@ -21,7 +21,7 @@
 
   import type { Tier } from "./classify";
   import Frise from "./Frise.svelte";
-  import { Z_TOP } from "./layout";
+  import { DRAG_SLOP, Z_TOP } from "./layout";
   import type { Timeline } from "./timeline";
 
   let {
@@ -57,9 +57,7 @@
     onplace: (id: string, x: number | null, y: number | null) => void;
   } = $props();
 
-  /** The wall's slop — `Canvas.svelte`'s `DRAG_SLOP`, the same four pixels
-   *  everything else on this wall waits for before a press becomes a drag. */
-  const DRAG_SLOP = 4;
+
 
   const stacked = $derived(timelines.filter((t) => t.glassX === null || t.glassY === null));
   const placed = $derived(timelines.filter((t) => t.glassX !== null && t.glassY !== null));

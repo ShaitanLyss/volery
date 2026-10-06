@@ -7,6 +7,7 @@
     settle,
     wallOrder,
     CARD_BOX,
+    DRAG_SLOP,
     LEAVE_MS,
     Z_CARD,
     Z_CHIP,
@@ -1281,7 +1282,9 @@
    * the same frame, and computing from the origin makes those two writes agree
    * instead of doubling. (The flowing case cannot be made to agree, which is why
    * `haulOf` excludes it — see the note there.) */
-  const DRAG_SLOP = 4;
+  /* `DRAG_SLOP` is `layout.ts`'s now — the same four pixels the panel's and the
+     dock's mooring handles wait for, which is only "the same" if there is one
+     of it. */
 
   /** How wide a territory's edge is to take hold of, in canvas units. Centred
    *  on the border, so half of it is the pad inside — which is 18 units of

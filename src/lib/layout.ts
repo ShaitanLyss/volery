@@ -264,6 +264,21 @@ export function nudgeReading(stored: number | null, deltaY: number): number {
   return readingScale(from + (deltaY < 0 ? READ_STEP : -READ_STEP));
 }
 
+/** How far a press must travel before it is a drag, in screen pixels.
+ *
+ * **The press is a click until it has travelled**, which CLAUDE.md states as a
+ * cross-cutting rule because it has now been learned three times — on a card,
+ * on a widget, and on the marquee that appeared on the first pixel of movement.
+ * It is here, beside the stacking order, for the reason that one is: "the same
+ * four pixels everywhere" is only true if there is one four.
+ *
+ * It was three separate `const DRAG_SLOP = 4` before the panel and the dock
+ * grew mooring handles and nearly made it four, so the drift this prevents is
+ * not hypothetical. Screen pixels in every case, including on the wall — a slop
+ * that scaled with the zoom would mean a different gesture at every zoom level.
+ */
+export const DRAG_SLOP = 4;
+
 /* ── how the wall stacks ───────────────────────────────────────────────────
  *
  * One order for everything on it, in one place, because "in front" has to mean

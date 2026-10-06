@@ -58,6 +58,13 @@ export type Moorings = { panel: Berth<PanelSite>; dock: Berth<DockSite> };
 export const MIN_W = 240;
 export const MIN_H = 160;
 
+/* `MIN_H` is the *panel's* floor and must not be applied to the dock, whose
+   height the berth explicitly does not own — it is whatever the draft has
+   grown to. Applied anyway, the y-clamp was computed against 160 for a surface
+   ninety pixels tall, so a floating dock dropped near the bottom of the window
+   jumped up and sat with a gap under it, which reads as the drop having failed.
+   `floatBox` takes the floor as an argument for that one caller. */
+
 /** How close to an edge of the room a drop has to land to moor there.
  *
  *  Generous on purpose. The gesture is "put it over there", not "hit this
@@ -73,45 +80,51 @@ export function moorings(): Moorings {
   };
 }
 
-/** Which site a drop at this point means, for the panel.
+export type Box = { x: number; y: number; w: number; h: number };
+
+/** Which site a dragged surface at this box means, for the panel.
  *
  *  The room is the chrome's own — the window, or the home screen's share of it
- *  while spread — because that is where an *edge* is. A float is measured
- *  against the whole window instead, and that asymmetry is the feature: you
- *  moor to the screen the chrome lives on and you float anywhere at all. */
-export function panelSiteAt(
-  p: { x: number; y: number },
-  room: { x: number; y: number; w: number; h: number },
-): PanelSite {
-  if (!inside(p, room)) return "float";
-  if (p.x - room.x < EDGE) return "left";
-  if (room.x + room.w - p.x < EDGE) return "right";
+ *  while spread — because that is where an *edge* is. A float is placed against
+ *  the whole window instead, and that asymmetry is the feature: you moor to the
+ *  screen the chrome lives on and you float anywhere at all.
+ *
+ *  **The box, not the cursor**, and that was a bug rather than a refinement.
+ *  Measuring from the pointer asks "is your finger near an edge", and what the
+ *  gesture means is "is the *thing* near an edge" — which are different by
+ *  however far the handle sits from the surface's near side. The dock's handle
+ *  is on its top edge, so a docked-bottom dock sits with its cursor a whole
+ *  dock-height above the bottom of the window: further than `EDGE`, so the
+ *  first pixel of a drag un-moored it and it floated. */
+export function panelSiteAt(box: Box, room: Box): PanelSite {
+  if (!inside(box, room)) return "float";
+  if (box.x - room.x < EDGE) return "left";
+  if (room.x + room.w - (box.x + box.w) < EDGE) return "right";
   return "float";
 }
 
-export function dockSiteAt(
-  p: { x: number; y: number },
-  room: { x: number; y: number; w: number; h: number },
-): DockSite {
-  if (!inside(p, room)) return "float";
-  if (p.y - room.y < EDGE) return "top";
-  if (room.y + room.h - p.y < EDGE) return "bottom";
+export function dockSiteAt(box: Box, room: Box): DockSite {
+  if (!inside(box, room)) return "float";
+  if (box.y - room.y < EDGE) return "top";
+  if (room.y + room.h - (box.y + box.h) < EDGE) return "bottom";
   return "float";
 }
 
-/** Whether a drop even landed in the room the chrome lives in.
+/** Whether the surface is even in the room the chrome lives in.
  *
  *  Asked first, and it is not a tidying-up: the nearness tests are distances
- *  with no far side, so a drop on the monitor *above* the home screen is
- *  negative pixels from its top edge and moored there — which is the one drop
- *  that most obviously meant "put it over there, on that screen". Outside the
- *  room is always a float, and the edges are only edges from within. */
-function inside(
-  p: { x: number; y: number },
-  room: { x: number; y: number; w: number; h: number },
-): boolean {
+ *  with no far side, so a surface dragged onto the monitor *above* the home
+ *  screen is negative pixels from its top edge and would moor there — which is
+ *  the one drop that most obviously meant "put it over there, on that screen".
+ *  Outside the room is always a float, and the edges are only edges from
+ *  within. The box's own top-left answers it, since that is the corner the
+ *  drag is carrying. */
+function inside(box: Box, room: Box): boolean {
   return (
-    p.x >= room.x && p.x <= room.x + room.w && p.y >= room.y && p.y <= room.y + room.h
+    box.x >= room.x &&
+    box.x <= room.x + room.w &&
+    box.y >= room.y &&
+    box.y <= room.y + room.h
   );
 }
 
@@ -137,9 +150,10 @@ export function nextSite<S extends string>(sites: readonly S[], now: S): S {
 export function floatBox(
   b: { x: number; y: number; w: number; h: number },
   room: { w: number; h: number },
+  minH = MIN_H,
 ): { x: number; y: number; w: number; h: number } {
   const w = Math.max(MIN_W, Math.min(b.w, room.w || b.w));
-  const h = Math.max(MIN_H, Math.min(b.h, room.h || b.h));
+  const h = Math.max(minH, Math.min(b.h, room.h || b.h));
   const at = glassAt({ x: b.x, y: b.y }, { w, h }, { w: room.w, h: room.h });
   return { x: at.x, y: at.y, w, h };
 }

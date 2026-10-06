@@ -16,6 +16,7 @@ import {
   nextBackZ,
   nextFrontZ,
   pinSpot,
+  Z_TOP,
 } from "./layout";
 import { NO_SCRIBE, type Scribe } from "./undo";
 import type { Spots } from "./widgets.svelte";
@@ -71,7 +72,14 @@ export class Board {
 
   async load() {
     try {
-      this.images = await invoke<RefImage[]>("list_images");
+      /* `z` capped under the ceiling on the way in — see the same note in
+         `widgets.ts`. `nextFrontZ` was unbounded until `Z_TOP` arrived, so a
+         wall that has been tidied a few hundred times carries references above
+         it, and a layer riding at `Z_TOP` would be under them. */
+      this.images = (await invoke<RefImage[]>("list_images")).map((i) => ({
+        ...i,
+        z: Math.min(Z_TOP - 1, i.z),
+      }));
       /* And now that the rows have been read, the files that no row claims can
          go. `delete_image` deliberately leaves the copy on disk so a removal is
          undoable, and the undo stack does not survive a restart — so this is

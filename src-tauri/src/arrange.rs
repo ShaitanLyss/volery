@@ -37,6 +37,8 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::collections::HashMap;
 
+use tauri::Manager;
+
 use crate::store::Store;
 
 /// Which of the five things on the glass a spot belongs to. One short string
@@ -140,6 +142,28 @@ pub(crate) fn remember(
     Ok(())
 }
 
+/// Take something off the glass in **every** room, because it no longer exists.
+///
+/// `remember` is about where a thing is; this is about a thing that is gone,
+/// and the difference is the one id in `KINDS` that gets reused. A conversation,
+/// an image, a widget and a timeline are uuids, so a stale row is dead weight
+/// and nothing worse. A project's ref is its `root_path` — so a territory stuck
+/// to the glass, removed, and then added back from the same folder came back
+/// *still stuck*, at the spot the old one had, in a room the user had never put
+/// it in. The row outlived the thing and then found a new thing with its name.
+///
+/// Across all arrangements rather than the current one: the thing is gone
+/// everywhere, and a row left in a room you are not standing in is one that
+/// surfaces the next time you walk into it.
+pub(crate) fn forget(conn: &Connection, kind: &str, id: &str) {
+    if let Err(e) = conn.execute(
+        "DELETE FROM glass_spot WHERE kind = ?1 AND ref = ?2",
+        params![kind, id],
+    ) {
+        eprintln!("skein: could not forget a glass spot ({kind} {id}): {e}");
+    }
+}
+
 /// `remember`, with the failure logged instead of returned.
 ///
 /// What the five writers actually call. The placement itself has already landed
@@ -154,8 +178,20 @@ pub(crate) fn note(conn: &Connection, kind: &str, id: &str, x: Option<f64>, y: O
 
 /// Every arrangement this wall has ever been looked at in.
 #[tauri::command]
-pub fn known_arrangements(store: tauri::State<'_, Store>) -> Result<Vec<KnownArrangement>, String> {
-    let conn = store.0.lock().unwrap();
+pub async fn known_arrangements(app: tauri::AppHandle) -> Result<Vec<KnownArrangement>, String> {
+    /* `async` + `off_main`, which is the house rule for anything taking the
+       store's mutex: a blocking arm runs inline on the thread that paints every
+       card on the wall, and this one is asked every time you come back to the
+       window. See the note over `crate::off_main`. */
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().unwrap();
+        known_in(&conn)
+    })
+    .await?
+}
+
+fn known_in(conn: &Connection) -> Result<Vec<KnownArrangement>, String> {
     let mut q = conn
         .prepare("SELECT key, screens_json, seen_at FROM arrangement ORDER BY seen_at DESC")
         .map_err(|e| e.to_string())?;
@@ -194,8 +230,8 @@ pub fn known_arrangements(store: tauri::State<'_, Store>) -> Result<Vec<KnownArr
 /// 3. **The arrangement becomes the current one**, which is what `remember`
 ///    then writes against.
 #[tauri::command]
-pub fn adopt_arrangement(
-    store: tauri::State<'_, Store>,
+pub async fn adopt_arrangement(
+    app: tauri::AppHandle,
     key: String,
     screens: String,
     origin: [f64; 2],
@@ -207,12 +243,20 @@ pub fn adopt_arrangement(
     if key.is_empty() {
         return Ok(None);
     }
-    let mut conn = store.0.lock().unwrap();
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    adopt_in(&tx, &key, &screens, origin, clone_from.as_deref())?;
-    let spots = spots_in(&tx, &key)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(Some(spots))
+    /* Off the main thread for the reason `known_arrangements` is, and with more
+       to answer for: `adopt_in` is a transaction carrying ten whole-table
+       statements, and it runs at the moment you have just looked at the
+       window. */
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let mut conn = store.0.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        adopt_in(&tx, &key, &screens, origin, clone_from.as_deref())?;
+        let spots = spots_in(&tx, &key)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(Some(spots))
+    })
+    .await?
 }
 
 /// The work of `adopt_arrangement`, so the round trip can be tested without an
@@ -224,13 +268,21 @@ pub(crate) fn adopt_in(
     origin: [f64; 2],
     clone_from: Option<&str>,
 ) -> Result<(), String> {
-    let fresh = conn
-        .query_row(
-            "SELECT 1 FROM arrangement WHERE key = ?1",
-            params![key],
-            |_| Ok(()),
-        )
-        .is_err();
+    /* **"No row" and "could not tell" are not the same answer**, and `is_err()`
+       said they were. This gate decides whether a room is furnished from
+       somewhere else — an `INSERT OR REPLACE` over its spots, or a reseed from
+       the columns — so a transient failure reading it would quietly overwrite
+       an arrangement somebody had made. Matched explicitly, and anything that
+       is not "no rows" is returned rather than guessed at. */
+    let fresh = match conn.query_row(
+        "SELECT 1 FROM arrangement WHERE key = ?1",
+        params![key],
+        |_| Ok(()),
+    ) {
+        Ok(()) => false,
+        Err(rusqlite::Error::QueryReturnedNoRows) => true,
+        Err(e) => return Err(format!("could not read arrangement {key}: {e}")),
+    };
 
     /* The ancestor's origin has to be read before the upsert, since the
        arrangement being adopted may *be* its own ancestor's row on a re-adopt
@@ -387,7 +439,9 @@ mod tests {
                 key          TEXT PRIMARY KEY,
                 screens_json TEXT NOT NULL,
                 seen_at      INTEGER NOT NULL,
-                current      INTEGER NOT NULL DEFAULT 0
+                current      INTEGER NOT NULL DEFAULT 0,
+                origin_x     REAL NOT NULL DEFAULT 0,
+                origin_y     REAL NOT NULL DEFAULT 0
             );
             CREATE TABLE glass_spot (
                 arrangement TEXT NOT NULL,
@@ -534,6 +588,37 @@ mod tests {
         // And back: the same place on the home screen again.
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((100.0, 50.0)));
+    }
+
+    #[test]
+    fn a_thing_that_is_gone_leaves_every_room() {
+        /* A project's ref is its `root_path`, which is the one id here that
+           gets reused: stick a territory to the glass, remove it, add the same
+           folder back, and the row found a new thing with its name. */
+        let conn = db();
+        conn.execute("INSERT INTO project VALUES ('/p', 3.0, 4.0)", []).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        forget(&conn, PROJECT, "/p");
+        // Gone from the room it was deleted in, and from the other one too.
+        assert!(spots_in(&conn, "two").unwrap().projects.is_empty());
+        assert!(spots_in(&conn, "one").unwrap().projects.is_empty());
+        // And the folder added back is on the wall, not where the old one was.
+        conn.execute("UPDATE project SET glass_x = NULL, glass_y = NULL", []).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        let back: Option<f64> = conn
+            .query_row("SELECT glass_x FROM project WHERE root_path = '/p'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(back, None);
+    }
+
+    #[test]
+    fn an_arrangement_that_cannot_be_read_is_not_treated_as_new() {
+        /* `is_err()` conflated "no row" with "could not tell", and the gate it
+           guards clones over a room's real spots. */
+        let conn = db();
+        conn.execute("DROP TABLE arrangement", []).unwrap();
+        assert!(adopt_in(&conn, "one", "[]", [0.0, 0.0], None).is_err());
     }
 
     #[test]

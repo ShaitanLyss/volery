@@ -40,6 +40,19 @@ class Arrangements {
    *  would leave the columns holding one arrangement and the flag naming the
    *  other — which nothing afterwards could tell apart. */
   #busy = false;
+  /** Somebody asked while one was in flight, so ask again when it lands.
+   *
+   *  **Dropping the second call was wrong, and the dropped one is the one that
+   *  matters.** `settle` is asked from an effect that only re-fires on focus or
+   *  on the spread, and `span.count()` runs `toggle()` from *inside* a focus —
+   *  so the spread flips while a focus-triggered settle is three IPC round
+   *  trips deep, the call that would have noticed is thrown away, and nothing
+   *  asks again until something happens to change focus. Until then
+   *  `arrangement.current` names the room you just left while the pane is the
+   *  other room's geometry, and every drag writes this room's coordinates into
+   *  that one's rows. That is exactly the corruption the per-arrangement design
+   *  exists to prevent, reached from the front end instead of the debounce. */
+  #again = false;
 
   /** The screens the glass is actually spread across.
    *
@@ -83,7 +96,15 @@ class Arrangements {
    *  first spread finds the glass where it already was rather than piled onto
    *  whichever monitor the union starts at. Nothing else reads it. */
   async settle(spread: boolean, origin: [number, number]): Promise<GlassSpots | null> {
-    if (this.#busy) return null;
+    if (this.#busy) {
+      /* Remembered rather than queued: the answer a second caller wants is
+         "whatever the screens are once this has landed", and that is one more
+         pass rather than one per caller. The arguments are not kept either —
+         `#rerun` reads the live ones, since a stale `spread` is the thing this
+         is here to stop believing. */
+      this.#again = true;
+      return null;
+    }
     this.#busy = true;
     try {
       const screens = await this.look(spread);
@@ -123,8 +144,24 @@ class Arrangements {
       return null;
     } finally {
       this.#busy = false;
+      if (this.#again) {
+        this.#again = false;
+        /* Out of this call's stack, so a caller awaiting the first settle is
+           not also awaiting the second — and so a pathological flapping
+           arrangement cannot recurse. `rerun` is what `App.svelte` registered
+           at startup; with nothing registered the catch-up is simply not
+           available, which is the honest state for a module nobody has wired. */
+        queueMicrotask(() => void this.rerun?.());
+      }
     }
   }
+
+  /** Ask the thing that knows the live arguments to settle again.
+   *
+   *  Set once by `App.svelte`. It is a hook rather than a stored argument list
+   *  because the whole point of the second pass is that the first pass's
+   *  `spread` and `origin` are the ones that went stale. */
+  rerun: (() => void) | null = null;
 }
 
 /** A stored shape, or nothing. Opaque to Rust and written by us, so the only
