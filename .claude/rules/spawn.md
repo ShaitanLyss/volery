@@ -333,8 +333,13 @@ the parent's summary of it. The same four as cards are four things on the wall.
 The description says so in those words, and a test holds it there, because **nothing else is in
 a position to say it.** `spawn` sits in `ask::roster`'s deferred tier: nothing about it reaches
 an agent until the agent goes looking, and an agent dividing a job into four does not go
-looking — `Agent` is already loaded and already answers. Promoting it is not available either,
-the loaded tier being a hair under its 25KB budget with a schema several KB wide. So the two
+looking — `Agent` is already loaded and already answers. Promoting it is a real question rather
+than a foreclosed one — it was written here as foreclosed, on the loaded tier "being a
+hair under its 25KB budget", and that stopped being the reason on 2026-10-07 when the
+ceiling went to 32,000 with room in it (`the_loaded_tier_is_what_every_turn_pays_for`).
+A schema several KB wide is still a real price and the bar for paying it is unchanged:
+name the tokens per spawn, and the person who pays them says yes. What has changed is
+that the answer is no longer "there is nowhere to put it". So the two
 places that can reach the reflex are the **search hint** (which is why it now carries "fan out
 the building work" and "spawn several agents to implement") and this paragraph, which is what
 gets read the moment the hint works. A wall whose standing instructions route read-only work to

@@ -527,6 +527,33 @@ these apply when you open almost anything.
   there is nothing for a component to forget. The judgement — `stillFollowing`, which turns on
   the position the follow last wrote, because a write's scroll event arrives a beat *after* the
   bottom has moved — is pure and tested. See `panel.md`.
+- **A budget is a reason to say a thing once. It is never a reason to say less
+  of it.** Several things here cap agent-facing text — the loaded MCP tier's
+  byte ceiling (`ask::tests::the_loaded_tier_is_what_every_turn_pays_for`) is
+  the sharpest, since every card pays it on every spawn. Those caps are real and
+  the cost they measure is real. What they must never buy is a thinner
+  explanation, because the thing being thinned is the only channel to a model
+  that cannot ask a follow-up question: it reads the description once, acts, and
+  the way you find out a sentence was load-bearing is a shipped bug. Both
+  halves of this were learned on one afternoon, in one file:
+  `preview_schema`'s pointer arrangement is the **good** move (the paragraph was
+  reaching the model four times per spawn and now reaches it once, with three
+  pointers at it), and the first attempt at fitting `file_schema` beside it was
+  the **bad** one: it quietly took "only where the decision turns on
+  interaction" off `js`, which is the exact sentence a shipped bug
+  (sink `51863e1e`) exists to have said.
+  So when a cap trips, the ladder is, in order: **is this a thing every card
+  must know without being told** — if not, it belongs in the deferred tier and
+  the cap has done its job; **is the same thing said twice** — say it once and
+  point at it, which costs nothing; and otherwise **raise the number**, at the
+  bar the previous raises set — name the tokens it costs per spawn, measured
+  rather than guessed, and the person who pays them says yes. A ceiling is a
+  tripwire somebody chose; the prose is the product. Trimming words to land
+  under a number you picked yourself is optimising the measurement.
+  And set a raised bound with **room** rather than to the millimetre: a ceiling
+  a few hundred bytes above the tier no longer catches a tool being added
+  quietly, which is what it is for — it catches the next paragraph anybody
+  writes, which is what it must not do.
 - **A text an agent will read may not carry a character it cannot send.** `crate::clean` is
   what an impossible character is — the C0 controls and DEL, less tab, newline and carriage
   return — and `clip::keep`, `ask::dispatch` and `ask::respond` are the three places it is
