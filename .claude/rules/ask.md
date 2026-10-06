@@ -998,6 +998,18 @@ question can carry a `file` as well as a `preview`, and the gallery draws both.
   the agent could not find out. `preview` had the same hole for its whole life
   and gets the same fix. The first question is the only answer that is not a
   guess, since the attachment was put at the level that addresses the *call*.
+- **A picture is a description, which `thin_options` had to be told.** The
+  bare-labels refusal landed the same week (sink `b260f62a`) and fires on two or
+  more options where not one carries a `detail` — which is precisely three
+  options labelled A, B and C with a render apiece and no prose, because the
+  prose would be describing what is already on the screen at full size. That is
+  the flagship use of both `preview` and `file`, so the check would have aimed
+  itself at the calls spending the *most* of the model's context on the user.
+  `undescribed_note`'s own comment says a false positive here is worse than one
+  in `swallowed` — "a refusal becomes an agent that stops asking" — and this
+  is what one would have looked like. Found by rebasing rather than by either
+  change on its own, which is the argument for running the other half's tests
+  and not only your own.
 - **`lookLabel` names a single file outright** — "look at shot-after.png" is a
   button you can decide about before pressing, where "look at the file" is one
   more gesture to find out what is behind it. Several of anything is a count,
@@ -1025,9 +1037,9 @@ question can carry a `file` as well as a `preview`, and the gallery draws both.
   decision turns on interaction" on `js`, which is the sentence sink `51863e1e`
   exists to have said. Both were bought back — 478 bytes, ~120 tokens, the
   best-value spend in the whole block — and the ceiling went to 32,000 with
-  room rather than to the millimetre, because a bound 215 bytes above the tier
-  does not catch a tool being added quietly, it catches the next paragraph
-  anybody writes. **A byte budget is a reason to say a thing once, not a reason
+  room rather than to the millimetre, because a bound a few hundred bytes above
+  the tier does not catch a tool being added quietly, it catches the next
+  paragraph anybody writes. The tier is 26,559 on the base this landed on. **A byte budget is a reason to say a thing once, not a reason
   to say less of it**, and the difference between those two is the whole of
   what this paragraph is for. The general form is in CLAUDE.md, where every
   session reads it.

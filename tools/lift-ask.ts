@@ -109,6 +109,7 @@ const TESTS: string[] = [
   "a_call_that_needs_no_explaining_still_goes_through",
   "the_long_form_is_checked_too_and_counted_per_question",
   "the_refusal_says_what_to_do_instead",
+  "something_to_look_at_is_a_description",
 ];
 
 const lines = readFileSync(SRC, "utf8").split(/\r?\n/);

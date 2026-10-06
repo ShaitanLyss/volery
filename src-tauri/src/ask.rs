@@ -1994,15 +1994,29 @@ pub(crate) fn swallowed_note(tool: &str, m: &Swallowed) -> String {
 /// about which needed describing, and that judgement is the model's to make.
 /// What is left is the shape that was actually complained about — a row of bare
 /// words with no way in.
+///
+/// **And a picture is a way in.** Three options each carrying a `preview` or a
+/// `file`, labelled A, B and C, have no `detail` anywhere and are not the
+/// complaint: the thing to judge them by is on the screen at full size, and a
+/// line of prose under each would be describing what the user is looking at.
+/// That shape is the flagship use of both fields — several designs side by
+/// side, several renders to pick between — so refusing it would aim this
+/// squarely at the calls that spend the *most* of the model's context on her.
+/// Caught when the two landed in the same week; the note over `undescribed_note`
+/// says why a false positive here is worse than one in `swallowed`, and this is
+/// what one would have looked like.
 fn thin_options(q: &Value) -> bool {
     let Some(opts) = q.get("options").and_then(Value::as_array) else {
         return false;
     };
+    let shown = |o: &Value, k: &str| o.get(k).is_some_and(|v| !v.is_null());
     opts.len() >= 2
         && !opts.iter().any(|o| {
             o.get("detail")
                 .and_then(Value::as_str)
                 .is_some_and(|d| !d.trim().is_empty())
+                || shown(o, "preview")
+                || shown(o, "file")
         })
 }
 
@@ -3066,6 +3080,58 @@ mod tests {
     }
 
     #[test]
+    fn something_to_look_at_is_a_description() {
+        /* The flagship shape of both `preview` and `file`: options labelled A
+           and B with the thing to judge them by drawn full size, and no prose
+           under either because the prose would be describing what is on the
+           screen. Refusing this would point the check at the calls that spend
+           the most of the model's context on the user. */
+        assert_eq!(
+            undescribed(&json!({
+                "question": "which of these?",
+                "options": [
+                    { "label": "A", "preview": { "html": "<i>a</i>" } },
+                    { "label": "B", "preview": { "html": "<i>b</i>" } }
+                ]
+            })),
+            0
+        );
+        assert_eq!(
+            undescribed(&json!({
+                "question": "which render?",
+                "options": [
+                    { "label": "A", "file": { "root": "C:/o", "path": "a.png" } },
+                    { "label": "B", "file": { "root": "C:/o", "path": "b.png" } }
+                ]
+            })),
+            0
+        );
+        /* One of each is still a call where every option shows you something. */
+        assert_eq!(
+            undescribed(&json!({
+                "question": "now, or as it would be?",
+                "options": [
+                    { "label": "now", "file": "a.png" },
+                    { "label": "after", "preview": { "html": "<i>b</i>" } }
+                ]
+            })),
+            0
+        );
+        /* And the field written out and left blank is no picture at all, which
+           is the shape `attach_at` leaves behind when it is given one. */
+        assert_eq!(
+            undescribed(&json!({
+                "question": "which?",
+                "options": [
+                    { "label": "A", "file": null },
+                    { "label": "B", "file": null }
+                ]
+            })),
+            1
+        );
+    }
+
+    #[test]
     fn an_attachment_is_found_wherever_it_is_hung() {
         /* What the chat-card gate is asked, and therefore what it must not
            miss. A walk that checked three of the four sites would be a gate
@@ -3243,11 +3309,13 @@ mod tests {
     /// second way to show somebody something: **1,096 bytes, ~275 tokens on
     /// every spawn and every wake, permanently**, measured by building the
     /// loaded tier and stripping the key back out rather than by counting
-    /// characters. That took the tier to 26,263 against a 26,000 ceiling.
+    /// characters. That took the tier over the 26,000 ceiling; rebased onto the
+    /// week's other work it sits at **26,559**, which is 559 over the bound it
+    /// replaced and 5,441 under the one it got.
     ///
     /// What happened next is the reason the number moved further than the
     /// 27,000 that would have cleared it. The first response to going red was
-    /// to **shorten sentences**, and it worked — 25,785, under the bound — and
+    /// to **shorten sentences**, and it worked — in under the bound — and
     /// it quietly cost two things that were doing work, both in the copy paid
     /// three times: the enumeration of what is forbidden at the top level,
     /// which `preview_schema`'s own comment argues for in as many words, and
