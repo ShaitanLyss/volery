@@ -1288,6 +1288,22 @@ export const WAKE_GRACE_S = 12;
  *  understood costs a bounded amount before it stops and says so. */
 export const NUDGE_BUDGET = 2;
 
+/** How long after a turn ends a still-unechoed prompt is called undelivered.
+ *
+ *  **Five times `WAKE_GRACE_S`, and the extra time is free now**, which is the
+ *  whole reason it is a separate number. The prompt side used to wait twelve
+ *  seconds and then spend a *turn*; a reading that costs a turn has to be taken
+ *  as early as it can be defended, because the user is waiting on the card. A
+ *  reading that only draws a line on the wall can afford to be sure, so this is
+ *  set from what the CLI actually does rather than from what the wall can
+ *  afford.
+ *
+ *  What it actually does, measured by `tools/probe-queue.ts`: a prompt written
+ *  to stdin mid-turn is replayed **1.5 seconds after the running turn's
+ *  `result`**, on its own, with nothing sent to flush it. Sixty seconds is
+ *  forty times that. A prompt still unechoed here was not in a queue. */
+export const UNQUEUED_AFTER_S = 60;
+
 /** What Skein says to a card that was told and did not stir.
  *
  *  Deliberately almost empty, and what it supplies is a *turn* rather than
@@ -1327,7 +1343,28 @@ export type NudgeKind = "job" | "prompt";
  *  where the "mine" was skein's and every card read it as yours. So the app
  *  asked in your voice about a message it had not sent, and was answered as
  *  though you had. Whose the queued message is has come out with the "mine" —
- *  it was never skein's, and the card is about to read it either way. */
+ *  it was never skein's, and the card is about to read it either way.
+ *
+ *  **It is no longer sent, and the measurement that retired it is worth more
+ *  than the wording.** Every prompt nudge ever sent on this machine was read
+ *  back out of the transcripts on 2026-10-06: **24 of them, and not one
+ *  flushed anything.** Twelve were answered with some version of "nothing is
+ *  queued behind it"; the rest are turns that produced no queued prompt
+ *  either, and one of them landed on a session limit. A 0-for-24 feature that
+ *  costs a real turn each time.
+ *
+ *  Which is what the probe predicts, and that is the part to keep: the CLI
+ *  drains its own queue **1.5 seconds** after a turn's `result`, unprompted
+ *  (`tools/probe-queue.ts`). The nudge waited twelve. So by the time it fired
+ *  the prompt was never in a queue — the premise was false *whenever* the
+ *  nudge was reached, by construction, and the feature could not have worked.
+ *  Sink `4ab8f584`, where two of them landed on an idle card that could only
+ *  reply "nothing queued, still waiting".
+ *
+ *  Kept rather than deleted because `#claimEcho` still has to recognise one:
+ *  a card updating mid-flight can have a nudge outstanding on the wire, and
+ *  the arm that clears the ghosts in front of it is how that card gets its
+ *  books closed. Nothing new will ever send it. */
 export const NUDGE_PROMPT_TEXT =
   "skein here — if a message is queued behind this one, answer that instead.";
 

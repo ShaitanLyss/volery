@@ -41,11 +41,12 @@ import {
   isCarryOn,
   HOLD_LINE,
   NUDGE_BUDGET,
+  ghostNote,
   nudgeSkipFor,
   nudgeGaveUpNote,
   nudgeNote,
-  NUDGE_PROMPT_TEXT,
   NUDGE_TEXT,
+  UNQUEUED_AFTER_S,
   WAKE_GRACE_S,
   windowForObserved,
 } from "./classify";
@@ -2330,6 +2331,32 @@ export class Skein {
       if (conv.working || conv.dormant) return;
       const prompt = nudge.kind === "prompt";
       if (prompt ? conv.awaiting === 0 : conv.unwoken === null) return;
+      /* **The prompt side sends nothing, and that is the whole of what it does
+         now.** It used to write `NUDGE_PROMPT_TEXT` down the wire to flush a
+         queue. Every one of the 24 it ever sent on this machine was answered
+         with some version of "nothing is queued" — because the CLI drains its
+         own queue 1.5s after a turn's `result` and this fires long after, so
+         the prompt it was flushing for was never in a queue to begin with.
+         `NUDGE_PROMPT_TEXT` carries the measurement.
+
+         What is left is the reading, which was always the useful half: your
+         words reached stdin and the wire never took them up. `ghostNote` is
+         already the right sentence and was already being said — after a wasted
+         turn, as the nudge's own echo disproved its premise. It is said
+         instead of one now.
+
+         Nothing below here is reached. No waterfall, because saying something
+         costs no allowance; no budget, because `saidUnqueued` is a flag rather
+         than a count. And `awaited` is deliberately left **on** — a late echo
+         must still find a line to claim, or it would push a second copy of
+         your prompt, which is the double-draw `#settleEchoes` was rewritten to
+         avoid. So the card goes on reading `sent, not picked up`, which is
+         still true, and now says so in words as well. */
+      if (prompt) {
+        conv.saidUnqueued = true;
+        conv.note(ghostNote(conv.awaiting));
+        return;
+      }
       /* A nudge is the one prompt this app sends on its own initiative, and an
          exhausted allowance is the one case where its outcome is known before
          it goes: the turn cannot reach a model, so it can neither flush a queue
@@ -2380,17 +2407,14 @@ export class Skein {
           return;
         }
       }
-      if (prompt) conv.promptNudgeAttempts = nudge.attempt;
-      else conv.nudgeAttempts = nudge.attempt;
+      conv.nudgeAttempts = nudge.attempt;
       conv.note(nudgeNote(nudge.attempt, nudge.kind));
-      await this.send(conv, prompt ? NUDGE_PROMPT_TEXT : NUDGE_TEXT);
-      /* The budget is spent and the card is still holding your words. Said out
-         loud, once, for the reason `#settleJob` says its own version once: a
-         card that has stopped trying must not look like one that never had to.
-         The job side says this from the fold, which has a notification to count;
-         this side has no second event to hang it on, so it is said here. */
-      if (prompt && nudge.attempt >= NUDGE_BUDGET) conv.note(nudgeGaveUpNote("prompt"));
-    }, WAKE_GRACE_S * 1000);
+      await this.send(conv, NUDGE_TEXT);
+      /* The timer is the job grace, except on the prompt side, where the wait
+         stopped costing anything the moment it stopped being a turn and could
+         therefore be set from what the CLI really does. See
+         `UNQUEUED_AFTER_S`. */
+    }, (nudge.kind === "prompt" ? UNQUEUED_AFTER_S : WAKE_GRACE_S) * 1000);
     this.#nudges.set(conv.id, t);
   }
 

@@ -15,8 +15,18 @@
  * Costs two short real turns.
  */
 
-const CWD = "C:/atelier/skein";
+/* The repo this is run from, rather than a path written down once. It was
+   hard-coded to `C:/atelier/skein`, which this machine does not have, so the
+   probe spawned into a directory that is not there — the usual silent rot of a
+   tool nothing runs between the two times it is needed. */
+const CWD = (await Bun.$`git rev-parse --show-toplevel`.text()).trim();
 const CLAUDE = Bun.which("claude") ?? "claude";
+
+/* Pinned small by default. Nothing measured here is a property of the model —
+   whether a queued prompt is replayed is the CLI's bookkeeping — and the
+   alternative is two real Opus turns to answer a question about plumbing.
+   `PROBE_MODEL=` empty runs whatever the CLI would have chosen. */
+const MODEL = process.env.PROBE_MODEL ?? "claude-haiku-4-5-20251001";
 
 /** Skein's shipped flags, verbatim. */
 const ARGV = [
@@ -28,6 +38,7 @@ const ARGV = [
   "--replay-user-messages",
   "--forward-subagent-text",
   "--dangerously-skip-permissions",
+  ...(MODEL ? ["--model", MODEL] : []),
 ];
 
 const mode = Bun.argv[2] ?? "busy";

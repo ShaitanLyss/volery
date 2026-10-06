@@ -847,16 +847,19 @@ export class Conversation {
    *  so the allowance is per generation of work rather than per turn. */
   nudgeAttempts = $state(0);
 
-  /** The same allowance for the prompt case, counted apart.
+  /** This card has already been told a prompt of yours never reached it.
    *
-   *  Not cleared when a turn opens, for exactly the reason `nudgeAttempts` is
-   *  not — a nudge *is* a prompt and would reset its own budget every time.
-   *  Cleared in `#claimEcho` instead, and only when the last outstanding echo
-   *  comes in — a nudge is a prompt of its own, so "one prompt was taken up" is
-   *  a test a stuck card passes with your words still sitting behind the nudge
-   *  in the queue. `awaiting` reaching zero is the honest moment. Same shape as
-   *  `#job` clearing the other one. */
-  promptNudgeAttempts = $state(0);
+   *  Where `promptNudgeAttempts` was, and it is a flag rather than a count
+   *  because the thing it bounds stopped being a turn: the prompt side draws a
+   *  line on the wall now, and a line saying the same thing twice is noise
+   *  where a second turn was expense. See `NUDGE_PROMPT_TEXT`.
+   *
+   *  Cleared in `#claimEcho` when the last outstanding echo comes in, for the
+   *  reason the count was: that is the card demonstrably taking your words up,
+   *  and the next prompt that goes missing is a new fact rather than the same
+   *  one. Not cleared when a turn opens — a turn opening says nothing about a
+   *  prompt that was never queued, which is the whole finding. */
+  saidUnqueued = $state(false);
 
   /* context — the ring */
   ctxTokens = $state(0);
@@ -1841,7 +1844,7 @@ export class Conversation {
        allowance to nothing spent, and been nudged again for as long as it went
        on doing that. An unbounded loop of real turns, on a card that is failing
        in precisely the way the loop was built for. */
-    if (this.awaiting === 0) this.promptNudgeAttempts = 0;
+    if (this.awaiting === 0) this.saidUnqueued = false;
     return true;
   }
 
@@ -2530,17 +2533,18 @@ export class Conversation {
         /* A turn has ended and a prompt of yours is still unechoed — which,
            after `#settleEchoes` just ran, is the *only* record that anything is
            outstanding. Scheduled here rather than at the grace boundary because
-           `pendingNudge` is a field Skein polls, exactly as the job case is: the
-           twelve seconds are `#nudge`'s timer, and the usual outcome is that the
-           CLI drains its queue inside them and the timer finds a working card.
-           Never past the budget — `#nudge` would take the field and spend a turn
-           it is not allowed. */
-        if (
-          this.awaiting > 0 &&
-          this.held === null &&
-          this.promptNudgeAttempts < NUDGE_BUDGET
-        ) {
-          this.pendingNudge = { attempt: this.promptNudgeAttempts + 1, kind: "prompt" };
+           `pendingNudge` is a field Skein polls, exactly as the job case is:
+           the wait is `#nudge`'s timer, and the usual outcome is that the CLI
+           drains its queue inside it and the timer finds a working card.
+
+           **No budget, because this no longer spends anything.** It used to
+           send a turn and was allowed two; it now draws one line on the wall
+           and is allowed one, which `saidUnqueued` holds. See
+           `NUDGE_PROMPT_TEXT` for the 0-for-24 measurement that retired the
+           sending, and `UNQUEUED_AFTER_S` for why the wait got five times
+           longer the moment it got free. */
+        if (this.awaiting > 0 && this.held === null && !this.saidUnqueued) {
+          this.pendingNudge = { attempt: 1, kind: "prompt" };
         }
 
         /* The ledger. `result.usage` is the turn summed — see `lastTurn`. It
@@ -3072,7 +3076,7 @@ export class Conversation {
        lines went with it — the count has to follow or the card would come back
        amber over prompts that are no longer on it. */
     this.awaiting = 0;
-    this.promptNudgeAttempts = 0;
+    this.saidUnqueued = false;
     /* The backup belongs to a session this card no longer has, so nothing here
        can ever settle it. Left set, the card would sit waiting on two good
        turns to release a file whose session is gone — and the discard would

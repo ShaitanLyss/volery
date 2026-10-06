@@ -405,19 +405,15 @@ What was wrong was what the wall drew while it waited, and it was worse than say
   reason: neglect would take five minutes to say something known in twelve seconds, about a
   card whose transcript is meanwhile claiming the prompt arrived.
 - **One mechanism, two silences.** `pendingNudge` carries a `NudgeKind`, and `#nudge` re-checks
-  whichever one it is before spending a turn — `awaiting === 0` for a prompt, `unwoken === null`
+  whichever one it is before acting — `awaiting === 0` for a prompt, `unwoken === null`
   for a job. On the prompt side that check is *usually* what happens: the queue drains in about
-  three seconds and the grace is twelve, so the timer finds a working card and costs nothing.
-- **The budgets are counted apart, and the prompt one resets only at zero.** A nudge is itself
-  a prompt, so "a prompt was taken up" is a test a stuck card passes with your words still
-  behind the nudge in the queue — reset there, the allowance would be restored by its own
-  spending and the loop would be unbounded. `#claimEcho` clears `promptNudgeAttempts` only when
-  `awaiting` reaches zero, which is the moment everything sent has been acknowledged. Neither
-  budget is cleared when a turn opens, for the reason `nudgeAttempts` already gives.
-- **`NUDGE_PROMPT_TEXT` hedges.** What flushes the queue is any message at all, and the thing
-  behind it in that queue is your own words — so it says only where to look. And it says *if*,
-  because twelve seconds is long enough for the queue to have drained since the check, and an
-  agent told flatly that a message exists would go hunting for one that does not.
+  three seconds, so the timer finds a working card and costs nothing.
+- **The prompt side no longer sends anything, and the section below is why.** It once sent
+  `NUDGE_PROMPT_TEXT` to flush the queue, counted that against a budget of its own, and hedged
+  the wording because twelve seconds was long enough for the queue to have drained since the
+  check. All three of those are gone with the send; what is left is the *reading*, which was
+  always the useful half. Everything below about budgets, allowances, holds and Escape is
+  still live for the **job** arm, which still spends a turn.
 - **A prompt the CLI answers itself is never echoed, and that leaked until 2026-08-25.**
   `--replay-user-messages` re-emits real prompts and stays silent on locally-answered ones —
   `tools/probe-echo.ts` sent `"say only: ok"`, `/model sonnet`, `"say only: done"` and got
@@ -479,6 +475,64 @@ What was wrong was what the wall drew while it waited, and it was worse than say
   budget at zero through the existing arm, which is the second half of the fault each earlier
   fix describes: a real stall later in the session now gets the nudge that used to have been
   spent on a ghost.
+
+#### And then it turned out there was no stall to get it, so the prompt nudge was retired
+
+Everything above is a sequence of exact fixes to a feature nobody had asked the first
+question of: **does it ever work?** Answered 2026-10-06, by reading every prompt nudge ever
+sent on this machine out of the transcripts — all projects, all 80-odd session files.
+
+```text
+prompt nudges ever sent : 24
+  answered "nothing is queued"        12
+  something flushed out behind it      0
+  neither, and several of those replies also say nothing was queued
+```
+
+**Zero for twenty-four**, each one a real turn against a real allowance, and one of them
+landed on a session limit. Sink `4ab8f584` is two of them arriving on an idle card that
+could only reply "nothing queued, still waiting" — which Lyss flagged as faulty, correctly.
+
+And the probe predicts exactly that, which is the part to keep. `tools/probe-queue.ts`, re-run
+with its stale `CWD` fixed: a prompt written mid-turn is replayed **1.5 seconds after the
+running turn's `result`**, on its own, with nothing sent to flush it. The grace was twelve
+seconds. So by the time `#nudge` was reached the queue had drained eight times over, and a
+prompt still unechoed there was *never in a queue* — **the nudge's premise was false whenever
+the nudge was reached, by construction.** It could not have worked, and every fix above was
+making a mechanism that cannot fire correctly fire more correctly.
+
+That is the lesson rather than the arithmetic, and it is the same shape as `ghostedByNudge`'s
+turned once more: **a guard whose evidence its action cannot move never stops firing — and a
+guard that only fires when its premise is false is a guard with no true case at all.** Four
+sittings went into the second one before anybody counted the outcomes.
+
+What replaced it is the reading with the send taken out:
+
+- **`#nudge`'s prompt arm says `ghostNote` and returns.** The same sentence it already said —
+  *"the queue was empty — that prompt never reached this card"* — which used to be reached only
+  after a wasted turn disproved the nudge's own premise. It is said instead of one now, and
+  `saidUnqueued` holds it to once; where there was a `promptNudgeAttempts` budget of two there
+  is now a flag, because a line drawn twice is noise where a second turn was expense.
+- **Nothing below it is reached.** No waterfall, because saying something costs no allowance,
+  and so the whole "a card with no allowance is not nudged either" argument below applies to
+  the job arm alone.
+- **`awaited` is deliberately left on.** A late echo must still find a line to claim, or it
+  pushes a second copy of your prompt — the double-draw `#settleEchoes` was rewritten to
+  avoid. So the card goes on reading `sent, not picked up`, which is still true, and now says
+  so in words as well.
+- **The wait went from twelve seconds to sixty** (`UNQUEUED_AFTER_S`), and the direction is
+  the point: a reading that costs a turn has to be taken as early as it can be defended,
+  because the user is waiting; a reading that only draws a line can afford to be sure. Sixty
+  is forty times the measured drain. **The extra patience was bought by giving up the send**,
+  which is worth noticing as a general trade — a cheaper action can be a later and therefore
+  more certain one.
+- **`NUDGE_PROMPT_TEXT`, `isPromptNudge` and `ghostedByNudge` all stay.** A card updating
+  mid-flight can have a nudge outstanding on the wire, and that arm is how its books get
+  closed. Nothing new will ever send one.
+
+The **job** nudge is untouched and is a different case on its merits: its premise is a
+notification the CLI delivered that nothing acted on, which a turn genuinely can fix, and
+`tools/probe-nudge.ts` is the measurement behind it.
 
 - **The face says *sent*, not *delivered*.** Skein knows the prompt reached the child's stdin
   and knows the wire never echoed it back. Whether the CLI is holding it or lost it is not a
@@ -562,7 +616,9 @@ What was wrong was what the wall drew while it waited, and it was worse than say
 
 `WAKE_GRACE_S` is twelve seconds, which is just past the median wake delay of ten — long
 enough that a card taking the ordinary path is never accused, short enough that the reading
-still concerns the job you are waiting on.
+still concerns the job you are waiting on. It is the **job** arm's grace; the prompt arm waits
+`UNQUEUED_AFTER_S`, and the reason the two differ is that only one of them still spends a
+turn — see the retirement above.
 
 ### Jobs that outlive the process
 

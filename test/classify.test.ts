@@ -29,6 +29,7 @@ import {
   nudgeNote,
   UNACKNOWLEDGED_LINE,
   unwokenNote,
+  UNQUEUED_AFTER_S,
   WAKE_GRACE_S,
   compactStat,
   contextWindowFor,
@@ -1639,6 +1640,40 @@ describe("healNote", () => {
     expect(gave).toContain("connection");
     expect(gave).toBe(gave.toLowerCase());
     expect(gave).not.toBe(healGaveUpNote("overloaded"));
+  });
+});
+
+describe("a prompt that went to stdin and was never taken up", () => {
+  /* Sink `4ab8f584`. The nudge that used to be sent here is retired: 24 were
+     ever sent on this machine and none of them flushed anything, because the
+     CLI drains its own queue 1.5s after a turn's `result` and the nudge fired
+     long after that. What is left is the reading. */
+  test("the wait is set from the CLI's own drain, not from what a turn costs", () => {
+    /* Measured at ~1.5s by `tools/probe-queue.ts`. Anything in this range is
+       many times that; what the bound is really protecting is the *direction*
+       — this must never drift back down towards a grace sized for spending a
+       turn, because nothing is spent any more. */
+    expect(UNQUEUED_AFTER_S).toBeGreaterThanOrEqual(WAKE_GRACE_S * 2);
+    /* And not so long that a prompt which never landed is news tomorrow. */
+    expect(UNQUEUED_AFTER_S).toBeLessThanOrEqual(300);
+  });
+
+  test("what the card says is that the prompt never arrived, not that it is looking", () => {
+    /* `ghostNote` was already the right sentence; it used to be reached only
+       after a wasted turn disproved the nudge's premise. Said instead of one
+       now, so it has to read as a statement about the prompt rather than as
+       Skein announcing it is about to do something. */
+    expect(ghostNote(1)).toContain("never reached this card");
+    expect(ghostNote(3)).toContain("3 prompts");
+    expect(ghostNote(1)).not.toContain("asking");
+  });
+
+  test("the nudge text is kept, because a card mid-update can still owe one", () => {
+    /* Nothing new sends it. `#claimEcho` still has to recognise one arriving
+       from a process spawned by the previous build, which is the arm that
+       clears the ghosts in front of it. */
+    expect(isPromptNudge(NUDGE_PROMPT_TEXT)).toBe(true);
+    expect(isPromptNudge("something the user actually typed")).toBe(false);
   });
 });
 
