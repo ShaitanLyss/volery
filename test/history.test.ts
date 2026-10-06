@@ -473,6 +473,93 @@ describe("what a transcript carries that the wire never does", () => {
   });
 });
 
+describe("a prompt sent while the card was working", () => {
+  /* The CLI queues a mid-turn prompt and writes it as an `attachment` of type
+     `queued_command` -- never as a `user` record, and no `user` record ever
+     follows. This file dropped every one of them for its whole life: 179 of
+     Lyss's own sentences across the 80 transcripts on this machine, including
+     the one reporting the bug. Sink `f7400dc4` and `a9c843db`. */
+  const queued = (prompt: unknown, mode = "prompt") => ({
+    type: "attachment",
+    attachment: { type: "queued_command", prompt, commandMode: mode },
+  });
+
+  test("it is drawn as something you said", () => {
+    const h = foldTranscript(
+      jsonl(
+        user("let's take care of volery sink items"),
+        assistant([{ type: "text", text: "on it" }]),
+        queued([{ type: "text", text: "also when the timer expires, defer it" }]),
+      ),
+    );
+    expect(h.lines).toEqual([
+      { kind: "you", text: "let's take care of volery sink items" },
+      { kind: "text", text: "on it" },
+      { kind: "you", text: "also when the timer expires, defer it" },
+    ]);
+  });
+
+  test("both prompt shapes, as they really appear", () => {
+    /* 123 of the 179 are a text block and 56 are a bare string. */
+    const h = foldTranscript(
+      jsonl(queued("a bare string"), queued([{ type: "text", text: "a text block" }])),
+    );
+    expect(h.lines).toEqual([
+      { kind: "you", text: "a bare string" },
+      { kind: "you", text: "a text block" },
+    ]);
+  });
+
+  /* The whole reason the ladder was lifted out of the `user` arm rather than
+     copied: a queued prompt is a prompt, so every shape that arm knows on
+     sight can arrive here too. Reading them a second way would put XML in the
+     user's mouth one record type over. */
+  test("a queued task notification is a note, not a sentence you typed", () => {
+    const h = foldTranscript(
+      jsonl(
+        queued(
+          "<task-notification>\n<task-id>abc</task-id>\n<status>completed</status>\n" +
+            "<summary>Background command \"build the thing\" completed</summary>\n" +
+            "</task-notification>",
+          "task-notification",
+        ),
+      ),
+    );
+    expect(h.lines.map((l) => l.kind)).toEqual(["meta"]);
+    expect(h.lines[0].text).not.toContain("<task-notification>");
+  });
+
+  test("a queued relay is another card talking, not you", () => {
+    const h = foldTranscript(
+      jsonl(queued("[skein relay] from the wall —\n\nA card you opened has stopped.")),
+    );
+    expect(h.lines[0].kind).toBe("relay");
+  });
+
+  /* Twenty-odd other attachment kinds are real machinery -- 7199
+     `total_tokens_reminder` and 1947 `hook_success` on this machine alone --
+     and folding one of those would be far worse than the bug being fixed. */
+  test("every other attachment kind stays off the page", () => {
+    const h = foldTranscript(
+      jsonl(
+        { type: "attachment", attachment: { type: "total_tokens_reminder", tokens: 120_000 } },
+        { type: "attachment", attachment: { type: "hook_success", stdout: "{}" } },
+        { type: "attachment", attachment: { type: "edited_text_file", filePath: "a.ts" } },
+        { type: "attachment", attachment: { type: "deferred_tools_record" } },
+        { type: "attachment" },
+      ),
+    );
+    expect(h.lines).toEqual([]);
+  });
+
+  test("a subagent's queued prompt is still a subagent's", () => {
+    const h = foldTranscript(
+      jsonl({ ...queued("inside a sidechain"), isSidechain: true }),
+    );
+    expect(h.lines).toEqual([]);
+  });
+});
+
 describe("history read while the card is speaking", () => {
   const h = (kind: any, text: string) => ({ kind, text });
 

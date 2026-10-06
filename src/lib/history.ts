@@ -18,8 +18,35 @@
  *   system/away_summary 178 · system/local_command 71 · agent-name 58
  *   frame-link 7 · custom-title 7 · system/compact_boundary 5
  *
- * Only `user`, `assistant` and `compact_boundary` say anything a reader wants;
- * the rest is editor bookkeeping the TUI does not draw either.
+ * `user`, `assistant` and `compact_boundary` say most of what a reader wants.
+ * **And `attachment` says the rest, which this file denied for its whole life
+ * and which cost the user 179 of her own sentences.** The line here used to
+ * read "the rest is editor bookkeeping the TUI does not draw either" — a claim
+ * made from the *counts* above rather than from the contents, and wrong about
+ * exactly one of the sixteen record types.
+ *
+ * A prompt sent while the card is **mid-turn** is queued by the CLI, and a
+ * queued prompt is not written as a `user` record. It is written as
+ * `{type: "attachment", attachment: {type: "queued_command", prompt}}`, and
+ * the `user` record never comes — checked across all 80 transcripts on this
+ * machine: 179 queued commands, of which 4 also appear as a `user` record and
+ * all 4 are Skein's own machinery sent twice, hours apart, rather than one
+ * delivery written down twice. So there is nothing to de-duplicate, and there
+ * was never anything to draw the queued one from.
+ *
+ * What that looked like: a card restored from disk simply did not contain
+ * what you said to it while it was working. Lyss, 2026-09-30, queued behind a
+ * turn and therefore itself one of the lost records — *"wait what happened to
+ * your transcript? I don't see any messages"*. Sink `f7400dc4` and `a9c843db`,
+ * which are one bug from two ends. The live path was never at fault:
+ * `Conversation.echo` draws your prompt the moment you send it and
+ * `#forgetEchoes` only clears a flag, never a line. It is the fold that lost
+ * them, so the loss showed up a restart later than the cause.
+ *
+ * Everything else under `attachment` genuinely is machinery — measured on the
+ * same 80 files, `total_tokens_reminder` (7199), `hook_success` (1947),
+ * `deferred_tools_record` (1711) and twenty more. `queued_command` is the one
+ * kind a person wrote.
  *
  * Pure on purpose — no runes, no invoke — so it is testable against real
  * transcripts. The `Line` import is type-only and erased at build, so nothing
@@ -131,6 +158,51 @@ export function foldTranscript(
      id of the call it answers. */
   const asked = new Set<string>();
 
+  /** Draw a sentence somebody sent, whatever kind of record carried it.
+   *
+   *  Lifted out of the `user` arm when the `attachment` arm turned out to need
+   *  every line of it. The five predicates below are each a member of the
+   *  `isMeta` family recognised by its *words*, because the flag that would
+   *  settle it exists on one side of a restart only — the note above `isMeta`
+   *  says anything joining that family owes a predicate here. What is new is
+   *  that it now also owes being reachable from both arms, and the cheapest
+   *  way to owe that is for there to be one ladder rather than two. */
+  const said = (text: string) => {
+    /* The CLI wrote it: a stopped turn leaves a record carrying its own note,
+       with no `isMeta` to sort it out by. It has to read the same here as it
+       does live, or the same stop is a note on the wall and a sentence you
+       appear to have typed after a restart. */
+    if (isStopNote(text)) return push("meta", "stopped");
+    /* A background job reporting in. Same shape as the stop note, and read as
+       speech it puts a block of `<task-notification>` XML in the transcript as
+       something you appear to have typed. */
+    const job = parseTaskNotification(text);
+    if (job) return push("meta", jobNote(job.summary));
+    /* An image-resize note. Every one of the 19 on this machine carries
+       `isMeta`, so the block above has already dropped it and this is
+       belt-and-braces — but it is the cheap kind: the live fold recognises this
+       by its text because the stream has no `isMeta` to read, and one predicate
+       answering on both sides is what stops the two folds drifting. A
+       transcript written by some other client, or a future one that stops
+       setting the flag, reads the same here as it does live. */
+    if (isImageNote(text)) return;
+    /* The retry nudge, for a transcript whose records carry no `isMeta`. */
+    if (isRetryNudge(text)) return push("meta", RETRY_NOTE);
+    /* A local command. `/compact` alone writes two of these with nothing to
+       mark them, so the transcript carried a block of `<command-name>` XML as
+       something you had typed — and since `<command-message>` holds the bare
+       name, a compacted card read as though somebody had said "compact" into
+       it. See `localCommand`. */
+    const ran = localCommand(text);
+    if (ran) return push(ran.kind, ran.text);
+    /* Another card on this wall. The one shape where getting it wrong puts
+       *another agent's* instructions in your mouth — see `relay.ts`. Both folds
+       go through the same two functions, which is the seam this file exists to
+       avoid. */
+    if (isRelayPrompt(text)) return push("relay", text, relayCap(text));
+    push("you", text);
+  };
+
   for (const raw of text.split("\n")) {
     if (!raw.trim()) continue;
     let rec: any;
@@ -236,60 +308,25 @@ export function foldTranscript(
            here) and the SDK — which is how Skein speaks — writes a text block
            (67). `textOf` already takes both, and returns "" for the tool-result
            records that make up the bulk of the `user` type. */
-        const said = textOf(rec.message?.content);
-        /* Except when the CLI wrote it: a stopped turn leaves a `user` record
-           carrying its own note, with no `isMeta` to sort it out by. It reads
-           the same here as it does live, or the same stop would be a note on
-           the wall and a sentence you appear to have typed after a restart. */
-        if (isStopNote(said)) {
-          push("meta", "stopped");
-          break;
-        }
-        /* And when a background job reported in. Same shape as the stop note —
-           a bare string on a `user` record with no `isMeta` to sort it out by —
-           and read as speech it puts a block of `<task-notification>` XML in
-           the transcript as something you appear to have typed. It has to read
-           the same here as it does live, or a restart changes what a card said. */
-        const job = parseTaskNotification(said);
-        if (job) {
-          push("meta", jobNote(job.summary));
-          break;
-        }
-        /* An image-resize note. Every one of the 19 on this machine carries
-           `isMeta`, so the block above has already dropped it and this is
-           belt-and-braces — but it is the cheap kind: the live fold recognises
-           this by its text because the stream has no `isMeta` to read, and one
-           predicate answering on both sides is exactly what stops the two folds
-           drifting. A transcript written by some other client, or a future one
-           that stops setting the flag, reads the same here as it does live. */
-        if (isImageNote(said)) break;
-        /* And the retry nudge, for a transcript whose records carry no `isMeta`
-           — one predicate answering on both sides, as above. */
-        if (isRetryNudge(said)) {
-          push("meta", RETRY_NOTE);
-          break;
-        }
-        /* And when it was a local command. `/compact` alone writes two of
-           these with nothing to mark them, so the transcript carried a block of
-           `<command-name>` XML as something you had typed — and since
-           `<command-message>` holds the bare name, a compacted card read as
-           though somebody had said "compact" into it. Third of the three
-           shapes this arm has to know on sight; see `localCommand`. */
-        const ran = localCommand(said);
-        if (ran) {
-          push(ran.kind, ran.text);
-          break;
-        }
-        /* And when another card on this wall said it. Last of the shapes this
-           arm knows, and the only one where getting it wrong puts *another
-           agent's* instructions in your mouth — see `relay.ts`. Both folds go
-           through the same two functions, which is the seam this file exists to
-           avoid. */
-        if (isRelayPrompt(said)) {
-          push("relay", said, relayCap(said));
-          break;
-        }
-        push("you", said);
+        said(textOf(rec.message?.content));
+        break;
+      }
+
+      /* A prompt you sent while the card was mid-turn. The CLI queues it and
+         writes it here rather than as a `user` record, and no `user` record
+         ever follows — see the head of this file for the count and for what
+         denying that cost. Everything else under `attachment` is machinery and
+         is correctly dropped by falling through. */
+      case "attachment": {
+        if (rec.attachment?.type !== "queued_command") break;
+        /* Through the very same ladder, which is the whole reason it was
+           lifted out of the arm above. A queued prompt is a prompt: it can be
+           a relay from another card, a `<task-notification>` coming home, or a
+           slash command — and `commandMode` is `task-notification` for 56 of
+           the 179 on this machine, so this is not hypothetical. Reading them a
+           second way here would put XML in the user's mouth exactly as the
+           `user` arm's four predicates exist to prevent, one record type over. */
+        said(textOf(rec.attachment.prompt));
         break;
       }
 
