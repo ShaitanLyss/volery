@@ -27,6 +27,7 @@
   import { promptPath } from "./shell";
   import { BANG, isBang, kindLabel, tokens, type Completion, type Match } from "./bang";
   import { dropToken, runsOf, sizeNote } from "./attach";
+  import type { DockSite } from "./berth";
 
   let {
     field,
@@ -38,6 +39,10 @@
     clashing,
     bangCard,
     dropping,
+    berth,
+    grabbing,
+    onmoor,
+    onheight,
     prompt = $bindable(),
     onkey,
     onsendtext,
@@ -71,6 +76,28 @@
      *  without this the dock would look identical whether a drop was about to
      *  land in the prompt or fly past onto the wall. */
     dropping: boolean;
+    /** Where the dock is moored, and — while it is floating — the box it was
+     *  put in, in window coordinates. The dock has always been a strip along
+     *  the bottom; over three screens that is a line of text pinned to the
+     *  corner of one of them, so it can go to the top or come off both edges.
+     *  See `berth.ts`, which owns the sites and the drop rule. */
+    berth: { site: DockSite; x: number; y: number; w: number };
+    /** The mooring handle is being dragged, so it says so under the cursor. */
+    grabbing: boolean;
+    /** The three halves of that drag, which live in `App.svelte` beside the
+     *  panel's — one gesture over two surfaces wants one implementation, and
+     *  the room a drop is measured against is the window's rather than the
+     *  dock's. */
+    onmoor: {
+      down: (e: PointerEvent) => void;
+      move: (e: PointerEvent) => void;
+      up: () => void;
+      reset: () => void;
+    };
+    /** How tall the dock is drawn, which is the draft's business and not the
+     *  berth's — the field grows as you type. Reported rather than stored, so
+     *  a floating dock can be clamped against a bottom edge it actually has. */
+    onheight: (h: number) => void;
     /** The textarea itself, handed back up so a keystroke on the wall can put
      *  the focus here and the character with it. */
     prompt: HTMLTextAreaElement | undefined;
@@ -87,6 +114,14 @@
      *  one selected. */
     onselect: (conv: Conversation) => void;
   } = $props();
+
+  let height = $state(0);
+  /* Braced, not an arrow expression: an effect that *returns* a value is an
+     effect Svelte reads as handing back a teardown, and `(h) => (dockH = h)`
+     answers the number it assigned. */
+  $effect(() => {
+    onheight(height);
+  });
 
   /* A draft that stops being a shell line is a new question, so the dismissal
      does not outlive it — the same rule the palette's has, for the same reason. */
@@ -226,7 +261,31 @@
   });
 </script>
 
-<footer class="dock" class:dropping>
+<footer
+  bind:clientHeight={height}
+  class="dock"
+  class:dropping
+  class:moored-top={berth.site === "top"}
+  class:afloat={berth.site === "float"}
+  style:width={berth.site === "float" ? `${berth.w}px` : undefined}
+  style:left={berth.site === "float" ? `calc(${berth.x}px - var(--span-x, 0px))` : undefined}
+  style:top={berth.site === "float" ? `calc(${berth.y}px - var(--span-y, 0px))` : undefined}
+>
+  <!-- The handle that moves the whole dock: to the top, or off both edges.
+       Faint until asked for, in the dock's own padding so it is never over
+       anything you are reading. The keyboard path is the chord in the title —
+       a chord cannot point at a place, so it cycles the three sites. -->
+  <div
+    class="moor"
+    class:on={grabbing}
+    role="presentation"
+    title="drag to move the dock — top, bottom, or floating · double-click to put it back (space then w d)"
+    onpointerdown={onmoor.down}
+    onpointermove={onmoor.move}
+    onpointerup={onmoor.up}
+    onpointercancel={onmoor.up}
+    ondblclick={onmoor.reset}
+  ></div>
   <!-- A blocked card jumps the queue: it is the only state where an agent is
        genuinely stopped, so answering it comes before anything else. -->
   {#if skein.blocked.length}
@@ -566,6 +625,77 @@
     flex-direction: column;
     gap: 0.45rem;
   }
+  /* ── the dock's berth ─────────────────────────────────────────────────
+     At the top, which is `order` and a mirrored border and nothing else — the
+     studio is a column, everything in it is at the default order, and the bar
+     is pushed one lower so the dock lands under the title bar rather than over
+     it. */
+  .dock.moored-top {
+    order: -1;
+    border-top: 0;
+    border-bottom: 1px solid var(--edge);
+  }
+  /* Off both edges. Window coordinates, so it can be put on a monitor the
+     chrome does not live on, and therefore owing `--span-*` like everything
+     else placed at viewport coordinates — the studio root is the containing
+     block for anything fixed inside it while spread (`span.ts`), and both
+     variables are zero when nothing is. Above the wall, which carries its own
+     `z-index: 1`, and above the glass inside it: this is chrome you are typing
+     into, and the one thing in the window that must never be covered. */
+  .dock.afloat {
+    position: fixed;
+    z-index: 6;
+    border: 1px solid var(--edge);
+    border-radius: var(--ch-radius, 4px);
+    /* Opaque, for the reason nothing standing on the wall may be transparent. */
+    background: var(--ink);
+    box-shadow: 0 24px 48px -18px rgba(0, 0, 0, 0.9);
+  }
+  /* The mooring handle: a pill centred on the dock's top edge, inside its own
+     padding so it is never over anything you are reading, and faint until the
+     pointer is near it — a dock wearing a visible handle all day is a dock with
+     a button on it. Centred rather than in a corner because the dock is a line
+     rather than a box, and the middle of its top edge is the one part of it
+     that holds nothing.
+
+     Mirrors `.moor` in `App.svelte`, which is the panel's. A component is the
+     only CSS scope this codebase has, so the two say a similar thing in two
+     places rather than sharing a selector neither of them owns. */
+  .moor {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 34px;
+    height: 10px;
+    z-index: 2;
+    cursor: grab;
+    opacity: 0.25;
+    transition: opacity 0.12s ease;
+    user-select: none;
+    touch-action: none;
+  }
+  /* The pill, drawn smaller than the thing you can hit — the dock's top
+     padding is ten pixels and the handle has to live entirely inside it, so
+     the bar is three and the hit area is all of them. */
+  .moor::after {
+    content: "";
+    position: absolute;
+    inset: 3px 0;
+    border-radius: 2px;
+    background: var(--paper-faint);
+  }
+  .moor:hover,
+  .moor.on {
+    opacity: 0.8;
+  }
+  .moor.on {
+    cursor: grabbing;
+  }
+  :global(html[data-motion="still"]) .moor {
+    transition: none;
+  }
+
   .targets {
     display: flex;
     align-items: center;

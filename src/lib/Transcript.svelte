@@ -43,12 +43,17 @@
     conv,
     watching = true,
     read = 1,
+    rails = "left",
     onhistory,
     onlink,
     onfile,
     onread,
   }: {
     conv: Conversation;
+    /** Which side the outline rails hang off, which is the side the wall is on
+     *  — see the note by `.rails`. The panel's berth decides it
+     *  (`berth.md`); the panel does not know, and should not. */
+    rails?: "left" | "right";
     /** Whether this panel can actually be being read — today, whether the studio
      *  window has focus. Passed in rather than asked for here: the window's
      *  focus already has an owner in `attention.svelte.ts`, and a second
@@ -1311,7 +1316,7 @@
 <section class="detail" bind:this={panel} style:--read={read}>
   <!-- Over the wall rather than in the panel: what is being read keeps its full
        column, and the gaps between the rails stay wall you can pan. -->
-  <div class="rails">
+  <div class="rails" class:other={rails === "right"}>
     <Rail label="you said" marks={said} active={saidAt} onpick={(i) => jump(said[i])} />
     <Rail
       label={contentsCap}
@@ -1560,6 +1565,12 @@
 
   /* Beside the panel, over the wall. Only the rails themselves take the mouse:
      the gaps around them are wall, and the wall pans. */
+  /* The rails hang *toward the wall*, which is the whole of why they are
+     outside the panel — "the gaps between them stay wall you can pan". Which
+     side that is stopped being a constant when the panel grew a berth
+     (`berth.md`): moored left, the wall is on the right, and rails left would
+     be off the edge of the window entirely. Floating, there is wall on both
+     sides and the caller picks the roomier one. */
   .rails {
     position: absolute;
     top: 0;
@@ -1572,6 +1583,10 @@
     gap: 0.6rem;
     pointer-events: none;
     z-index: 2;
+  }
+  .rails.other {
+    right: auto;
+    left: calc(100% + 0.7rem);
   }
   /* Holds the column and the button over it. `min-width: 0` for the same reason
      `.detail` has it — a fence's min-content must never reach the panel. */

@@ -51,7 +51,7 @@ export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
   | { kind: "open"; what: "timelines" | "pile" }
-  | { kind: "window"; act: "span" }
+  | { kind: "window"; act: "span" | "panel" | "dock" }
   | { kind: "presence"; act: "toggle" };
 
 /** One sequence the leader opens onto.
@@ -113,6 +113,12 @@ export const CHORDS: readonly Chord[] = [
      letter, because placing a window is several verbs (maximise, minimise,
      which screen) and they want to sit together in the hint. */
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
+  /* And where the two things you work *in* are moored. A chord cannot point at
+     a place on the screen, so each cycles its three sites — starting from the
+     edge that surface has always had, so going round the ring puts you back
+     without having to remember which way it goes. See `berth.ts`. */
+  { keys: "wp", label: "panel: right / left / floating", verb: { kind: "window", act: "panel" } },
+  { keys: "wd", label: "dock: bottom / top / floating", verb: { kind: "window", act: "dock" } },
   /* Away mode, and it has two chords on purpose. `z` is the one you reach for
      — one key, zzz, and nothing else here begins with it. `ia` is the one you
      *think of*: "I'm away" is what the thing is called in the user's own

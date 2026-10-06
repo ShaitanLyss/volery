@@ -53,7 +53,7 @@ bun run check            # svelte-check + tsc over src/**
 bun run build            # vite build → dist/
 bun run tauri build      # bundle
 
-bun run test             # the pure suites: ansi, classify, adopt, layout, pick, wheel, glass, arrange, specs, history, menu,
+bun run test             # the pure suites: ansi, classify, adopt, layout, pick, wheel, glass, arrange, berth, specs, history, menu,
                          # markdown, actions, outline, follow, ambience, transcript, compaction,
                          # hunt,
                          # presets,
@@ -206,6 +206,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `repair.md` | mending a conversation a tool call made unsendable: the two causes behind one 400, taking the bad characters out, and the original kept until the card has moved on | `repair.ts`, `repair/mod.rs`, `repair/text.rs` |
 | `restore.md` | painting the wall from SQLite, rousing dormant cards, setting one aside, scrollback and adopting sessions Skein did not start | `rousing.ts`, `skein.svelte.ts`, `history.ts`, `sessions.rs` |
 | `theme.md` | how the reading is set: a theme as a diff against `tokens.css`, the revert guarantee, the eleven knobs and why each is arguable, deriving and carrying one off the machine | `theme.ts`, `theme.svelte.ts`, `Themes.svelte`, `tokens.css` |
+| `berth.md` | where the panel and the dock are moored: three sites each and why there are not six, mooring against the chrome's room while floating against the window's, the `--span-*` a floating one owes, and why a berth is `localStorage` where a glass spot is SQLite | `berth.ts`, `berth.svelte.ts`, `Dock.svelte` |
 | `panel.md` | the transcript: markdown parsing, folding tool calls, opening one to see its arguments and result, panel width, reading size, the two rails, keyboard scrolling, following the tail, finding a word in it | `Transcript.svelte`, `Markdown.svelte`, `markdown.ts`, `outline.ts`, `follow.ts`, `transcript.ts`, `toolcall.ts`, `ToolCall.svelte`, `copy.ts`, `hunt.ts` |
 | `arrange.md` | one glass per room: what a screen arrangement is and why it is a shape rather than a set of monitors, the alignment search that replaced trusting the normalisation, the columns as a cache of the room you are in, and why a copy is shifted by the pane's origin | `arrange.ts`, `arrange.svelte.ts`, `arrange.rs` |
 | `layout.md` | territories, the flow, pinning, the two-box viewport, `CARD_BOX`, the three pointer gestures, one selection over four kinds and the band that draws it, and an agent putting an image on the wall beside its card | `layout.ts`, `pick.ts`, `Canvas.svelte`, `studio.svelte.ts`, `images.svelte.ts`, `pin.rs` |
@@ -353,7 +354,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `unreallog.ts`,
 `gears.ts`, `handoff.ts`,
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
-`timeline.ts`, `arrange.ts`) are pure
+`timeline.ts`, `arrange.ts`, `berth.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.
@@ -636,7 +637,7 @@ arms return errors rather than silently no-oping.
   ships with a keyboard path, nvim style — not as a follow-up. That is Lyss's standing
   requirement, and a button with no key is an unfinished feature. In order of preference:
   - **A leader chord** in `leader.ts`'s `CHORDS`: `<space>` then a family letter then a verb
-    (`ff` find file, `ts` synth, `ws` every screen). Group by family rather than spending a
+    (`ff` find file, `ts` synth, `ws` every screen, `wp` where the panel is moored). Group by family rather than spending a
     top-level letter, so the which-key hint (`Which.svelte`) reads as a menu. The label goes
     beside the chord and `test/leader.test.ts` holds the table.
   - **A direct binding** in `App.svelte`'s `onGlobalKey`, only for something used constantly

@@ -1042,3 +1042,12 @@ file already states for every scroller that gains content at the end.
 **A local called `derived` shadows the rune.** Every `$derived` in the component is then parsed
 as `$` applied to that variable, and what `svelte-check` reports is a page of errors about
 `SvelteStore` and `subscribe` — with no mention of runes anywhere in them.
+
+### And it is no longer nailed to the right
+
+The panel has a **berth** now: `right`, `left`, or floating free of both edges, remembered per
+screen arrangement. `.claude/rules/berth.md` is the whole of it; what matters here is that
+`panelWidth` still owns the *moored* width and is no longer consulted for a floating one —
+`studio.panelW` is how the window is divided, and a panel that is not dividing it has a width
+of its own. The resize grip is unchanged except for which edge it hangs off, which is one sign
+(`gripSign`) rather than three handlers.

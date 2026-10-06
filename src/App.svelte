@@ -172,6 +172,8 @@
   import WindowControls from "./lib/WindowControls.svelte";
   import { span } from "./lib/span.svelte";
   import { arrangements } from "./lib/arrange.svelte";
+  import { berths } from "./lib/berth.svelte";
+  import { MIN_H, MIN_W, dockSiteAt, floatBox, moorings, panelSiteAt } from "./lib/berth";
   import { homeInsets, spreadPan } from "./lib/span";
 
   const studio = new Studio();
@@ -394,7 +396,11 @@
       if (verb.what === "pile") presence.openPile();
       else showAnnals = true;
     }
-    else if (verb.kind === "window") void span.toggle();
+    else if (verb.kind === "window") {
+      if (verb.act === "span") void span.toggle();
+      else if (verb.act === "panel") berths.cyclePanel();
+      else berths.cycleDock();
+    }
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.toy === "synth") synth.show();
     /* The rest of the shelf is the away gate's puzzles, opened on purpose
@@ -1066,6 +1072,7 @@
      opens. The width is decided by `panelWidth` (pure, tested) and lives with
      the viewport, which is the other half of how this window is divided. */
   let winW = $state(window.innerWidth);
+  let winH = $state(window.innerHeight);
   let dpr = $state(window.devicePixelRatio || 1);
   /** Where the home screen sits inside a window spread over every screen, or
    *  `null` when it is not. See `span.ts`. */
@@ -1148,9 +1155,115 @@
   const panelPx = $derived(panelWidth(studio.panelW, roomW));
   let grip = $state<{ x: number; w: number } | null>(null);
 
+  /* ── where the panel and the dock are moored ──────────────────────────
+     Both were nailed to one edge — the panel to the right of the wall, the
+     dock along the bottom — which is a reasonable thing to have decided for
+     somebody on one screen and not over three, where the wall is across all of
+     them and the thing you type into is pinned to a corner of one. `berth.ts`
+     is the sites, the drop rule and the clamp; `berth.svelte.ts` remembers
+     them per screen arrangement, for the reason the glass does. */
+
+  /** The room the chrome lives in — the whole window, or the home screen's
+   *  share of it while spread. This is where an *edge* is, which is why a
+   *  mooring is measured against it and a float is not: you moor to the screen
+   *  the chrome is on and you float anywhere at all. */
+  const chromeRoom = $derived({
+    x: spread?.x ?? 0,
+    y: spread?.y ?? 0,
+    w: roomW,
+    h: spread ? Math.max(0, winH - spread.y - spread.b) : winH,
+  });
+  /** The whole window, which is what a floating berth is clamped against. */
+  const windowRoom = $derived({ w: winW, h: winH });
+
+  const panelAfloat = $derived(berths.panel.site === "float");
+  const dockAfloat = $derived(berths.dock.site === "float");
+  const panelAt = $derived(floatBox(berths.panel, windowRoom));
+  /** The dock's height is the draft's, so it is measured rather than stored —
+   *  only `x`, `y` and `w` of this are read. `MIN_H` stands in for the frame
+   *  before it has been measured, so the clamp has a box to work with. */
+  let dockH = $state(0);
+  const dockAt = $derived(
+    floatBox({ ...berths.dock, h: dockH || MIN_H }, windowRoom),
+  );
+
+  /** Which side the transcript's outline rails hang off.
+   *
+   *  They hang *toward the wall* — that is why they are outside the panel at
+   *  all — which was a constant for as long as the panel was nailed to the
+   *  right. Moored left, the wall is on the right and rails on the left would
+   *  be off the edge of the window entirely. Floating, there is wall on both
+   *  sides, so they take the roomier one. */
+  const railsOn = $derived<"left" | "right">(
+    berths.panel.site === "left"
+      ? "right"
+      : berths.panel.site === "right"
+        ? "left"
+        : panelAt.x >= winW - (panelAt.x + panelAt.w)
+          ? "left"
+          : "right",
+  );
+
+  /** A mooring drag in flight: which surface, and where inside it the grip was
+   *  taken hold of, so the surface follows the cursor rather than jumping its
+   *  top-left corner under it. */
+  let mooring = $state<{ what: "panel" | "dock"; dx: number; dy: number } | null>(null);
+
+  function moorDown(what: "panel" | "dock", e: PointerEvent) {
+    if (e.button !== 0) return;
+    const grab = e.currentTarget as HTMLElement;
+    const r = grab.closest(what === "panel" ? "aside" : "footer")?.getBoundingClientRect();
+    mooring = { what, dx: e.clientX - (r?.left ?? 0), dy: e.clientY - (r?.top ?? 0) };
+    /* Captured for the reason `gripDown` captures: the cursor is not going to
+       stay on an 18px handle, and the whole gesture is about leaving. */
+    grab.setPointerCapture(e.pointerId);
+    /* Unlike the resize grip, this one does refuse the default: there is no
+       double-click to protect here, and a drag off a panel full of prose that
+       began by selecting a paragraph is a drag you watch highlight the window. */
+    e.preventDefault();
+  }
+
+  function moorMove(e: PointerEvent) {
+    const m = mooring;
+    if (!m) return;
+    const p = { x: e.clientX, y: e.clientY };
+    const at = { x: p.x - m.dx, y: p.y - m.dy };
+    if (m.what === "panel") {
+      const site = panelSiteAt(p, chromeRoom);
+      berths.setPanel(site === "float" ? { site, ...at } : { site });
+    } else {
+      const site = dockSiteAt(p, chromeRoom);
+      berths.setDock(site === "float" ? { site, ...at } : { site });
+    }
+  }
+
+  function moorUp() {
+    if (!mooring) return;
+    mooring = null;
+    berths.save();
+  }
+
+  /** Back to the edge it has always been on. The same offer `gripReset` makes,
+   *  and for the same reason: a surface dragged somewhere unreachable on a
+   *  screen you no longer have is otherwise something you fix by eye. */
+  function moorReset(what: "panel" | "dock") {
+    if (what === "panel") berths.setPanel({ site: "right" });
+    else berths.setDock({ site: "bottom" });
+    berths.save();
+  }
+
+  /** Which way along the x axis widens the panel.
+   *
+   *  The resize grip is always on the edge facing *away* from the panel's own
+   *  anchor, so moored right it is on the left and dragging left widens;
+   *  moored left or floating it is on the right and dragging right does. One
+   *  sign rather than three handlers, because the three cases differ in
+   *  nothing else. */
+  const gripSign = $derived(berths.panel.site === "right" ? -1 : 1);
+
   function gripDown(e: PointerEvent) {
     if (e.button !== 0) return;
-    grip = { x: e.clientX, w: panelPx };
+    grip = { x: e.clientX, w: panelAfloat ? panelAt.w : panelPx };
     /* Captured, because a 7px grip is not somewhere the cursor is going to
        stay: without this the drag would end the moment it crossed onto the
        wall, which is the direction that widens the panel. */
@@ -1167,22 +1280,57 @@
 
   function gripMove(e: PointerEvent) {
     if (!grip) return;
-    /* The panel is on the right: leftwards is wider. */
-    studio.panelW = panelWidth(grip.w + (grip.x - e.clientX), roomW);
+    const want = grip.w + gripSign * (e.clientX - grip.x);
+    /* A floating panel's width is its own, not the wall's division: `panelW`
+       is how the *window* is split and means nothing to a panel that is not
+       splitting it. Writing the one while drawing the other is how a drag ends
+       up fighting a stylesheet. */
+    if (panelAfloat) berths.setPanel({ w: Math.max(MIN_W, want) });
+    else studio.panelW = panelWidth(want, roomW);
   }
 
   function gripUp() {
     if (!grip) return;
     grip = null;
-    studio.save();
+    if (panelAfloat) berths.save();
+    else studio.save();
   }
 
   /* Back to fitting the window. Nothing else offers a way back, and a panel
      dragged to the wrong width on a monitor you are no longer at is otherwise
      something you have to drag back by eye. */
   function gripReset() {
-    studio.panelW = null;
-    studio.save();
+    if (panelAfloat) berths.setPanel({ w: moorings().panel.w });
+    else studio.panelW = null;
+    if (panelAfloat) berths.save();
+    else studio.save();
+  }
+
+  /** The floating panel's other dimension. Moored, its height is the wall's
+   *  and there is nothing to set; floating, it is a box and a box with a width
+   *  you can drag and a height you cannot is a box half finished. */
+  let vgrip = $state<{ y: number; h: number } | null>(null);
+
+  function vgripDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    vgrip = { y: e.clientY, h: panelAt.h };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function vgripMove(e: PointerEvent) {
+    if (!vgrip) return;
+    berths.setPanel({ h: Math.max(MIN_H, vgrip.h + (e.clientY - vgrip.y)) });
+  }
+
+  function vgripUp() {
+    if (!vgrip) return;
+    vgrip = null;
+    berths.save();
+  }
+
+  function vgripReset() {
+    berths.setPanel({ h: moorings().panel.h });
+    berths.save();
   }
 
   /* ── how big the reading is ───────────────────────────────────────────
@@ -3587,6 +3735,7 @@
   onpaste={onPaste}
   onpointermove={trackPointer}
   bind:innerWidth={winW}
+  bind:innerHeight={winH}
   bind:devicePixelRatio={dpr}
 />
 
@@ -4022,7 +4171,17 @@
         onstickproject={(cwd, at) => skein.stickProject(cwd, at)}
       />
       {#if focused && showDetail}
-        <aside class="side" style:width="{panelPx}px">
+        <aside
+          class="side"
+          class:moored-left={berths.panel.site === "left"}
+          class:afloat={panelAfloat}
+          style:width="{panelAfloat ? panelAt.w : panelPx}px"
+          style:height={panelAfloat ? `${panelAt.h}px` : undefined}
+          style:left={panelAfloat
+            ? `calc(${panelAt.x}px - var(--span-x, 0px))`
+            : undefined}
+          style:top={panelAfloat ? `calc(${panelAt.y}px - var(--span-y, 0px))` : undefined}
+        >
           <!-- The border, made draggable. `role="presentation"` for the same
                reason the studio root has one: this is a gesture surface, not a
                control, and there is nothing here to announce. -->
@@ -4037,10 +4196,42 @@
             onpointercancel={gripUp}
             ondblclick={gripReset}
           ></div>
+          <!-- Floating, it is a box: the width grip above moves its right edge
+               and this one moves its bottom. Moored, its height is the wall's
+               and there is nothing here to set. -->
+          {#if panelAfloat}
+            <div
+              class="vgrip"
+              class:on={vgrip}
+              role="presentation"
+              title="drag to resize · double-click to reset"
+              onpointerdown={vgripDown}
+              onpointermove={vgripMove}
+              onpointerup={vgripUp}
+              onpointercancel={vgripUp}
+              ondblclick={vgripReset}
+            ></div>
+          {/if}
+          <!-- And the handle that moves the whole panel: to the other edge, or
+               off both of them. Faint until asked for, like the resize grip —
+               a panel wearing a visible handle all day is a panel with a
+               button on it. The keyboard path is the chord in the title. -->
+          <div
+            class="moor"
+            class:on={mooring?.what === "panel"}
+            role="presentation"
+            title="drag to move the panel — left, right, or floating · double-click to put it back (space then w p)"
+            onpointerdown={(e) => moorDown("panel", e)}
+            onpointermove={moorMove}
+            onpointerup={moorUp}
+            onpointercancel={moorUp}
+            ondblclick={() => moorReset("panel")}
+          ></div>
           <Transcript
             bind:this={transcript}
             conv={focused}
             read={reading}
+            rails={railsOn}
             watching={attention.focused}
             onhistory={(c) => void skein.loadHistory(c)}
             onlink={(href) => void skein.openLink(href)}
@@ -4084,6 +4275,15 @@
     {clashing}
     {bangCard}
     dropping={dropOn === "prompt"}
+    berth={{ site: berths.dock.site, x: dockAt.x, y: dockAt.y, w: dockAt.w }}
+    grabbing={mooring?.what === "dock"}
+    onmoor={{
+      down: (e) => moorDown("dock", e),
+      move: moorMove,
+      up: moorUp,
+      reset: () => moorReset("dock"),
+    }}
+    onheight={(h) => (dockH = h)}
     bind:prompt
     onkey={onDraftKey}
     onsendtext={sendText}
@@ -4160,6 +4360,10 @@
   }
 
   .bar {
+    /* Below everything else in the column, so a dock moored to the top lands
+       under the title bar rather than over it. Means nothing while the dock is
+       at the bottom, where every child is at the default order already. */
+    order: -2;
     display: flex;
     align-items: center;
     gap: 0.7rem;
@@ -4369,6 +4573,117 @@
     position: relative;
   }
 
+  /* ── the panel's berth ────────────────────────────────────────────────
+     Moored to the other edge, which is `order` and a mirrored border and
+     nothing else: the panel is the same column either side, so there is no
+     second layout here to keep in step with the first. `.wall` is a row, and
+     `order: -1` is the whole of "before the canvas". */
+  .side.moored-left {
+    order: -1;
+    border-left: 0;
+    border-right: 1px solid var(--edge);
+    padding: 0.8rem 0 0.8rem 0.8rem;
+  }
+  /* Both grips mirror with it. The resize grip is deliberately mostly outside
+     the panel, over the wall — see its own note — so the side it hangs off is
+     the side the wall is on. */
+  .side.moored-left .grip {
+    left: auto;
+    right: -4px;
+  }
+  .side.moored-left .moor {
+    right: auto;
+    left: 0;
+  }
+
+  /* Off both edges. Positioned in *window* coordinates, so it can be put on a
+     monitor the chrome does not live on — and therefore owing `--span-*` like
+     everything else placed at viewport coordinates, since the studio root is
+     the containing block for anything fixed inside it while spread (`span.ts`).
+     Both variables are zero when nothing is spread, so the arithmetic is
+     harmless on one screen rather than conditional.
+
+     `z-index` clears the glass (4), which is the one thing in this window that
+     is otherwise allowed to cover the panel. That rule is right for a panel
+     filling an edge — the pane is in front of the wall and the panel is part of
+     the wall's furniture — and wrong for one you have deliberately placed,
+     which is the same kind of thing as what is stuck to the pane. */
+  .side.afloat {
+    position: fixed;
+    z-index: 5;
+    padding: 0.8rem;
+    border: 1px solid var(--edge);
+    border-radius: var(--ch-radius, 4px);
+    /* Opaque, for the reason nothing standing on the wall may be transparent:
+       the backdrop draws behind all of it. */
+    background: var(--ink);
+    /* Static, rastered once — not the animated `box-shadow` motion.md prices. */
+    box-shadow: 0 24px 48px -18px rgba(0, 0, 0, 0.9);
+  }
+  /* Floating, the panel is anchored by its top-left, so the edge that widens
+     it is the right one — a grip on the left that grew the right edge would
+     read as the panel sliding out from under the cursor. */
+  .side.afloat .grip {
+    left: auto;
+    right: -4px;
+  }
+  /* The bottom edge, the same seven pixels over the same one-pixel line. */
+  .vgrip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -4px;
+    height: 7px;
+    cursor: row-resize;
+    z-index: 3;
+    user-select: none;
+    touch-action: none;
+  }
+
+  /* The handle that moves the panel rather than resizing it.
+     **In the padding, never over the column.** The transcript's reading column
+     starts at the panel's own top-left — the two rails hang *outside* it, over
+     the wall — so a handle in that corner would sit on the prose and quietly
+     eat a click near the first line. The panel's padding is on the side facing
+     away from the wall, which is also the side this has to mirror to, so the
+     one rule gets both for free: a narrow vertical pill in the 0.8rem gutter.
+     Faint until the pointer is near it; a panel wearing a visible handle all
+     day is a panel with a button on it. */
+  .moor {
+    position: absolute;
+    top: 0.8rem;
+    right: 0;
+    width: 12px;
+    height: 26px;
+    z-index: 4;
+    cursor: grab;
+    opacity: 0.25;
+    transition: opacity 0.12s ease;
+    /* Refuses the text selection a drag across a transcript would otherwise
+       start, at the source — the same thing `.grip` does. */
+    user-select: none;
+    touch-action: none;
+  }
+  /* The pill itself, drawn narrower than the thing you can hit. Nobody can aim
+     at four pixels, and nobody wants to look at twelve. */
+  .moor::after {
+    content: "";
+    position: absolute;
+    inset: 0 4px;
+    border-radius: 2px;
+    background: var(--paper-faint);
+  }
+  .moor:hover,
+  .moor.on {
+    opacity: 0.8;
+  }
+  .moor.on {
+    cursor: grabbing;
+  }
+  :global(html[data-motion="still"]) .moor {
+    transition: none;
+  }
+
   /* Seven pixels of hit area over a one-pixel line, because nobody can hit a
      one-pixel line. It sits mostly *outside* the panel, over the wall — three
      pixels in, which is nowhere near the rails, and the wall under it still
@@ -4487,5 +4802,15 @@
   }
   .studio.spanning .side {
     margin-left: auto;
+  }
+  /* Moored to the other edge it is pushed the other way, and floating it is
+     out of the flow entirely and a margin would move it off the spot it was
+     dropped on. */
+  .studio.spanning .side.moored-left {
+    margin-left: 0;
+    margin-right: auto;
+  }
+  .studio.spanning .side.afloat {
+    margin: 0;
   }
 </style>

@@ -162,6 +162,8 @@ describe("the which-key hint", () => {
       { keys: "tk", label: "croquis" },
       { keys: "tm", label: "motus" },
       { keys: "ts", label: "synth" },
+      { keys: "wd", label: "dock: bottom / top / floating" },
+      { keys: "wp", label: "panel: right / left / floating" },
       { keys: "ws", label: "every screen / one screen" },
       { keys: "z", label: "away / back" },
     ]);
@@ -205,7 +207,15 @@ describe("the which-key hint", () => {
   });
 
   test("so is the window", () => {
-    expect(offers("w")).toEqual([{ keys: "s", label: "every screen / one screen" }]);
+    /* Three verbs now: which screens the studio is over, and where each of the
+       two things you work *in* is moored. The family was always the argument —
+       placing a window is several verbs and they want to sit together in the
+       hint — and this is it being taken. */
+    expect(offers("w")).toEqual([
+      { keys: "d", label: "dock: bottom / top / floating" },
+      { keys: "p", label: "panel: right / left / floating" },
+      { keys: "s", label: "every screen / one screen" },
+    ]);
   });
 
   test("a completed chord offers nothing — there is nothing left to press", () => {
