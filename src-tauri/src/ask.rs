@@ -577,11 +577,14 @@ fn preview_schema(full: bool) -> Value {
 fn option_schema() -> Value {
     json!({
         "type": "array",
+        /* Terse on purpose, and the terseness is the design rather than a
+           saving. This is the loaded tier — every byte here is paid on every
+           spawn of every card — while `undescribed_note` costs nothing until
+           it fires. So the schema carries only what has to shape the call
+           before it is written, and the refusal carries the instruction. */
         "description":
-            "Preset answers for this question, your recommendation first. Give \
-             every option a `detail`, and put the trade-offs in the question \
-             itself — a row of bare labels is refused, because the user does \
-             not have the context you do and will just ask you what they mean.",
+            "Preset answers, your recommendation first. Give each a `detail`; \
+             options that are all bare labels are refused.",
         "items": {
             "type": "object",
             "properties": {
@@ -592,9 +595,8 @@ fn option_schema() -> Value {
                 "detail": {
                     "type": "string",
                     "description":
-                        "One short line on what picking this means — the cost or \
-                         the risk, not a restatement of the label. A paragraph \
-                         does not fit: this is drawn on a button, so longer \
+                        "One short line on the cost or risk of picking this, not \
+                         a restatement of the label. Drawn on a button, so \
                          reasoning goes in the question."
                 },
                 /* Terse, and this is the copy that would have cost most: an
@@ -618,13 +620,8 @@ fn tool_schema() -> Value {
              question, because this keeps the turn open and resumes as soon as they \
              answer. Supply `options` when the answer is a choice; they can then reply \
              with one click.\n\n\
-             **Ask it the way you would want it asked of you.** You have read the \
-             code and they have not, so spend that: say what is actually at stake, \
-             give each option its trade-off, and name the one you would pick and \
-             why. A neutral list of bare labels moves the decision without \
-             informing it, and comes back as \"what are the pros and cons?\" — \
-             which is the same decision, two turns later. A call whose options are \
-             all bare labels is refused.\n\n\
+             Say what is at stake and which way you would go: they have not read \
+             the code and you have.\n\n\
              When you have more than one decision outstanding, put each in its own \
              entry of `questions` rather than fusing them into one. They are asked one \
              at a time and answered separately, and there is no limit on how many a \
@@ -1166,7 +1163,22 @@ fn found_by(mut schema: Value, hint: &str) -> Value {
 /// 939 of the schema as it stood, and the rest the sentence that makes loading it
 /// worth anything, which is not a cost to be economised on. All three would leave
 /// the tier with about 800 bytes of slack, which is the state that made the
-/// tiering a conversation in the first place; this leaves 2,076.
+/// tiering a conversation in the first place; this left 2,076.
+///
+/// **Those are the figures of the day they were taken and they are no longer the
+/// state of the tier — read them as history, and get the current number from the
+/// test.** On 2026-10-06 that paragraph was read as a live measurement by
+/// somebody adding a few hundred bytes of schema: it says 2,076 of slack, the
+/// real figure was 528, and the release built from it went red on this very
+/// assertion at 26,506 against the 26,000 ceiling. A tag published with no
+/// installer behind it, which is the expensive end of this mistake.
+///
+/// Measured that day after trimming: **25,756 bytes, 244 of slack.** The tier is
+/// effectively full. There is no cheap way to take this reading on a machine
+/// with no MSVC — `cargo check` compiles the assertion and never runs it, and
+/// `roster()` reaches the whole crate so it cannot be lifted the way `swallowed`
+/// is (sink `46a9ea47`). Until that changes, anything added here is verified by
+/// CI or not at all, and the honest move is to assume there is no room.
 ///
 /// Everything below is a capability a card knows it wants from the prompt it
 /// was given — it is working on a pull request, or it is not — and those are

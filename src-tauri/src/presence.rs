@@ -148,11 +148,11 @@ fn pile_full(why: Queued) -> String {
         "{opening} You already have {MAX_PER_CARD} \
          questions queued — which is as many as one card may leave for one \
          person to read. This question was **not** queued.\n\n\
-         This is the one case where deciding it yourself is the right move, and \
-         it is the right move because there is nowhere left to put the \
-         question: decide it on the best reasoning you have, write down what \
-         you decided and why, and say so plainly in your closing line so it can \
-         be revisited. If you are genuinely blocked, stop and say what on."
+         This is the one case where there is nowhere left to put the \
+         question, so decide it yourself: on the best reasoning you have, \
+         writing down what you decided and why, and saying so plainly in your \
+         closing line so it can be revisited. If you are genuinely blocked, \
+         stop and say what on."
     )
 }
 
