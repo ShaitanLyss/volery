@@ -36,6 +36,17 @@
  * nothing type-checks: the cap that used to live here quietly made a call of
  * twelve questions buy the reading time for five (sink `4b076830`).
  *
+ * `undescribed` is here on `swallowed`'s argument exactly: it is the server's
+ * **second** refusal, it decides whether a person is interrupted at all, and
+ * both of its directions are invisible to a typecheck. A false negative is the
+ * bug it was written for — a row of bare labels in front of somebody who does
+ * not have the model's context, and thirty round trips a month going back as
+ * "pros and cons?" (sink `b260f62a`). A false positive is worse here than it is
+ * for `swallowed`, because the escape hatches are *named in the refusal*: an
+ * agent that reads the note and complies has to get through, or a refusal
+ * becomes an agent that stops asking — which is the one outcome this tool
+ * cannot survive. Three of the six tests below are that direction alone.
+ *
  * `the_check_reads_the_tools_own_schema` is deliberately **not** lifted: it
  * calls `roster()`, which is the whole of `ask.rs`'s dependency graph. It runs
  * under `cargo test` on a machine that has one.
@@ -72,6 +83,10 @@ const ITEMS: string[] = [
   "fn declarations",
   "fn swallowed",
   "fn swallowed_note",
+  "fn thin_options",
+  "fn questions_in",
+  "fn undescribed",
+  "fn undescribed_note",
 ];
 
 /** Consts declared inside `mod tests`, which `findTest` does not reach. */
@@ -88,6 +103,12 @@ const TESTS: string[] = [
   "a_tag_that_never_closes_names_nothing",
   "an_ordinary_call_is_not_examined_at_all",
   "the_refusal_names_what_was_lost_and_where_it_went",
+  "two_bare_labels_are_refused",
+  "one_described_option_is_enough_to_pass",
+  "whitespace_is_not_a_description",
+  "a_call_that_needs_no_explaining_still_goes_through",
+  "the_long_form_is_checked_too_and_counted_per_question",
+  "the_refusal_says_what_to_do_instead",
 ];
 
 const lines = readFileSync(SRC, "utf8").split(/\r?\n/);

@@ -278,6 +278,69 @@ next.
   go quiet on its own — every other assertion supplies its own list of argument names, so a
   renamed `options` would leave them all green over a check that had stopped matching.
 
+#### A choice with nothing to choose by
+
+The second refusal on this server, and it rests on the same observation as the first: the
+cost of a bad `ask_user` lands on a *person*, the moment the question is drawn, so anything
+returned afterwards is a note about an interruption that already happened.
+
+**The evidence is 178 of Lyss's answers, Aug 24 to Oct 1 2026, of which about 30 send the
+question straight back** (sink `b260f62a`):
+
+```text
+no trade-offs      "give me pros and cons for each option so that my judgment is aware"
+                   "what are the stakes"
+no context         "i don't have the context you have, what's the matter"
+overload           "that's overwhelming i have no idea"   "trop verbeux, je suis perdu"
+no recommendation  "i trust you to pick the right fix"    "i'm tired, which is most sound?"
+```
+
+Each is a round trip: her turn to ask what the options mean, the card's turn to answer, and
+the decision still not made. **The model has the context and she does not** — that asymmetry
+is the entire reason this tool exists, and a call that spends none of it has moved the work
+rather than done it.
+
+`undescribed` is the check and `undescribed_note` is the refusal.
+
+- **The trigger is as narrow as it can be while still catching the complaint**: two or more
+  options, and *not one of them* carries a non-empty `detail`. One option is not a choice. A
+  call where some options are described and some are not is a judgement about which needed
+  describing, and that judgement is the model's to make. What is left is the shape actually
+  complained about — a row of bare words with no way in.
+- **A refusal rather than an aside, and that was the live argument.** The softer option was
+  `previewAside`'s shape: let the call through and tell the agent afterwards. It was rejected
+  because the signal would be *lagging* — Lyss has already paid the round trip by the time the
+  agent reads it — and the round trip is the entire cost being removed. The refusal returns in
+  milliseconds, costs her nothing, and the agent re-asks within the same turn.
+- **Which is only safe because the escape hatches are named in the note and actually work.**
+  An agent that reads the refusal and complies must get through, or a refusal becomes an agent
+  that stops asking — the one outcome this tool cannot survive. Three of the six tests are
+  that direction alone, and they are *lifted* rather than merely compiled: on a machine with
+  no MSVC `cargo test` does not run, and a false positive here is invisible to a typecheck.
+- **The note says where the trade-offs go, and that sentence is load-bearing.** `detail` is
+  drawn on a button and is one line by design — the panel lives in the dock and grows upward,
+  so pros and cons under four buttons is the "dock that has eaten the studio" the one-at-a-time
+  stepper already exists to prevent. The question body is markdown and it scrolls, so that is
+  where a table belongs. An agent told only *"add detail"* writes four paragraphs onto four
+  buttons and the panel cannot draw them.
+- **It asks for a recommendation and cannot check for one.** Nothing marks an option as
+  recommended — the schema has said "most recommended first" for its whole life and nothing
+  has ever verified it — so this half lives in the description and in the refusal's wording
+  rather than in the check. That is honest about what is enforceable: an unenforceable rule
+  stated in the schema is still read by the model composing the call, which is the one moment
+  it can act on it.
+- **Both question forms are read.** Neither may be `required`, so a check that looked at only
+  the short form would be the gap rather than the guard — and the long form is where a review
+  puts its twelve decisions, which is exactly where bare labels pile up.
+
+The schema descriptions carry the rest, and they are the half that shapes a call *before* it
+is made rather than refusing it after. `options` now says the recommendation goes first and
+that bare labels are refused; `detail` says it is the cost or the risk rather than a
+restatement of the label; the tool description says to ask it the way you would want it asked
+of you. Those bytes are in the **loaded** tier and therefore paid on every spawn of every
+card, which is the usual trade — they are affordable here because the ceiling had ~2KB of
+slack and because `option_schema`'s own comment already warns that it is emitted twice.
+
 #### A tool the agent can see, under a name it can call
 
 Two failures, found together on 2026-08-19 from one symptom — agents barely touching the

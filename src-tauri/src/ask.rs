@@ -577,7 +577,11 @@ fn preview_schema(full: bool) -> Value {
 fn option_schema() -> Value {
     json!({
         "type": "array",
-        "description": "Preset answers for this question, most recommended first.",
+        "description":
+            "Preset answers for this question, your recommendation first. Give \
+             every option a `detail`, and put the trade-offs in the question \
+             itself — a row of bare labels is refused, because the user does \
+             not have the context you do and will just ask you what they mean.",
         "items": {
             "type": "object",
             "properties": {
@@ -588,8 +592,10 @@ fn option_schema() -> Value {
                 "detail": {
                     "type": "string",
                     "description":
-                        "One short line on what picking this means. Not a paragraph — \
-                         this is drawn on a button."
+                        "One short line on what picking this means — the cost or \
+                         the risk, not a restatement of the label. A paragraph \
+                         does not fit: this is drawn on a button, so longer \
+                         reasoning goes in the question."
                 },
                 /* Terse, and this is the copy that would have cost most: an
                    option's preview is the flagship use — several designs side
@@ -612,6 +618,13 @@ fn tool_schema() -> Value {
              question, because this keeps the turn open and resumes as soon as they \
              answer. Supply `options` when the answer is a choice; they can then reply \
              with one click.\n\n\
+             **Ask it the way you would want it asked of you.** You have read the \
+             code and they have not, so spend that: say what is actually at stake, \
+             give each option its trade-off, and name the one you would pick and \
+             why. A neutral list of bare labels moves the decision without \
+             informing it, and comes back as \"what are the pros and cons?\" — \
+             which is the same decision, two turns later. A call whose options are \
+             all bare labels is refused.\n\n\
              When you have more than one decision outstanding, put each in its own \
              entry of `questions` rather than fusing them into one. They are asked one \
              at a time and answered separately, and there is no limit on how many a \
@@ -1693,6 +1706,102 @@ pub(crate) fn swallowed_note(tool: &str, m: &Swallowed) -> String {
     )
 }
 
+/// A question whose options are bare labels, with nothing to choose between
+/// them by.
+///
+/// **178 of Lyss's answers to `ask_user` show the question itself was the
+/// problem, and about 30 of them send it straight back** (sink `b260f62a`) —
+/// *"when askings, give me pros and cons for each option so that my judgment
+/// is aware"*, *"what are the stakes"*, *"i don't have the context you have,
+/// what's the matter"*. Each of those is a round trip: her turn to ask, the
+/// card's turn to answer, and the decision still not made.
+///
+/// The model has the context and she does not; that asymmetry is the whole
+/// reason the tool exists, and a call that does not spend any of it on her is
+/// a call that has moved the work rather than done it.
+///
+/// **The trigger is as narrow as it can be while still catching that.** Two or
+/// more options and *not one of them* carries a `detail`. One option is not a
+/// choice; a call where some options are described and some are not is a judgement
+/// about which needed describing, and that judgement is the model's to make.
+/// What is left is the shape that was actually complained about — a row of bare
+/// words with no way in.
+fn thin_options(q: &Value) -> bool {
+    let Some(opts) = q.get("options").and_then(Value::as_array) else {
+        return false;
+    };
+    opts.len() >= 2
+        && !opts.iter().any(|o| {
+            o.get("detail")
+                .and_then(Value::as_str)
+                .is_some_and(|d| !d.trim().is_empty())
+        })
+}
+
+/// Every question in a call, whichever form it arrived in.
+///
+/// The two forms are the tool's own (`question` + `options`, or `questions[]`),
+/// and neither may be `required` — see `tool_schema`. So both are read, and a
+/// call carrying both is read as both rather than one being preferred: this is
+/// a check, and a check that looked at only half of a malformed call would be
+/// the gap rather than the guard.
+fn questions_in(args: &Value) -> Vec<&Value> {
+    let mut out: Vec<&Value> = Vec::new();
+    if args.get("question").is_some() || args.get("options").is_some() {
+        out.push(args);
+    }
+    if let Some(qs) = args.get("questions").and_then(Value::as_array) {
+        out.extend(qs.iter());
+    }
+    out
+}
+
+/// How many of this call's questions offer a choice with nothing to choose by.
+pub(crate) fn undescribed(args: &Value) -> usize {
+    questions_in(args).into_iter().filter(|q| thin_options(q)).count()
+}
+
+/// What the agent is told about it.
+///
+/// Shaped like `swallowed_note` and for its reasons: it says nothing happened
+/// first, because that is the part that decides what to do next, and it is
+/// specific about the fix so the re-ask is one tool call rather than a guess.
+///
+/// **Where the trade-offs go is the half worth saying.** `detail` is drawn on a
+/// button and is one line by design — the panel lives in the dock and grows
+/// upward into the wall, so pros and cons under four buttons is a dock that has
+/// eaten the studio. The question body is markdown, it scrolls, and it is where
+/// a table of trade-offs belongs. An agent told only "add detail" writes four
+/// paragraphs onto four buttons.
+pub(crate) fn undescribed_note(n: usize) -> String {
+    let which = if n == 1 {
+        "A question in this call offers".to_string()
+    } else {
+        format!("{n} questions in this call offer")
+    };
+    format!(
+        "skein refused this ask_user call, and nothing was done — no question \
+         was shown and the user was not interrupted.\n\n\
+         {which} two or more options and not one of them carries a `detail`. \
+         The user does not have the context you have, so a row of bare labels \
+         asks them to decide from less than you know — which in practice means \
+         they ask you what the options mean, and the decision costs three turns \
+         instead of one.\n\n\
+         Ask it again with:\n\n\
+         - a one-line `detail` on each option, saying what picking it *means* — \
+         not a restatement of the label;\n\
+         - the trade-offs in the question body, where there is room for them. \
+         It is markdown and it scrolls; a table or a short list per option reads \
+         well. `detail` is drawn on a button and cannot hold them;\n\
+         - your recommendation first, and said out loud in the question. \
+         \"I'd pick B\" with the reason is worth more than a neutral list — you \
+         have read the code and they have not.\n\n\
+         If the choice genuinely needs no explaining, ask it with one option or \
+         with none and a free-text answer: this is only refused for two or more \
+         options where every one of them is a bare label."
+    )
+}
+
 /// Take the impossible characters out of every string in a JSON value, in
 /// place.
 ///
@@ -2044,6 +2153,36 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 }),
                             );
                             return;
+                        }
+
+                        /* And the second refusal, on the same argument one
+                           layer in: that one is a call whose text ate an
+                           argument, this one is a call that asks the user to
+                           decide from less than the model knows. Both are
+                           refused before any arm for the same reason — the
+                           cost lands on a person the moment the question is
+                           drawn, and a note returned afterwards is a note
+                           about an interruption that already happened.
+                           `ask_user` only: no other tool on this server puts a
+                           choice in front of anybody. See `undescribed`. */
+                        if tool == "ask_user" {
+                            let n = undescribed(&args);
+                            if n > 0 {
+                                respond(
+                                    req,
+                                    json!({
+                                        "jsonrpc": "2.0", "id": id,
+                                        "result": {
+                                            "content": [
+                                                { "type": "text",
+                                                  "text": undescribed_note(n) }
+                                            ],
+                                            "isError": true
+                                        }
+                                    }),
+                                );
+                                return;
+                            }
                         }
 
                         /* Two tools park, and everything else is answered on
@@ -2747,6 +2886,92 @@ mod tests {
              card — see ask::roster, and ask whether the new tool is one a card \
              must know exists without being told"
         );
+    }
+
+    /* ── a choice with nothing to choose by (sink `b260f62a`) ─────────────── */
+
+    /// The shape actually complained about: a row of bare words.
+    #[test]
+    fn two_bare_labels_are_refused() {
+        let args = json!({
+            "question": "how should the drafts land?",
+            "options": [{ "label": "land all" }, { "label": "I'll read them first" }]
+        });
+        assert_eq!(undescribed(&args), 1);
+    }
+
+    /// One described option is a judgement about which needed describing, and
+    /// that judgement is the model's. The trigger is *none of them*, not *any*.
+    #[test]
+    fn one_described_option_is_enough_to_pass() {
+        let args = json!({
+            "question": "how should the drafts land?",
+            "options": [
+                { "label": "land all", "detail": "pushes to two repos" },
+                { "label": "hold" }
+            ]
+        });
+        assert_eq!(undescribed(&args), 0);
+    }
+
+    /// A blank `detail` is not a `detail`, or the refusal is one space away
+    /// from being satisfied without being answered.
+    #[test]
+    fn whitespace_is_not_a_description() {
+        let args = json!({
+            "question": "which?",
+            "options": [{ "label": "a", "detail": "   " }, { "label": "b", "detail": "" }]
+        });
+        assert_eq!(undescribed(&args), 1);
+    }
+
+    /// The escape hatches the note promises have to actually work, or an agent
+    /// that reads it and complies is refused a second time — which is how a
+    /// refusal turns into an agent that stops asking.
+    #[test]
+    fn a_call_that_needs_no_explaining_still_goes_through() {
+        /* No options at all: a free-text question. */
+        assert_eq!(undescribed(&json!({ "question": "what should it be called?" })), 0);
+        /* One option is not a choice. */
+        assert_eq!(
+            undescribed(&json!({ "question": "ready?", "options": [{ "label": "go" }] })),
+            0
+        );
+        /* And an empty list is the first case written a second way. */
+        assert_eq!(undescribed(&json!({ "question": "well?", "options": [] })), 0);
+    }
+
+    /// Both forms, because neither may be `required` — see `tool_schema`. A
+    /// check that read only the short form would be the gap rather than the
+    /// guard, and the long form is where a review puts its twelve decisions.
+    #[test]
+    fn the_long_form_is_checked_too_and_counted_per_question() {
+        let args = json!({
+            "questions": [
+                { "header": "a", "question": "a?",
+                  "options": [{ "label": "x" }, { "label": "y" }] },
+                { "header": "b", "question": "b?",
+                  "options": [{ "label": "x", "detail": "costs a rebuild" },
+                              { "label": "y", "detail": "costs nothing" }] },
+                { "header": "c", "question": "c?",
+                  "options": [{ "label": "p" }, { "label": "q" }] }
+            ]
+        });
+        assert_eq!(undescribed(&args), 2);
+    }
+
+    /// The note has to say nothing happened, how to fix it, and where the
+    /// trade-offs go — an agent told only "add detail" writes four paragraphs
+    /// onto four buttons, which the panel cannot draw.
+    #[test]
+    fn the_refusal_says_what_to_do_instead() {
+        let note = undescribed_note(1);
+        assert!(note.contains("nothing was done"), "what to do next turns on this");
+        assert!(note.contains("not interrupted"), "the user is the cost being saved");
+        assert!(note.contains("question body"), "where the trade-offs go");
+        assert!(note.contains("recommendation first"));
+        assert!(note.contains("one option"), "the escape hatch has to be named");
+        assert!(undescribed_note(3).contains("3 questions"));
     }
 
     /// A tool in the deferred tier and carrying no hint is a tool nobody finds.
