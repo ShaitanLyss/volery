@@ -23,6 +23,9 @@ import {
   VIDEOS,
   MARKDOWN,
   READINGS,
+  fullPath,
+  namedPath,
+  pathsIn,
 } from "../src/lib/finding";
 import { DOCUMENTS, TABLES } from "../src/lib/office";
 
@@ -622,5 +625,113 @@ describe("one table over five readings", () => {
     for (const ext of ["exe", "bat", "cmd", "com", "scr", "ps1", "msi", "lnk", "vbs", "hta", "reg", "jar", "dll"]) {
       expect(allowed.has(ext), `Rust would launch a .${ext}`).toBe(false);
     }
+  });
+});
+
+describe("a path named in prose", () => {
+  const W = "C:\\Users\\lyss\\skein";
+
+  test("the ask that started it", () => {
+    // "The merged-feedback hunt is done: `.tmp-fpe/feedback/AUDIT-2026-10-06.md`."
+    const found = namedPath(".tmp-fpe/feedback/AUDIT-2026-10-06.md");
+    expect(found?.path).toBe(".tmp-fpe/feedback/AUDIT-2026-10-06.md");
+    expect(found?.line).toBeNull();
+  });
+
+  test("a place keeps its line, and the column rides in the covered text", () => {
+    /* Otherwise a `:7` is left as plain text dangling beside its own link. */
+    const found = namedPath("src/lib/a.ts:42:7");
+    expect(found?.path).toBe("src/lib/a.ts");
+    expect(found?.line).toBe(42);
+    expect(found?.text).toBe("src/lib/a.ts:42:7");
+  });
+
+  test("a folder is a path, with or without its trailing slash", () => {
+    expect(namedPath(".tmp-fpe/feedback/")?.path).toBe(".tmp-fpe/feedback/");
+    expect(namedPath("src/lib")?.path).toBe("src/lib");
+  });
+
+  test("a url is not a path, however many slashes it has", () => {
+    // The separator class would otherwise swallow the scheme whole.
+    expect(namedPath("https://example.com/a.ts")).toBeNull();
+    expect(pathsIn("see https://example.com/x/y.md for more")).toEqual([]);
+  });
+
+  test("a bare name in a sentence is somebody talking about a file", () => {
+    /* The same call `placesIn` makes, for the same reason: resolving it
+       against the card's directory invents a path nobody wrote. */
+    expect(namedPath("package.json")).toBeNull();
+    expect(namedPath("Transcript.svelte")).toBeNull();
+  });
+
+  test("a spaced string is only a path when it is plainly absolute", () => {
+    // So a code span holding an expression is not asked about.
+    expect(namedPath("const a = 1 / 2")).toBeNull();
+    expect(namedPath("C:\\Program Files\\x\\a.ts")?.path).toBe("C:\\Program Files\\x\\a.ts");
+  });
+
+  test("a version number with a slash in it is not a path", () => {
+    expect(pathsIn("ratio 3/4 and 1.2/3.4 and 16/9")).toEqual([]);
+  });
+
+  test("the sentence's punctuation is not part of the path", () => {
+    const [one] = pathsIn("(see src/a.ts).");
+    expect(one.path).toBe("src/a.ts");
+    expect(one.to - one.from).toBe("src/a.ts".length);
+    expect(pathsIn("ends here src/lib/a.ts:")[0].path).toBe("src/lib/a.ts");
+  });
+
+  test("the spans line up with the text they cover", () => {
+    const line = "done: .tmp/x.md, and src/lib/a.ts:42 too.";
+    for (const f of pathsIn(line)) {
+      expect(line.slice(f.from, f.to).startsWith(f.path)).toBe(true);
+    }
+    expect(pathsIn(line).map((f) => f.path)).toEqual([".tmp/x.md", "src/lib/a.ts"]);
+  });
+
+  test("a shapely non-path is still offered, because the disk is the guard", () => {
+    /* `and/or` has a separator and no extension, which is the same shape as a
+       folder. The pattern is deliberately generous and `paths.svelte.ts` asks
+       the disk before anything is drawn as a link — so this is the *designed*
+       behaviour rather than a false positive, and the test says so out loud. */
+    expect(pathsIn("and/or it works")[0]?.path).toBe("and/or");
+  });
+});
+
+describe("resolving a path against the card's directory", () => {
+  const W = "C:\\Users\\lyss\\skein";
+
+  test("a relative path hangs off the root", () => {
+    expect(fullPath(W, ".tmp/x.md")).toBe("C:\\Users\\lyss\\skein\\.tmp\\x.md");
+  });
+
+  test("an absolute path is left where it is", () => {
+    expect(fullPath(W, "C:/other/y.md")).toBe("C:\\other\\y.md");
+  });
+
+  test("separators come out matching the root's", () => {
+    // What must not happen is a path with one of each going to the shell.
+    expect(fullPath(W, "src/lib/a.ts")).toBe("C:\\Users\\lyss\\skein\\src\\lib\\a.ts");
+    expect(fullPath("/home/u/proj", "x/y.ts")).toBe("/home/u/proj/x/y.ts");
+  });
+
+  test("dot segments are resolved here rather than passed on", () => {
+    // `safe_join` refuses a `..` outright, so a path that climbs and comes
+    // back would be refused for a shape it does not really have.
+    expect(fullPath(W, "./c.ts")).toBe("C:\\Users\\lyss\\skein\\c.ts");
+    expect(fullPath(W, "a/../b.ts")).toBe("C:\\Users\\lyss\\skein\\b.ts");
+    expect(fullPath(W, "../sibling/x.ts")).toBe("C:\\Users\\lyss\\sibling\\x.ts");
+  });
+
+  test("a climb cannot walk off the top", () => {
+    expect(fullPath("C:\\a", "../../../../x.ts")).toBe("C:\\x.ts");
+  });
+
+  test("a trailing separator survives, because it says folder", () => {
+    expect(fullPath(W, "sub/dir/")).toBe("C:\\Users\\lyss\\skein\\sub\\dir\\");
+  });
+
+  test("a UNC share keeps both of its leading separators", () => {
+    expect(fullPath(W, "\\\\srv\\share\\f.txt")).toBe("\\\\srv\\share\\f.txt");
   });
 });

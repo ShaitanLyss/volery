@@ -592,6 +592,158 @@ export function placesIn(text: string): Place[] {
   return out;
 }
 
+/* ── a path named in prose ────────────────────────────────────────────────── */
+
+/** What the transcript needs in order to make a path in prose clickable.
+ *
+ *  One prop rather than two, because it is threaded through every level of
+ *  `Markdown` and `Inlines` and a second `{onpath}` beside `{onlink}` at nine
+ *  call sites is nine chances to forget one. Absent where there is no project
+ *  behind the prose, which is also how a surface opts out.
+ *
+ *  `how` is what the gesture meant: `open` reads the file or opens the folder,
+ *  `reveal` shows either in Explorer. */
+export type FileLinks = {
+  /** The card's directory, which a relative path counts from. */
+  root: string;
+  go: (path: string, line: number | null, how: "open" | "reveal") => void;
+};
+
+
+/** A file or folder an agent named in a sentence, as a span into the text.
+ *
+ *  `line` is `null` for the common case; `path` is exactly what was written,
+ *  which may be absolute, may be relative to the card's directory, and may not
+ *  exist at all. */
+export type Named = { from: number; to: number; path: string; line: number | null };
+
+/** What a whole string is, read as a path — or null for one that is not.
+ *
+ *  **Deliberately permissive, where `placesIn` is deliberately strict**, and the
+ *  difference is not a disagreement: `placesIn` is the last word on whether a
+ *  `path:line` in a tool's output becomes a link, so a false positive there is a
+ *  dead link in the middle of an agent's output and the guard has to be the
+ *  pattern itself. A path named in prose is checked against the disk before it
+ *  is offered (`paths.svelte.ts`), so the pattern here only has to be cheap
+ *  enough to ask about — and being strict would cost the thing somebody
+ *  actually wants, which is that a folder, a dotfile and a name with no
+ *  extension are all openable.
+ *
+ *  Three things are still refused, because no amount of checking makes them
+ *  worth asking about:
+ *
+ *  - a url, which the separator class would otherwise swallow whole
+ *    (`https://example.com/a.ts` has slashes and an extension)
+ *  - anything with no separator in it at all, which is the same call `placesIn`
+ *    makes for the same reason — a bare name in a sentence is somebody talking
+ *    about a file, and resolving it against the card's directory invents a path
+ *    nobody wrote
+ *  - a *spaced* string that is not plainly absolute, so ``const a = 1 / 2`` in a
+ *    code span is not asked about while `C:\Program Files\x\a.ts` still is.
+ *    Windows paths have spaces in them and prose has more. */
+export function namedPath(
+  raw: string,
+): { path: string; line: number | null; text: string } | null {
+  let s = raw.trim();
+  /* The punctuation a sentence wraps a path in. Leading and trailing, and
+     repeatedly, since `(see src/a.ts).` wears three of them. */
+  while (s && "([{<\"'`".includes(s[0])) s = s.slice(1);
+  while (s && ".,;:!?)]}>\"'`".includes(s[s.length - 1])) s = s.slice(0, -1);
+  if (!s) return null;
+  if (s.includes("://")) return null;
+
+  /* `a.ts:42` and `a.ts:42:7` — the column is parsed so that it is not left on
+     the path, and then dropped, because the viewer takes a line and nothing
+     else. A trailing `:` has already gone above, so what is left here ends in a
+     digit or is not a place at all. */
+  let line: number | null = null;
+  const text = s;
+  const place = /^(.*?):(\d+)(?::\d+)?$/.exec(s);
+  if (place && /[\\/]/.test(place[1])) {
+    s = place[1];
+    line = Number(place[2]);
+  }
+
+  const absolute = /^([A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(s);
+  if (/\s/.test(s) && !absolute) return null;
+  if (!/[\\/]/.test(s)) return null;
+  /* Only separators, or a version number somebody wrote with a slash in it. */
+  if (!/[\w]/.test(s)) return null;
+  if (/^[\d.\\/]+$/.test(s)) return null;
+  /* `text` is what the link covers and `path` is what it opens. They differ by
+     the `:42:7` a place carries, and keeping both is what stops a column
+     number being left dangling as plain text beside its own link. */
+  return { path: s, line, text };
+}
+
+/** Every path named in a run of prose, in the order they occur.
+ *
+ *  Tokenised on whitespace rather than matched with one pattern, which is the
+ *  readable half of the same bargain `PLACE`'s character class strikes: a
+ *  pattern that can run backwards through a sentence is a pattern that will,
+ *  and a token is a thing with two ends somebody can reason about. A path with
+ *  a space in it is therefore missed here and caught in a code span, where the
+ *  whole span is one candidate. */
+export function pathsIn(text: string): Named[] {
+  const out: Named[] = [];
+  for (const m of text.matchAll(/\S+/g)) {
+    const found = namedPath(m[0]);
+    if (!found) continue;
+    /* Back to a span in the original text. The trimming above only ever takes
+       characters off the two ends, so the path is a substring and `indexOf`
+       finds the one occurrence that matters. */
+    const at = m[0].indexOf(found.text);
+    if (at < 0) continue;
+    const from = m.index + at;
+    out.push({ from, to: from + found.text.length, path: found.path, line: found.line });
+  }
+  return out;
+}
+
+/** A path as written, resolved against the card's directory.
+ *
+ *  The counterpart of `insideRoot`, which reduces an absolute path to a
+ *  relative one; this is the other direction, and both exist because the two
+ *  sides of this app count from different places. A path in prose may be
+ *  either, and everything that *acts* on one — the viewer, Explorer — wants to
+ *  be told exactly which.
+ *
+ *  `.` and `..` segments are resolved here rather than passed on. `safe_join`
+ *  in `find.rs` refuses a `..` outright, so a path that climbs and comes back
+ *  would be refused for a shape it does not really have — and Explorer is
+ *  happy either way, which makes this the one place the two agree.
+ *
+ *  Separators are normalised to the root's, or to `\` when the root has none
+ *  to copy. An agent writes whichever slash it feels like and Windows takes
+ *  both; what must not happen is a path with one of each going to the shell. */
+export function fullPath(root: string, path: string): string {
+  const sep = root.includes("\\") && !root.includes("/") ? "\\" : root.includes("/") ? "/" : "\\";
+  const absolute = /^([A-Za-z]:[\\/]|[\\/]{1,2})/.test(path);
+  const joined = absolute ? path : `${root.replace(/[\\/]+$/, "")}${sep}${path}`;
+  /* A leading `\\\\` is a UNC share and its two separators are part of the
+     name, so the head is kept whole and only the rest is walked. */
+  const unc = /^[\\/]{2}/.test(joined);
+  const head = unc ? joined.slice(0, 2) : "";
+  const parts = (unc ? joined.slice(2) : joined).split(/[\\/]+/);
+  const out: string[] = [];
+  for (const part of parts) {
+    if (part === ".") continue;
+    /* A `..` that would climb past the root of the path is dropped rather than
+       kept: there is nothing above a drive letter, and carrying it along would
+       hand the shell a path it cannot mean. */
+    if (part === "..") {
+      if (out.length > 1 || (out.length === 1 && !/^([A-Za-z]:)?$/.test(out[0]))) out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  const body = out.join(sep);
+  /* A trailing separator says "folder" and is worth keeping — `open_folder`
+     does not care, but the string is also what the tooltip shows. */
+  const tail = /[\\/]$/.test(path) && !/[\\/]$/.test(body) ? sep : "";
+  return head + body + tail;
+}
+
 /** The path as two pieces, so the panel can draw the directory quietly and the
  *  file plainly. The directory keeps its trailing separator — it reads as a
  *  path that way, and it means the two halves concatenate back to the whole. */

@@ -105,14 +105,18 @@ fn candidates() -> Vec<PathBuf> {
 /// No console window flashing up behind a GUI app — the same shape `shell.rs`,
 /// `actions.rs` and `project.rs` use, and needed here for the same reason: a
 /// grep per keystroke would be a black rectangle per keystroke.
+///
+/// `pub(crate)` for `open::open_folder`, which spawns the same `rundll32` this
+/// file's `open_file` does and wants the same silence. A fifth copy of four
+/// lines was the alternative.
 #[cfg(windows)]
-fn quiet(cmd: &mut Command) -> &mut Command {
+pub(crate) fn quiet(cmd: &mut Command) -> &mut Command {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     cmd.creation_flags(CREATE_NO_WINDOW)
 }
 #[cfg(not(windows))]
-fn quiet(cmd: &mut Command) -> &mut Command {
+pub(crate) fn quiet(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
@@ -794,6 +798,70 @@ pub fn open_file(root: &str, path: &str) -> Result<(), String> {
     {
         Err("opening a file outside is implemented for windows only".into())
     }
+}
+
+/* ── what a path named in prose actually is ───────────────────────────────── */
+
+/// How many paths one ask may carry.
+///
+/// A transcript is unbounded and an agent can write a thousand path-shaped
+/// tokens in one answer; this is a `stat` apiece and the front end batches, so
+/// the cap is about a pathological turn rather than a normal one. Beyond it the
+/// extra candidates simply stay text, which is the same way every other
+/// link-finding bound in this app fails.
+const CLASSIFY_CAP: usize = 400;
+
+/// Which of these paths exist, and which of them are folders.
+///
+/// The front end offers a path named in an agent's prose as a link, and it only
+/// knows the shape of one — `.tmp/report.md` and `and/or` are the same shape.
+/// So the pattern is allowed to be generous and *this* is the guard: a
+/// candidate the disk does not have stays plain text, and a dead link in the
+/// middle of an answer is the one outcome worse than not offering the link.
+/// It also answers the question the click needs — a file opens in the viewer
+/// and a folder opens in Explorer — so the two are one round trip rather than
+/// two.
+///
+/// **Keyed by the string that was asked about, not by what it resolved to.**
+/// The caller has a span in a sentence and needs the answer back against it;
+/// handing back a canonical path would make the front end re-derive which
+/// candidate each answer belonged to, over exactly the ambiguity (`./a` and `a`)
+/// this is supposed to settle.
+///
+/// Relative counts from `root`. **Not `safe_join`**, deliberately: that refuses
+/// anything climbing out of the project, which is right for *reading* a file
+/// and wrong here, since an agent legitimately names `../sibling/x.ts` and a
+/// transcript is full of absolute paths from elsewhere on the disk. Nothing is
+/// opened, read or executed on this path — it is `symlink_metadata` and a
+/// boolean — so the narrow contract the readers keep buys nothing here, and the
+/// commands that *act* on the answer (`open_file_outside`, `show_in_explorer`,
+/// `open_folder`) each keep their own guard.
+#[tauri::command]
+pub async fn classify_paths(
+    root: String,
+    paths: Vec<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    crate::off_main(move || {
+        let mut out = std::collections::HashMap::new();
+        for raw in paths.into_iter().take(CLASSIFY_CAP) {
+            let full = resolve(&root, &raw);
+            /* `metadata`, which follows a link, rather than `symlink_metadata`:
+               what somebody clicking a symlink to a folder means is the folder.
+               A broken link is then neither, which is also what they want. */
+            let Ok(meta) = std::fs::metadata(&full) else { continue };
+            let kind = if meta.is_dir() { "dir" } else { "file" };
+            out.insert(raw, kind.to_string());
+        }
+        Ok(out)
+    })
+    .await?
+}
+
+/// A path as written, against the card's directory. Absolute stays absolute —
+/// `Path::join` already does exactly that, and saying so here is cheaper than
+/// the reader working out whether it was relied on.
+fn resolve(root: &str, raw: &str) -> PathBuf {
+    Path::new(root).join(raw)
 }
 
 #[tauri::command]

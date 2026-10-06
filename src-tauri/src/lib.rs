@@ -738,6 +738,8 @@ pub fn run() {
             sketch::sketch_adopt,
             open::open_external,
             open::show_in_explorer,
+            open::open_folder,
+            find::classify_paths,
             find::find_files,
             find::find_grep,
             find::read_file_text,

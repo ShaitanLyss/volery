@@ -9,12 +9,14 @@
   import Self from "./Markdown.svelte";
   import Inlines from "./Inlines.svelte";
   import { runIn, type Block } from "./markdown";
+  import type { FileLinks } from "./finding";
 
   let {
     blocks,
     caret = false,
     nav = true,
     onlink,
+    files,
   }: {
     blocks: Block[];
     /** Draw the streaming caret at the very end of the last thing written.
@@ -30,6 +32,11 @@
      *  words are somebody else's structure, not this answer's. */
     nav?: boolean;
     onlink?: (href: string) => void;
+    /** What makes a path written in a sentence something you can open — see
+     *  `finding.ts`. One prop rather than two, because it is threaded through
+     *  every level here and at every `Inlines`, and a second one beside it is
+     *  one more place to forget. */
+    files?: FileLinks;
   } = $props();
 
   /* Copying is the one thing anybody does to a fence, and a column that is
@@ -65,13 +72,14 @@
     <p data-nav={lead ? "lead" : null} data-lead={lead}><Inlines
         kids={b.kids}
         {onlink}
+        {files}
       />{#if tip}<span class="caret"></span>{/if}</p>
   {:else if b.t === "h"}
     <!-- One shape for every level, sized by depth. An agent's `###` is a label
          over a paragraph, not a document outline, so none of them shout.
          `data-nav` is how the transcript's rail finds them — see outline.ts. -->
     <div class="h" data-nav="h" data-level={b.level}>
-      <Inlines kids={b.kids} {onlink} />{#if tip}<span class="caret"></span
+      <Inlines kids={b.kids} {onlink} {files} />{#if tip}<span class="caret"></span
         >{/if}
     </div>
   {:else if b.t === "code"}
@@ -97,7 +105,7 @@
       </div>
     </div>
   {:else if b.t === "quote"}
-    <blockquote><Self blocks={b.kids} caret={tip} nav={false} {onlink} /></blockquote>
+    <blockquote><Self blocks={b.kids} caret={tip} nav={false} {onlink} {files} /></blockquote>
   {:else if b.t === "hr"}
     <hr />
   {:else if b.t === "list"}
@@ -110,6 +118,7 @@
               caret={tip && j === b.items.length - 1}
               nav={false}
               {onlink}
+              {files}
             />
           </li>
         {/each}
@@ -125,6 +134,7 @@
               caret={tip && j === b.items.length - 1}
               nav={false}
               {onlink}
+              {files}
             />
           </li>
         {/each}
@@ -139,7 +149,7 @@
           <tr>
             {#each b.head as cell, c (c)}
               <th style:text-align={b.align[c] ?? "left"}>
-                <Inlines kids={cell} {onlink} />
+                <Inlines kids={cell} {onlink} {files} />
               </th>
             {/each}
           </tr>
@@ -149,7 +159,7 @@
             <tr>
               {#each row as cell, c (c)}
                 <td style:text-align={b.align[c] ?? "left"}>
-                  <Inlines kids={cell} {onlink} />
+                  <Inlines kids={cell} {onlink} {files} />
                 </td>
               {/each}
             </tr>

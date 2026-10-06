@@ -143,6 +143,14 @@ export type MenuTarget = {
    *  offer: an inert "undo" is one you stop reading after the second time. */
   undoing?: string | null;
   redoing?: string | null;
+  /* prose: the right-click landed on a path this app noticed in an agent's
+     words. `dir` because the two differ in what a plain press already did —
+     a file was opened in the viewer, a folder in Explorer — and the menu has
+     to name the thing it is offering rather than the gesture. Absent when the
+     press was on ordinary prose, which is how the menu stays the one-item
+     thing it was. */
+  path?: { path: string; dir: boolean };
+
   /* editable / prose */
   hasSelection?: boolean;
   canPaste?: boolean;
@@ -604,9 +612,19 @@ export function menuFor(t: MenuTarget): MenuItem[] {
       ].filter(Boolean) as MenuItem[]);
 
     /* Read-only text: the transcript. Offering "copy" with nothing selected
-       would be a menu item that does nothing, so there is simply no menu. */
+       would be a menu item that does nothing, so there is simply no menu —
+       unless the press landed on a path, which has its own three things to
+       offer and needs no selection to offer them. */
     case "prose":
-      return t.hasSelection ? [item("copy", "copy")] : [];
+      return (
+        [
+          t.path ? item("path-open", t.path.dir ? "open the folder" : "look at it") : null,
+          t.path ? item("path-reveal", "show it in explorer") : null,
+          t.path ? item("path-copy", "copy the path") : null,
+          t.path && t.hasSelection ? sep : null,
+          t.hasSelection ? item("copy", "copy") : null,
+        ].filter(Boolean) as MenuItem[]
+      );
 
     default:
       return [];

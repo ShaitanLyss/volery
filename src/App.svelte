@@ -174,6 +174,8 @@
   import { span } from "./lib/span.svelte";
   import { arrangements } from "./lib/arrange.svelte";
   import { berths } from "./lib/berth.svelte";
+  import { fullPath, insideRoot } from "./lib/finding";
+  import { paths } from "./lib/paths.svelte";
   import { MIN_H, MIN_W, dockSiteAt, floatBox, moorings, panelSiteAt } from "./lib/berth";
   import { homeInsets, spreadPan } from "./lib/span";
 
@@ -1398,6 +1400,46 @@
     studio.save();
   }
 
+  /* ── a path an agent named in its prose ───────────────────────────────
+     An agent writes a path far more often than it writes a markdown link, and
+     until this every one of them was dead text you retyped into the finder.
+     `finding.ts` finds the shape of one, `paths.svelte.ts` asks the disk
+     whether it is real, `Inlines.svelte` draws what survives, and this is what
+     a press on it means. */
+
+  /** Open what the text named, or show it in Explorer.
+   *
+   *  Three destinations and one rule behind them: **a file is read here and a
+   *  folder is somewhere else's.** The viewer is the right place for a file
+   *  because that is what the panel beside it is for; a folder has nothing the
+   *  viewer could draw, so it goes to the file manager. `reveal` overrides both
+   *  and is the ctrl-click.
+   *
+   *  A file outside the card's tree falls back to Explorer rather than
+   *  failing: the viewer refuses anything that climbs out of its root
+   *  (`safe_join`), which is right, and "I cannot show you this" is a worse
+   *  answer than showing it where it actually lives. */
+  function goToPath(path: string, line: number | null, how: "open" | "reveal") {
+    const conv = focused;
+    if (!conv || conv.kind !== "project" || !conv.cwd) return;
+    const root = conv.cwd;
+    const full = fullPath(root, path);
+    const dir = paths.kind(root, path) === "dir";
+
+    if (how === "reveal") return void reveal(full);
+    if (dir) {
+      void invoke("open_folder", { path: full }).catch((e) => (skein.fault = String(e)));
+      return;
+    }
+    const rel = insideRoot(full, root);
+    if (rel) void finder.lookAt(root, rel, line);
+    else void reveal(full);
+  }
+
+  function reveal(full: string) {
+    void invoke("show_in_explorer", { path: full }).catch((e) => (skein.fault = String(e)));
+  }
+
   /* ── the right-click ──────────────────────────────────────────────────
      Chromium's menu is suppressed globally in main.ts. What replaces it is
      decided in menu.ts and dispatched here: the component turns ids into calls
@@ -1436,6 +1478,9 @@
     /* Both the territory and the name that carries it — right-clicking the
        handle you just dragged should reach the project it belongs to. */
     const regionEl = el.closest("[data-cwd]") as HTMLElement | null;
+    /* A path this app noticed in an agent's prose — see `Inlines.svelte`, which
+       is what puts `data-path` on it. */
+    const pathEl = el.closest("[data-path]") as HTMLElement | null;
     const selection = window.getSelection();
     const selected = (selection?.toString() ?? "").trim();
 
@@ -1767,14 +1812,32 @@
            the territory menu's own. */
         else if (id === "guidance") guiding = { focus: null };
       };
-    } else if (selected) {
-      /* Read-only prose — the transcript, mostly. */
-      target = { kind: "prose", hasSelection: true };
+    } else if (selected || pathEl?.dataset.path) {
+      /* Read-only prose — the transcript, mostly — and the paths this app
+         noticed inside it. The two are one target because a press on a path is
+         also a press on prose: you may well have a selection as well, and two
+         menus for one click is a menu that opens the wrong one half the time. */
+      const named = pathEl?.dataset.path;
+      target = {
+        kind: "prose",
+        hasSelection: !!selected,
+        path: named ? { path: named, dir: pathEl?.dataset.dir === "1" } : undefined,
+      };
       act = (id) => {
         /* The same markdown ctrl+C hands over, and taken now rather than then:
            opening a menu can cost the selection, and two routes to "copy" that
            put different text on the clipboard would be two clipboards. */
-        if (id === "copy") void copyText(selectionMarkdown() || selected);
+        if (id === "copy") return void copyText(selectionMarkdown() || selected);
+        if (!named) return;
+        /* The full path on the clipboard, not what the sentence happened to
+           say: a relative path pasted anywhere else is a path to nothing, and
+           copying it is a gesture about taking it *out* of here. */
+        if (id === "path-copy") {
+          const root = focused?.kind === "project" ? focused.cwd : "";
+          return void copyText(root ? fullPath(root, named) : named);
+        }
+        if (id === "path-open") goToPath(named, null, "open");
+        if (id === "path-reveal") goToPath(named, null, "reveal");
       };
     }
 
@@ -4285,6 +4348,7 @@
             onlink={(href) => void skein.openLink(href)}
             onfile={(path, line) =>
               void finder.lookAt(focused.kind === "project" ? focused.cwd : "", path, line)}
+            onpath={goToPath}
             onread={setRead}
           />
         </aside>

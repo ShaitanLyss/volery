@@ -77,11 +77,17 @@ pub fn open_external(url: String) -> Result<(), String> {
 /// shown the territory, in place, with its neighbours around it. A label
 /// promising the folder's contents would be one the reuse cannot pay for.
 ///
-/// A directory and nothing else. The command is reachable from anything holding
-/// the IPC, the same argument `openable` above makes about schemes, and "reveal
-/// any path on this disk" is a wider promise than the one caller needs. Nothing
-/// is executed either way — the shell only navigates a view — so the guard is
-/// about keeping the contract narrow rather than about a hazard.
+/// **A file or a folder**, and it was a folder only until the transcript grew
+/// clickable paths. The old note said "reveal any path on this disk is a wider
+/// promise than the one caller needs" — true while the one caller was a
+/// territory's menu, and the second caller is "show this file in Explorer" on a
+/// path an agent named, which is the gesture this API exists for. What the
+/// guard still refuses is a path that is not there at all, so the failure is a
+/// sentence rather than an Explorer window on somebody's user folder.
+///
+/// Nothing is executed either way — the shell only navigates a view and selects
+/// an item — so widening it costs nothing a reader has to weigh. `open_folder`
+/// below is the one that hands a path to a *handler*, and it keeps its own.
 #[tauri::command]
 pub async fn show_in_explorer(path: String) -> Result<(), String> {
     /* `async` + `off_main`: the call reaches the shell, and on a cold Explorer
@@ -102,8 +108,8 @@ fn reveal(path: &str) -> Result<(), String> {
     use windows::Win32::UI::Shell::{SHOpenFolderAndSelectItems, SHParseDisplayName};
     use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
 
-    if path.is_empty() || !std::path::Path::new(path).is_dir() {
-        return Err(format!("{path} is not a folder on this machine"));
+    if path.is_empty() || !std::path::Path::new(path).exists() {
+        return Err(format!("{path} is not on this machine"));
     }
 
     /* S_FALSE means this thread already had an apartment and still owes a
@@ -156,7 +162,61 @@ fn reveal(path: &str) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn reveal(_path: &str) -> Result<(), String> {
-    Err("showing a folder is implemented for windows only".into())
+    Err("showing a path is implemented for windows only".into())
+}
+
+/* ── a folder, opened rather than shown ───────────────────────────────────── */
+
+/// Open a folder in Explorer — its contents, not its parent.
+///
+/// The sibling of `show_in_explorer` and deliberately not the same call.
+/// `SHOpenFolderAndSelectItems` with no items takes the *item* and opens
+/// whatever contains it, which is the right answer for "show me where this is"
+/// and the wrong one for clicking a folder named in a sentence: you asked to go
+/// in, not to be shown it from outside.
+///
+/// `rundll32 url.dll,FileProtocolHandler`, which is `open_file`'s mechanism and
+/// its reasoning — `cmd /c start` goes through the shell, which reads `&`, `^`
+/// and `%` in a path as its own syntax, and a path in a transcript is a string
+/// an agent wrote. rundll32 takes it as one argument and hands it to the
+/// registered handler, which for a directory is Explorer and which respects
+/// whatever the user's folder options say about reusing a window.
+///
+/// **A directory and nothing else, and here the guard is load-bearing rather
+/// than tidy.** This is the one command in the pair that asks the shell to
+/// *open* a path, and the registered handler for `.exe` is the thing itself —
+/// so a path an agent wrote reaching this with no check is an agent running a
+/// program by naming it in prose. `is_dir` is what stops that, and it is also
+/// why the front end's file branch goes to the viewer rather than here.
+#[tauri::command]
+pub async fn open_folder(path: String) -> Result<(), String> {
+    /* `async` + `off_main` for the reason `show_in_explorer` is: `is_dir` on a
+       disconnected network root is not instant, and blocking the main thread
+       stops every card on the wall being painted. */
+    crate::off_main(move || {
+        if path.is_empty() || !std::path::Path::new(&path).is_dir() {
+            return Err(format!("{path} is not a folder on this machine"));
+        }
+
+        #[cfg(windows)]
+        {
+            use std::process::{Command, Stdio};
+            let mut cmd = Command::new("rundll32.exe");
+            cmd.args(["url.dll,FileProtocolHandler"])
+                .arg(&path)
+                .stdin(Stdio::null());
+            crate::find::quiet(&mut cmd);
+            cmd.spawn()
+                .map_err(|e| format!("could not open {path}: {e}"))?;
+            Ok(())
+        }
+
+        #[cfg(not(windows))]
+        {
+            Err("opening a folder is implemented for windows only".into())
+        }
+    })
+    .await?
 }
 
 #[cfg(test)]

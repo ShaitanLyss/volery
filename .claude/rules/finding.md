@@ -10,6 +10,8 @@ paths:
   # ToolCall is panel.md's file first, but half of "a path opens the file" lives
   # in it — so this loads there too rather than trusting a pointer in prose.
   - "src/lib/ToolCall.svelte"
+  - "src/lib/paths.svelte.ts"
+  - "src/lib/Inlines.svelte"
 ---
 
 # The finder, and the file viewer
@@ -733,3 +735,61 @@ differ by an opacity and a hairline. **`reap` takes the time**, because the alte
 test sleeping five real minutes to watch a fuse burn down. And a tab reports *whether* it is
 carrying a reading rather than what the reading is: a scroll offset in pixels is a fact about a
 font, and a test asserting one would be a test about the theme.
+
+### A path an agent named in its prose
+
+An agent writes a path far more often than it writes a markdown link, and until 2026-10-06
+every one of them was dead text you retyped into the finder. Now they open: a file in the
+viewer, a folder in Explorer, ctrl-click or the right-click menu to show either in Explorer.
+
+**The pattern is deliberately generous and the disk is the guard**, which is the opposite of
+the call `placesIn` makes two functions up — and the two are not in disagreement.
+`placesIn` is the *last word* on whether a `path:line` in a tool's output becomes a link, so a
+false positive there is a dead link in the middle of an answer and the guard has to be the
+pattern itself. `pathsIn` is checked against the disk before anything is drawn
+(`paths.svelte.ts`), so it can afford to ask about `and/or` — and being as strict as `placesIn`
+would cost the thing somebody actually wants, which is that a folder, a dotfile and a name
+with no extension are all openable.
+
+Three things are still refused, because no amount of checking makes them worth asking about: a
+url (the separator class swallows a scheme whole), anything with **no separator at all** —
+which is `placesIn`'s rule arriving for its own reason, since a bare name in a sentence is
+somebody talking about a file and resolving it against the card's directory invents a path
+nobody wrote — and a *spaced* string that is not plainly absolute, so `const a = 1 / 2` in a
+code span is left alone while `C:\Program Files\x\a.ts` is not.
+
+- **Two sources, asked different questions.** A **code span** is one candidate whole, because
+  an author who reached for backticks has already said it is a thing rather than words, and
+  because a Windows path has spaces a tokeniser would cut. **Plain text** is tokenised on
+  whitespace, since a sentence is mostly not paths. `pathsIn` tokenises rather than running one
+  pattern over the line, which is the readable half of the bargain `PLACE`'s character class
+  strikes: a pattern that can run backwards through a sentence is a pattern that will.
+- **`text` and `path` are two fields.** They differ by the `:42:7` a place carries — the link
+  covers the whole of it and opens the file at line 42 — and keeping both is what stops a
+  column number being left dangling as plain text beside its own link.
+- **The question is asked once and answers three ways.** `undefined` means nobody has been
+  told yet and draws as plain text, so nothing flickers into a link and back out of one;
+  `null` is a real answer that stops the candidate being asked about again on every repaint;
+  and `file`/`dir` is also what the *click* needs, which is why existence and kind are one
+  round trip rather than two.
+- **`ask` is called from a render path and must stay cheap.** A streaming answer repaints a
+  paragraph many times a second and hands over the same candidates each time; `ask` is a map
+  lookup and a set insert, and `GATHER_MS` collects a turn's worth into one call. The queueing
+  happens in an `$effect` rather than inside the `$derived` that finds the candidates — a
+  derived that reaches out and queues work is a side effect wearing a value's clothes.
+- **A batch that fails is recorded as absent**, not left unanswered. Otherwise the next render
+  queues the whole batch again and the two spin against each other.
+
+On the Rust side the split is about what each command is allowed to do. `classify_paths` stats
+and nothing else, so it deliberately does **not** use `safe_join` — an agent legitimately names
+`../sibling/x.ts`, and a transcript is full of absolute paths from elsewhere on the disk.
+`show_in_explorer` was widened from folders to anything that exists, which costs nothing
+because the shell only navigates a view. `open_folder` is the one that hands a path to a
+*handler*, so its `is_dir` guard is load-bearing rather than tidy: the registered handler for
+`.exe` is the thing itself, and without the check an agent could run a program by naming it in
+prose. That is also why the file branch goes to the viewer and never here.
+
+`fullPath` is `insideRoot`'s counterpart — the two exist because the two sides of this app
+count from different places, and everything that *acts* on a path wants to be told exactly
+which. It resolves `.` and `..` itself, because `safe_join` refuses a `..` outright and a path
+that climbs and comes back would otherwise be refused for a shape it does not really have.
