@@ -131,7 +131,14 @@
   import { spotOf } from "./lib/glass";
   import { selectionMarkdown } from "./lib/copy";
   import { displayName } from "./lib/naming";
-  import { Drafts } from "./lib/drafts";
+  import {
+    Drafts,
+    KEEP_AFTER_MS,
+    KEPT_KEY,
+    decodeKept,
+    encodeKept,
+    type Draft,
+  } from "./lib/drafts";
   import Transcript from "./lib/Transcript.svelte";
   import Servers from "./lib/Servers.svelte";
   import Processes from "./lib/Processes.svelte";
@@ -545,6 +552,11 @@
      goes on ingesting events and writing rows for a wall nobody can see — one
      `result` used to become two `turn` rows, one per generation. */
   onDestroy(() => {
+    /* Ahead of everything, and written rather than merely cancelled: a close
+       is the other way a window stops existing, and the debounce means the
+       last few hundred milliseconds of typing are otherwise still pending. */
+    clearTimeout(keeping);
+    keep(field.draft);
     skein.detach();
     attention.detach();
     actions.detach();
@@ -730,6 +742,55 @@
    *  field over a wall of cards is one Enter away from saying what you wrote at
    *  one of them to another, and the parking is what stops it. */
   const drafts = new Drafts();
+  /* What was in the field when this window last stopped existing. Read before
+     anything is drawn, so the restore lands under the focus effect below
+     rather than racing it. See `drafts.ts`: the pictures do not come back, and
+     their tokens come out with them. */
+  drafts.restore(decodeKept(readKept()));
+  /* The wall's own bucket is handed over here rather than by the focus effect
+     below, which cannot do it: nothing has moved, so `holds(null)` is already
+     true and it returns early. Everything restored under a *card* waits to be
+     handed over by clicking that card, which is the round trip `switchTo`
+     already makes. */
+  field.take(drafts.peek(null));
+  function readKept(): string | null {
+    try {
+      return localStorage.getItem(KEPT_KEY);
+    } catch {
+      /* Disabled or full. A wall with no keeping is the wall as it was. */
+      return null;
+    }
+  }
+
+  /** Write the keeping, now.
+   *
+   *  Takes the field's contents as an argument rather than reading them,
+   *  because its two callers want different ones: the debounce wants the value
+   *  the effect saw, and the teardown wants whatever is there at the end. */
+  function keep(held: Draft) {
+    try {
+      localStorage.setItem(KEPT_KEY, encodeKept(drafts.keeping(held)));
+    } catch {
+      /* A full or disabled store costs the keeping and nothing else — the same
+         answer `rememberCompaction` gives, one subsystem over. */
+    }
+  }
+
+  let keeping: ReturnType<typeof setTimeout> | undefined;
+  /* Debounced, and the dependency is the *draft* rather than the text: an
+     image written into the sentence changes what is kept (its token comes out)
+     without changing a character the user typed. Parking is covered for free —
+     switching cards hands the field a different draft, which is a change here.
+
+     `KEEP_AFTER_MS` after the last keystroke, so what a crash takes is a word.
+     The timer is cleared on teardown with the rest of them: a superseded
+     generation's pending write would land `encodeKept` over a live wall from a
+     `Drafts` nobody is parking into any more. */
+  $effect(() => {
+    const held = field.draft;
+    clearTimeout(keeping);
+    keeping = setTimeout(() => keep(held), KEEP_AFTER_MS);
+  });
   /* The whole of the per-card behaviour, in the one place the focus is known to
      have moved. Deliberately an effect rather than something `focusCard` does:
      the focus is set from a dozen places — the wall, Tab, the attention list,
@@ -794,6 +855,17 @@
   });
 
   /* Paint the wall from disk, then start the servers. Deliberately no agent. */
+  /* Drafts belonging to cards that are no longer here go once the wall knows
+     what is here — not before, since an empty `convs` is what it looks like
+     before `load` has answered and pruning against that would drop every
+     draft on the wall. See `Drafts.prune`. */
+  let pruned = false;
+  $effect(() => {
+    if (pruned || !skein.convs.length) return;
+    pruned = true;
+    drafts.prune(new Set(skein.convs.map((c) => c.id)));
+  });
+
   $effect(() => {
     void skein.load();
     void board.load();
@@ -3748,7 +3820,11 @@
       {
         key: "pile",
         label: `${presence.waiting} waiting`,
-        title: `${presence.waiting} ${presence.waiting === 1 ? "question" : "questions"} queued while you were away — read them (space then q)`,
+        /* "queued for you" rather than "queued while you were away", which is
+           no longer the only way one gets here: a question nobody got to in
+           time is queued too, with the wall never having gone away at all. See
+           `presence::Queued`. */
+        title: `${presence.waiting} ${presence.waiting === 1 ? "question" : "questions"} queued for you — read them (space then q)`,
         on: presence.showing,
         press: () => presence.openPile(),
       },

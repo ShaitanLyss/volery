@@ -206,6 +206,58 @@ I am talking to" — the panel *is* that card's conversation — and splitting t
 answers to a question with one, plus an edge down the middle of the screen you would have to
 aim either side of.
 
+## An unsent line outlives the window, and the pictures in it do not
+
+`drafts.ts` opened with "an unsent line is a thought in progress, and it lives as long as the
+window does" — a nice sentence about the wrong thing, and read for a while as an argument
+when it was only a description of what had been built. Lyss's machine crashed while she was
+typing a long feature request into a card and the words were simply gone (sink `b7a08d5e`).
+A thought in progress is not worth less than a sent one; it is the same words a keystroke
+earlier, and it is the one thing on this wall nobody can reconstruct, because unlike
+everything else here it was never anywhere but in a person's head and that box.
+
+So the whole keeping — every card's parked draft *and* whatever is in the field right now —
+is written to `localStorage` behind a `KEEP_AFTER_MS` debounce and read back at startup.
+
+- **`localStorage` rather than SQLite, and the second reason is the load-bearing one.** The
+  first is the usual one on this wall: per-machine and disposable, like the viewport and the
+  compaction calibration. The second is that it is the only store here that is durable
+  **synchronously**. A draft written through an `invoke` is a draft racing the process it is
+  trying to survive, which is the entire event this exists for — the thing that makes SQLite
+  the better home for real data is what makes it the wrong home for this.
+- **The images do not travel, and that is this file's rule rather than an omission.** An
+  attachment is megabytes of pixels held for exactly as long as the draft is being written,
+  and nothing of it is written to disk. Keeping them would put screenshots of whatever was on
+  screen into a file on this machine, indefinitely, as a side effect of a feature about not
+  losing typed words.
+- **Which means their tokens come out with them.** A restored `look at [shot 1]` with nothing
+  attached is a prompt referring to something the agent will never receive — the one failure
+  `Attachments.prune` exists to prevent, arriving from the other direction. `withoutShots`
+  runs every shot through the same `dropToken` the `✕` on a chip uses, so the restored draft
+  is the sentence you wrote minus the pictures, and says nothing about pictures that are not
+  there.
+- **Nothing is truncated.** Past `KEEP_BUDGET` whole drafts are dropped from the end, and the
+  held one is at the head of `keeping` so it is never the one dropped. A half-kept paragraph
+  that reads as complete is worse than one that is plainly absent, because you would send it.
+- **`restore` refuses once anything is parked**, which is what makes it safe to call from a
+  place that might run twice: a restore landing over a live wall would overwrite what you are
+  typing with what you were typing last week. `decodeKept` degrades rather than throwing, for
+  the reason every opaque blob here does — it is read before the wall is drawn, and a parse
+  that threw would be a window that did not open because of a half-written draft.
+- **`prune` is why the keeping does not grow for ever.** A card closed while Volery was shut
+  takes its draft the way `release` would have; without it the file grows a row per card ever
+  closed, each holding text that can never be shown. It runs once `skein.convs` is non-empty,
+  never against the empty list `load` has not answered yet. The wall's own bucket is never
+  pruned — it belongs to no card by definition, which is the whole reason it exists.
+- **The teardown writes rather than merely cancelling.** A clean close is the other way a
+  window stops existing, and the debounce means the last few hundred milliseconds of typing
+  are otherwise still pending.
+- **The ask panel's free-text box is deliberately not covered**, and it is not a gap: the
+  parked HTTP request dies with the process, so there is no question left for a restored
+  answer to belong to. What protects typed text there is the countdown no longer running down
+  while you type and an expired question going to the pile rather than away — both in
+  `ask.md`.
+
 ## What is not done
 
 - **A restored card shows no thumbnails.** They were never in the session file as anything a

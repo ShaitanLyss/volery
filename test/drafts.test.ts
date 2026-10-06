@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Attachment } from "../src/lib/attach";
-import { Drafts, type Draft } from "../src/lib/drafts";
+import {
+  Drafts,
+  KEEP_BUDGET,
+  decodeKept,
+  encodeKept,
+  type Draft,
+} from "../src/lib/drafts";
 
 /** A draft of nothing but words, which is what every test here was written
  *  against and is still the ordinary case. */
@@ -162,5 +168,105 @@ describe("the pictures go where the words go", () => {
     d.switchTo("a", words(""));
     d.switchTo("b", { text: "", shots: [shot("shot 1")] });
     expect(d.peek("a").shots.map((s) => s.name)).toEqual(["shot 1"]);
+  });
+});
+
+/* Sink `b7a08d5e`: Lyss's machine crashed while she was typing a long prompt
+   into a card and the text was gone. An unsent line now outlives the window. */
+describe("what survives the window", () => {
+  test("the one in your hand is kept, and it is kept first", () => {
+    const d = new Drafts();
+    d.switchTo("a", words(""));
+    d.switchTo("b", words("left at a"));
+    const kept = decodeKept(encodeKept(d.keeping(words("writing at b"))));
+    expect(kept).toEqual({ b: "writing at b", a: "left at a" });
+    /* First, because the budget drops from the end and the held one is the
+       sentence with the keystroke in it. */
+    expect(Object.keys(kept)[0]).toBe("b");
+  });
+
+  test("the wall's own line is kept too", () => {
+    const d = new Drafts();
+    expect(decodeKept(encodeKept(d.keeping(words("no card in hand"))))).toEqual({
+      "": "no card in hand",
+    });
+  });
+
+  test("a round trip hands the words back where they were written", () => {
+    const d = new Drafts();
+    d.switchTo("a", words(""));
+    d.switchTo("b", words("for a"));
+    const raw = encodeKept(d.keeping(words("for b")));
+    const back = new Drafts();
+    back.restore(decodeKept(raw));
+    expect(back.peek("a").text).toBe("for a");
+    expect(back.peek("b").text).toBe("for b");
+  });
+
+  /* The images do not go to disk — `attach.md` — so neither may their tokens:
+     a restored `look at [shot 1]` is a prompt naming something the agent will
+     never be sent, which is the one failure `prune` exists to prevent arriving
+     from the other side. */
+  test("a picture does not travel, and takes its token with it", () => {
+    const d = new Drafts();
+    const held: Draft = {
+      text: "look at [shot 1] and tell me",
+      shots: [shot("shot 1")],
+    };
+    expect(decodeKept(encodeKept(d.keeping(held)))).toEqual({
+      "": "look at and tell me",
+    });
+  });
+
+  test("a draft that was only a picture is not kept as a blank", () => {
+    const d = new Drafts();
+    const held: Draft = { text: "[shot 1]", shots: [shot("shot 1")] };
+    expect(decodeKept(encodeKept(d.keeping(held)))).toEqual({});
+  });
+
+  /* Nothing is truncated: a half-kept paragraph that reads as whole is worse
+     than one that is plainly absent, because you would send it. */
+  test("past the budget whole drafts go, and never the held one", () => {
+    const d = new Drafts();
+    const long = "x".repeat(KEEP_BUDGET);
+    d.switchTo("a", words(""));
+    /* Parks `long` under "a" and leaves the field holding "b". */
+    d.switchTo("b", words(long));
+    const kept = decodeKept(encodeKept(d.keeping(words(long))));
+    expect(kept.b).toHaveLength(KEEP_BUDGET);
+    expect(kept.a).toBeUndefined();
+  });
+
+  test("a keeping larger than the budget on its own is still kept whole", () => {
+    const d = new Drafts();
+    const huge = "x".repeat(KEEP_BUDGET * 2);
+    expect(decodeKept(encodeKept(d.keeping(words(huge))))[""]).toHaveLength(huge.length);
+  });
+
+  /* Read before the wall is drawn, so anything that threw here would be a
+     window that did not open because of a half-written draft. */
+  test("nonsense in the store is not a draft and is not a crash", () => {
+    expect(decodeKept(null)).toEqual({});
+    expect(decodeKept("")).toEqual({});
+    expect(decodeKept("{oh no")).toEqual({});
+    expect(decodeKept("[1,2]")).toEqual({});
+    expect(decodeKept('{"a":17,"b":"real","c":""}')).toEqual({ b: "real" });
+  });
+
+  test("a restore will not land over a wall already being typed into", () => {
+    const d = new Drafts();
+    d.switchTo("a", words(""));
+    d.switchTo("b", words("from this session"));
+    d.restore({ a: "from last week" });
+    expect(d.peek("a").text).toBe("from this session");
+  });
+
+  test("a card that is gone takes its draft, and the wall keeps its own", () => {
+    const d = new Drafts();
+    d.restore({ "": "the wall's", gone: "nobody's", here: "still a card" });
+    d.prune(new Set(["here"]));
+    expect(d.peek("gone").text).toBe("");
+    expect(d.peek("here").text).toBe("still a card");
+    expect(d.peek(null).text).toBe("the wall's");
   });
 });
