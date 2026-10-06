@@ -147,12 +147,15 @@ process reading our answer is a Bun runtime with opinions of its own.
   payloads. One suite going red alone is the mirror saying it has drifted.
 
   **What is still lost is the tail rather than the whole call, and it is not fixed here.**
-  A deadline that expires takes every answer already given with it: the agent is told nobody
-  answered, and has to re-ask everything, so the user re-reads and re-decides what they had
-  already decided. Preserving the partial needs the panel to push each answer to Rust as it is
-  given — a new command, a call site in `skein.svelte.ts`, and a decision about what "three of
-  five" reads as to an agent — which is a second piece of work rather than the other half of
-  this one. Filed as its own sink item.
+  A deadline that expires takes every answer already given with it. Two things have since
+  taken most of the weight off that — the deadline no longer runs down while you are typing,
+  and expiring now *queues* the question rather than telling the agent to decide for itself
+  (both below) — so what is left is narrower than it was: the question comes back whole, and
+  the three answers already given have to be given again. Preserving the partial still needs
+  the panel to push each answer to Rust as it is given — a new command, a call site in
+  `skein.svelte.ts`, and a decision about what "three of five" reads as to an agent — which
+  is a second piece of work rather than the other half of this one. Filed as its own sink
+  item.
 - **Ten minutes is also the floor when nobody is there**, and that is the answer
   rather than a bug. Reported 2026-08-20 by a card driven non-interactively: `ask_user` timed
   out on it twice, with no human anywhere near the wall. Both fired correctly. A tool whose
@@ -497,8 +500,8 @@ So a call carries `questions[]` and the panel walks you through them one at a ti
   numbered list carrying each question's `header`. Load-bearing: the bare form is what every
   ask sent before this, and a single question suddenly arriving numbered and headed would
   change the reply's shape for every agent already written against the tool. Skipped
-  questions are sent as `no preference — your call` rather than omitted, because a gap in a
-  numbered list invites the model to re-align the rest onto the wrong questions.
+  questions are sent as `skipped` rather than omitted, because a gap in a numbered list
+  invites the model to re-align the rest onto the wrong questions.
 - **Asked one at a time, not laid out at once.** Two reasons, and the second is the one that
   matters: the panel lives in the dock and grows *upward* into the wall, so three questions
   with four options each is a dock that has eaten the studio — and a decision read on its own
@@ -577,6 +580,134 @@ So a call carries `questions[]` and the panel walks you through them one at a ti
 - **The peek is named by headers, never by a truncated body** (`askHeadline`). That line is
   `white-space: nowrap` with an ellipsis, so a question body put there is a cut-off paragraph
   naming nothing — and a call carrying several would name only the first.
+
+#### A skip is not a yes, and a deadline is not an answer
+
+Two bugs with one shape, and the shape is worth naming before either: **Skein kept answering
+a question on the user's behalf with a sentence that read as delegation.** Both were cheap to
+write and both published something.
+
+**The skip.** `NO_PREFERENCE` — `no preference — your call` — was what the skip button sent,
+what `composeAnswer` filled an unanswered slot with, and what the control surface's
+`rest: true` wrote. On 2026-10-01 a card asked how some drafts should land, offering "land
+all", "I'll read them first" and "skein only for now". Lyss skipped it. The card read
+`landing: no preference — your call` as delegation and pushed to two repositories — skein
+`1a1a93a` on main and nova `a57617f2` on a shared feature branch (sink `662b2900`). *"it was
+not really land all, that was a skip."*
+
+Two different answers were wearing one sentence: **I don't mind, you pick**, which hands the
+decision over, and **not now**, which withholds it. For a question gating an outward-facing
+act the cost is asymmetric in exactly the direction that matters — a wrong *wait* costs a
+turn, a wrong *go* pushes, deploys or deletes.
+
+So they are two sentences and two gestures. `skip` sends `SKIPPED`; `you decide` is its own
+button and is the only way to reach `NO_PREFERENCE`. The review sheet greys both (`isUnsaid`)
+because neither is a thing the user said, but only one of them authorises anything.
+
+- **The directive is said once, not once per slot.** The first cut put the whole forty-word
+  instruction in the slot, and the call this was filed about carried 42 questions of which 25
+  were skipped. That is the same paragraph twenty-five times in one reply — a few hundred
+  tokens of repetition, and a model reading one instruction twenty-five times is being told
+  something about its weight that nobody meant to say. The slot carries the word (`skipped`)
+  and `SKIPPED_ASIDE` carries the meaning, which is also the right division: *skipped* is what
+  happened to that question, and the directive is a fact about the call.
+- **It rides `ASIDE`**, for the reason `previewAside` does — read back off disk it is a
+  `tool_result` like any other, and drawn as an answer it would put Skein instructing an agent
+  into the user's mouth under a one-word decision. **The asides are gathered and emitted under
+  one marker**, because `answerNote` cuts at the *last* one: two markers in a reply would
+  leave the first drawn in the transcript as a line the user typed, which is the whole thing
+  the marker exists to prevent.
+
+**The deadline, which is the same bug arriving by a different route.** `timed_out` told the
+agent to *"proceed using your best judgement"*, and it did. But the user not getting to a
+question in forty-five minutes says nothing whatever about what she would have decided — and
+the call that motivated the countdown work below was answered by Lyss skipping every
+remaining question *because the clock was running*, which turned a pacing problem into
+twenty-five unintended delegations (sink `7264177f`). Her instruction: *"when the timer
+expires on a question, it shouldn't mean 'no answer in time, do it according to your best
+judgement', it should mean deferred, same as if I were away"*.
+
+So `expired` **queues** it, into the same pile away mode uses. The question survives, the
+answer reaches the card as a message, and `presence::Queued` carries the one thing that
+differs — the opening sentence, because `DEFERRED_OPENING` says "Volery is in away mode" and
+that is simply false when the user is standing at the wall. Everything after the opening is
+shared, deliberately: what happened to the question is the same thing, so the four things the
+note has to say are the same four.
+
+- **Two cases keep the old timeout, and the boundary is the one `defer_parked` already
+  draws.** A question carrying a `Settle` — `close`, `unpost`, the `remove` hand-off — cannot
+  be moved into the pile at all, because the settle lives on the parked thread and is the only
+  thing that can perform it; its unanswered behaviour is `decide(app, None)`, which is the
+  right answer to a deadline anyway, since nothing happens. A question carrying an `act` but
+  no settle is `smith` and `docket` — writes to somebody else's service, where re-entry after
+  an unattended forty-five minutes is a decision this function cannot make. Which leaves
+  `ask_user`, the whole of what was meant and the only kind of question that is purely
+  information flowing back to an agent.
+- **It has to make a noise, which away mode does not.** Coming back from away *opens* the
+  pile, so a question queued then is read within seconds of there being anybody to read it. A
+  question queued while the user is right here has no such moment: it was amber in the dock,
+  it vanishes, and all that is left is a count appearing in the bar — quieter than what it
+  replaced, on the one wall where the user is actually present. Answering "the agent decided
+  without me" with "the question went away" is a different failure and not obviously a smaller
+  one. So `expired` writes a chronicle row when the wall is not away — the wall's existing
+  answer to *something happened that you were not looking at*, read as a wisp when it lands
+  and as a row for ever after. **Not** the attention ladder: the flash and the peek are for a
+  card that is *blocked*, and this card is not blocked any more.
+- **`MAX_PER_CARD` is the backstop and is unchanged.** Past eight queued questions one card
+  still gets `pile_full`, which tells it to decide for itself — so the old behaviour is still
+  reachable and a card cannot block on a person indefinitely. What changed is that it is
+  reached after eight real attempts to ask rather than on the first deadline.
+- **What this costs, stated plainly, because it is a trade and not a tidy-up.** A timeout used
+  to leave a card *carrying on*; it now leaves a card *waiting*. On a wall running ten agents
+  that converts work the agents would have guessed at into work queued against one person's
+  attention. It is the right trade here — the guessing failure is the one that pushed to two
+  repositories — but the pile has to be read like an inbox for it to be, and a headless card
+  with nobody at the wall now stops where it used to proceed.
+- **Nothing in TS knew about a deferral, and that was already a bug.** The live path hears
+  `ask:closed` with `deferred: true` and writes nothing, so a deferred question left no mark
+  and nobody noticed the *folded* form had one: off disk there is no flag, only a tool result
+  beginning "Volery is in away mode.", and with nothing to recognise it `answerNote` drew
+  Skein's own sentence as a line the user had typed. The precise seam `UNANSWERED` exists to
+  close, one case short since away mode shipped. `QUEUED` is the list and `QUEUED_NOTE` is
+  what the panel says — a separate note from `NO_ANSWER_NOTE` because it says the opposite
+  thing: that one reports a loss, this one reports that nothing was lost.
+
+#### The countdown does not run down while you are typing into it
+
+*"we need to improve the ask tool to not decrease time when i'm litterally active and typing
+in it, it's stressful and work losing for no reason"* — and then every remaining question was
+skipped, which under the old meaning of a skip was the dangerous outcome as well as the
+rushed one. Sink `7264177f`.
+
+**The panel cannot pause its own clock, and that is the whole design.** The countdown is not
+decoration: it mirrors the deadline `park_and_stream` gives up on, and a display frozen over a
+thread that is still counting would be an instrument lying in the one direction that loses
+work. So the *deadline itself* moves. `ANSWER_HOLD` (5 minutes) is what a touch buys from the
+moment of the touch, `held_window` / `heldWindow` is the rule, and both sides apply it to the
+same event — the panel moves its own countdown immediately and tells Rust through `stir_ask`.
+
+- **Five minutes, and it is under `ANSWER_BASE` on purpose.** It has to outlast reading the
+  next question rather than merely the keystroke; shorter and a pause to think reads as
+  inactivity. Being under the floor is what makes the never-touched case need no special arm —
+  `max(base, 0 + hold)` is `base`.
+- **Still clamped to `ANSWER_MAX`**, which is not patience: it is the client's own deadline,
+  written into `--mcp-config` once at spawn. Typing past it buys nothing, and the honest thing
+  is for the countdown to say so.
+- **The stir is throttled to once a minute, and the two sides may drift.** An invoke per
+  character is an IPC round trip for a number that moves in minutes. They drift by at most
+  `STIR_EVERY`, always with the panel showing *less* time than there is — the safe direction
+  for an instrument whose job is to say whether to hurry.
+- **It listens on the panel root, capturing, for pointers as well as keys.** Active is not
+  only typing: reading four options before deciding anything is the longest kind of decision
+  and precisely the one a keyboard-only hold would run out on.
+- **`park_and_wait` grew the same tick loop.** It is the Volery-composed path and had one flat
+  `recv_timeout(window)`, which is this bug on a second surface — exactly the "written three
+  times to three standards" failure `follow.ts` was cut out of.
+
+The one thing still lost is the tail: a sheet three answers into five, when the clock runs
+out, goes to the pile as the whole question again. Better than before, where it went nowhere
+at all — but the partial answers are still not preserved, and that remains its own piece of
+work.
 
 #### Designs that are looked at rather than described
 

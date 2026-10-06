@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ANSWER_HOLD,
   ANSWER_MAX,
   NO_ANSWER_NOTE,
   NO_PREFERENCE,
   PREVIEW_VIEWPORT,
+  QUEUED_NOTE,
+  SKIPPED,
   answerNote,
   answerWindow,
   answeredCount,
@@ -11,6 +14,7 @@ import {
   askShown,
   blankAnswers,
   composeAnswer,
+  heldWindow,
   isComplete,
   isScriptBuilt,
   normalizeAsk,
@@ -198,7 +202,12 @@ describe("composeAnswer", () => {
   });
 
   test("one unanswered question still says something", () => {
-    expect(composeAnswer([q("shape", "one or two?")], [null])).toBe(NO_PREFERENCE);
+    /* And the bare-answer shape still holds — the directive rides the `ASIDE`
+       marker, which `answerNote` takes back off, so what the transcript draws
+       is still one word. */
+    const out = composeAnswer([q("shape", "one or two?")], [null]);
+    expect(out.startsWith(SKIPPED)).toBe(true);
+    expect(answerNote(out)).toEqual({ kind: "answer", text: SKIPPED });
   });
 
   test("several compose to a numbered list carrying the headers", () => {
@@ -240,17 +249,59 @@ describe("composeAnswer", () => {
       [q("shape", "one or two?"), q("attention", "ring?"), q("name", "called?")],
       ["two widgets", null, "timer"],
     );
-    expect(out.split("\n")).toEqual([
+    expect(out.split("\n").slice(0, 4)).toEqual([
       "Answering each in turn:",
       "1. shape: two widgets",
-      `2. attention: ${NO_PREFERENCE}`,
+      `2. attention: ${SKIPPED}`,
       "3. name: timer",
     ]);
   });
 
-  test("a whitespace answer is treated as no preference", () => {
-    const out = composeAnswer([q("a", "a?"), q("b", "b?")], ["   ", "yes"]);
+  /* Sink `662b2900`: a skip used to send "no preference — your call", an agent
+     read that as delegation, and it pushed to two repositories. The two
+     answers are two sentences now and only one of them authorises anything. */
+  test("a skip is not delegation, and says so once", () => {
+    const qs = [q("a", "a?"), q("b", "b?"), q("c", "c?")];
+    const out = composeAnswer(qs, [null, null, "yes"]);
+    expect(out).toContain("1. a: skipped");
+    expect(out).toContain("2. b: skipped");
+    expect(out).not.toContain(NO_PREFERENCE);
+    expect(out).toContain("not permission");
+    /* Once, however many slots carry it — 25 skips in one call is what this
+       is about, and 25 copies of the directive is its own problem. */
+    expect(out.split("not permission")).toHaveLength(2);
+  });
+
+  test("delegating is still a thing that can be said, and reads as one", () => {
+    const out = composeAnswer([q("a", "a?"), q("b", "b?")], [NO_PREFERENCE, "yes"]);
     expect(out).toContain(`1. a: ${NO_PREFERENCE}`);
+    /* No directive: nothing was withheld, so there is nothing to warn about. */
+    expect(out).not.toContain("not permission");
+  });
+
+  test("a whitespace answer is treated as skipped", () => {
+    const out = composeAnswer([q("a", "a?"), q("b", "b?")], ["   ", "yes"]);
+    expect(out).toContain(`1. a: ${SKIPPED}`);
+  });
+
+  /* `answerNote` cuts at the *last* marker, so two asides in one reply would
+     leave the first drawn in the transcript as a line the user typed. */
+  test("a skip and a blank preview share one aside marker", () => {
+    const out = composeAnswer(
+      [
+        q("a", "a?"),
+        {
+          header: "look",
+          question: "this one?",
+          options: [],
+          preview: { html: "", css: "", js: "render()" },
+        },
+      ],
+      [null, "fine"],
+    );
+    expect(out.split("— skein: ")).toHaveLength(2);
+    const note = answerNote(out);
+    expect(note).toEqual({ kind: "answer", text: "1. a: skipped\n2. look: fine" });
   });
 });
 
@@ -324,7 +375,44 @@ describe("answerWindow", () => {
   });
 });
 
+describe("the deadline a call has", () => {
+  /* Sink `7264177f`. The panel cannot pause its own clock — `ask.rs` would go
+     on counting — so the deadline itself moves, by this rule, on both sides.
+     `ask.rs::held_window` is the mirror and asserts the same numbers. */
+  test("an untouched call gets exactly what it was scaled to", () => {
+    expect(heldWindow(600, 0)).toBe(600);
+    expect(heldWindow(1800, 0)).toBe(1800);
+  });
+
+  test("touching it always leaves at least the hold in hand", () => {
+    /* 9 minutes into a 10-minute call: one minute left becomes five. */
+    expect(heldWindow(600, 540)).toBe(540 + ANSWER_HOLD);
+    /* Early on, the floor is still longer than the hold, so nothing moves. */
+    expect(heldWindow(600, 10)).toBe(600);
+  });
+
+  test("nothing may promise past the client's own deadline", () => {
+    /* `ANSWER_MAX` is not patience: it is what is written into the card's
+       `--mcp-config` at spawn, and typing cannot buy past it. */
+    expect(heldWindow(ANSWER_MAX, ANSWER_MAX - 1)).toBe(ANSWER_MAX);
+    expect(heldWindow(600, 100_000)).toBe(ANSWER_MAX);
+  });
+});
+
 describe("answerNote", () => {
+  /* Volery's own sentence about a queued question is not something the user
+     said. This had been missing since away mode shipped and only ever showed
+     after a restart, where there is no `ask:closed` flag and nothing but the
+     tool result's text to go on. */
+  test("a question that went to the pile is Skein talking, not you", () => {
+    for (const opening of ["Volery is in away mode.", "Volery queued your question."]) {
+      expect(answerNote(`${opening} There are now 2 of your questions waiting.`)).toEqual({
+        kind: "meta",
+        text: QUEUED_NOTE,
+      });
+    }
+  });
+
   test("one question's answer is kept exactly as it was sent", () => {
     expect(answerNote("two widgets")).toEqual({ kind: "answer", text: "two widgets" });
   });

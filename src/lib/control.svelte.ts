@@ -24,7 +24,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { Conversation } from "./conversation.svelte";
-import { NO_PREFERENCE, composeAnswer, isComplete, panelsOf, stepAt } from "./asking";
+import { SKIPPED, composeAnswer, isComplete, panelsOf, stepAt } from "./asking";
 import { stripAnsi } from "./ansi";
 import { screenText } from "./nvim";
 import type { Ambience } from "./ambience.svelte";
@@ -1773,9 +1773,14 @@ export class Control {
             if (isComplete(ask.answers)) break;
           }
         }
+        /* `SKIPPED`, which is what the panel's own skip button sends and what
+           `composeAnswer` fills an empty slot with. It was `NO_PREFERENCE`,
+           and the control surface following the panel here is the point: a
+           test that filled the rest with a *delegation* would be asserting the
+           behaviour sink `662b2900` was filed about. */
         if (op.rest === true) {
           for (let i = 0; i < ask.answers.length; i++) {
-            if (ask.answers[i] === null) ask.answers[i] = NO_PREFERENCE;
+            if (ask.answers[i] === null) ask.answers[i] = SKIPPED;
           }
         }
 

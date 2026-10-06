@@ -211,9 +211,12 @@ describe("the answer handed back to the card", () => {
       ],
     });
     const text = answerEnvelope(many, ["red", null], 1000);
-    /* `composeAnswer`'s rule, inherited: a blank reads as a bug where "you
-       decide" reads as a decision. */
-    expect(text).toContain(NO_PREFERENCE);
+    /* `composeAnswer`'s rule, inherited — and it is the post-`662b2900` rule:
+       a blank reads as a bug, so the slot says something, and what it says is
+       a withholding rather than "you decide". A question the user never got
+       to while away is the least likely of all of them to be a delegation. */
+    expect(text).toContain("shape: skipped");
+    expect(text).not.toContain(NO_PREFERENCE);
   });
 
   test("the plural follows the number of questions", () => {

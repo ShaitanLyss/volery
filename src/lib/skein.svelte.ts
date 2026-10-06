@@ -3160,6 +3160,27 @@ export class Skein {
    *  `answer` overrides the sheet — the one-question case still sends exactly
    *  the text of the option you clicked, unchanged from before questions were
    *  plural. */
+  /** The user is working on this question, so the deadline should move.
+   *
+   *  Fire-and-forget, and deliberately silent on failure: the one way this
+   *  fails is the question no longer being parked, which means it has just
+   *  been answered or has just expired — and neither is worth a fault banner
+   *  over a keystroke. The panel has already moved its own countdown by the
+   *  time this is called (`Ask.svelte`'s `stir`), so a lost one costs at most
+   *  the two deadlines disagreeing until the next.
+   *
+   *  See `ANSWER_HOLD` for why the deadline moves at all rather than the
+   *  countdown simply pausing. */
+  async stirAsk(conv: Conversation) {
+    const ask = conv.pendingAsk;
+    if (!ask) return;
+    try {
+      await invoke("stir_ask", { askId: ask.askId });
+    } catch {
+      /* No longer waiting. Nothing to hold open. */
+    }
+  }
+
   async answerAsk(conv: Conversation, answer?: string) {
     const ask = conv.pendingAsk;
     if (!ask) return;

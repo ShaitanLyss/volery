@@ -68,10 +68,62 @@ export type AskQuestion = {
 /** One slot per question, in step order. `null` means not answered yet. */
 export type Answers = (string | null)[];
 
-/** What a skipped question sends. The agent asked, so it is owed a reply — and
- *  "you decide" is a real answer that reads as one, where an empty string
- *  reads as a bug. */
+/** What *delegating* a question sends. The agent asked, so it is owed a reply —
+ *  and "you decide" is a real answer that reads as one, where an empty string
+ *  reads as a bug.
+ *
+ *  It is reached by its own button and nothing else. For most of this panel's
+ *  life it was also what **skip** sent and what an unanswered slot was filled
+ *  with, and that conflation published two repositories: a card asked how some
+ *  drafts should land, the question was skipped, the agent read "no preference
+ *  — your call" as delegation and pushed to `skein` and to a shared nova branch
+ *  (sink `662b2900`). Two different answers were wearing one sentence —
+ *
+ *  - *I don't mind, you pick*, which hands the decision over;
+ *  - *not now*, which withholds it —
+ *
+ *  and the cost of confusing them is asymmetric in exactly the direction that
+ *  matters. A wrong "wait" costs a turn. A wrong "go" pushes, deploys or
+ *  deletes. So they are two sentences now, and delegating is a gesture you make
+ *  on purpose. */
 export const NO_PREFERENCE = "no preference — your call";
+
+/** What a skipped — or simply unanswered — question sends.
+ *
+ *  Says the one thing the model has to get right, in the words it would need to
+ *  reason with: this is not an answer, and it is not permission. Phrased as an
+ *  instruction rather than a state, because a model reading "skipped" alone has
+ *  to infer what to do with it, and the inference that published two
+ *  repositories was the obvious one. */
+export const SKIPPED = "skipped";
+
+/** What `skipped` is to be read as, said **once** however many slots carry it.
+ *
+ *  The first cut of this put the whole directive in the slot, and the shape of
+ *  the call it was filed about is what argues against that: 42 questions, of
+ *  which Lyss skipped 25. That is the same forty-word paragraph twenty-five
+ *  times in one reply — a few hundred tokens of repetition on a path that
+ *  already runs long, and a model reading one instruction twenty-five times is
+ *  being told something about how much it matters that nobody meant to say.
+ *
+ *  So the slot carries the word and the reply carries the meaning, which is
+ *  also the right division: `skipped` is what happened to that question, and
+ *  this is a fact about the call. It rides the `ASIDE` marker for the same
+ *  reason `previewAside` does — read back off disk it is a `tool_result` like
+ *  any other, and drawn as an answer it would put a paragraph of Skein
+ *  instructing an agent into the user's mouth under a one-word decision. */
+export const SKIPPED_ASIDE =
+  "a question answered `skipped` was passed over, not decided, and a skip is " +
+  "not permission: don't do anything it was gating. Carry on with what it " +
+  "doesn't block, say plainly what you are holding and why, and ask again if " +
+  "you need it.";
+
+/** Is this slot one of Skein's own stand-ins rather than something the user
+ *  said? Both are, and the panel draws them alike — the review sheet greys a
+ *  row that nobody actually filled in, whichever way it got that way. */
+export function isUnsaid(answer: string | null): boolean {
+  return answer === NO_PREFERENCE || answer === SKIPPED;
+}
 
 /* -- how long the whole call gets -----------------------------------------
  *
@@ -131,6 +183,41 @@ export function answerWindow(questions: AskQuestion[]): number {
     ANSWER_MAX,
     ANSWER_BASE + ANSWER_PER_QUESTION * (n - 1) + ANSWER_PER_OPTION * options,
   );
+}
+
+/** How much time touching the panel buys, from the moment you touch it.
+ *
+ *  "we need to improve the ask tool to not decrease time when i'm litterally
+ *  active and typing in it, it's stressful and work losing for no reason" —
+ *  and then every remaining question was skipped, which under the old meaning
+ *  of a skip (see `NO_PREFERENCE`) was the dangerous outcome as well as the
+ *  rushed one. Sink `7264177f`.
+ *
+ *  **The panel cannot simply pause its own clock**, and that is why this is
+ *  arithmetic rather than a boolean. The countdown is not decoration: it mirrors
+ *  the deadline `ask.rs`'s parking thread gives up on, and a display frozen over
+ *  a thread that is still counting would be an instrument lying in the one
+ *  direction that loses work. So the *deadline itself* moves, on both sides, by
+ *  the same rule — the panel tells Rust it was touched (`stir_ask`) and each
+ *  half applies this to the same event.
+ *
+ *  Five minutes because it has to outlast reading the next question, not merely
+ *  the keystroke. Shorter and a pause to think reads as inactivity; longer and
+ *  a panel brushed on the way past holds the agent for no reason. It is under
+ *  `ANSWER_BASE`, which is what makes the never-touched case need no special
+ *  arm — the floor already beats it. */
+export const ANSWER_HOLD = 300;
+
+/** The deadline this call actually has, in seconds from when it opened.
+ *
+ *  `stirredAt` is when the panel was last touched, in seconds from the same
+ *  origin; `0` is "not since it opened", which the floor absorbs. Clamped to
+ *  `ANSWER_MAX` at the top, because that ceiling is not patience — it is the
+ *  client's own deadline, written into the card's `--mcp-config` at spawn, and
+ *  the one number here that nothing on this side may exceed. Typing past it
+ *  buys nothing, and the honest thing is for the countdown to say so. */
+export function heldWindow(base: number, stirredAt: number): number {
+  return Math.min(ANSWER_MAX, Math.max(base, stirredAt + ANSWER_HOLD));
 }
 
 /** Enough of a question to name it, when the agent named nothing. */
@@ -442,8 +529,14 @@ const PREAMBLE = "Answering each in turn:";
  *
  *  Several compose to a numbered list carrying each question's header, so the
  *  model cannot mis-pair an answer with the decision it belongs to. Unanswered
- *  slots are sent as `NO_PREFERENCE` rather than omitted, for the same reason:
- *  a list with a gap in it invites the model to re-align the rest. */
+ *  slots are sent as `SKIPPED` rather than omitted, for the same reason: a list
+ *  with a gap in it invites the model to re-align the rest.
+ *
+ *  **`SKIPPED` and not `NO_PREFERENCE`**, which is what it filled with until
+ *  sink `662b2900`. A slot nobody filled in is the one thing this function can
+ *  be certain about, and what it is certain of is an *absence* — it has no
+ *  evidence at all that the user meant to hand the decision over. Reading it as
+ *  delegation was the whole of that bug. */
 /** How a note *about* the call is set apart from the answer to it.
  *
  *  One marker, matched in both directions: `composeAnswer` writes it and
@@ -477,17 +570,23 @@ export function previewAside(questions: AskQuestion[]): string | null {
 }
 
 export function composeAnswer(questions: AskQuestion[], answers: Answers): string {
+  const slots = questions.map((_, i) => (answers[i] ?? SKIPPED).trim() || SKIPPED);
   const said =
     questions.length === 1
-      ? (answers[0] ?? NO_PREFERENCE).trim()
+      ? slots[0]
       : `${PREAMBLE}\n${questions
-          .map((q, i) => {
-            const a = (answers[i] ?? NO_PREFERENCE).trim() || NO_PREFERENCE;
-            return `${i + 1}. ${q.header}: ${a}`;
-          })
+          .map((q, i) => `${i + 1}. ${q.header}: ${slots[i]}`)
           .join("\n")}`;
-  const aside = previewAside(questions);
-  return aside ? `${said}${ASIDE}${aside}` : said;
+  /* Gathered rather than appended one at a time, because `answerNote` cuts at
+     the *last* `ASIDE` — two markers in one reply would leave the first one
+     drawn in the transcript as a sentence the user typed, which is the whole
+     thing the marker exists to prevent. One marker, however many things Skein
+     has to say about the call. */
+  const asides = [
+    slots.some((a) => a === SKIPPED) ? SKIPPED_ASIDE : null,
+    previewAside(questions),
+  ].filter((a): a is string => a !== null);
+  return asides.length ? `${said}${ASIDE}${asides.join(" ")}` : said;
 }
 
 /* What `ask.rs` sends the agent when the question is never answered: the
@@ -509,6 +608,32 @@ const UNANSWERED = [
   "The user did not answer within ten minutes.",
   "The user dismissed the question.",
 ];
+
+/* And the two openings of a question that went to the *pile* rather than going
+   unanswered — `presence.rs`'s `DEFERRED_OPENING` and `UNATTENDED_OPENING`,
+   duplicated across the boundary under exactly the bargain above.
+
+   This had been missing since away mode shipped, and it only ever showed on a
+   restart: the live path hears `ask:closed` with `deferred: true` and writes
+   nothing, so a deferred question left no mark on the wall and nobody noticed
+   that the *folded* form had one. Off disk there is no flag — there is a tool
+   result whose text begins "Volery is in away mode." — and with nothing here to
+   recognise it, Skein's own sentence was drawn as a line the user had typed.
+   Which is the precise seam `UNANSWERED` exists to close, one case short.
+
+   Found while making a timeout queue the question instead of expiring it
+   (sink `7264177f`), which turns this from a rare case into the ordinary one:
+   every ask that runs out of time now lands here. */
+const QUEUED = ["Volery is in away mode.", "Volery queued your question."];
+
+/** What the panel says about a question that went to the pile.
+ *
+ *  Separate from `NO_ANSWER_NOTE` because it says the opposite thing. That one
+ *  reports a loss — the agent went on without you. This one reports that
+ *  nothing was lost and the question is still yours to answer, which is the
+ *  entire difference the deferral was built to make. */
+export const QUEUED_NOTE =
+  "queued for you — nothing was decided, and the question is in the pile";
 
 /** What the panel says when the reply was Skein's rather than yours.
  *
@@ -541,6 +666,9 @@ export function answerNote(sent: string): AnswerNote | null {
   if (!text) return null;
   if (UNANSWERED.some((u) => text.startsWith(u))) {
     return { kind: "meta", text: NO_ANSWER_NOTE };
+  }
+  if (QUEUED.some((q) => text.startsWith(q))) {
+    return { kind: "meta", text: QUEUED_NOTE };
   }
   /* From the last one: `composeAnswer` appends, so anything earlier is the
      answer quoting the marker rather than the marker doing its job. */

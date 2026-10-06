@@ -25,9 +25,12 @@
   import { parseMarkdown } from "./markdown";
   import {
     NO_PREFERENCE,
+    SKIPPED,
     answerWindow,
     answeredCount,
+    heldWindow,
     isComplete,
+    isUnsaid,
     panelsOf,
     stepAt,
   } from "./asking";
@@ -48,6 +51,7 @@
     parked = true,
     elsewhere = false,
     onanswer,
+    onstir,
     onselect,
     onlink,
   }: {
@@ -67,6 +71,11 @@
      *  button in the head. */
     elsewhere?: boolean;
     onanswer: () => void;
+    /** The panel was touched, so the deadline should move. Throttled here, not
+     *  by the caller — see `stir`. Nothing to do for a question out of the
+     *  pile, which has no deadline at all, so this is only ever wired by the
+     *  dock. */
+    onstir?: () => void;
     /** Put the asking card in the ring. Only reachable while `elsewhere`. */
     onselect?: () => void;
     /** A link in a question goes out the way one in the transcript does — this
@@ -105,6 +114,8 @@
   $effect(() => {
     ask.askId;
     at = null;
+    stirredAt = 0;
+    told = -STIR_EVERY;
   });
 
   /* The draft belongs to the question it was typed at, not to the panel — and
@@ -122,8 +133,49 @@
      `answerWindow` is the same arithmetic `ask.rs` parks on, mirrored rather
      than sent, and the note there is why. */
   const window = $derived(answerWindow(questions));
+
+  /** When the panel was last touched, in seconds from the call opening — the
+   *  same origin `heldWindow` measures against, and `0` until it is.
+   *
+   *  Reset by the `askId` effect above along with `at`, since a new call is a
+   *  new deadline and a stir belongs to the sheet it was made on. */
+  let stirredAt = $state(0);
+
+  /** How often a touch is worth telling Rust about.
+   *
+   *  A keystroke is not news; a *minute* of keystrokes is. `ANSWER_HOLD` is
+   *  five minutes, so telling it once a minute keeps the two deadlines within a
+   *  minute of each other at all times, which is inside the resolution of a
+   *  countdown drawn in whole seconds and read in glances. The alternative —
+   *  an invoke per character — is an IPC round trip per keystroke for a number
+   *  that moves in minutes. */
+  const STIR_EVERY = 60;
+
+  /** The panel was touched: hold the deadline open.
+   *
+   *  Both halves move or neither does. `stirredAt` is what the countdown reads,
+   *  so the local one is immediate and unconditional; `onstir` is what moves
+   *  the thread that will actually give up, and is throttled. They can drift by
+   *  up to `STIR_EVERY`, always in the direction of the panel showing *less*
+   *  time than there is, which is the safe direction for an instrument whose
+   *  job is to tell you whether to hurry.
+   *
+   *  Only while `parked`. A question out of the pile has nobody waiting on it
+   *  and nothing to extend. */
+  let told = -STIR_EVERY;
+  function stir() {
+    if (!parked) return;
+    stirredAt = Math.max(0, Math.floor((Date.now() - ask.since) / 1000));
+    if (stirredAt - told < STIR_EVERY) return;
+    told = stirredAt;
+    onstir?.();
+  }
+
   const left = $derived(
-    Math.max(0, window - Math.floor((clock.t - ask.since) / 1000)),
+    Math.max(
+      0,
+      heldWindow(window, stirredAt) - Math.floor((clock.t - ask.since) / 1000),
+    ),
   );
   const mins = $derived(Math.floor(left / 60));
   const secs = $derived(String(left % 60).padStart(2, "0"));
@@ -161,12 +213,26 @@
     if (!many && isComplete(ask.answers)) onanswer();
   }
 
-  /** Leave one to the agent's judgement.
+  /** Not this one, not now.
    *
-   *  Offered rather than assumed. "You decide" is a real answer to a question
-   *  about, say, whether a timer chimes — but it has to be *said*, or a panel
-   *  that quietly sent blanks would look like one that lost them. */
+   *  Offered rather than assumed. A panel that quietly sent blanks would look
+   *  like one that lost them, so a question you pass over still sends
+   *  something — but what it sends is a *withholding*, and the agent is told in
+   *  so many words that it is not permission. See `SKIPPED`: this button sent
+   *  `NO_PREFERENCE` until sink `662b2900`, and an agent that read a skip as
+   *  delegation pushed to two repositories on the strength of it. */
   function skip() {
+    give(SKIPPED);
+  }
+
+  /** Hand this one over on purpose.
+   *
+   *  The other half of that split, and the reason it is a button rather than a
+   *  shade of `skip`. "You decide" is a real and useful answer to a question
+   *  about, say, whether a timer chimes — it just has to be something you
+   *  *said*, since it is the one answer that authorises the agent to act
+   *  without you. */
+  function decide() {
     give(NO_PREFERENCE);
   }
 
@@ -216,7 +282,20 @@
   }
 </script>
 
-<div class="ask">
+<!-- Capturing, and on the root rather than on the field: "active" is not
+     only typing. Reading an option, stepping between questions, opening the
+     gallery and clicking a rung are all somebody working on this sheet, and a
+     clock that only hears the keyboard would run out on the longest kind of
+     decision — the one where you read four options before typing anything.
+     `stir` throttles what reaches Rust, so this firing on every key is fine.
+     svelte-ignore: it is the deadline that moves, not a control being
+     operated, so there is nothing here for a keyboard user to reach. -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="ask"
+  onkeydowncapture={stir}
+  onpointerdowncapture={stir}
+>
   <div class="head">
     <span class="mark">{parked ? "Waiting on you" : "Asked while you were away"}</span>
     <span class="who">{project}{name ? ` · ${name}` : ""}</span>
@@ -276,8 +355,11 @@
       {#each questions as q, i}
         <button class="pair" onclick={() => goTo(i)} title="Change this answer">
           <span class="pq">{q.header}</span>
-          <span class="pa" class:none={ask.answers[i] === NO_PREFERENCE}
-            >{ask.answers[i]}</span
+          <!-- Greyed for either stand-in, since neither is a thing the user
+               said — and the review sheet's job is to show at a glance which
+               decisions actually got made. -->
+          <span class="pa" class:none={isUnsaid(ask.answers[i])}
+            >{ask.answers[i] === SKIPPED ? "skipped" : ask.answers[i]}</span
           >
         </button>
       {/each}
@@ -356,10 +438,19 @@
           : "Your answer"}
       />
       {#if many}
+        <!-- Two gestures where there was one, because they were two answers
+             wearing one sentence. See `SKIPPED` and `NO_PREFERENCE`. -->
         <button
           class="nav skip"
           onclick={skip}
-          title="Leave this one to the agent">skip</button
+          title="Pass over this one — the agent is told it is not an answer and not permission"
+          >skip</button
+        >
+        <button
+          class="nav yours"
+          onclick={decide}
+          title="Hand this decision to the agent — a real answer, said on purpose"
+          >you decide</button
         >
       {/if}
       <button class="send" onclick={() => give(free)} disabled={!free.trim()}
@@ -634,6 +725,14 @@
   .nav:disabled {
     color: var(--edge);
     cursor: default;
+  }
+  /* The two stand-ins read as one pair, set apart from the arrows beside them:
+     an arrow moves you, these two answer. `you decide` is the longer label on
+     purpose — it is the one that authorises the agent to act without you, and
+     a two-character button for that would be a gesture made by accident. */
+  .nav.skip,
+  .nav.yours {
+    white-space: nowrap;
   }
   .send {
     font-family: var(--mono);

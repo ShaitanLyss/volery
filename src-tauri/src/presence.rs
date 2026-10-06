@@ -49,6 +49,68 @@ const MAX_PER_CARD: usize = 8;
 /// the only thing that puts this string on a channel somebody is listening to.
 pub const DEFERRED_OPENING: &str = "Volery is in away mode.";
 
+/// The first words of a question that went to the pile because **nobody got to
+/// it**, rather than because the wall was away.
+///
+/// A second opening rather than a second meaning for the first one, because
+/// `DEFERRED_OPENING` is a sentence the agent reads and "Volery is in away
+/// mode" is simply false here — the user is at the wall, the question was
+/// drawn, and it stood there until the clock ran out. Telling a model
+/// something false about the state of the world to reuse a string is the kind
+/// of economy that gets reasoned from later.
+///
+/// Everything *after* the opening is shared, and that is the point: the four
+/// things `deferred_note` has to say are the same four either way, because
+/// what happened to the question is the same. See `Queued`.
+pub const UNATTENDED_OPENING: &str = "Volery queued your question.";
+
+/// Why a question went to the pile instead of being answered.
+///
+/// It only ever changes the opening sentence. The rest of the contract — not
+/// lost, nothing decided, the answer arrives as a message, do not ask again —
+/// is a property of being queued and not of the reason for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Queued {
+    /// The switch was on. The question was never drawn.
+    Away,
+    /// It was drawn, it stood on the wall, and its deadline passed. Sink
+    /// `7264177f`: a timeout used to tell the agent to proceed on its own best
+    /// judgement, which is the same conflation `SKIPPED` was split out of one
+    /// layer up — running out of time is not a decision, and the cost of
+    /// reading it as one is asymmetric in the direction that pushes code.
+    Unattended,
+}
+
+impl Queued {
+    fn opening(self) -> &'static str {
+        match self {
+            Queued::Away => DEFERRED_OPENING,
+            Queued::Unattended => UNATTENDED_OPENING,
+        }
+    }
+
+    /// Why it was queued, as the clause that follows the opening.
+    fn because(self) -> &'static str {
+        match self {
+            Queued::Away => "The user is not at the wall, so your question was \
+                             **queued** rather than put to them",
+            Queued::Unattended => "It stood on the wall and the user did not get to it \
+                                   in time, so rather than expiring it was **queued** \
+                                   for them to answer later",
+        }
+    }
+}
+
+/// Is this reply one of Volery's own queueing notes rather than an answer?
+///
+/// Both openings, in one place, because `park_and_stream` asks this question
+/// about a string on a channel and a second opening added here must not need a
+/// second `starts_with` found by reading. The same bargain the TS side strikes
+/// in `asking.ts`'s `UNANSWERED`, and for the same reason.
+pub fn is_deferral(answer: &str) -> bool {
+    answer.starts_with(DEFERRED_OPENING) || answer.starts_with(UNATTENDED_OPENING)
+}
+
 /// What the asking card is told. The whole contract with the agent is in here
 /// rather than in the tool's schema, and that is deliberate: `ask_user` is an
 /// `alwaysLoad` tool, so every byte of its description is paid on every spawn of
@@ -62,10 +124,10 @@ pub const DEFERRED_OPENING: &str = "Volery is in away mode.";
 /// a *message* rather than as this call's result (or the agent waits for a
 /// return value that already came), and asking again queues a second copy (or
 /// the morning pile is the same question eleven times).
-fn deferred_note(queued: usize) -> String {
+fn deferred_note(queued: usize, why: Queued) -> String {
+    let (opening, because) = (why.opening(), why.because());
     format!(
-        "{DEFERRED_OPENING} The user is not at the wall, so your question was \
-         **queued** rather than put to them — nothing timed out and nothing was \
+        "{opening} {because} — nothing was \
          lost. There are now {queued} of your questions waiting.\n\n\
          Nothing has been decided. When the user returns they will be shown \
          every question that piled up, and their answer will arrive in this \
@@ -80,15 +142,17 @@ fn deferred_note(queued: usize) -> String {
 }
 
 /// What the tool answers when a card has filled its share of the pile.
-fn pile_full() -> String {
+fn pile_full(why: Queued) -> String {
+    let opening = why.opening();
     format!(
-        "{DEFERRED_OPENING} The user is away, and you already have {MAX_PER_CARD} \
+        "{opening} You already have {MAX_PER_CARD} \
          questions queued — which is as many as one card may leave for one \
          person to read. This question was **not** queued.\n\n\
-         Treat it as you would a question that timed out: decide it yourself on \
-         the best reasoning you have, write down what you decided and why, and \
-         say so plainly in your closing line so it can be revisited. If you are \
-         genuinely blocked, stop and say what on."
+         This is the one case where deciding it yourself is the right move, and \
+         it is the right move because there is nowhere left to put the \
+         question: decide it on the best reasoning you have, write down what \
+         you decided and why, and say so plainly in your closing line so it can \
+         be revisited. If you are genuinely blocked, stop and say what on."
     )
 }
 
@@ -220,26 +284,26 @@ fn flip(
 /// The row is written before the note is composed, so the count in it is the
 /// count including this one — which is what a card reading "there are now 3 of
 /// your questions waiting" means by it.
-pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value) -> String {
+pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value, why: Queued) -> String {
     let Some(store) = app.try_state::<Store>() else {
         /* No store is no queue, and a note promising the question was kept
            would be a lie told to the one party that cannot check. */
-        return pile_full();
+        return pile_full(why);
     };
     let id = crate::store::uuid_v4();
     let at = crate::store::now();
 
     let queued = {
-        let Ok(conn) = store.0.lock() else { return pile_full() };
+        let Ok(conn) = store.0.lock() else { return pile_full(why) };
         let mine = crate::store::deferred_asks(&conn)
             .iter()
             .filter(|d| d.conversation_id == conversation_id)
             .count();
         if mine >= MAX_PER_CARD {
-            return pile_full();
+            return pile_full(why);
         }
         if crate::store::defer_ask(&conn, &id, conversation_id, &args.to_string(), at).is_err() {
-            return pile_full();
+            return pile_full(why);
         }
         mine + 1
     };
@@ -252,7 +316,7 @@ pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value) -> String {
             asked_at: at,
         },
     );
-    deferred_note(queued)
+    deferred_note(queued, why)
 }
 
 /// Turn every question *already* on the wall into a deferred one.
@@ -288,7 +352,7 @@ fn defer_parked(app: &AppHandle) {
             Some((tool, args)) => {
                 defer_act(app, &conversation_id, &tool, &args, &question, "it")
             }
-            None => defer(app, &conversation_id, &question),
+            None => defer(app, &conversation_id, &question, Queued::Away),
         };
         /* The park is listening on this channel and recognises the opening, so
            what the agent reads is the note and what the wall draws is a
@@ -597,7 +661,7 @@ pub(crate) fn defer_act(
            pile of a hundred queued deletes is one nobody can read, and a pile
            nobody reads is a pile approved in bulk. */
         if mine >= MAX_PER_CARD {
-            return pile_full();
+            return pile_full(Queued::Away);
         }
         if crate::store::defer_act(
             &conn,
@@ -610,7 +674,7 @@ pub(crate) fn defer_act(
         )
         .is_err()
         {
-            return pile_full();
+            return pile_full(Queued::Away);
         }
     }
     let _ = app.emit(
@@ -732,7 +796,7 @@ mod tests {
 
     #[test]
     fn a_deferred_call_tells_the_agent_all_four_things() {
-        let note = deferred_note(3);
+        let note = deferred_note(3, Queued::Away);
         assert!(note.starts_with(DEFERRED_OPENING), "the park matches on this");
         /* Not lost; nothing decided; the answer comes as a message; do not
            re-ask. Each of these is a way the feature fails without it. */
@@ -746,10 +810,35 @@ mod tests {
 
     #[test]
     fn a_full_pile_reads_as_a_timeout_rather_than_as_a_queue() {
-        let note = pile_full();
+        let note = pile_full(Queued::Away);
         assert!(note.starts_with(DEFERRED_OPENING));
         assert!(note.contains("**not** queued"), "it must not claim to have kept it");
         assert!(note.contains("decide it yourself"));
+    }
+
+    /* Sink `7264177f`: a question nobody got to goes to the same pile an away
+       question goes to, and the agent is told the same four things about it.
+       What it must NOT be told is that the wall is away, which it is not. */
+    #[test]
+    fn an_unattended_question_is_queued_without_claiming_the_wall_is_away() {
+        let note = deferred_note(1, Queued::Unattended);
+        assert!(note.starts_with(UNATTENDED_OPENING));
+        assert!(!note.contains("away mode"), "the user is at the wall");
+        assert!(note.contains("did not get to it in time"));
+        /* The same contract, which is the whole argument for one note. */
+        assert!(note.contains("Nothing has been decided"));
+        assert!(note.contains("new message"));
+        assert!(note.contains("Do not ask it again"));
+    }
+
+    /* Both openings, because `park_and_stream` tells a queueing note from an
+       answer by asking this and nothing else. */
+    #[test]
+    fn either_opening_reads_as_a_deferral() {
+        assert!(is_deferral(&deferred_note(1, Queued::Away)));
+        assert!(is_deferral(&deferred_note(1, Queued::Unattended)));
+        assert!(is_deferral(&pile_full(Queued::Unattended)));
+        assert!(!is_deferral("green, the second one"));
     }
 
     #[test]

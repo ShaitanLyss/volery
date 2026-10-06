@@ -297,6 +297,7 @@
       scripts={target.kind !== "chat"}
       elsewhere={target !== focused}
       onanswer={() => skein.answerAsk(target)}
+      onstir={() => skein.stirAsk(target)}
       onselect={() => onselect(target)}
       onlink={(href) => void skein.openLink(href)}
     />
