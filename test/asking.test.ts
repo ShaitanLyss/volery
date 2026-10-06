@@ -14,18 +14,23 @@ import {
   askShown,
   blankAnswers,
   composeAnswer,
+  galleryHint,
   heldWindow,
   isComplete,
   isScriptBuilt,
+  lookLabel,
   normalizeAsk,
   panelsOf,
   previewAside,
   previewDoc,
   stepAt,
   type Answers,
+  type AskFile,
   type AskPreview,
   type AskQuestion,
 } from "../src/lib/asking";
+
+const file = (path = "shot.png", root = "C:/atelier/skein"): AskFile => ({ root, path });
 
 const q = (header: string, question: string, labels: string[] = []): AskQuestion => ({
   header,
@@ -105,7 +110,9 @@ describe("normalizeAsk", () => {
       question: "pick?",
       options: [{ label: "" }, { detail: "no label" }, { label: "  keep  " }, 7],
     });
-    expect(out[0].options).toEqual([{ label: "keep", detail: null, preview: null }]);
+    expect(out[0].options).toEqual([
+      { label: "keep", detail: null, preview: null, file: null },
+    ]);
   });
 
   test("an empty detail becomes null rather than an empty span", () => {
@@ -651,6 +658,199 @@ describe("panelsOf", () => {
     expect(out.length).toBe(2);
     expect(out[0].label).toBe(null);
     expect(out[1].label).toBe("tweak it");
+  });
+});
+
+describe("files", () => {
+  test("a file is the pair the viewer reads, and survives normalizing", () => {
+    const out = normalizeAsk({
+      question: "which render?",
+      options: [
+        { label: "warm", file: { root: "C:/out", path: "warm.png" } },
+        { label: "cool", file: { root: "C:/out", path: "cool.png" } },
+      ],
+    });
+    expect(out[0].options[0].file).toEqual({ root: "C:/out", path: "warm.png" });
+    expect(out[0].options[1].file).toEqual({ root: "C:/out", path: "cool.png" });
+  });
+
+  test("a question can carry one of its own, which is the commonest shape", () => {
+    /* One screenshot and a list of things that might be wrong with it. */
+    const out = normalizeAsk({
+      question: "what is off about this?",
+      file: { root: "C:/out", path: "after.png" },
+      options: [{ label: "the spacing" }, { label: "the colour" }],
+    });
+    expect(out[0].file?.path).toBe("after.png");
+  });
+
+  test("half a pair is no file at all", () => {
+    /* Either half on its own reaches `safe_join` as a read that fails for a
+       reason no panel could explain. Only `ask.rs::attach_at` writes this
+       shape, and it writes both or refuses the call. */
+    for (const bad of [
+      {},
+      { root: "C:/out" },
+      { path: "a.png" },
+      { root: "  ", path: "a.png" },
+      "C:/out/a.png",
+      7,
+      null,
+      [],
+    ]) {
+      const out = normalizeAsk({ question: "?", options: [{ label: "a", file: bad }] });
+      expect(out[0].options[0].file).toBe(null);
+    }
+  });
+});
+
+describe("a top-level attachment with no top-level question", () => {
+  /* `ask.rs` resolves it — and can refuse the whole call over it — so dropping
+     it here meant a file the user never saw and the agent could not find out
+     about. */
+  test("hangs on the first question rather than vanishing", () => {
+    const out = normalizeAsk({
+      questions: [
+        { header: "one", question: "first?" },
+        { header: "two", question: "second?" },
+      ],
+      file: { root: "C:/out", path: "shot.png" },
+    });
+    expect(out[0].file?.path).toBe("shot.png");
+    expect(out[1].file).toBe(null);
+  });
+
+  test("the same hole `preview` had for its whole life", () => {
+    const out = normalizeAsk({
+      questions: [{ header: "one", question: "first?" }],
+      preview: { html: "<i>x</i>" },
+    });
+    expect(out[0].preview?.html).toBe("<i>x</i>");
+  });
+
+  test("a question's own is never displaced by it", () => {
+    const out = normalizeAsk({
+      questions: [
+        { question: "first?", file: { root: "C:/out", path: "mine.png" } },
+      ],
+      file: { root: "C:/out", path: "spare.png" },
+    });
+    expect(out[0].file?.path).toBe("mine.png");
+  });
+
+  test("the single-question form is untouched, since it already had one", () => {
+    const out = normalizeAsk({
+      questions: [{ question: "first?" }],
+      question: "and also?",
+      file: { root: "C:/out", path: "shot.png" },
+    });
+    /* It belongs to the sugar's own question, exactly as before — hoisting it
+       onto `questions[0]` as well would draw one file twice. */
+    expect(out[0].file).toBe(null);
+    expect(out[1].file?.path).toBe("shot.png");
+  });
+});
+
+describe("panelsOf, over both kinds", () => {
+  test("a file and a design sit in one list, the file first", () => {
+    /* "Here is what it looks like now, here is what it would look like" reads
+       in that order and not the other. */
+    const out = panelsOf({
+      header: "replace it",
+      question: "swap this for that?",
+      file: file("now.png"),
+      preview: preview(),
+      options: [{ label: "yes", detail: null }],
+    });
+    expect(out.map((p) => (p.file ? "file" : "design"))).toEqual(["file", "design"]);
+    expect(out.every((p) => p.label === null)).toBe(true);
+  });
+
+  test("an option carrying both yields two panels under one label", () => {
+    const out = panelsOf({
+      header: "a",
+      question: "?",
+      options: [
+        { label: "A", detail: null, file: file("a.png"), preview: preview() },
+        { label: "B", detail: null },
+      ],
+    });
+    expect(out.length).toBe(2);
+    expect(out.map((p) => p.label)).toEqual(["A", "A"]);
+  });
+
+  test("exactly one of the two is ever set on a panel", () => {
+    const out = panelsOf({
+      header: "a",
+      question: "?",
+      file: file(),
+      options: [{ label: "A", detail: null, preview: preview() }],
+    });
+    for (const p of out) expect(!!p.preview !== !!p.file).toBe(true);
+  });
+});
+
+describe("what the button and the bar say", () => {
+  const designs = (n: number): AskQuestion => ({
+    header: "a",
+    question: "?",
+    options: Array.from({ length: n }, (_, i) => ({
+      label: `opt${i}`,
+      detail: null,
+      preview: preview(),
+    })),
+  });
+
+  test("one file is named outright, because the name is the decision", () => {
+    const out = panelsOf({
+      header: "a",
+      question: "?",
+      file: file("shot-after.png"),
+      options: [],
+    });
+    expect(lookLabel(out)).toBe("look at shot-after.png");
+  });
+
+  test("several of a kind are a count", () => {
+    expect(lookLabel(panelsOf(designs(1)))).toBe("look at the design");
+    expect(lookLabel(panelsOf(designs(3)))).toBe("look at the 3 designs");
+    const files = panelsOf({
+      header: "a",
+      question: "?",
+      options: [
+        { label: "a", detail: null, file: file("a.png") },
+        { label: "b", detail: null, file: file("b.png") },
+      ],
+    });
+    expect(lookLabel(files)).toBe("look at the 2 files");
+  });
+
+  test("a mix names neither kind, since it is no longer either", () => {
+    const mixed = panelsOf({
+      header: "a",
+      question: "?",
+      file: file(),
+      options: [{ label: "a", detail: null, preview: preview() }],
+    });
+    expect(lookLabel(mixed)).toBe("look at the 2 attachments");
+  });
+
+  test("the composed size is said only where it applies", () => {
+    /* It is the fact that makes three designs comparable, and it is nothing at
+       all about a PDF. */
+    expect(galleryHint(panelsOf(designs(2)))).toBe(
+      `2 designs \u00b7 composed at ${PREVIEW_VIEWPORT.w}\u00d7${PREVIEW_VIEWPORT.h}`,
+    );
+    const files = panelsOf({ header: "a", question: "?", file: file(), options: [] });
+    expect(galleryHint(files)).toBe("one file");
+    const mixed = panelsOf({
+      header: "a",
+      question: "?",
+      file: file(),
+      options: [{ label: "a", detail: null, preview: preview() }],
+    });
+    expect(galleryHint(mixed)).toContain("one design and one file");
+    expect(galleryHint(mixed)).toContain("designs composed at");
   });
 });
 

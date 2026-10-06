@@ -4,6 +4,9 @@ paths:
   - "src/lib/finding.ts"
   - "src/lib/finder.svelte.ts"
   - "src/lib/Spyglass.svelte"
+  # The viewer's own dispatch, lifted out of Spyglass so a question can draw a
+  # file with it too — ask.md owns that half.
+  - "src/lib/Leaf.svelte"
   - "src/lib/dogears.ts"
   - "src/lib/Dogears.svelte"
   - "tools/probe-places.ts"

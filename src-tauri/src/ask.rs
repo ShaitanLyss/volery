@@ -508,24 +508,34 @@ pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Resu
 /// be: the constraints are what stop an agent reaching for a framework or a
 /// font, and a reader that is told where they are can go and get them, where a
 /// reader given half of them does not know a half is missing.
+///
+/// **And the paragraph was cut again when `file` arrived**, which is the budget
+/// in `the_loaded_tier_is_what_every_turn_pays_for` doing exactly its job: a
+/// second way to show something put the loaded tier over its ceiling, and the
+/// reclamation came out of what the two fields were *both* saying. "Shown side
+/// by side, full size, instead of described" is one sentence about the gallery
+/// and it is now in the tool's own description, said once; what is left here is
+/// only what is true of a composed design and of nothing else — the sealed
+/// frame, the tokens, the viewport. `file_schema` is the same shape with the
+/// same split. The general lesson, for the next field that wants a paragraph:
+/// **when two options are two answers to one question, the shared half belongs
+/// to the question.**
 fn preview_schema(full: bool) -> Value {
     if !full {
         return json!({
             "type": "object",
             "description":
-                "Optional. A design shown full-size instead of described, same as \
-                 the `preview` beside `question` at the top level of this tool — \
-                 see that one for what it renders in, what is forbidden, and the \
-                 viewport to compose for. Same shape: `html` is required, `css` \
-                 and `js` are optional.",
+                "Optional. A design, same shape as the top-level `preview` — see \
+                 that one for what it renders in, what is forbidden, and the \
+                 viewport to compose for.",
             "properties": {
                 "html": { "type": "string", "description": "The body markup." },
-                "css": { "type": "string", "description": "A stylesheet for it." },
+                "css": { "type": "string", "description": "A stylesheet." },
                 "js": {
                     "type": "string",
                     "description":
-                        "Script, only where the decision turns on interaction. It \
-                         does not run until the user asks it to."
+                        "Script, only where the decision turns on interaction. \
+                         It does not run until the user asks it to."
                 }
             },
             "required": ["html"]
@@ -534,18 +544,14 @@ fn preview_schema(full: bool) -> Value {
     json!({
         "type": "object",
         "description":
-            "Optional. What this looks like, as a small self-contained web page, \
-             shown full-size instead of described — side by side with the \
-             alternatives when each option carries one, on its own when the \
-             question does and you are asking whether it will do. Reach for it \
-             when the decision is visual — a layout, a card, a colour treatment, \
-             a chart — because a picked design should be one that was seen. It \
-             is rendered in a sealed frame: no network, no imports, no \
-             frameworks, no external fonts or images (inline SVG and data: URIs \
-             are fine). Skein's own design tokens are already defined, so \
-             var(--paper), var(--ink), var(--surface), var(--edge), var(--body) \
-             and the rest are available and are what to build in. Compose for a \
-             1280x800 viewport; it is scaled down to fit.",
+            "Optional. A design you compose here, as a small self-contained web \
+             page. Reach for it when the layout, card, colour treatment or chart \
+             does not exist yet; for one that does, use `file`. Rendered in a \
+             sealed frame: no network, no imports, no frameworks, no external \
+             fonts or images (inline SVG and data: URIs are fine). Skein's own \
+             design tokens are defined — var(--paper), var(--ink), var(--surface), \
+             var(--edge), var(--body) and the rest — and are what to build in. \
+             Compose for a 1280x800 viewport; it is scaled down to fit.",
         "properties": {
             "html": {
                 "type": "string",
@@ -565,10 +571,60 @@ fn preview_schema(full: bool) -> Value {
                      interaction — a menu opening, a stepper advancing. It does \
                      not run until the user asks it to, and never on a chat \
                      conversation, so the design must still read correctly \
-                     without it."
+                     without it. A design whose markup is an empty skeleton its \
+                     script fills in draws nothing at all until somebody runs \
+                     it: compose in `html` and `css`, and keep this for what a \
+                     static rendering genuinely cannot show."
             }
         },
         "required": ["html"]
+    })
+}
+
+/// A file that already exists, as against a design being composed.
+///
+/// `preview` is live HTML and is the right tool for a layout that does not
+/// exist yet. It is the wrong tool for a screenshot, a render, a PDF, a
+/// spreadsheet or a page of notes — there is nothing to compose, the thing is
+/// already a file, and an agent holding one has until now had to describe it or
+/// `pin` it to the wall and ask a question that pointed at it sideways. The
+/// wall is for what outlives the question; this is for the question.
+///
+/// **Nothing here knows what a file format is, and that is the arrangement.**
+/// The only thing this validates is that the path names a file; which of the
+/// readings it gets — image, video, PDF, Word, workbook, markdown, source — is
+/// decided by `finding.ts::drawnAs`, which is the one table the viewer already
+/// reads from, and it is drawn by the viewer's own components. A second
+/// opinion held over here would be a second place to be wrong about a format,
+/// which is the bargain `find::read_doc` already strikes and says so.
+///
+/// Written out once and pointed at three times, for the reason stated over
+/// `preview_schema`: the field appears at four sites in one payload and
+/// `option_schema` is itself emitted twice, so a full copy at each is one
+/// paragraph reaching the model four times per spawn of every card.
+fn file_schema(full: bool) -> Value {
+    if !full {
+        return json!({
+            "type": "string",
+            "description":
+                "Optional. A file, same rules as the top-level `file`."
+        });
+    }
+    json!({
+        "type": "string",
+        "description":
+            "Optional. A file that already exists: a path, absolute or relative \
+             to this conversation's working directory. It opens in the app's own \
+             viewer, so anything that viewer draws works — image, video, PDF, \
+             Word, spreadsheet, markdown rendered as a document, any source file. \
+             Reach for it whenever what you want decided already exists: a \
+             screenshot of what you changed, a render, a frame, a chart you \
+             plotted, the report you just generated, the config you are proposing \
+             to replace. Not `preview`, which is live HTML for a design that does \
+             not exist yet; and not `pin`, which puts a picture on the wall and \
+             leaves it there, where this one belongs to the question. A path that \
+             names no file refuses the whole call rather than asking with a hole \
+             in it, so write the file first."
     })
 }
 
@@ -603,7 +659,8 @@ fn option_schema() -> Value {
                    option's preview is the flagship use — several designs side
                    by side — but `option_schema` is emitted at both levels, so
                    the full text here is paid for twice. */
-                "preview": preview_schema(false)
+                "preview": preview_schema(false),
+                "file": file_schema(false)
             },
             "required": ["label"]
         }
@@ -629,10 +686,13 @@ fn tool_schema() -> Value {
              fine use of one call. Fusing two decisions forces the options to be \
              combinations of both — which is longer to read and, worse, silently \
              leaves out the combinations you did not think to list.\n\n\
-             When the decision is a visual one, do not describe the designs — give \
-             each option a `preview` and they are drawn side by side, full size, for \
-             the user to look at and pick from. This client has a real display; a \
-             layout written out in prose is a layout being chosen from memory.",
+             When the decision is a visual one, do not describe it — show it. \
+             `preview` is a design you compose here; `file` is one that already \
+             exists on disk. Put one on each option to compare, or one on the \
+             question to approve, and they are drawn side by side, full size, for \
+             the user to look at and pick from — both kinds in the same gallery. \
+             This client has a real display; a layout written out in prose is a \
+             layout being chosen from memory.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -658,7 +718,8 @@ fn tool_schema() -> Value {
                                      Markdown is fine."
                             },
                             "options": option_schema(),
-                            "preview": preview_schema(false)
+                            "preview": preview_schema(false),
+                            "file": file_schema(false)
                         },
                         "required": ["question"]
                     }
@@ -673,7 +734,8 @@ fn tool_schema() -> Value {
                 /* The one full copy. Top level rather than one of the nested
                    sites because it is the form a caller reads first, and the
                    three pointers name it by this position. */
-                "preview": preview_schema(true)
+                "preview": preview_schema(true),
+                "file": file_schema(true)
             }
         }
     })
@@ -713,6 +775,200 @@ fn tool_schema() -> Value {
 /// it — because a write that fails is a client that hung up, which is the one
 /// thing the blocking park could never see.
 const FEED_EVERY: Duration = Duration::from_secs(25);
+
+/// How many files one call may attach.
+///
+/// The question count is deliberately unbounded — twelve decisions after a
+/// round of worker reports is the shape this tool encourages, and every one of
+/// them could name a file. Each attachment is a read the panel makes through
+/// `find::read_file_doc`, which carries up to 24 MB base64 apiece. Twenty-four
+/// is past anything a person reads in a sitting and well under anything that
+/// matters.
+const MAX_FILES: usize = 24;
+
+/// Resolve every file a call attached and rewrite it as the pair the viewer
+/// reads: a root and a path inside it.
+///
+/// **Before anything else the `ask_user` arm does**, and the two reasons are the
+/// two things that happen after it. The question is drawn from these arguments,
+/// so a path that names nothing is a panel with a hole in it and nothing to say
+/// why; and away mode stores them verbatim in `deferred_ask`, so a relative path
+/// is one whose meaning depends on a working directory nobody will remember in
+/// the morning.
+///
+/// **The pair is `(parent directory, file name)` rather than the project root.**
+/// Every read in `find.rs` goes through `safe_join`, which refuses a path that
+/// climbs out of its root — so handing it the card's working tree would refuse
+/// the screenshot in `%TEMP%` that is the commonest thing an agent has to show.
+/// Rooting each file at its own parent keeps the containment exactly as strong
+/// (one named file, reached by its own name) and costs the agent nothing.
+///
+/// Nothing here reads the file or cares what is in it. The reading is
+/// `finding.ts::drawnAs`'s, which is the viewer's own one table, and the
+/// drawing is `Leaf.svelte`'s. See `file_schema`.
+///
+/// A path that names no file **refuses the whole call**, which is `pin`'s
+/// bargain rather than `preview`'s. A design built by its script is still a
+/// question worth asking with a note attached (`previewAside`); a question
+/// whose file is missing is a question about nothing, and the agent learns what
+/// is wrong in a second instead of ten minutes later.
+fn attach_files(app: &AppHandle, caller: &str, mut args: Value) -> Result<Value, String> {
+    /* Decided by what kind of card asked, never by the payload — the rule
+       `spawn_conversation` follows when it reads `kind_of` off the store rather
+       than taking a capability as an argument, and the same one `Ask.svelte`
+       follows for whether a design may run its script.
+
+       A chat card spawns `--tools WebSearch,WebFetch` with no bypass: no Read,
+       no Write, no Bash. So it cannot *make* a file to show you, and the only
+       paths it could name are ones it did not write — which is a capability
+       with no honest use and one dishonest one, your own `.env` drawn legibly
+       on your own screen under a question about it. The content never reaches
+       the model either way, so this is not the exfiltration it looks like; it
+       is a chat card being given a reach into the disk that every other thing
+       about that card kind says it does not have. Cheap to close and nothing
+       is lost by closing it. */
+    if let Some(store) = app.try_state::<crate::store::Store>() {
+        if crate::store::kind_of(&store, caller) == "chat" && has_file(&args) {
+            return Err("this is a chat conversation, which is spawned with no access to \
+                        this machine at all — so it may not attach a file to a \
+                        question. Ask in words, or use `preview` to compose what you \
+                        mean."
+                .to_string());
+        }
+    }
+
+    let mut n = 0usize;
+    attach_at(app, caller, &mut args, &mut n)?;
+    attach_each(app, caller, args.get_mut("options"), &mut n)?;
+    if let Some(questions) = args.get_mut("questions").and_then(Value::as_array_mut) {
+        for q in questions {
+            attach_at(app, caller, q, &mut n)?;
+            attach_each(app, caller, q.get_mut("options"), &mut n)?;
+        }
+    }
+    Ok(args)
+}
+
+/// Whether a call attaches anything at all, for the one gate that is about the
+/// *caller* rather than about the path. Cheaper than walking it twice and
+/// clearer than threading a flag through the walk that does the work.
+fn has_file(args: &Value) -> bool {
+    fn at(v: &Value) -> bool {
+        v.get("file").is_some_and(|f| !f.is_null())
+    }
+    fn any(v: Option<&Value>) -> bool {
+        v.and_then(Value::as_array).is_some_and(|l| l.iter().any(at))
+    }
+    if at(args) || any(args.get("options")) {
+        return true;
+    }
+    args.get("questions")
+        .and_then(Value::as_array)
+        .is_some_and(|qs| qs.iter().any(|q| at(q) || any(q.get("options"))))
+}
+
+fn attach_each(
+    app: &AppHandle,
+    caller: &str,
+    slot: Option<&mut Value>,
+    n: &mut usize,
+) -> Result<(), String> {
+    let Some(list) = slot.and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    for option in list {
+        attach_at(app, caller, option, n)?;
+    }
+    Ok(())
+}
+
+/// One site that may carry a `file`: the call itself, a question, an option.
+fn attach_at(
+    app: &AppHandle,
+    caller: &str,
+    site: &mut Value,
+    n: &mut usize,
+) -> Result<(), String> {
+    let Some(slot) = site.get_mut("file") else {
+        return Ok(());
+    };
+
+    /* **Both shapes go through the same checks, and that is the point.** This
+       guard used to return early on an object carrying `root`, on the stated
+       belief that `root` is "a key nothing but this function writes" — which
+       is not true of anything here: `slot` is a subtree of the agent's own
+       arguments, and the function already accepts `{"path": ...}` on purpose,
+       so one more key beside it is no reach at all. The early return skipped
+       `resolve`'s existence check *and* the counter, which means a forged pair
+       defeated the one promise this function makes (a bad path refuses the
+       call rather than asking with a hole in it) and made `MAX_FILES`
+       unbounded besides. Found in review.
+
+       So a pair is simply joined back up and re-checked. Idempotence falls out
+       of that rather than being asserted: a pair we wrote resolves to the same
+       file and is rewritten to the same pair, and one we did not is checked
+       like anything else. */
+    let want = if let Some(root) = slot.get("root").and_then(Value::as_str) {
+        match slot.get("path").and_then(Value::as_str) {
+            Some(name) => Some(
+                std::path::Path::new(root)
+                    .join(name)
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            None => {
+                return Err("`file` carried a `root` with no `path`, which names a \
+                            directory rather than a file."
+                    .to_string())
+            }
+        }
+    } else {
+        /* A string is what the schema asks for; an object with a `path` is the
+           shape an agent reaches for anyway, having just read `pin`'s. Both
+           mean the same thing and refusing one of them would teach nothing. */
+        slot
+            .as_str()
+            .or_else(|| slot.get("path").and_then(Value::as_str))
+            .map(|s| s.trim().to_string())
+    };
+
+    let Some(want) = want else {
+        if slot.is_null() {
+            return Ok(());
+        }
+        return Err("`file` must be the path to a file on disk, as a string. It carried \
+                    something else."
+            .to_string());
+    };
+    /* Empty is an agent writing the field out and leaving it blank, which means
+       no file rather than a broken one. */
+    if want.is_empty() {
+        *slot = Value::Null;
+        return Ok(());
+    }
+
+    *n += 1;
+    if *n > MAX_FILES {
+        return Err(format!(
+            "this call attached more than {MAX_FILES} files, which is the limit — a sheet \
+             that long is past what anyone reads in a sitting. Ask about the ones that \
+             matter."
+        ));
+    }
+
+    let full = crate::pin::resolve(app, caller, &want, "Write the file first, then ask about it")?;
+    /* Both halves have to exist for the viewer's join to land on the file, and
+       a file always has both — this is belt and braces over `resolve`, which has
+       already established it is a file. */
+    let (Some(root), Some(name)) = (full.parent(), full.file_name()) else {
+        return Err(format!("{} is not a file this viewer can open", full.display()));
+    };
+    *slot = json!({
+        "root": root.to_string_lossy(),
+        "path": name.to_string_lossy(),
+    });
+    Ok(())
+}
 
 /// Register a question and put it in front of the user. Returns the id it was
 /// filed under and the channel a click comes back on.
@@ -2205,6 +2461,35 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            costs nothing here, and the client already trusts this
                            endpoint. */
                         if tool == "ask_user" {
+                            /* The attachments first, because every path below
+                               is too late: the away branch stores these
+                               arguments in the pile and the parking branch
+                               draws them. See `attach_files`. */
+                            let args = match attach_files(&app, &conversation_id, args) {
+                                Ok(v) => v,
+                                Err(why) => {
+                                    respond(
+                                        req,
+                                        json!({
+                                            "jsonrpc": "2.0", "id": id,
+                                            "result": {
+                                                "content": [{
+                                                    "type": "text",
+                                                    "text": format!(
+                                                        "{why}\n\nNothing was asked, so the \
+                                                         decision is still outstanding — put \
+                                                         the call back together and send it \
+                                                         again."
+                                                    )
+                                                }],
+                                                "isError": true
+                                            }
+                                        }),
+                                    );
+                                    return;
+                                }
+                            };
+
                             /* Away mode, and the whole of what it changes here:
                                the call does not park at all. Nobody is going to
                                answer inside any of the three deadlines this
@@ -2755,6 +3040,73 @@ mod tests {
     }
 
     #[test]
+    fn a_file_may_be_attached_at_every_level_and_is_required_at_none() {
+        let r = dispatch(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
+        let Dispatch::Reply(v) = r else { panic!("expected a reply") };
+        let props = &v["result"]["tools"][0]["inputSchema"]["properties"];
+
+        // Everywhere a design can go, for the reason stated over `file_schema`:
+        // a call may compare three renders exactly as it compares three
+        // mock-ups, and may show one screenshot and ask what is wrong with it.
+        for site in [
+            &props["file"],
+            &props["options"]["items"]["properties"]["file"],
+            &props["questions"]["items"]["properties"]["file"],
+            &props["questions"]["items"]["properties"]["options"]["items"]["properties"]
+                ["file"],
+        ] {
+            assert_eq!(site["type"], "string", "a file is named by its path");
+        }
+
+        // And demanded nowhere: almost every ask is a sentence and some
+        // buttons, and a mandatory field would refuse all of them at the
+        // client. Same argument as `preview`, one field over.
+        assert_eq!(props["options"]["items"]["required"], json!(["label"]));
+        assert_eq!(props["questions"]["items"]["required"], json!(["question"]));
+    }
+
+    #[test]
+    fn an_attachment_is_found_wherever_it_is_hung() {
+        /* What the chat-card gate is asked, and therefore what it must not
+           miss. A walk that checked three of the four sites would be a gate
+           with a hole at the fourth, and the fourth is an option inside
+           `questions[]` — which is the form the schema pushes callers toward. */
+        assert!(has_file(&json!({ "question": "?", "file": "a.png" })));
+        assert!(has_file(&json!({
+            "question": "?", "options": [{ "label": "a", "file": "a.png" }]
+        })));
+        assert!(has_file(&json!({ "questions": [{ "question": "?", "file": "a.png" }] })));
+        assert!(has_file(&json!({
+            "questions": [{ "question": "?", "options": [{ "label": "a", "file": "a.png" }] }]
+        })));
+
+        // And is not seen where there is none, including the shape an agent
+        // writes when it means "no file".
+        assert!(!has_file(&json!({ "question": "?" })));
+        assert!(!has_file(&json!({ "question": "?", "file": null })));
+        assert!(!has_file(&json!({
+            "questions": [{ "question": "?", "options": [{ "label": "a" }] }]
+        })));
+        assert!(!has_file(&json!({ "question": "?", "preview": { "html": "<i>x</i>" } })));
+    }
+
+    #[test]
+    fn the_schema_names_no_file_format_anywhere() {
+        /* The whole arrangement, asserted rather than trusted: `drawnAs` in
+           `finding.ts` is the one table that decides a reading, and a list of
+           extensions here would be a second place to be wrong about a format.
+           The description talks about *kinds* of document on purpose — "a
+           PDF", "a spreadsheet" — which is prose for the model and not a rule
+           anything is matched against. */
+        let r = dispatch(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
+        let Dispatch::Reply(v) = r else { panic!("expected a reply") };
+        let said = v["result"]["tools"][0].to_string();
+        for ext in [".png", ".pdf", ".docx", ".xlsx", ".md", ".csv", ".webp"] {
+            assert!(!said.contains(ext), "the schema spells out {ext}");
+        }
+    }
+
+    #[test]
     fn tools_call_is_parked_rather_than_answered() {
         let r = dispatch(&json!({
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -2885,6 +3237,38 @@ mod tests {
     /// is a number that moves whenever it is inconvenient — so the bar for the
     /// next raise is the bar this one met: somebody names the tokens it costs
     /// per spawn, and somebody who pays them says yes.
+    ///
+    /// **Raised to 32KB on 2026-10-07, once, deliberately, and by the user — and
+    /// this time the raise is also a correction.** `ask_user` gained `file`, a
+    /// second way to show somebody something: **1,096 bytes, ~275 tokens on
+    /// every spawn and every wake, permanently**, measured by building the
+    /// loaded tier and stripping the key back out rather than by counting
+    /// characters. That took the tier to 26,263 against a 26,000 ceiling.
+    ///
+    /// What happened next is the reason the number moved further than the
+    /// 27,000 that would have cleared it. The first response to going red was
+    /// to **shorten sentences**, and it worked — 25,785, under the bound — and
+    /// it quietly cost two things that were doing work, both in the copy paid
+    /// three times: the enumeration of what is forbidden at the top level,
+    /// which `preview_schema`'s own comment argues for in as many words, and
+    /// "only where the decision turns on interaction" on `js`, which is the
+    /// sentence sink `51863e1e` exists to have said. Buying them back cost 478
+    /// bytes, ~120 tokens, and is the best-value spend in this whole block.
+    ///
+    /// So the ceiling is now set with **room rather than to the millimetre**,
+    /// which is the same argument the 25KB raise made ("a tier tuned to 23,999
+    /// is a build one word from red forever") applied to its own consequence: a
+    /// bound 215 bytes above the tier does not catch a tool being added
+    /// quietly, it catches the next paragraph anybody writes, and what it
+    /// extracts is prose rather than a decision. The guard is for tools. See
+    /// CLAUDE.md, "a budget is a reason to say a thing once, not a reason to
+    /// say less of it", which is the general form and is now stated where every
+    /// session reads it.
+    ///
+    /// The bar is unchanged and this met it: the price was named before it was
+    /// agreed, and the person who pays it said raise it.
+    const CEILING: usize = 32_000;
+
     #[test]
     fn the_loaded_tier_is_what_every_turn_pays_for() {
         let loaded: Vec<Value> = roster()
@@ -2893,10 +3277,15 @@ mod tests {
             .collect();
         let bytes = json!(loaded).to_string().len();
         assert!(
-            bytes < 26_000,
+            bytes < CEILING,
             "the loaded tier is {bytes} bytes of schema on every spawn of every \
-             card — see ask::roster, and ask whether the new tool is one a card \
-             must know exists without being told"
+             card, over the {CEILING} this is watching for. In order: is the new \
+             tool one every card must know exists without being told — if not it \
+             belongs in the deferred tier, and this has done its job. Is the same \
+             thing said twice — say it once and point at it, which is what \
+             preview_schema does. Otherwise RAISE THIS NUMBER and say why in the \
+             commit. Do not thin the prose to get under it: see CLAUDE.md, \
+             \"a budget is a reason to say a thing once\"."
         );
     }
 
@@ -3342,7 +3731,7 @@ mod tests {
     /// than read off `tool_schema()` so the whole of this group lifts — see
     /// `tools/lift-ask.ts`; the wiring to the real roster is asserted once, on
     /// its own, in `the_check_reads_the_tools_own_schema`.
-    const ASK_ARGS: &[&str] = &["questions", "question", "options", "preview"];
+    const ASK_ARGS: &[&str] = &["questions", "question", "options", "preview", "file"];
 
     /// The reported call, reconstructed: `options` written as a bare tag, so the
     /// whole of it arrived concatenated onto `question` and no `options` came at

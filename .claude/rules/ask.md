@@ -5,6 +5,9 @@ paths:
   - "src/lib/Ask.svelte"
   - "src/lib/Gallery.svelte"
   - "src/lib/zoom.ts"
+  # Half of "a question can show you a file" lives in the shared viewer; the
+  # other half of it is finding.md's.
+  - "src/lib/Leaf.svelte"
 ---
 
 # The ask_user MCP server, and several questions in one call
@@ -868,6 +871,172 @@ and it changes nothing about the parking: the reply is still the option's label,
   frameworks), that the tokens are already defined, and what size to compose at. `preview` is
   required nowhere, for the same reason neither question form is: almost every ask is a
   sentence and some buttons, and a mandatory field would refuse all of them at the client.
+
+#### Files that already exist, which is the other half of the same gap
+
+A design is composed here because it does not exist yet. A screenshot, a render,
+a PDF, a spreadsheet, a page of notes — those already do, and an agent holding
+one had the same problem from the other side: describe it in prose, or `pin` it
+to the wall and ask a question that points at it sideways. So an option or a
+question can carry a `file` as well as a `preview`, and the gallery draws both.
+
+- **Nothing in this feature knows what a file format is, and that is the whole
+  arrangement.** `finding.ts::READINGS` is already the one table that decides
+  which of the viewer's five readings a path gets, `Leaf.svelte` is already what
+  draws each of them, and `find.rs`'s three commands are already how bytes get
+  here. A question's attachment goes down that path and no other. The *gain* is
+  the point: the day the viewer learns a sixth format, a question can show you
+  one without this file being touched. `ask.rs`'s test asserts the negative
+  directly — the schema may not spell an extension anywhere, because a list
+  there would be a second place to be wrong about a format, which is the hazard
+  `find::read_doc` already writes down about the `media_type`/`IMAGES` pair.
+- **So `Leaf.svelte` exists, and the wrapper deliberately does not move with
+  it.** The dispatch — media before `binary`, `docFault` before `binary`,
+  rendered-markdown before source — was inside `Spyglass.svelte` while the
+  finder was the only thing that opened a file, and two copies of it would have
+  been two answers to *what does a `.docx` look like here*. What stays with each
+  caller is the box: the finder's scrolls and is what its dog-ear measures a
+  reading out of, and the gallery's is a fixed stage with a magnifier over it.
+  `readSheet` is the same lift one layer down — the finder's own `#fetch`, at
+  module level, because a `Finder` owns a current root and a cache and a
+  question owns neither.
+- **Rust resolves and never copies.** The whole of `attach_files` is: the path
+  names a file, and here it is as the `(root, path)` pair every read in
+  `find.rs` goes through. It was briefly going to copy into
+  `$APPDATA/references/asked/`, which is what pinning does — that was right for
+  the asset protocol and wrong for everything else, since the viewer does not
+  use the asset protocol at all. It reads through `safe_join`, which is a
+  stronger boundary than a scope, and it costs no disk and no sweep.
+- **Each file is rooted at its own parent directory, not at the card's working
+  tree.** `safe_join` refuses a path that climbs out of its root, so a root of
+  the project would refuse the screenshot in `%TEMP%` — which is the commonest
+  thing an agent actually has to show. Rooting one named file at its own parent
+  keeps the containment exactly as strong (one file, reached by its own name)
+  and costs the agent nothing.
+- **The resolution happens before the away branch, because the away branch
+  stores the arguments.** A deferred question is read in the morning, and a
+  relative path is one whose meaning depends on a working directory nobody will
+  remember by then. What the pile cannot promise is that the file is still
+  *there* — nothing is copied, so a render deleted overnight draws the viewer's
+  own "could not read" sentence. That is the honest failure and it is cheaper
+  than a copy with a sweep and a claim rule behind it.
+- **A path that names no file refuses the whole call.** `pin`'s bargain rather
+  than `preview`'s, and the difference is worth stating: a design built by its
+  `js` is still a question worth asking with a note attached (`previewAside`),
+  where a question whose file is missing is a question about nothing. The agent
+  learns what is wrong in a second instead of ten minutes later, and the panel
+  never needs a broken-attachment state at all.
+  **And the idempotence is derived rather than asserted**, which is the second
+  cut: the first one returned early on an object already carrying `root`, on
+  the stated belief that `root` was "a key nothing but this function writes".
+  Nothing in a `tools/call` is a key only we write — `slot` is a subtree of the
+  agent's own arguments, and `attach_at` deliberately accepts `{"path": ...}`
+  too, so one more key beside it is no reach. The early return skipped both the
+  existence check and the counter, so a forged pair defeated the refusal
+  promise above *and* made `MAX_FILES` unbounded. Now a pair is joined back up
+  and re-checked like anything else; a pair we wrote resolves to the same file
+  and comes out the same pair. The general shape, which is `#adoptModel`'s one
+  file over: **a guard keyed on something its own subject can write is not a
+  guard.**
+- **One panel is one thing**, so a site carrying both a file and a design yields
+  two panels under one label. That reads as what it is: here is what it looks
+  like now, here is what it would look like. `panelsOf` puts the file first for
+  the same reason — the thing that exists before the proposal about it.
+- **The magnifier on a file is honestly just more room.** No zoom chrome, no
+  glass, no composed viewport: 100% means one composed pixel against a design
+  that was told what size to compose at, and means nothing at all against a PDF.
+  A document brings its own reading and its own scroll, and the glass exists
+  because a pointer over an *iframe* belongs to the iframe — a file is drawn by
+  this document's own elements, which hear a wheel without being asked. The
+  stage is focusable and takes focus when it opens, which is the half that was
+  missing: the zoom ladder returns early for a file, so without it a forty-page
+  PDF was reachable by wheel alone, and the keyboard reaching everything is a
+  standing requirement here rather than a preference.
+- **The gallery grew the question's own options**, and that is the shape the
+  user asked for first: one picture, several answers about it. Nothing on those
+  panels chooses — the picture is the question, not an option — so without the
+  row you read the picture, closed the gallery and went hunting for the matching
+  button in the dock. Deciding twice, which is exactly what `onchoose` already
+  exists to prevent for the panels that *do* choose. It is the **difference** —
+  every option no panel carries — rather than an either/or, and the first cut
+  had a hole exactly in the middle of that: a question with a screenshot *and*
+  one option carrying a render had a panel to choose from, so the row was
+  suppressed, so the plain options were reachable from nowhere.
+- **A chat card may not attach one.** Decided by what kind of card asked and
+  never by the payload — the rule `spawn_conversation` follows, and the one
+  `Ask.svelte` already follows for whether a design may run its script. The
+  argument is not exfiltration: the file's content never reaches the model,
+  since a parked call comes back carrying only your answer. It is that a chat
+  card spawns with no Read, no Write and no Bash, so it cannot *make* a file to
+  show you, and the only paths it could name are ones it did not write. That is
+  a capability with no honest use and one dishonest one, and closing it costs
+  nothing. `has_file` is the walk the gate asks, and its test is about the
+  fourth site — an option inside `questions[]`, which is the form the schema
+  pushes callers toward and the one a three-site walk would miss.
+- **`Leaf`'s `rendered` takes its default from the file, not from `true`.**
+  `Finder.rendered` means *this is markdown and the raw toggle is off*, and
+  hoisting it to a component whose other caller has no toggle quietly widened
+  it to *this is any text at all*: a `.yml` or a `.py` attached to a question
+  went through `parseMarkdown`, losing the indentation that is its meaning and
+  promoting its `#` comments to headings. Caught in review before it shipped.
+  `hasDocumentReading` is that predicate with the toggle taken out, and it is
+  in `finding.ts` beside `drawnAs` rather than next to either caller, because
+  it is the same question those readings answer and because there it is pure
+  and tested. **A flag named after a reading must be derived from the file**;
+  a default of `true` on one is a claim about every file a caller will ever
+  pass.
+- **The gallery's answers row is keyed by position.** `optionsFrom` drops a
+  blank label and dedupes nothing, so two options reading "Other" are two
+  entries — and a keyed `each` throws `each_key_duplicate` in production as
+  well as in dev, which would take the whole gallery down on a payload the
+  dock's own unkeyed list draws without complaint. The list is fixed for the
+  life of the component, so a key bought nothing to weigh against that.
+- **A top-level `file` with `questions[]` hangs on the first question.** The
+  single-question sugar only runs when `question` is a string, so a call
+  sending both had its file resolved by `ask.rs` — which can refuse the whole
+  call over it — and then dropped without a word: the user never saw it and
+  the agent could not find out. `preview` had the same hole for its whole life
+  and gets the same fix. The first question is the only answer that is not a
+  guess, since the attachment was put at the level that addresses the *call*.
+- **`lookLabel` names a single file outright** — "look at shot-after.png" is a
+  button you can decide about before pressing, where "look at the file" is one
+  more gesture to find out what is behind it. Several of anything is a count,
+  because the names would not fit and the count is the fact that matters. Both
+  it and `galleryHint` are pure and tested, which is why they are in `asking.ts`
+  rather than interpolated into two components.
+- **The loaded tier's budget is what shaped the schema**, and it is worth
+  reading as the guard working rather than as an obstacle:
+  `the_loaded_tier_is_what_every_turn_pays_for` caps what every card pays on
+  every spawn, and a second way to show something put it over — `file` costs
+  1,096 bytes, ~275 tokens on every spawn and every wake, measured rather than
+  counted.
+  The reclamation came out of what `preview` and `file` were *both* saying —
+  "shown side by side, full size, instead of described" is one sentence about
+  the gallery, and it now sits in the tool's own description where it is said
+  once. What is left on each field is only what is true of it and of nothing
+  else. The lesson for the next field that wants a paragraph: **when two
+  options are two answers to one question, the shared half belongs to the
+  question.**
+  The first pass at fitting went too far and took two things with it, both in
+  the copy that is paid *three* times: the enumeration of what is over at the
+  top level — which `preview_schema`'s own comment argues for in as many words,
+  since a reader told where the constraints are goes and gets them, where one
+  given half of them does not know a half is missing — and "only where the
+  decision turns on interaction" on `js`, which is the sentence sink `51863e1e`
+  exists to have said. Both were bought back — 478 bytes, ~120 tokens, the
+  best-value spend in the whole block — and the ceiling went to 32,000 with
+  room rather than to the millimetre, because a bound 215 bytes above the tier
+  does not catch a tool being added quietly, it catches the next paragraph
+  anybody writes. **A byte budget is a reason to say a thing once, not a reason
+  to say less of it**, and the difference between those two is the whole of
+  what this paragraph is for. The general form is in CLAUDE.md, where every
+  session reads it.
+- **`snapshot.cards[].pendingAsk` reports `files` beside `previews`.** Two
+  numbers rather than one, because the two reach the panel by different routes
+  and fail differently: a design is in the payload and a file is a read that can
+  come back empty, so a test that could not tell them apart could not assert the
+  one it meant. `previews` keeps its name and its meaning — panels in the
+  gallery — so nothing outside had to be rewritten.
 
 #### Looking closer at one of them
 

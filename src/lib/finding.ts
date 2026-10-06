@@ -18,7 +18,7 @@
  * that ripgrep exists.
  */
 
-import { DOCUMENTS, TABLES, extOf } from "./office";
+import { DOCUMENTS, TABLES, extOf, type Doc } from "./office";
 
 /* ── what the panel is doing ─────────────────────────────────── */
 
@@ -466,6 +466,27 @@ export const READINGS: Record<string, Drawing> = (() => {
  *  question about saving a round trip. */
 export function drawnAs(path: string): Drawing | null {
   return READINGS[extOf(path)] ?? null;
+}
+
+/** Whether this file has a *document* reading at all, before any toggle.
+ *
+ *  `Finder.rendered` with the user's own `raw` switch taken out of it, and it
+ *  is shared because `Leaf` has to default to something and this is the only
+ *  honest default there is. Defaulting to `true` looks harmless and is not: it
+ *  silently widens "this is markdown" to "this is any text at all", and a
+ *  `.yml` or a `.py` then goes through `parseMarkdown` — indentation gone,
+ *  which *is* the meaning in both, `#` comments promoted to headings, `*` and
+ *  `_` eaten as emphasis. The user is shown something that is not the file
+ *  they were asked to approve. Caught in review before it shipped; the lesson
+ *  is that a flag named after a *reading* must be derived from the file and
+ *  not assumed by whoever is drawing it. */
+export function hasDocumentReading(file: {
+  path: string;
+  doc?: Doc;
+  docFault?: string;
+}): boolean {
+  if (file.docFault) return false;
+  return !!file.doc || isMarkdown(file.path);
 }
 
 /** Which element would draw this file, or `null` for one to read as text. */

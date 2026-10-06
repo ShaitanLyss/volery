@@ -15,9 +15,8 @@
   import { invoke } from "@tauri-apps/api/core";
 
   import Folio from "./Folio.svelte";
-  import Markdown from "./Markdown.svelte";
+  import Leaf from "./Leaf.svelte";
   import Quill from "./Quill.svelte";
-  import { parseMarkdown } from "./markdown";
   import { type Reading, flatOf, locate } from "./dogears";
   import { pieces, shift, splitPath, viewLines, windowAround } from "./finding";
   import type { Finder } from "./finder.svelte";
@@ -228,20 +227,6 @@
     const w = windowAround(lines.length, finder.row?.line ?? null);
     return lines.slice(w.from, w.to);
   });
-
-  /** The whole file, for the viewer's source reading. */
-  const sheetRows = $derived.by(() =>
-    finder.sheet && !finder.sheet.binary && !finder.rendered
-      ? viewLines(finder.sheet.text)
-      : [],
-  );
-
-  /** The document, parsed. Only while it is actually being drawn as one — a
-   *  markdown parse of a six-thousand-line file is not free, and the source
-   *  reading does not want it. */
-  const blocks = $derived.by(() =>
-    finder.rendered && finder.sheet ? parseMarkdown(finder.sheet.text) : [],
-  );
 
   async function onKey(e: KeyboardEvent) {
     /* The viewer's keys first — it is the innermost thing open, so Escape there
@@ -465,67 +450,17 @@
       tabindex="-1"
       role="document"
     >
-      {#if finder.sheet.media}
-        <!-- A file the viewer draws rather than reads. Before the `binary` arm,
-             which is the sentence for a file that cannot be shown at all — an
-             image is not that, and saying "nothing to read here" over a
-             screenshot was the whole of sink 28409145.
-
-             The bytes come through `find::read_media` on a `data:` URL rather
-             than through Tauri's asset protocol, because that protocol is scoped
-             to `$APPDATA/references/**` and widening it to reach a project would
-             route around `safe_join` — see the note on `MEDIA_CAP`.
-
-             A video gets `controls` and nothing else: no autoplay, no loop, no
-             muted-autoplay trick. Opening a file in a viewer is a reading
-             gesture, and a film that starts playing because you looked at it is
-             the panel doing something you did not ask for. -->
-        {#if finder.sheet.media.tooLarge}
-          <p class="empty">
-            {(finder.sheet.bytes / (1024 * 1024)).toFixed(1)} MB — too large to draw here.
-            press <kbd>e</kbd> to open it outside.
-          </p>
-        {:else if finder.sheet.media.kind === "video"}
-          <!-- svelte-ignore a11y_media_has_caption -->
-          <video class="media" src={finder.sheet.media.dataUrl} controls></video>
-        {:else}
-          <img class="media" src={finder.sheet.media.dataUrl} alt={finder.sheet.path} />
-        {/if}
-      {:else if finder.sheet.docFault}
-        <!-- A document that could not be made sense of, and it says which — a
-             `.docx` that is really a renamed zip, a workbook past the cap, a
-             `.pdf` whose first bytes are not `%PDF-`. Before the `binary` arm,
-             which is the sentence for a file nothing can be said about at all;
-             this is a file rather a lot can be said about. -->
-        <p class="empty">
-          {finder.sheet.docFault} — press <kbd>e</kbd> to open it outside.
-        </p>
-      {:else if finder.rendered && finder.sheet.doc}
-        <!-- The fifth reading. Parsed in `office.ts` on the way in and drawn by
-             `Folio.svelte`; nothing about a format reaches this file. -->
-        <Folio
-          doc={finder.sheet.doc}
-          path={finder.sheet.path}
-          bytes={finder.sheet.bytes}
-          {onlink}
-        />
-      {:else if finder.sheet.binary}
-        <p class="empty">not a text file — nothing to read here</p>
-      {:else if finder.rendered}
-        <!-- The repo's own renderer, so a rule reads here exactly as an agent's
-             answer reads in the transcript. `nav` off: that flag is about the
-             transcript's rail listing a paragraph, and there is no rail here. -->
-        <Markdown {blocks} nav={false} {onlink} />
-      {:else}
-        {#each sheetRows as l (l.no)}
-          <div class="ln" class:hit={l.no === finder.sheetLine} data-no={l.no}>
-            <span class="no">{l.no}</span><span class="src">{l.text}</span>
-          </div>
-        {/each}
-      {/if}
-      {#if finder.sheet.truncated}
-        <p class="empty">— only the first two megabytes are shown —</p>
-      {/if}
+      <!-- Every reading this viewer has, in `Leaf.svelte` — shared with the
+           gallery, which draws a file an agent attached to a question. Two
+           renderers would have been two answers to "what does a `.docx` look
+           like here"; see the note at the top of that file. -->
+      <Leaf
+        sheet={finder.sheet}
+        rendered={finder.rendered}
+        line={finder.sheetLine}
+        outsideKey="e"
+        {onlink}
+      />
     </div>
   {:else}
     <div class="body">
@@ -867,21 +802,6 @@
      line-numbered gutter. The transcript's own reading size and leading,
      because it is the same act of reading — and a measure, because a rule read
      across 150 characters is one you lose your place in. */
-  /* A picture or a film in the viewer. Undressed, for the reason the
-     transcript's own `.shot` is: whatever this is has its own frame, and the
-     panel dressing it would be competing with the thing it was opened to show.
-     `max-width: 100%` and `height: auto` so a 4K capture sits inside the panel
-     without it ever scrolling sideways, and `--edge` underneath because a pale
-     image on pale paper has no boundary at all otherwise. */
-  .media {
-    display: block;
-    max-width: 100%;
-    height: auto;
-    margin: 0 auto;
-    background: var(--edge);
-    outline: 1px solid var(--edge);
-    outline-offset: -1px;
-  }
   /* The preview pane's version. Bounded in height as well as width: this is a
      glance taken while moving down a list, and a tall capture that pushed the
      rows off the pane would make the list unusable to get to it. */

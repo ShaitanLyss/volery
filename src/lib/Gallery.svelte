@@ -1,5 +1,12 @@
 <script lang="ts">
-  /* Designs, side by side, over the wall.
+  /* What a question attached, side by side, over the wall.
+   *
+   * Two kinds and one surface. A *design* is HTML the agent composed, drawn in
+   * a sealed frame at a fixed viewport; a *file* already exists and is drawn by
+   * the app's own viewer (`Leaf.svelte`), the same one the finder opens into.
+   * They share a gallery because they are one act — looking at the things a
+   * decision is between — and because a call may perfectly well put a
+   * screenshot of what exists beside a mock-up of what would replace it.
    *
    * The CLI can only ever *describe* a layout, so an agent with three of them
    * to offer writes three paragraphs and you choose by imagining. There is a
@@ -25,10 +32,15 @@
   import { onMount, untrack } from "svelte";
   import {
     PREVIEW_VIEWPORT,
+    galleryHint,
     isScriptBuilt,
     previewDoc,
-    type PreviewPanel,
+    type AskFile,
+    type AskOption,
+    type LookPanel,
   } from "./asking";
+  import { readSheet, type Sheet } from "./finder.svelte";
+  import Leaf from "./Leaf.svelte";
   import {
     STEP,
     canPan,
@@ -48,19 +60,49 @@
   let {
     panels,
     header,
+    options = [],
     scripts,
     onchoose,
     onclose,
   }: {
-    panels: PreviewPanel[];
+    panels: LookPanel[];
     /** What is being decided, for the one line at the top. */
     header: string;
+    /** The question's own options, for the shape this gallery exists to serve
+     *  as much as the comparison does: **one** thing attached and several
+     *  answers about it. Nothing on a panel chooses then — the picture is the
+     *  question, not an option — and closing the gallery to hunt for the
+     *  matching button in the dock would be answering it twice, which is the
+     *  same argument `onchoose` already makes for the panels that do choose.
+     *  Drawn only when no panel carries a label of its own. */
+    options?: AskOption[];
     /** Whether a preview from this card may run script at all — decided by what
      *  kind of card asked, never by the payload. See below. */
     scripts: boolean;
     onchoose: (label: string) => void;
     onclose: () => void;
   } = $props();
+
+  /** The answers that no panel carries.
+   *
+   *  Empty for the pure comparison — three designs, three buttons on three
+   *  panels, nothing left over — and the whole list for the other shape this
+   *  gallery serves: one thing attached and several answers about it, where
+   *  the picture is the question rather than an option.
+   *
+   *  Computed as a difference rather than branched on "do any panels choose",
+   *  which was the first cut and had a hole in the middle of it: a question
+   *  with a screenshot *and* one option carrying a render left the plain
+   *  options reachable from nowhere, since a panel existed to choose from and
+   *  the row was therefore suppressed. A difference has no such middle.
+   *
+   *  Matched on the label, which is what `panelsOf` copies across and what
+   *  `onchoose` sends, so an option whose panel is here is not offered twice.
+   *  That says nothing about duplicates *within* `options`, which is a
+   *  different question and is answered at the `each` below. */
+  const spare = $derived(
+    options.filter((o) => !panels.some((p) => p.label === o.label)),
+  );
 
   /** Skein's own custom properties, so a mockup is judged on the decision
    *  rather than on whether the agent guessed the greys.
@@ -130,9 +172,45 @@
 
   const docs = $derived(
     panels.map((p, i) =>
-      previewDoc(p.preview, { scripts: scripts && !!live[i], tokens }),
+      p.preview
+        ? previewDoc(p.preview, { scripts: scripts && !!live[i], tokens })
+        : "",
     ),
   );
+
+  /* ── the files ───────────────────────────────────────────────────────────
+   *
+   * Read through `readSheet`, which is the finder's own read lifted to module
+   * level for exactly this — same three commands, same `drawnAs` dispatch,
+   * same `Sheet`. Nothing here learns a file format, and whatever the viewer
+   * gains the gallery gains with it.
+   *
+   * Per panel and once, keyed by index: a gallery is built fresh each time it
+   * opens, and the panels do not change under it while it is up. A read that
+   * fails keeps its sentence, because it will be just as true next time. */
+  let sheets = $state<Record<number, Sheet>>({});
+  let faults = $state<Record<number, string>>({});
+
+  /* Started at mount rather than in an `$effect`, and the reason is both halves
+     of what an effect would have done. It would re-run on its own writes — the
+     guard that stops a second fetch has to *read* `sheets[i]`, which makes the
+     thing it writes a dependency — and it would be guarding against a change
+     that cannot happen, since the gallery is built fresh each time it opens and
+     `panels` does not change under it. That is the same reasoning `live` is
+     keyed by index on. */
+  onMount(() => {
+    panels.forEach((p, i) => {
+      if (!p.file) return;
+      const { root, path } = p.file;
+      void readSheet(root, path)
+        .then((sheet) => (sheets[i] = sheet))
+        .catch((err) => (faults[i] = String(err)));
+    });
+  });
+
+  /** What a file panel is called. An option's label is about the decision; the
+   *  file's own name is the only thing that says which file. */
+  const nameOf = (file: AskFile) => file.path;
 
   /* ── Looking closer ──────────────────────────────────────────────────────
    *
@@ -158,9 +236,18 @@
    *  *resized* re-clamps instead of throwing away where you had got to. */
   let fitted = $state<number | null>(null);
 
+  /** The magnified stage, when it is holding a file: focused on open so the
+   *  arrows scroll it rather than doing nothing. */
+  let reading = $state<HTMLElement | null>(null);
+
   const openBig = (i: number) => {
     fitted = null;
     big = i;
+    if (!panels[i]?.preview) {
+      /* After the element exists. One frame, and the alternative is an
+         `$effect` keyed on `big` that would also fire on a resize. */
+      queueMicrotask(() => reading?.focus());
+    }
   };
   const closeBig = () => {
     big = null;
@@ -174,7 +261,7 @@
     const w = stage.w;
     const h = stage.h;
     const i = big;
-    if (i === null || !w || !h) return;
+    if (i === null || !w || !h || !panels[i]?.preview) return;
     untrack(() => {
       if (fitted !== i) {
         fitted = i;
@@ -217,7 +304,19 @@
   const bigDoc = $derived(big === null ? "" : (docs[big] ?? ""));
   const bigLive = $derived(big !== null && !!live[big]);
 
-  const glassed = $derived(bigPanel !== null && !(scripts && bigLive));
+  /* Only a *design* needs one. The sheet exists because a pointer over an
+     iframe belongs to the iframe; a file is drawn by this document's own
+     elements, which hear a wheel and a drag without being asked — and a PDF
+     or a workbook scrolls itself, so covering it would take away the gesture
+     rather than supply one. */
+  const glassed = $derived(
+    bigPanel !== null && !!bigPanel.preview && !(scripts && bigLive),
+  );
+
+  /** Whether the magnified panel is a design, which is what the zoom chrome and
+   *  the fixed viewport are about. A file has no composed size to be a
+   *  percentage of, and brings its own reading. */
+  const bigIsDesign = $derived(!!bigPanel?.preview);
 
   let dragging = $state(false);
   let travelled = false;
@@ -306,7 +405,10 @@
         else onclose();
         return;
       }
-      if (big === null || e.ctrlKey || e.metaKey || e.altKey) return;
+      /* A file brings its own scrolling and has no composed size for a zoom
+         to be a percentage of, so the whole ladder below is a design's. */
+      if (big === null || !panels[big]?.preview) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const at = centreOf(stage);
       const p = panStep();
       let next: View | null = null;
@@ -358,10 +460,7 @@
       <span class="mark">Looking at</span>
       <span class="what">{header}</span>
       <span class="grow"></span>
-      <span class="hint">
-        {panels.length === 1 ? "one design" : `${panels.length} designs`} · composed at
-        {PREVIEW_VIEWPORT.w}×{PREVIEW_VIEWPORT.h}
-      </span>
+      <span class="hint">{galleryHint(panels)}</span>
       <button class="x" onclick={onclose} title="Close (Escape)">close</button>
     </div>
 
@@ -373,7 +472,23 @@
                  beside it would hand the frame this document's origin back and
                  undo the whole arrangement — they are not two independent
                  permissions. -->
-            {#if ready}
+            {#if p.file}
+              <!-- A file, in the app's own viewer. Scrolls inside the panel
+                   rather than being scaled into it: a design has a composed
+                   size and three of them are comparable at one scale, and a
+                   document has neither — shrinking a PDF to fit a third of the
+                   screen is a page nobody can read, where scrolling it is the
+                   reading it already has. -->
+              <div class="leaf">
+                {#if faults[i]}
+                  <p class="plate">{faults[i]}</p>
+                {:else if sheets[i]}
+                  <Leaf sheet={sheets[i]} />
+                {:else}
+                  <p class="plate">reading {nameOf(p.file)}…</p>
+                {/if}
+              </div>
+            {:else if ready && p.preview}
               <!-- Keyed on the document, so asking a panel to run its script
                    replaces the frame rather than mutating a `srcdoc` the
                    already-loaded document has moved on from. -->
@@ -399,7 +514,7 @@
                  A plate rather than a cover, because `isScriptBuilt` cannot see
                  a skeleton drawn entirely in CSS: whatever *is* there stays
                  visible around this, and running the script takes it away. -->
-            {#if isScriptBuilt(p.preview) && !(scripts && live[i])}
+            {#if p.preview && isScriptBuilt(p.preview) && !(scripts && live[i])}
               <div class="waiting">
                 <span class="line">this design is built by its script</span>
                 <span class="sub">
@@ -420,7 +535,9 @@
             <button
               class="magnify"
               onclick={() => openBig(i)}
-              title="Look closer — zoom and pan this design on its own"
+              title={p.preview
+                ? "Look closer — zoom and pan this design on its own"
+                : "Look closer — this file, with the room to read it"}
             >
               look closer
             </button>
@@ -429,10 +546,14 @@
           <div class="foot">
             <div class="says">
               {#if p.label}<span class="lbl">{p.label}</span>{/if}
+              <!-- A file's own name, which is the only thing that says which
+                   file this is: an option's label is about the decision, and a
+                   question's own attachment has no label at all. -->
+              {#if p.file}<span class="file">{nameOf(p.file)}</span>{/if}
               {#if p.detail}<span class="det">{p.detail}</span>{/if}
             </div>
             <div class="acts">
-              {#if p.preview.js}
+              {#if p.preview?.js}
                 {#if !scripts}
                   <!-- A chat card spawns with `--tools WebSearch,WebFetch` and
                        no bypass, so it can reach nothing on this machine; a
@@ -464,6 +585,31 @@
         </div>
       {/each}
     </div>
+
+    {#if spare.length}
+      <!-- Every answer no panel carries. The shape this serves is one thing
+           attached and several answers about it — the picture is the question,
+           not an option — and without the row you read the picture, closed the
+           gallery and went hunting for the matching button in the dock.
+           Deciding twice, which is exactly what `onchoose` already exists to
+           prevent for the panels that do choose. See `spare` for why it is a
+           difference rather than an either/or. -->
+      <div class="answers">
+        <!-- Keyed by position, not by label. `optionsFrom` drops a *blank*
+             label and dedupes nothing, so two options reading "Other" are two
+             entries here — and a keyed each throws `each_key_duplicate` in
+             production as well as in dev, which would take the whole gallery
+             down on a payload the dock's own unkeyed list draws without
+             complaint. The list is fixed for the life of this component, so a
+             key buys nothing to weigh against that. -->
+        {#each spare as o, i (i)}
+          <button class="answer" onclick={() => onchoose(o.label)}>
+            <span class="lbl">{o.label}</span>
+            {#if o.detail}<span class="det">{o.detail}</span>{/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -481,6 +627,7 @@
         <span class="what">{bigPanel.label ?? header}</span>
         <span class="grow"></span>
 
+        {#if bigIsDesign}
         <div class="zoom">
           <button
             class="z"
@@ -509,13 +656,43 @@
           >
         </div>
 
+        {/if}
+
         <button class="x" onclick={closeBig} title="Back to the gallery (Escape)">
           back
         </button>
       </div>
 
-      <div class="stage" bind:clientWidth={stage.w} bind:clientHeight={stage.h}>
-        {#if ready}
+      <!-- Focusable when it holds a file, and focused on open. The zoom ladder
+           below returns early for a file — there is no composed size for a
+           percentage to mean anything against — so without this a forty-page
+           PDF is reachable only with a wheel, and "the keyboard reaches
+           everything" is a standing requirement rather than a preference. A
+           scroller with a tabindex gets the arrows, Page keys, Home and End
+           from the browser for nothing. -->
+      <div
+        class="stage"
+        class:reading={!bigIsDesign}
+        tabindex="-1"
+        role="document"
+        bind:this={reading}
+        bind:clientWidth={stage.w}
+        bind:clientHeight={stage.h}
+      >
+        {#if bigPanel.file}
+          <!-- The same `Leaf` the panel drew, with the room to read it. No zoom
+               chrome: a design has a composed size that 100% can mean something
+               against, and a document has none — it has its own reading, its
+               own scroll, and in Folio's case its own controls. "Look closer"
+               for a file is honestly just more room. -->
+          {#if faults[big!]}
+            <p class="plate">{faults[big!]}</p>
+          {:else if sheets[big!]}
+            <Leaf sheet={sheets[big!]} />
+          {:else}
+            <p class="plate">reading {nameOf(bigPanel.file)}…</p>
+          {/if}
+        {:else if ready}
           {#key bigDoc}
             <iframe
               title={bigPanel.label ?? header}
@@ -528,7 +705,7 @@
           {/key}
         {/if}
 
-        {#if isScriptBuilt(bigPanel.preview) && !(scripts && bigLive)}
+        {#if bigPanel.preview && isScriptBuilt(bigPanel.preview) && !(scripts && bigLive)}
           <div class="waiting">
             <span class="line">this design is built by its script</span>
             <span class="sub">
@@ -561,16 +738,19 @@
 
       <div class="foot">
         <div class="says">
+          {#if bigPanel.file}<span class="file">{nameOf(bigPanel.file)}</span>{/if}
           {#if bigPanel.detail}<span class="det">{bigPanel.detail}</span>{/if}
-          <span class="det quiet keys">
-            {glassed
-              ? "scroll to zoom · drag to pan · double-click for 100%"
-              : "running its script, so the pointer is the design's"} · arrows,
-            +, −, 0 and 1 work either way
-          </span>
+          {#if bigIsDesign}
+            <span class="det quiet keys">
+              {glassed
+                ? "scroll to zoom · drag to pan · double-click for 100%"
+                : "running its script, so the pointer is the design's"} · arrows,
+              +, −, 0 and 1 work either way
+            </span>
+          {/if}
         </div>
         <div class="acts">
-          {#if bigPanel.preview.js}
+          {#if bigPanel.preview?.js}
             {#if !scripts}
               <span class="det quiet">script not run — chat card</span>
             {:else if bigLive}
@@ -703,6 +883,72 @@
     /* Scaled from the corner, so the composed viewport and the box it is drawn
        in share an origin and the design cannot drift out of its own frame. */
     transform-origin: 0 0;
+  }
+
+  /* A file, in the app's own viewer. Scrolls rather than being scaled: see the
+     markup. The padding is the panel's own, since `Leaf` deliberately brings
+     none — a grid wants none and a document wants a measure, and that is the
+     same bargain `Spyglass`'s `.sheet.doc` strikes with `Folio`. */
+  .leaf {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+    padding: 0.5rem 0 1rem;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    line-height: 1.55;
+  }
+  /* Reading, not composing: the magnified stage holds a file rather than a
+     scaled frame, so it scrolls and the content sits at the top. */
+  .stage.reading {
+    overflow: auto;
+    padding: 0.6rem 0 1.2rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    line-height: 1.55;
+  }
+  .plate {
+    margin: 0;
+    padding: 1.5rem 1rem;
+    text-align: center;
+    font-family: var(--util);
+    font-size: 0.72rem;
+    color: var(--paper-faint);
+  }
+  /* The file's own name. `--mono`, because it is a path and reads as one. */
+  .file {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--paper);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The question's own answers, under panels that choose nothing. Laid out
+     across rather than down: they are alternatives and the gallery has the
+     width, where the dock's column does not. */
+  .answers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    flex: 0 0 auto;
+  }
+  .answer {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.1rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+    background: var(--surface);
+    cursor: pointer;
+    text-align: left;
+  }
+  .answer:hover {
+    border-color: var(--paper-faint);
+    background: var(--raised);
   }
 
   /* Centred and small, over the frame rather than instead of it — see the

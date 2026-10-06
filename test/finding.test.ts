@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   fileRows,
+  hasDocumentReading,
   grepRows,
   insideRoot,
   isMarkdown,
@@ -255,6 +256,49 @@ describe("reading a file", () => {
 
   test("an empty file is no lines at all", () => {
     expect(viewLines("")).toEqual([]);
+  });
+});
+
+describe("whether a file has a document reading", () => {
+  /* The flag `Leaf.svelte` draws by when its caller offers no toggle. It
+     defaulted to `true` for an afternoon, which silently widened "this is
+     markdown" to "this is any text at all" — and a `.yml` through
+     `parseMarkdown` loses its indentation, which *is* its meaning. */
+  test("markdown has one", () => {
+    for (const path of ["notes.md", "a/b.markdown", "x.mdx", "RULE.MDC"]) {
+      expect(hasDocumentReading({ path })).toBe(true);
+    }
+  });
+
+  test("plain source does not, whatever it is", () => {
+    for (const path of [
+      "release.yml",
+      "main.py",
+      "a.ts",
+      "package.json",
+      "build.log",
+      "patch.diff",
+      "Makefile",
+      "icon.svg",
+    ]) {
+      expect(hasDocumentReading({ path })).toBe(false);
+    }
+  });
+
+  test("a parsed document has one whatever its name says", () => {
+    /* The bytes settle it, not the extension — `office.sniff` has already run
+       by the time this is asked. */
+    expect(
+      hasDocumentReading({ path: "whatever", doc: { kind: "pdf", bytes: new Uint8Array() } }),
+    ).toBe(true);
+  });
+
+  test("a document that could not be read has none", () => {
+    /* There is a sentence to draw instead, and it is drawn before this is
+       consulted — but a reading claimed here would be a reading of nothing. */
+    expect(
+      hasDocumentReading({ path: "notes.md", docFault: "not a zip" }),
+    ).toBe(false);
   });
 });
 

@@ -252,11 +252,20 @@ function askSnapshot(ask: Conversation["pendingAsk"]) {
     headers: ask.questions.map((q) => q.header),
     answers: [...ask.answers],
     complete: isComplete(ask.answers),
-    /* How many designs each question offers to show. Same reason the stepper's
-       fields are here: a question whose three options carry three mockups and
-       one whose options carry none are the same question, the same card and the
-       same tier from outside, and the whole feature lives in the difference. */
+    /* How many things each question offers to show, and how many of them are
+       files. Same reason the stepper's fields are here: a question whose three
+       options carry three mockups and one whose options carry none are the
+       same question, the same card and the same tier from outside, and the
+       whole feature lives in the difference.
+
+       Two numbers rather than one, because a design and a file reach the panel
+       by different routes and fail differently — a design is in the payload
+       and a file is a read that can come back empty, so a test that could not
+       tell them apart could not assert the one it meant. `previews` keeps its
+       name and its meaning of "panels in the gallery"; nothing outside has to
+       be rewritten to go on asking what it was asking. */
     previews: ask.questions.map((q) => panelsOf(q).length),
+    files: ask.questions.map((q) => panelsOf(q).filter((p) => p.file).length),
     /* Who composed the question, which is one bit and not a reason.
      *
      *  True means Skein put the question up and there is no `ask_user` tool call

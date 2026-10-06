@@ -44,12 +44,38 @@ export type AskPreview = {
   js: string | null;
 };
 
+/** A file an agent attached to a question, as the pair the viewer reads.
+ *
+ *  The other half of the same gap `AskPreview` closes, from the other side: a
+ *  design is composed here because it does not exist yet, and a screenshot, a
+ *  PDF or a spreadsheet already does. An agent holding one used to have to
+ *  describe it, or pin it to the wall and ask a question pointing at it
+ *  sideways.
+ *
+ *  **Nothing here knows what a file format is**, and nothing in `ask.rs` does
+ *  either — which is the whole arrangement. `drawnAs` decides the reading and
+ *  `Leaf.svelte` draws it, exactly as they do for the finder's own viewer, so
+ *  whatever that viewer gains this gains with it. Rust's share is establishing
+ *  the path names a file and splitting it into the `(root, path)` pair every
+ *  read in `find.rs` goes through; see `ask.rs::attach_at` for why the root is
+ *  the file's own parent and not the card's working tree. */
+export type AskFile = {
+  /** The directory it is in. */
+  root: string;
+  /** Its name inside that root — which is also what it is called on the
+   *  panel, since an option's label is about the decision and a question's own
+   *  attachment has no label at all. */
+  path: string;
+};
+
 export type AskOption = {
   label: string;
   detail?: string | null;
   /** What picking this looks like. `null` for the ordinary option, which is
    *  most of them — this is for the choice between *designs*. */
   preview?: AskPreview | null;
+  /** What picking this looks like, when it already exists as a file. */
+  file?: AskFile | null;
 };
 
 export type AskQuestion = {
@@ -63,6 +89,9 @@ export type AskQuestion = {
    *  asks whether it will do. That is an approval, not a comparison, so it
    *  hangs off the question rather than being duplicated onto a yes and a no. */
   preview?: AskPreview | null;
+  /** The same, for a file: one screenshot and a list of things that might be
+   *  wrong with it, which is the commonest shape this tool is asked for. */
+  file?: AskFile | null;
 };
 
 /** One slot per question, in step order. `null` means not answered yet. */
@@ -235,12 +264,18 @@ function headerFrom(question: string): string {
   return (space > 28 ? cut.slice(0, space) : cut.trimEnd()) + "…";
 }
 
-type RawOption = { label?: unknown; detail?: unknown; preview?: unknown };
+type RawOption = {
+  label?: unknown;
+  detail?: unknown;
+  preview?: unknown;
+  file?: unknown;
+};
 type RawQuestion = {
   header?: unknown;
   question?: unknown;
   options?: unknown;
   preview?: unknown;
+  file?: unknown;
 };
 
 /** A preview, or nothing — and nothing is the answer to almost everything.
@@ -258,6 +293,23 @@ function previewFrom(raw: unknown): AskPreview | null {
   return { html, css: css || null, js: js || null };
 }
 
+/** A file, or nothing — and nothing is the answer to almost everything.
+ *
+ *  Both halves of the pair or neither: a root with no path names a directory
+ *  and a path with no root names nothing, and either on its own would reach
+ *  `safe_join` as a read that fails for a reason no panel could explain. The
+ *  only thing that writes this shape is `ask.rs::attach_at`, which has already
+ *  established the file is there — so a half-formed one here is a payload that
+ *  did not come through it, and dropping it is right. */
+function fileFrom(raw: unknown): AskFile | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const f = raw as { root?: unknown; path?: unknown };
+  const root = typeof f.root === "string" ? f.root.trim() : "";
+  const path = typeof f.path === "string" ? f.path.trim() : "";
+  if (!root || !path) return null;
+  return { root, path };
+}
+
 function optionsFrom(raw: unknown): AskOption[] {
   if (!Array.isArray(raw)) return [];
   const out: AskOption[] = [];
@@ -265,7 +317,12 @@ function optionsFrom(raw: unknown): AskOption[] {
     const label = typeof o?.label === "string" ? o.label.trim() : "";
     if (!label) continue;
     const detail = typeof o?.detail === "string" ? o.detail.trim() : "";
-    out.push({ label, detail: detail || null, preview: previewFrom(o?.preview) });
+    out.push({
+      label,
+      detail: detail || null,
+      preview: previewFrom(o?.preview),
+      file: fileFrom(o?.file),
+    });
   }
   return out;
 }
@@ -297,6 +354,7 @@ export function normalizeAsk(raw: {
       question: text,
       options: optionsFrom(q?.options),
       preview: previewFrom(q?.preview),
+      file: fileFrom(q?.file),
     });
   }
 
@@ -312,7 +370,30 @@ export function normalizeAsk(raw: {
       question: single,
       options: optionsFrom(raw?.options),
       preview: previewFrom((raw as { preview?: unknown })?.preview),
+      file: fileFrom((raw as { file?: unknown })?.file),
     });
+  }
+
+  /* A top-level attachment with no top-level *question* to hang it on.
+   *
+   * The sugar above only runs when `question` is a string, so a call sending
+   * `questions[]` and a bare `file` had that file resolved by `ask.rs` — which
+   * can refuse the whole call over it — and then dropped here without a word.
+   * The user never saw it and the agent had no way to find out. `preview` had
+   * the same hole for its whole life and gets the same fix, since it is one
+   * line either way.
+   *
+   * Hung on the **first** question, which is the only answer that is not a
+   * guess: there is one attachment and it was put at the level that addresses
+   * the call rather than any one decision, so it belongs to the first thing it
+   * will be read beside. A question carrying its own keeps it. */
+  const spare = {
+    preview: previewFrom((raw as { preview?: unknown })?.preview),
+    file: fileFrom((raw as { file?: unknown })?.file),
+  };
+  if (!single && out.length) {
+    if (spare.preview && !out[0].preview) out[0].preview = spare.preview;
+    if (spare.file && !out[0].file) out[0].file = spare.file;
   }
 
   if (!out.length) {
@@ -320,7 +401,8 @@ export function normalizeAsk(raw: {
       header: "no question given",
       question: "(no question given)",
       options: [],
-      preview: null,
+      preview: spare.preview,
+      file: spare.file,
     });
   }
 
@@ -357,27 +439,84 @@ export const PREVIEW_VIEWPORT = { w: 1280, h: 800 };
 
 /** One thing the gallery draws, whatever it hung off.
  *
- *  A question's own preview and its options' previews are the same object to
- *  look at and differ only in whether picking it answers anything — the
- *  approval case has nothing to pick, the comparison case has one per panel. */
-export type PreviewPanel = {
-  /** The answer this panel sends, or `null` for a question's own preview,
+ *  A question's own attachment and its options' attachments are the same thing
+ *  to look at and differ only in whether picking it answers anything — the
+ *  approval case has nothing to pick, the comparison case has one per panel.
+ *
+ *  **Two kinds, one list**, and that is deliberate rather than tidy: a call may
+ *  perfectly well offer a rendered screenshot of what exists beside a design
+ *  for what would replace it, and those are the two panels that most want to be
+ *  side by side. Exactly one of `preview` and `file` is set; a site carrying
+ *  both yields two panels under the same label, which is honest about there
+ *  being two things to look at. */
+export type LookPanel = {
+  /** The answer this panel sends, or `null` for a question's own attachment,
    *  which is a thing to look at rather than a thing to choose. */
   label: string | null;
   detail: string | null;
-  preview: AskPreview;
+  /** A design composed here. */
+  preview: AskPreview | null;
+  /** A file that already exists. */
+  file: AskFile | null;
 };
 
-/** Everything worth showing for one question, in the order it was offered. */
-export function panelsOf(q: AskQuestion): PreviewPanel[] {
-  const out: PreviewPanel[] = [];
-  if (q.preview) out.push({ label: null, detail: null, preview: q.preview });
+/** Everything worth showing for one question, in the order it was offered.
+ *
+ *  The file before the design at each site, because a file is a thing that
+ *  exists and a design is a proposal about it — "here is what it looks like
+ *  now, here is what it would look like" reads in that order and not the
+ *  other. */
+export function panelsOf(q: AskQuestion): LookPanel[] {
+  const out: LookPanel[] = [];
+  if (q.file) out.push({ label: null, detail: null, preview: null, file: q.file });
+  if (q.preview) out.push({ label: null, detail: null, preview: q.preview, file: null });
   for (const o of q.options) {
-    if (o.preview) {
-      out.push({ label: o.label, detail: o.detail ?? null, preview: o.preview });
-    }
+    const said = { label: o.label, detail: o.detail ?? null };
+    if (o.file) out.push({ ...said, preview: null, file: o.file });
+    if (o.preview) out.push({ ...said, preview: o.preview, file: null });
   }
   return out;
+}
+
+/** How many of each kind are in a set of panels. */
+function countsOf(panels: LookPanel[]): { designs: number; files: number } {
+  return {
+    designs: panels.filter((p) => p.preview).length,
+    files: panels.filter((p) => p.file).length,
+  };
+}
+
+/** What the dock's button offers, which has to name the thing rather than the
+ *  machinery.
+ *
+ *  A single file is named outright — "look at shot-after.png" is a button you
+ *  can decide about before pressing, where "look at the file" is one more
+ *  gesture to find out what is behind it. Several of anything is a count,
+ *  because the names would not fit and the count is the fact that matters. */
+export function lookLabel(panels: LookPanel[]): string {
+  const { designs, files } = countsOf(panels);
+  const total = designs + files;
+  if (!total) return "look";
+  if (designs && files) return `look at the ${total} attachments`;
+  if (files) return files === 1 ? `look at ${panels[0].file!.path}` : `look at the ${files} files`;
+  return designs === 1 ? "look at the design" : `look at the ${designs} designs`;
+}
+
+/** The line in the gallery's own bar: what is up, and the one fact about it
+ *  that is not obvious from looking — the size the designs were composed at,
+ *  which is what makes three of them comparable and is mentioned only when
+ *  there are designs to which it applies. */
+export function galleryHint(panels: LookPanel[]): string {
+  const { designs, files } = countsOf(panels);
+  const parts: string[] = [];
+  if (designs) parts.push(designs === 1 ? "one design" : `${designs} designs`);
+  if (files) parts.push(files === 1 ? "one file" : `${files} files`);
+  const what = parts.join(" and ") || "nothing";
+  if (!designs) return what;
+  const composed = `${PREVIEW_VIEWPORT.w}\u00d7${PREVIEW_VIEWPORT.h}`;
+  return files
+    ? `${what} \u00b7 designs composed at ${composed}`
+    : `${what} \u00b7 composed at ${composed}`;
 }
 
 /** Elements that draw something whatever the markup around them says.
@@ -556,7 +695,9 @@ const ASIDE = "\n\n— skein: ";
  *  nothing reached the model at all: the call succeeded, an answer came back,
  *  and the next call composed the same skeleton. */
 export function previewAside(questions: AskQuestion[]): string | null {
-  const n = questions.flatMap(panelsOf).filter((p) => isScriptBuilt(p.preview)).length;
+  const n = questions
+    .flatMap(panelsOf)
+    .filter((p) => p.preview && isScriptBuilt(p.preview)).length;
   if (!n) return null;
   const [subject, it] =
     n === 1 ? ["one design in this call was", "it"] : [`${n} designs in this call were`, "they"];

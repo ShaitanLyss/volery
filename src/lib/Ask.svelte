@@ -31,6 +31,7 @@
     heldWindow,
     isComplete,
     isUnsaid,
+    lookLabel,
     panelsOf,
     stepAt,
   } from "./asking";
@@ -256,9 +257,10 @@
     goTo(step + delta);
   }
 
-  /* Designs this question offers to show rather than describe. Almost always
-     empty — an ask is a sentence and some buttons, and this is for the one that
-     is a choice between layouts. */
+  /* What this question offers to show rather than describe: designs composed
+     here, files that already exist, or both. Almost always empty — an ask is a
+     sentence and some buttons, and this is for the one that is a choice between
+     layouts, or about a screenshot. */
   const panels = $derived(current ? panelsOf(current) : []);
   let showing = $state(false);
 
@@ -382,14 +384,14 @@
     {/key}
 
     {#if panels.length}
-      <!-- The CLI can only describe a layout; this one can be looked at. The
-           gallery is its own surface rather than something that unfolds here —
-           the dock grows upward into the wall and three mockups in it is the
-           studio gone. See ./Gallery.svelte. -->
+      <!-- The CLI can only describe a layout or a screenshot; this one can show
+           either. The gallery is its own surface rather than something that
+           unfolds here — the dock grows upward into the wall and three mockups
+           in it is the studio gone. The options go with them, because a
+           question whose panels choose nothing still has to be answerable from
+           in front of the thing it is about. See ./Gallery.svelte. -->
       <button class="look" onclick={() => (showing = true)}>
-        {panels.length > 1
-          ? `look at the ${panels.length} designs`
-          : "look at the design"}
+        {lookLabel(panels)}
       </button>
     {/if}
 
@@ -481,6 +483,7 @@
   <Gallery
     {panels}
     header={current.header}
+    options={current.options}
     {scripts}
     onchoose={chose}
     onclose={() => (showing = false)}

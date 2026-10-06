@@ -243,7 +243,20 @@ pub fn pinned_schema() -> Value {
 ///
 /// Resolved against *that* because it is the directory the agent has been typing
 /// paths relative to all turn. An absolute path is left alone.
-fn resolve(app: &AppHandle, caller: &str, want: &str) -> Result<std::path::PathBuf, String> {
+///
+/// `then` is the **whole** instruction clause, not its tail, and that is the
+/// correction rather than the design: it was the tail for an afternoon, which
+/// left "Write the image first" hard-coded in front of it — so an agent whose
+/// `report.xlsx` was missing read "Write the image first, then ask about it",
+/// which names the wrong artefact at the one moment it is trying to work out
+/// what it got wrong. `ask.rs` resolves a question's attachments through here
+/// and they are not images.
+pub(crate) fn resolve(
+    app: &AppHandle,
+    caller: &str,
+    want: &str,
+    then: &str,
+) -> Result<std::path::PathBuf, String> {
     let Some(store) = app.try_state::<Store>() else {
         return Err("the store is unavailable".into());
     };
@@ -264,9 +277,9 @@ fn resolve(app: &AppHandle, caller: &str, want: &str) -> Result<std::path::PathB
     };
     if !full.is_file() {
         return Err(format!(
-            "there is no file at {}. Write the image first, then pin it — and if you meant \
-             a path relative to somewhere other than this card's working directory, give \
-             the absolute one.",
+            "there is no file at {}. {then} — and if you meant a path relative to \
+             somewhere other than this card's working directory, give the absolute \
+             one.",
             full.display()
         ));
     }
@@ -306,7 +319,7 @@ fn do_pin(app: &AppHandle, caller: &str, args: &Value) -> String {
     if want.is_empty() {
         return "the path was empty, so nothing was pinned".into();
     }
-    let full = match resolve(app, caller, want) {
+    let full = match resolve(app, caller, want, "Write the image first, then pin it") {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -446,7 +459,7 @@ fn do_repin(app: &AppHandle, caller: &str, args: &Value) -> String {
 
     let mut stored = None;
     if let Some(p) = asked_path.filter(|p| !p.is_empty()) {
-        let full = match resolve(app, caller, p) {
+        let full = match resolve(app, caller, p, "Write the image first, then repin it") {
             Ok(f) => f,
             Err(e) => return e,
         };
