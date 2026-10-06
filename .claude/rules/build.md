@@ -57,7 +57,15 @@ and WiX and NSIS produce what they produce under MSVC. Four things bite:
   as the Tauri arg-name bug further down.
 
 - **`cargo test` does not run on the gnu toolchain here**, so the Rust suites need MSVC and
-  the pure Bun suites are what a no-MSVC machine can actually check. Probed 2026-08-13: the
+  the pure Bun suites are what a no-MSVC machine can actually check. **A new Rust test module
+  is therefore unverified until a release runner reaches it**, which is not a theoretical gap:
+  `arrange.rs`'s whole module shipped red twice in one evening — first because its fixture was
+  missing two columns, then because one assertion read a column that the half-writer it called
+  does not write. Both compiled perfectly. `tools/lift-arrange.ts` is the shape to copy when a
+  new module's claims are mostly SQL or mostly data: take the statements out of the Rust and
+  run them under `bun:sqlite`, where they *can* be run. It will not catch a wrong expectation
+  in a Rust test, and nothing local will — that one is CI's, and the honest answer is to expect
+  a red build the first time a Rust module runs anywhere. Probed 2026-08-13: the
   crate *compiles* clean for `x86_64-pc-windows-gnu` and `cargo test --lib` links, but the
   harness exe dies at load with `0xC0000139` (STATUS_ENTRYPOINT_NOT_FOUND) — before any test
   runs, so a failure here says nothing about the code. Plain `cargo test` does not even get

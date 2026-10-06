@@ -173,6 +173,61 @@ const after = db.query("SELECT glass_x FROM placement WHERE conversation_id = 'c
 };
 ok("a room that holds nothing puts the card back on the wall", after.glass_x === null, `got ${after.glass_x}`);
 
+/* And the whole round trip, driven the way a *writer* drives it.
+ *
+ * `arrange::note` is only ever half of a placement — `save_placement` writes
+ * `placement.glass_x` itself and notes the row beside it — and a test that
+ * calls one half and reads the other is asserting something no code path does.
+ * One of the Rust tests did exactly that and it went red on a release runner,
+ * because `cargo test` cannot link on this machine and so the module had never
+ * run here at all. This is the same claim where it *can* be run. */
+/* A second card, in no room at all to begin with — `c1` was seeded into room
+   "one" above, and the claim here is about one that was never in it. */
+db.run("INSERT INTO placement VALUES ('c2', NULL, NULL)");
+
+function stick(id: string, x: number | null, y: number | null, room: string) {
+  db.run("UPDATE placement SET glass_x = ?, glass_y = ? WHERE conversation_id = ?", [x, y, id]);
+  if (x === null || y === null) {
+    db.run("DELETE FROM glass_spot WHERE arrangement = ? AND kind = 'card' AND ref = ?", [room, id]);
+  } else {
+    db.run(
+      `INSERT INTO glass_spot (arrangement, kind, ref, x, y) VALUES (?, 'card', ?, ?, ?)
+       ON CONFLICT(arrangement, kind, ref) DO UPDATE SET x = ?3, y = ?4`,
+      [room, id, x, y],
+    );
+  }
+}
+
+function reconcileTo(room: string) {
+  db.run(
+    `UPDATE placement SET
+       glass_x = (SELECT s.x FROM glass_spot s
+                   WHERE s.arrangement = ? AND s.kind = 'card' AND s.ref = placement.conversation_id),
+       glass_y = (SELECT s.y FROM glass_spot s
+                   WHERE s.arrangement = ? AND s.kind = 'card' AND s.ref = placement.conversation_id)`,
+    [room, room],
+  );
+}
+
+function spotNow(): number | null {
+  return (
+    db.query("SELECT glass_x FROM placement WHERE conversation_id = 'c2'").get() as {
+      glass_x: number | null;
+    }
+  ).glass_x;
+}
+
+stick("c2", 5, 6, "two");
+ok("sticking a card writes the column and the row together", spotNow() === 5, `got ${spotNow()}`);
+reconcileTo("one");
+ok("walking into a room that never held it puts it back on the wall", spotNow() === null, `got ${spotNow()}`);
+reconcileTo("two");
+ok("walking back finds it where it was left", spotNow() === 5, `got ${spotNow()}`);
+stick("c2", null, null, "two");
+reconcileTo("one");
+reconcileTo("two");
+ok("a room you emptied stays empty", spotNow() === null, `got ${spotNow()}`);
+
 /* ── the reading ─────────────────────────────────────────────────────────── */
 
 report();

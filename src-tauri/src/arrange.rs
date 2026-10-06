@@ -457,6 +457,27 @@ mod tests {
         conn
     }
 
+    /// Stick a card to the glass the way a *writer* does: the column and the
+    /// row, together.
+    ///
+    /// `note` is only ever half of a placement — `save_placement` writes
+    /// `placement.glass_x` itself and calls `note` beside it, which is the
+    /// whole of the "the columns are a cache of the room you are in" bargain.
+    /// A test calling `note` alone and then reading the column asserts
+    /// something no code path in this app does, and that is exactly what one of
+    /// these did. It failed nowhere until the module could run at all.
+    ///
+    /// `nothing_is_remembered_before_an_arrangement_is_known` still calls
+    /// `note` bare on purpose: its whole subject is what that half does alone.
+    fn stick(conn: &Connection, id: &str, x: Option<f64>, y: Option<f64>) {
+        conn.execute(
+            "UPDATE placement SET glass_x = ?2, glass_y = ?3 WHERE conversation_id = ?1",
+            params![id, x, y],
+        )
+        .unwrap();
+        note(conn, CARD, id, x, y);
+    }
+
     fn card_spot(conn: &Connection, id: &str) -> Option<(f64, f64)> {
         conn.query_row(
             "SELECT glass_x, glass_y FROM placement WHERE conversation_id = ?1",
@@ -495,7 +516,7 @@ mod tests {
         adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((10.0, 20.0)));
         // And the two are now separate rooms.
-        note(&conn, CARD, "c1", Some(99.0), Some(98.0));
+        stick(&conn, "c1", Some(99.0), Some(98.0));
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((10.0, 20.0)));
         adopt_in(&conn, "two", "[]", [0.0, 0.0], None).unwrap();
@@ -512,7 +533,7 @@ mod tests {
             .unwrap();
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
-        note(&conn, CARD, "c1", None, None);
+        stick(&conn, "c1", None, None);
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
         assert_eq!(card_spot(&conn, "c1"), None);
@@ -528,7 +549,7 @@ mod tests {
             .unwrap();
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
-        note(&conn, CARD, "c1", Some(5.0), Some(6.0));
+        stick(&conn, "c1", Some(5.0), Some(6.0));
         assert_eq!(card_spot(&conn, "c1"), Some((5.0, 6.0)));
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), None);
