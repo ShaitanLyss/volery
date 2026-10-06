@@ -123,7 +123,11 @@
      for why the two columns are folded separately. Both are cheap: a fold is one
      pass over an array that only grows at the end. */
   const past = $derived(blocksOf(conv.history, "h"));
-  const live = $derived(blocksOf(conv.lines, "l"));
+  /* `conv.dropped` is what makes a live line's key its absolute position rather
+     than its index in a window that slides — without it the whole column is
+     rebuilt on every message past the cap, and the reading goes with it. See
+     `Conversation.dropped`. */
+  const live = $derived(blocksOf(conv.lines, "l", conv.dropped));
 
   /** Which folded groups are open, by key. Every group starts closed — the
    *  space they were taking is the whole point — and each is its own decision,
@@ -905,40 +909,50 @@
     untrack(() => onhistory?.(c));
   });
 
-  /* A panel nobody is looking at lets go of the place it was holding.
-     Scrolling up during a live turn means "I am reading this", and the tail is
-     let go of for exactly as long as that is true — but turn to an editor for a
-     minute and the agent writes another round underneath, and coming back to a
-     view parked in the middle of the round before it is coming back to stale
-     news. So while the studio is unfocused, anything arriving re-arms the tail
-     and the follow below takes the view down; you turn back to the newest thing
-     said, which is what you left the card alone to get on with.
+  /* A panel nobody is looking at used to let go of the place it was holding,
+     and that is gone.
 
-     Gated on something actually arriving rather than on the blur itself: away
-     for two seconds with nothing said, the place you were holding is still
-     yours. And it is only ever *this* card's panel, so a card you are not
-     focused on has nothing to reset — its scroll position isn't kept anywhere.
+     The argument for it was good and it has expired. It read: scrolling up
+     during a live turn means "I am reading this", and the tail is let go of
+     for exactly as long as that is true -- but turn to an editor for a minute
+     and the agent writes another round underneath, so coming back to a view
+     parked in the middle of the round before it is coming back to stale news.
+     So while the studio was unfocused, anything arriving re-armed the tail and
+     the follow took the view down.
 
-     **`watching` is read untracked, and that is the whole of the gate.** Asking
-     `if (!watching)` inside the effect makes the blur a dependency, so losing
-     focus re-ran this and re-armed the tail by itself — the arrival signals
-     above became decoration, and the follow effect (which reads `watching` too)
-     took the view straight to the bottom. Scroll into the middle of a finished
+     **What expired it is `3da8146`, two and a half weeks later: only a hand
+     may let go of the tail.** Before that, `following` went false on its own
+     all the time -- the clamp, scroll anchoring, a late-delivered write -- so
+     re-arming it while you were away was *repair*, and usually right. After
+     it, every path to `following = false` is a deliberate act: a wheel, a key,
+     a scrollbar, unfolding a call, clicking a hunt match. So this effect could
+     only ever fire over a decision somebody had made, which makes it wrong
+     every time it does anything at all.
+
+     And it is the second half of sink `b14e1606`, which is the half that bites
+     an orchestrator: Lyss reads a card scrolled up, clicks into an editor --
+     constantly, that is what orchestrating is -- a relay lands, the tail is
+     re-armed, and coming back throws her place away. *"I intentionally
+     scrolled up and I didn't unselect the card."* The comment this replaces
+     already described the same complaint one case narrower, from when the blur
+     alone could trigger it: *"Scroll into the middle of a finished
      conversation, click an editor, and the panel you were reading threw the
-     place away with nothing having arrived to justify it. The condition here is
-     "is anyone looking", which is a question this effect asks and never wants to
-     be woken by; what wakes it is the four reads above, which are the events.
+     place away with nothing having arrived to justify it."* That was fixed by
+     gating on arrival. The remaining case is the same loss with something
+     having arrived, which is not a justification for discarding a decision --
+     the newest thing said is one flick of the wheel away, and the place she
+     was holding is not recoverable by any gesture at all.
 
-     It has to write `following` rather than scroll: the follow effect is what
-     knows to wait a frame for the DOM the new text made, and a second path to
-     the bottom would be a second thing to keep in step with it. */
-  $effect(() => {
-    void conv.streaming;
-    void conv.lines.length;
-    void conv.history.length;
-    void conv.activity;
-    if (!untrack(() => watching)) following = true;
-  });
+     **Nothing replaces it, and nothing needs to.** The returning-to-the-window
+     pin below is a separate effect and is the one that actually mattered: it
+     honours `following` rather than overwriting it, so a card left at the tail
+     still lands on the newest line when you come back, which is the case this
+     one was really protecting. A card left scrolled up stays where you left it.
+
+     The general shape, and it is this file's own lesson arriving from outside:
+     **a repair written for a flag that lied is a bug once the flag tells the
+     truth.** Anything that corrects a value "for" the user has to be re-read
+     whenever that value's meaning is tightened. */
 
   /* Follow the tail while the column grows — but only if that is where you
      already were. Scrolling up during a live turn is how you read what has just

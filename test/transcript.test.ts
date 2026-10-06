@@ -121,6 +121,50 @@ describe("a key that survives what happens to the column", () => {
     expect(after).toBe(before);
   });
 
+  /* Sink `b14e1606`. An ordinary line was keyed on its raw index, which was
+     judged harmless because it carries no fold state — and it carries a DOM
+     node. Past the cap every index shifts on every message, so Svelte's keyed
+     `{#each}` rebuilt the whole column, which takes Chromium's scroll anchor
+     with it; `scrollTop` then keeps its number over content that got shorter
+     and the reader slides toward the bottom with nothing having decided to
+     scroll. `base` is how many lines have fallen off the front. */
+  test("an ordinary line keeps its key when the window slides past it", () => {
+    const lines = [you("one"), you("two"), you("three"), you("four")];
+    const keyOf = (bs: ReturnType<typeof blocksOf>, text: string) =>
+      bs.find((b) => b.kind === "line" && b.line.text === text)!.key;
+
+    const before = blocksOf(lines);
+    /* Two fell off the front, so the rest are two further along in the
+       conversation and not two earlier in it. */
+    const after = blocksOf(lines.slice(2), "l", 2);
+
+    expect(keyOf(after, "three")).toBe(keyOf(before, "three"));
+    expect(keyOf(after, "four")).toBe(keyOf(before, "four"));
+  });
+
+  test("and without the offset it would not — which is the bug", () => {
+    /* Kept as the counter-example rather than as a second assertion of the
+       same thing: it is the whole reason the parameter exists, and a reader
+       who deletes it should fail this rather than wonder. */
+    const lines = [you("one"), you("two"), you("three")];
+    const keyOf = (bs: ReturnType<typeof blocksOf>) =>
+      bs.find((b) => b.kind === "line" && b.line.text === "three")!.key;
+    expect(keyOf(blocksOf(lines.slice(2)))).not.toBe(keyOf(blocksOf(lines)));
+  });
+
+  test("two lines never share a key, however far the window has slid", () => {
+    const lines = [you("same"), said("same"), you("same")];
+    const keys = blocksOf(lines, "l", 1_000).map((b) => b.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test("history is folded once and never slides, so it needs no offset", () => {
+    const lines = [you("go"), said("ok")];
+    expect(blocksOf(lines, "h").map((b) => b.key)).toEqual(
+      blocksOf(lines, "h", 0).map((b) => b.key),
+    );
+  });
+
   test("a growing group keeps its key — a new call lands at the end", () => {
     const key = (ls: Line[]) => blocksOf(ls).find((b) => b.kind === "tools")!.key;
     expect(key([tool("reading a"), tool("reading b"), tool("editing c")])).toBe(

@@ -874,6 +874,108 @@ three times to three different standards. `stillFollowing` and `STICK_PX` used t
   last one did. Named `snap` because it is instant: `Transcript.toTail` is the other kind, a
   glide you watch, and the two are not interchangeable.
 
+#### And a panel can lose your place without any of that being involved
+
+All of the above is about *deciding* whether to move the view, and every bit of it was
+working when Lyss reported the panel yanking her to the bottom anyway: *"every new message or
+relay or I don't know what in the transcript resets the scroll to the bottom whereas I
+intentionally scrolled up and I didn't unselect the card"* (sink `b14e1606`, 2026-10-02, on a
+nova orchestrator card taking relays and tool output as fast as they arrived).
+
+`following` was false throughout. Nothing decided to scroll. **The view was being carried out
+from under the reading by the DOM**, which is why the 2026-09-03 rework — the one that made
+only a hand able to let go of the tail — did not touch it and could not have: the tail was
+never released.
+
+The chain is four steps and each is individually reasonable:
+
+1. `Conversation.#push` caps the live column at `MAX_LINES` and slices **off the front**.
+2. `blocksOf` keyed an ordinary line on its index in that array.
+3. So past the cap, every key changes on every message — and Svelte's keyed `{#each}`
+   responds to a changed key by destroying the node and building a new one. The whole column,
+   per message.
+4. Chromium's scroll anchor is a *node*. Destroy it and there is nothing to hold, so
+   `scrollTop` keeps its number over content that just got a line shorter above it. The
+   reading slides toward the bottom, one line per message, for as long as the card is busy.
+
+**`transcript.ts`'s own comment names step 1 and stops one line short of step 2.** It is why
+a *group's* key is its opening words rather than its position — "`lines` is sliced off the
+front past MAX_LINES, which shifts every index down and would silently move an opened group
+onto a different one". For an ordinary line the same shift was judged harmless, and for the
+concern being reasoned about it was: a line has no fold state to misplace. It has a DOM node,
+and nothing in that paragraph was looking at the DOM.
+
+The fix is to make the key an *absolute* position: `Conversation.dropped` counts what has
+fallen off the front, ever, and `blocksOf` takes it as `base`. Stable by construction, which
+is the same property the group keys already buy by other means. History passes nothing — it
+is folded once and never slides.
+
+Two things worth carrying out of it:
+
+- **A keyed `{#each}` is a claim about identity, and an index is not one** wherever the array
+  can lose elements from the front. The cost is not a wrong-looking list, which is what one
+  usually watches for; it is every node being rebuilt, and whatever the browser was holding
+  on those nodes going with them — the scroll anchor here, and equally focus, a selection, a
+  running transition or an open `<details>`.
+- **A reading can be lost by something that never moves the view.** Every guard in `follow.ts`
+  asks *should we scroll?*, and the answer was correctly "no" the whole time. Nothing in that
+  family of questions can see this, so a symptom reported as "it scrolls me" is not evidence
+  that something scrolled.
+
+#### And the second half of the same report, which is a repair that outlived its reason
+
+The panel also used to re-arm the tail **whenever content arrived while the studio was
+unfocused** — `if (!untrack(() => watching)) following = true`. The argument was good: you
+turn to an editor for a minute, the agent writes another round underneath, and coming back
+to a view parked in the middle of the round before it is coming back to stale news.
+
+**`3da8146` expired it two and a half weeks after it was written, and nobody went back.**
+That is the commit above: *only a hand may let go of the tail*. Before it, `following` went
+false on its own constantly — the clamp, scroll anchoring, a late-delivered write — so
+re-arming while you were away was **repair**, and usually right. After it, every path to
+`following = false` is a deliberate act: a wheel, a key, a scrollbar, unfolding a call,
+clicking a hunt match. So the effect could only ever fire over a decision somebody had made,
+which makes it wrong every time it does anything at all.
+
+And it is the half that bites an orchestrator hardest, because orchestrating *is* switching
+windows: read a card scrolled up, click into an editor, a relay lands, come back, place
+gone. The comment it replaced already described the same complaint one case narrower, from
+when the blur alone could trigger it — *"Scroll into the middle of a finished conversation,
+click an editor, and the panel you were reading threw the place away with nothing having
+arrived to justify it"* — and fixed it by gating on arrival. The remaining case is the same
+loss with something having arrived, which is not a justification for discarding a decision:
+the newest thing said is one flick of the wheel away, and the place she was holding is
+recoverable by no gesture at all.
+
+**Nothing replaces it.** The returning-to-the-window pin is a separate effect and is the one
+that actually mattered: it *honours* `following` rather than overwriting it, so a card left
+at the tail still lands on the newest line when you come back — which is the case the re-arm
+was really protecting — and a card left scrolled up stays where you left it.
+
+The general shape, and it is this file's own lesson arriving from outside: **a repair written
+for a flag that lied is a bug once the flag tells the truth.** Anything that corrects a value
+on the user's behalf has to be re-read whenever that value's meaning is tightened.
+
+#### What is proved and what is inferred
+
+**Not driven in a browser** — this machine does not do automatic UI testing, so what is
+proved is the mechanism and the keys: `test/transcript.test.ts` asserts that a line keeps its
+key when the window slides past it, and keeps the counter-example that fails without the
+offset. The re-arm's removal is reasoned from the commit order and from there being no
+remaining non-hand path to `following = false` — checked, all three are gestures — and is
+covered by no test, because a Svelte effect reading a prop is not reachable from the pure
+suites. The link from either to Lyss's symptom is inference. Strong, and inference.
+
+Lyss's own three clauses, which are the spec to re-read if any of this is touched:
+
+1. selecting a card that got new content while she wasn't looking lands at the **end**;
+2. looking at a card already at the end: stay pinned as things arrive;
+3. looking at a card and scrolled **up**: never move her, whatever arrives.
+
+(1) is the `void conv.id; following = true` effect, which was already right. (3) is these two
+fixes. They are consistent rather than in tension precisely because `following` is per-column
+— a card you have just turned to is a column you have not scrolled.
+
 ### Reading it from the keyboard
 
 Until now the only ways down the panel were the wheel and the rails, both of which want a

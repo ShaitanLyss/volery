@@ -861,6 +861,38 @@ export class Conversation {
    *  prompt that was never queued, which is the whole finding. */
   saidUnqueued = $state(false);
 
+  /** How many lines have fallen off the front of `lines`, ever.
+   *
+   *  **A line's position in this array is not its identity, and drawing it as
+   *  though it were slid the panel out from under the reader.** `blocksOf`
+   *  keys an ordinary line on its index; `#push` slices the array at
+   *  `MAX_LINES`, so on a card busy enough to reach that cap *every key changes
+   *  on every message*. Svelte's keyed `{#each}` then destroys and rebuilds the
+   *  whole column, which takes Chromium's scroll anchor with it — and with no
+   *  anchor to hold, `scrollTop` keeps its number while the content above it
+   *  got a line shorter. The view slides toward the bottom, one line per
+   *  message, on a card receiving relays and tool output as fast as they
+   *  arrive. Which is sink `b14e1606`, reported as the panel resetting the
+   *  scroll: *"every new message or relay or I don't know what in the
+   *  transcript resets the scroll to the bottom whereas I intentionally
+   *  scrolled up and I didn't unselect the card"*.
+   *
+   *  Note what was *not* wrong: `following` is false throughout and every guard
+   *  in `follow.ts` behaves exactly as designed. Nothing decided to scroll. That
+   *  is why the 2026-09-03 rework — which made only a hand able to let go of the
+   *  tail — did not touch this and could not have: the reading was not being
+   *  released, it was being carried away underneath. **A panel can lose your
+   *  place without any code having moved the view.**
+   *
+   *  So this is added to the index to make an *absolute* position, which is
+   *  stable by construction however much falls off the front.
+   *  `transcript.ts`'s own comment already names this hazard — it is why a
+   *  group's key is its first line's words rather than its position — and the
+   *  reasoning stopped one line short of the lines themselves, where it was
+   *  judged harmless because an ordinary line has no fold state to misplace.
+   *  It has a DOM node. */
+  dropped = $state(0);
+
   /* context — the ring */
   ctxTokens = $state(0);
   contextWindow = $state(200_000);
@@ -1708,6 +1740,7 @@ export class Conversation {
     if (call) line.call = call;
     this.lines.push(line);
     if (this.lines.length > MAX_LINES) {
+      this.dropped += this.lines.length - MAX_LINES;
       this.lines = this.lines.slice(-MAX_LINES);
     }
     return this.lines[this.lines.length - 1]!;

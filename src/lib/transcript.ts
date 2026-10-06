@@ -89,8 +89,23 @@ const LONG: Line["kind"][] = ["summary", "skill", "relay"];
  *  move an opened group onto a different one. The first line of a group does not
  *  change as the group grows (a new call lands at the end), so the key is stable
  *  for exactly as long as the group is. Identical runs — the same command twice
- *  in one turn — are told apart by the count of those before them. */
-export function blocksOf(lines: Line[], tag = "l"): Block[] {
+ *  in one turn — are told apart by the count of those before them.
+ *
+ *  **`base` is that same hazard, for the lines the paragraph above stops one
+ *  short of.** An ordinary line was keyed on its raw index, which was judged
+ *  harmless because it has no fold state to misplace — and it has a DOM node.
+ *  Past the cap every index shifts on every message, so every key changed, so
+ *  Svelte's keyed `{#each}` rebuilt the entire column each time; that takes
+ *  Chromium's scroll anchor with it, and with nothing to anchor, `scrollTop`
+ *  keeps its number while the content above it got shorter. The reader slides
+ *  toward the bottom a line at a time with nothing having decided to scroll
+ *  (sink `b14e1606`, and `Conversation.dropped` has the whole of it).
+ *
+ *  So the caller passes how many lines have fallen off the front and the key
+ *  becomes an *absolute* position — stable by construction, which is the same
+ *  property the group keys buy by other means. Defaulting to zero keeps every
+ *  other caller right: history is folded once and never sliced. */
+export function blocksOf(lines: Line[], tag = "l", base = 0): Block[] {
   const out: Block[] = [];
   const seen = new Map<string, number>();
   /* Counted apart from `seen`, which is keyed on a tool line's own words: a run
@@ -160,7 +175,7 @@ export function blocksOf(lines: Line[], tag = "l"): Block[] {
       if (resent.body) {
         out.push({
           kind: "line",
-          key: `${tag}${i}`,
+          key: `${tag}${base + i}`,
           line: { ...line, text: resent.body },
         });
       }
@@ -174,14 +189,14 @@ export function blocksOf(lines: Line[], tag = "l"): Block[] {
       continue;
     }
     if (line.kind !== "tool") {
-      out.push({ kind: "line", key: `${tag}${i}`, line });
+      out.push({ kind: "line", key: `${tag}${base + i}`, line });
       continue;
     }
     let end = i;
     while (end < lines.length && lines[end].kind === "tool") end++;
     const run = lines.slice(i, end);
     if (run.length < MIN_FOLD) {
-      out.push({ kind: "line", key: `${tag}${i}`, line });
+      out.push({ kind: "line", key: `${tag}${base + i}`, line });
     } else {
       const head = run[0].text;
       const nth = seen.get(head) ?? 0;
