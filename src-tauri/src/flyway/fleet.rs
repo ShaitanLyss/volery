@@ -22,6 +22,10 @@
 //! That is what lets the properties below be unit tests with three `Fleet`s
 //! in a loop rather than three machines.
 //!
+//! The one thing the wiring must *keep* for it is the last roster version it
+//! announced (`Fleet::version`, handed back to `Fleet::new`) — see `announce`
+//! for the restart that freezes a wall on every peer's roster without it.
+//!
 //! ### Everything is gossip, and a repeat is free
 //!
 //! The three decisions `session.rs` is built on hold here unchanged, and each
@@ -38,18 +42,19 @@
 //!   greeter lacked — so whoever speaks first, both end up with everything,
 //!   and nothing here holds per-connection state about who dialled whom.
 //! - **A replay costs nothing.** An announcement is deduplicated on its
-//!   version, an ask and its answer on the request id. What a `Fleet` returns
-//!   to be said is only ever what was *new to it*, which is also what makes a
-//!   flood terminate: a thing echoed back to a wall that already holds it dies
-//!   there. So everything in `Reply::say` is safe to send to every peer, and
-//!   must reach at least the one that sent the message being answered.
+//!   version, an ask and its answer on the asking host and the request id.
+//!   What a `Fleet` returns to be said is only ever what was *new to it*, which
+//!   is also what makes a flood terminate: a thing echoed back to a wall that
+//!   already holds it dies there. So everything in `Reply::say` is safe to send
+//!   to every peer, and must reach at least the one that sent the message
+//!   being answered.
 //!
 //! The third one carries real weight for asks, because an ask is the one
 //! message on this wire whose effect is not idempotent by construction —
 //! opening a card twice is two cards, two agents, twice the money. See
-//! `Fleet::on`'s handling of `Ask`, and `the_memory_of_a_decision_outlives_
-//! any_ask_that_could_still_be_acted_on`, which is the invariant that keeps a
-//! redelivered frame from being a second card.
+//! `Fleet::on`'s handling of `Ask` and `Held::keep_until`, which together keep
+//! a redelivered frame from being a second card however late it arrives and
+//! however wrong the asker's clock is.
 //!
 //! ### Attribution, not authorisation
 //!
@@ -66,8 +71,31 @@
 //! card. The receiving wall must draw it: a card that arrived from the laptop
 //! and does not say so is a card nobody in the room with the desktop can
 //! account for, and the fan-out is visible only on a wall nobody is looking at.
+//!
+//! ### What was got wrong first
+//!
+//! The first cut passed its own tests and a red-team review then broke four of
+//! its promises, each with a test that is now below. Worth knowing because each
+//! one is a way a design like this goes wrong without looking wrong:
+//!
+//! - **The clock guard was checked only at arrival.** An asker seven minutes
+//!   fast was refused, the refusal was forgotten ten minutes later, and the
+//!   *same frame* redelivered then passed the check it had failed — the
+//!   asker's clock had become "only" three minutes off relative to a now that
+//!   had moved. Memory now lasts until the stamp check would refuse on its own
+//!   (`keep_until`), and a wall whose clock the roster has measured as off by
+//!   more than the slack is refused outright, whatever the frame says.
+//! - **A relay forwarded asks of any age.** Hop age does not grow in transit,
+//!   so a stale ask between two relays was remembered for less than the time it
+//!   took to come back, and bounced for ever. Relays now pass on only what the
+//!   addressee could still act on.
+//! - **The request id alone was the dedup key**, so two walls each minting
+//!   `r1` swallowed each other's ask. The key is the asking host and the id.
+//! - **The roster version was the clock**, which goes backwards across a
+//!   restart after a clock correction, and every peer then ignored the wall
+//!   until its clock caught up.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -102,27 +130,27 @@ pub const ASK_TTL_MS: i64 = 2 * 60_000;
 ///
 /// An ask carries the asker's wall clock as well as its hop-counted age (see
 /// `Heard` for why ages are hop-counted at all). The age is immune to skew but
-/// trusts whoever relayed it; the stamp is immune to a transport holding a
-/// frame but trusts the clocks. The ask is checked against both, and this is
-/// how much the clocks are allowed to be wrong by. Two minutes is far beyond
-/// what NTP leaves between two machines and still small beside the time a
-/// decision is remembered for.
+/// trusts whoever relayed it and cannot see a frame the *transport* held; the
+/// stamp sees that but trusts the clocks. So the ask is checked against both,
+/// and this is how wrong the clocks are allowed to be — measured from the
+/// roster where it can be (`Entry::skew_ms`), from the stamp where it cannot.
+/// Two minutes is far beyond what NTP leaves between two machines.
 pub const CLOCK_SLACK_MS: i64 = 2 * 60_000;
 
 /// When an asker stops waiting and says nobody answered.
 ///
-/// After this the addressee would refuse the ask as expired even with its
-/// clock at the far edge of `CLOCK_SLACK_MS`, so no answer saying "opened" can
+/// After this the addressee would refuse the ask as expired even with the
+/// clocks at the far edge of `CLOCK_SLACK_MS`, so no answer saying "opened" can
 /// still be on its way *unless* a card really was opened — which is why a late
 /// answer still surfaces after this (`Fleet::on`, `Answer`).
 pub const GIVE_UP_MS: i64 = ASK_TTL_MS + 2 * CLOCK_SLACK_MS;
 
-/// How long a wall remembers an ask and what it answered.
+/// How long a wall remembers an ask and its answer, at the least.
 ///
-/// This is the memory that turns a repeat into a no-op rather than a second
-/// card, so it has to outlast every ask that could still pass the age checks —
-/// `the_memory_of_a_decision_outlives_any_ask_that_could_still_be_acted_on`
-/// holds the arithmetic. Ten minutes leaves room above the six that requires.
+/// Measured from when *this wall* heard it rather than from when it was asked,
+/// so a relay's memory always outlasts the time a copy takes to come back
+/// round. The addressee keeps its decision longer still where the ask's stamp
+/// demands it — see `Held::keep_until`.
 pub const ANSWER_KEPT_MS: i64 = 10 * 60_000;
 
 /// A place a card can stand, as another machine can name it.
@@ -201,15 +229,17 @@ pub struct Facts {
 }
 
 /// One wall's statement about itself.
-///
-/// `version` orders a host's statements and nothing else — it is only ever
-/// compared with the same host's earlier versions, so whose clock is fast does
-/// not matter. `Fleet::announce` derives it from the announcing wall's own
-/// clock, which survives a restart without anything being stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Announcement {
     pub host: String,
+    /// Orders this host's statements and nothing else — only ever compared
+    /// with the same host's earlier versions. See `Fleet::announce`.
     pub version: u64,
+    /// The announcing wall's own clock when it said this. Never used to order
+    /// anything; it is how a receiver measures how far the two clocks disagree
+    /// (`Entry::skew_ms`), which the ask's stamp check needs to be trustworthy.
+    #[serde(default)]
+    pub said_at: Option<i64>,
     pub facts: Facts,
 }
 
@@ -239,11 +269,20 @@ pub struct Entry {
     /// When the wall made this statement, on *this* wall's clock. Estimated
     /// from the age it arrived with — see `Heard`.
     pub heard_at: i64,
+    said_at: Option<i64>,
 }
 
 impl Entry {
     pub fn quiet_for(&self, now: i64) -> u64 {
         age(now, self.heard_at)
+    }
+
+    /// How far that wall's clock is ahead of this one's, or `None` if it did
+    /// not say. Its clock when it spoke, less this wall's estimate of when that
+    /// was — both halves read off one statement, so a relay in between adds
+    /// only its own transit time, never its own clock.
+    pub fn skew_ms(&self) -> Option<i64> {
+        self.said_at.map(|s| s.saturating_sub(self.heard_at))
     }
 
     /// What a person choosing a host should be told about this one.
@@ -254,7 +293,7 @@ impl Entry {
     /// two-minute wait for nothing.
     pub fn standing(&self, now: i64) -> Standing {
         let quiet = self.quiet_for(now);
-        if quiet as i64 > QUIET_AFTER_MS {
+        if quiet > QUIET_AFTER_MS as u64 {
             return Standing::Quiet { for_ms: quiet };
         }
         if !self.facts.accepting {
@@ -264,6 +303,15 @@ impl Entry {
             return Standing::Full(r);
         }
         Standing::Open
+    }
+
+    /// The roster's merge order. A max over this is what makes the roster
+    /// converge whatever order statements arrive in; the facts are the last
+    /// term only so that two different statements claiming one version — which
+    /// a correct wall never makes, but a namesake would — still settle the same
+    /// way everywhere instead of by arrival.
+    fn order(&self) -> (u64, i64, String) {
+        (self.version, self.heard_at, serde_json::to_string(&self.facts).unwrap_or_default())
     }
 }
 
@@ -312,10 +360,11 @@ pub struct Origin {
 /// One wall asking another to open a card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ask {
-    /// Minted once per *gesture* by the asker, and the whole of what makes a
-    /// repeat harmless. A retry after a timeout reuses it (`Fleet::ask` with
-    /// the same id hands back the same ask), so the far side sees one request
-    /// arriving twice rather than two requests.
+    /// Minted once per *gesture* by the asker — a uuid, never a counter, and
+    /// never reused. Together with `from.host` it is the whole of what makes a
+    /// repeat harmless. A retry within `ASK_TTL_MS` reuses it (`Fleet::ask`
+    /// with the same id hands back the same ask), so the far side sees one
+    /// request arriving twice rather than two requests.
     ///
     /// Which cuts the other way after a *refusal*: the far side remembers what
     /// it answered, so the same id asked again gets the same refusal even if
@@ -332,12 +381,12 @@ pub struct Ask {
     pub territory: Territory,
     /// The new card's first prompt. Not clipped, for `spawn.rs`'s reason: the
     /// brief is the entire channel and it is already paid for. Scrubbed of
-    /// impossible characters on the way into a `Spawn`, because it goes
-    /// straight into a request the API would refuse otherwise.
+    /// impossible characters on arrival, because it goes straight into a
+    /// request the API would refuse otherwise.
     pub brief: String,
     pub title: Option<String>,
-    /// The asker's wall clock when it asked. Checked against `CLOCK_SLACK_MS`
-    /// — see there for why an ask carries both this and an age.
+    /// The asker's wall clock when it asked. See `CLOCK_SLACK_MS` for why an
+    /// ask carries both this and an age.
     pub asked_at: i64,
 }
 
@@ -347,11 +396,15 @@ pub struct Ask {
 /// `reason` says what to do about it, because the reader is as often an agent
 /// as a person and an agent told only "refused" has no next move but to ask
 /// again — which, for most of these, is exactly the wrong one.
+///
+/// The order `decide` checks them in is the order of what would make the rest
+/// moot: first whether the ask itself can be trusted (its clock, its age), then
+/// whether this wall takes anything, then the territory, then the bounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "why", rename_all = "snake_case")]
 pub enum Refusal {
     /// The person who owns that machine has not let other walls open cards on
-    /// it. The first check, because nothing else about the ask matters.
+    /// it. The first check about the wall itself.
     NotAccepting,
     /// It has no territory with that identity. Says what it does have, the way
     /// `spawn.rs` refuses an unmatched project with the list that would have
@@ -361,10 +414,10 @@ pub enum Refusal {
     AtHourlyBound { opened: u32, limit: u32 },
     /// The ask was older than `ASK_TTL_MS` by the time it arrived — see there.
     Expired { waited_ms: u64 },
-    /// The asker's clock is further ahead than `CLOCK_SLACK_MS`. Kept apart
-    /// from `Expired` because the cure is different: no amount of asking again
-    /// fixes a clock.
-    ClocksDisagree { ahead_ms: u64 },
+    /// The two machines' clocks are further apart than `CLOCK_SLACK_MS`. Kept
+    /// apart from `Expired` because the cure is different: no amount of
+    /// asking again fixes a clock.
+    ClocksDisagree { by_ms: u64, asker_ahead: bool },
     /// It tried and the spawn itself failed — the account is out, the binary
     /// is missing, the directory is gone. The reason is the receiving wall's
     /// own words.
@@ -396,6 +449,12 @@ impl Refusal {
                     wanted.name
                 )
             }
+            /* A bound of zero is a wall saying "none", and telling somebody to
+               close one of the zero cards it is running is nonsense. */
+            Refusal::AtLiveBound { limit: 0, .. } | Refusal::AtHourlyBound { limit: 0, .. } => format!(
+                "{host} takes no cards from other walls while its bound is zero — raise its \
+                 bound on {host}, or ask another wall"
+            ),
             Refusal::AtLiveBound { live, limit } => format!(
                 "{host} already has {live} cards opened for other walls and takes at most \
                  {limit} at once — close one of those on {host}, raise its bound, or ask \
@@ -413,10 +472,11 @@ impl Refusal {
                 span(*waited_ms),
                 span(ASK_TTL_MS as u64),
             ),
-            Refusal::ClocksDisagree { ahead_ms } => format!(
-                "the asking wall's clock is {} ahead of {host}'s — set both machines' clocks \
-                 from the network, then ask again",
-                span(*ahead_ms)
+            Refusal::ClocksDisagree { by_ms, asker_ahead } => format!(
+                "the asking wall's clock is {} {} {host}'s — set both machines' clocks from the \
+                 network, then ask again",
+                span(*by_ms),
+                if *asker_ahead { "ahead of" } else { "behind" },
             ),
             Refusal::CouldNotStart { reason } => format!(
                 "{host} tried to open the card and could not: {reason} — nothing was opened \
@@ -442,7 +502,8 @@ pub struct Answer {
     /// The wall that answered — which is the wall the card is on, if one was
     /// opened.
     pub by: String,
-    /// The wall that asked, so walls in between know where it is going.
+    /// The wall that asked, so walls in between know where it is going — and,
+    /// with `request`, the key it is deduplicated on.
     pub asked_by: String,
     pub outcome: Outcome,
 }
@@ -475,7 +536,8 @@ pub struct Spawn {
     pub territory: Territory,
     pub brief: String,
     pub title: Option<String>,
-    /// Must be recorded on the card and drawn. See the module comment.
+    /// Must be recorded on the card and drawn. See the module comment. Its
+    /// `host` is also half of what `opened` and `failed` are keyed on.
     pub asked_by: Origin,
 }
 
@@ -502,6 +564,13 @@ pub enum Unsendable {
     ThisWall,
     UnknownHost { host: String, known: Vec<String> },
     Quiet { host: String, for_ms: u64 },
+    /// A retry of an ask too old to be acted on. Sending it would only buy a
+    /// refusal, and sending it under the old id is how a request outlives the
+    /// memory that keeps it from being a second card.
+    Expired { id: String },
+    /// A retry of an ask that has already been answered. The answer is the
+    /// thing the caller was missing, so it is handed back rather than the ask.
+    AlreadyAnswered { answer: Box<Answer> },
 }
 
 impl Unsendable {
@@ -523,6 +592,19 @@ impl Unsendable {
                  it, or ask another wall",
                 span(*for_ms)
             ),
+            Unsendable::Expired { .. } => format!(
+                "that ask is more than {} old and will not be sent again — if it is still \
+                 wanted, ask afresh",
+                span(ASK_TTL_MS as u64)
+            ),
+            Unsendable::AlreadyAnswered { answer } => match &answer.outcome {
+                Outcome::Opened { card } => {
+                    format!("already answered: {} opened it as card {card}", answer.by)
+                }
+                Outcome::Refused { refusal } => {
+                    format!("already answered: {}", refusal.reason(&answer.by))
+                }
+            },
         };
         crate::clean::scrub(&s).into_owned()
     }
@@ -531,6 +613,7 @@ impl Unsendable {
 /// What a person or a card hands `Fleet::ask`.
 #[derive(Debug, Clone)]
 pub struct Request {
+    /// A uuid — see `Ask::id`.
     pub id: String,
     /// The card asking, or `None` for a person.
     pub card: Option<String>,
@@ -540,12 +623,31 @@ pub struct Request {
     pub title: Option<String>,
 }
 
+/// An ask or answer's identity: the asking host and the request id. The id
+/// alone was the first cut, and two walls each minting `r1` swallowed each
+/// other's ask — the second arrived, was taken for a repeat, and nobody
+/// opened anything or said so.
+type Key = (String, String);
+
 /// Something held with an estimate of when its origin made it, on this wall's
 /// clock — the local half of `Heard`'s age arithmetic.
 #[derive(Debug, Clone)]
 struct Held<T> {
     it: T,
     origin_at: i64,
+    /// When this wall may forget it.
+    ///
+    /// **For the addressee this is the guarantee against a second card**, so it
+    /// is not simply `ANSWER_KEPT_MS` after hearing. A redelivered ask that
+    /// meets no memory is decided again, and the only thing that refuses it
+    /// then is the stamp check — which refuses once `now - asked_at` passes
+    /// `ASK_TTL_MS + CLOCK_SLACK_MS`, on *this* wall's clock against the
+    /// *asker's* stamp. So memory lasts until at least that moment, whatever
+    /// the skew: an asker seven minutes fast moves the moment seven minutes
+    /// later, and the memory moves with it. That case was the first cut's
+    /// hole — refused at arrival, forgotten at ten minutes, and the same frame
+    /// passing at ten minutes and one.
+    keep_until: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -558,37 +660,61 @@ struct Waiting {
 pub struct Fleet {
     me: String,
     roster: BTreeMap<String, Entry>,
-    /// Every ask this wall has heard, its own included, by id. Kept for
-    /// `ANSWER_KEPT_MS` — this and `answers` are the memory that makes a
-    /// repeat a no-op.
-    asks: BTreeMap<String, Held<Ask>>,
-    answers: BTreeMap<String, Held<Answer>>,
+    /// Every ask this wall has heard, its own included. This and `answers` are
+    /// the memory that makes a repeat a no-op.
+    asks: BTreeMap<Key, Held<Ask>>,
+    answers: BTreeMap<Key, Held<Answer>>,
     /// Asks this wall has agreed to and handed out as a `Spawn`, not yet
-    /// reported opened or failed. Counted against the bound, which is what
-    /// stops two asks in one frame both passing a bound with room for one:
-    /// the facts the wiring reads cannot know about a card that has not been
-    /// opened yet.
-    in_flight: BTreeSet<String>,
-    /// This wall's own asks that nobody has answered yet.
+    /// reported opened or failed, with how long the answer must then be kept.
+    /// Counted against the bound, which is what stops two asks in one frame
+    /// both passing a bound with room for one: the facts the wiring reads
+    /// cannot know about a card that has not been opened yet. Never pruned —
+    /// the wiring owes every `Spawn` a report.
+    in_flight: BTreeMap<Key, i64>,
+    /// This wall's own asks that nobody has answered yet, by id.
     waiting: BTreeMap<String, Waiting>,
+    /// Walls a person took off the roster, with the version they had then. A
+    /// peer still holding the entry would otherwise gossip it straight back.
+    forgotten: BTreeMap<String, u64>,
+    /// Whether a statement about a wall of *this* name arrived with a version
+    /// this wall never made — another machine answering to the same name.
+    namesake: bool,
     last_version: u64,
 }
 
 impl Fleet {
-    pub fn new(me: &str) -> Self {
+    /// `last_version` is what `version()` returned the last time this wall
+    /// ran, or zero the first time. See `announce` for why it is kept.
+    pub fn new(me: &str, last_version: u64) -> Self {
         Self {
             me: me.to_string(),
             roster: BTreeMap::new(),
             asks: BTreeMap::new(),
             answers: BTreeMap::new(),
-            in_flight: BTreeSet::new(),
+            in_flight: BTreeMap::new(),
             waiting: BTreeMap::new(),
-            last_version: 0,
+            forgotten: BTreeMap::new(),
+            namesake: false,
+            last_version,
         }
     }
 
     pub fn me(&self) -> &str {
         &self.me
+    }
+
+    /// The version of this wall's latest announcement. The wiring persists it
+    /// and hands it back to `new`.
+    pub fn version(&self) -> u64 {
+        self.last_version
+    }
+
+    /// Another machine is in this flyway under this wall's name. Both would
+    /// answer asks addressed to it — two cards for one ask — and each ignores
+    /// the other's announcements as echoes of itself. Nothing here can fix
+    /// that; a person renaming one machine can, so it is said.
+    pub fn namesake(&self) -> bool {
+        self.namesake
     }
 
     /// Every wall this one knows about, itself included once it has announced.
@@ -600,8 +726,8 @@ impl Fleet {
         self.roster.get(host)
     }
 
-    pub fn answer(&self, request: &str) -> Option<&Answer> {
-        self.answers.get(request).map(|h| &h.it)
+    pub fn answer(&self, asked_by: &str, request: &str) -> Option<&Answer> {
+        self.answers.get(&(asked_by.to_string(), request.to_string())).map(|h| &h.it)
     }
 
     /// Take a wall off the roster — a machine retired, or renamed.
@@ -610,8 +736,14 @@ impl Fleet {
     /// drawn as quiet, because "the build box has not been heard from for
     /// three days" is information, and an entry that silently vanished would
     /// read as a machine that was never there.
+    ///
+    /// It holds against gossip — a peer still carrying the old entry does not
+    /// put it back — but not against the wall itself: if it announces again,
+    /// it is plainly not retired, and it reappears.
     pub fn forget(&mut self, host: &str) {
-        self.roster.remove(host);
+        if let Some(e) = self.roster.remove(host) {
+            self.forgotten.insert(host.to_string(), e.version);
+        }
     }
 
     /// The walls that could host a card in this territory, best first.
@@ -640,14 +772,19 @@ impl Fleet {
     /// something a chooser would care about changes — a territory opened, the
     /// accepting switch thrown.
     ///
-    /// The version is this wall's clock, or one past the last version if the
-    /// clock has gone backwards: it must only ever rise for this host, and it
-    /// must survive a restart, which a counter in memory would not and a clock
-    /// does without anything being stored.
+    /// The version must only ever rise for this host, or every peer ignores
+    /// the wall as repeating itself. It is this wall's clock, but never less
+    /// than one past the last version — *including the last version from
+    /// before a restart*, which is why the wiring keeps it. The first cut used
+    /// the clock alone, and a machine whose clock had been an hour fast,
+    /// corrected and then restarted announced versions every peer had already
+    /// passed: they kept the old entry, read the live wall as quiet within two
+    /// minutes, and refused to ask it anything. The clock term is kept so a
+    /// wall whose wiring loses the number still recovers by itself, if slowly.
     pub fn announce(&mut self, facts: Facts, now: i64) -> FleetMsg {
-        let version = (now.max(0) as u64).max(self.last_version + 1);
+        let version = (now.max(0) as u64).max(self.last_version.saturating_add(1));
         self.last_version = version;
-        let e = Entry { host: self.me.clone(), version, facts, heard_at: now };
+        let e = Entry { host: self.me.clone(), version, facts, heard_at: now, said_at: Some(now) };
         self.roster.insert(self.me.clone(), e.clone());
         FleetMsg::Roster { walls: vec![heard(&e, now)], greeting: false }
     }
@@ -666,10 +803,19 @@ impl Fleet {
     /// Ask a wall to open a card. What comes back is the message to say; the
     /// answer arrives later through `on`, in `Reply::answered`.
     ///
-    /// Asking again with an id already asked hands back the same ask — the
-    /// retry is the same request, which is the whole point of the id.
+    /// Asking again with an id already asked hands back the same ask while it
+    /// could still be acted on, the answer if one came, and a refusal past
+    /// that — the retry is the same request, which is the whole point of the
+    /// id, and an old id is never re-minted into a fresh ask.
     pub fn ask(&mut self, r: Request, now: i64) -> Result<FleetMsg, Unsendable> {
-        if let Some(h) = self.asks.get(&r.id) {
+        let key = (self.me.clone(), r.id.clone());
+        if let Some(h) = self.answers.get(&key) {
+            return Err(Unsendable::AlreadyAnswered { answer: Box::new(h.it.clone()) });
+        }
+        if let Some(h) = self.asks.get(&key) {
+            if age(now, h.origin_at) > ASK_TTL_MS as u64 {
+                return Err(Unsendable::Expired { id: r.id });
+            }
             return Ok(FleetMsg::Ask { ask: h.it.clone(), age_ms: age(now, h.origin_at) });
         }
         if r.to == self.me {
@@ -682,7 +828,7 @@ impl Fleet {
             });
         };
         let quiet = there.quiet_for(now);
-        if quiet as i64 > QUIET_AFTER_MS {
+        if quiet > QUIET_AFTER_MS as u64 {
             return Err(Unsendable::Quiet { host: r.to, for_ms: quiet });
         }
         let ask = Ask {
@@ -694,7 +840,10 @@ impl Fleet {
             title: r.title,
             asked_at: now,
         };
-        self.asks.insert(r.id.clone(), Held { it: ask.clone(), origin_at: now });
+        self.asks.insert(
+            key,
+            Held { it: ask.clone(), origin_at: now, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
+        );
         self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false });
         Ok(FleetMsg::Ask { ask, age_ms: 0 })
     }
@@ -702,26 +851,29 @@ impl Fleet {
     /// The card a `Spawn` asked for is open. Returns the answer to say, or
     /// nothing if this request was not in flight — reporting twice is a no-op,
     /// for the same reason everything else here is.
-    pub fn opened(&mut self, request: &str, card: &str, now: i64) -> Option<FleetMsg> {
-        self.settle(request, Outcome::Opened { card: card.to_string() }, now)
+    pub fn opened(&mut self, asked_by: &str, request: &str, card: &str, now: i64) -> Option<FleetMsg> {
+        self.settle(asked_by, request, Outcome::Opened { card: card.to_string() }, now)
     }
 
     /// The card a `Spawn` asked for could not be opened.
-    pub fn failed(&mut self, request: &str, reason: &str, now: i64) -> Option<FleetMsg> {
+    pub fn failed(&mut self, asked_by: &str, request: &str, reason: &str, now: i64) -> Option<FleetMsg> {
         let refusal = Refusal::CouldNotStart { reason: reason.to_string() };
-        self.settle(request, Outcome::Refused { refusal }, now)
+        self.settle(asked_by, request, Outcome::Refused { refusal }, now)
     }
 
-    fn settle(&mut self, request: &str, outcome: Outcome, now: i64) -> Option<FleetMsg> {
-        if !self.in_flight.remove(request) {
-            return None;
-        }
-        let asked_by = self.asks.get(request).map(|h| h.it.from.host.clone())?;
-        Some(self.record(Answer { request: request.to_string(), by: self.me.clone(), asked_by, outcome }, now))
+    /// Everything needed is in the key and `in_flight`, deliberately — the
+    /// first cut read the asker off `asks`, which a spawn slower than the
+    /// memory had already pruned, and the card opened with no answer ever
+    /// sent and a later redelivery told it had expired.
+    fn settle(&mut self, asked_by: &str, request: &str, outcome: Outcome, now: i64) -> Option<FleetMsg> {
+        let key = (asked_by.to_string(), request.to_string());
+        let keep_until = self.in_flight.remove(&key)?;
+        let answer = Answer { request: key.1.clone(), by: self.me.clone(), asked_by: key.0.clone(), outcome };
+        Some(self.record(key, answer, now, keep_until.max(now.saturating_add(ANSWER_KEPT_MS))))
     }
 
-    fn record(&mut self, answer: Answer, now: i64) -> FleetMsg {
-        self.answers.insert(answer.request.clone(), Held { it: answer.clone(), origin_at: now });
+    fn record(&mut self, key: Key, answer: Answer, now: i64, keep_until: i64) -> FleetMsg {
+        self.answers.insert(key, Held { it: answer.clone(), origin_at: now, keep_until });
         FleetMsg::Answer { answer, age_ms: 0 }
     }
 
@@ -732,16 +884,16 @@ impl Fleet {
     /// nobody answered is still an outcome somebody is waiting to hear — the
     /// card that asked would otherwise wait for ever.
     pub fn prune(&mut self, now: i64) -> Vec<String> {
-        self.asks.retain(|_, h| now - h.origin_at <= ANSWER_KEPT_MS);
-        self.answers.retain(|_, h| now - h.origin_at <= ANSWER_KEPT_MS);
+        self.asks.retain(|_, h| now <= h.keep_until);
+        self.answers.retain(|_, h| now <= h.keep_until);
         let mut gave_up = Vec::new();
         for (id, w) in self.waiting.iter_mut() {
-            if !w.given_up && now - w.asked_at > GIVE_UP_MS {
+            if !w.given_up && age(now, w.asked_at) > GIVE_UP_MS as u64 {
                 w.given_up = true;
                 gave_up.push(id.clone());
             }
         }
-        self.waiting.retain(|_, w| now - w.asked_at <= ANSWER_KEPT_MS);
+        self.waiting.retain(|_, w| age(now, w.asked_at) <= ANSWER_KEPT_MS as u64);
         gave_up
     }
 
@@ -754,7 +906,7 @@ impl Fleet {
                 let mut theirs: BTreeMap<String, u64> = BTreeMap::new();
                 let mut news = Vec::new();
                 for h in walls {
-                    let v = theirs.entry(h.wall.host.clone()).or_insert(0);
+                    let v = theirs.entry(sc(&h.wall.host)).or_insert(0);
                     *v = (*v).max(h.wall.version);
                     if let Some(e) = self.learn(h, now) {
                         news.push(heard(&e, now));
@@ -782,51 +934,74 @@ impl Fleet {
             }
 
             FleetMsg::Ask { ask, age_ms } => {
-                let id = ask.id.clone();
+                let ask = clean_ask(ask);
+                let key = (ask.from.host.clone(), ask.id.clone());
                 /* **The repeat.** An ask this wall has seen is never decided
                    twice — that is the second card. If this wall is the one it
                    was for and has answered, the repeat is most likely the asker
                    retrying because the answer was lost, so the answer is said
                    again; the asker's own dedup makes that free if it was not. */
-                if self.asks.contains_key(&id) || self.answers.contains_key(&id) || self.in_flight.contains(&id) {
+                if self.asks.contains_key(&key) || self.answers.contains_key(&key) || self.in_flight.contains_key(&key) {
                     if ask.to == self.me {
-                        if let Some(h) = self.answers.get(&id) {
+                        if let Some(h) = self.answers.get(&key) {
                             reply.say.push(FleetMsg::Answer { answer: h.it.clone(), age_ms: age(now, h.origin_at) });
                         }
                     }
                     return reply;
                 }
                 let origin_at = now.saturating_sub(clamp(age_ms));
-                self.asks.insert(id.clone(), Held { it: ask.clone(), origin_at });
 
                 if ask.to != self.me {
+                    /* Passed on only while the addressee could still act on it,
+                       by either measure. Without this a stale ask bounced
+                       between two relays for ever: hop age does not grow in
+                       transit, so each remembered it for less than the time it
+                       took to come back. Dropped rather than remembered — a
+                       repeat is dropped again, and says nothing either way. */
+                    if age(now, origin_at) > ASK_TTL_MS as u64 || stamp_age(now, ask.asked_at) > ASK_TTL_MS + CLOCK_SLACK_MS {
+                        return reply;
+                    }
+                    self.asks.insert(
+                        key,
+                        Held { it: ask.clone(), origin_at, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
+                    );
                     reply.say.push(FleetMsg::Ask { ask, age_ms: age(now, origin_at) });
                     return reply;
                 }
+
+                let keep_until = now
+                    .saturating_add(ANSWER_KEPT_MS)
+                    .max(ask.asked_at.saturating_add(ASK_TTL_MS + CLOCK_SLACK_MS + 1));
+                self.asks.insert(key.clone(), Held { it: ask.clone(), origin_at, keep_until });
                 match self.decide(&ask, age_ms, now, here) {
                     Ok(spawn) => {
-                        self.in_flight.insert(id);
+                        self.in_flight.insert(key, keep_until);
                         reply.open.push(spawn);
                     }
                     Err(refusal) => {
                         let answer = Answer {
-                            request: id,
+                            request: key.1.clone(),
                             by: self.me.clone(),
-                            asked_by: ask.from.host.clone(),
+                            asked_by: key.0.clone(),
                             outcome: Outcome::Refused { refusal },
                         };
-                        reply.say.push(self.record(answer, now));
+                        reply.say.push(self.record(key, answer, now, keep_until));
                     }
                 }
             }
 
             FleetMsg::Answer { answer, age_ms } => {
-                if self.answers.contains_key(&answer.request) {
+                let answer = clean_answer(answer);
+                let key = (answer.asked_by.clone(), answer.request.clone());
+                if self.answers.contains_key(&key) {
                     return reply;
                 }
                 let origin_at = now.saturating_sub(clamp(age_ms));
-                self.answers.insert(answer.request.clone(), Held { it: answer.clone(), origin_at });
                 if answer.asked_by == self.me {
+                    self.answers.insert(
+                        key,
+                        Held { it: answer.clone(), origin_at, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
+                    );
                     /* Reported even if this wall had given up waiting. Past
                        `GIVE_UP_MS` the far side should have refused as expired,
                        so an answer that says "opened" this late means a card
@@ -837,6 +1012,16 @@ impl Fleet {
                         reply.answered.push(answer);
                     }
                 } else {
+                    /* An answer older than anybody's memory of its ask is
+                       nobody's to receive; carrying it on would only be the
+                       ask's bounce again, one message later. */
+                    if age(now, origin_at) > ANSWER_KEPT_MS as u64 {
+                        return reply;
+                    }
+                    self.answers.insert(
+                        key,
+                        Held { it: answer.clone(), origin_at, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
+                    );
                     reply.say.push(FleetMsg::Answer { answer, age_ms: age(now, origin_at) });
                 }
             }
@@ -846,20 +1031,30 @@ impl Fleet {
 
     /// Whether to open a card for this ask, against this wall's facts now.
     ///
-    /// The order is the order of what would make the rest moot: an ask too old
-    /// to act on, then a wall that takes nothing, then the territory, then the
-    /// bounds — so the refusal names the thing that would have to change
-    /// first, not the third of three.
+    /// The ask's own trustworthiness first — its clock and its age — then
+    /// whether this wall takes anything, then the territory, then the bounds,
+    /// so the refusal names the thing that would have to change first rather
+    /// than the third of three.
     fn decide(&self, ask: &Ask, hop_age: u64, now: i64, here: &Facts) -> Result<Spawn, Refusal> {
-        let by_clock = now - ask.asked_at;
+        /* The skew the roster has *measured*, when it has. This is what makes
+           the stamp check below honest: the stamp can only catch a frame the
+           transport held if the clocks agree to within the slack, and nothing
+           else enforces that. An asker half an hour fast whose frame was held
+           twenty-nine minutes has a stamp that looks a minute old. */
+        if let Some(skew) = self.roster.get(&ask.from.host).and_then(Entry::skew_ms) {
+            if skew.unsigned_abs() > CLOCK_SLACK_MS as u64 {
+                return Err(Refusal::ClocksDisagree { by_ms: skew.unsigned_abs(), asker_ahead: skew > 0 });
+            }
+        }
+        let by_clock = now.saturating_sub(ask.asked_at);
         if by_clock < -CLOCK_SLACK_MS {
-            return Err(Refusal::ClocksDisagree { ahead_ms: (-by_clock) as u64 });
+            return Err(Refusal::ClocksDisagree { by_ms: by_clock.unsigned_abs(), asker_ahead: true });
         }
         /* Both measures, because each covers the other's blind spot: the hop
            age catches an ask held by a wall that relayed it, whatever the
            clocks say; the stamp catches a frame the *transport* held and
            redelivered with the age it left with, which no wall ever saw. */
-        if clamp(hop_age) > ASK_TTL_MS || by_clock > ASK_TTL_MS + CLOCK_SLACK_MS {
+        if hop_age > ASK_TTL_MS as u64 || by_clock > ASK_TTL_MS + CLOCK_SLACK_MS {
             return Err(Refusal::Expired { waited_ms: hop_age.max(by_clock.max(0) as u64) });
         }
         if !here.accepting {
@@ -877,8 +1072,8 @@ impl Fleet {
         Ok(Spawn {
             request: ask.id.clone(),
             territory: t.clone(),
-            brief: crate::clean::scrub(&ask.brief).into_owned(),
-            title: ask.title.as_deref().map(|s| crate::clean::scrub(s).into_owned()),
+            brief: ask.brief.clone(),
+            title: ask.title.clone(),
             asked_by: ask.from.clone(),
         })
     }
@@ -886,8 +1081,8 @@ impl Fleet {
     /// Fold one statement in. Returns the entry if it was news — a version of
     /// that host this wall had not heard — which is what gets passed on.
     ///
-    /// The kept entry is the greatest by `(version, heard_at)`, which is a max
-    /// over a total order and so cannot depend on arrival order — the property
+    /// The kept entry is the greatest by `Entry::order`, a max over a total
+    /// order and so independent of arrival order — the property
     /// `a_roster_converges_however_announcements_interleave` holds. A same-
     /// version copy that arrived by a quicker path improves the estimate of
     /// when it was said but is not news: passing it on would be every relay
@@ -895,25 +1090,38 @@ impl Fleet {
     ///
     /// Statements about this wall itself are ignored. It knows what it is
     /// better than any relay does, and an old copy of its own announcement
-    /// coming back round must never overwrite the current one.
+    /// coming back round must never overwrite the current one. One with a
+    /// version it never made is not an echo, though — see `namesake`.
     fn learn(&mut self, h: Heard, now: i64) -> Option<Entry> {
-        if h.wall.host == self.me {
+        let host = sc(&h.wall.host);
+        if host == self.me {
+            if h.wall.version > self.last_version {
+                self.namesake = true;
+            }
             return None;
         }
+        if let Some(v) = self.forgotten.get(&host) {
+            if h.wall.version <= *v {
+                return None;
+            }
+            self.forgotten.remove(&host);
+        }
+        let heard_at = now.saturating_sub(clamp(h.age_ms));
         let incoming = Entry {
-            host: h.wall.host.clone(),
+            host: host.clone(),
             version: h.wall.version,
-            facts: h.wall.facts,
-            heard_at: now.saturating_sub(clamp(h.age_ms)),
+            facts: clean_facts(h.wall.facts),
+            heard_at,
+            said_at: h.wall.said_at,
         };
-        match self.roster.get(&incoming.host) {
-            Some(e) if (e.version, e.heard_at) >= (incoming.version, incoming.heard_at) => None,
+        match self.roster.get(&host) {
+            Some(e) if e.order() >= incoming.order() => None,
             Some(e) if e.version == incoming.version => {
-                self.roster.insert(incoming.host.clone(), incoming);
+                self.roster.insert(host, incoming);
                 None
             }
             _ => {
-                self.roster.insert(incoming.host.clone(), incoming.clone());
+                self.roster.insert(host, incoming.clone());
                 Some(incoming)
             }
         }
@@ -928,14 +1136,16 @@ impl Fleet {
     fn gossip(&self, now: i64) -> Vec<FleetMsg> {
         let asks = self
             .asks
-            .values()
-            .filter(|h| h.it.to != self.me)
-            .filter(|h| !self.answers.contains_key(&h.it.id))
-            .filter(|h| now - h.origin_at <= ASK_TTL_MS)
-            .map(|h| FleetMsg::Ask { ask: h.it.clone(), age_ms: age(now, h.origin_at) });
+            .iter()
+            .filter(|(_, h)| h.it.to != self.me)
+            .filter(|(k, _)| !self.answers.contains_key(*k))
+            .filter(|(_, h)| age(now, h.origin_at) <= ASK_TTL_MS as u64)
+            .filter(|(_, h)| stamp_age(now, h.it.asked_at) <= ASK_TTL_MS + CLOCK_SLACK_MS)
+            .map(|(_, h)| FleetMsg::Ask { ask: h.it.clone(), age_ms: age(now, h.origin_at) });
         let answers = self
             .answers
             .values()
+            .filter(|h| age(now, h.origin_at) <= ANSWER_KEPT_MS as u64)
             .map(|h| FleetMsg::Answer { answer: h.it.clone(), age_ms: age(now, h.origin_at) });
         asks.chain(answers).collect()
     }
@@ -962,9 +1172,64 @@ fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
 
 fn heard(e: &Entry, now: i64) -> Heard {
     Heard {
-        wall: Announcement { host: e.host.clone(), version: e.version, facts: e.facts.clone() },
+        wall: Announcement { host: e.host.clone(), version: e.version, said_at: e.said_at, facts: e.facts.clone() },
         age_ms: age(now, e.heard_at),
     }
+}
+
+/* ── at the boundary ─────────────────────────────────────────────────────────
+   Every string that arrives from another wall and can reach an agent — a host,
+   a card id, a territory name, a brief — is scrubbed here, once, on the way in
+   (CLAUDE.md: a text an agent will read may not carry a character it cannot
+   send). On the way *in* rather than at each reader, because the readers are
+   the wiring's and do not exist yet; and because `crate::clean::scrub` is
+   idempotent, a wall relaying something it scrubbed hands on exactly what the
+   next wall would have made of it, so keys built from these strings agree. */
+
+fn sc(s: &str) -> String {
+    crate::clean::scrub(s).into_owned()
+}
+
+fn sc_opt(s: Option<String>) -> Option<String> {
+    s.map(|s| sc(&s))
+}
+
+fn clean_territory(t: Territory) -> Territory {
+    Territory { identity: sc(&t.identity), name: sc(&t.name) }
+}
+
+fn clean_facts(mut f: Facts) -> Facts {
+    f.territories = f.territories.into_iter().map(clean_territory).collect();
+    f
+}
+
+fn clean_ask(a: Ask) -> Ask {
+    Ask {
+        id: sc(&a.id),
+        from: Origin { host: sc(&a.from.host), card: sc_opt(a.from.card) },
+        to: sc(&a.to),
+        territory: clean_territory(a.territory),
+        brief: sc(&a.brief),
+        title: sc_opt(a.title),
+        asked_at: a.asked_at,
+    }
+}
+
+fn clean_answer(a: Answer) -> Answer {
+    let outcome = match a.outcome {
+        Outcome::Opened { card } => Outcome::Opened { card: sc(&card) },
+        Outcome::Refused { refusal: Refusal::CouldNotStart { reason } } => {
+            Outcome::Refused { refusal: Refusal::CouldNotStart { reason: sc(&reason) } }
+        }
+        Outcome::Refused { refusal: Refusal::NoSuchTerritory { wanted, offered } } => Outcome::Refused {
+            refusal: Refusal::NoSuchTerritory {
+                wanted: clean_territory(wanted),
+                offered: offered.into_iter().map(clean_territory).collect(),
+            },
+        },
+        other => other,
+    };
+    Answer { request: sc(&a.request), by: sc(&a.by), asked_by: sc(&a.asked_by), outcome }
 }
 
 /// How long ago, never negative. A wall whose estimate of when something was
@@ -972,6 +1237,12 @@ fn heard(e: &Entry, now: i64) -> Heard {
 /// just now rather than as a negative age wrapping to the far end of a `u64`.
 fn age(now: i64, at: i64) -> u64 {
     now.saturating_sub(at).max(0) as u64
+}
+
+/// How old an ask's stamp says it is, on this wall's clock. Signed, because a
+/// stamp from the future is a clock question rather than an age.
+fn stamp_age(now: i64, asked_at: i64) -> i64 {
+    now.saturating_sub(asked_at)
 }
 
 /// An age off the wire as something safe to subtract. A peer is trusted, but a
@@ -995,6 +1266,7 @@ fn span(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn t(identity: &str, name: &str) -> Territory {
         Territory { identity: identity.into(), name: name.into() }
@@ -1018,7 +1290,7 @@ mod tests {
 
     impl Node {
         fn new(host: &str, here: Facts) -> Self {
-            Self { f: Fleet::new(host), here, spawns: Vec::new(), answered: Vec::new() }
+            Self { f: Fleet::new(host, 0), here, spawns: Vec::new(), answered: Vec::new() }
         }
 
         fn hear(&mut self, m: FleetMsg, now: i64) -> Vec<FleetMsg> {
@@ -1061,6 +1333,36 @@ mod tests {
         }
     }
 
+    fn raw_ask(id: &str, from: &str, to: &str, asked_at: i64) -> Ask {
+        Ask {
+            id: id.into(),
+            from: Origin { host: from.into(), card: None },
+            to: to.into(),
+            territory: skein(),
+            brief: "b".into(),
+            title: None,
+            asked_at,
+        }
+    }
+
+    fn statement(host: &str, version: u64, facts: Facts, said_at: Option<i64>, age_ms: u64) -> FleetMsg {
+        FleetMsg::Roster {
+            walls: vec![Heard { wall: Announcement { host: host.into(), version, said_at, facts }, age_ms }],
+            greeting: false,
+        }
+    }
+
+    fn announced(host: &str, version: u64, working: u32, age_ms: u64) -> FleetMsg {
+        statement(host, version, Facts { cards_working: working, ..open_facts() }, None, age_ms)
+    }
+
+    fn refusal_in(said: &[FleetMsg]) -> Option<&Refusal> {
+        match said {
+            [FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal }, .. }, .. }] => Some(refusal),
+            _ => None,
+        }
+    }
+
     fn snapshot(f: &Fleet) -> Vec<(String, u64, Facts, i64)> {
         f.roster().map(|e| (e.host.clone(), e.version, e.facts.clone(), e.heard_at)).collect()
     }
@@ -1078,20 +1380,6 @@ mod tests {
         v
     }
 
-    fn announced(host: &str, version: u64, working: u32, age_ms: u64) -> FleetMsg {
-        FleetMsg::Roster {
-            walls: vec![Heard {
-                wall: Announcement {
-                    host: host.into(),
-                    version,
-                    facts: Facts { cards_working: working, ..open_facts() },
-                },
-                age_ms,
-            }],
-            greeting: false,
-        }
-    }
-
     /// **The property.** Statements about three walls — several versions
     /// each, one version arriving by two paths with different ages, some
     /// bundled the way a relay bundles them — reach an observer in every
@@ -1102,11 +1390,11 @@ mod tests {
         let bundle = FleetMsg::Roster {
             walls: vec![
                 Heard {
-                    wall: Announcement { host: "lap".into(), version: 2, facts: Facts { cards_working: 2, ..open_facts() } },
+                    wall: Announcement { host: "lap".into(), version: 2, said_at: None, facts: Facts { cards_working: 2, ..open_facts() } },
                     age_ms: 4_000,
                 },
                 Heard {
-                    wall: Announcement { host: "server".into(), version: 1, facts: Facts { cards_working: 0, ..open_facts() } },
+                    wall: Announcement { host: "server".into(), version: 1, said_at: None, facts: Facts { cards_working: 0, ..open_facts() } },
                     age_ms: 9_000,
                 },
             ],
@@ -1123,6 +1411,10 @@ mod tests {
             bundle,
             announced("lap", 2, 2, 2_000),
             announced("server", 4, 7, 500),
+            /* A namesake's collision: two different statements claiming one
+               version. A correct wall never makes this, but the roster must
+               still settle it the same way everywhere. */
+            announced("server", 4, 8, 500),
         ];
 
         let now = 1_000_000;
@@ -1193,6 +1485,9 @@ mod tests {
         let e = lap.f.entry("desk").expect("learned through the server");
         assert_eq!(e.quiet_for(lap_now), hour as u64, "an hour old, not fresh from the relay");
         assert!(matches!(e.standing(lap_now), Standing::Quiet { .. }));
+        /* And the same arithmetic measures the clocks: the desk said 0 when
+           the laptop's clock read an hour. */
+        assert_eq!(e.skew_ms(), Some(-hour));
     }
 
     /// **Quiet is not busy.** A wall that said it was full and a wall that has
@@ -1203,7 +1498,7 @@ mod tests {
     fn a_stale_entry_is_not_a_busy_one() {
         let mut me = Node::new("me", open_facts());
         let full = Facts { bound: Bound { live: Some(2), per_hour: None }, remote_live: 2, ..open_facts() };
-        me.hear(FleetMsg::Roster { walls: vec![Heard { wall: Announcement { host: "busy".into(), version: 1, facts: full }, age_ms: 0 }], greeting: false }, 0);
+        me.hear(statement("busy", 1, full, None, 0), 0);
         me.hear(announced("idle", 1, 0, 0), 0);
 
         let soon = 10_000;
@@ -1219,24 +1514,50 @@ mod tests {
     }
 
     /// A wall knows itself better than any relay does. An old copy of its own
-    /// announcement coming back round must not replace the current one.
+    /// announcement coming back round must not replace the current one — and
+    /// is not mistaken for a namesake.
     #[test]
     fn a_wall_is_never_told_what_it_is_by_an_echo() {
         let mut desk = Node::new("desk", open_facts());
         desk.f.announce(Facts { cards_working: 9, ..open_facts() }, 5_000);
         desk.hear(announced("desk", 1, 0, 0), 6_000);
         assert_eq!(desk.f.entry("desk").unwrap().facts.cards_working, 9);
+        assert!(!desk.f.namesake());
     }
 
-    /// The version only rises for a host, even if the clock it is drawn from
-    /// steps backwards — otherwise every wall would ignore it until the clock
-    /// caught up.
+    /// Two machines answering to one name would both open a card for one ask,
+    /// and each would take the other's announcements for echoes. The only
+    /// sign is a statement about "me" with a version this wall never made.
+    #[test]
+    fn a_second_machine_with_this_name_is_noticed() {
+        let mut desk = Node::new("desk", open_facts());
+        desk.f.announce(open_facts(), 5_000);
+        desk.hear(announced("desk", 9_000, 0, 0), 6_000);
+        assert!(desk.f.namesake());
+    }
+
+    /// The version only rises for a host — across a clock stepping back while
+    /// running, and across a restart after one, which is the case that froze a
+    /// wall on every roster when the version was the clock alone.
     #[test]
     fn a_clock_stepping_back_does_not_freeze_a_wall_on_the_roster() {
-        let mut desk = Fleet::new("desk");
+        let mut desk = Fleet::new("desk", 0);
         desk.announce(open_facts(), 10_000);
         let FleetMsg::Roster { walls, .. } = desk.announce(open_facts(), 4_000) else { unreachable!() };
         assert!(walls[0].wall.version > 10_000);
+
+        /* The clock was an hour fast; it is corrected and the app restarts,
+           with the version the wiring kept. */
+        let hour = 3_600_000;
+        let mut lap = Node::new("lap", open_facts());
+        let mut before = Fleet::new("desk", 0);
+        lap.hear(before.announce(open_facts(), 2 * hour), 0);
+        let kept = before.version();
+
+        let mut after = Fleet::new("desk", kept);
+        let closed = Facts { accepting: false, ..open_facts() };
+        lap.hear(after.announce(closed, hour), 1_000);
+        assert!(!lap.f.entry("desk").unwrap().facts.accepting, "the restarted wall's word was taken");
     }
 
     /// Either end may open, and the other answers with what the opener lacked
@@ -1268,6 +1589,19 @@ mod tests {
         assert!(replies.is_empty(), "{replies:?}");
     }
 
+    /// A forgotten wall stays forgotten when a peer gossips the old entry back,
+    /// and comes back if it speaks for itself again — it is plainly not retired.
+    #[test]
+    fn forgetting_a_wall_holds_against_gossip_but_not_against_the_wall() {
+        let mut me = Node::new("me", open_facts());
+        me.hear(announced("old", 5, 0, 0), 0);
+        me.f.forget("old");
+        me.hear(announced("old", 5, 0, 0), 1_000);
+        assert!(me.f.entry("old").is_none(), "a peer's stale copy does not undo it");
+        me.hear(announced("old", 6, 0, 0), 2_000);
+        assert!(me.f.entry("old").is_some());
+    }
+
     /// An ask, a card, an answer: the whole round trip, and the card knows
     /// who asked for it.
     #[test]
@@ -1288,7 +1622,7 @@ mod tests {
         assert_eq!(s.asked_by, Origin { host: "lap".into(), card: Some("card-1".into()) });
         assert_eq!(s.territory, skein());
 
-        let answer = desk.f.opened("r1", "card-on-desk", 2_000).unwrap();
+        let answer = desk.f.opened("lap", "r1", "card-on-desk", 2_000).unwrap();
         lap.hear(answer, 2_100);
         assert_eq!(lap.answered.len(), 1);
         assert_eq!(lap.answered[0].by, "desk");
@@ -1310,8 +1644,8 @@ mod tests {
         desk.hear(ask.clone(), 1_001);
         assert_eq!(desk.spawns.len(), 1, "in flight, a repeat is silence");
 
-        desk.f.opened("r1", "card-on-desk", 2_000).unwrap();
-        assert!(desk.f.opened("r1", "card-on-desk", 2_001).is_none(), "reporting twice is a no-op");
+        desk.f.opened("lap", "r1", "card-on-desk", 2_000).unwrap();
+        assert!(desk.f.opened("lap", "r1", "card-on-desk", 2_001).is_none(), "reporting twice is a no-op");
 
         /* The asker retries with the same id because it never heard back. */
         let retry = lap.f.ask(request("r1", "desk", skein()), 30_000).unwrap();
@@ -1323,6 +1657,31 @@ mod tests {
         );
         lap.hear_all(said, 30_000);
         assert_eq!(lap.answered.len(), 1);
+    }
+
+    /// Two walls each minting the same id ask the same wall. They are two
+    /// asks — the first cut keyed on the id alone and the second was taken for
+    /// a repeat, opening nothing and saying nothing.
+    #[test]
+    fn two_walls_using_the_same_id_are_two_asks() {
+        let mut desk = Node::new("desk", open_facts());
+        desk.hear(FleetMsg::Ask { ask: raw_ask("r1", "lap", "desk", 0), age_ms: 0 }, 0);
+        desk.hear(FleetMsg::Ask { ask: raw_ask("r1", "server", "desk", 0), age_ms: 0 }, 0);
+        assert_eq!(desk.spawns.len(), 2);
+        assert!(desk.f.opened("server", "r1", "c-server", 10).is_some());
+        assert!(desk.f.opened("lap", "r1", "c-lap", 10).is_some());
+
+        /* And on the asking side, a stranger's answer under the same id does
+           not swallow this wall's own. */
+        let mut lap = Node::new("lap", open_facts());
+        lap.hear(announced("desk", 1, 0, 0), 0);
+        lap.f.ask(request("r1", "desk", skein()), 0).unwrap();
+        let theirs = Answer { request: "r1".into(), by: "desk".into(), asked_by: "server".into(), outcome: Outcome::Opened { card: "c-server".into() } };
+        let mine = Answer { request: "r1".into(), by: "desk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "c-lap".into() } };
+        lap.hear(FleetMsg::Answer { answer: theirs, age_ms: 0 }, 10);
+        lap.hear(FleetMsg::Answer { answer: mine, age_ms: 0 }, 10);
+        assert_eq!(lap.answered.len(), 1);
+        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "c-lap".into() });
     }
 
     /// Two different asks in one frame, a bound with room for one. The facts
@@ -1340,28 +1699,22 @@ mod tests {
         let two = lap.f.ask(request("r2", "desk", skein()), 1_000).unwrap();
         let said = desk.hear_all(vec![one, two], 1_000);
         assert_eq!(desk.spawns.len(), 1);
-        assert!(matches!(
-            &said[..],
-            [FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal: Refusal::AtLiveBound { live: 1, limit: 1 } }, .. }, .. }]
-        ), "{said:?}");
+        assert_eq!(refusal_in(&said), Some(&Refusal::AtLiveBound { live: 1, limit: 1 }), "{said:?}");
     }
 
-    /// The invariant under the dedup. A wall remembers what it decided for
-    /// `ANSWER_KEPT_MS`; an ask may still pass the age checks up to
-    /// `ASK_TTL_MS + CLOCK_SLACK_MS` after it was stamped, by a clock up to
-    /// `CLOCK_SLACK_MS` ahead. If the memory were shorter than that, a frame
-    /// the transport redelivered late would meet no memory and still pass —
-    /// and be a second card.
+    /// The constants the guarantees lean on. The no-second-card guarantee no
+    /// longer rests on these — `keep_until` is computed from each ask's own
+    /// stamp — but a relay's memory must still outlast the window in which it
+    /// forwards, or the bounce comes back.
     #[test]
-    fn the_memory_of_a_decision_outlives_any_ask_that_could_still_be_acted_on() {
-        assert!(ANSWER_KEPT_MS > ASK_TTL_MS + 2 * CLOCK_SLACK_MS);
+    fn the_timing_constants_keep_their_order() {
+        assert!(ANSWER_KEPT_MS > ASK_TTL_MS + CLOCK_SLACK_MS);
         assert!(GIVE_UP_MS < ANSWER_KEPT_MS, "a late answer must still find its waiting entry");
         assert!(QUIET_AFTER_MS > ANNOUNCE_EVERY_MS);
     }
 
-    /// And the behaviour that invariant buys: the transport redelivers an ask
-    /// long after the memory of it is gone, carrying the age it left with. The
-    /// stamp catches it.
+    /// The transport redelivers an ask long after the memory of it is gone,
+    /// carrying the age it left with. The stamp catches it.
     #[test]
     fn a_redelivery_after_the_memory_is_gone_is_refused_not_opened() {
         let mut lap = Node::new("lap", open_facts());
@@ -1371,18 +1724,115 @@ mod tests {
 
         let ask = lap.f.ask(request("r1", "desk", skein()), 1_000).unwrap();
         desk.hear(ask.clone(), 1_000);
-        desk.f.opened("r1", "c", 1_500);
+        desk.f.opened("lap", "r1", "c", 1_500);
 
-        /* Past the memory of the *answer*, which was made at 1_500 — the ask's
-           own memory went half a second earlier. */
+        /* Past the memory of the *answer*, which was made at 1_500. */
         let much_later = 1_500 + ANSWER_KEPT_MS + 1;
         desk.f.prune(much_later);
         let said = desk.hear(ask, much_later);
         assert_eq!(desk.spawns.len(), 1);
-        assert!(matches!(
-            &said[..],
-            [FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal: Refusal::Expired { .. } }, .. }, .. }]
-        ), "{said:?}");
+        assert!(matches!(refusal_in(&said), Some(Refusal::Expired { .. })), "{said:?}");
+    }
+
+    /// **The review's first hole.** An asker seven minutes fast is refused at
+    /// arrival. The first cut forgot that at ten minutes, and the same frame
+    /// redelivered at ten minutes and one passed — its stamp was by then only
+    /// three minutes in the future of a clock that had moved on. Memory now
+    /// lasts until the stamp check refuses on its own, and the frame never
+    /// opens a card at any moment.
+    #[test]
+    fn a_fast_clock_cannot_wait_out_the_memory_of_its_refusal() {
+        let mut desk = Node::new("desk", open_facts());
+        let ask = FleetMsg::Ask { ask: raw_ask("r1", "lap", "desk", 7 * 60_000), age_ms: 0 };
+        let said = desk.hear(ask.clone(), 0);
+        assert!(matches!(refusal_in(&said), Some(Refusal::ClocksDisagree { asker_ahead: true, .. })));
+
+        for minute in 1..=20 {
+            let now = minute * 60_000 + 1;
+            desk.f.prune(now);
+            desk.hear(ask.clone(), now);
+        }
+        assert!(desk.spawns.is_empty(), "a redelivery at any minute opened a card");
+    }
+
+    /// And the case the stamp alone cannot see: an asker half an hour fast
+    /// whose frame the transport held twenty-nine minutes, so the stamp looks
+    /// a minute old. The roster has measured that clock, and that is what
+    /// refuses it.
+    #[test]
+    fn a_clock_the_roster_has_measured_as_wrong_is_refused_whatever_the_stamp_says() {
+        let mut desk = Node::new("desk", open_facts());
+        let half_hour = 30 * 60_000;
+        desk.hear(statement("lap", 1, open_facts(), Some(half_hour), 0), 0);
+
+        let held = FleetMsg::Ask { ask: raw_ask("r1", "lap", "desk", half_hour - 29 * 60_000), age_ms: 0 };
+        let said = desk.hear(held, 0);
+        assert!(desk.spawns.is_empty());
+        assert_eq!(
+            refusal_in(&said),
+            Some(&Refusal::ClocksDisagree { by_ms: half_hour as u64, asker_ahead: true }),
+            "{said:?}"
+        );
+        assert!(refusal_in(&said).unwrap().reason("desk").contains("ahead of desk"));
+    }
+
+    /// **The review's second hole**: an over-aged ask between two relays was
+    /// remembered for less than the time it took to come back, and bounced for
+    /// ever. Relays now carry only what the addressee could still act on, so
+    /// even with every relay's memory gone between hops, it dies.
+    #[test]
+    fn a_stale_ask_between_two_relays_dies_rather_than_bouncing() {
+        let mut a = Node::new("a", open_facts());
+        let mut b = Node::new("b", open_facts());
+        /* Too old by its hop age to be passed on at all. */
+        let old = FleetMsg::Ask { ask: raw_ask("r1", "lap", "offline", 0), age_ms: (ANSWER_KEPT_MS - 100) as u64 };
+        assert!(a.hear(old, 0).is_empty());
+
+        /* Young by its hop age, and the transport takes eleven minutes a hop —
+           longer than either relay remembers anything. */
+        let mut msgs = vec![FleetMsg::Ask { ask: raw_ask("r2", "lap", "offline", 0), age_ms: 0 }];
+        let mut now = 0;
+        for hop in 0.. {
+            if msgs.is_empty() {
+                break;
+            }
+            assert!(hop < 10, "still bouncing after {hop} hops");
+            let to = if hop % 2 == 0 { &mut a } else { &mut b };
+            to.f.prune(now);
+            msgs = to.hear_all(msgs, now);
+            now += 11 * 60_000;
+        }
+    }
+
+    /// A spawn slower than the ask's memory still gets its answer sent. The
+    /// first cut read the asker back off the pruned ask and sent nothing.
+    #[test]
+    fn a_slow_spawn_still_answers() {
+        let mut desk = Node::new("desk", open_facts());
+        desk.hear(FleetMsg::Ask { ask: raw_ask("r1", "lap", "desk", 0), age_ms: 0 }, 0);
+        let slow = ANSWER_KEPT_MS + 60_000;
+        desk.f.prune(slow);
+        assert!(desk.f.opened("lap", "r1", "c", slow).is_some());
+    }
+
+    /// Retrying an id is the same request only while it could still be acted
+    /// on. Past that, and once it has been answered, `ask` says so rather than
+    /// re-sending — the first cut re-minted an old id into a fresh ask once
+    /// the memory had gone, which is a second card for "the same request".
+    #[test]
+    fn retrying_an_old_or_answered_id_does_not_send_it_again() {
+        let mut lap = Node::new("lap", open_facts());
+        lap.hear(announced("desk", 1, 0, 0), 0);
+        lap.f.ask(request("r1", "desk", skein()), 0).unwrap();
+        assert!(matches!(lap.f.ask(request("r1", "desk", skein()), ASK_TTL_MS + 1), Err(Unsendable::Expired { .. })));
+
+        lap.f.ask(request("r2", "desk", skein()), 0).unwrap();
+        let answer = Answer { request: "r2".into(), by: "desk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "c".into() } };
+        lap.hear(FleetMsg::Answer { answer, age_ms: 0 }, 10);
+        match lap.f.ask(request("r2", "desk", skein()), 20) {
+            Err(e @ Unsendable::AlreadyAnswered { .. }) => assert!(e.reason().contains("opened it as card c")),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// Three walls, two awake at a time: the laptop asks the desktop through
@@ -1404,7 +1854,7 @@ mod tests {
         desk.hear_all(passed, 1_000);
         assert_eq!(desk.spawns.len(), 1);
 
-        let answer = desk.f.opened("r1", "card-on-desk", 2_000).unwrap();
+        let answer = desk.f.opened("lap", "r1", "card-on-desk", 2_000).unwrap();
         let passed = server.hear(answer, 2_000);
         lap.hear_all(passed, 2_000);
         assert_eq!(lap.answered.len(), 1);
@@ -1430,11 +1880,8 @@ mod tests {
         assert!(server.f.open(morning).iter().all(|m| !matches!(m, FleetMsg::Ask { .. })));
         /* And even handed directly — say a relay that ignores the TTL — the
            hop age refuses it, with the clocks in perfect agreement. */
-        let stale = FleetMsg::Ask {
-            ask: server.f.asks.get("r1").unwrap().it.clone(),
-            age_ms: (morning - 1_000) as u64,
-        };
-        desk.hear(stale, morning);
+        let held = server.f.asks.get(&("lap".to_string(), "r1".to_string())).unwrap().it.clone();
+        desk.hear(FleetMsg::Ask { ask: held, age_ms: (morning - 1_000) as u64 }, morning);
         assert!(desk.spawns.is_empty());
     }
 
@@ -1457,23 +1904,12 @@ mod tests {
         const ALL: usize = 7;
 
         let now = 10_000_000;
-        let ask_with = |id: &str, territory: Territory, asked_at: i64| Ask {
-            id: id.into(),
-            from: Origin { host: "lap".into(), card: None },
-            to: "desk".into(),
-            territory,
-            brief: "b".into(),
-            title: None,
-            asked_at,
-        };
+        let ask_with = |id: &str, territory: Territory, asked_at: i64| Ask { territory, ..raw_ask(id, "lap", "desk", asked_at) };
         let refused = |here: Facts, ask: Ask, age_ms: u64| -> Refusal {
-            let mut desk = Fleet::new("desk");
+            let mut desk = Fleet::new("desk", 0);
             let r = desk.on(FleetMsg::Ask { ask, age_ms }, now, &here);
             assert!(r.open.is_empty());
-            match &r.say[..] {
-                [FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal }, .. }, .. }] => refusal.clone(),
-                other => panic!("expected one refusal, got {other:?}"),
-            }
+            refusal_in(&r.say).unwrap_or_else(|| panic!("expected one refusal, got {:?}", r.say)).clone()
         };
 
         let mut got = vec![
@@ -1484,10 +1920,10 @@ mod tests {
             refused(open_facts(), ask_with("e", skein(), now), (ASK_TTL_MS + 1) as u64),
             refused(open_facts(), ask_with("f", skein(), now + CLOCK_SLACK_MS + 60_000), 0),
         ];
-        let mut desk = Fleet::new("desk");
+        let mut desk = Fleet::new("desk", 0);
         let r = desk.on(FleetMsg::Ask { ask: ask_with("g", skein(), now), age_ms: 0 }, now, &open_facts());
         assert_eq!(r.open.len(), 1);
-        match desk.failed("g", "the account is out of allowance until 14:00", now) {
+        match desk.failed("lap", "g", "the account is out of allowance until 14:00", now) {
             Some(FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal }, .. }, .. }) => got.push(refusal),
             other => panic!("{other:?}"),
         }
@@ -1508,27 +1944,24 @@ mod tests {
         assert!(got[6].reason("desk").contains("until 14:00"), "the receiving wall's own words");
     }
 
-    /// The order of checks names the thing that would have to change first: a
-    /// wall that takes nothing says so, rather than that it lacks the
-    /// territory too.
+    /// A bound of zero is "none", and the reason must not tell anybody to
+    /// close one of the zero cards.
     #[test]
-    fn a_closed_wall_says_it_is_closed_before_anything_else() {
-        let mut desk = Fleet::new("desk");
+    fn a_bound_of_zero_reads_as_none_rather_than_as_full() {
+        let r = Refusal::AtLiveBound { live: 0, limit: 0 }.reason("desk");
+        assert!(!r.contains("close one"), "{r}");
+        assert!(r.contains("raise its bound"), "{r}");
+    }
+
+    /// Among the checks about the wall itself, a wall that takes nothing says
+    /// so first, rather than that it lacks the territory too.
+    #[test]
+    fn a_closed_wall_says_it_is_closed_before_it_says_anything_about_the_territory() {
+        let mut desk = Fleet::new("desk", 0);
         let here = Facts { accepting: false, territories: vec![], ..Default::default() };
-        let ask = Ask {
-            id: "r".into(),
-            from: Origin { host: "lap".into(), card: None },
-            to: "desk".into(),
-            territory: t("tid-nova", "nova"),
-            brief: "b".into(),
-            title: None,
-            asked_at: 0,
-        };
+        let ask = Ask { territory: t("tid-nova", "nova"), ..raw_ask("r", "lap", "desk", 0) };
         let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &here);
-        assert!(matches!(
-            &r.say[..],
-            [FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal: Refusal::NotAccepting }, .. }, .. }]
-        ));
+        assert_eq!(refusal_in(&r.say), Some(&Refusal::NotAccepting));
     }
 
     /// What this wall can already see is pointless never leaves it.
@@ -1574,24 +2007,47 @@ mod tests {
         assert_eq!(lap.answered.len(), 1);
     }
 
-    /// The brief goes straight into a card's first request, and a control
-    /// character in it would make the API refuse that request — the card would
-    /// be born unable to speak.
+    /// Every string from another wall that can reach an agent is scrubbed on
+    /// the way in. The brief most of all: it goes straight into a card's first
+    /// request, and a control character in it would have the API refuse that
+    /// request — the card would be born unable to speak.
     #[test]
-    fn the_brief_arrives_without_characters_it_could_not_send() {
-        let mut desk = Fleet::new("desk");
+    fn nothing_from_another_wall_reaches_an_agent_with_characters_it_could_not_send() {
+        let mut desk = Fleet::new("desk", 0);
         let ask = Ask {
-            id: "r".into(),
-            from: Origin { host: "lap".into(), card: None },
-            to: "desk".into(),
-            territory: skein(),
+            from: Origin { host: "lap".into(), card: Some("c\u{0}1".into()) },
             brief: "build\u{0}the\u{7}thing\nplease".into(),
             title: Some("t\u{1b}itle".into()),
-            asked_at: 0,
+            ..raw_ask("r", "lap", "desk", 0)
         };
         let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &open_facts());
         assert_eq!(r.open[0].brief, "buildthething\nplease");
         assert_eq!(r.open[0].title.as_deref(), Some("title"));
+        assert_eq!(r.open[0].asked_by.card.as_deref(), Some("c1"));
+
+        let mut lap = Node::new("lap", open_facts());
+        lap.hear(announced("desk", 1, 0, 0), 0);
+        lap.f.ask(request("r1", "desk", skein()), 0).unwrap();
+        let answer = Answer { request: "r1".into(), by: "de\u{7}sk".into(), asked_by: "lap".into(), outcome: Outcome::Opened { card: "ca\u{0}rd".into() } };
+        lap.hear(FleetMsg::Answer { answer, age_ms: 0 }, 10);
+        assert_eq!(lap.answered[0].by, "desk");
+        assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card".into() });
+    }
+
+    /// A corrupt frame — an age of `u64::MAX`, a stamp at either end of `i64`
+    /// — must not overflow the arithmetic. A debug build panicked on these.
+    #[test]
+    fn absurd_ages_and_stamps_do_not_overflow() {
+        let mut desk = Node::new("desk", open_facts());
+        for (asked_at, age_ms) in [(i64::MIN, u64::MAX), (i64::MAX, 0), (0, u64::MAX), (i64::MIN, 0)] {
+            let id = format!("r{asked_at}{age_ms}");
+            desk.hear(FleetMsg::Ask { ask: raw_ask(&id, "lap", "desk", asked_at), age_ms }, 1_000);
+            desk.hear(FleetMsg::Ask { ask: raw_ask(&id, "lap", "elsewhere", asked_at), age_ms }, 1_000);
+        }
+        desk.hear(statement("odd", u64::MAX, open_facts(), Some(i64::MIN), u64::MAX), 1_000);
+        desk.f.prune(i64::MAX);
+        desk.f.open(i64::MIN);
+        assert!(desk.spawns.is_empty());
     }
 
     /// Candidates come best first, dead ends included with their reasons, and
@@ -1600,15 +2056,11 @@ mod tests {
     fn candidates_are_ordered_by_what_would_actually_work() {
         let mut me = Node::new("me", open_facts());
         me.f.announce(open_facts(), 0);
-        let heard = |host: &str, facts: Facts, age_ms: u64| FleetMsg::Roster {
-            walls: vec![Heard { wall: Announcement { host: host.into(), version: 1, facts }, age_ms }],
-            greeting: false,
-        };
-        me.hear(heard("asleep", open_facts(), (QUIET_AFTER_MS * 2) as u64), 0);
-        me.hear(heard("closed", Facts { accepting: false, ..open_facts() }, 0), 0);
-        me.hear(heard("busy", Facts { cards_working: 6, ..open_facts() }, 0), 0);
-        me.hear(heard("calm", Facts { cards_working: 1, ..open_facts() }, 0), 0);
-        me.hear(heard("elsewhere", Facts { territories: vec![t("tid-nova", "nova")], ..open_facts() }, 0), 0);
+        me.hear(statement("asleep", 1, open_facts(), None, (QUIET_AFTER_MS * 2) as u64), 0);
+        me.hear(statement("closed", 1, Facts { accepting: false, ..open_facts() }, None, 0), 0);
+        me.hear(statement("busy", 1, Facts { cards_working: 6, ..open_facts() }, None, 0), 0);
+        me.hear(statement("calm", 1, Facts { cards_working: 1, ..open_facts() }, None, 0), 0);
+        me.hear(statement("elsewhere", 1, Facts { territories: vec![t("tid-nova", "nova")], ..open_facts() }, None, 0), 0);
 
         let order: Vec<&str> = me.f.candidates("tid-skein", 0).iter().map(|(e, _)| e.host.as_str()).collect();
         assert_eq!(order, vec!["calm", "busy", "closed", "asleep"]);
@@ -1618,7 +2070,7 @@ mod tests {
     /// one's facts, which is what `#[serde(default)]` is for.
     #[test]
     fn the_wire_survives_a_round_trip_and_a_missing_field() {
-        let mut lap = Fleet::new("lap");
+        let mut lap = Fleet::new("lap", 0);
         let m = lap.announce(Facts { allowance_used: Some(40), ..open_facts() }, 7);
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"msg\":\"roster\""), "{json}");
@@ -1628,5 +2080,6 @@ mod tests {
         let FleetMsg::Roster { walls, .. } = serde_json::from_str::<FleetMsg>(sparse).unwrap() else { unreachable!() };
         assert!(walls[0].wall.facts.accepting);
         assert!(walls[0].wall.facts.territories.is_empty());
+        assert_eq!(walls[0].wall.said_at, None);
     }
 }
