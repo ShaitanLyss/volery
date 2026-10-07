@@ -48,6 +48,14 @@ pub(crate) const PROJECT: &str = "project";
 pub(crate) const IMAGE: &str = "image";
 pub(crate) const WIDGET: &str = "widget";
 pub(crate) const TIMELINE: &str = "timeline";
+/// A grouping of cards inside a project — what the wall draws as a region.
+///
+/// Keyed by the territory's own id, where `PROJECT` above is keyed by a
+/// `root_path`. That is the whole of why this is a sixth kind rather than a
+/// change to the fifth: `migrate_v42` rewrites the stuck regions on every
+/// arrangement from one to the other, and a kind whose key column changed
+/// meaning underneath it would have been unreadable either side of the rung.
+pub(crate) const TERRITORY: &str = "territory";
 
 /// Every kind, with the table and key column the columns live in. One list, so
 /// adding a sixth thing to the glass cannot be half-done: the reconcile, the
@@ -55,6 +63,12 @@ pub(crate) const TIMELINE: &str = "timeline";
 const KINDS: &[(&str, &str, &str)] = &[
     (CARD, "placement", "conversation_id"),
     (PROJECT, "project", "root_path"),
+    /* `TERRITORY` is deliberately NOT here yet. The reconcile below clears as
+       well as sets, so a kind listed with no rows written for it would empty
+       `territory.glass_x` on the first arrangement change — throwing away the
+       values `migrate_v42` seeded from the projects, before anything has had a
+       chance to read them. It joins this list in the same change that makes
+       `stick_territory` the caller and re-keys the existing rows. */
     (IMAGE, "reference_image", "id"),
     (WIDGET, "widget", "id"),
     (TIMELINE, "timeline", "id"),

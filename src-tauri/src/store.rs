@@ -89,6 +89,42 @@ pub struct Project {
     pub read_only: bool,
 }
 
+/// A named grouping of cards inside one project — what the wall draws as a
+/// region, and what you drag, widen and stick to the glass.
+///
+/// A region *was* a project, and so there was one per folder: everything going
+/// on in a repo landed in one grid. A territory is the grouping pulled out from
+/// under it, so one checkout can carry three of them.
+///
+/// **Nothing about the folder is here**, and that division is the whole design.
+/// Git, dev servers, board notices, sink items, guidance and the read-only flag
+/// all stay on `Project`, keyed by `project_id`, because they are facts about a
+/// repository and two groupings of one repository must share every one of them
+/// — a notice saying "I am reworking `store.rs`" that reached only half the
+/// cards in a tree would be worse than no notice. What is here is only what a
+/// region *looks like*. See `migrate_v42`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Territory {
+    pub id: String,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    pub name: String,
+    /// Where it has been dragged to, or `None` to let the grid decide — the
+    /// same contract `Project::x` had, moved one table down.
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    /// Where it is drawn if stuck to the glass, in screen pixels, independent
+    /// of `x`/`y` for the reason a card's is. Spelled `glassX` on the wire
+    /// because the things that can be stuck speak one vocabulary.
+    #[serde(rename = "glassX")]
+    pub glass_x: Option<f64>,
+    #[serde(rename = "glassY")]
+    pub glass_y: Option<f64>,
+    /// How many columns of cards it holds, or `None` for the wall's default.
+    #[serde(default)]
+    pub cols: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServerSpec {
     pub label: String,
@@ -112,6 +148,15 @@ pub struct StoredConversation {
     pub id: String,
     pub agent_session_id: Option<String>,
     pub project_id: String,
+    /// Which grouping inside that project the card stands in.
+    ///
+    /// `None` means "the project's first", which is what `migrate_v42` made
+    /// every card before it and what a card born by an older build would be.
+    /// The front end resolves it rather than treating it as homeless — a card
+    /// with nowhere to stand is a card that is not drawn, and a null here must
+    /// never be able to do that.
+    #[serde(rename = "territoryId")]
+    pub territory_id: Option<String>,
     pub cwd: String,
     pub title: String,
     /// The title was given by you rather than cut from a prompt or read out of
@@ -179,6 +224,10 @@ pub struct StoredConversation {
 #[derive(Debug, Serialize, Clone)]
 pub struct Studio {
     pub projects: Vec<Project>,
+    /// Every grouping on the wall, in creation order. At least one per project,
+    /// guaranteed by `migrate_v42` and by `ensure_project_row`, so the front end
+    /// never has to draw a project that has nowhere to put its cards.
+    pub territories: Vec<Territory>,
     pub conversations: Vec<StoredConversation>,
     pub server_groups: Vec<ServerGroup>,
     /// What the wall tells every card standing on it, project and chat alike.
@@ -300,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 41;
+const SCHEMA_VERSION: i64 = 42;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -347,6 +396,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (39, migrate_v39),
     (40, migrate_v40),
     (41, migrate_v41),
+    (42, migrate_v42),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2303,6 +2353,143 @@ fn under(path: &str, root: &str) -> bool {
             || matches!(path.as_bytes()[n], b'\\' | b'/'))
 }
 
+/// Territories: several named groupings of cards inside one checkout.
+///
+/// A region on the wall *was* a project, and a project is one row per folder —
+/// so every card in a repo landed in one grid, however many unrelated things
+/// were going on in it. What was wanted is three regions over one `nova`: a
+/// small one on the left, one stuck to the glass, a big one on the right.
+///
+/// **The obvious change was to drop `project.root_path`'s UNIQUE, and it is the
+/// wrong one.** Twice over. SQLite cannot drop an inline constraint without
+/// rebuilding the table, `foreign_keys` is ON (see `Store::open`) and
+/// `conversation.project_id` cascades — so the rebuild deletes every card on
+/// the wall unless it is done exactly right, for a schema change that is
+/// supposed to be cosmetic. And it is wrong on the meaning as well: a second
+/// row for one folder would split everything keyed on `project_id` along with
+/// the grid. Board notices, sink items, chronicle rows, dev server groups,
+/// guidance and the read-only flag would each belong to one half of a repo —
+/// and a notice saying "I am reworking `store.rs`, leave it alone" that does
+/// not reach the card next door is worse than no notice at all.
+///
+/// So this is additive, and the split is along the seam that was always there:
+/// **a project is a repo, a territory is a grouping of cards within it.**
+/// Everything about the folder — git, servers, scope, permission — stays on the
+/// project and keeps working untouched. Only what a region *looks like* moves:
+/// its name, where it sits, how wide it is, and whether it is on the glass.
+///
+/// The backfill gives every project exactly one territory carrying the geometry
+/// it already had, so a wall comes back looking identical and the front end has
+/// a single code path rather than "a territory, or else the project it belongs
+/// to". `project`'s own `x`/`y`/`glass_*`/`cols` are left in place and stop
+/// being read: dead columns are cheap, and they are what a rollback would need.
+fn migrate_v42(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS territory (
+            id          TEXT PRIMARY KEY,
+            project_id  TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+            name        TEXT NOT NULL,
+            x           REAL,
+            y           REAL,
+            glass_x     REAL,
+            glass_y     REAL,
+            cols        INTEGER,
+            created_at  INTEGER NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v42: {e}"))?;
+
+    /* Null means "not yet sorted into one", which is what every card is until
+       the backfill below runs — and what a card written by an older build
+       would be if one ever opened this file again. The front end reads null as
+       the project's first territory rather than as a card with nowhere to
+       stand, so the column never needs a default. */
+    add_column(conn, "conversation", "territory_id", "TEXT")?;
+
+    /* One territory per project, carrying the geometry the project had. Looped
+       in Rust rather than done as one INSERT…SELECT because each row needs a
+       uuid and SQLite has no way to make one.
+
+       `WHERE NOT EXISTS` keeps the rung re-runnable, per the note on
+       `SCHEMA_VERSION` — a half-applied rung is the case the whole ladder is
+       shaped around. */
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.id, p.name, p.root_path, p.x, p.y, p.glass_x, p.glass_y, p.cols, p.created_at
+               FROM project p
+              WHERE NOT EXISTS (SELECT 1 FROM territory t WHERE t.project_id = p.id)",
+        )
+        .map_err(|e| format!("migrate v42: {e}"))?;
+    type Seed = (
+        String,
+        String,
+        String,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<i64>,
+        i64,
+    );
+    let seeds: Vec<Seed> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+            ))
+        })
+        .map_err(|e| format!("migrate v42: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("migrate v42: {e}"))?;
+    drop(stmt);
+
+    for (project_id, name, root_path, x, y, glass_x, glass_y, cols, created_at) in seeds {
+        let id = uuid_v4();
+        conn.execute(
+            "INSERT INTO territory (id, project_id, name, x, y, glass_x, glass_y, cols, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, project_id, name, x, y, glass_x, glass_y, cols, created_at],
+        )
+        .map_err(|e| format!("migrate v42: {e}"))?;
+
+        conn.execute(
+            "UPDATE conversation SET territory_id = ?1
+              WHERE project_id = ?2 AND territory_id IS NULL",
+            params![id, project_id],
+        )
+        .map_err(|e| format!("migrate v42: {e}"))?;
+
+        /* **The glass deliberately does not move here**, and the reason is
+           worth the paragraph. A stuck region's spot lives in `glass_spot` as
+           `(kind: 'project', ref: <root_path>)`, and `arrange::adopt` reconciles
+           those rows against `project.glass_x` with a correlated UPDATE per
+           kind that *clears as well as sets* (`.claude/rules/arrange.md`). Move
+           the rows onto the territory while the front end still calls
+           `stick_project`, and the first time you walk into another screen
+           arrangement every project finds no `'project'` row of its own and has
+           its glass cleared — every stuck territory drops back onto the wall,
+           silently, in a release whose notes say nothing about the glass.
+
+           So the spot follows the caller, not the schema. `territory.glass_x`
+           is seeded above from the project's and read by nobody yet; the rows
+           are re-keyed in the rung that lands beside the front end switching to
+           `stick_territory`, where the two halves can be wrong together or
+           right together and not one of each. */
+        let _ = &root_path;
+    }
+
+    Ok(())
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -2695,6 +2882,11 @@ fn ensure_project_row(conn: &Connection, root_path: String) -> Result<Project, S
         params![id, name, root_path, now()],
     )
     .map_err(|e| e.to_string())?;
+    /* And the one grouping it needs to be drawn at all, named after the folder
+       like the project is. `migrate_v42` did this for every project that already
+       existed; this is the same guarantee for every one made since, so nothing
+       downstream has to carry a "project with no territory" case. */
+    make_territory_row(conn, &id, &name)?;
     /* No position: a project arrives in the grid's hands, and the wall writes
        one back as soon as it has flowed it somewhere. */
     /* And not on the glass: the pane is somewhere you put a thing on purpose,
@@ -2894,6 +3086,300 @@ fn stick_row(
     Ok(())
 }
 
+/* ── territories ──────────────────────────────────────────────────────────────
+
+   A grouping of cards inside one project. `Territory`'s doc comment has the
+   division and why it is drawn there; these are the writes.
+
+   Every one of them is keyed on the territory's **id**, which is the difference
+   from the four above: a region's identity used to be its `root_path`, so two
+   regions over one folder would have taken each other's drags. An id is minted
+   once and means one thing for ever, which is the only property this needs. */
+
+/// Every territory on the wall, in creation order.
+fn territory_rows(conn: &Connection) -> Result<Vec<Territory>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, project_id, name, x, y, glass_x, glass_y, cols
+               FROM territory ORDER BY created_at, id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(Territory {
+                id: r.get(0)?,
+                project_id: r.get(1)?,
+                name: r.get(2)?,
+                x: r.get(3)?,
+                y: r.get(4)?,
+                glass_x: r.get(5)?,
+                glass_y: r.get(6)?,
+                cols: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// The id of a project's first territory, making one if it somehow has none.
+///
+/// The "somehow" is the point. `migrate_v42` gave every project one and
+/// `ensure_project_row` gives every new project one, so this should never have
+/// to build anything — but a project with no territory is a project whose cards
+/// cannot be drawn at all, and that is far too quiet a way to lose a wall. One
+/// `INSERT` is cheaper than a class of bug that reads as "my cards are gone".
+fn first_territory(conn: &Connection, project_id: &str) -> Result<String, String> {
+    let found: Option<String> = conn
+        .query_row(
+            "SELECT id FROM territory WHERE project_id = ?1 ORDER BY created_at, id LIMIT 1",
+            params![project_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(id) = found {
+        return Ok(id);
+    }
+    let name: String = conn
+        .query_row(
+            "SELECT name FROM project WHERE id = ?1",
+            params![project_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "territory".to_string());
+    make_territory_row(conn, project_id, &name)
+}
+
+/// The insert, so both the command and `first_territory` go through one place.
+fn make_territory_row(
+    conn: &Connection,
+    project_id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let id = uuid_v4();
+    conn.execute(
+        "INSERT INTO territory (id, project_id, name, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, project_id, crate::clip::keep(name, 80).kept, now()],
+    )
+    .map_err(|e| e.to_string())?;
+    /* No position, no width and not on the glass, for the three reasons
+       `ensure_project_row` gives: a new region arrives in the grid's hands, at
+       the width every other one is, and the pane is somewhere you put a thing
+       on purpose. */
+    Ok(id)
+}
+
+/// Another grouping in a project you already have — the gesture that makes a
+/// second region over one checkout.
+#[tauri::command]
+pub fn make_territory(
+    store: tauri::State<'_, Store>,
+    project_id: String,
+    name: String,
+) -> Result<Territory, String> {
+    let conn = store.0.lock().unwrap();
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM project WHERE id = ?1",
+            params![project_id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(false);
+    if !exists {
+        return Err("no such project on this wall".to_string());
+    }
+    let id = make_territory_row(&conn, &project_id, &name)?;
+    Ok(Territory {
+        id,
+        project_id,
+        name: crate::clip::keep(&name, 80).kept,
+        x: None,
+        y: None,
+        glass_x: None,
+        glass_y: None,
+        cols: None,
+    })
+}
+
+/// What a region is called. Its own name rather than the folder's, which is the
+/// point of having three of them over one checkout.
+#[tauri::command]
+pub fn rename_territory(
+    store: tauri::State<'_, Store>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    conn.execute(
+        "UPDATE territory SET name = ?2 WHERE id = ?1",
+        params![id, crate::clip::keep(&name, 80).kept],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Take a grouping off the wall, moving its cards to the project's first
+/// remaining one.
+///
+/// **The cards are moved rather than closed.** Forgetting a *project* ends its
+/// cards, because the folder is what they were about; forgetting one of three
+/// groupings over one checkout is rearranging furniture, and a gesture that
+/// reads as tidying must never be able to end a conversation.
+///
+/// Refused for a project's last territory, which would leave its cards with
+/// nowhere to stand — `forget_project` is the gesture for that, and it says so.
+#[tauri::command]
+pub fn forget_territory(store: tauri::State<'_, Store>, id: String) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    forget_territory_row(&conn, &id)
+}
+
+/// The write itself, so the move-and-refuse can be tested without an app —
+/// the bargain `place_row`, `record_row` and `forget_row` already strike.
+fn forget_territory_row(conn: &Connection, id: &str) -> Result<(), String> {
+    let project_id: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM territory WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(project_id) = project_id else {
+        return Ok(());
+    };
+
+    let heir: Option<String> = conn
+        .query_row(
+            "SELECT id FROM territory
+              WHERE project_id = ?1 AND id <> ?2
+              ORDER BY created_at, id LIMIT 1",
+            params![project_id, id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(heir) = heir else {
+        return Err(
+            "that is the only grouping this project has — forget the project itself to take it \
+             off the wall"
+                .to_string(),
+        );
+    };
+
+    conn.execute(
+        "UPDATE conversation SET territory_id = ?2 WHERE territory_id = ?1",
+        params![id, heir],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM territory WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    crate::arrange::forget(conn, crate::arrange::TERRITORY, id);
+    Ok(())
+}
+
+/// Where a territory sits on the wall. `None`/`None` hands it back to the grid.
+#[tauri::command]
+pub fn place_territory(
+    store: tauri::State<'_, Store>,
+    id: String,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    conn.execute(
+        "UPDATE territory SET x = ?2, y = ?3 WHERE id = ?1",
+        params![id, x, y],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// How wide a territory is, in columns of cards. `None` gives it the default.
+/// Clamping stays in `layout.ts::colsOf`, beside the arithmetic that reads it.
+#[tauri::command]
+pub fn size_territory(
+    store: tauri::State<'_, Store>,
+    id: String,
+    cols: Option<i64>,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    conn.execute(
+        "UPDATE territory SET cols = ?2 WHERE id = ?1",
+        params![id, cols],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Stick a territory to the glass, or take it off.
+#[tauri::command]
+pub fn stick_territory(
+    store: tauri::State<'_, Store>,
+    id: String,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    conn.execute(
+        "UPDATE territory SET glass_x = ?2, glass_y = ?3 WHERE id = ?1",
+        params![id, x, y],
+    )
+    .map_err(|e| e.to_string())?;
+    crate::arrange::note(&conn, crate::arrange::TERRITORY, &id, x, y);
+    Ok(())
+}
+
+/// Move a card from one grouping to another.
+///
+/// Only within its own project: a territory is a grouping *of a checkout*, and
+/// a card's `cwd` is where its agent is actually running. Letting this cross
+/// projects would draw a card in a region whose folder it has nothing to do
+/// with, and the card would be the honest one.
+#[tauri::command]
+pub fn set_card_territory(
+    store: tauri::State<'_, Store>,
+    conversation_id: String,
+    territory_id: String,
+) -> Result<(), String> {
+    let conn = store.0.lock().unwrap();
+    set_card_territory_row(&conn, &conversation_id, &territory_id)
+}
+
+/// The write itself, so the refusal can be tested without an app around it.
+fn set_card_territory_row(
+    conn: &Connection,
+    conversation_id: &str,
+    territory_id: &str,
+) -> Result<(), String> {
+    let ok: bool = conn
+        .query_row(
+            "SELECT 1 FROM conversation c
+               JOIN territory t ON t.id = ?2
+              WHERE c.id = ?1 AND t.project_id = c.project_id",
+            params![conversation_id, territory_id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(false);
+    if !ok {
+        return Err("that grouping belongs to a different project".to_string());
+    }
+    conn.execute(
+        "UPDATE conversation SET territory_id = ?2 WHERE id = ?1",
+        params![conversation_id, territory_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn record_conversation(
     store: tauri::State<'_, Store>,
@@ -2911,12 +3397,22 @@ pub fn record_conversation(
        and every card that existed before presets did. */
     model: Option<String>,
     effort: Option<String>,
+    /* Which grouping in that project the card stands in. Absent means the
+       project's first, which is what a plain `+` on the header means and what
+       every call site meant before territories existed. Sent as `territoryId`;
+       `invoke` converts the case. */
+    territory_id: Option<String>,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
+    let territory_id = match territory_id {
+        Some(t) => t,
+        None => first_territory(&conn, &project_id)?,
+    };
     record_row(
         &conn,
         &id,
         &project_id,
+        &territory_id,
         &cwd,
         worktree.as_deref(),
         kind.as_deref(),
@@ -2932,6 +3428,7 @@ fn record_row(
     conn: &Connection,
     id: &str,
     project_id: &str,
+    territory_id: &str,
     cwd: &str,
     worktree: Option<&str>,
     kind: Option<&str>,
@@ -2940,9 +3437,9 @@ fn record_row(
 ) -> Result<(), String> {
     conn.execute(
         "INSERT OR IGNORE INTO conversation
-           (id, agent_session_id, project_id, cwd, worktree, born_at, kind, model, effort)
-         VALUES (?1, ?1, ?2, ?3, ?4, ?5, COALESCE(?6, 'project'), ?7, ?8)",
-        params![id, project_id, cwd, worktree, now(), kind, model, effort],
+           (id, agent_session_id, project_id, territory_id, cwd, worktree, born_at, kind, model, effort)
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?7, 'project'), ?8, ?9)",
+        params![id, project_id, territory_id, cwd, worktree, now(), kind, model, effort],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -4314,9 +4811,11 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
 
+    let territories = territory_rows(&conn)?;
+
     let mut cs = conn
         .prepare(
-            "SELECT c.id, c.agent_session_id, c.project_id, c.cwd, c.title, c.worktree,
+            "SELECT c.id, c.agent_session_id, c.project_id, c.territory_id, c.cwd, c.title, c.worktree,
                     c.model, c.interrupted, c.last_ctx_frac, c.last_ending, c.aside,
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
@@ -4333,28 +4832,29 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 id: r.get(0)?,
                 agent_session_id: r.get(1)?,
                 project_id: r.get(2)?,
-                cwd: r.get(3)?,
-                title: r.get(4)?,
-                worktree: r.get(5)?,
-                model: r.get(6)?,
-                interrupted: r.get::<_, i64>(7)? != 0,
-                last_ctx_frac: r.get(8)?,
-                last_ending: r.get(9)?,
-                aside: r.get::<_, i64>(10)? != 0,
-                kind: r.get(11)?,
-                named_by_hand: r.get::<_, i64>(12)? != 0,
-                account_label: r.get(13)?,
-                bypass_caps: r.get::<_, i64>(14)? != 0,
-                x: r.get(15)?,
-                y: r.get(16)?,
-                pinned: r.get::<_, Option<i64>>(17)?.unwrap_or(0) != 0,
-                glass_x: r.get(18)?,
-                glass_y: r.get(19)?,
-                effort: r.get(20)?,
-                permission_mode: r.get(21)?,
-                held_text: r.get(22)?,
-                held_why: r.get(23)?,
-                held_until: r.get(24)?,
+                territory_id: r.get(3)?,
+                cwd: r.get(4)?,
+                title: r.get(5)?,
+                worktree: r.get(6)?,
+                model: r.get(7)?,
+                interrupted: r.get::<_, i64>(8)? != 0,
+                last_ctx_frac: r.get(9)?,
+                last_ending: r.get(10)?,
+                aside: r.get::<_, i64>(11)? != 0,
+                kind: r.get(12)?,
+                named_by_hand: r.get::<_, i64>(13)? != 0,
+                account_label: r.get(14)?,
+                bypass_caps: r.get::<_, i64>(15)? != 0,
+                x: r.get(16)?,
+                y: r.get(17)?,
+                pinned: r.get::<_, Option<i64>>(18)?.unwrap_or(0) != 0,
+                glass_x: r.get(19)?,
+                glass_y: r.get(20)?,
+                effort: r.get(21)?,
+                permission_mode: r.get(22)?,
+                held_text: r.get(23)?,
+                held_why: r.get(24)?,
+                held_until: r.get(25)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -4385,6 +4885,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
 
     Ok(Studio {
         projects,
+        territories,
         conversations,
         server_groups,
         guidance: wall_guidance(&conn),
@@ -8783,8 +9284,8 @@ mod tests {
     fn a_recorded_kind_is_what_comes_back_out() {
         let conn = db();
         seed_project(&conn, "p1", "C:/x");
-        record_row(&conn, "talk", "p1", "C:/x", None, Some("chat"), None, None).unwrap();
-        record_row(&conn, "work", "p1", "C:/x", None, None, None, None).unwrap();
+        record_row(&conn, "talk", "p1", "t1", "C:/x", None, Some("chat"), None, None).unwrap();
+        record_row(&conn, "work", "p1", "t1", "C:/x", None, None, None, None).unwrap();
 
         assert_eq!(kind_row(&conn, "talk"), "chat");
         assert_eq!(
@@ -8802,9 +9303,9 @@ mod tests {
     fn a_card_opened_from_a_preset_is_set_up_the_same_way_at_every_spawn() {
         let conn = db();
         seed_project(&conn, "p1", "C:/x");
-        record_row(&conn, "deep", "p1", "C:/x", None, None, Some("opus[1m]"), Some("max"))
+        record_row(&conn, "deep", "p1", "t1", "C:/x", None, None, Some("opus[1m]"), Some("max"))
             .unwrap();
-        record_row(&conn, "plain", "p1", "C:/x", None, None, None, None).unwrap();
+        record_row(&conn, "plain", "p1", "t1", "C:/x", None, None, None, None).unwrap();
 
         assert_eq!(
             setup_row(&conn, "deep"),
@@ -8829,10 +9330,10 @@ mod tests {
     fn the_tree_a_card_works_in_comes_off_its_row() {
         let conn = db();
         seed_project(&conn, "p1", "C:/x");
-        record_row(&conn, "branched", "p1", "C:/x", Some("feat/async-auth"), None, None, None)
+        record_row(&conn, "branched", "p1", "t1", "C:/x", Some("feat/async-auth"), None, None, None)
             .unwrap();
-        record_row(&conn, "plain", "p1", "C:/x", None, None, None, None).unwrap();
-        record_row(&conn, "blank", "p1", "C:/x", Some("   "), None, None, None).unwrap();
+        record_row(&conn, "plain", "p1", "t1", "C:/x", None, None, None, None).unwrap();
+        record_row(&conn, "blank", "p1", "t1", "C:/x", Some("   "), None, None, None).unwrap();
 
         assert_eq!(worktree_row(&conn, "branched"), Some("feat/async-auth".into()));
         assert_eq!(worktree_row(&conn, "plain"), None);
@@ -8855,8 +9356,8 @@ mod tests {
     fn a_card_is_looked_up_where_its_child_actually_stands() {
         let conn = db();
         seed_project(&conn, "p1", "C:/x");
-        record_row(&conn, "plain", "p1", "C:/x", None, None, None, None).unwrap();
-        record_row(&conn, "branched", "p1", "C:/x", Some("feat/async-auth"), None, None, None)
+        record_row(&conn, "plain", "p1", "t1", "C:/x", None, None, None, None).unwrap();
+        record_row(&conn, "branched", "p1", "t1", "C:/x", Some("feat/async-auth"), None, None, None)
             .unwrap();
 
         let (dir, session) = session_of(&conn, "plain").unwrap();
@@ -8883,7 +9384,7 @@ mod tests {
     fn what_the_card_is_seen_to_be_overwrites_what_it_was_opened_as() {
         let conn = db();
         seed_project(&conn, "p1", "C:/x");
-        record_row(&conn, "c1", "p1", "C:/x", None, None, Some("opus[1m]"), Some("max"))
+        record_row(&conn, "c1", "p1", "t1", "C:/x", None, None, Some("opus[1m]"), Some("max"))
             .unwrap();
         conn.execute(
             "UPDATE conversation SET
@@ -10182,6 +10683,187 @@ mod tests {
         let said: i64 = conn.query_row("SELECT COUNT(*) FROM chronicle", [], |r| r.get(0)).unwrap();
         assert_eq!(said, 0);
         unlink(&base, &link);
+    }
+
+    /* ── territories ───────────────────────────────────────────────────────── */
+
+    /// Everything on the wall comes back looking identical: one grouping per
+    /// project carrying the geometry the project had, every card standing in
+    /// it, and a stuck region still stuck.
+    ///
+    /// The rung is called directly against a migrated database with its
+    /// territories taken back out, rather than by building a v41 file by hand.
+    /// What is being asserted is the backfill, and the backfill cannot tell the
+    /// difference — where a hand-built file could differ from a real one in
+    /// some column nobody thought about.
+    #[test]
+    fn the_rung_gives_every_project_one_grouping_carrying_its_geometry() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/one");
+        seed_project(&conn, "p2", "C:/two");
+        conn.execute(
+            "UPDATE project SET x = 10, y = 20, glass_x = 30, glass_y = 40, cols = 5
+              WHERE id = 'p1'",
+            [],
+        )
+        .unwrap();
+        record_row(&conn, "a", "p1", "t-old", "C:/one", None, None, None, None).unwrap();
+        record_row(&conn, "b", "p2", "t-old", "C:/two", None, None, None, None).unwrap();
+        conn.execute("UPDATE conversation SET territory_id = NULL", []).unwrap();
+        conn.execute("DELETE FROM territory", []).unwrap();
+        conn.execute(
+            "INSERT INTO glass_spot (arrangement, kind, ref, x, y)
+             VALUES ('room', 'project', 'C:/one', 30, 40)",
+            [],
+        )
+        .unwrap();
+
+        migrate_v42(&conn).unwrap();
+
+        /* The project keeps its own geometry, untouched. That is what lets the
+           front end go on drawing the wall exactly as it did while only half of
+           this change has landed — and `project.glass_x` in particular must
+           survive, or a stuck region drops onto the wall. */
+        let kept: (Option<f64>, Option<f64>) = conn
+            .query_row("SELECT x, glass_x FROM project WHERE id = 'p1'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(kept, (Some(10.0), Some(30.0)));
+
+        let (id, name, x, y, gx, gy, cols): (
+            String,
+            String,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+            Option<i64>,
+        ) = conn
+            .query_row(
+                "SELECT id, name, x, y, glass_x, glass_y, cols FROM territory
+                  WHERE project_id = 'p1'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(name, "p1", "a grouping is named after the project it came from");
+        assert_eq!((x, y, gx, gy, cols), (Some(10.0), Some(20.0), Some(30.0), Some(40.0), Some(5)));
+
+        let stands: String = conn
+            .query_row("SELECT territory_id FROM conversation WHERE id = 'a'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stands, id, "a card stands in its project's grouping");
+
+        /* And the stuck region is still filed the way the front end files it. */
+        let (kind, spot): (String, String) = conn
+            .query_row("SELECT kind, ref FROM glass_spot", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((kind.as_str(), spot.as_str()), ("project", "C:/one"));
+
+        /* Every project, not only the one with geometry on it. */
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM territory", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+    }
+
+    /// A rung that half-ran must be safe to run again — the property the whole
+    /// ladder is shaped around, and the one `add_column` exists to give.
+    #[test]
+    fn the_rung_makes_no_second_grouping_when_it_runs_twice() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/one");
+        conn.execute("DELETE FROM territory", []).unwrap();
+
+        migrate_v42(&conn).unwrap();
+        migrate_v42(&conn).unwrap();
+
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM territory", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// A project made after the rung gets one too, so nothing downstream has to
+    /// carry a "project with nowhere to put its cards" case.
+    #[test]
+    fn a_new_project_arrives_with_a_grouping_to_stand_in() {
+        let conn = db();
+        let p = ensure_project_row(&conn, "C:/fresh".to_string()).unwrap();
+        let name: String = conn
+            .query_row("SELECT name FROM territory WHERE project_id = ?1", params![p.id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, p.name);
+    }
+
+    /// Forgetting a grouping is rearranging furniture. It moves the cards to
+    /// whatever is left rather than ending them — a gesture that reads as
+    /// tidying must never be able to close a conversation.
+    #[test]
+    fn forgetting_a_grouping_moves_its_cards_rather_than_ending_them() {
+        let conn = db();
+        let p = ensure_project_row(&conn, "C:/one".to_string()).unwrap();
+        let first = first_territory(&conn, &p.id).unwrap();
+        let second = make_territory_row(&conn, &p.id, "the other one").unwrap();
+        record_row(&conn, "c", &p.id, &second, "C:/one", None, None, None, None).unwrap();
+
+        forget_territory_row(&conn, &second).unwrap();
+
+        let stands: String = conn
+            .query_row("SELECT territory_id FROM conversation WHERE id = 'c'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stands, first, "the card moved to what was left");
+        let alive: i64 = conn
+            .query_row("SELECT COUNT(*) FROM conversation WHERE closed_at IS NULL", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(alive, 1, "and was not closed");
+    }
+
+    /// The last one is refused, because its cards would have nowhere to stand
+    /// and the gesture for taking a folder off the wall is a different gesture.
+    #[test]
+    fn the_last_grouping_of_a_project_cannot_be_forgotten() {
+        let conn = db();
+        let p = ensure_project_row(&conn, "C:/one".to_string()).unwrap();
+        let only = first_territory(&conn, &p.id).unwrap();
+
+        let refused = forget_territory_row(&conn, &only).unwrap_err();
+
+        assert!(refused.contains("forget the project"), "it says what to do instead: {refused}");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM territory", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// A grouping belongs to a checkout, and a card's `cwd` is where its agent
+    /// is really running — so a card drawn in a region whose folder it has
+    /// nothing to do with would be the region lying about the card.
+    #[test]
+    fn a_card_cannot_be_moved_into_another_projects_grouping() {
+        let conn = db();
+        let one = ensure_project_row(&conn, "C:/one".to_string()).unwrap();
+        let two = ensure_project_row(&conn, "C:/two".to_string()).unwrap();
+        let here = first_territory(&conn, &one.id).unwrap();
+        let there = first_territory(&conn, &two.id).unwrap();
+        record_row(&conn, "c", &one.id, &here, "C:/one", None, None, None, None).unwrap();
+
+        let refused = set_card_territory_row(&conn, "c", &there).unwrap_err();
+
+        assert!(refused.contains("different project"), "{refused}");
+        let stands: String = conn
+            .query_row("SELECT territory_id FROM conversation WHERE id = 'c'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stands, here, "it did not move");
     }
 
     /// Two territories that turn out to be one folder become one, and nothing
