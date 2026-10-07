@@ -22,6 +22,7 @@
   let host = $state("");
   let typed = $state("");
   let phrase = $state(""); // shown once, never re-fetched
+  let linked = $state(false);
   let busy = $state(false);
   let fault = $state("");
   let copied = $state(false);
@@ -30,6 +31,10 @@
     try {
       held = await invoke<boolean>("flyway_held");
       host = await invoke<string>("flyway_host");
+      /* Holding a key and being *on* the flyway are two different facts, and
+         they must not look alike: a wall whose endpoint could not bind has a
+         key and syncs nothing. `flyway_linked` is the second question. */
+      linked = await invoke<boolean>("flyway_linked");
     } catch (e) {
       fault = flywayError(e);
     }
@@ -56,6 +61,11 @@
     act(async () => {
       phrase = await invoke<string>("flyway_start");
       copied = false;
+      /* **Bring the link up now.** Without this a key takes effect at the next
+         launch and nothing says so — you paste an invite, the panel says you
+         are on a flyway, and nothing ever syncs. `arrive` is idempotent, so
+         calling it on a wall that is already linked costs a lock. */
+      await invoke("flyway_arrive");
     });
 
   const join = () => {
@@ -64,6 +74,7 @@
     return act(async () => {
       await invoke("flyway_join", { phrase: sent });
       typed = "";
+      await invoke("flyway_arrive");
     });
   };
 
@@ -158,6 +169,12 @@
         <h3>linked</h3>
         <p class="aside">
           This machine calls itself <code>{host}</code>. The key is held and is not shown.
+          {#if linked}
+            The link is up.
+          {:else}
+            The link is not up — nothing is syncing. Restarting may be enough; if it is not,
+            this machine could not take a place on the flyway.
+          {/if}
         </p>
         <div class="pair">
           <button class="act" disabled={busy} onclick={leave}>leave the flyway</button>
