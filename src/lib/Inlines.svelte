@@ -10,23 +10,25 @@
      space between every word and the emphasis next to it. */
   import Self from "./Inlines.svelte";
   import type { Inline } from "./markdown";
-  import { namedPath, pathsIn, type FileLinks } from "./finding";
-  import { paths } from "./paths.svelte";
+  import { namedPath, pathsIn } from "./finding";
+  import { paths, useFiles, useLinks } from "./paths.svelte";
 
-  let {
-    kids,
-    onlink,
-    files,
-  }: {
-    kids: Inline[];
-    /** Routed out rather than invoked: a link leaves the app, and `skein` is
-     *  the only thing that talks to Rust. */
-    onlink?: (href: string) => void;
-    /** What makes a path written in a sentence something you can open. Absent
-     *  where there is no project behind the prose, which is how a surface opts
-     *  out of the whole business. See `finding.ts`. */
-    files?: FileLinks;
-  } = $props();
+  let { kids }: { kids: Inline[] } = $props();
+
+  /** Where a link goes. Off the environment rather than a prop, for the reason
+   *  `files` is — see `provideLinkOpener`. There is exactly one thing a link
+   *  can mean in a window with no address bar, so no surface ever had anything
+   *  to say about it. */
+  const onlink = useLinks();
+
+  /** What makes a path written in a sentence something you can open.
+   *
+   *  Off the scope rather than off a prop, which is the whole of why three
+   *  surfaces used to draw an agent's paths as dead text — see the note over
+   *  `scopeFiles`. `null` here is a surface with no directory behind its prose,
+   *  which is how the business is opted out of and is right for a chat card. */
+  const scope = useFiles();
+  const files = $derived(scope());
 
   /* ── paths named in the prose ──────────────────────────────────────────
      An agent writes a path far more often than it writes a markdown link, and
@@ -117,14 +119,19 @@
      from. The click is a command that opens the link where links belong.
 
      A path is the same shape of thing one layer in — a button that reads as the
-     text it replaced — and carries `data-path` so the right-click can find it
-     without the menu needing to know anything about markdown. -->
+     text it replaced — and carries `data-path` *and the root it counts from*
+     so the right-click can find both without the menu needing to know anything
+     about markdown. The root travels on the element because that is the only
+     place it is still true: the menu fires from a document-level listener, and
+     reading the focused card there resolved a path in one project's question
+     against another project's directory. -->
 {#each kids as k, i (i)}{#if k.t === "text"}{#if textRuns.has(i)}{#each textRuns.get(i)! as run, ri (ri)}{#if run.at && kindOf(run.at.path)}{@const at =
           run.at}{@const dir = kindOf(at.path) === "dir"}<button
         type="button"
         class="path"
         class:dir
         data-path={at.path}
+        data-root={files?.root}
         data-dir={dir ? "1" : null}
         title={hint(at.path, dir)}
         onclick={(e) => go(e, at.path, at.line)}>{run.text}</button
@@ -134,18 +141,19 @@
       class="path code"
       class:dir
       data-path={at.path}
+      data-root={files?.root}
       data-dir={dir ? "1" : null}
       title={hint(at.path, dir)}
       onclick={(e) => go(e, at.path, at.line)}><code>{k.v}</code></button
     >{:else}<code>{k.v}</code>{/if}{:else if k.t === "strong"}<strong
-      ><Self kids={k.kids} {onlink} {files} /></strong
-    >{:else if k.t === "em"}<em><Self kids={k.kids} {onlink} {files} /></em
-    >{:else if k.t === "del"}<del><Self kids={k.kids} {onlink} {files} /></del
+      ><Self kids={k.kids} /></strong
+    >{:else if k.t === "em"}<em><Self kids={k.kids} /></em
+    >{:else if k.t === "del"}<del><Self kids={k.kids} /></del
     >{:else if k.t === "link"}<button
       type="button"
       class="link"
       title={k.href}
-      onclick={() => onlink?.(k.href)}><Self kids={k.kids} {onlink} {files} /></button
+      onclick={() => onlink?.(k.href)}><Self kids={k.kids} /></button
     >{/if}{/each}
 
 <style>

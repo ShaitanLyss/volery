@@ -40,6 +40,7 @@
     type LookPanel,
   } from "./asking";
   import { readSheet, type Sheet } from "./finder.svelte";
+  import FileScope from "./FileScope.svelte";
   import Leaf from "./Leaf.svelte";
   import {
     STEP,
@@ -483,7 +484,18 @@
                 {#if faults[i]}
                   <p class="plate">{faults[i]}</p>
                 {:else if sheets[i]}
-                  <Leaf sheet={sheets[i]} />
+                  <!-- Scoped to the file's own directory, and said rather than
+                       inherited. The scope here would otherwise be the asking
+                       *card's* — but `attach_at` roots an attachment at its own
+                       parent and takes any absolute path, so a `.md` from a
+                       sibling repository would have had the paths in its prose
+                       resolved against this card's tree: either dead text, or
+                       a link that opens the wrong project's file of the right
+                       name. A document's prose counts from where the document
+                       is. -->
+                  <FileScope root={p.file.root}>
+                    <Leaf sheet={sheets[i]} />
+                  </FileScope>
                 {:else}
                   <p class="plate">reading {nameOf(p.file)}…</p>
                 {/if}
@@ -688,7 +700,9 @@
           {#if faults[big!]}
             <p class="plate">{faults[big!]}</p>
           {:else if sheets[big!]}
-            <Leaf sheet={sheets[big!]} />
+            <FileScope root={bigPanel.file.root}>
+              <Leaf sheet={sheets[big!]} />
+            </FileScope>
           {:else}
             <p class="plate">reading {nameOf(bigPanel.file)}…</p>
           {/if}

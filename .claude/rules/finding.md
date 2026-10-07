@@ -7,6 +7,11 @@ paths:
   # The viewer's own dispatch, lifted out of Spyglass so a question can draw a
   # file with it too — ask.md owns that half.
   - "src/lib/Leaf.svelte"
+  # A path in prose is clickable everywhere or nowhere; these are what make it
+  # ambient rather than a prop each surface has to remember.
+  - "src/lib/paths.svelte.ts"
+  - "src/lib/Inlines.svelte"
+  - "src/lib/FileScope.svelte"
   - "src/lib/dogears.ts"
   - "src/lib/Dogears.svelte"
   - "tools/probe-places.ts"
@@ -796,3 +801,63 @@ prose. That is also why the file branch goes to the viewer and never here.
 count from different places, and everything that *acts* on a path wants to be told exactly
 which. It resolves `.` and `..` itself, because `safe_join` refuses a `..` outright and a path
 that climbs and comes back would otherwise be refused for a shape it does not really have.
+
+### A path in prose is clickable everywhere, or the arrangement is wrong
+
+`pathsIn` finds them, `paths.svelte.ts` asks the disk whether they are real, and
+`Inlines.svelte` draws the ones that are. That half was right from the start.
+What was wrong is how a surface got the feature at all.
+
+**It was a prop.** `FileLinks` was threaded `Transcript` → `Markdown` →
+`Inlines` and back into both recursively — thirteen `{files}` inside the
+renderer, four at the call sites — and the type's comment said why it was one
+prop rather than two: *"a second `{onpath}` beside `{onlink}` at nine call sites
+is nine chances to forget one."* Right observation, wrong axis. Three surfaces
+forgot anyway: the question `ask_user` puts in the dock, and the markdown the
+file viewer draws through `Leaf` and `Folio`. A path in a question an agent
+asked you was dead text, and the only way to discover that was to try clicking
+one.
+
+So the navigation is **ambient and the root is scoped**:
+
+- `App.svelte` calls `provideFileNavigation(goToPath, …)` once, and
+  `provideLinkOpener` beside it — `onlink` was the same prop with the same
+  hazard and *no* scope at all, since every caller passed the identical
+  function and `Spyglass` had its own copy whose comment said "the same call
+  the transcript makes". A markdown link in the gallery was dead for exactly
+  the reason a path in the ask panel was.
+- **The default root is `null`, not the focused card.** A fallback reads as the
+  generous choice and is worse than none: the focused card is right for one
+  surface, so a panel that forgets gets another card's directory, and a
+  relative path that exists there becomes a link to the wrong project's file of
+  the right name. `Gallery` proved it — it draws an attachment rooted at the
+  file's own parent (`attach_at`), which need not be under the asking card at
+  all, so it names its own root with `FileScope` rather than inheriting one.
+- A surface that knows whose words it is drawing names only the directory they
+  count from — `scopeFiles(() => …)`, one line. `Transcript` (the card it
+  draws), `Dock` (the card that is *blocked*, which need not be the focused
+  one), `Spyglass` (the finder's root, which is what gives `Leaf` and `Folio`
+  the feature without either knowing it exists). `FileScope.svelte` is the same
+  thing as an element, for the away pile, whose rows are five different
+  projects' questions stacked.
+- `null` turns it off, which is what a chat card wants: no directory behind the
+  prose, so a relative path counts from nowhere.
+
+**The root travels on the element too** (`data-root` beside `data-path`), because
+the right-click menu fires from a document-level listener and had been reading
+the *focused* card — so a path in one project's question resolved against
+another project's directory, and opened either nothing or the wrong file of the
+right name. `goToPath` takes its root as an argument for the same reason.
+
+`test/finding.test.ts` asserts both props stay deleted, in both directions: the
+renderer may not declare `files` or `onlink`, no component may pass either, and
+`Inlines` must still call `useFiles()` and `useLinks()` — since the first
+assertions are equally satisfied by deleting the feature. It scans the opening
+tag with a **brace-aware scanner rather than a regex**, which took three goes:
+`[^>]*` is walked through by an attribute holding an arrow function, and so is
+`[\s\S]*?>`, since non-greedy means shortest and the shortest match ends at the
+`>` inside the arrow. Both of those passed a tree with `{files}` put back by
+hand, which is how they were found — a guard is not written until it has been
+watched to fail. The general form of all of this is in `CLAUDE.md`: **if a
+surface omits a capability, does anything say so?**
+

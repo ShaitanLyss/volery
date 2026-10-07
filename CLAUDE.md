@@ -527,6 +527,48 @@ these apply when you open almost anything.
   there is nothing for a component to forget. The judgement — `stillFollowing`, which turns on
   the position the follow last wrote, because a write's scroll event arrives a beat *after* the
   bottom has moved — is pure and tested. See `panel.md`.
+- **A capability every surface should have is not a prop.** If the answer to
+  "why does this panel not do X" is "it did not pass `x`", the prop is the bug
+  and adding one more call site is not the fix. Threading a capability through
+  a component tree means every present and future surface has to *remember* it,
+  and forgetting is silent: the panel renders, nothing errors, and the only way
+  to find out is for somebody to try the gesture and have nothing happen.
+  That is how a path written in an agent's prose became clickable in the
+  transcript and nowhere else — not in a question `ask_user` put in front of
+  you, not in a markdown file opened in the viewer — while `FileLinks` was
+  threaded through thirteen places inside `Markdown`/`Inlines` and four at the
+  call sites. The type's own comment had already noticed the hazard and
+  mitigated it by collapsing two props into one, which is the wrong axis: two
+  chances to forget instead of three is still a design where forgetting is
+  possible.
+  The shape that works is **ambient, with a scope where one is genuinely
+  needed**: set the capability once at the root so everything below has it by
+  existing (`provideFileNavigation`, `provideLinkOpener` in `App.svelte`). Some
+  have nothing a surface could say about them at all — `onlink` was the
+  identical function at every call site, because a window with no address bar
+  has one thing a link can mean — and those are purely ambient. Where a surface
+  does know something the root cannot, it says only that: `scopeFiles` names the
+  directory a panel's prose counts from, and `FileScope.svelte` does it per row
+  for a list whose rows belong to different cards.
+  **Do not give the ambient value a helpful default.** The first cut defaulted
+  the root to the focused card, which reads as generous and is worse than
+  nothing: the focused card is right for exactly one surface, so a panel that
+  forgot to scope got *another* card's directory, and a relative path that
+  happened to exist there became a link opening the wrong project's file of the
+  right name — silently, where the old omission at least failed as plain text.
+  An ambient capability with no honest default defaults to **off**.
+  **Then delete the prop rather than leaving it as an escape hatch, and assert
+  it stays deleted** — a prop that exists is a prop a surface can omit, and
+  omitting it looks exactly like prose with nothing in it to click.
+  `test/finding.test.ts` is that assertion, and getting it right took three
+  goes: `[^>]*` is walked through by an attribute holding an arrow function, and
+  so is the obvious repair `[\s\S]*?>`, because non-greedy means shortest and
+  the shortest match ends at the `>` *in* the arrow. **Check a guard fails** by
+  putting the thing back by hand; both broken versions passed a tree that had
+  it.
+  Ask this of anything a panel can "forget": a theme, a root, a permission, a
+  router. The question is not "is this prop ugly" but **"if a surface omits
+  this, does anything say so?"**
 - **A budget is a reason to say a thing once. It is never a reason to say less
   of it.** Several things here cap agent-facing text — the loaded MCP tier's
   byte ceiling (`ask::tests::the_loaded_tier_is_what_every_turn_pays_for`) is

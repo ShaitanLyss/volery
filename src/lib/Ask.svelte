@@ -54,7 +54,6 @@
     onanswer,
     onstir,
     onselect,
-    onlink,
   }: {
     ask: PendingAsk;
     project: string;
@@ -79,10 +78,6 @@
     onstir?: () => void;
     /** Put the asking card in the ring. Only reachable while `elsewhere`. */
     onselect?: () => void;
-    /** A link in a question goes out the way one in the transcript does — this
-     *  window is undecorated, with no address bar and no way back, so an
-     *  `<a href>` would be a one-way trip out of the app. */
-    onlink?: (href: string) => void;
   } = $props();
 
   let free = $state("");
@@ -379,7 +374,7 @@
       <!-- `nav={false}`: the rails collect `data-nav` marks, and a question in
            the dock is not a place in the transcript to travel to. -->
       <div class="q">
-        <Markdown blocks={parseMarkdown(current.question)} nav={false} {onlink} />
+        <Markdown blocks={parseMarkdown(current.question)} nav={false} />
       </div>
     {/key}
 

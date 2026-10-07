@@ -12,10 +12,10 @@
      Every piece of arithmetic in here is in `finding.ts` instead — the spans, the
      window, the line splitting. What is left is elements. */
   import { tick } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
 
   import Folio from "./Folio.svelte";
   import Leaf from "./Leaf.svelte";
+  import { scopeFiles } from "./paths.svelte";
   import Quill from "./Quill.svelte";
   import { type Reading, flatOf, locate } from "./dogears";
   import { pieces, shift, splitPath, viewLines, windowAround } from "./finding";
@@ -23,6 +23,12 @@
   import type { Editor } from "./nvim.svelte";
 
   let { finder, editor }: { finder: Finder; editor: Editor } = $props();
+
+  /* A markdown file read in the viewer is prose like any other, and a path
+     inside it counts from the project being looked at — which is the finder's
+     root, not the focused card's. `Leaf` and `Folio` get it from here without
+     knowing it exists, which is the whole point of the arrangement. */
+  scopeFiles(() => finder.root || null);
 
   let field: HTMLInputElement | undefined = $state();
   let list: HTMLDivElement | undefined = $state();
@@ -285,15 +291,6 @@
       await finder.swap();
     }
   }
-
-  /** A link in a rendered document goes to the desktop, never to this window —
-   *  the studio has no address bar and no back button, so navigating it would
-   *  be a one-way trip out of the app. The same call the transcript makes. */
-  function onlink(href: string) {
-    void invoke("open_external", { url: href }).catch(
-      (err) => (finder.fault = String(err)),
-    );
-  }
 </script>
 
 <!-- A press outside puts it away, and it is the *tabs* that make that affordable.
@@ -459,7 +456,6 @@
         rendered={finder.rendered}
         line={finder.sheetLine}
         outsideKey="e"
-        {onlink}
       />
     </div>
   {:else}

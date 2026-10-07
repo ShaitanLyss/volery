@@ -22,6 +22,7 @@
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
   import { askShown } from "./asking";
+  import { scopeFiles } from "./paths.svelte";
   import { completionForChoice, slashAt, stirsCard, typingChoice, type Command } from "./commands";
   import { nameBesideProject } from "./naming";
   import { promptPath } from "./shell";
@@ -114,6 +115,14 @@
      *  one selected. */
     onselect: (conv: Conversation) => void;
   } = $props();
+
+  /* The dock draws whichever card is *blocked*, which need not be the card in
+     the ring — `elsewhere` is that case and it is drawn on the panel. So a
+     path in the question belongs to the asking card's directory, and the root
+     this falls back to otherwise is the focused one: the same file name in two
+     projects would have opened the wrong one, silently. See `scopeFiles`. */
+  const asking = $derived(askShown(focused, skein.blocked));
+  scopeFiles(() => (asking?.kind === "project" ? asking.cwd : null) ?? null);
 
   let height = $state(0);
   /* Braced, not an arrow expression: an effect that *returns* a value is an
@@ -289,7 +298,7 @@
   <!-- A blocked card jumps the queue: it is the only state where an agent is
        genuinely stopped, so answering it comes before anything else. -->
   {#if skein.blocked.length}
-    {@const target = askShown(focused, skein.blocked)!}
+    {@const target = asking!}
     <Ask
       ask={target.pendingAsk!}
       project={target.project}
@@ -299,7 +308,6 @@
       onanswer={() => skein.answerAsk(target)}
       onstir={() => skein.stirAsk(target)}
       onselect={() => onselect(target)}
-      onlink={(href) => void skein.openLink(href)}
     />
     {#if skein.blocked.length > 1}
       <button class="more" onclick={() => onmore(target)}>

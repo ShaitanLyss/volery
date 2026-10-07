@@ -32,7 +32,6 @@
     rendered = null,
     line = null,
     outsideKey = null,
-    onlink,
   }: {
     sheet: Sheet;
     /** Whether to draw the document reading or the source. `null` takes it
@@ -50,7 +49,6 @@
      *  is right for a caller that offers no such gesture: a panel naming a key
      *  that does nothing is worse than one that stays quiet. */
     outsideKey?: string | null;
-    onlink?: (href: string) => void;
   } = $props();
 
   /** The reading, with the caller's answer preferred over the file's. */
@@ -101,14 +99,14 @@
 {:else if asDoc && sheet.doc}
   <!-- Parsed in `office.ts` on the way in and drawn by `Folio.svelte`; nothing
        about a format reaches this file. -->
-  <Folio doc={sheet.doc} path={sheet.path} bytes={sheet.bytes} {onlink} />
+  <Folio doc={sheet.doc} path={sheet.path} bytes={sheet.bytes} />
 {:else if sheet.binary}
   <p class="empty">not a text file — nothing to read here</p>
 {:else if asDoc}
   <!-- The repo's own renderer, so a rule reads here exactly as an agent's
        answer reads in the transcript. `nav` off: that flag is about the
        transcript's rail listing a paragraph, and there is no rail here. -->
-  <Markdown {blocks} nav={false} {onlink} />
+  <Markdown {blocks} nav={false} />
 {:else}
   {#each rows as l (l.no)}
     <div class="ln" class:hit={l.no === line} data-no={l.no}>

@@ -33,6 +33,7 @@
   import type { Conversation } from "./conversation.svelte";
   import { clock } from "./conversation.svelte";
   import { nameBesideProject } from "./naming";
+  import FileScope from "./FileScope.svelte";
   import type { Presence } from "./presence.svelte";
   import { actVerb, answerEnvelope, lasted, stood, type Act, type Deferred } from "./presence";
   import type { Skein } from "./skein.svelte";
@@ -43,7 +44,6 @@
     skein,
     onclose,
     onselect,
-    onlink,
   }: {
     presence: Presence;
     skein: Skein;
@@ -52,7 +52,6 @@
      *  while you decide. The one gesture here that is about context rather than
      *  about answering. */
     onselect?: (conv: Conversation) => void;
-    onlink?: (href: string) => void;
   } = $props();
 
   /** The card whose questions are in hand. Null until the pile resolves, then
@@ -245,6 +244,16 @@
           {#each here.asks as d (d.id)}
             {@const who = whoOf(d.conversationId)}
             <div class="one" class:sending={sending === d.id}>
+              <!-- Each row is a different card's question, so the directory a
+                   path in it counts from is that card's and not the pile's.
+                   `scopeFiles` is per component; this list needs one per row.
+                   See `FileScope.svelte`. -->
+              <FileScope
+                root={(() => {
+                  const c = convOf(d.conversationId);
+                  return (c?.kind === "project" ? c.cwd : null) ?? null;
+                })()}
+              >
               <Ask
                 ask={{ askId: d.id, questions: d.questions, answers: d.answers, ours: false, since: d.askedAt }}
                 project={who.project}
@@ -257,8 +266,8 @@
                   const c = convOf(d.conversationId);
                   if (c) onselect?.(c);
                 }}
-                {onlink}
               />
+              </FileScope>
               <div class="foot">
                 {#if isComplete(d.answers)}
                   <span class="ready">answered — send it to wake the card</span>

@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -29,6 +30,19 @@ import {
   pathsIn,
 } from "../src/lib/finding";
 import { DOCUMENTS, TABLES } from "../src/lib/office";
+
+/** Every `.svelte` under a directory, at any depth. The same walk
+ *  `test/styles.test.ts` uses, for the same kind of invariant: something true
+ *  of every component, which no component is in a position to check. */
+function components(dir: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...components(p));
+    else if (e.name.endsWith(".svelte")) out.push(p);
+  }
+  return out;
+}
 
 /* ── scoring ──────────────────────────────────────────────────────────────── */
 
@@ -777,5 +791,91 @@ describe("resolving a path against the card's directory", () => {
 
   test("a UNC share keeps both of its leading separators", () => {
     expect(fullPath(W, "\\\\srv\\share\\f.txt")).toBe("\\\\srv\\share\\f.txt");
+  });
+});
+
+describe("a capability no surface has to ask for", () => {
+  /* `FileLinks` and `onlink` were both props. They were threaded from
+     `Transcript` into `Markdown` into `Inlines` and back into both recursively
+     — thirteen `{files}` inside the renderer and four at the call sites — and
+     the type's own comment said why `files` had been collapsed from two props
+     into one: "a second `{onpath}` beside `{onlink}` at nine call sites is nine
+     chances to forget one."
+
+     Three surfaces forgot anyway. A path in a question an agent asked you was
+     dead text, and so was every path in a markdown file opened in the viewer;
+     a markdown *link* in the gallery is still dead today for the same reason,
+     one prop over. The only way to find out was to try clicking one.
+
+     So both are ambient now, and these assertions are what keep them that way,
+     because the failure they guard is silent by construction: a prop that
+     exists is a prop a surface can omit, and omitting it looks exactly like
+     prose with nothing in it to click. */
+
+  /** The whole of a component's opening tag, braces and all.
+   *
+   *  A scanner rather than a regex, and that is not fastidiousness — it is the
+   *  second thing that got this wrong. `[^>]*` was the first attempt and an
+   *  attribute holding an arrow function walks straight through it. The
+   *  obvious repair, `[\\s\\S]*?>`, is the *same bug wearing a different hat*:
+   *  non-greedy means shortest, and the shortest match still ends at the `>`
+   *  in `onclick={(h) => …}`. Both versions passed a tree that had `{files}`
+   *  put back by hand.
+   *
+   *  A `>` only closes a tag at brace depth zero. That is one loop and it
+   *  cannot be fooled by the contents of an expression. */
+  function tags(src: string, tag: string): string[] {
+    const out: string[] = [];
+    const open = new RegExp(`<${tag}\\b`, "g");
+    for (let m = open.exec(src); m; m = open.exec(src)) {
+      let depth = 0;
+      for (let i = m.index; i < src.length; i++) {
+        const c = src[i];
+        if (c === "{") depth++;
+        else if (c === "}") depth--;
+        else if (c === ">" && depth === 0) {
+          out.push(src.slice(m.index, i + 1));
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  const read = (p: string) => readFileSync(join("src", "lib", p), "utf8");
+
+  test("the renderer cannot be handed either, so it cannot be denied them", () => {
+    for (const c of ["Markdown.svelte", "Inlines.svelte"]) {
+      const props = read(c);
+      /* Any declaration at all, optional or required — `files: FileLinks`
+         passes a check written against `files?:`. */
+      expect(props).not.toMatch(/^\s*files\??:/m);
+      expect(props).not.toMatch(/^\s*onlink\??:/m);
+    }
+  });
+
+  test("and no surface passes them, because there is nothing to pass", () => {
+    const all = components("src");
+    /* Asserted first so this cannot pass by having walked nothing — the same
+       discipline the `IMAGES`/`VIDEOS` agreement test keeps next door. */
+    expect(all.length).toBeGreaterThan(20);
+    let checked = 0;
+    for (const c of all) {
+      for (const t of [...tags(readFileSync(c, "utf8"), "Markdown"), ...tags(readFileSync(c, "utf8"), "Inlines")]) {
+        checked++;
+        expect(t).not.toMatch(/\bfiles\b/);
+        expect(t).not.toMatch(/\bonlink\b/);
+      }
+    }
+    /* And that it found the render sites at all. */
+    expect(checked).toBeGreaterThan(5);
+  });
+
+  test("`Inlines` reads the environment instead", () => {
+    /* The other direction: every assertion above is satisfied by deleting the
+       feature, and this is what says it is still there. */
+    const src = read("Inlines.svelte");
+    expect(src).toContain("useFiles()");
+    expect(src).toContain("useLinks()");
   });
 });

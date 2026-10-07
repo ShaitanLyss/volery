@@ -10,6 +10,7 @@
   import Rail from "./Rail.svelte";
   import ToolCall from "./ToolCall.svelte";
   import { nudgeReading } from "./layout";
+  import { scopeFiles } from "./paths.svelte";
   import { readingOf } from "./gears";
   import { parseMarkdown, StreamedMarkdown } from "./markdown";
   import {
@@ -45,9 +46,7 @@
     read = 1,
     rails = "left",
     onhistory,
-    onlink,
     onfile,
-    onpath,
     onread,
   }: {
     conv: Conversation;
@@ -68,20 +67,11 @@
      *  rather than invoked here: `skein.svelte.ts` is the only thing that talks
      *  to Rust. */
     onhistory?: (c: Conversation) => void;
-    /** Open a link the agent wrote. Routed out for the same reason. */
-    onlink?: (href: string) => void;
     /** Look at a file a tool call named, in the finder's viewer. Routed out for
      *  the same reason as `onlink`: which panel is on screen is not this one's
      *  business. The path arrives project-relative, already reduced against
      *  `conv.cwd` by `ToolCall` — see `.claude/rules/finding.md`. */
     onfile?: (path: string, line: number | null) => void;
-    /** A path an agent named in its *prose* — not in a tool call — and what the
-     *  gesture meant. An agent writes a path far more often than it writes a
-     *  markdown link, and until this every one of them was dead text you
-     *  retyped into the finder. `finding.ts` finds them, `paths.svelte.ts` asks
-     *  the disk whether they are real, and this routes the click out: the panel
-     *  neither opens files nor reaches Explorer. */
-    onpath?: (path: string, line: number | null, how: "open" | "reveal") => void;
     /** A notch of ctrl+wheel asking for a different size. Routed out for the
      *  same reason the width's drag is: how this window is set up to be read
      *  from is not the panel's to keep. */
@@ -103,18 +93,12 @@
      above the last block boundary once and hands it back by identity, so this
      one holds a fold rather than being one. See markdown.ts for what counts as
      a boundary; it is the whole of the subtlety. */
-  /** What makes a path written in this card's prose something you can open.
-   *
-   *  Absent for a chat card, which has no directory behind it — a relative
-   *  path there counts from nowhere, and a link that resolves against nowhere
-   *  is the dead link this whole path is written to avoid. Absent too when the
-   *  surface above did not offer a handler, which is how a reading that is not
-   *  a transcript opts out. */
-  const files = $derived(
-    onpath && conv.kind === "project" && conv.cwd
-      ? { root: conv.cwd, go: onpath }
-      : undefined,
-  );
+  /* Which directory *this card's* prose counts from. One line, because the
+     navigation comes down from the root — see `scopeFiles`. `null` for a chat
+     card, which has no directory behind it: a relative path there counts from
+     nowhere, and a link that resolves against nowhere is the dead link this
+     whole path exists to avoid. */
+  scopeFiles(() => (conv.kind === "project" ? conv.cwd : null) ?? null);
 
   const stream = new StreamedMarkdown();
   const streamed = $derived(stream.read(conv.id, conv.streaming));
@@ -1178,8 +1162,18 @@
   {:else if line.kind === "text"}
     <!-- `data-nav` is the rail's whole handle on the panel: this one is the
          answer itself, and the marks inside it are its shape. -->
-    <div class="line text md" data-nav="msg">
-      <Markdown blocks={parseMarkdown(line.text)} {onlink} {files} />
+    <!-- Narration is the server's summary of what the agent wrote between tool
+         calls, which is all of that prose the wire carries. Speech, so drawn as
+         speech; marked, because it is the gist rather than the words. -->
+    <div
+      class="line text md"
+      class:narration={line.narration}
+      data-nav="msg"
+      title={line.narration
+        ? "summarised by the server — what the agent wrote between tool calls"
+        : undefined}
+    >
+      <Markdown blocks={parseMarkdown(line.text)} />
     </div>
   {:else}
     <!-- The line is drawn exactly as it was — `pre-wrap` here, so the text stays
@@ -1279,7 +1273,7 @@
                one of them. -->
           <div class="inside">
             <div class="line text md">
-              <Markdown blocks={parseMarkdown(b.line.text)} {onlink} {files} />
+              <Markdown blocks={parseMarkdown(b.line.text)} />
             </div>
           </div>
         {/if}
@@ -1446,10 +1440,8 @@
           <Markdown
             blocks={streamed.settled}
             caret={streamed.tail.length === 0}
-            {onlink}
-            {files}
           />
-          <Markdown blocks={streamed.tail} caret {onlink} {files} />
+          <Markdown blocks={streamed.tail} caret />
         </div>
       {/if}
       <!-- What the agent is doing *now*, at the foot of the column.
@@ -1876,6 +1868,17 @@
      but a heading, a list and a table must not be held in pre-wrap. */
   .line.md {
     white-space: normal;
+  }
+  /* A pseudo-element rather than a child, so `.md > :last-child` still finds
+     the end of the answer and a copy never carries the word. Achromatic: what
+     this says is whose words these are, which is not a status. */
+  .line.text.narration::after {
+    content: "summary";
+    display: block;
+    margin-top: calc(0.15rem * var(--read, 1));
+    font-family: var(--util);
+    font-size: calc(0.68rem * var(--read, 1));
+    color: var(--paper-faint);
   }
   /* Your half of the conversation. Set in against a rule rather than in a
      bubble: the transcript is one column of speech, and what distinguishes you

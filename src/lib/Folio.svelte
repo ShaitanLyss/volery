@@ -21,13 +21,11 @@
     path,
     bytes,
     peek = false,
-    onlink,
   }: {
     doc: Doc;
     path: string;
     bytes: number;
     peek?: boolean;
-    onlink?: (href: string) => void;
   } = $props();
 
   /** How much of a document the preview draws. Both are about the *glance*: a
@@ -182,7 +180,7 @@
     </p>
   {:else}
     <div class="prose" class:peek>
-      <Markdown {blocks} nav={false} {onlink} />
+      <Markdown {blocks} nav={false} />
     </div>
   {/if}
 {:else if !grid}

@@ -120,3 +120,106 @@ function trim(map: Record<string, PathKind | null>): Record<string, PathKind | n
 }
 
 export const paths = new Paths();
+
+/* ── which directory a surface's prose counts from ─────────────────────────
+ *
+ * This was a prop. `FileLinks` was threaded from `Transcript` into `Markdown`
+ * into `Inlines` and back into both of them recursively — thirteen `{files}`
+ * inside the renderer and four at the call sites — and the comment on the type
+ * said why it was one prop rather than two: "a second `{onpath}` beside
+ * `{onlink}` at nine call sites is nine chances to forget one." That is the
+ * right observation and halving it was the wrong fix. Three surfaces forgot
+ * anyway — the ask panel, and the markdown the file viewer draws through
+ * `Leaf` and `Folio` — so a path in a question an agent asked you was dead
+ * text, and the only way to find out was to try clicking one.
+ *
+ * **A capability every surface should have is not something every surface
+ * should have to ask for.** So the navigation is set once, at the root, and
+ * reaches every `Markdown` in the app by being above it; what a surface may
+ * still say is the one thing only it knows, which is the directory its prose
+ * counts from. A new panel that renders an agent's words gets working links by
+ * existing, and gets them wrong only by being wrong about *whose* words they
+ * are — which is a mistake with a visible consequence, where forgetting a prop
+ * had none.
+ *
+ * `test/finding.test.ts` holds the shape: neither `Markdown` nor `Inlines` may
+ * grow a `files` prop again, because a prop that exists is a prop a surface can
+ * omit.
+ */
+
+import { getContext, setContext } from "svelte";
+import type { FileLinks } from "./finding";
+
+/** Opening a path, which only `App` can do — it owns the finder and the one
+ *  thing that talks to Rust. Takes the root explicitly rather than reading the
+ *  focused card, because the prose being clicked is not always the focused
+ *  card's: the dock draws whichever card is blocked, which may be another
+ *  project entirely. */
+export type GoToPath = (
+  root: string,
+  path: string,
+  line: number | null,
+  how: "open" | "reveal",
+) => void;
+
+type Scope = { go: GoToPath | null; root: () => string | null };
+
+const FILES = Symbol("volery:files");
+
+/** Set once, by the root. `root` is the fallback — the focused card — so a
+ *  surface that says nothing still linkifies against something sensible. */
+export function provideFileNavigation(go: GoToPath, root: () => string | null): void {
+  setContext<Scope>(FILES, { go, root });
+}
+
+/** A surface naming the directory *its* prose counts from. One line, and the
+ *  navigation comes down from above unrestated. `null` turns links off for
+ *  everything inside, which is what a chat card's prose wants: a relative path
+ *  there counts from nowhere. */
+export function scopeFiles(root: () => string | null): void {
+  const up = getContext<Scope | undefined>(FILES);
+  setContext<Scope>(FILES, { go: up?.go ?? null, root });
+}
+
+/** What `Inlines` asks. `null` means draw the text and nothing more. */
+export function useFiles(): () => FileLinks | null {
+  const scope = getContext<Scope | undefined>(FILES);
+  return () => {
+    const root = scope?.root() ?? null;
+    const go = scope?.go;
+    if (!root || !go) return null;
+    return { root, go: (path, line, how) => go(root, path, line, how) };
+  };
+}
+
+/* ── and the link beside it ────────────────────────────────────────────────
+ *
+ * `onlink` is the same prop with the same hazard and *no* scope at all: every
+ * caller in the app passed the identical function, because there is only one
+ * thing a markdown link can mean here. The studio has no address bar and no
+ * back button, so a link leaves for the desktop or does nothing; `App` and
+ * `Spyglass` had each written that out, and the second one's comment says "the
+ * same call the transcript makes" — which is a copy admitting it is a copy.
+ *
+ * Threaded through the same thirteen places, and forgotten in the one surface
+ * that was added last: a markdown link in the gallery was dead while a path in
+ * it was clickable, which is the inconsistency that makes the general rule
+ * worth stating. If a capability is identical at every call site it is not a
+ * prop, it is the environment.
+ */
+
+/** Where a markdown link goes. Set once; there is nothing a surface could
+ *  usefully say about it, which is exactly why it was never a prop's business. */
+export type OpenLink = (href: string) => void;
+
+const LINKS = Symbol("volery:links");
+
+export function provideLinkOpener(open: OpenLink): void {
+  setContext<OpenLink>(LINKS, open);
+}
+
+/** What `Inlines` asks. A no-op where nothing provided one, so a link renders
+ *  as its label and goes nowhere rather than throwing. */
+export function useLinks(): OpenLink {
+  return getContext<OpenLink | undefined>(LINKS) ?? (() => {});
+}

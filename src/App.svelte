@@ -182,7 +182,11 @@
   import { arrangements } from "./lib/arrange.svelte";
   import { berths } from "./lib/berth.svelte";
   import { fullPath, insideRoot } from "./lib/finding";
-  import { paths } from "./lib/paths.svelte";
+  import {
+    paths,
+    provideFileNavigation,
+    provideLinkOpener,
+  } from "./lib/paths.svelte";
   import { MIN_H, MIN_W, dockSiteAt, floatBox, moorings, panelSiteAt } from "./lib/berth";
   import { homeInsets, spreadPan } from "./lib/span";
 
@@ -1479,7 +1483,8 @@
      whether it is real, `Inlines.svelte` draws what survives, and this is what
      a press on it means. */
 
-  /** Open what the text named, or show it in Explorer.
+  /** Open what the text named, or show it in Explorer, against the directory
+   *  *its surface* said its prose counts from.
    *
    *  Three destinations and one rule behind them: **a file is read here and a
    *  folder is somewhere else's.** The viewer is the right place for a file
@@ -1490,11 +1495,19 @@
    *  A file outside the card's tree falls back to Explorer rather than
    *  failing: the viewer refuses anything that climbs out of its root
    *  (`safe_join`), which is right, and "I cannot show you this" is a worse
-   *  answer than showing it where it actually lives. */
-  function goToPath(path: string, line: number | null, how: "open" | "reveal") {
-    const conv = focused;
-    if (!conv || conv.kind !== "project" || !conv.cwd) return;
-    const root = conv.cwd;
+   *  answer than showing it where it actually lives.
+   *
+   *  **The root is an argument rather than `focused.cwd`**, and that was a bug
+   *  waiting rather than tidiness: the dock draws whichever card is blocked,
+   *  which need not be the card in the ring — so a path in a question asked by
+   *  another project resolved against this one, and opened either nothing or
+   *  the wrong file of the right name. See `scopeFiles`. */
+  function goToPath(
+    root: string,
+    path: string,
+    line: number | null,
+    how: "open" | "reveal",
+  ) {
     const full = fullPath(root, path);
     const dir = paths.kind(root, path) === "dir";
 
@@ -1507,6 +1520,33 @@
     if (rel) void finder.lookAt(root, rel, line);
     else void reveal(full);
   }
+
+  /* Set once, here, and every `Markdown` in the app is below it — so what a
+     surface still has to say is the one thing only it knows: the directory its
+     prose counts from. `Transcript`, `Dock`, `Vigil`, `Spyglass` and `Gallery`
+     each name their own.
+
+     **The default root is `null` rather than the focused card**, and that is
+     the half worth arguing. A fallback reads as the generous choice and is the
+     opposite: the focused card is the right root for exactly one surface, so a
+     panel that forgets to scope does not get a sensible default — it gets
+     another card's directory, and a relative path that happens to exist there
+     becomes a link that opens the wrong project's file of the right name.
+     Silently, and more wrongly than the dead text it replaced. `null` keeps
+     the honest failure: a surface that says nothing draws plain words.
+
+     Which leaves forgetting still possible and no longer harmful, so the thing
+     that makes it *visible* is a test rather than a default — see
+     `test/finding.test.ts`, which fails on a component that renders prose and
+     has made no decision about whose it is. See `paths.svelte.ts`. */
+  provideFileNavigation(goToPath, () => null);
+
+  /* And the link beside it, which needs no scope at all: there is one thing a
+     markdown link can mean in a window with no address bar and no back button,
+     and every surface that ever took this prop passed the identical function.
+     `Spyglass` had written its own copy, whose comment said "the same call the
+     transcript makes" — a copy admitting it is a copy. */
+  provideLinkOpener((href) => void skein.openLink(href));
 
   function reveal(full: string) {
     void invoke("show_in_explorer", { path: full }).catch((e) => (skein.fault = String(e)));
@@ -1890,6 +1930,7 @@
          also a press on prose: you may well have a selection as well, and two
          menus for one click is a menu that opens the wrong one half the time. */
       const named = pathEl?.dataset.path;
+      const namedRoot = pathEl?.dataset.root;
       target = {
         kind: "prose",
         hasSelection: !!selected,
@@ -1905,11 +1946,11 @@
            say: a relative path pasted anywhere else is a path to nothing, and
            copying it is a gesture about taking it *out* of here. */
         if (id === "path-copy") {
-          const root = focused?.kind === "project" ? focused.cwd : "";
-          return void copyText(root ? fullPath(root, named) : named);
+          return void copyText(namedRoot ? fullPath(namedRoot, named) : named);
         }
-        if (id === "path-open") goToPath(named, null, "open");
-        if (id === "path-reveal") goToPath(named, null, "reveal");
+        if (!namedRoot) return;
+        if (id === "path-open") goToPath(namedRoot, named, null, "open");
+        if (id === "path-reveal") goToPath(namedRoot, named, null, "reveal");
       };
     }
 
@@ -4207,7 +4248,6 @@
         focusedId = c.id;
         studio.selectOnly(c.id);
       }}
-      onlink={(href) => void skein.openLink(href)}
     />
   {/if}
   {#if showAnnals}
@@ -4424,10 +4464,8 @@
             rails={railsOn}
             watching={attention.focused}
             onhistory={(c) => void skein.loadHistory(c)}
-            onlink={(href) => void skein.openLink(href)}
             onfile={(path, line) =>
               void finder.lookAt(focused.kind === "project" ? focused.cwd : "", path, line)}
-            onpath={goToPath}
             onread={setRead}
           />
         </aside>
