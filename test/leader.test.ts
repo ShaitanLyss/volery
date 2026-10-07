@@ -158,6 +158,7 @@ describe("the which-key hint", () => {
       { keys: "gn", label: "another grouping here" },
       { keys: "gr", label: "rename this grouping" },
       { keys: "ia", label: "I'm away / back" },
+      { keys: "k", label: "flyway key" },
       { keys: "p", label: "questions that piled up" },
       { keys: "tc", label: "casse-tête" },
       { keys: "td", label: "dérivée" },

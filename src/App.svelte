@@ -90,6 +90,7 @@
   import Themes from "./lib/Themes.svelte";
   import Accounts from "./lib/Accounts.svelte";
   import Keyring from "./lib/Keyring.svelte";
+  import Flyway from "./lib/Flyway.svelte";
   import Annals from "./lib/Annals.svelte";
   import Unfinished from "./lib/Unfinished.svelte";
   import { isReceipt, type Timeline } from "./lib/timeline";
@@ -435,6 +436,7 @@
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.kind === "open") {
       if (verb.what === "pile") presence.openPile();
+      else if (verb.what === "flyway") showFlyway = true;
       else showAnnals = true;
     }
     else if (verb.kind === "window") {
@@ -1106,6 +1108,7 @@
      `token` stays the key, because it is what `BAR_ORDER`, `FOLD_ORDER` and
      `chrome.test.ts` call it and renaming it buys nothing. */
   let showKeyring = $state(false);
+  let showFlyway = $state(false);
   /* The timeline archive, behind `<space>a` and a header button that is only
      there once something has been archived. */
   let showAnnals = $state(false);
@@ -3399,6 +3402,7 @@
         showThemes ||
         showAccounts ||
         showKeyring ||
+        showFlyway ||
         showAnnals ||
         unfinished ||
         openRun ||
@@ -4003,6 +4007,13 @@
         press: () => (showKeyring = !showKeyring),
       },
       {
+        key: "flyway",
+        label: "flyway",
+        title: "Link your walls on several machines with one wall key (space then k)",
+        on: showFlyway,
+        press: () => (showFlyway = !showFlyway),
+      },
+      {
         key: "chime",
         label: "chime",
         title: "Play a soft chime when a card wants you and Skein isn't focused",
@@ -4235,6 +4246,9 @@
         onclose={() => (openRun = null)}
       />
     {/key}
+  {/if}
+  {#if showFlyway}
+    <Flyway onclose={() => (showFlyway = false)} />
   {/if}
   {#if showKeyring}
     <Keyring keyring={creds} {devops} onclose={() => (showKeyring = false)} />

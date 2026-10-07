@@ -50,7 +50,7 @@ export type ShelfId = ToyId | PuzzleId;
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
-  | { kind: "open"; what: "timelines" | "pile" }
+  | { kind: "open"; what: "timelines" | "pile" | "flyway" }
   | { kind: "window"; act: "span" | "panel" | "dock" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" };
@@ -109,6 +109,10 @@ export const CHORDS: readonly Chord[] = [
      pile were one gesture for as long as the pile could only be opened by
      coming back, which is the gap this closes. */
   { keys: "p", label: "questions that piled up", verb: { kind: "open", what: "pile" } },
+  /* `k` for the wall key: a place you go, on `a`'s argument, and the key is the
+     whole of what a flyway is — starting, joining and leaving all happen in the
+     one panel it opens. */
+  { keys: "k", label: "flyway key", verb: { kind: "open", what: "flyway" } },
   /* `w` is the window, after nvim's `<C-w>` family: what the studio window
      itself does rather than anything on the wall. A family rather than a
      letter, because placing a window is several verbs (maximise, minimise,
