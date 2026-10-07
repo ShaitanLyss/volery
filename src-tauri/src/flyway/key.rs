@@ -139,6 +139,21 @@ pub fn leave() -> Result<(), String> {
 /// can see and rename. Anything that needs to tell two walls apart needs an id,
 /// and the sink does not — see `sink.rs` on why origin is attribution.
 pub fn host_name() -> String {
+    /* An override, so two walls can exist on one machine.
+    
+       Not a convenience: a wall's identity is derived from the key *and* this
+       name, so without it every test of the link is two endpoints with one
+       identity, which is a wall dialling itself and is the one arrangement that
+       cannot work. `examples/flyway-link.rs` is the whole reason it exists, and
+       it is the only honest way to exercise the real store path before two
+       machines are in the room. Named for the product rather than the crate,
+       like `VOLERY_AZDO_PAT`. */
+    if let Ok(v) = std::env::var("VOLERY_FLYWAY_HOST") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return crate::clip::keep(v, 40).kept;
+        }
+    }
     for var in ["COMPUTERNAME", "HOSTNAME"] {
         if let Ok(v) = std::env::var(var) {
             let v = v.trim();

@@ -50,7 +50,6 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
 use super::key;
-use super::seal::WallKey;
 use super::session::Msg;
 use super::wire::Wire;
 use crate::store::Store;
@@ -137,14 +136,23 @@ fn answer(app: &AppHandle, heard: Vec<Msg>) -> Vec<Msg> {
     let Ok(conn) = store.0.lock() else {
         return Vec::new();
     };
+    answer_with(&conn, heard)
+}
 
+/// The same, against a connection rather than an app.
+///
+/// Split out so the integrated path — a real outbox, a real fold, a real
+/// connection — can be exercised by `examples/flyway-link.rs` without a Tauri
+/// app around it. The pieces below this all had tests; what had none was the
+/// sequence, and a sequence nobody has run is a sequence nobody has checked.
+pub fn answer_with(conn: &rusqlite::Connection, heard: Vec<Msg>) -> Vec<Msg> {
     let mut out = Vec::new();
     for m in heard {
         match m {
             Msg::Hello { watermark, .. } => {
-                let mine = crate::sinksync::watermark(&conn).unwrap_or_default();
+                let mine = crate::sinksync::watermark(conn).unwrap_or_default();
                 out.push(Msg::Hello { host: key::host_name(), watermark: mine });
-                if let Ok(events) = crate::sinksync::events_after(&conn, &watermark) {
+                if let Ok(events) = crate::sinksync::events_after(conn, &watermark) {
                     if !events.is_empty() {
                         out.push(Msg::Events { events });
                     }
@@ -154,7 +162,7 @@ fn answer(app: &AppHandle, heard: Vec<Msg>) -> Vec<Msg> {
                and a frame we did not ask for is still news. */
             Msg::Events { events } => {
                 for e in &events {
-                    let _ = crate::sinksync::receive(&conn, e);
+                    let _ = crate::sinksync::receive(conn, e);
                 }
             }
         }

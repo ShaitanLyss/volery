@@ -62,7 +62,7 @@ mod signin;
 mod shell;
 mod sketch;
 mod sink;
-mod sinksync;
+pub mod sinksync;
 /// Everything under the dock's slash that is *not* Volery's own: the CLI's
 /// built-ins, a project's `.claude/commands/`, and every skill. Asked of a
 /// `claude` over the control route rather than worked out here — see the
