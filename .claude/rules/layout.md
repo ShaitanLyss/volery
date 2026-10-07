@@ -14,9 +14,77 @@ paths:
 
 # Layout and the wall
 
+### A region is a grouping, not a folder
+
+A region on the wall **was** a project, and a project is one row per folder — so every card
+in a repo landed in one grid, however many unrelated things were going on in it. Since schema
+v42 a **territory** is a named grouping of cards *inside* a project, and one checkout can
+carry three of them: a small one on the left, one stuck to the glass, a big one on the right.
+
+**The obvious change was to drop `project.root_path`'s UNIQUE, and it is wrong twice over.**
+SQLite cannot drop an inline constraint without rebuilding the table, `PRAGMA foreign_keys`
+is ON and `conversation.project_id` cascades — so the rebuild deletes every card on the wall
+unless it is done exactly right, for a change that is meant to be cosmetic. And it is wrong
+on the *meaning*: a second row per folder splits everything keyed on `project_id` along with
+the grid. Board notices, sink items, chronicle rows, dev server groups, guidance and the
+read-only flag would each belong to half a repo, and a notice saying "I am reworking
+`store.rs`, leave it alone" that does not reach the card next door is worse than no notice.
+
+So the split is along the seam that was already there: **a project is a repo, a territory is
+a grouping of cards within it.** Everything about the folder stays on the project and was
+untouched; only what a region *looks like* moved — its name, where it sits, how wide it is,
+and whether it is on the glass. The same division runs through the front end: `chipsFor`,
+`actionsFor`, `conflictFor`, `onaction`, `onresolve` and `onadd` still take a `cwd`, because
+dev servers, git actions and opening a card are facts about a repository; `onplace`,
+`onsize`, `onstickproject` and the menu's grouping verbs take a territory id. The region
+markup carries both (`data-cwd`, `data-territory`) and each caller reads the one it is about.
+
+`Region.id` is the territory, and it is what the selection, the undo records, the drag, the
+sizing gesture, the menu and the control surface's territory ops key on. A path cannot be an
+identity once one repo carries three regions — both answer to the same string, so a drag on
+either moved both.
+
+**Three fallbacks, all guarding one thing.** A card whose `territory_id` is null (a row from
+before v42) or names a territory that is gone falls to its project's first and then to its
+folder; a project with no grouping at all gets a region synthesised off the project row. None
+should be reachable — `migrate_v42` and `ensure_project_row` both guarantee a territory — and
+they are there because the failure they prevent is a card that is not drawn, which is a
+conversation nobody can get back to. A region drawn from a project is one whose drags do not
+persist; a region that is not drawn is work you cannot reach.
+
+**The handle says both names** — `regionLabel`, pure and tested — and says one when they are
+the same word. That is the common case rather than the edge one: the backfill named every
+territory after its project, so an unconditional pair would have renamed every region on
+every existing wall to `nova · nova` on first launch. The condition is *does the second name
+say anything the first did not*, not *does this project have more than one territory*; a lone
+grouping renamed to `experiments` is worth both names, and counting siblings would hide it.
+
+**The glass had to move in a rung of its own.** A stuck region's spot was
+`(kind: 'project', ref: <root_path>)`, and `arrange::adopt` reconciles those with one
+`UPDATE` per kind that *clears as well as sets*. Re-key the rows while the front end still
+calls `stick_project` — or add `TERRITORY` to `arrange::KINDS` before anything writes rows
+for it — and the first walk into another screen arrangement finds no row for that kind and
+clears the column: every stuck territory onto the wall, silently, in a release whose notes say
+nothing about the glass. So v42 seeds `territory.glass_x` and touches no spot, and v43 re-keys
+the rows in the same change that makes `stick_territory` the caller. The general shape:
+**a reconcile that clears is a reconcile you cannot half-switch.**
+
+Forgetting a grouping **moves its cards** to whatever is left of its project rather than
+closing them — rearranging furniture must never be able to end a conversation — and a
+project's last one is refused, naming `forget this project` as the gesture that does mean
+that. `forget_row` reads its territories' ids *before* the delete, because `project_id`
+cascades and a moment later there is nothing left to ask; the ids are what the glass rows are
+keyed on, and a spot nobody can name again sits in every arrangement for ever.
+
+`firstTerritoryAt` is the bridge for the two callers that still speak in paths and should: an
+imported layout carries a root rather than an id (no id travels — see `portage.md`), and the
+control surface's territory ops name a folder because a test should not have to know a uuid.
+Both mean "the region this folder had", and a folder carrying several answers with the oldest
+— a real narrowing, and the honest one, since neither caller can say which of three it meant.
+
 ### Layout and the wall
 
-`layout.ts` is pure: cards auto-flow into their project's territory (grouped by `cwd`), and
+`layout.ts` is pure: cards auto-flow into their territory (grouped by `territoryId`), and
 dragging one pins it forever at canvas coordinates. Pinned cards never reflow; unpinned ones
 flow around them.
 
