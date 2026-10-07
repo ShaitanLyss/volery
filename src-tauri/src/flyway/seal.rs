@@ -76,6 +76,14 @@ const TAG_LEN: usize = 16;
 const ROOM_LABEL: &str = "volery/flyway/room/v1";
 const CONTENT_SALT: &[u8] = b"volery/flyway/v1";
 const CONTENT_INFO: &[u8] = b"content";
+/// The label a wall's *network* identity is derived under.
+///
+/// Separate from the content key for the ordinary reason, and here also for a
+/// sharp one: a node's secret determines a **public** key that is published to
+/// a lookup service so peers can find each other. Deriving it under the same
+/// label as the thing that decrypts traffic would mean publishing a value with
+/// a fixed relationship to that key.
+const NODE_INFO: &[u8] = b"node/";
 
 /// The secret a wall is a member by.
 ///
@@ -147,6 +155,42 @@ impl WallKey {
         m.extend_from_slice(scope.as_bytes());
         let tag = hmac::sign(&k, &m);
         tag.as_ref()[..16].iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// This wall's network identity, derived from the key and the machine's
+    /// name.
+    ///
+    /// **Derived rather than stored, and that is what keeps an invite short.**
+    /// The transport dials a peer by its public key, so two walls need a way to
+    /// learn each other's — and the choices are to carry a 52-character node id
+    /// in the invite, to run a rendezvous server, or to make the identity a
+    /// function of something a person can already read. A machine's name is
+    /// that something: any wall holding the key can recompute any other wall's
+    /// node id from its name alone, so an invite is a key and a hostname, and
+    /// nothing has to remember a node id to find somebody again.
+    ///
+    /// Lowercased, because `COMPUTERNAME` is stable but its case is not
+    /// something anybody should have to reproduce — and two spellings of one
+    /// machine would be two identities that never meet.
+    ///
+    /// The cost is that renaming a machine changes its identity on the flyway.
+    /// That is the right trade: it is rare, it is visible, and the repair is to
+    /// re-announce rather than to lose anything.
+    pub fn node_secret(&self, host: &str) -> Result<[u8; 32], String> {
+        let mut info = NODE_INFO.to_vec();
+        info.extend_from_slice(host.trim().to_lowercase().as_bytes());
+        let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, CONTENT_SALT).extract(&self.0);
+        /* Bound rather than inlined: `expand` borrows the slice-of-slices, and
+           a temporary built in the call expression is dropped at the semicolon
+           while the `Okm` still holds it. */
+        let parts: [&[u8]; 1] = [&info];
+        let okm = prk
+            .expand(&parts, hkdf::HKDF_SHA256)
+            .map_err(|_| "could not derive the node key".to_string())?;
+        let mut out = [0u8; 32];
+        okm.fill(&mut out)
+            .map_err(|_| "could not derive the node key".to_string())?;
+        Ok(out)
     }
 
     fn content_key(&self) -> Result<[u8; 32], String> {
@@ -448,6 +492,41 @@ mod tests {
            That is why the struct derives nothing. */
         let why = WallKey::from_phrase("ABCD-EF!H").err().unwrap();
         assert!(why.contains("not part of a wall key"), "{why}");
+    }
+
+    /// Every wall on one flyway is a different peer, or they could not dial
+    /// each other at all.
+    #[test]
+    fn each_machine_gets_its_own_identity_from_one_key() {
+        let k = key();
+        assert_ne!(k.node_secret("desk").unwrap(), k.node_secret("laptop").unwrap());
+    }
+
+    /// The whole of why an invite is a key and a hostname: the far side
+    /// recomputes this rather than being told it.
+    #[test]
+    fn a_machines_identity_is_the_same_wherever_it_is_computed() {
+        let here = WallKey::from_bytes([3u8; 32]);
+        let there = WallKey::from_bytes([3u8; 32]);
+        assert_eq!(here.node_secret("desk").unwrap(), there.node_secret("desk").unwrap());
+        /* And the case nobody should have to reproduce by hand. */
+        assert_eq!(here.node_secret("DESK").unwrap(), there.node_secret(" desk ").unwrap());
+    }
+
+    /// A different flyway is a different network, even on the same machine.
+    #[test]
+    fn another_key_gives_the_same_machine_another_identity() {
+        let a = WallKey::from_bytes([1u8; 32]);
+        let b = WallKey::from_bytes([2u8; 32]);
+        assert_ne!(a.node_secret("desk").unwrap(), b.node_secret("desk").unwrap());
+    }
+
+    /// And it is not the key that decrypts the traffic, which is published
+    /// nowhere.
+    #[test]
+    fn the_network_identity_is_not_the_content_key() {
+        let k = key();
+        assert_ne!(k.node_secret("desk").unwrap(), k.content_key().unwrap());
     }
 
     #[test]

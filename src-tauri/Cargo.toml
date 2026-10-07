@@ -176,6 +176,36 @@ sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"
 # librespot-playback, so naming it directly costs no new third-party code —
 # only the right to open an input stream where the player opens an output one.
 cpal = "0.16"
+# The flyway's transport: QUIC between this person's own machines, dialled by
+# public key rather than by address, with hole-punching and a relay fallback
+# that `iroh` operates. Chosen over writing a relay because there is then
+# nothing to deploy — and because a node's identity *is* a keypair, which is
+# already the flyway's model (`flyway/seal.rs`).
+#
+# **`platform-verifier` is the load-bearing feature and is not a default.**
+# Without it `iroh-relay` verifies with `webpki-roots` — a compiled-in copy of
+# Mozilla's — which is precisely the client that works on every network it is
+# tested on and fails on the one that matters. The office gateway intercepts
+# TLS, so the chain terminates at a corporate CA that cannot be in a bundled
+# public root set. `CaTlsConfig::system()` verifies through the OS instead,
+# which on Windows is the real certificate store and therefore has that CA in
+# it. Note this is a *different* mechanism from the one `forge::tls` fights
+# with: `rustls-native-certs` tries to *load* roots and returned one out of
+# forty-five here because policy EKU-restricted the built-ins, where the
+# platform verifier hands the whole decision to Windows and never enumerates
+# anything.
+#
+# `tls-ring` is a default we must put back by hand, having turned the defaults
+# off: it selects rustls' crypto provider, and `ring` is the one already in
+# this tree. `portmapper` is kept because UPnP/NAT-PMP is free help with the
+# thing this exists to do. `metrics` and `fast-apple-datapath` are dropped —
+# one is an endpoint nobody here reads, the other is for a platform this app
+# does not ship on.
+iroh = { version = "1.3.0", default-features = false, features = [
+    "platform-verifier",
+    "tls-ring",
+    "portmapper",
+] }
 
 [target.'cfg(windows)'.dependencies]
 # Job objects. A dev server is `npm run dev` spawning node spawning more node;
