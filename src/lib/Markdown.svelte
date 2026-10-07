@@ -370,6 +370,16 @@
   :global(.md li > p) {
     margin: 0.2em 0;
   }
+  /* An item's first paragraph runs on from its dash. Every item is parsed into
+     blocks, so its text is a `<p>`, and a block after the inline `::before`
+     below put the dash on a line of its own above every item — in the
+     transcript, the ask panel and a notice alike, since 2026-08-13. Scoped
+     rather than under `.md`, which only the transcript's lines carry — and the
+     `<p>` half global, since it is rendered by a nested `<Self>` and Svelte
+     prunes a selector it cannot see matching in this template. */
+  li > :global(p:first-child) {
+    display: inline;
+  }
   /* An em dash rather than a disc: the wall's furniture is rules and dashes,
      and a bulleted list should read like the rest of it. */
   ul {
