@@ -154,6 +154,13 @@ bun tools/probe-rm.ts              # what `deny: Bash(rm -rf:*)` actually stops.
                                    # is nothing a card can call — it is given PowerShell and
                                    # no Bash tool at all. One real turn
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
+bun tools/probe-migrate.ts         # whether a session can be picked up where the repo lives
+                                   # at a different path — the whole of whether a card can be
+                                   # *moved* to another machine. Two directories stand in for
+                                   # two machines; the arms that matter delete the original
+                                   # first, because the CLI finds a session by id beyond the
+                                   # cwd-folded directory and every arm passes without that.
+                                   # Four real turns, pinned to Haiku
 bun run lifts                      # every lift below, and a *pass count* asserted for each —
                                    # a lift that finds nothing to assert exits 0 and is how
                                    # four of these rotted red unnoticed (sink ce72b16b). This
