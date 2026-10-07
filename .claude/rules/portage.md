@@ -110,7 +110,9 @@ Two costs, both the right price:
 ## A project arrives unrooted, and that is the interesting half
 
 `project.root_path` is UNIQUE and is the identity the whole app matches on — cards find
-their territory by `cwd`, `ensure_project` finds one by its root. A path from the machine
+their territory by `cwd`, `ensure_project` finds one by its root, resolved first
+(`store::canonical_root`), so a carried root that is another spelling of a folder already
+here finds that territory, and is placed by the root it came back with. A path from the machine
 that wrote the document will not exist here, and inventing a placeholder would throw away
 the only useful thing the document knows: **which folder this territory wants.**
 

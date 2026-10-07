@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  alreadyHere,
   baseName,
   cleanAmbience,
   cleanGroup,
@@ -244,14 +243,6 @@ describe("paths", () => {
   test("the same folder spelled several ways is one folder", () => {
     expect(normPath("C:\\atelier\\skein")).toBe(normPath("c:/atelier/skein/"));
     expect(normPath("C:\\\\atelier\\\\skein\\\\")).toBe("c:/atelier/skein");
-  });
-
-  test("a territory is not duplicated by a backslash", () => {
-    const roots = ["C:\\atelier\\skein", "D:/work/caravan"];
-    expect(alreadyHere({ wasRoot: "c:/atelier/skein/" }, roots)).toBe(true);
-    expect(alreadyHere({ wasRoot: "D:\\work\\caravan" }, roots)).toBe(true);
-    expect(alreadyHere({ wasRoot: "C:\\atelier\\other" }, roots)).toBe(false);
-    expect(alreadyHere({ wasRoot: "C:\\atelier\\skein" }, [])).toBe(false);
   });
 
   test("baseName keeps the extension, because two screenshots differing in one are two images", () => {

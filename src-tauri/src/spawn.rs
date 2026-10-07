@@ -1406,6 +1406,20 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
     let Some(store) = app.try_state::<Store>() else {
         return "the store is unavailable".into();
     };
+    /* Two paths resolved before the lock rather than under it, since resolving
+       is a filesystem call and one on an unreachable share holds the store —
+       and with it the wall — for an SMB timeout. Roots are stored as the
+       directory really is (`store::canonical_root`), so a path an agent has in
+       another spelling — `C:\Users\lyss\…` through the junction on this
+       machine — has to be resolved to name its territory, and the data folder
+       has to be resolved to be recognised under the spelling `chat_home` now
+       stores it in. A bare name is not absolute and comes back unchanged. */
+    let asked_real = crate::store::canonical_root(
+        args.get("project").and_then(Value::as_str).unwrap_or("").trim(),
+    );
+    let data_real = std::path::PathBuf::from(crate::store::canonical_root(
+        &store.1.to_string_lossy(),
+    ));
     let Ok(conn) = store.0.lock() else {
         return "the store is unavailable".into();
     };
@@ -1485,7 +1499,7 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
     let wall: Vec<crate::store::ProjectRow> = match crate::store::projects(&conn) {
         Ok(ps) => ps
             .into_iter()
-            .filter(|p| !is_skeins_own(&p.root_path, &store.1))
+            .filter(|p| !is_skeins_own(&p.root_path, &store.1) && !is_skeins_own(&p.root_path, &data_real))
             .collect(),
         Err(e) => return format!("could not read the wall's projects: {e}"),
     };
@@ -1494,7 +1508,11 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
        project is not written down as a spawn at all — an agent correcting a name
        is not an agent fanning out, and `spawns_since` is what a restored rate
        limit would read. */
-    let (cwd, worktree, elsewhere) = match standing(&wall, &me.project_id, asked) {
+    let mut stands = standing(&wall, &me.project_id, asked);
+    if stands == Standing::Unknown && asked_real != asked.trim() {
+        stands = standing(&wall, &me.project_id, &asked_real);
+    }
+    let (cwd, worktree, elsewhere) = match stands {
         /* The parent's tree as well as its territory, and the two are different
            facts for a worktree card: the row's `cwd` is the project root by
            design (`worktree.md`) and the agent stands in the tree for its

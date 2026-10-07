@@ -1518,7 +1518,19 @@ fn do_servers(app: &AppHandle, caller: &str) -> String {
 
     json!({
         "project": stand.project,
-        "root": stand.root,
+        /* Resolved at answer time as well as at rest, and one field rather than
+           a `realpath` beside it. The stored root is already resolved
+           (`store::canonical_root`, and `migrate_v41` for rows from before
+           it), so a second field would repeat this one on every answer and
+           differ from it on none — and a card handed two paths for one folder
+           is being asked the very question this answers. Asking again here is
+           one `canonicalize` and makes the reading true even for a row the
+           migration could not resolve, such as a root that was not mounted
+           when it ran. The confusion it closes is sink `59aaab6f`: this said
+           `C:\Users\lyss\codes\nova` while the card's own environment, git
+           and the server's own log all said `C:\Users\flori\codes\nova`, and
+           a card concluded the two might be different checkouts. */
+        "root": crate::store::canonical_root(&stand.root),
         "groups": rows,
         /* Named in full, and this is the one result where that is load-bearing
            twice over. A tool result arrives with no listing beside it, so a bare
@@ -1529,7 +1541,10 @@ fn do_servers(app: &AppHandle, caller: &str) -> String {
                  to do instead of restarting something to find out what it says. \
                  `mcp__skein__server` starts, stops and restarts them, and that runs \
                  processes on this machine. Do not launch one of these by hand: the wall \
-                 owns the process tree, the ports and the log.",
+                 owns the process tree, the ports and the log. A dev server runs in `root`, \
+                 or in its own folder where it names one, and serves the working tree there as it is on disk now, uncommitted edits \
+                 included, rather than any commit or branch; a card in a worktree is not \
+                 looking at what these serve.",
     })
     .to_string()
 }

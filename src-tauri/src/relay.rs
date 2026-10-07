@@ -517,6 +517,23 @@ fn do_list(app: &AppHandle, caller: &str, args: &Value) -> String {
             if let (Some(who), Some(obj)) = (spawned_by, row.as_object_mut()) {
                 obj.insert("spawned_by".into(), Value::String(who));
             }
+            /* Where a worktree card actually stands, which is not its `cwd`: the
+               row's `cwd` is the territory root by design (`worktree.md`) and the
+               agent runs in the tree for its branch. A card comparing its own
+               working directory against this row — the comparison that made
+               the junction spelling read as a second checkout (sink `59aaab6f`)
+               — would otherwise find the two differ and have nothing here to
+               say why. Absent for a card in the main tree, where `cwd` is the
+               answer already. */
+            if let (Some(_), Some(obj)) = (
+                r.worktree.as_deref().map(str::trim).filter(|n| !n.is_empty()),
+                row.as_object_mut(),
+            ) {
+                obj.insert(
+                    "tree".into(),
+                    Value::String(crate::worktree::run_dir(&r.cwd, r.worktree.as_deref())),
+                );
+            }
             row
         })
         .collect();

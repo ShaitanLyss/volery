@@ -1247,6 +1247,13 @@ export class Skein {
   ): Promise<Conversation | null> {
     try {
       const project = await invoke<Project>("ensure_project", { rootPath: cwd });
+      /* The card lives at the root as the store resolved it, not as it was
+         asked for. `ensure_project` follows junctions (`store::canonical_root`),
+         so a folder opened through `C:\Users\lyss` is a territory stored under
+         the directory that junction points at — and a card whose `cwd` kept the
+         spelling it came in with would match no territory's root on the wall,
+         which groups cards by exactly that string. */
+      cwd = project.root_path;
       if (!this.projects.some((p) => p.id === project.id)) {
         this.projects = [...this.projects, project];
         /* A new territory flows into the first free cell — once, here, and then
@@ -1394,6 +1401,11 @@ export class Skein {
       const project = await invoke<Project>("ensure_project", {
         rootPath: s.cwd,
       });
+      /* Where the card lives is the root as stored, for the reason `#openIn`
+         gives. A session's recorded `cwd` is the path its process resolved,
+         which is usually this already; what makes it so either way is
+         `ensure_project` resolving it. */
+      const cwd = project.root_path;
       if (!this.projects.some((p) => p.id === project.id)) {
         this.projects = [...this.projects, project];
         this.#settlePlaces();
@@ -1404,7 +1416,7 @@ export class Skein {
       await invoke("import_conversation", {
         id: s.id,
         projectId: project.id,
-        cwd: s.cwd,
+        cwd,
         title: s.title,
         model: s.model,
         lastCtxFrac: frac,
@@ -1414,7 +1426,7 @@ export class Skein {
 
       const conv = Conversation.restore({
         id: s.id,
-        cwd: s.cwd,
+        cwd,
         project_id: project.id,
         title: s.title ?? UNNAMED,
         model: s.model,

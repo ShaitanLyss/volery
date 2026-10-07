@@ -2300,7 +2300,12 @@ pub(crate) fn transcript_dir_name(cwd: &str) -> String {
 
 /// A path as the filesystem itself spells it: junctions and symlinks followed,
 /// case as the directories really are.
-fn real_dir(cwd: &str) -> String {
+///
+/// Also what a territory's root is stored as — `store::canonical_root` is this
+/// with a guard for relative paths — so the spelling a card is spawned under,
+/// the one its transcript is filed under and the one the wall reports are one
+/// answer from one function.
+pub(crate) fn real_dir(cwd: &str) -> String {
     match std::fs::canonicalize(cwd) {
         Ok(p) => plain(&p.to_string_lossy()),
         // Not there — nothing to resolve, and nothing to file under either.

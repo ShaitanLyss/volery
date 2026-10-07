@@ -300,7 +300,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 40;
+const SCHEMA_VERSION: i64 = 41;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -346,6 +346,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (38, migrate_v38),
     (39, migrate_v39),
     (40, migrate_v40),
+    (41, migrate_v41),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -1980,6 +1981,328 @@ fn migrate_v40(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v40: {e}"))
 }
 
+/// Every territory's root, and every path that names one, in the spelling the
+/// filesystem itself uses — `canonical_root`, which `ensure_project` now
+/// stores under. This rung brings the rows written before it into line.
+///
+/// Measured on the wall it was written for (2026-10-07): three territories —
+/// nova, rise and Gargi-Job-Finder — stored as `C:\Users\lyss\codes\…`, a
+/// junction to `C:\Users\flori`, along with 90 cards' `cwd`, 228 gate runs and
+/// a glass spot. No two territories resolved to one folder there, so the merge
+/// below had nothing to do; it is here because `ensure_project` matched on the
+/// raw string for the app's whole life, and a wall that ever opened one folder
+/// under two spellings has two rows for it.
+///
+/// **A merge is reported, never silent.** Two rows naming one folder become
+/// one, and everything that pointed at the other — cards, server groups,
+/// notices, sink items, chronicle rows — is moved onto the survivor rather than
+/// left for the `ON DELETE CASCADE` on two of those tables to take. Each merge
+/// leaves a line in the chronicle saying which spelling went where, since this
+/// runs at launch with nobody watching, and a territory that has quietly become
+/// another one is a thing the user should be able to find out about.
+///
+/// What is not rewritten, and why:
+///
+/// - **`file_touch.path`** is the path the model wrote, which is already its
+///   own environment's — resolved — spelling. Every nova row here was.
+/// - **Notice and sink globs** are an agent's words. Rewriting them would be
+///   guessing at what a glob meant; a relative glob, which is the common case,
+///   has no root in it to rewrite.
+/// - **A widget's `config_json`** is the front end's to read and never Rust's —
+///   see "Opaque JSON columns" in `CLAUDE.md`. None on this wall names a
+///   junction root.
+fn migrate_v41(conn: &Connection) -> Result<(), String> {
+    resettle(conn, &canonical_root)
+}
+
+/// `settle_spellings`, and a chronicle line for every merge it made.
+fn resettle(conn: &Connection, resolve: &dyn Fn(&str) -> String) -> Result<(), String> {
+    let merged = settle_spellings(conn, resolve).map_err(|e| format!("migrate v41: {e}"))?;
+    for m in &merged {
+        log::info!("{} — {}", m.mark, m.detail);
+        let mark = crate::clip::keep(&m.mark, 120).kept;
+        let detail = crate::clip::keep(&m.detail, 240).kept;
+        add_chronicle_entry(conn, None, Some(&m.keeper), "volery", "note", &mark, &detail, "")
+            .map_err(|e| format!("migrate v41: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Two territories found to be one folder, after they were folded together.
+#[derive(Debug)]
+struct Merged {
+    /// The row that survived, which everything now points at.
+    keeper: String,
+    mark: String,
+    detail: String,
+}
+
+/// The work of `migrate_v41`, with the resolver handed in so the merge can be
+/// tested without making junctions — the resolver is the only part that asks
+/// the filesystem anything.
+fn settle_spellings(
+    conn: &Connection,
+    resolve: &dyn Fn(&str) -> String,
+) -> Result<Vec<Merged>, String> {
+    struct Row {
+        id: String,
+        name: String,
+        root: String,
+        x: Option<f64>,
+        y: Option<f64>,
+        glass_x: Option<f64>,
+        glass_y: Option<f64>,
+        cols: Option<i64>,
+        instructions: String,
+        read_only: bool,
+    }
+    let rows: Vec<Row> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, root_path, x, y, glass_x, glass_y, cols, instructions, read_only
+                   FROM project ORDER BY created_at, id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Row {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    root: r.get(2)?,
+                    x: r.get(3)?,
+                    y: r.get(4)?,
+                    glass_x: r.get(5)?,
+                    glass_y: r.get(6)?,
+                    cols: r.get(7)?,
+                    instructions: r.get(8)?,
+                    read_only: r.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    /* One folder → the rows naming it, oldest first, in the order the folders
+       were first met. */
+    let mut folders: Vec<(String, Vec<Row>)> = Vec::new();
+    for row in rows {
+        let canon = resolve(&row.root);
+        match folders.iter_mut().find(|(c, _)| *c == canon) {
+            Some((_, v)) => v.push(row),
+            None => folders.push((canon, vec![row])),
+        }
+    }
+
+    /* Every spelling that changed, old → new, for the path columns below. */
+    let mut moved: Vec<(String, String)> = Vec::new();
+    let mut merged: Vec<Merged> = Vec::new();
+
+    for (canon, mut group) in folders {
+        /* The survivor is the row already spelled the resolved way, when there
+           is one — it is what everything below the wall already calls this
+           folder — and otherwise the oldest. */
+        let at = group.iter().position(|r| r.root == canon).unwrap_or(0);
+        let mut keeper = group.remove(at);
+        for gone in group {
+            let mut carried = Vec::new();
+            for (table, what) in [
+                ("conversation", "card"),
+                ("server_group", "server group"),
+                ("notice", "notice"),
+                ("sink_item", "sink item"),
+                ("chronicle", "chronicle row"),
+            ] {
+                let n = conn
+                    .execute(
+                        &format!("UPDATE {table} SET project_id = ?1 WHERE project_id = ?2"),
+                        params![keeper.id, gone.id],
+                    )
+                    .map_err(|e| format!("move {table} rows: {e}"))?;
+                if n > 0 {
+                    carried.push(format!("{n} {what}{}", if n == 1 { "" } else { "s" }));
+                }
+            }
+            /* What the survivor did not have, it takes from the other; where
+               both said something, neither is dropped. */
+            let mut also: Vec<String> = Vec::new();
+            /* Two groups of one name now stand in one territory, and both
+               autostart onto the same ports. Kept — which is the one to lose is
+               the user's call — and named, so the chronicle says where to look. */
+            let twins: Vec<String> = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT label FROM server_group WHERE project_id = ?1
+                          GROUP BY label HAVING COUNT(*) > 1",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let found = stmt
+                    .query_map(params![keeper.id], |r| r.get::<_, String>(0))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
+                found
+            };
+            if !twins.is_empty() {
+                also.push(format!(
+                    "two server groups are now each called {}, and one of each wants removing",
+                    twins.join(", ")
+                ));
+            }
+            let mine = keeper.instructions.trim().to_string();
+            let theirs = gone.instructions.trim();
+            if !theirs.is_empty() && mine != theirs {
+                keeper.instructions = if mine.is_empty() {
+                    theirs.to_string()
+                } else {
+                    also.push("both sets of standing instructions were kept, one after the other".into());
+                    format!("{mine}\n\n{theirs}")
+                };
+            }
+            if gone.read_only && !keeper.read_only {
+                keeper.read_only = true;
+                also.push("it stays locked, since one of the two was".into());
+            }
+            if keeper.x.is_none() && keeper.y.is_none() {
+                (keeper.x, keeper.y) = (gone.x, gone.y);
+            }
+            if keeper.glass_x.is_none() && keeper.glass_y.is_none() {
+                (keeper.glass_x, keeper.glass_y) = (gone.glass_x, gone.glass_y);
+            }
+            keeper.cols = keeper.cols.or(gone.cols);
+            conn.execute("DELETE FROM project WHERE id = ?1", params![gone.id])
+                .map_err(|e| format!("drop the merged territory: {e}"))?;
+            if gone.root != canon {
+                moved.push((gone.root.clone(), canon.clone()));
+            }
+
+            let mut detail = format!(
+                "{} and {} are one folder, {canon}; {}",
+                gone.root,
+                keeper.root,
+                if carried.is_empty() {
+                    "it held nothing".to_string()
+                } else {
+                    format!("moved across: {}", carried.join(", "))
+                }
+            );
+            for a in also {
+                detail.push_str("; ");
+                detail.push_str(&a);
+            }
+            merged.push(Merged {
+                keeper: keeper.id.clone(),
+                mark: format!(
+                    "merged territory {} into {}, which was the same folder",
+                    gone.name, keeper.name
+                ),
+                detail,
+            });
+        }
+        if keeper.root != canon {
+            moved.push((keeper.root.clone(), canon.clone()));
+        }
+        conn.execute(
+            "UPDATE project
+                SET root_path = ?2, x = ?3, y = ?4, glass_x = ?5, glass_y = ?6, cols = ?7,
+                    instructions = ?8, read_only = ?9
+              WHERE id = ?1",
+            params![
+                keeper.id,
+                canon,
+                keeper.x,
+                keeper.y,
+                keeper.glass_x,
+                keeper.glass_y,
+                keeper.cols,
+                keeper.instructions,
+                keeper.read_only
+            ],
+        )
+        .map_err(|e| format!("resettle {}: {e}", keeper.root))?;
+    }
+
+    /* A card's `cwd` is its territory's root by design, so it moves with the
+       root — and one naming a folder no territory spells the same way is
+       resolved on its own, which is a card adopted under the other spelling
+       before `settle_roots` existed. Each change joins `moved`, so the columns
+       derived from a card's `cwd` below follow it too. */
+    for cwd in distinct(conn, "SELECT DISTINCT cwd FROM conversation")? {
+        let now = rebase(&cwd, &moved).unwrap_or_else(|| resolve(&cwd));
+        if now != cwd {
+            conn.execute("UPDATE conversation SET cwd = ?2 WHERE cwd = ?1", params![cwd, now])
+                .map_err(|e| format!("resettle a card's cwd: {e}"))?;
+            moved.push((cwd, now));
+        }
+    }
+    /* A timeline's `cwd` and a gate run's `root` are a card's running
+       directory, which is its root or a worktree beneath it. Rebased rather
+       than resolved, since a worktree that has been removed resolves to
+       nothing and still wants its prefix moved. */
+    for (select, update) in [
+        ("SELECT DISTINCT cwd FROM timeline", "UPDATE timeline SET cwd = ?2 WHERE cwd = ?1"),
+        ("SELECT DISTINCT root FROM gate_run", "UPDATE gate_run SET root = ?2 WHERE root = ?1"),
+    ] {
+        for old in distinct(conn, select)? {
+            if let Some(now) = rebase(&old, &moved).filter(|now| *now != old) {
+                conn.execute(update, params![old, now]).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    /* A territory's glass spot is keyed by its root. `OR IGNORE` and then the
+       delete is the merge case: the survivor already has a spot in that room,
+       two cannot share a key, and the one it already had stands. */
+    for (old, now) in &moved {
+        conn.execute(
+            "UPDATE OR IGNORE glass_spot SET ref = ?3 WHERE kind = ?1 AND ref = ?2",
+            params![crate::arrange::PROJECT, old, now],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM glass_spot WHERE kind = ?1 AND ref = ?2",
+            params![crate::arrange::PROJECT, old],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(merged)
+}
+
+fn distinct(conn: &Connection, sql: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let out = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string());
+    out
+}
+
+/// `path` with the longest root in `moved` that it sits at or under swapped
+/// for that root's new spelling, or `None` if it is under none of them.
+///
+/// At or under means a whole segment: `C:\x\nova-old` is not under `C:\x\nova`.
+/// The prefix is compared without case, because Windows paths are, and the
+/// tail is kept exactly as it was.
+fn rebase(path: &str, moved: &[(String, String)]) -> Option<String> {
+    moved
+        .iter()
+        .filter(|(old, _)| under(path, old))
+        .max_by_key(|(old, _)| old.len())
+        .map(|(old, now)| format!("{now}{}", &path[old.len()..]))
+}
+
+fn under(path: &str, root: &str) -> bool {
+    let n = root.len();
+    !root.is_empty()
+        && path.len() >= n
+        && path.is_char_boundary(n)
+        && path[..n].eq_ignore_ascii_case(root)
+        && (path.len() == n
+            || root.ends_with(['\\', '/'])
+            || matches!(path.as_bytes()[n], b'\\' | b'/'))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -2252,11 +2575,71 @@ fn dir_name(path: &str) -> String {
 
 /* ── commands ─────────────────────────────────────────────────────────── */
 
+/// A territory's root in the one spelling it is stored under: the directory as
+/// the filesystem resolves it, junctions and symlinks followed and the verbatim
+/// prefix off — `supervisor::real_dir`, which is already what a card's
+/// transcript is filed under.
+///
+/// **Why the stored root has to be this and not what was typed.** `C:\Users\lyss`
+/// on this machine is a junction to `C:\Users\flori`, and every layer below the
+/// wall resolves it: git's `--show-toplevel`, a spawned process's `cwd`, Claude
+/// Code's own environment block, the dev server's `node_modules` paths, every
+/// `file_touch` row. Only the `project` table kept the junction spelling, so
+/// `servers` and `list` were the two readings on the wall that disagreed with
+/// everything a card could check them against — and a nova card, seeing
+/// `servers` name a root that was not its own `cwd`, concluded the dev server
+/// might be another checkout and stopped to ask (sink `59aaab6f`). Matching on
+/// the raw string here also meant any second spelling made a second territory,
+/// which `sessions::settle_roots` mended for adoption alone (`f47d19eb`).
+///
+/// A relative path is left as written, since resolving it would answer for the
+/// app's own working directory rather than anything the caller meant; so is
+/// one that does not exist, which is an imported territory pointing nowhere
+/// and has nothing to resolve.
+///
+/// **And so is a drive letter that resolves to a share.** `canonicalize` turns
+/// a mapped drive's `Z:\proj` into `\\server\share\proj`, which is the same
+/// directory and the wrong one to store: dev servers and actions start under
+/// `cmd /C`, and `cmd` refuses a UNC working directory — it says so and runs the
+/// command in `C:\Windows` instead. Keeping the letter costs only a junction
+/// that sits on a mapped drive, which is a much smaller thing to get wrong.
+pub(crate) fn canonical_root(raw: &str) -> String {
+    if !std::path::Path::new(raw).is_absolute() {
+        return raw.to_string();
+    }
+    let real = crate::supervisor::real_dir(raw);
+    let lettered = raw.as_bytes().get(1) == Some(&b':');
+    if lettered && real.starts_with(r"\\") {
+        return raw.to_string();
+    }
+    real
+}
+
 /// Find or create the project that owns a directory. Projects are implicit:
 /// pointing at a new path is all it takes to make one.
+///
+/// The directory is resolved first (`canonical_root`), so every spelling of one
+/// folder finds one territory and the row that comes back carries the resolved
+/// root — which is what the caller must use as the card's `cwd`, not what it
+/// passed in.
+///
+/// Off the main thread, because resolving a path is a filesystem call and a
+/// root on an unreachable share parks it for the length of an SMB timeout —
+/// the freeze `crate::off_main` exists for.
 #[tauri::command]
-pub fn ensure_project(store: tauri::State<'_, Store>, root_path: String) -> Result<Project, String> {
-    let conn = store.0.lock().unwrap();
+pub async fn ensure_project(app: tauri::AppHandle, root_path: String) -> Result<Project, String> {
+    crate::off_main(move || {
+        let root_path = canonical_root(&root_path);
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        ensure_project_row(&conn, root_path)
+    })
+    .await?
+}
+
+/// `ensure_project` against a root already resolved. Split out so the lookup
+/// and the insert can be tested without a running app.
+fn ensure_project_row(conn: &Connection, root_path: String) -> Result<Project, String> {
     type Row = (
         String,
         String,
@@ -2428,23 +2811,49 @@ fn size_row(conn: &Connection, root_path: &str, cols: Option<i64>) -> Result<(),
 /// conversation happened somewhere it did not. An imported territory has no
 /// cards, and a rerooted one keeps whatever history it has, in the place that
 /// history happened.
+///
+/// The new root is resolved first, by the rule `ensure_project` follows and for
+/// its reason: a territory pointed at a junction would otherwise be the one row
+/// on the wall spelling its folder differently from everything beneath it. Off
+/// the main thread for the same reason as well.
 #[tauri::command]
-pub fn reroot_project(
-    store: tauri::State<'_, Store>,
+pub async fn reroot_project(
+    app: tauri::AppHandle,
     id: String,
     root_path: String,
-) -> Result<(), String> {
-    let conn = store.0.lock().unwrap();
-    let hit = conn
-        .execute(
-            "UPDATE project SET root_path = ?2 WHERE id = ?1",
-            params![id, root_path],
-        )
-        .map_err(|e| e.to_string())?;
-    if hit == 0 {
-        return Err(format!("no territory with id {id}"));
-    }
-    Ok(())
+) -> Result<String, String> {
+    crate::off_main(move || {
+        let root_path = canonical_root(&root_path);
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        /* Asked after resolving, because the panel's own check compares what
+           was picked and a junction spelling of a folder already on the wall
+           passes it — and the constraint's own message is SQL. */
+        let taken: Option<String> = conn
+            .query_row(
+                "SELECT name FROM project WHERE root_path = ?1 AND id <> ?2",
+                params![root_path, id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(name) = taken {
+            return Err(format!("that folder is already the territory {name} on this wall"));
+        }
+        let hit = conn
+            .execute(
+                "UPDATE project SET root_path = ?2 WHERE id = ?1",
+                params![id, root_path],
+            )
+            .map_err(|e| e.to_string())?;
+        if hit == 0 {
+            return Err(format!("no territory with id {id}"));
+        }
+        /* The root as it landed, which the caller keeps in its own list rather
+           than the spelling it asked for. */
+        Ok(root_path)
+    })
+    .await?
 }
 
 /// Where a territory is drawn when it has been stuck to the glass, or `None`
@@ -2767,7 +3176,10 @@ pub fn read_only_of(store: &Store, id: &str) -> bool {
 pub fn chat_home(store: tauri::State<'_, Store>) -> Result<String, String> {
     let dir = store.1.join("chat");
     std::fs::create_dir_all(&dir).map_err(|e| format!("create chat dir: {e}"))?;
-    Ok(dir.to_string_lossy().to_string())
+    /* Resolved, because the chat territory is made by `ensure_project` like any
+       other and stored under `canonical_root`'s spelling — and the front end
+       recognises it by comparing this answer against that root as a string. */
+    Ok(canonical_root(&dir.to_string_lossy()))
 }
 
 /// Take a project off the wall for good.
@@ -9647,6 +10059,281 @@ mod tests {
         // Version 4, RFC 4122 variant — claude validates --session-id.
         assert_eq!(&a[14..15], "4");
         assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
+    }
+
+    /* ── one folder, one spelling (sink 59aaab6f) ───────────────────────── */
+
+    /// A directory junction under the temp dir, or `None` where `mklink` will
+    /// not make one — skipped rather than failed, as in `supervisor`'s own
+    /// junction test, since that is not this crate's to guarantee.
+    #[cfg(windows)]
+    fn junction(tag: &str) -> Option<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
+        let base = std::env::temp_dir().join(format!("skein-{tag}-{}", uuid_v4()));
+        let (real, link) = (base.join("real"), base.join("link"));
+        std::fs::create_dir_all(real.join("codes").join("nova")).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !made {
+            let _ = std::fs::remove_dir_all(&base);
+            return None;
+        }
+        Some((base, real, link))
+    }
+
+    #[cfg(windows)]
+    fn unlink(base: &std::path::Path, link: &std::path::Path) {
+        /* The junction first, so removing the tree cannot walk through it. */
+        let _ = std::fs::remove_dir(link);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// The bug, through the front door: a folder opened under a junction found
+    /// no territory at its raw spelling and made a second one. Both spellings
+    /// must land on one row, stored as the directory really is — and the
+    /// junction sits in the *middle* of the path, three segments above the
+    /// folder, which is the shape `C:\Users\lyss\codes\nova` has.
+    #[test]
+    #[cfg(windows)]
+    fn a_junction_root_lands_on_the_canonical_territory() {
+        let Some((base, real, link)) = junction("ensure") else { return };
+        let conn = db();
+        let (real_nova, link_nova) = (real.join("codes").join("nova"), link.join("codes").join("nova"));
+        let canon = crate::supervisor::real_dir(real_nova.to_str().unwrap());
+
+        let via_link =
+            ensure_project_row(&conn, canonical_root(link_nova.to_str().unwrap())).unwrap();
+        assert_eq!(via_link.root_path, canon, "stored as the directory, not the junction");
+        let via_real =
+            ensure_project_row(&conn, canonical_root(real_nova.to_str().unwrap())).unwrap();
+        assert_eq!(via_real.id, via_link.id, "one folder is one territory");
+        /* And a trailing separator is not a third. */
+        let trailing = format!("{}\\", link_nova.to_str().unwrap());
+        assert_eq!(ensure_project_row(&conn, canonical_root(&trailing)).unwrap().id, via_link.id);
+
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM project", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        unlink(&base, &link);
+    }
+
+    /// What `canonical_root` must leave alone: a relative path, which would
+    /// otherwise resolve against the app's own working directory, and a folder
+    /// that is not on this machine, which an imported territory may be.
+    #[test]
+    fn a_root_that_cannot_be_resolved_is_kept_as_written() {
+        assert_eq!(canonical_root("codes\\nova"), "codes\\nova");
+        assert_eq!(canonical_root("."), ".");
+        let gone = r"C:\nowhere-skein-would-ever-be\nova";
+        assert_eq!(canonical_root(gone), gone);
+    }
+
+    /// The migration on a wall shaped like the one it was written for: a
+    /// territory, its card, a gate run in a worktree beneath it and its glass
+    /// spot, all in the junction spelling. Walked from v40 through `migrate`
+    /// itself, so it is the real rung with the real resolver.
+    #[test]
+    #[cfg(windows)]
+    fn the_migration_resolves_a_junction_root_and_everything_naming_it() {
+        let Some((base, real, link)) = junction("migrate") else { return };
+        let conn = db();
+        let old = link.join("codes").join("nova").to_str().unwrap().to_string();
+        let canon = crate::supervisor::real_dir(real.join("codes").join("nova").to_str().unwrap());
+        seed_project(&conn, "nova", &old);
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1', 'nova', ?1, 0)",
+            params![old],
+        )
+        .unwrap();
+        let tree = format!("{old}\\.claude\\worktrees\\feat");
+        conn.execute(
+            "INSERT INTO gate_run (tool_id, conversation_id, root, gate, scope, command, started_at, outcome)
+             VALUES ('t1', 'c1', ?1, 'test', 'all', 'cargo test', 0, 'pass')",
+            params![tree],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO glass_spot (arrangement, kind, ref, x, y) VALUES ('room', 'project', ?1, 1, 2)",
+            params![old],
+        )
+        .unwrap();
+
+        conn.pragma_update(None, "user_version", 40).unwrap();
+        migrate(&conn).unwrap();
+
+        let root: String =
+            conn.query_row("SELECT root_path FROM project", [], |r| r.get(0)).unwrap();
+        assert_eq!(root, canon);
+        let cwd: String =
+            conn.query_row("SELECT cwd FROM conversation", [], |r| r.get(0)).unwrap();
+        assert_eq!(cwd, canon, "a card moves with its territory's root");
+        let gate: String = conn.query_row("SELECT root FROM gate_run", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            gate,
+            format!("{canon}\\.claude\\worktrees\\feat"),
+            "a worktree that is not on disk is rebased rather than resolved"
+        );
+        let spot: String =
+            conn.query_row("SELECT ref FROM glass_spot", [], |r| r.get(0)).unwrap();
+        assert_eq!(spot, canon);
+        /* Nothing was merged, so nothing was said. */
+        let said: i64 = conn.query_row("SELECT COUNT(*) FROM chronicle", [], |r| r.get(0)).unwrap();
+        assert_eq!(said, 0);
+        unlink(&base, &link);
+    }
+
+    /// Two territories that turn out to be one folder become one, and nothing
+    /// that pointed at the other is lost: cards, groups, notices and sink items
+    /// move across, both sets of instructions survive, the lock holds, a glass
+    /// spot the survivor already had wins, and the merge is put on record.
+    ///
+    /// A resolver stands in for the filesystem, which is the only part of this
+    /// that would need a junction.
+    #[test]
+    fn two_spellings_of_one_folder_are_merged_and_the_merge_is_reported() {
+        let conn = db();
+        let resolve = |p: &str| p.replace("C:/link/", "C:/real/");
+        conn.execute(
+            "INSERT INTO project (id, name, root_path, created_at, instructions, x, y)
+             VALUES ('old', 'nova', 'C:/link/nova', 0, 'say hello', 10, 20)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project (id, name, root_path, created_at, instructions, read_only)
+             VALUES ('new', 'nova', 'C:/real/nova', 1, 'say goodbye', 1)",
+            [],
+        )
+        .unwrap();
+        seed_project(&conn, "other", "C:/elsewhere");
+        for (id, project, cwd) in [
+            ("c1", "old", "C:/link/nova"),
+            ("c2", "new", "C:/real/nova"),
+            ("c3", "other", "C:/elsewhere"),
+        ] {
+            conn.execute(
+                "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES (?1, ?2, ?3, 0)",
+                params![id, project, cwd],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO server_group (id, project_id, label, spec_json) VALUES ('g1', 'old', 'web', '[]')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO server_group (id, project_id, label, spec_json) VALUES ('g2', 'new', 'web', '[]')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO notice (id, scope, project_id, subject, body, posted_at, touched_at)
+             VALUES ('n1', 'project', 'old', 's', 'b', 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sink_item (id, project_id, kind, title, body, dropped_at, touched_at)
+             VALUES ('s1', 'old', 'bug', 't', 'b', 0, 0)",
+            [],
+        )
+        .unwrap();
+        for (room, r, x) in [
+            ("both", "C:/link/nova", 1.0),
+            ("both", "C:/real/nova", 2.0),
+            ("only-old", "C:/link/nova", 3.0),
+        ] {
+            conn.execute(
+                "INSERT INTO glass_spot (arrangement, kind, ref, x, y) VALUES (?1, 'project', ?2, ?3, 0)",
+                params![room, r, x],
+            )
+            .unwrap();
+        }
+
+        resettle(&conn, &resolve).unwrap();
+
+        let rows: Vec<(String, String, String, bool, Option<f64>)> = conn
+            .prepare("SELECT id, root_path, instructions, read_only, x FROM project ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "one folder became one territory, and the other was untouched");
+        let (id, root, said, locked, x) = &rows[0];
+        assert_eq!(id, "new", "the row already spelled the resolved way survives");
+        assert_eq!(root, "C:/real/nova");
+        assert_eq!(said, "say goodbye\n\nsay hello", "neither set of instructions is dropped");
+        assert!(locked);
+        assert_eq!(*x, Some(10.0), "a place the survivor lacked is taken from the other");
+
+        let homes: Vec<(String, String)> = conn
+            .prepare("SELECT project_id, cwd FROM conversation WHERE id IN ('c1','c2') ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for (project, cwd) in &homes {
+            assert_eq!((project.as_str(), cwd.as_str()), ("new", "C:/real/nova"));
+        }
+        for table in ["server_group", "notice", "sink_item"] {
+            let p: String = conn
+                .query_row(&format!("SELECT project_id FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(p, "new", "{table} moved across rather than cascading away");
+        }
+        let spots: Vec<(String, String, f64)> = conn
+            .prepare("SELECT arrangement, ref, x FROM glass_spot ORDER BY arrangement")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            spots,
+            vec![
+                ("both".to_string(), "C:/real/nova".to_string(), 2.0),
+                ("only-old".to_string(), "C:/real/nova".to_string(), 3.0),
+            ]
+        );
+
+        let (mark, detail, project): (String, String, Option<String>) = conn
+            .query_row("SELECT mark, detail, project_id FROM chronicle", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert!(mark.contains("merged territory nova"), "{mark}");
+        assert!(detail.contains("C:/link/nova") && detail.contains("1 card"), "{detail}");
+        assert!(detail.contains("each called web"), "two groups of one name are named: {detail}");
+        assert_eq!(project.as_deref(), Some("new"));
+
+        /* And a second pass has nothing left to do. */
+        assert!(settle_spellings(&conn, &resolve).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_path_is_rebased_only_at_a_whole_segment() {
+        let moved = vec![
+            (r"C:\Users\lyss".to_string(), r"C:\Users\flori".to_string()),
+            (r"C:\Users\lyss\codes\nova".to_string(), r"D:\nova".to_string()),
+        ];
+        assert_eq!(rebase(r"C:\Users\lyss", &moved).as_deref(), Some(r"C:\Users\flori"));
+        assert_eq!(
+            rebase(r"c:\users\LYSS\codes\rise", &moved).as_deref(),
+            Some(r"C:\Users\flori\codes\rise"),
+            "the prefix is matched without case and the tail kept as written"
+        );
+        assert_eq!(
+            rebase(r"C:\Users\lyss\codes\nova\.claude\worktrees\x", &moved).as_deref(),
+            Some(r"D:\nova\.claude\worktrees\x"),
+            "the longest root wins"
+        );
+        assert_eq!(rebase(r"C:\Users\lyssandra", &moved), None);
+        assert_eq!(rebase("", &moved), None);
     }
 }
 

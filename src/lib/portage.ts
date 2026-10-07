@@ -354,17 +354,6 @@ export function imageIsHere(
 
 /* ── Roots ───────────────────────────────────────────────────────────────── */
 
-/** Whether a carried project's old root is a territory this wall already has.
- *
- *  Matched case-insensitively and with separators folded, because the same
- *  folder is spelled several ways on Windows and a territory duplicated by a
- *  backslash is the worst kind of duplicate: two of them, both apparently
- *  right. */
-export function alreadyHere(p: { wasRoot: string }, roots: string[]): boolean {
-  const want = normPath(p.wasRoot);
-  return roots.some((r) => normPath(r) === want);
-}
-
 /** Fold a path to the one form comparisons are done in. Not for display and
  *  never written anywhere — `wasRoot` keeps whatever it was given. */
 export function normPath(p: string): string {

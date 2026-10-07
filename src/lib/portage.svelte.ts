@@ -32,7 +32,6 @@ import { changed } from "./guidance";
 import { specFor } from "./widgets";
 import { EXPORT_VERSION as THEME_VERSION } from "./theme";
 import {
-  alreadyHere,
   baseName,
   freeName,
   imageIsHere,
@@ -384,8 +383,12 @@ export class Portage {
          What is topped up is its server groups, by label. */
       for (const p of carried.projects) {
         try {
-          const here = alreadyHere(p, skein.projects.map((x) => x.root_path));
           const project = await invoke<Project>("ensure_project", { rootPath: p.wasRoot });
+          /* Whether it was already here is `ensure_project`'s answer rather than
+             a comparison of spellings: it resolves the root, so a carried
+             `C:\Users\lyss\…` finds the territory stored as the directory that
+             junction points at, which no folding of the two strings could. */
+          const here = skein.projects.some((x) => x.id === project.id);
           /* Into the wall's own hands as well as onto disk. This reached
              `ensure_project` directly and stopped there, so a carried territory
              was a row the wall did not know about until the next launch — and
@@ -393,8 +396,9 @@ export class Portage {
           skein.learnProject(project);
           if (!here) {
             out.projects++;
-            if (p.x !== null && p.y !== null) skein.placeProject(p.wasRoot, p.x, p.y);
-            if (p.cols !== null) skein.sizeProject(p.wasRoot, p.cols);
+            /* By the root it was stored under, which is not always `wasRoot`. */
+            if (p.x !== null && p.y !== null) skein.placeProject(project.root_path, p.x, p.y);
+            if (p.cols !== null) skein.sizeProject(project.root_path, p.cols);
           }
           out.groups += await this.#groupsFor(project, p.wasRoot, p.groups);
           /* And what it tells its cards, by the same top-up rule the wall's took
@@ -651,7 +655,9 @@ class Adrift {
     const was = project.root_path;
     this.busy = true;
     try {
-      await invoke("reroot_project", { id: project.id, rootPath: to });
+      /* The root as Rust stored it, which is `to` resolved — a folder picked
+         through a junction lands under the directory it points at. */
+      const landed = await invoke<string>("reroot_project", { id: project.id, rootPath: to });
       for (const g of skein.groups.filter((x) => x.group.project_id === project.id)) {
         const moved = rerootGroup(
           {
@@ -661,11 +667,11 @@ class Adrift {
             servers: g.group.servers,
           },
           was,
-          to,
+          landed,
         );
         await skein.reworkGroup(g, moved.servers);
       }
-      skein.rootedAt(project.id, to);
+      skein.rootedAt(project.id, landed);
       this.note = `pointed at ${baseName(to)}`;
       return true;
     } catch (err) {
