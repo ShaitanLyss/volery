@@ -901,6 +901,12 @@ export class Control {
            answered looks, from here, exactly like one parked on three with none
            — same card, same tier, same clock. */
         pendingAsk: askSnapshot(c.pendingAsk),
+        /* How many are parked on this card, the one being drawn included. A
+           card can hold several at once — a subagent asking behind its own
+           card's question — and from outside that is indistinguishable from
+           one, which is the same argument the comment above makes about a
+           stepper. */
+        pendingAsks: c.asks.length,
         seats: c.seats.map((s) => ({
           id: s.id,
           persona: s.persona,
@@ -1218,6 +1224,14 @@ export class Control {
         seatNodes: document.querySelectorAll("[data-seat]").length,
         transcriptOpen: !!document.querySelector(".side"),
         askOpen: !!document.querySelector(".ask"),
+        /* *Which* question is drawn, not merely that one is. The dock picks one
+           out of a queue every other card on the wall is writing to, and it
+           holds what it drew against anything arriving — so from outside, a
+           panel that correctly stayed on your half-answered question and one
+           that was stolen from under it are the same `askOpen: true`. Same for
+           the notice behind it. */
+        askShown: document.querySelector(".ask")?.getAttribute("data-ask") ?? null,
+        noticeShown: document.querySelector(".notice")?.getAttribute("data-notice") ?? null,
         /* A drag on the wall must be a gesture, never a text selection. That
            distinction is invisible to a synthetic pointer — only a real one
            makes Chromium start selecting — so the count is reported here rather
@@ -1880,7 +1894,25 @@ export class Control {
               )
             : [],
         });
-        return { id: c.id, askId, tier: c.tier };
+        return { id: c.id, askId, tier: c.tier, asks: c.asks.length };
+      },
+
+      /** The other half of `ask`: the question settling, as `ask.rs` reports it
+       *  when a call is answered, expires or its card hangs up.
+       *
+       *  Needed because `ask` parks nothing — there is no HTTP request behind a
+       *  synthetic question, so `answer` cannot take it off the wall without
+       *  faulting on a Rust call for an ask nobody is holding. Without this, a
+       *  test that opens one leaves a card blocked for every test after it.
+       *  `answered` defaults true, which is the quiet outcome: the other two
+       *  write a line into the card. */
+      "ask.close": async (op) => {
+        await asRust("ask:closed", {
+          ask_id: String(op.askId ?? ""),
+          answered: op.answered === undefined ? true : !!op.answered,
+          deferred: !!op.deferred,
+        });
+        return {};
       },
 
       "server.log": async (op) => {

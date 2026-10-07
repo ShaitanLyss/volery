@@ -62,7 +62,7 @@
   }
 </script>
 
-<div class="notice {tone}">
+<div class="notice {tone}" data-notice={notice.id}>
   <div class="head">
     <span class="mark">{words.mark}</span>
     <span class="who">{project}{name ? ` · ${name}` : ""}</span>

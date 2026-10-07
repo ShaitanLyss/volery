@@ -169,6 +169,20 @@ async function until<T>(
   }
 }
 
+/** The reply to a parked `tools/call`.
+ *
+ *  The ask server answers `text/event-stream` — it has to, since the request is
+ *  held open while the question is on the wall — so the JSON-RPC body is the
+ *  payload of the one `data:` frame rather than the whole response. This was
+ *  `r.json()`, which has been a bare `SyntaxError: Failed to parse JSON` ever
+ *  since, reported against a feature that was working perfectly. */
+async function mcpReply(res: Response): Promise<Reply> {
+  const text = await res.text();
+  const frame = text.split("\n").find((l) => l.startsWith("data:"));
+  if (!frame) throw new Error(`no data frame in the MCP reply: ${text.slice(0, 200)}`);
+  return JSON.parse(frame.slice("data:".length).trim()) as Reply;
+}
+
 const snapshot = () => ctl("snapshot");
 const cardOf = async (id: string) => (await ctl("card", { id })).card;
 
@@ -686,7 +700,15 @@ t("a question parked over MCP blocks the card, raises the peek, and resumes on a
         name: "ask_user",
         arguments: {
           question: "Fold the parser into the classifier, or keep the seam?",
-          options: [{ label: "Keep the seam" }, { label: "Fold it in" }],
+          /* Every option carries a `detail`, because a call whose options are
+             all bare labels is refused before anything is drawn — see
+             `.claude/rules/ask.md`. This payload had none for a while and the
+             test was red against a refusal, which from here looked exactly like
+             a question that never arrived. */
+          options: [
+            { label: "Keep the seam", detail: "two files to keep in step" },
+            { label: "Fold it in", detail: "one file, and the parser is harder to test" },
+          ],
         },
       },
     }),
@@ -725,7 +747,7 @@ t("a question parked over MCP blocks the card, raises the peek, and resumes on a
   await ctl("answer", { id: asked, text: answer });
 
   /* The turn resumes from where it stopped: same request, answered. */
-  const body = (await call.then((r) => r.json())) as Reply;
+  const body = await mcpReply(await call);
   expect(body.result.content[0].text).toBe(answer);
 
   const after = await cardOf(asked);
@@ -760,12 +782,18 @@ t("several questions in one call are stepped through and answered together", asy
             {
               header: "shape",
               question: "One widget with variants, or two separate ones?",
-              options: [{ label: "two widgets" }, { label: "one widget" }],
+              options: [
+                { label: "two widgets", detail: "two catalogue entries to keep in step" },
+                { label: "one widget", detail: "one entry, and a knob nobody uses half the time" },
+              ],
             },
             {
               header: "attention",
               question: "Should a finished timer join the attention ladder?",
-              options: [{ label: "yes" }, { label: "keep it silent" }],
+              options: [
+                { label: "yes", detail: "it rings, and a long break is interrupted" },
+                { label: "keep it silent", detail: "you find out by looking" },
+              ],
             },
           ],
         },
@@ -820,7 +848,7 @@ t("several questions in one call are stepped through and answered together", asy
 
   /* Composed with each question's header, so the model cannot mis-pair an
      answer with the decision it belongs to. */
-  const body = (await call.then((r) => r.json())) as Reply;
+  const body = await mcpReply(await call);
   const text = body.result.content[0].text;
   /* In the order they were asked, whatever order they were answered in. */
   expect(text).toContain("1. shape: one widget");
@@ -838,6 +866,87 @@ t("several questions in one call are stepped through and answered together", asy
     text: "1. shape: one widget\n2. attention: yes",
   });
 });
+
+/* The dock draws one question out of a queue every card on the wall writes to,
+   and until 0.41.1 an arrival could re-pick it from under a half-written answer:
+   you lost what you had typed and the question in front of you changed
+   mid-sentence. These drive the three ways in. The questions are synthetic —
+   `ask` emits what `ask.rs` emits without parking anything — which is exactly
+   what is wanted here, since what is under test is which of several the dock
+   chooses rather than what an answer does. */
+t("a question arriving does not take the panel off the one you are answering", async () => {
+  const here = await newCard();
+  const there = await newCard();
+
+  /* You are looking at `here` and `there` asks something. Nothing else is
+     blocked, so that is what the dock draws. */
+  await ctl("focus", { id: here });
+  await ctl("ask", { id: there, askId: "wall-a", question: "Keep the seam?" });
+  await until(
+    "the dock to draw the only question there is",
+    snapshot,
+    (s) => s.dom.askShown === "wall-a",
+  );
+
+  /* Now the card in the ring starts asking. The focused card wins when you
+     *move* the ring and must not win merely by becoming blocked — this is the
+     draft-losing case, since the panel keys what you have typed on the askId. */
+  await ctl("ask", { id: here, askId: "wall-b", question: "Fold it in?" });
+  const held = await snapshot();
+  expect(held.blocked).toContain(here);
+  expect(held.dom.askShown).toBe("wall-a");
+
+  /* And a question on a card *older* than the one you are on, which is the
+     other way in: `blocked` is in the order the cards were made, so this one
+     lands in front of `wall-a` in the queue. */
+  await ctl("ask", { id: card, askId: "wall-c", question: "Or neither?" });
+  const three = await snapshot();
+  expect(three.dom.askShown).toBe("wall-a");
+  /* Three questions over three cards, which is what the dock's "more waiting on
+     you" counts — one per question rather than one per card. */
+  expect(
+    three.cards.reduce((n: number, c: Reply) => n + (c.pendingAsks ?? 0), 0),
+  ).toBeGreaterThanOrEqual(3);
+
+  /* Moving the ring is the one thing that does re-decide it — "it should change
+     what shows up once i'm done with it or click to select others". Onto a card
+     that is not the one already focused, or nothing has moved. */
+  await ctl("focus", { id: card });
+  await until(
+    "the ring moving to hand the panel over",
+    snapshot,
+    (s) => s.dom.askShown === "wall-c",
+  );
+
+  for (const askId of ["wall-a", "wall-b", "wall-c"]) await ctl("ask.close", { askId });
+  await until("the questions to clear", snapshot, (s) => s.dom.askShown === null);
+}, 20000);
+
+t("a card parked on two questions keeps both, and answers the first", async () => {
+  const two = await newCard();
+  await ctl("focus", { id: two });
+  await ctl("ask", { id: two, askId: "wall-d", question: "First?" });
+  await until("the first", snapshot, (s) => s.dom.askShown === "wall-d");
+
+  /* A subagent of a card whose main agent is already parked. `ask.rs` keys its
+     parked requests by id and holds both; this used to overwrite the slot, so
+     the first question vanished from the app while staying parked in Rust until
+     it timed out. */
+  const second = await ctl("ask", { id: two, askId: "wall-e", question: "Second?" });
+  expect(second.asks).toBe(2);
+  expect((await cardOf(two)).pendingAsks).toBe(2);
+  /* Still the one you were given. */
+  expect((await snapshot()).dom.askShown).toBe("wall-d");
+
+  /* And the second comes forward of its own accord once the first settles —
+     no gesture needed, since it was behind it rather than instead of it. */
+  await ctl("ask.close", { askId: "wall-d" });
+  await until("the one behind it", snapshot, (s) => s.dom.askShown === "wall-e");
+  expect((await cardOf(two)).pendingAsks).toBe(1);
+
+  await ctl("ask.close", { askId: "wall-e" });
+  await until("the card to come unblocked", () => cardOf(two), (c) => !c.pendingAsk);
+}, 20000);
 
 /* ── reference images ────────────────────────────────────────────────── */
 

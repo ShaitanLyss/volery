@@ -118,20 +118,59 @@
     onselect: (conv: Conversation) => void;
   } = $props();
 
+  /* ── what the panel is already on ──────────────────────────────────────
+   *
+   * The dock draws one thing out of a queue other cards are writing to all the
+   * time, and until this existed an arrival could re-pick it from under a
+   * half-written answer — see `askShown`, which carries the argument. These two
+   * are what it drew last, and they are dropped only when you move the ring,
+   * which is the one event in here that is you choosing rather than the wall
+   * changing. Everything else — a card starting to ask, a notice being raised,
+   * the queue being re-read — leaves them alone.
+   *
+   * `$effect.pre` rather than `$effect` so the hold is settled before the
+   * template reads the deriveds that depend on it: both rules run in the same
+   * flush either way, but doing it after would have the panel drawn once with
+   * the stale hold on the frame you click a card. */
+  let heldAsk = $state<Conversation | null>(null);
+  let heldNotice = $state<string | null>(null);
+  /* Plain, not `$state`: it is this effect's own memory of the last ring it
+     saw, and nothing may re-run on it. */
+  let ringed: Conversation | null = null;
+  $effect.pre(() => {
+    const ring = focused;
+    const asks = skein.blocked;
+    const notices = skein.noticeQueue;
+    untrack(() => {
+      const moved = ring !== ringed;
+      ringed = ring;
+      heldAsk = askShown(ring, asks, moved ? null : heldAsk);
+      const kept = moved ? null : heldNotice;
+      heldNotice = heldAsk ? kept : (noticeShown(ring?.id, notices, kept)?.id ?? null);
+    });
+  });
+
   /* The dock draws whichever card is *blocked*, which need not be the card in
      the ring — `elsewhere` is that case and it is drawn on the panel. So a
      path in the question belongs to the asking card's directory, and the root
      this falls back to otherwise is the focused one: the same file name in two
      projects would have opened the wrong one, silently. See `scopeFiles`. */
-  const asking = $derived(askShown(focused, skein.blocked));
+  const asking = $derived(askShown(focused, skein.blocked, heldAsk));
   /* Behind every ask: a notice is a card that already stopped, where an ask is
      an agent stopped mid-turn on a clock. So one only shows with no ask up. */
-  const notice = $derived(asking ? null : noticeShown(focused?.id, skein.noticeQueue));
+  const notice = $derived(
+    asking ? null : noticeShown(focused?.id, skein.noticeQueue, heldNotice),
+  );
   const noticeCard = $derived(
     notice ? (skein.convs.find((c) => c.id === notice.conversationId) ?? null) : null,
   );
-  /* The whole queue, asks and notices, as the "more" line counts it. */
-  const waitingOnYou = $derived(skein.blocked.length + skein.noticeQueue.length);
+  /* The whole queue, asks and notices, as the "more" line counts it. Asks are
+     counted rather than the cards holding them: one card can be parked on
+     several at once (`Conversation.asks`), and a line reading "2 more waiting
+     on you" over three unanswered questions is an instrument that cannot be
+     trusted to have counted the one you have not seen. */
+  const waitingOnYou = $derived(skein.pendingAsks + skein.noticeQueue.length);
+
   const shownCard = $derived(asking ?? noticeCard);
   scopeFiles(() => (shownCard?.kind === "project" ? shownCard.cwd : null) ?? null);
 
@@ -308,8 +347,8 @@
   ></div>
   <!-- A blocked card jumps the queue: it is the only state where an agent is
        genuinely stopped, so answering it comes before anything else. -->
-  {#if skein.blocked.length}
-    {@const target = asking!}
+  {#if asking}
+    {@const target = asking}
     <Ask
       ask={target.pendingAsk!}
       project={target.project}

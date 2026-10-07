@@ -713,13 +713,14 @@ export class Skein {
           return;
         }
         const questions = normalizeAsk(raw);
-        c.pendingAsk = {
+        /* Appended, never substituted — `Conversation.asks` is why. */
+        c.openAsk({
           askId: e.payload.ask_id,
           questions,
           answers: blankAnswers(questions),
           ours: e.payload.ours === true,
           since: Date.now(),
-        };
+        });
         c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
       }),
     );
@@ -762,9 +763,12 @@ export class Skein {
             if (c) c.waitingOnNotice = false;
           }
           for (const c of this.#byId.values()) {
-            if (c.pendingAsk?.askId !== e.payload.ask_id) continue;
-            const ours = c.pendingAsk.ours;
-            c.pendingAsk = null;
+            /* Across the card's whole queue rather than only the one in front:
+               a question that expired while a longer one was being answered is
+               the ordinary case now that a card can hold several. */
+            const gone = c.closeAsk(e.payload.ask_id);
+            if (!gone) continue;
+            const ours = gone.ours;
             /* Same bargain one case over: a question Skein put up reports its
                own outcome through the tool result, which says "nobody
                answered, so it stays" in more useful words than this note has —
@@ -3449,12 +3453,18 @@ export class Skein {
    *  See `ANSWER_HOLD` for why the deadline moves at all rather than the
    *  countdown simply pausing. */
   async stirAsk(conv: Conversation) {
-    const ask = conv.pendingAsk;
-    if (!ask) return;
-    try {
-      await invoke("stir_ask", { askId: ask.askId });
-    } catch {
-      /* No longer waiting. Nothing to hold open. */
+    /* Every question this card is parked on, not only the one drawn. A question
+       waiting behind another is one you have not been shown yet, and letting it
+       run its clock down while you work through the card's queue would expire it
+       for a wait you were never given the chance to end. Bounded by
+       `ANSWER_MAX` on both sides like any other hold, so this cannot stretch
+       past the client's own deadline. */
+    for (const ask of conv.asks) {
+      try {
+        await invoke("stir_ask", { askId: ask.askId });
+      } catch {
+        /* No longer waiting. Nothing to hold open. */
+      }
     }
   }
 
@@ -3465,7 +3475,7 @@ export class Skein {
       answer !== undefined
         ? answer
         : composeAnswer(ask.questions, ask.answers);
-    conv.pendingAsk = null;
+    conv.closeAsk(ask.askId);
     conv.activity = "responding";
     try {
       await invoke("answer_ask", { askId: ask.askId, answer: text });
@@ -3490,8 +3500,18 @@ export class Skein {
   }
 
   /** Every card currently blocked on a question. These are facts, not
-   *  inferences, so they sort ahead of anything merely overdue. */
+   *  inferences, so they sort ahead of anything merely overdue.
+   *
+   *  One entry per *card*, which is what the waiting cycle steps through — a
+   *  card parked on two questions is one place to go. `pendingAsks` is the
+   *  other count, and the dock wants that one. */
   blocked = $derived(this.convs.filter((c) => c.pendingAsk));
+
+  /** How many questions are waiting, over the whole wall. More than
+   *  `blocked.length` whenever a card is parked on several at once — a
+   *  subagent asking behind its own card's question is the ordinary way
+   *  there. */
+  pendingAsks = $derived(this.convs.reduce((n, c) => n + c.asks.length, 0));
 
   /* ── notices ─────────────────────────────────────────────────────────
    *

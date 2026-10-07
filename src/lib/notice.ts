@@ -79,11 +79,23 @@ export function noticeQueue(notices: Notice[]): Notice[] {
   );
 }
 
-/** Which notice the dock draws: the focused card's if it has one — the card in
- *  the ring and the notice beside it should be about the same conversation —
- *  else the front of the queue. `askShown`'s rule. */
-export function noticeShown(focusedId: string | null | undefined, queue: Notice[]): Notice | null {
-  return queue.find((n) => n.conversationId === focusedId) ?? queue[0] ?? null;
+/** Which notice the dock draws: the one already drawn while it is still in the
+ *  queue, else the focused card's if it has one — the card in the ring and the
+ *  notice beside it should be about the same conversation — else the front of
+ *  the queue. `askShown`'s rule, held the same way and for the same reason: a
+ *  notice raised anywhere on the wall jumps the queue when it is a card's own
+ *  parked one, and it must not take the panel away from a reply being typed. */
+export function noticeShown(
+  focusedId: string | null | undefined,
+  queue: Notice[],
+  heldId?: string | null,
+): Notice | null {
+  return (
+    (heldId ? queue.find((n) => n.id === heldId) : undefined) ??
+    queue.find((n) => n.conversationId === focusedId) ??
+    queue[0] ??
+    null
+  );
 }
 
 /** What the panel calls it, and what its reply box says. */

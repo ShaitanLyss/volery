@@ -662,10 +662,43 @@ export class Conversation {
    *  must not be roused (`rousing.ts`). */
   aside = $state(false);
 
-  /** A question the agent is *blocked* on, via our own ask_user MCP tool.
-   *  Unlike every other tier this is not an inference: the turn is genuinely
-   *  parked and nothing will happen until it is answered. */
-  pendingAsk = $state<PendingAsk | null>(null);
+  /** Questions the agent is *blocked* on, via our own ask_user MCP tool, in the
+   *  order they arrived. Unlike every other tier this is not an inference: the
+   *  turn is genuinely parked and nothing will happen until it is answered.
+   *
+   *  **A list rather than one, because a card can be parked on more than one at
+   *  a time and this used to overwrite.** `ask.rs` keys its parked HTTP requests
+   *  by `ask_id` and happily holds several for one conversation — a subagent
+   *  asking while the card's main agent is already parked is the ordinary way
+   *  there — but this field was a single slot, so the second call replaced the
+   *  first. The panel keys its draft on `askId`, so what you had typed went with
+   *  it, the question in front of you changed mid-sentence, and the first call
+   *  was left parked with no surface left that could answer it until it timed
+   *  out. Oldest first, so the one you started on is the one that stays. */
+  asks = $state<PendingAsk[]>([]);
+
+  /** The question being drawn: the oldest still waiting, or none.
+   *
+   *  A getter rather than a field so there is one source of truth — `blocked`,
+   *  the attention ladder and the dock all read this, and a mirror would be a
+   *  second thing to keep in step. */
+  get pendingAsk(): PendingAsk | null {
+    return this.asks[0] ?? null;
+  }
+
+  /** A question arrived. Appended, never substituted — see `asks`. */
+  openAsk(ask: PendingAsk) {
+    if (this.asks.some((a) => a.askId === ask.askId)) return;
+    this.asks = [...this.asks, ask];
+  }
+
+  /** A question settled, however: answered, expired, deferred, or its card hung
+   *  up. Answers whether this card was the one holding it. */
+  closeAsk(askId: string): PendingAsk | null {
+    const gone = this.asks.find((a) => a.askId === askId) ?? null;
+    if (gone) this.asks = this.asks.filter((a) => a !== gone);
+    return gone;
+  }
   /** The card sent a notice with `wait: true` and is parked on it — stopped
    *  exactly as it is on a question, so it wears the same amber. The notice
    *  itself is in `Skein.notices`, which is the queue; this is only the card's
@@ -2741,8 +2774,9 @@ export class Conversation {
           /* A parked question cannot outlive the turn it was asked in. The
              thread holding the MCP call in ask.rs times out on its own; what
              matters on the wall is that the card stops claiming to be waiting
-             on an answer that would now have nothing to resume. */
-          this.pendingAsk = null;
+             on an answer that would now have nothing to resume. Every one of
+             them: they were all asked inside the turn that just stopped. */
+          this.asks = [];
           this.waitingOnNotice = false;
         } else if (ending === "asked") {
           this.activity = "asked you";
@@ -3114,7 +3148,7 @@ export class Conversation {
     this.jobs = [];
     this.plan = [];
     this.#creating.clear();
-    this.pendingAsk = null;
+    this.asks = [];
     this.waitingOnNotice = false;
     /* A cleared card is a new session with nothing owed to it, so a prompt held
        against an account coming back is a prompt for a conversation that no

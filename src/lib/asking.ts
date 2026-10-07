@@ -832,9 +832,23 @@ export function askHeadline(questions: AskQuestion[]): string {
 
 /** Which blocked card's question the dock draws, out of all of them.
  *
- *  The card in the ring wins whenever it is one of the ones asking, so
- *  answering follows the selection rather than fighting it; otherwise it is the
- *  first that asked, which is the queue `blocked` already is.
+ *  **What you are already on wins, and that is the first rule rather than a
+ *  tie-break.** A question arriving anywhere on the wall used to be able to
+ *  take the panel out from under a half-written answer — the panel keys its
+ *  draft on the ask, so what had been typed went with it — and the two ways in
+ *  were both ordinary on a wall running ten cards: the focused card starting to
+ *  ask while you answered somebody else's question, and a *lower* card in
+ *  `blocked` starting to ask, since that list is in the order the cards were
+ *  made rather than the order they asked. Neither is you choosing anything.
+ *
+ *  So `held` is what the dock drew last and it stays drawn while it is still
+ *  asking. It is dropped when you move the ring, which is the one event here
+ *  that is unambiguously a choice — clicking a card, stepping with the waiting
+ *  cycle, taking the "select it" offer — and then the two rules below decide
+ *  again.
+ *
+ *  The card in the ring wins next, so answering follows the selection rather
+ *  than fighting it; otherwise it is the first in the queue.
  *
  *  It is also what decides whether the panel is about somewhere *else*: the
  *  drawn card is then not the focused one, the transcript beside the question
@@ -844,7 +858,12 @@ export function askHeadline(questions: AskQuestion[]): string {
  *
  *  Generic over the card because nothing in this file knows what a conversation
  *  is, and `Dock.svelte` is the only caller that does. */
-export function askShown<T>(focused: T | null | undefined, blocked: T[]): T | null {
+export function askShown<T>(
+  focused: T | null | undefined,
+  blocked: T[],
+  held?: T | null,
+): T | null {
+  if (held && blocked.includes(held)) return held;
   if (focused && blocked.includes(focused)) return focused;
   return blocked[0] ?? null;
 }

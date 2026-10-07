@@ -775,6 +775,61 @@ out, goes to the pile as the whole question again. Better than before, where it 
 at all — but the partial answers are still not preserved, and that remains its own piece of
 work.
 
+#### Nor does the question itself change while you are answering it
+
+The countdown was the first half of *"it's stressful and work losing for no reason"*; this is
+the second, and it loses the work outright rather than hurrying you. *"sometimes as I'm
+answering a question, a new question pops up and it changes my active question, losing what I
+was typing"*.
+
+The panel keys its draft and its step on `askId` — deliberately, so that clicking away to
+another card and back does not throw away answers already given — so anything that hands it a
+*different* ask wipes the half-written one. **Three things could, and none of them was you.**
+
+- **A second question on the same card.** `ask.rs` keys its parked requests by `ask_id` and
+  holds as many per conversation as it is sent; a card's main agent being parked does not stop
+  a subagent of that card calling the tool, and on a wall that runs several agents per card
+  that is ordinary. `Conversation.pendingAsk` was one slot and `ask:opened` assigned to it, so
+  the second call *replaced* the first. Worst of the three: what you had typed went, and the
+  first call stayed parked with no surface left in the app that could answer it, until it timed
+  out and the agent went on without you. It is `asks`, a list, now — appended by `openAsk`,
+  removed by `closeAsk`, and `pendingAsk` is a getter for the front of it.
+- **The focused card starting to ask.** `askShown`'s second rule — the card in the ring wins —
+  is right at the moment you *move* the ring and wrong every other moment, because a card
+  becomes blocked on its own schedule.
+- **A card ahead of it in `blocked` starting to ask.** That list is `convs.filter(…)`, which is
+  the order the cards were *made*, not the order they asked — so a card older than the one you
+  are on jumps to the head of the queue merely by raising a question. The comment on `askShown`
+  claimed it was "the first that asked", which it never was.
+
+So `askShown` takes a third argument: what the dock drew last, which wins outright while it is
+still asking. `noticeShown` takes the same one for the same reason — a card's own parked notice
+jumps the notice queue the moment it is raised (`noticeQueue`), and a reply being typed into
+another notice is exactly as losable.
+
+**The hold is dropped on one event: the ring moving.** That is the only thing reaching
+`Dock.svelte` that is unambiguously you choosing — clicking a card, stepping with the waiting
+cycle, taking the panel's own "select it" offer — and the user's own statement of the rule is
+the specification: *"it should change what shows up once i'm done with it or click to select
+others"*. Everything else leaves it alone. It is an `$effect.pre` so the hold is settled before
+the template reads the deriveds that turn on it; after, and the panel is drawn once with the
+stale hold on the frame you click a card.
+
+Two things follow from a card being able to hold several, and both are the kind that would
+otherwise be found by somebody losing an answer:
+
+- **A stir holds the card's whole queue open, not the question drawn.** A question waiting
+  behind another is one you have not been shown yet, so running its clock down while you work
+  through the one in front expires it for a wait you were never given the chance to end. Still
+  clamped to `ANSWER_MAX` on both sides, so it cannot stretch past the client's own deadline.
+- **The dock counts questions, not cards.** `skein.pendingAsks` rather than `blocked.length`
+  — "2 more waiting on you" over three unanswered questions is an instrument that has
+  miscounted the one you have not seen. `blocked` stays one entry per card, because that is
+  what the waiting cycle steps through and a card parked on two is one place to go.
+  `snapshot.cards[].pendingAsks` is the same fact from outside, for the reason the stepper
+  fields exist: a card parked on three questions and a card parked on one look identical here
+  otherwise.
+
 #### Designs that are looked at rather than described
 
 Claude Code in a terminal can only ever *describe* a layout, so an agent with three of them
