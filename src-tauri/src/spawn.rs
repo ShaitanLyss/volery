@@ -1877,6 +1877,19 @@ pub fn stirring(id: &str) {
     }
 }
 
+/// Is a report about a card this one opened on its way to it?
+///
+/// The other half of "a card it opened is still working", for `notice.rs`: a
+/// child that has just come to rest is not working, but its parent is about to
+/// be woken by the relay `sweep` sends, and a notice raised in between is one
+/// the parent clears itself two minutes later.
+pub fn settling_toward(parent_id: &str) -> bool {
+    brood()
+        .lock()
+        .map(|b| b.pending.values().any(|s| s.parent_id == parent_id))
+        .unwrap_or(false)
+}
+
 /// A turn has closed on a card. If another card opened it, start the grace.
 ///
 /// The parent is asked of the store rather than remembered, for

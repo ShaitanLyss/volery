@@ -49,7 +49,17 @@ import {
   UNQUEUED_AFTER_S,
   WAKE_GRACE_S,
   windowForObserved,
+  answeredLocally,
 } from "./classify";
+import {
+  followUpText,
+  noticeFromRow,
+  noticeQueue,
+  parkedReply,
+  raiseAt,
+  restNotice,
+  type Notice,
+} from "./notice";
 import {
   repairWorthTrying,
   sayNothingToRepair,
@@ -609,6 +619,8 @@ export class Skein {
     this.#holds.clear();
     for (const t of this.#heals.values()) clearTimeout(t);
     this.#heals.clear();
+    for (const t of this.#noticeTimers.values()) clearTimeout(t);
+    this.#noticeTimers.clear();
     for (const t of this.#nudges.values()) clearTimeout(t);
     this.#nudges.clear();
     for (const t of this.#leaves.values()) clearTimeout(t);
@@ -677,6 +689,29 @@ export class Skein {
         const c = this.#byId.get(e.payload.conversation_id);
         if (!c) return;
         const raw = e.payload.ask ?? {};
+        /* A card's notice that is holding its turn open. Same park, same
+           channel, a different panel: it joins the notice queue at the front
+           rather than becoming a question with no question in it. See
+           `notice.rs::parked_payload`. */
+        const parked = (raw as { notice?: { text?: unknown } }).notice;
+        if (parked && typeof parked.text === "string") {
+          this.notices = [
+            ...this.notices.filter((n) => n.askId !== e.payload.ask_id),
+            {
+              id: e.payload.ask_id,
+              askId: e.payload.ask_id,
+              conversationId: c.id,
+              kind: "card",
+              text: parked.text,
+              raisedAt: Date.now(),
+              away: false,
+              waited: true,
+            },
+          ];
+          c.waitingOnNotice = true;
+          c.activity = "sent you a notice";
+          return;
+        }
         const questions = normalizeAsk(raw);
         c.pendingAsk = {
           askId: e.payload.ask_id,
@@ -717,6 +752,15 @@ export class Skein {
       listen<{ ask_id: string; answered: boolean; deferred?: boolean }>(
         "ask:closed",
         (e) => {
+          /* A parked notice coming down — answered, queued because the wall went
+             away or nobody got to it, or its card hung up. Its tool result says
+             which, so there is no note to write. */
+          const parked = this.notices.find((n) => n.askId === e.payload.ask_id);
+          if (parked) {
+            this.notices = this.notices.filter((n) => n !== parked);
+            const c = this.#byId.get(parked.conversationId);
+            if (c) c.waitingOnNotice = false;
+          }
           for (const c of this.#byId.values()) {
             if (c.pendingAsk?.askId !== e.payload.ask_id) continue;
             const ours = c.pendingAsk.ours;
@@ -741,6 +785,15 @@ export class Skein {
         },
       ),
     );
+
+    keep(
+      /* The notice queue moved in Rust — raised, taken, a card stirred, the
+         wall went away. Re-read rather than patched: the queue is a few rows,
+         and one reading cannot drift from the table the way a fold of deltas
+         can. */
+      listen("notice:changed", () => void this.#loadNotices()),
+    );
+    void this.#loadNotices();
 
     keep(
       /* One event per recipient, so a broadcast is a strand each rather than
@@ -3440,6 +3493,143 @@ export class Skein {
    *  inferences, so they sort ahead of anything merely overdue. */
   blocked = $derived(this.convs.filter((c) => c.pendingAsk));
 
+  /* ── notices ─────────────────────────────────────────────────────────
+   *
+   * A card that finished, ended on a question, gave up on an error, or sent
+   * one itself — waiting in the dock's queue, behind `blocked`, until you
+   * acknowledge or follow it up. Rust holds the queue (`notice.rs`) so it
+   * survives a restart; this is its reading, plus the notices that are parked
+   * on a card's tool call, which exist only while that call is held open. */
+  notices = $state<Notice[]>([]);
+
+  /** The queue as the dock reads it: only cards still on the wall, a notice
+   *  holding a turn open first, then oldest first. */
+  noticeQueue = $derived.by(() => {
+    /* Against `convs`, which is reactive — not `#byId`, which is a plain Map:
+       the queue is read before the wall has loaded its cards, and a filter over
+       something Svelte cannot track would answer "none" once and never again,
+       so every notice standing across a restart went undrawn. */
+    const here = new Set(this.convs.map((c) => c.id));
+    return noticeQueue(this.notices.filter((n) => here.has(n.conversationId)));
+  });
+
+  /** Every card waiting on you, in the order the dock reads them: the asks,
+   *  then each card with a notice once. What "more waiting on you" steps
+   *  through. */
+  waitingCards = $derived.by(() => {
+    const out = [...this.blocked];
+    for (const n of this.noticeQueue) {
+      const c = this.convs.find((x) => x.id === n.conversationId);
+      if (c && !out.includes(c)) out.push(c);
+    }
+    return out;
+  });
+
+  /** Is this card in front of you right now — selected, its transcript open,
+   *  the window focused? Its finishing is something you watched, so it raises
+   *  nothing. Set by `App.svelte`, which is where all three facts live. Off by
+   *  default, the ambient-capability rule: with nothing to say, every card is
+   *  one you are not watching. */
+  watching: (id: string) => boolean = () => false;
+
+  /** Pending raises, one per card, so a newer rest replaces an older one. */
+  #noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  async #loadNotices() {
+    try {
+      const rows = await invoke<unknown[]>("notices_read");
+      const stored = rows.map(noticeFromRow).filter((n): n is Notice => n !== null);
+      /* The parked ones are not rows — keep them across a re-read. */
+      this.notices = [...this.notices.filter((n) => n.askId), ...stored];
+    } catch {
+      /* A queue that cannot be read draws as empty, which is the same as no
+         notices — and nothing here may fault the wall. */
+    }
+  }
+
+  /** A turn ended. Decide whether it raises a notice, and when.
+   *
+   *  The front end's half of the rule: the ending, the closing words, a retry
+   *  the card is about to make itself, and its own background work, all of
+   *  which are folds only this side holds. The wall's half — an armed wake,
+   *  children still working, a live parent being told instead — is asked of
+   *  `notice_raise`, which may answer that it held. */
+  #scheduleNotice(c: Conversation, ev: any) {
+    const pending = this.#noticeTimers.get(c.id);
+    if (pending) clearTimeout(pending);
+    this.#noticeTimers.delete(c.id);
+
+    const want = restNotice(c.ending, c.lastWords, {
+      lastError: c.lastError,
+      healing: c.pendingHeal !== null,
+      local: answeredLocally(ev),
+    });
+    if (!want) return;
+    const rested = Date.now();
+    const turns = c.turns;
+    const delay = raiseAt(rested, c.jobs) - rested;
+    this.#noticeTimers.set(
+      c.id,
+      setTimeout(() => {
+        this.#noticeTimers.delete(c.id);
+        /* Moved on in the meantime — a queued message, its own background
+           work reporting. The rest this was about is over. */
+        if (c.working || c.turns !== turns) return;
+        if (!this.#byId.has(c.id) || this.watching(c.id)) return;
+        void invoke("notice_raise", {
+          conversationId: c.id,
+          kind: want.kind,
+          text: want.text,
+        }).catch(() => {});
+      }, delay),
+    );
+  }
+
+  /** You are typing a follow-up to a notice that is holding its card's turn
+   *  open — move its deadline out, `stirAsk`'s reason. */
+  stirNotice(n: Notice) {
+    if (n.askId) void invoke("stir_ask", { askId: n.askId }).catch(() => {});
+  }
+
+  /** Take a notice down without a word. */
+  async acknowledgeNotice(n: Notice) {
+    this.notices = this.notices.filter((x) => x.id !== n.id);
+    if (n.askId) {
+      await invoke("answer_ask", { askId: n.askId, answer: parkedReply() }).catch((err) => {
+        this.fault = String(err);
+      });
+      return;
+    }
+    await invoke("notice_take", { id: n.id }).catch(() => {});
+  }
+
+  /** Answer one: a follow-up, or the answer to the question it ended on.
+   *  A parked notice gets it as its call's result; anything else gets it as a
+   *  message, which rouses a dormant card to take it — that is the one costly
+   *  gesture here, and it is what you asked for. The take comes before the
+   *  send, `later::serve_due`'s ordering: an interruption between the two
+   *  loses a follow-up rather than delivering it twice. */
+  async followUpNotice(n: Notice, reply: string) {
+    const said = reply.trim();
+    if (!said) return this.acknowledgeNotice(n);
+    this.notices = this.notices.filter((x) => x.id !== n.id);
+    if (n.askId) {
+      await invoke("answer_ask", { askId: n.askId, answer: parkedReply(said) }).catch((err) => {
+        this.fault = String(err);
+      });
+      return;
+    }
+    const taken = await invoke<unknown>("notice_take", { id: n.id }).catch(() => null);
+    if (!taken) {
+      /* Somebody got there first — the card stirred and took it down, or it was
+         closed. Say so: a reply that vanishes looks exactly like one sent. */
+      this.fault = "that notice had already come down, so your reply was not sent";
+      return;
+    }
+    const c = this.#byId.get(n.conversationId);
+    if (c) await this.send(c, followUpText(n, said));
+  }
+
   /* ── the horizon ─────────────────────────────────────────────────────
    *
    * Global usage, kept as one number so the ground itself can carry it. The
@@ -4404,6 +4594,7 @@ export class Skein {
    *  without ever spawning the session behind it. */
   #persistConv(c: Conversation, ev: any) {
     if (ev?.type === "result") {
+      this.#scheduleNotice(c, ev);
       /* Read *before* anything else in this branch, because `ending` is already
          folded by the time a `result` reaches here — `ingest` computed it — and
          this is the one place that sees every turn end exactly once.

@@ -153,6 +153,8 @@ export const SKEIN_ALLOWANCE_TOOL = "mcp__skein__allowance";
  *  the one place a reader would otherwise go looking for the cause of a wall
  *  that had gone quiet by itself. */
 export const SKEIN_AWAY_TOOL = "mcp__skein__away";
+/** A card putting a notice in the user's queue — see `notice.rs`. */
+export const SKEIN_NOTICE_TOOL = "mcp__skein__notice";
 /** Every account on the wall by label, for `spawn`'s `account`. */
 export const SKEIN_ACCOUNTS_TOOL = "mcp__skein__accounts";
 /** Whether Claude itself is up — the agent's half of the status widget.
@@ -653,6 +655,15 @@ export function describeTool(name: string, input: any): string {
     case SKEIN_AWAY_TOOL: {
       const note = arg(input?.note);
       return note ? `put the wall away — ${clip(note, 30)}` : "put the wall into away mode";
+    }
+    /* `wants you to see`, not `told you`, while it waits: a waiting notice
+       parks like a question, so at the moment the call lands nothing has been
+       read yet. */
+    case SKEIN_NOTICE_TOOL: {
+      const text = arg(input?.text);
+      const line = text ? text.split("\n").find((l) => l.trim())?.trim() ?? "" : "";
+      if (input?.wait === true) return line ? `waits on you: ${clip(line, 30)}` : "is waiting on a notice";
+      return line ? `sent you a notice: ${clip(line, 26)}` : "sent you a notice";
     }
     case SKEIN_ACCOUNTS_TOOL:
       return "listed the accounts";
@@ -1610,18 +1621,49 @@ export function sameModel(a: string | undefined, b: string | undefined): boolean
   return x !== "" && x === baseModel(b);
 }
 
+/** The words that ask the user for something without a question mark.
+ *
+ * Measured, not guessed: on 2026-10-07, 848 real turn endings from this
+ * machine's transcripts were labelled four ways by a model (needs you / offers
+ * more / waiting on its own work / done) and the rules below were tuned on half
+ * the sessions and scored on the other half. What a `?`-only check missed was
+ * almost all imperative — *"send me its path and I'll check it"*, *"tell me
+ * which"*, *"say the word"*, *"your call"*. Adding these to the last paragraph
+ * took recall from 34% to 53% at 80% precision on the held-out half; the
+ * last-line check this replaced caught 28%. The scripts that took the
+ * measurement are described in `.claude/rules/notice.md`. */
+const ASK_PHRASE =
+  /\b(say the word|let me know (if|whether|which|what|how)|tell me (which|whether|if|what|how)|send me|your call|up to you|which (do|would|should) (you|we|i)|do you want|would you (like|prefer|rather)|should i\b|shall i\b|want me to|or should|before i (go|proceed|continue|start|commit|push|merge|run)|waiting (on|for) (you|your)|need(s)? your|i need you to|your (decision|go-ahead|answer|call|input|confirmation|approval|pick)|(confirm|approve) (that|this|whether|before)|rather not (guess|decide|pick|choose)|pick one|which (one|way|option) (do|would|should)|if you('d| would) (like|rather|prefer)|say (if|which|so)|happy to [^.\n]{0,60} if you)\b/i;
+
+/** A question mark that ends a sentence, not one inside a URL or a token. */
+const QUESTION_MARK = /\?(?=[\s"'`)\]*_]|$)/;
+
+/** The last paragraph of prose: code fences, inline code and links taken out,
+ *  since a `?` in a regex or a query string is not a question. */
+function closingParagraph(text: string): string {
+  const prose = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`\n]*`/g, "x")
+    .replace(/https?:\/\/\S+/g, "url");
+  const paras = prose
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return paras[paras.length - 1] ?? "";
+}
+
 /** Did this turn end on a question?
  *
- * Looks at the last non-empty line so a closing question survives being
- * followed by a bulleted list, and tolerates trailing quotes and brackets. */
+ * The **last paragraph** — not the last line, which is what this used to read
+ * and what made "Should I push? I can also squash first." a finished turn —
+ * holding a question mark or one of the phrases above. It decides the card's
+ * half-amber and the label on a notice, and the two must agree, so there is
+ * one rule and this is it. A wrong answer costs only the label: a notice carries
+ * the text and a reply box whichever it says. */
 export function endsOnQuestion(text: string): boolean {
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const last = lines[lines.length - 1];
+  const last = closingParagraph(text);
   if (!last) return false;
-  return /\?["'`)\]*_]*\s*$/.test(last);
+  return QUESTION_MARK.test(last) || ASK_PHRASE.test(last);
 }
 
 /** The note Claude Code writes into the conversation when a turn is stopped.

@@ -17,6 +17,8 @@
    * one priority order where neither can be read against the other. */
   import { untrack } from "svelte";
   import Ask from "./Ask.svelte";
+  import Notice from "./Notice.svelte";
+  import { noticeShown } from "./notice";
   import type { Skein } from "../lib/skein.svelte";
   import type { Conversation } from "../lib/conversation.svelte";
   import type { Field } from "./field.svelte";
@@ -122,7 +124,16 @@
      this falls back to otherwise is the focused one: the same file name in two
      projects would have opened the wrong one, silently. See `scopeFiles`. */
   const asking = $derived(askShown(focused, skein.blocked));
-  scopeFiles(() => (asking?.kind === "project" ? asking.cwd : null) ?? null);
+  /* Behind every ask: a notice is a card that already stopped, where an ask is
+     an agent stopped mid-turn on a clock. So one only shows with no ask up. */
+  const notice = $derived(asking ? null : noticeShown(focused?.id, skein.noticeQueue));
+  const noticeCard = $derived(
+    notice ? (skein.convs.find((c) => c.id === notice.conversationId) ?? null) : null,
+  );
+  /* The whole queue, asks and notices, as the "more" line counts it. */
+  const waitingOnYou = $derived(skein.blocked.length + skein.noticeQueue.length);
+  const shownCard = $derived(asking ?? noticeCard);
+  scopeFiles(() => (shownCard?.kind === "project" ? shownCard.cwd : null) ?? null);
 
   let height = $state(0);
   /* Braced, not an arrow expression: an effect that *returns* a value is an
@@ -309,11 +320,25 @@
       onstir={() => skein.stirAsk(target)}
       onselect={() => onselect(target)}
     />
-    {#if skein.blocked.length > 1}
-      <button class="more" onclick={() => onmore(target)}>
-        {skein.blocked.length - 1} more waiting on an answer
-      </button>
-    {/if}
+  {:else if notice && noticeCard}
+    {@const n = notice}
+    {@const card = noticeCard}
+    <Notice
+      notice={n}
+      project={card.project}
+      title={card.title}
+      elsewhere={card !== focused}
+      onack={() => skein.acknowledgeNotice(n)}
+      onfollow={(text) => skein.followUpNotice(n, text)}
+      onstir={() => skein.stirNotice(n)}
+      onselect={() => onselect(card)}
+    />
+  {/if}
+  {#if shownCard && waitingOnYou > 1}
+    {@const shown = shownCard}
+    <button class="more" onclick={() => onmore(shown)}>
+      {waitingOnYou - 1} more waiting on you
+    </button>
   {/if}
 
   <div class="targets">

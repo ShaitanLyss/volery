@@ -714,18 +714,13 @@ t("a question parked over MCP blocks the card, raises the peek, and resumes on a
   expect(snap.blocked).toContain(asked);
   expect(snap.dom.askOpen).toBe(true);
 
-  /* The peek only exists for when you are somewhere else, so it can only be
-     tested from somewhere else — which is exactly where this suite runs. */
-  if (snap.attention.windowFocused) {
-    console.log("  note: Skein is the focused window, so the peek is not asserted.");
-  } else {
-    const peek = await until(
-      "the peek window to appear",
-      () => ctl("peek"),
-      (p) => p.visible === true,
-    );
-    expect(peek.exists).toBe(true);
-  }
+  /* The peek is for a person somewhere else, and a driven wall has none: it is
+     silenced while the control surface is armed, because it is an
+     always-on-top window on a screen somebody *is* using (see
+     `Attention.isDriven`). So what this suite can check is the reading the
+     peek would draw from, and that no window went up over the user's work. */
+  expect(snap.attention.items.some((i: { kind: string }) => i.kind === "blocked")).toBe(true);
+  expect((await ctl("peek")).visible).toBe(false);
 
   await ctl("answer", { id: asked, text: answer });
 

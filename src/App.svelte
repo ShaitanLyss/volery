@@ -131,7 +131,8 @@
   } from "./lib/presets";
   import { spotOf } from "./lib/glass";
   import { selectionMarkdown } from "./lib/copy";
-  import { displayName } from "./lib/naming";
+  import { displayName, nameBesideProject } from "./lib/naming";
+  import { noticeLine, noticeWords } from "./lib/notice";
   import {
     Drafts,
     KEEP_AFTER_MS,
@@ -551,6 +552,30 @@
     },
     () => rungTimers(),
     () => presence.away,
+    /* Notices, in the peek's words. One row per card — the newest of its
+       notices says what the card is doing now. */
+    () =>
+      skein.waitingCards
+        .filter((c) => !c.pendingAsk)
+        .flatMap((c) => {
+          const mine = skein.noticeQueue.filter((n) => n.conversationId === c.id);
+          const n = mine[mine.length - 1];
+          if (!n) return [];
+          return [
+            {
+              id: c.id,
+              project: c.project,
+              title: nameBesideProject(c.title),
+              kind: "notice" as const,
+              key: n.id,
+              detail: `${noticeWords(n).mark.toLowerCase()} — ${noticeLine(n.text)}`,
+              waitedSeconds: Math.floor((clock.t - n.raisedAt) / 1000),
+            },
+          ];
+        }),
+    /* Read lazily: `control` is constructed further down, and the ladder only
+       asks once the wall is ticking. */
+    () => control.endpoint !== null,
   );
 
   /** Countdowns that have run out, as things wanting your attention.
@@ -854,6 +879,12 @@
   let spawning = $state(false);
 
   const focused = $derived(skein.convs.find((c) => c.id === focusedId) ?? null);
+  /* A card you are looking at finishing is something you watched, so it raises
+     no notice — the user's choice. All three facts live here, so this is where
+     the question is answered for `Skein`. */
+  skein.watching = (id) => id === focusedId && showDetail && attention.focused;
+  /* The away pile reads the notices raised while you were out. */
+  presence.notices = () => skein.noticeQueue;
 
   /** The project whose card you touched last, which is the one whose shell the
    *  panel shows. Sticky: letting go of the wall — Escape, the ground click,
@@ -4606,7 +4637,7 @@
     ontake={takeCompletion}
     oncycle={cycleWaiting}
     onmore={(shown) =>
-      (focusedId = skein.blocked.find((c) => c !== shown)?.id ?? focusedId)}
+      (focusedId = skein.waitingCards.find((c) => c !== shown)?.id ?? focusedId)}
     onselect={focusCard}
   />
 

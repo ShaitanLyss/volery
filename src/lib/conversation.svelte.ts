@@ -666,6 +666,11 @@ export class Conversation {
    *  Unlike every other tier this is not an inference: the turn is genuinely
    *  parked and nothing will happen until it is answered. */
   pendingAsk = $state<PendingAsk | null>(null);
+  /** The card sent a notice with `wait: true` and is parked on it — stopped
+   *  exactly as it is on a question, so it wears the same amber. The notice
+   *  itself is in `Skein.notices`, which is the queue; this is only the card's
+   *  side of the fact. */
+  waitingOnNotice = $state(false);
 
   /** Subagents this card has convened, in the order they were spawned. */
   seats = $state<Seat[]>([]);
@@ -1184,6 +1189,12 @@ export class Conversation {
 
   /** Text blocks seen in the current turn, used to classify how it ended. */
   #turnText: string[] = [];
+  /** What the turn said after its last tool call — the closing message a
+   *  notice shows. `#turnText` is the whole turn's prose, which is right for
+   *  `endingFor` and too much for a box you read the end of a card in. */
+  #closingText: string[] = [];
+  /** The turn's closing message, fixed when the turn ends. See `notice.ts`. */
+  lastWords = $state("");
   #sawAskTool = false;
 
   /** Whether this turn has got anything out of a model that the agent would be
@@ -1479,7 +1490,7 @@ export class Conversation {
    *  "fine" on a card that is not. `working` stays on top of both, unchanged: a
    *  turn underway is the current state of the card whatever the last one did. */
   tier = $derived<Tier>(
-    this.pendingAsk
+    this.pendingAsk || this.waitingOnNotice
       ? "ask"
       : this.working
         ? "work"
@@ -2130,6 +2141,7 @@ export class Conversation {
 
   #beginTurn() {
     this.#turnText = [];
+    this.#closingText = [];
     this.#sawAskTool = false;
     this.#producedOutput = false;
     this.saidNoAllowance = false;
@@ -2384,8 +2396,10 @@ export class Conversation {
             this.#push("text", said).narration = true;
           } else if (block.type === "text" && block.text?.trim()) {
             this.#turnText.push(block.text);
+            this.#closingText.push(block.text);
             this.#push("text", block.text);
           } else if (block.type === "tool_use") {
+            this.#closingText = [];
             if (ASK_TOOLS.has(block.name)) this.#sawAskTool = true;
             const desc = describeTool(block.name, block.input);
             this.activity = desc;
@@ -2624,11 +2638,15 @@ export class Conversation {
           this.#costAtLastTurn = ev.total_cost_usd;
         }
 
-        const { ending, detail } = endingFor(
-          ev,
-          this.#turnText.join("\n"),
-          this.#sawAskTool,
-        );
+        /* The closing message, and the ending read off it rather than off the
+           whole turn: a question asked before the last tool call was answered
+           by the work that followed it, and the notice shows this text, so the
+           label and the box have to be about the same words. A turn that ended
+           on a tool call with nothing after it falls back to everything it said. */
+        this.lastWords = (this.#closingText.length ? this.#closingText : this.#turnText)
+          .join("\n\n")
+          .trim();
+        const { ending, detail } = endingFor(ev, this.lastWords, this.#sawAskTool);
         this.ending = ending;
         /* A turn that reached a model at all clears the budget, whatever it
            then did with it — a stop, a question, an error of some other kind.
@@ -2725,6 +2743,7 @@ export class Conversation {
              matters on the wall is that the card stops claiming to be waiting
              on an answer that would now have nothing to resume. */
           this.pendingAsk = null;
+          this.waitingOnNotice = false;
         } else if (ending === "asked") {
           this.activity = "asked you";
         } else if (ending === "question") {
@@ -3096,6 +3115,7 @@ export class Conversation {
     this.plan = [];
     this.#creating.clear();
     this.pendingAsk = null;
+    this.waitingOnNotice = false;
     /* A cleared card is a new session with nothing owed to it, so a prompt held
        against an account coming back is a prompt for a conversation that no
        longer exists. The account itself is *kept*: it is a property of the card

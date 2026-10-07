@@ -13,7 +13,7 @@
     id: string;
     project: string;
     title: string;
-    kind: "blocked" | "overdue" | "failed" | "rang";
+    kind: "blocked" | "notice" | "overdue" | "failed" | "rang";
     detail: string;
     waitedSeconds: number;
   };

@@ -45,6 +45,7 @@ mod open;
 mod perf;
 mod pin;
 mod portage;
+mod notice;
 mod presence;
 mod project;
 mod reap;
@@ -760,6 +761,9 @@ pub fn run() {
             presence::set_presence,
             presence::deferred_asks,
             presence::take_deferred_ask,
+            notice::notice_raise,
+            notice::notices_read,
+            notice::notice_take,
             presence::deferred_acts,
             presence::answer_deferred_act,
             sketch::sketch_json,

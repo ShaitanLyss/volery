@@ -108,7 +108,9 @@ impl Queued {
 /// second `starts_with` found by reading. The same bargain the TS side strikes
 /// in `asking.ts`'s `UNANSWERED`, and for the same reason.
 pub fn is_deferral(answer: &str) -> bool {
-    answer.starts_with(DEFERRED_OPENING) || answer.starts_with(UNATTENDED_OPENING)
+    answer.starts_with(DEFERRED_OPENING)
+        || answer.starts_with(UNATTENDED_OPENING)
+        || answer.starts_with(crate::notice::QUEUED_OPENING)
 }
 
 /// What the asking card is told. The whole contract with the agent is in here
@@ -275,6 +277,9 @@ fn flip(
        against a wall that has already gone quiet. */
     if away {
         defer_parked(app);
+        /* And the notices already up go to the pile with them — the same move
+           made on the same edge, so coming back reads one pile. */
+        crate::notice::went_away(app);
     }
     Ok(since)
 }
@@ -351,6 +356,14 @@ fn defer_parked(app: &AppHandle) {
         let note = match act {
             Some((tool, args)) => {
                 defer_act(app, &conversation_id, &tool, &args, &question, "it")
+            }
+            /* A card's notice that was waiting is not a question: it goes into
+               the notice queue, marked as one that waited, so a follow-up from
+               the pile reaches the card as a message naming it. Filing it with
+               the questions would draw it as a question with no question in it. */
+            None if crate::notice::is_notice(&question) => {
+                let text = question["notice"]["text"].as_str().unwrap_or_default();
+                crate::notice::queue(app, &conversation_id, text, crate::notice::Queued::Away)
             }
             None => defer(app, &conversation_id, &question, Queued::Away),
         };
@@ -437,9 +450,14 @@ pub fn take_deferred_ask(store: State<'_, Store>, id: String) -> bool {
 /// is nobody left to hand it to, and a card that has been reset is not the
 /// conversation that asked.
 pub fn clear_for(app: &AppHandle, conversation_id: &str) {
-    let Some(store) = app.try_state::<Store>() else { return };
-    let Ok(conn) = store.0.lock() else { return };
-    crate::store::drop_deferred_asks_of(&conn, conversation_id);
+    {
+        let Some(store) = app.try_state::<Store>() else { return };
+        let Ok(conn) = store.0.lock() else { return };
+        crate::store::drop_deferred_asks_of(&conn, conversation_id);
+    }
+    /* Its notices went with them, and the queue the dock reads is a reading
+       of the table — it has to be told, or it goes on drawing them. */
+    crate::notice::changed(app, Some(conversation_id));
 }
 
 /* ── the tool ─────────────────────────────────────────────────────────────── */

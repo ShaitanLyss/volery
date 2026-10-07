@@ -42,7 +42,10 @@ export type PeekItem = {
    *  building it a notification path of its own would mean a second answer to
    *  "how does Skein get your attention", with a Windows toast at the end of it.
    *  See the note at the top of the file for why there isn't one. */
-  kind: "blocked" | "overdue" | "failed" | "rang";
+  kind: "blocked" | "notice" | "overdue" | "failed" | "rang";
+  /** What makes this item news, when that is not the card — a notice's own
+   *  id, since a card's second notice is news its first one already rang for. */
+  key?: string;
   detail: string;
   waitedSeconds: number;
 };
@@ -59,8 +62,26 @@ const GRACE_S = 20;
 
 export class Attention {
   /** Off by default: a sound is the most intrusive thing here, and it should
-   *  be something you opt into rather than something you have to switch off. */
-  chime = $state(false);
+   *  be something you opt into rather than something you have to switch off.
+   *
+   *  Remembered, because it was not: it came back off on every launch, and the
+   *  whole point of turning it on — walk away and come back when it rings — is
+   *  lost on the morning you forget to turn it on again. localStorage, the
+   *  house rule for what is per-machine: a chime is about this room. */
+  #chime = $state(readChime());
+  get chime(): boolean {
+    return this.#chime;
+  }
+  set chime(on: boolean) {
+    this.#chime = on;
+    try {
+      localStorage.setItem(CHIME_KEY, on ? "1" : "0");
+    } catch {
+      /* A setting that cannot be kept is still a setting for this session. */
+    }
+  }
+  /** What has already rung, as `kind:id`, so a ring is news — see `sync`. */
+  #rung = new Set<string>();
   enabled = $state(true);
 
   focused = $state(true);
@@ -93,6 +114,16 @@ export class Attention {
      *  the wall, and a constructor that could not be given this must not be
      *  the thing that silences the ladder. */
     private isAway: () => boolean = () => false,
+    /** Notices standing in the queue, one item each — `skein.noticeQueue`
+     *  in the peek's words. Injected for `instruments`' reason. */
+    private notices: () => PeekItem[] = () => [],
+    /** Whether this wall is being driven from outside — the control surface is
+     *  armed, which is the lab and `test:wall`. Nobody is at a driven wall, and
+     *  somebody *is* at the screen it shares: its peek is an always-on-top
+     *  window, so on 2026-10-08 the lab's test notices put a "waiting" panel
+     *  over the user's own studio for a minute at a time. Silenced exactly as
+     *  away mode silences it, bookkeeping kept. */
+    private isDriven: () => boolean = () => false,
   ) {
     this.#wire();
   }
@@ -148,6 +179,11 @@ export class Attention {
    *  because a blocked agent is stopped rather than merely quiet. */
   items = $derived.by<PeekItem[]>(() => {
     const out: PeekItem[] = [];
+    /* A card with a notice is said once, by the notice: its `failed` or
+       `overdue` reading is the same news, older and vaguer. */
+    const noticed = this.notices();
+    const told = new Set(noticed.map((n) => n.id));
+    out.push(...noticed);
     for (const c of this.convs()) {
       /* A card with no process cannot want anything. Restoring the wall from
          disk brings back whatever ending each card closed on, so without this a
@@ -169,6 +205,8 @@ export class Attention {
           detail: askHeadline(c.pendingAsk.questions),
           waitedSeconds: Math.floor((clock.t - c.pendingAsk.since) / 1000),
         });
+      } else if (told.has(c.id)) {
+        continue;
       } else if (c.tier === "fail") {
         out.push({
           id: c.id,
@@ -196,7 +234,7 @@ export class Attention {
 
     /* A crash is news and a rung timer is an appointment, so `failed` outranks
        it; a blocked agent outranks both, being genuinely stopped. */
-    const rank = { blocked: 0, failed: 1, rang: 2, overdue: 3 } as const;
+    const rank = { blocked: 0, notice: 1, failed: 2, rang: 3, overdue: 4 } as const;
     return out.sort(
       (a, b) => rank[a.kind] - rank[b.kind] || b.waitedSeconds - a.waitedSeconds,
     );
@@ -205,7 +243,7 @@ export class Attention {
   /** Identity of *what* is waiting, so a card ageing by a second doesn't
    *  count as something new to announce. */
   #signature(items: PeekItem[]): string {
-    return items.map((i) => `${i.kind}:${i.id}`).join("|");
+    return items.map((i) => `${i.kind}:${i.key ?? i.id}`).join("|");
   }
 
   async #peekWindow(): Promise<Window | null> {
@@ -302,11 +340,24 @@ export class Attention {
        would play all of them at once, hours late, which is the one thing worse
        than ringing in an empty room. Muting keeps the bookkeeping and drops
        only the sound. */
-    const away = this.isAway();
+    const away = this.isAway() || this.isDriven();
 
     /* Before the focused early-return below, which is what makes an alarm
        audible while you are at the wall. */
     const rang = this.#alarm(items, away);
+
+    /* What is new since the last ring, among the things that are news — a
+       question parked or a notice raised. Kept current while away for
+       `#alarm`'s reason: a pass that skipped the bookkeeping would come back
+       to a pile of things that all look fresh, and ring them together. */
+    const urgent = items.filter((i) => i.kind === "blocked" || i.kind === "notice");
+    const keyOf = (i: PeekItem) => `${i.kind}:${i.key ?? i.id}`;
+    /* And only what arrived since this ladder started watching: a notice that
+       stood across a restart is not news on launch, and ringing for every one
+       of them each time the wall opens is the bell crying wolf. */
+    const since = (clock.t - this.#watching) / 1000 + 1;
+    const fresh = urgent.filter((i) => !this.#rung.has(keyOf(i)) && i.waitedSeconds <= since);
+    this.#rung = new Set(urgent.map(keyOf));
 
     if (away) {
       /* Hidden rather than merely not shown: going away with a peek on screen
@@ -323,13 +374,32 @@ export class Attention {
     if (this.focused || items.length === 0) {
       if (this.#shown) await this.hide();
       if (items.length === 0) this.#lastSignature = "";
+      /* **The chime is not a peek, and focus is not presence.** The window is
+         in front on the desk you walked away from — that is the ordinary way
+         to leave it — so a bell that only rang when another app had focus
+         rang for nobody in exactly the case it is for. The user's words: the
+         chime is so they need not sit at the computer and can come back when
+         it rings. So a new question or notice rings here too; the peek and the
+         taskbar flash, which are for a window you cannot see, do not. */
+      if (this.chime && !rang && fresh.length) {
+        sound(fresh.some((i) => i.kind === "blocked") ? "blocked" : "overdue");
+      }
       return;
     }
 
     void emit("peek:set", { items });
 
     if (sig === this.#lastSignature) return;
+    const prior = new Set(this.#lastSignature.split("|"));
     this.#lastSignature = sig;
+    /* What this showing adds that has not already rung. A question or notice
+       rung while the window was in front is not news again because you then
+       looked away from it. */
+    const freshKeys = new Set(fresh.map(keyOf));
+    const news = items.filter((i) => {
+      if (i.kind === "blocked" || i.kind === "notice") return freshKeys.has(keyOf(i));
+      return !prior.has(`${i.kind}:${i.id}`);
+    });
 
     const w = await this.#peekWindow();
     if (!w) return;
@@ -344,8 +414,8 @@ export class Attention {
 
     /* Not when the alarm has just rung this same tick: a countdown that ran out
        while you were away is one piece of news, and it has already been said. */
-    if (this.chime && !rang) {
-      sound(items[0]?.kind === "blocked" ? "blocked" : "overdue");
+    if (this.chime && !rang && news.length) {
+      sound(news.some((i) => i.kind === "blocked") ? "blocked" : "overdue");
     }
   }
 }
@@ -358,6 +428,16 @@ export class Attention {
  * and an alarm you set is a different piece of news from an agent that stopped.
  * `rang` is three notes and the only rising arpeggio: two soft tones is the
  * house chime, and a countdown finishing should not be mistakable for a card. */
+const CHIME_KEY = "skein.chime";
+
+function readChime(): boolean {
+  try {
+    return localStorage.getItem(CHIME_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 const TONES: Record<"blocked" | "overdue" | "rang", number[]> = {
   blocked: [587.33, 880.0],
   overdue: [523.25, 783.99],

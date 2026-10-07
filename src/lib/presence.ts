@@ -76,17 +76,29 @@ export type Pile = {
    *  card: deciding whether its scratch directory may go is the same context
    *  as answering what it asked about the work. */
   acts: Act[];
+  /** Notices it raised while you were out — it finished, ended on a question,
+   *  gave up, or sent one. Same card, same context, so the same group. */
+  notices: PileNotice[];
   /** When this card first asked. The group's sort key, and what the heading
    *  counts from. */
   since: number;
 }[];
 
-export function pileOf(asks: Deferred[], acts: Act[] = []): Pile {
+/** What the pile needs of a notice. `notice.ts::Notice` satisfies it; kept
+ *  structural so this file does not import the notice vocabulary. */
+export type PileNotice = { id: string; conversationId: string; raisedAt: number };
+
+export function pileOf<N extends PileNotice>(
+  asks: Deferred[],
+  acts: Act[] = [],
+  notices: N[] = [],
+): (Pile[number] & { notices: N[] })[] {
   const cards = new Set([
     ...asks.map((a) => a.conversationId),
     ...acts.map((a) => a.conversationId),
+    ...notices.map((n) => n.conversationId),
   ]);
-  const out: Pile = [];
+  const out: (Pile[number] & { notices: N[] })[] = [];
   for (const conversationId of cards) {
     const mine = asks
       .filter((a) => a.conversationId === conversationId)
@@ -94,13 +106,18 @@ export function pileOf(asks: Deferred[], acts: Act[] = []): Pile {
     const doing = acts
       .filter((a) => a.conversationId === conversationId)
       .sort((a, b) => a.askedAt - b.askedAt);
+    const told = notices
+      .filter((n) => n.conversationId === conversationId)
+      .sort((a, b) => a.raisedAt - b.raisedAt);
     out.push({
       conversationId,
       asks: mine,
       acts: doing,
+      notices: told,
       since: Math.min(
         mine[0]?.askedAt ?? Number.POSITIVE_INFINITY,
         doing[0]?.askedAt ?? Number.POSITIVE_INFINITY,
+        told[0]?.raisedAt ?? Number.POSITIVE_INFINITY,
       ),
     });
   }
@@ -113,8 +130,12 @@ export function pileOf(asks: Deferred[], acts: Act[] = []): Pile {
  *  is three things to decide, and a pile counted by *rows* would say "1
  *  question" to somebody with three to make. An act is one decision whatever
  *  it drew. */
-export function waitingCount(asks: Deferred[], acts: Act[] = []): number {
-  return asks.reduce((n, a) => n + a.questions.length, 0) + acts.length;
+export function waitingCount(
+  asks: Deferred[],
+  acts: Act[] = [],
+  notices: PileNotice[] = [],
+): number {
+  return asks.reduce((n, a) => n + a.questions.length, 0) + acts.length + notices.length;
 }
 
 /** Whether the pile button, or the `p` chord, opens anything.
@@ -128,8 +149,13 @@ export function waitingCount(asks: Deferred[], acts: Act[] = []): number {
  *  purity boundary gives: the arithmetic of what a gesture does is testable and
  *  the rune holding the answer is not. `presence.svelte.ts::openPile` is the
  *  one caller. */
-export function pileOpens(showing: boolean, asks: Deferred[], acts: Act[] = []): boolean {
-  return !showing && waitingCount(asks, acts) > 0;
+export function pileOpens(
+  showing: boolean,
+  asks: Deferred[],
+  acts: Act[] = [],
+  notices: PileNotice[] = [],
+): boolean {
+  return !showing && waitingCount(asks, acts, notices) > 0;
 }
 
 /** How long something has stood, in the shape a person reads.

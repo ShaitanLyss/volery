@@ -30,6 +30,7 @@
    * wake before you start. */
 
   import Ask from "./Ask.svelte";
+  import Notice from "./Notice.svelte";
   import type { Conversation } from "./conversation.svelte";
   import { clock } from "./conversation.svelte";
   import { nameBesideProject } from "./naming";
@@ -68,6 +69,13 @@
     if (pile.length && !pile.some((g) => g.conversationId === on)) {
       on = pile[0]?.conversationId ?? null;
     }
+  });
+
+  /* And shut once nothing is left, whichever way the last of it went — a
+     question answered, a notice acknowledged here or in the dock, a card that
+     stirred and took its notice down. */
+  $effect(() => {
+    if (presence.waiting === 0) onclose();
   });
 
   function convOf(id: string): Conversation | undefined {
@@ -117,7 +125,7 @@
     } finally {
       sending = null;
     }
-    if (!presence.asks.length) onclose();
+    if (!presence.waiting) onclose();
   }
 
   /** What came of an act, once decided. Keyed by the act's id and kept after
@@ -143,7 +151,7 @@
    *  closing the panel and letting it sit for ever. */
   async function drop(d: Deferred) {
     await presence.claim(d.id);
-    if (!presence.asks.length) onclose();
+    if (!presence.waiting) onclose();
   }
 
   /** How many cards this pile will wake. Said before you start, because that
@@ -167,8 +175,7 @@
     <header>
       <h2>while you were away</h2>
       <span class="count">
-        {presence.waiting}
-        {presence.waiting === 1 ? "question" : "questions"} from {pile.length}
+        {presence.waiting} waiting from {pile.length}
         {pile.length === 1 ? "card" : "cards"} · {lasted(clock.t - oldest)}
       </span>
       <button class="x" onclick={onclose} aria-label="Close">&times;</button>
@@ -197,7 +204,9 @@
         {#each pile as group (group.conversationId)}
           {@const who = whoOf(group.conversationId)}
           {@const n =
-            group.asks.reduce((t, a) => t + a.questions.length, 0) + group.acts.length}
+            group.asks.reduce((t, a) => t + a.questions.length, 0) +
+            group.acts.length +
+            group.notices.length}
           <button
             class="who"
             class:on={group.conversationId === here?.conversationId}
@@ -212,6 +221,34 @@
 
       <div class="asks">
         {#if here}
+          {#each here.notices as n (n.id)}
+            {@const who = whoOf(n.conversationId)}
+            <!-- What the card did while you were out: it finished, ended on a
+                 question, gave up, or told you something. The same panel the
+                 dock draws, so a follow-up here is the same gesture as there. -->
+            <div class="one">
+              <FileScope
+                root={(() => {
+                  const c = convOf(n.conversationId);
+                  return (c?.kind === "project" ? c.cwd : null) ?? null;
+                })()}
+              >
+                <Notice
+                  notice={n}
+                  project={who.project}
+                  title={who.title}
+                  elsewhere={true}
+                  onack={() => void skein.acknowledgeNotice(n)}
+                  onfollow={(text) => void skein.followUpNotice(n, text)}
+                  onstir={() => skein.stirNotice(n)}
+                  onselect={() => {
+                    const c = convOf(n.conversationId);
+                    if (c) onselect?.(c);
+                  }}
+                />
+              </FileScope>
+            </div>
+          {/each}
           {#each here.acts as a (a.id)}
             <!-- Drawn above the questions, and differently. An act is not a
                  question with buttons: approving it means Volery asks itself
@@ -280,7 +317,7 @@
               </div>
             </div>
           {/each}
-          {#if !here.asks.length && !here.acts.length}
+          {#if !here.asks.length && !here.acts.length && !here.notices.length}
             <p class="note">this card is settled.</p>
           {/if}
         {:else}

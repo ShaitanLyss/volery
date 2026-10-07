@@ -19,6 +19,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { normalizeAsk, blankAnswers } from "./asking";
 import { Listeners } from "./listeners";
+import type { Notice } from "./notice";
 import {
   gateOnReturn,
   isAwayScreen,
@@ -28,7 +29,6 @@ import {
   type Act,
   type AwayScreen,
   type Deferred,
-  type Pile,
 } from "./presence";
 
 const ANIMATE_KEY = "skein.away.animate";
@@ -132,8 +132,14 @@ export class Presence {
     return gateOnReturn(this.toys, this.elapsed(now));
   }
 
-  pile = $derived<Pile>(pileOf(this.asks, this.acts));
-  waiting = $derived(waitingCount(this.asks, this.acts));
+  /** The notices that belong in the pile — raised while away, or still up
+   *  when the wall went away. Injected by `App.svelte`, since the notice queue
+   *  is `Skein`'s and neither class may own the other. */
+  notices = $state<() => Notice[]>(() => []);
+  #awayNotices = $derived(this.notices().filter((n) => n.away));
+
+  pile = $derived(pileOf(this.asks, this.acts, this.#awayNotices));
+  waiting = $derived(waitingCount(this.asks, this.acts, this.#awayNotices));
 
   async #load() {
     try {
@@ -268,7 +274,8 @@ export class Presence {
       await this.#load();
     }
     await this.refresh();
-    const anything = this.asks.length > 0 || this.acts.length > 0;
+    const anything =
+      this.asks.length > 0 || this.acts.length > 0 || this.#awayNotices.length > 0;
     this.showing = anything;
     return anything;
   }
@@ -291,7 +298,7 @@ export class Presence {
    *  one is not a smaller version of this panel. Returns whether it opened,
    *  which is what lets a caller say so. */
   openPile(): boolean {
-    this.showing = pileOpens(this.showing, this.asks, this.acts);
+    this.showing = pileOpens(this.showing, this.asks, this.acts, this.#awayNotices);
     return this.showing;
   }
 

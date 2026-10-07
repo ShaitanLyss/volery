@@ -1093,6 +1093,18 @@ fn expired(
     if settle.is_some() || act.is_some() {
         return timed_out(window);
     }
+    /* A card's notice that asked to be waited on. Same move as a question —
+       queued rather than expired — into the queue a notice belongs in, which
+       is already the thing that rings, so there is no chronicle row to add. */
+    if crate::notice::is_notice(args) {
+        let text = args["notice"]["text"].as_str().unwrap_or_default();
+        return crate::notice::queue(
+            app,
+            conversation_id,
+            text,
+            crate::notice::Queued::Unattended,
+        );
+    }
     let note = crate::presence::defer(
         app,
         conversation_id,
@@ -1470,6 +1482,17 @@ pub(crate) fn roster() -> Vec<Value> {
              off to the gym, taking a break, leaving for the evening, going to bed, \
              back tomorrow — stop notifying them and queue questions instead of \
              parking on them",
+        ),
+        /* Deferred, with one sentence in `supervisor::append_prompt` naming
+           the search rather than the tool — the timeline arrangement. The user
+           asked that cards use it sparingly; loaded on every card it would be
+           in front of every agent on every turn, which is the opposite. */
+        found_by(
+            crate::notice::schema(),
+            "notify the user, tell the user now, heads up, warn them, alert, \
+             announce, let them know I am starting something disruptive, found a \
+             serious bug, data at risk, before a restart or a migration, a notice \
+             in their queue",
         ),
         found_by(
             crate::sink::take_schema(),
@@ -2536,6 +2559,59 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 &conversation_id,
                                 &id,
                                 &args,
+                                progress,
+                                req,
+                                None,
+                                None,
+                            );
+                            return;
+                        }
+
+                        /* `notice` parks only when it was asked to wait, and
+                           only while somebody is at the wall — otherwise it is a
+                           row in the queue and an answer on the spot. Here
+                           rather than in the roster chain for `close`'s reason
+                           below: that chain has already committed to answering. */
+                        if tool == crate::notice::NOTICE_TOOL {
+                            let reply = |req: tiny_http::Request, text: String, error: bool| {
+                                respond(
+                                    req,
+                                    json!({
+                                        "jsonrpc": "2.0", "id": id,
+                                        "result": {
+                                            "content": [{ "type": "text", "text": text }],
+                                            "isError": error
+                                        }
+                                    }),
+                                );
+                            };
+                            let text = match crate::notice::text_of(&args) {
+                                Ok(t) => t,
+                                Err(why) => return reply(req, why, true),
+                            };
+                            if !crate::notice::waits(&args) || crate::presence::away(&app) {
+                                let why = if crate::notice::waits(&args) {
+                                    crate::notice::Queued::Away
+                                } else {
+                                    crate::notice::Queued::Sent
+                                };
+                                let said =
+                                    crate::notice::queue(&app, &conversation_id, &text, why);
+                                return reply(req, said, false);
+                            }
+                            /* Before parking, not on the way out: a full queue
+                               found when the wait expires would have nowhere to
+                               put the text. */
+                            if !crate::notice::has_room(&app, &conversation_id) {
+                                return reply(req, crate::notice::full_note(), false);
+                            }
+                            let asks = app.state::<Asks>();
+                            park_and_stream(
+                                &app,
+                                &asks,
+                                &conversation_id,
+                                &id,
+                                &crate::notice::parked_payload(&text),
                                 progress,
                                 req,
                                 None,

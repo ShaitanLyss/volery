@@ -526,6 +526,19 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
              'timeline' to find them. Not for a small task or open-ended \
              experimenting with no clear plan.",
         );
+        /* Notices, on the timeline sentence's footing: one sentence naming a
+           search, so the tool stays deferred and costs nothing until a card
+           goes looking. The user asked for the mention — "agents will never
+           think of using it" without one — and for "sparingly", which is why
+           the sentence carries its own limit rather than leaving it to the
+           schema an agent has not read yet. */
+        prompt.push_str(
+            " When the user should know something now and you need nothing from \
+             them — you are about to do something disruptive, or you found a \
+             serious problem and started on it — you can put a notice in their \
+             queue; search your tools for 'notice'. Sparingly: your finished \
+             turns already reach them on their own.",
+        );
         /* **There is no `drop` sentence here either, and the argument that put
            it here failed for its own case.** It read: "a description is only
            read by an agent that has thought to look for a tool, and the reflex
@@ -1816,6 +1829,10 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
         crate::spawn::settling(app, id);
     } else {
         crate::spawn::stirring(id);
+        /* And a notice about the rest that just ended comes down — the user
+           chose that a notice clears when its card starts another turn, for any
+           reason, since what it described is no longer true. */
+        crate::notice::stirred(app, id);
     }
 }
 
@@ -3667,6 +3684,7 @@ mod tests {
         ("status.rs", include_str!("status.rs")),
         ("supervisor.rs", include_str!("supervisor.rs")),
         ("timeline.rs", include_str!("timeline.rs")),
+        ("notice.rs", include_str!("notice.rs")),
     ];
 
     /// **The list above is hand-written, so this is what keeps it honest.**

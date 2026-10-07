@@ -349,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 45;
+const SCHEMA_VERSION: i64 = 46;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -400,6 +400,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (43, migrate_v43),
     (44, migrate_v44),
     (45, migrate_v45),
+    (46, migrate_v46),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2717,6 +2718,29 @@ fn migrate_v45(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("migrate v45: {e}"))?;
     }
     Ok(())
+}
+
+/// Notices: a card that finished, ended on a question, gave up on an error, or
+/// sent one itself, waiting in the dock's queue until acknowledged or followed
+/// up. A table rather than memory because they must survive a restart the way
+/// a deferred question does — a card that finished at six and a wall restarted
+/// at seven is still a card waiting on you. See `notice.rs`.
+fn migrate_v46(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS pending_notice (
+            id               TEXT PRIMARY KEY,
+            conversation_id  TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+            kind             TEXT NOT NULL,
+            text             TEXT NOT NULL,
+            raised_at        INTEGER NOT NULL,
+            away             INTEGER NOT NULL DEFAULT 0,
+            waited           INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS pending_notice_card ON pending_notice(conversation_id);
+        "#,
+    )
+    .map_err(|e| format!("migrate v46: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -7691,6 +7715,121 @@ pub fn save_away_since(conn: &Connection, away_since: Option<i64>) -> Result<(),
     .map_err(|e| format!("save presence: {e}"))
 }
 
+/// A notice: a card that finished, ended on a question, gave up on an error,
+/// or sent one with the `notice` tool. See `notice.rs`.
+///
+/// `away` is which surface reads it: every notice is in the dock's queue, and
+/// one raised while the wall was away (or still up when it went away) is in the
+/// pile as well, which is what away mode does to a parked question.
+/// `waited` is a card's notice that asked to be waited on and could not be —
+/// the wall was away, or nobody got to it in time — so its follow-up has to
+/// travel as a message naming the notice rather than as the call's result.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct NoticeRow {
+    pub id: String,
+    pub conversation_id: String,
+    pub kind: String,
+    pub text: String,
+    pub raised_at: i64,
+    pub away: bool,
+    pub waited: bool,
+}
+
+/// Put one up. The turn-end kinds are one per card — a newer rest replaces the
+/// older one, since a notice is about a rest and only the latest rest is still
+/// true — and a card's own notices accumulate, since two things it wanted you
+/// to know are two things.
+pub fn raise_notice(conn: &Connection, n: &NoticeRow) -> Result<(), String> {
+    /* One transaction, so a failed insert cannot leave the older notice
+       deleted with nothing in its place. */
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("raise notice: {e}"))?;
+    if n.kind != "card" {
+        tx.execute(
+            "DELETE FROM pending_notice WHERE conversation_id = ?1 AND kind != 'card'",
+            params![n.conversation_id],
+        )
+        .map_err(|e| format!("raise notice: {e}"))?;
+    }
+    tx.execute(
+        "INSERT INTO pending_notice (id, conversation_id, kind, text, raised_at, away, waited)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            n.id,
+            n.conversation_id,
+            n.kind,
+            n.text,
+            n.raised_at,
+            n.away as i64,
+            n.waited as i64
+        ],
+    )
+    .map_err(|e| format!("raise notice: {e}"))?;
+    tx.commit().map_err(|e| format!("raise notice: {e}"))
+}
+
+/// Every notice standing, oldest first — the order the queue is read in.
+pub fn queued_notices(conn: &Connection) -> Vec<NoticeRow> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, conversation_id, kind, text, raised_at, away, waited FROM pending_notice
+          ORDER BY raised_at, rowid",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok(NoticeRow {
+            id: r.get(0)?,
+            conversation_id: r.get(1)?,
+            kind: r.get(2)?,
+            text: r.get(3)?,
+            raised_at: r.get(4)?,
+            away: r.get::<_, i64>(5)? != 0,
+            waited: r.get::<_, i64>(6)? != 0,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+/// Settle one. The DELETE is the claim, `take_deferred_ask`'s reasoning: a
+/// follow-up is sent *after* this returns the row, so an interruption between
+/// the two loses a follow-up rather than delivering it twice.
+pub fn take_notice(conn: &Connection, id: &str) -> Option<NoticeRow> {
+    let row = queued_notices(conn).into_iter().find(|n| n.id == id)?;
+    let gone = conn
+        .execute("DELETE FROM pending_notice WHERE id = ?1", params![id])
+        .unwrap_or(0);
+    (gone > 0).then_some(row)
+}
+
+/// A turn opened on this card, so the rest its notice was about is over. The
+/// card's own notices stay: they were about something it said, not about it
+/// being quiet. Answers how many came down, so the caller emits only on change.
+pub fn drop_rest_notices_of(conn: &Connection, conversation_id: &str) -> usize {
+    conn.execute(
+        "DELETE FROM pending_notice WHERE conversation_id = ?1 AND kind != 'card'",
+        params![conversation_id],
+    )
+    .unwrap_or(0)
+}
+
+/// The wall went away with these up, so the pile reads them too — what
+/// `presence::defer_parked` does to a question already on the wall.
+pub fn notices_go_away(conn: &Connection) {
+    let _ = conn.execute("UPDATE pending_notice SET away = 1 WHERE away = 0", []);
+}
+
+pub fn card_notices_of(conn: &Connection, conversation_id: &str) -> usize {
+    conn.query_row(
+        "SELECT COUNT(*) FROM pending_notice WHERE conversation_id = ?1 AND kind = 'card'",
+        params![conversation_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0) as usize
+}
+
 /// One question that was put while you were out.
 pub struct DeferredAsk {
     pub id: String,
@@ -7758,6 +7897,12 @@ pub fn drop_deferred_asks_of(conn: &Connection, conversation_id: &str) {
     );
     let _ = conn.execute(
         "DELETE FROM deferred_act WHERE conversation_id = ?1",
+        params![conversation_id],
+    );
+    /* And its notices, for the same reason: a card that has been closed or
+       reset is not the conversation that finished. */
+    let _ = conn.execute(
+        "DELETE FROM pending_notice WHERE conversation_id = ?1",
         params![conversation_id],
     );
 }
@@ -8977,6 +9122,51 @@ mod tests {
             .unwrap();
         assert_eq!(title, "untitled");
         assert_eq!(flagged, 0, "a cleared card would refuse to be named again");
+    }
+
+    /// A rest notice is one per card and a card's own accumulate; a turn opening
+    /// takes the first kind down and leaves the second; the take is the claim.
+    #[test]
+    fn rest_notices_replace_and_clear_on_stir_while_a_cards_own_notices_stay() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate(&conn).unwrap();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        let n = |id: &str, kind: &str, at: i64| NoticeRow {
+            id: id.into(),
+            conversation_id: "c1".into(),
+            kind: kind.into(),
+            text: format!("{kind} {id}"),
+            raised_at: at,
+            away: false,
+            waited: false,
+        };
+        raise_notice(&conn, &n("a", "done", 1)).unwrap();
+        raise_notice(&conn, &n("b", "card", 2)).unwrap();
+        raise_notice(&conn, &n("c", "card", 3)).unwrap();
+        raise_notice(&conn, &n("d", "question", 4)).unwrap();
+        let ids = |conn: &Connection| -> Vec<String> {
+            queued_notices(conn).into_iter().map(|n| n.id).collect()
+        };
+        assert_eq!(ids(&conn), ["b", "c", "d"], "the newer rest replaced the older");
+        assert_eq!(card_notices_of(&conn, "c1"), 2);
+
+        assert_eq!(drop_rest_notices_of(&conn, "c1"), 1);
+        assert_eq!(ids(&conn), ["b", "c"]);
+
+        notices_go_away(&conn);
+        assert!(queued_notices(&conn).iter().all(|n| n.away));
+
+        assert_eq!(take_notice(&conn, "b").map(|n| n.text), Some("card b".into()));
+        assert!(take_notice(&conn, "b").is_none(), "a second take finds nothing");
+
+        drop_deferred_asks_of(&conn, "c1");
+        assert!(ids(&conn).is_empty(), "a closed card's notices go with it");
     }
 
     /// The v2 repair: a card that has turns behind it must come back resumable.

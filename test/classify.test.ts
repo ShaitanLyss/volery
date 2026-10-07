@@ -158,8 +158,23 @@ describe("endsOnQuestion", () => {
     expect(endsOnQuestion("Done.\n\n- a\n- b\n\nShall I continue?")).toBe(true);
   });
 
-  test("a question in the middle does not count", () => {
-    expect(endsOnQuestion("Should I? I did it anyway. All tests pass.")).toBe(false);
+  test("a question in an earlier paragraph does not count", () => {
+    expect(endsOnQuestion("Should I? Maybe.\n\nI did it anyway. All tests pass.")).toBe(false);
+  });
+
+  test("the last paragraph counts, not only its last line", () => {
+    expect(endsOnQuestion("Done.\n\nShould I push? I can also squash first.")).toBe(true);
+  });
+
+  test("an ask with no question mark counts", () => {
+    expect(endsOnQuestion("The test frame is set up. Send me its path and I'll check it.")).toBe(true);
+    expect(endsOnQuestion("Both work; it's your call.")).toBe(true);
+    expect(endsOnQuestion("Say the word and I'll launch the editor.")).toBe(true);
+  });
+
+  test("a question mark in code or a link is not a question", () => {
+    expect(endsOnQuestion("Fixed the regex `a?b` and the query in https://x.dev/?q=1 too.")).toBe(false);
+    expect(endsOnQuestion("Done.\n\n```\nwhat?\n```")).toBe(false);
   });
 
   test("tolerates trailing markdown and quotes", () => {
