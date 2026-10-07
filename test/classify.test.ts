@@ -81,6 +81,8 @@ import {
   HEAL_BUDGET,
   widenedWindow,
   windowForObserved,
+  isNarrationSignature,
+  narrationOf,
 } from "../src/lib/classify";
 
 describe("urgency decays with neglect", () => {
@@ -2602,5 +2604,72 @@ describe("the carry-on", () => {
     const note = carryNote(2, 1_000);
     expect(note).toContain(`2 of ${CARRY_BUDGET}`);
     expect(note).toContain("another account");
+  });
+});
+
+describe("narration: the prose between tool calls, delivered as thinking", () => {
+  /* Two real signatures off this machine (claude 2.1.28x, opus/sonnet 5.5),
+     one of each kind. The envelope is opaque by design and these are what pin
+     the reading to the shape the server actually sends, rather than to the
+     shape a test author believed it sent. */
+  const real = JSON.parse(
+    readFileSync(join(import.meta.dir, "fixtures", "signatures.json"), "utf8"),
+  ) as { narration: string; thinking: string };
+
+  /* The same envelope built by hand: field 2 → field 1 → field 8 as a string,
+     with a varint and a sibling either side so the walk has to step over them. */
+  const len = (field: number, body: number[]) => [(field << 3) | 2, body.length, ...body];
+  const envelope = (kind: string) => {
+    const inner = [0x08, 0x02, ...len(8, [...new TextEncoder().encode(kind)]), ...len(3, [1, 2])];
+    const outer = [0x10, 0x05, ...len(1, inner)];
+    return btoa(String.fromCharCode(...len(2, outer), ...len(4, [9])));
+  };
+
+  test("the signature says which kind of thinking block it is", () => {
+    expect(isNarrationSignature(real.narration)).toBe(true);
+    expect(isNarrationSignature(real.thinking)).toBe(false);
+    expect(isNarrationSignature(envelope("narration"))).toBe(true);
+    expect(isNarrationSignature(envelope("thinking"))).toBe(false);
+  });
+
+  test("anything that does not parse is ordinary thinking", () => {
+    /* Fail-closed, as the CLI's own reader is: a summary drawn as speech is the
+       claim being made, and an unreadable envelope cannot back it. */
+    expect(isNarrationSignature(undefined)).toBe(false);
+    expect(isNarrationSignature("")).toBe(false);
+    expect(isNarrationSignature("not base64 at all!")).toBe(false);
+    expect(isNarrationSignature(envelope("narration").slice(0, 12))).toBe(false);
+    expect(isNarrationSignature(btoa("\x12\x7f"))).toBe(false); // length past the end
+  });
+
+  const content = [
+    { type: "thinking", thinking: "", signature: real.thinking },
+    { type: "thinking", thinking: "The prototype covers the floor; cost is ~30ms.", signature: real.narration },
+    { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
+    { type: "thinking", thinking: "reasoning a summarised-thinking build would show", signature: real.thinking },
+    { type: "thinking", thinking: "", signature: real.narration },
+  ];
+
+  test("a mixed message yields its narration by position, and nothing else", () => {
+    expect([...narrationOf(content)]).toEqual([
+      [1, "The prototype covers the floor; cost is ~30ms."],
+    ]);
+  });
+
+  test("the CLI's own index list wins when the wire carries one", () => {
+    /* Live, the event names the blocks and no decode is needed — and an empty
+       listed block is still nothing to draw. */
+    expect([...narrationOf(content, [1, 4])]).toEqual([
+      [1, "The prototype covers the floor; cost is ~30ms."],
+    ]);
+    expect([...narrationOf(content, [])]).toEqual([]);
+    expect([...narrationOf(content, [3])]).toEqual([
+      [3, "reasoning a summarised-thinking build would show"],
+    ]);
+  });
+
+  test("no content is no narration", () => {
+    expect(narrationOf(undefined).size).toBe(0);
+    expect(narrationOf("text").size).toBe(0);
   });
 });

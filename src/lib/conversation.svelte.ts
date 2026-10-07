@@ -23,6 +23,7 @@ import {
   mayHeal,
   healHeldNote,
   producedModelOutput,
+  narrationOf,
   healGaveUpNote,
   HEAL_BUDGET,
   type HealKind,
@@ -189,6 +190,13 @@ export type Line = {
    *  cap says so in words rather than the line wearing a fault. Same
    *  distinction `wasStopped` draws for a turn. */
   state?: "pending" | "failed";
+  /** On a `text` line, that it is **narration**: the server's summary of what
+   *  the agent wrote between tool calls, which reaches us as a thinking block
+   *  rather than as text (`classify.ts::narrationOf`). It is the agent's
+   *  speech, so it is a `text` line — drawn in order, read by the rails,
+   *  copied as markdown — and it is marked, because it is a summary of the
+   *  words rather than the words. */
+  narration?: true;
   /** On a `tool` line, the call itself: its name, the arguments the model
    *  wrote, and — once it lands — what came back.
    *
@@ -2356,8 +2364,18 @@ export class Conversation {
            `producedModelOutput`. */
         if (producedModelOutput(ev.message)) this.#producedOutput = true;
 
-        for (const block of ev.message?.content ?? []) {
-          if (block.type === "text" && block.text?.trim()) {
+        /* The prose between tool calls arrives as thinking blocks the server
+           tagged narration, and the CLI names which ones beside the message.
+           Dropping them with the rest of the thinking was the whole of why an
+           agent's mid-turn account of what it had found never reached the
+           panel. Kept out of `#turnText`, which is what `endingFor` reads for
+           the turn's own last word, and a summary is not that. */
+        const narrated = narrationOf(ev.message?.content, ev.narration_block_indexes);
+        for (const [at, block] of (ev.message?.content ?? []).entries()) {
+          const said = narrated.get(at);
+          if (said) {
+            this.#push("text", said).narration = true;
+          } else if (block.type === "text" && block.text?.trim()) {
             this.#turnText.push(block.text);
             this.#push("text", block.text);
           } else if (block.type === "tool_use") {

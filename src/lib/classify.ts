@@ -2711,6 +2711,108 @@ export function producedModelOutput(message: any): boolean {
   );
 }
 
+/* ── narration: the prose between tool calls, delivered as thinking ─────────
+ *
+ * On Opus 5.5 and Sonnet 5.5 (claude 2.1.28x) what a model writes to the user
+ * *between* tool calls mostly does not arrive as a `text` block. The server
+ * summarises it and hands the summary back as a `thinking` block whose
+ * signature is tagged `block_kind: "narration"` — while real reasoning arrives
+ * as a thinking block with empty text. Measured 2026-10-07 over every
+ * transcript on this machine: 315 non-empty thinking blocks, **every one of
+ * them narration**, against ~7,800 empty ones.
+ *
+ * Both folds dropped every thinking block, so all of that was invisible. Card
+ * bd31764c in nova wrote its whole opinion of a design and a performance
+ * estimate that way, then asked a question about it, and the user — twice —
+ * could see the question and none of what it was about.
+ *
+ * The CLI knows. Every `assistant` event on the wire carries
+ * `narration_block_indexes`, which its own schema describes as "the thinking
+ * blocks whose signature the server tagged block_kind 'narration' (server
+ * summaries of the prose between tool calls, not the model's own reasoning)".
+ * That field is wrapper-level and **not written to the session file**, so
+ * `history.ts` has to read the signature itself, exactly as the CLI does to
+ * compute the field (`a1t`/`Dle` in 2.1.288's bundle): base64, protobuf field
+ * 2, then field 1, then field 8 as a string, equal to `narration`. Fail-closed
+ * the same way — anything that does not parse is ordinary thinking. */
+
+/** Field `field`'s last length-delimited value in a protobuf message, or
+ *  `undefined` if there is none or the message does not parse as one. The
+ *  CLI's `n8n` takes the last occurrence too, and refuses a malformed buffer
+ *  outright rather than returning what it found before the fault. */
+function protoBytes(buf: Uint8Array, field: number): Uint8Array | undefined {
+  const varint = (at: number): [number, number] | null => {
+    let v = 0;
+    for (let shift = 0, i = at; i < buf.length && shift < 50; shift += 7, i++) {
+      v += (buf[i] & 0x7f) * 2 ** shift;
+      if (!(buf[i] & 0x80)) return [v, i + 1];
+    }
+    return null;
+  };
+  let found: Uint8Array | undefined;
+  let i = 0;
+  while (i < buf.length) {
+    const key = varint(i);
+    if (!key) return undefined;
+    i = key[1];
+    const tag = Math.floor(key[0] / 8);
+    const wire = key[0] % 8;
+    if (wire === 0) {
+      const v = varint(i);
+      if (!v) return undefined;
+      i = v[1];
+    } else if (wire === 1) i += 8;
+    else if (wire === 5) i += 4;
+    else if (wire === 2) {
+      const len = varint(i);
+      if (!len || len[1] + len[0] > buf.length) return undefined;
+      if (tag === field) found = buf.subarray(len[1], len[1] + len[0]);
+      i = len[1] + len[0];
+    } else return undefined;
+  }
+  return i === buf.length ? found : undefined;
+}
+
+/** Whether a thinking block's signature says the server tagged it narration.
+ *  Opaque by design, so every failure answers `false` — a legacy or unreadable
+ *  signature is ordinary thinking, which is what the CLI's own reader says. */
+export function isNarrationSignature(signature: unknown): boolean {
+  if (typeof signature !== "string" || !signature) return false;
+  try {
+    const raw = atob(signature);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const outer = protoBytes(bytes, 2);
+    const inner = outer && protoBytes(outer, 1);
+    const kind = inner && protoBytes(inner, 8);
+    return !!kind && new TextDecoder().decode(kind) === "narration";
+  } catch {
+    return false;
+  }
+}
+
+/** The narration in a message's content, as `index → text`, in block order.
+ *
+ *  `wire` is the event's `narration_block_indexes` when the stream carried
+ *  one, and it wins: it is the CLI's own reading and costs no decode. Absent —
+ *  an older CLI, or a record read off disk — the signature is read instead.
+ *  Either way a block with no text is left out, which is the CLI's rule too
+ *  ("a listed block can have empty thinking text … give those ordinary
+ *  thinking treatment"): there is nothing to draw. */
+export function narrationOf(content: unknown, wire?: unknown): Map<number, string> {
+  const out = new Map<number, string>();
+  if (!Array.isArray(content)) return out;
+  const listed = Array.isArray(wire) ? new Set(wire) : null;
+  content.forEach((b: any, i) => {
+    if (b?.type !== "thinking" || typeof b.thinking !== "string") return;
+    if (!b.thinking.trim()) return;
+    if (listed ? listed.has(i) : isNarrationSignature(b.signature)) {
+      out.set(i, b.thinking.trim());
+    }
+  });
+  return out;
+}
+
 /** Whether a failed turn may be tried again, given whether it had already got
  *  anything out of a model.
  *

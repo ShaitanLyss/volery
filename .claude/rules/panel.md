@@ -60,6 +60,31 @@ Five things it is worth knowing:
 No syntax highlighting, deliberately: colour on this wall is status, and a keyword is not a
 status.
 
+### Narration, which is speech that arrives as thinking
+
+On Opus 5.5 and Sonnet 5.5 (claude 2.1.28x) the prose a model writes *between* tool calls
+mostly does not arrive as `text`. The server summarises it and returns a `thinking` block whose
+signature is tagged `block_kind: "narration"`; real reasoning arrives as a thinking block with
+empty text. Both folds dropped all thinking, so every mid-turn account an agent gave was
+invisible — reported from nova `bd31764c` on 2026-10-07, where the user saw an `ask_user`
+question and none of the opinion it was asking about. Measured that day over every transcript
+here: 315 non-empty thinking blocks, **all** narration.
+
+- **Live, the CLI says which blocks they are** — `narration_block_indexes` on the `assistant`
+  event, indexes into that frame's `content`. **Off disk it does not**: the field is
+  wrapper-level and never written to the session file, so `classify.ts::narrationOf` reads the
+  signature the way the CLI does to compute it (base64 → protobuf field 2 → 1 → string field 8
+  `== "narration"`), fail-closed. `test/fixtures/signatures.json` holds one real signature of
+  each kind so the reading is pinned to what the server sends.
+- **It is a `text` line with `narration: true`**: drawn in order, on the rails, copied as
+  markdown — and marked with a faint `summary` beneath it (a `::after`, so copy and
+  `.md > :last-child` never see it), because it is the gist rather than the words. The words
+  themselves never reach the client; there is nothing better to draw.
+- **It stays out of `#turnText`**, which is what `endingFor` reads as the turn's last word.
+- **Reproduce** with `claude -p … --output-format stream-json --verbose --effort high` and a
+  prompt asking for prose between two shell calls. Without thinking (no effort flag) the same
+  prose arrives as plain `text`, which is why a cheap probe shows nothing wrong.
+
 ### An answer is parsed once, not once per token
 
 `lines` only ever grows, so a settled line is folded the once — that argument is at the top

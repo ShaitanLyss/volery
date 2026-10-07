@@ -1,4 +1,6 @@
 import { expect, test, describe } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { HISTORY_MAX_LINES, foldTranscript, trimOverlap } from "../src/lib/history";
 import { VALUE_CAP } from "../src/lib/toolcall";
 
@@ -773,5 +775,53 @@ describe("the call, and what came back", () => {
       ),
     );
     expect(h.lines.map((l) => l.call?.name)).toEqual(["Glob"]);
+  });
+});
+
+describe("narration: what the agent said between tool calls", () => {
+  /* The shape bd31764c's turn had in nova on 2026-10-07: text, a tool, more
+     text, another tool, a closing word — with the middle prose arriving as a
+     thinking block the server tagged narration, which is how opus/sonnet 5.5
+     deliver it. Every block of speech has to come back, in order, interleaved
+     with the calls; the real thinking beside them must not. */
+  const sig = JSON.parse(
+    readFileSync(join(import.meta.dir, "fixtures", "signatures.json"), "utf8"),
+  ) as { narration: string; thinking: string };
+  const bash = (id: string) => ({ type: "tool_use", id, name: "Bash", input: { command: "ls" } });
+  const result = (id: string) =>
+    user([{ type: "tool_result", tool_use_id: id, content: "ok" }]);
+
+  test("A, a call, B, a call, C reads A, B and C in order", () => {
+    const h = foldTranscript(
+      jsonl(
+        user("go"),
+        assistant([
+          { type: "thinking", thinking: "", signature: sig.thinking },
+          { type: "text", text: "A" },
+          bash("t1"),
+        ]),
+        result("t1"),
+        assistant([{ type: "thinking", thinking: "", signature: sig.thinking }]),
+        assistant([{ type: "thinking", thinking: "B, in the server's words", signature: sig.narration }]),
+        assistant([bash("t2")]),
+        result("t2"),
+        assistant([{ type: "text", text: "C" }]),
+      ),
+    );
+    expect(h.lines.map((l) => [l.kind, l.text, l.narration ?? false])).toEqual([
+      ["you", "go", false],
+      ["text", "A", false],
+      ["tool", "ls", false],
+      ["text", "B, in the server's words", true],
+      ["tool", "ls", false],
+      ["text", "C", false],
+    ]);
+  });
+
+  test("reasoning that is not narration stays out", () => {
+    const h = foldTranscript(
+      jsonl(assistant([{ type: "thinking", thinking: "private reasoning", signature: sig.thinking }])),
+    );
+    expect(h.lines).toEqual([]);
   });
 });

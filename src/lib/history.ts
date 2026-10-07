@@ -61,6 +61,7 @@ import {
   describeTool,
   RETRY_NOTE,
   isApiErrorMessage,
+  narrationOf,
   isImageNote,
   isRetryNudge,
   isStopNote,
@@ -352,8 +353,17 @@ export function foldTranscript(
           push("error", textOf(rec.message?.content));
           break;
         }
-        for (const block of rec.message?.content ?? []) {
-          if (block?.type === "text") push("text", block.text ?? "");
+        /* Narration — the prose between tool calls, which arrives as a thinking
+           block — is drawn as speech, as it is live. The file carries no
+           `narration_block_indexes`, so the signature is read instead; see
+           `narrationOf`. */
+        const narrated = narrationOf(rec.message?.content);
+        for (const [at, block] of (rec.message?.content ?? []).entries()) {
+          const said = narrated.get(at);
+          if (said) {
+            push("text", said);
+            lines[lines.length - 1].narration = true;
+          } else if (block?.type === "text") push("text", block.text ?? "");
           else if (block?.type === "tool_use") {
             if (block.name === SKEIN_ASK_TOOL && block.id) asked.add(block.id);
             const call: ToolCall = {
@@ -370,7 +380,7 @@ export function foldTranscript(
               calls.set(block.id, call);
             }
           }
-          /* thinking blocks are dropped, as they are live */
+          /* the rest of the thinking is dropped, as it is live */
         }
         break;
       }
