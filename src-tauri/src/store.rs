@@ -2876,15 +2876,46 @@ pub(crate) fn canonical_root(raw: &str) -> String {
 /// Off the main thread, because resolving a path is a filesystem call and a
 /// root on an unreachable share parks it for the length of an SMB timeout —
 /// the freeze `crate::off_main` exists for.
+///
+/// **Answers the territories too, and that is not a convenience.** This call is
+/// what *mints* a project's first grouping, so a front end handed only the
+/// project has a territory it does not know about — which is not a cosmetic
+/// gap. `layout` then draws the region from the project row as a fallback, and
+/// every write about that region goes to `place_territory` with a *project* id,
+/// which matches no row: a territory you drag somewhere silently does not stay
+/// there. Caught by `every territory has a place of its own` in
+/// `test/wall.test.ts`, which is the test that exists for exactly this.
+///
+/// So the thing that creates it is the thing that hands it back — the same
+/// bargain `pin.rs` strikes by minting an image's id in Rust so the tool can
+/// say it.
 #[tauri::command]
-pub async fn ensure_project(app: tauri::AppHandle, root_path: String) -> Result<Project, String> {
+pub async fn ensure_project(app: tauri::AppHandle, root_path: String) -> Result<Ensured, String> {
     crate::off_main(move || {
         let root_path = canonical_root(&root_path);
         let store = tauri::Manager::state::<Store>(&app);
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
-        ensure_project_row(&conn, root_path)
+        let project = ensure_project_row(&conn, root_path)?;
+        let territories = territories_of(&conn, &project.id)?;
+        Ok(Ensured { project, territories })
     })
     .await?
+}
+
+/// A project and the groupings it has. See `ensure_project` for why these
+/// travel together rather than the caller asking twice.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Ensured {
+    pub project: Project,
+    pub territories: Vec<Territory>,
+}
+
+/// One project's groupings, in creation order.
+fn territories_of(conn: &Connection, project_id: &str) -> Result<Vec<Territory>, String> {
+    Ok(territory_rows(conn)?
+        .into_iter()
+        .filter(|t| t.project_id == project_id)
+        .collect())
 }
 
 /// `ensure_project` against a root already resolved. Split out so the lookup

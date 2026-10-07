@@ -121,6 +121,15 @@ export type Grouping = {
   cols: number | null;
 };
 
+/** What `ensure_project` answers: the project, and the groupings it has.
+ *
+ *  Together rather than in two calls, because that command is what *mints* a
+ *  project's first grouping — see its own note in `store.rs`. A front end
+ *  holding the project and not the territory draws the region off the project
+ *  row and then writes every drag to a territory id that is really a project
+ *  id, which matches no row. */
+export type Ensured = { project: Project; territories: Grouping[] };
+
 export type Project = {
   id: string;
   name: string;
@@ -1420,7 +1429,8 @@ export class Skein {
     prefer: string | null = null,
   ): Promise<Conversation | null> {
     try {
-      const project = await invoke<Project>("ensure_project", { rootPath: cwd });
+      const { project, territories } = await invoke<Ensured>("ensure_project", { rootPath: cwd });
+      this.learnTerritories(territories);
       /* The card lives at the root as the store resolved it, not as it was
          asked for. `ensure_project` follows junctions (`store::canonical_root`),
          so a folder opened through `C:\Users\lyss` is a territory stored under
@@ -1572,7 +1582,7 @@ export class Skein {
       return `a card on this wall${name} is already that conversation`;
     }
     try {
-      const project = await invoke<Project>("ensure_project", {
+      const { project, territories } = await invoke<Ensured>("ensure_project", {
         rootPath: s.cwd,
       });
       /* Where the card lives is the root as stored, for the reason `#openIn`
@@ -1580,6 +1590,10 @@ export class Skein {
          which is usually this already; what makes it so either way is
          `ensure_project` resolving it. */
       const cwd = project.root_path;
+      /* Before the settle, not after: `#settlePlaces` writes a position for
+         every grouping it can see, so a territory learned afterwards is one
+         that never gets settled and stands at the origin. */
+      this.learnTerritories(territories);
       if (!this.projects.some((p) => p.id === project.id)) {
         this.projects = [...this.projects, project];
         this.#settlePlaces();
@@ -3972,6 +3986,18 @@ export class Skein {
    *  `#settlePlaces` for the same reason it is called there: a new territory
    *  flows into the first free cell once, rather than sitting wherever the order
    *  of the list implies. */
+  /** Take groupings into hand that the store has just made or confirmed.
+   *
+   *  Idempotent and additive, the shape `learnProject` has: a grouping already
+   *  held is left exactly as it is, because the copy in hand may carry a
+   *  position a drag wrote a frame ago that the store has not been told about
+   *  yet. */
+  learnTerritories(territories: Grouping[]) {
+    const have = new Set(this.groupings.map((g) => g.id));
+    const fresh = territories.filter((t) => !have.has(t.id));
+    if (fresh.length) this.groupings = [...this.groupings, ...fresh];
+  }
+
   learnProject(project: Project) {
     if (this.projects.some((p) => p.id === project.id)) return;
     this.projects = [...this.projects, project];

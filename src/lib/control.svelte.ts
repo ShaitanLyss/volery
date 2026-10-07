@@ -728,23 +728,40 @@ export class Control {
           items: el.childElementCount,
         };
       })(),
-      projects: h.skein.projects.map((p) => ({
-        id: p.id,
-        name: p.name,
-        root: p.root_path,
-        /* Where the territory sits. Null means the grid is still deciding, which
-           after a load should be true of nothing — see `#settlePlaces`. */
-        x: p.x,
-        y: p.y,
-        /* And where it is *drawn*, if it has been stuck to the glass. Reported
-           beside `x`/`y` rather than instead of them, because the claim worth
-           seeing from outside is that sticking a territory changed neither. */
-        glass: spotOf(p),
-        /* How wide it is. The stored count, null and all, rather than what
-           `colsOf` would draw — the whole thing worth asserting from outside is
-           that "never sized" and "sized to the default" stay different facts. */
-        cols: p.cols,
-      })),
+      projects: h.skein.projects.map((p) => {
+        /* **The geometry is the territory's, not the project's.** Since v42 a
+           region is a grouping inside a project and `#settlePlaces` writes
+           `territory.x/y`; `project.x` is a dead column nothing updates. Read
+           off the project row this reported null for every territory on every
+           wall — which is exactly what `every territory has a place of its own`
+           caught, and the reason that test exists.
+
+           The op vocabulary stays keyed on the folder, because a test should
+           not have to know a uuid — the same bargain `firstTerritoryAt` makes
+           for an imported layout. A folder carrying several groupings reports
+           the oldest, which is the one that was there before it had siblings. */
+        const t = h.skein.territories.find((q) => q.projectId === p.id);
+        return {
+          id: p.id,
+          name: p.name,
+          root: p.root_path,
+          /* Where the territory sits. Null means the grid is still deciding,
+             which after a load should be true of nothing — see
+             `#settlePlaces`. */
+          x: t?.x ?? null,
+          y: t?.y ?? null,
+          /* And where it is *drawn*, if it has been stuck to the glass.
+             Reported beside `x`/`y` rather than instead of them, because the
+             claim worth seeing from outside is that sticking a territory
+             changed neither. */
+          glass: t ? spotOf(t) : null,
+          /* How wide it is. The stored count, null and all, rather than what
+             `colsOf` would draw — the whole thing worth asserting from outside
+             is that "never sized" and "sized to the default" stay different
+             facts. */
+          cols: t?.cols ?? null,
+        };
+      }),
       /* What is crossing the wall right now, and what a cap has cut short.
          `cut` is reported because `MAX_STRANDS` silently dropping strands
          during a big broadcast is exactly the kind of bound that reads from

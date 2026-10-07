@@ -23,7 +23,7 @@
  */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Skein, Project } from "./skein.svelte";
+import type { Skein, Project, Ensured } from "./skein.svelte";
 import type { Board } from "./images.svelte";
 import type { Widgets } from "./widgets.svelte";
 import type { Ambience } from "./ambience.svelte";
@@ -125,7 +125,21 @@ export class Portage {
   async gather(): Promise<Carried> {
     const { skein, board, widgets, ambience, ink } = this.#hands;
 
-    const projects: CarriedProject[] = skein.projects.map((p) => ({
+    const projects: CarriedProject[] = skein.projects.map((p) => {
+      /* **The geometry is the territory's.** Read off the project row this
+         carried nulls — `project.x/y/cols` stopped being written at v42 — so a
+         layout exported after that came back with every territory handed to the
+         grid and every width reset. Silent, and only visible on the machine you
+         carried it *to*.
+
+         The first grouping, symmetric with the import: `wasRoot` is a folder,
+         and `firstTerritoryAt` is what the import resolves it against. A folder
+         carrying several groupings therefore travels as one region — the
+         document format has no id to hang the others on, and inventing one
+         would break `portage.md`'s rule that no id travels. Worth knowing
+         before relying on a carried layout to reproduce a split wall. */
+      const t = skein.territories.find((q) => q.projectId === p.id);
+      return {
       name: p.name,
       wasRoot: p.root_path,
       /* The wall position travels; the *glass* position does not. Sticking a
@@ -133,12 +147,12 @@ export class Portage {
          size (see the note at the top of `glass.ts`), and a window somewhere
          else is a different window. A carried thing comes back on the wall,
          where it also is. */
-      x: p.x,
-      y: p.y,
+      x: t?.x ?? null,
+      y: t?.y ?? null,
       /* The width travels where the glass position does not, because it is a
          count of cards rather than a place on this window: a territory three
          cards across is three cards across anywhere. */
-      cols: p.cols,
+      cols: t?.cols ?? null,
       /* Furniture by this file's own test — how the room is arranged, not what
          has been said in it. See `.claude/rules/guidance.md`. */
       instructions: p.instructions,
@@ -155,7 +169,8 @@ export class Portage {
             port: s.port,
           })),
         })),
-    }));
+      };
+    });
 
     return {
       projects,
@@ -383,7 +398,10 @@ export class Portage {
          What is topped up is its server groups, by label. */
       for (const p of carried.projects) {
         try {
-          const project = await invoke<Project>("ensure_project", { rootPath: p.wasRoot });
+          const { project, territories } = await invoke<Ensured>("ensure_project", {
+            rootPath: p.wasRoot,
+          });
+          skein.learnTerritories(territories);
           /* Whether it was already here is `ensure_project`'s answer rather than
              a comparison of spellings: it resolves the root, so a carried
              `C:\Users\lyss\…` finds the territory stored as the directory that

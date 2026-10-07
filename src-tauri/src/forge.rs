@@ -372,7 +372,7 @@ pub(crate) fn agent() -> ureq::Agent {
 
 /// The same roots, for a caller that wants its own timeouts. `update.rs` is the
 /// one — it talks to GitHub on a different clock and must not inherit a forge's.
-pub(crate) fn tls_config() -> std::sync::Arc<ureq::rustls::ClientConfig> {
+pub fn tls_config() -> std::sync::Arc<ureq::rustls::ClientConfig> {
     tls()
 }
 

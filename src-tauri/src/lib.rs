@@ -28,7 +28,7 @@ mod docket;
 /// is vocabulary-neutral on purpose — see its header for the line between a
 /// projection that is honest and one that is a lie.
 mod flyway;
-mod forge;
+pub mod forge;
 mod github;
 /// Public so `examples/find-probe.rs` can drive the real search rather than a
 /// copy of it — the same arrangement `azdo` has, and the convention
@@ -79,7 +79,7 @@ mod status;
    and deliberately not inside `voice`, which is the recogniser and nothing
    else. */
 mod steward;
-mod store;
+pub mod store;
 mod supervisor;
 mod timeline;
 /* The IPv4-first loopback CONNECT tunnel librespot dials through. Beside
