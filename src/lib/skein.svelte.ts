@@ -59,7 +59,7 @@ import {
 import type { Block, Turn } from "./attach";
 import { Conversation, type ConvKind } from "./conversation.svelte";
 import { foldTranscript, trimOverlap } from "./history";
-import { LEAVE_MS, layout, type Placement } from "./layout";
+import { LEAVE_MS, layout, type Placement, type Territory } from "./layout";
 import type { Kin } from "./lineage";
 import { Listeners } from "./listeners";
 import { Flights, type SentEvent } from "./relay.svelte";
@@ -104,6 +104,22 @@ import {
 } from "./reaping";
 import { dayStart, turnRowKind } from "./usage";
 import type { Studio } from "./studio.svelte";
+
+/** A grouping of cards inside a project, as the store holds one.
+ *
+ *  The folder and the project's name are *not* here, because they are the
+ *  project's and a grouping does not own them — `Skein.territories` joins them
+ *  on for the wall to draw. Schema v42. */
+export type Grouping = {
+  id: string;
+  projectId: string;
+  name: string;
+  x: number | null;
+  y: number | null;
+  glassX: number | null;
+  glassY: number | null;
+  cols: number | null;
+};
 
 export type Project = {
   id: string;
@@ -217,6 +233,81 @@ const HOLD_SWEEP_MS = 60_000;
 
 export class Skein {
   projects = $state<Project[]>([]);
+
+  /** The first grouping of the project rooted at a folder, or `null`.
+   *
+   *  The bridge for the two callers that still speak in paths and should: an
+   *  imported layout carries a root rather than an id (`portage.ts` — no id
+   *  travels, on purpose), and the control surface's territory ops name a
+   *  folder because a test should not have to know a uuid. Both mean "the
+   *  region this folder had", which before v42 was the only one it could have.
+   *
+   *  A folder carrying several groupings answers with the oldest, which is the
+   *  one the backfill made. That is a real narrowing and it is the honest one:
+   *  neither caller has any way to say which of three it meant. */
+  firstTerritoryAt(cwd: string): string | null {
+    const p = this.projects.find((q) => q.root_path === cwd);
+    if (!p) return null;
+    return this.territories.find((t) => t.projectId === p.id)?.id ?? null;
+  }
+
+  /** The groupings as the store holds them — ids, names and geometry, with no
+   *  folder on them. `territories` is what the wall reads. */
+  groupings = $state<Grouping[]>([]);
+
+  /** Every region on the wall: a grouping with its project's name and folder
+   *  joined on.
+   *
+   *  The join is here rather than in `layout.ts` so that file stays pure and
+   *  knows nothing about where a project lives — it is handed regions and packs
+   *  them.
+   *
+   *  **A project with no grouping still gets a region**, synthesised off the
+   *  project row. Every project is guaranteed one by `migrate_v42` and by
+   *  `ensure_project_row`, so this should be unreachable; it is here because the
+   *  alternative when it is reached is a territory that silently vanishes off
+   *  the wall — taking the `+` that starts the next conversation in it with it,
+   *  which `layout.md` is explicit a territory must outlive its last card to
+   *  keep. A region drawn from a project is a region whose drags do not persist;
+   *  a region that is not drawn is work you cannot get back to. */
+  territories = $derived.by<Territory[]>(() => {
+    const byProject = new Map(this.projects.map((p) => [p.id, p]));
+    const out: Territory[] = [];
+    const covered = new Set<string>();
+    for (const g of this.groupings) {
+      const p = byProject.get(g.projectId);
+      if (!p) continue;
+      covered.add(p.id);
+      out.push({
+        id: g.id,
+        projectId: g.projectId,
+        name: g.name,
+        project: p.name,
+        cwd: p.root_path,
+        x: g.x,
+        y: g.y,
+        glassX: g.glassX,
+        glassY: g.glassY,
+        cols: g.cols,
+      });
+    }
+    for (const p of this.projects) {
+      if (covered.has(p.id)) continue;
+      out.push({
+        id: p.id,
+        projectId: p.id,
+        name: p.name,
+        project: p.name,
+        cwd: p.root_path,
+        x: p.x,
+        y: p.y,
+        glassX: p.glassX,
+        glassY: p.glassY,
+        cols: p.cols,
+      });
+    }
+    return out;
+  });
   /** What the wall tells every card standing on it, project and chat alike.
    *  Its territories' own are on `Project.instructions`. See `guidance.ts`. */
   guidance = $state("");
@@ -797,6 +888,10 @@ export class Skein {
     try {
       const s = await invoke<{
         projects: Project[];
+        /* `?? []` where it is read: a snapshot from a build before v42 carries
+           no such key, and no groupings is exactly what that build meant — the
+           derived falls back to a region per project. */
+        territories?: Grouping[];
         conversations: any[];
         server_groups: ServerGroup[];
         stopped_groups: string[];
@@ -805,6 +900,7 @@ export class Skein {
       }>("load_studio");
 
       this.projects = s.projects;
+      this.groupings = s.territories ?? [];
       /* `?? ""` rather than trusting the field: this arrives in the snapshot,
          and a snapshot from a build before v23 has no such key. Nothing set is
          what that build meant. */
@@ -3589,14 +3685,12 @@ export class Skein {
    *  was and nothing else on the wall moves. Same write-through as
    *  `placeProject` — a drag asks for the new position on the next frame, and
    *  waiting for SQLite would drop the territory back for one of them. */
-  stickProject(cwd: string, at: { x: number; y: number } | null) {
-    this.projects = this.projects.map((p) =>
-      p.root_path === cwd
-        ? { ...p, glassX: at?.x ?? null, glassY: at?.y ?? null }
-        : p,
+  stickTerritory(id: string, at: { x: number; y: number } | null) {
+    this.groupings = this.groupings.map((g) =>
+      g.id === id ? { ...g, glassX: at?.x ?? null, glassY: at?.y ?? null } : g,
     );
-    void invoke("stick_project", {
-      rootPath: cwd,
+    void invoke("stick_territory", {
+      id,
       x: at?.x ?? null,
       y: at?.y ?? null,
     }).catch(() => {});
@@ -3607,15 +3701,15 @@ export class Skein {
    *  No write: Rust has already written `project.glass_x`, and the caller is
    *  the thing that asked it to. Answers the roots it moved, so the undo stack
    *  can forget what it knows about them — see `Studio.adoptGlass`. */
-  adoptProjectGlass(spots: Record<string, [number, number]>): string[] {
+  adoptTerritoryGlass(spots: Record<string, [number, number]>): string[] {
     const moved: string[] = [];
-    this.projects = this.projects.map((p) => {
-      const at = spots[p.root_path];
+    this.groupings = this.groupings.map((g) => {
+      const at = spots[g.id];
       const x = at ? at[0] : null;
       const y = at ? at[1] : null;
-      if (p.glassX === x && p.glassY === y) return p;
-      moved.push(p.root_path);
-      return { ...p, glassX: x, glassY: y };
+      if (g.glassX === x && g.glassY === y) return g;
+      moved.push(g.id);
+      return { ...g, glassX: x, glassY: y };
     });
     return moved;
   }
@@ -3634,19 +3728,15 @@ export class Skein {
    *  already mean "settle it back in" — see `size_project` in `store.rs`. Same
    *  write-through as the two beside it, and for the same reason: the sizing
    *  gesture asks for the new width on the very next frame. */
-  sizeProject(cwd: string, cols: number | null) {
-    this.projects = this.projects.map((p) =>
-      p.root_path === cwd ? { ...p, cols } : p,
-    );
-    void invoke("size_project", { rootPath: cwd, cols }).catch(() => {});
+  sizeTerritory(id: string, cols: number | null) {
+    this.groupings = this.groupings.map((g) => (g.id === id ? { ...g, cols } : g));
+    void invoke("size_territory", { id, cols }).catch(() => {});
   }
 
   /** Put a territory somewhere. Nulls settle it back in among the others. */
-  placeProject(cwd: string, x: number | null, y: number | null) {
-    this.projects = this.projects.map((p) =>
-      p.root_path === cwd ? { ...p, x, y } : p,
-    );
-    void invoke("place_project", { rootPath: cwd, x, y }).catch(() => {});
+  placeTerritory(id: string, x: number | null, y: number | null) {
+    this.groupings = this.groupings.map((g) => (g.id === id ? { ...g, x, y } : g));
+    void invoke("place_territory", { id, x, y }).catch(() => {});
     /* Settling it back still ends in a position of its own — see `#settlePlaces`
        for why nothing is left unsettled for long. */
     if (x === null || y === null) this.#settlePlaces();
@@ -3659,7 +3749,7 @@ export class Skein {
    *  reaching into its neighbour; this is how you ask for the whole wall to be
    *  laid out again around what is actually standing on it now. */
   tidyProjects() {
-    this.projects = this.projects.map((p) => ({ ...p, x: null, y: null }));
+    this.groupings = this.groupings.map((g) => ({ ...g, x: null, y: null }));
     this.#settlePlaces();
   }
 
@@ -3675,11 +3765,12 @@ export class Skein {
    *
    *  Idempotent, and cheap: a project that has a position is left alone. */
   #settlePlaces() {
-    const { regions } = layout(this.convs, this.#studio.placements, this.projects);
-    for (const p of this.projects) {
-      if (p.x !== null && p.y !== null) continue;
-      const r = regions.find((r) => r.cwd === p.root_path);
-      if (r) this.placeProject(p.root_path, r.x, r.y);
+    const terrs = this.territories;
+    const { regions } = layout(this.convs, this.#studio.placements, terrs);
+    for (const t of terrs) {
+      if (t.x != null && t.y != null) continue;
+      const r = regions.find((r) => r.id === t.id);
+      if (r) this.placeTerritory(t.id, r.x, r.y);
     }
   }
 
@@ -3698,7 +3789,7 @@ export class Skein {
    *  `Board.pinned` is where it is called from.
    */
   spotBeside(id: string): { x: number; y: number } {
-    const { laid } = layout(this.convs, this.#studio.placements, this.projects);
+    const { laid } = layout(this.convs, this.#studio.placements, this.territories);
     const mine = laid.find((l) => l.conv.id === id);
     if (!mine) return { x: 0, y: 0 };
     return { x: mine.x, y: mine.y };

@@ -44,6 +44,7 @@ import {
   colsOf,
   colsForWidth,
   regionWidth,
+  regionLabel,
   wallOrder,
   touches,
   contains,
@@ -52,20 +53,35 @@ import {
   type Placement,
 } from "../src/lib/layout";
 
+/* The fixtures give a territory the folder as its id, so these tests go on
+   saying what they always said — a region per folder, keyed by it. That one
+   checkout can now carry three regions is tested where it is new, below; here
+   it would only obscure what each case is about. */
 const conv = (id: string, cwd: string): Placeable => ({
   id,
   cwd,
   project: cwd.split(/[\\/]/).pop()!,
+  projectId: cwd,
+  territoryId: cwd,
 });
 
-/** A project row. `x`/`y` left off means the grid still places it. */
+/** A territory row. `x`/`y` left off means the grid still places it. */
 const proj = (
   name: string,
   root_path: string,
   x: number | null = null,
   y: number | null = null,
   cols: number | null = null,
-) => ({ name, root_path, x, y, cols });
+) => ({
+  id: root_path,
+  projectId: root_path,
+  name,
+  project: name,
+  cwd: root_path,
+  x,
+  y,
+  cols,
+});
 
 describe("how wide a territory is", () => {
   test("a width is a whole number of columns, both ways round", () => {
@@ -1073,5 +1089,85 @@ describe("where a pinned image goes", () => {
     const one = pinSpot(card, [], tall);
     const two = pinSpot(card, [box(one, tall)], tall);
     expect(two.x - one.x).toBe(tall.w + PIN_GAP);
+  });
+});
+
+describe("several regions over one checkout", () => {
+  const terr = (
+    id: string,
+    project: string,
+    name: string,
+    cwd: string,
+    x: number | null = null,
+    y: number | null = null,
+  ) => ({ id, projectId: cwd, name, project, cwd, x, y, cols: null });
+
+  const card = (id: string, cwd: string, territoryId: string | null) => ({
+    id,
+    cwd,
+    project: "nova",
+    projectId: cwd,
+    territoryId,
+  });
+
+  test("cards are grouped by their territory, not by their folder", () => {
+    const { regions, laid } = layout(
+      [
+        card("a", "C:/nova", "left"),
+        card("b", "C:/nova", "right"),
+        card("c", "C:/nova", "right"),
+      ],
+      {},
+      [
+        terr("left", "nova", "left", "C:/nova"),
+        terr("right", "nova", "right", "C:/nova"),
+      ],
+    );
+    expect(regions.map((r) => r.id)).toEqual(["left", "right"]);
+    /* Two regions over one folder, and the cards did not pool into both — the
+       bug the whole change exists to stop. */
+    expect(regions[0].cwd).toBe("C:/nova");
+    expect(regions[1].cwd).toBe("C:/nova");
+    const home = (id: string) =>
+      regions.find(
+        (r) =>
+          laid.find((l) => l.conv.id === id)!.x >= r.x &&
+          laid.find((l) => l.conv.id === id)!.x < r.x + r.w &&
+          laid.find((l) => l.conv.id === id)!.y >= r.y,
+      )!.id;
+    expect(home("a")).toBe("left");
+    expect(home("b")).toBe("right");
+    expect(home("c")).toBe("right");
+  });
+
+  test("a card with no territory falls to its project's first, never off the wall", () => {
+    const { laid } = layout(
+      [card("old", "C:/nova", null), card("gone", "C:/nova", "deleted")],
+      {},
+      [
+        terr("left", "nova", "left", "C:/nova"),
+        terr("right", "nova", "right", "C:/nova"),
+      ],
+    );
+    /* Both are drawn — that is the whole assertion. A card that is not on the
+       wall is a conversation nobody can get back to. */
+    expect(laid.map((l) => l.conv.id).sort()).toEqual(["gone", "old"]);
+  });
+
+  test("the handle says both names, and only one when they are the same word", () => {
+    expect(regionLabel("nova", "left")).toBe("nova · left");
+    /* Every backfilled territory is named after its project, which is every
+       region on every wall that existed before v42 — so this is the common
+       case, not the edge one. */
+    expect(regionLabel("nova", "nova")).toBe("nova");
+    expect(regionLabel("nova", "")).toBe("nova");
+  });
+
+  test("a region carries the label it will be drawn with", () => {
+    const { regions } = layout([], {}, [
+      terr("t1", "nova", "left", "C:/nova"),
+      terr("t2", "rise", "rise", "C:/rise"),
+    ]);
+    expect(regions.map((r) => r.label)).toEqual(["nova · left", "rise"]);
   });
 });

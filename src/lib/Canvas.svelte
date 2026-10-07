@@ -466,7 +466,7 @@
    * `WidgetNode`'s resize is: it is a `data-grip`, so `handleOf` hands the
    * press straight back and the wall's drag never sees it. */
   let sizing = $state<{
-    cwd: string;
+    id: string;
     edge: "left" | "right";
     /** Where the press landed, in canvas units, and the box it landed on. */
     px: number;
@@ -500,7 +500,7 @@
     if (!z) return null;
     const w = regionWidth(z.cols);
     const x = z.edge === "left" ? z.x0 + z.w0 - w : z.x0;
-    return { cwd: z.cwd, x, y: z.y0, w };
+    return { id: z.id, x, y: z.y0, w };
   });
 
   const territories = $derived.by(() => {
@@ -508,8 +508,8 @@
     const z = sizingAt;
     if (!c && !z) return projects;
     return projects.map((p) => {
-      const at = c?.at[p.root_path];
-      const grown = z && z.cwd === p.root_path && sizing ? sizing.cols : null;
+      const at = c?.at[p.id];
+      const grown = z && z.id === p.id && sizing ? sizing.cols : null;
       let out = p;
       if (at) {
         out = c!.glass
@@ -543,10 +543,14 @@
    * new all move it, and nothing else does. Not a clock, for the reason stated
    * over the class.
    *
-   * `projects` rather than `territories`, so a drag — which rewrites every
-   * territory's position each frame — cannot ask the disk sixty times a
-   * second. */
-  const rootSig = $derived(projects.map((p) => p.root_path).join("|"));
+   * The prop rather than the shaped `territories` below, so a drag — which
+   * rewrites every territory's position each frame — cannot ask the disk sixty
+   * times a second.
+   *
+   * De-duplicated, because this asks about *folders* and several territories
+   * can share one: without it a repo carrying three regions would be asked
+   * about three times, and a missing root would be reported three times over. */
+  const rootSig = $derived([...new Set(projects.map((p) => p.cwd))].join("|"));
   $effect(() => {
     void adrift.ask(rootSig.length ? rootSig.split("|") : []);
   });
@@ -680,9 +684,9 @@
     return p ? { ...p } : null;
   }
 
-  /** Where a territory stands, off the project row. */
-  function standOf(cwd: string): Stand | null {
-    const p = projects.find((q) => q.root_path === cwd);
+  /** Where a territory stands, off its own row. */
+  function standOf(id: string): Stand | null {
+    const p = projects.find((q) => q.id === id);
     if (!p) return null;
     return {
       x: p.x ?? null,
@@ -1484,7 +1488,7 @@
     if (ground) return;
     const p = toCanvas(e.clientX, e.clientY);
     sizing = {
-      cwd: r.cwd,
+      id: r.id,
       edge,
       px: p.x,
       x0: r.x,
@@ -1538,16 +1542,16 @@
     if (!z) return;
     e.stopPropagation();
     if (!z.moved) return;
-    const p = projects.find((q) => q.root_path === z.cwd);
+    const p = projects.find((q) => q.id === z.id);
     if (!p) return;
-    const was = standOf(z.cwd);
+    const was = standOf(z.id);
     if (!was) return;
     /* Null rather than the number when it lands back on the default, so a
        territory nobody has deliberately sized goes on following the wall's own
        width — see `migrate_v35` for why the two are different facts. */
     const cols = z.cols === colsOf(null) ? null : z.cols;
     const now: Stand = { ...was, cols };
-    if ((was.cols ?? null) !== cols) onsize?.(z.cwd, cols);
+    if ((was.cols ?? null) !== cols) onsize?.(z.id, cols);
     if (z.edge === "left") {
       /* The right edge was the anchor, so the origin moved — and a territory
          that was still flowing is placed by that, which is the honest record
@@ -1556,12 +1560,12 @@
       if (x !== was.x || was.y === null) {
         now.x = x;
         now.y = z.y0;
-        onplace?.(z.cwd, x, z.y0);
+        onplace?.(z.id, x, z.y0);
       }
     }
     if (was.cols === now.cols && was.x === now.x && was.y === now.y) return;
     undo.did(nameEdit("territory", ["cols"]), [
-      { at: "territory", id: z.cwd, was, now },
+      { at: "territory", id: z.id, was, now },
     ]);
   }
 
@@ -1999,8 +2003,9 @@
       class:torn={!!torn}
       class:nowhere
       class:picked={studio.isPicked("region", r.cwd)}
-      data-name={r.project}
+      data-name={r.label}
       data-cwd={r.cwd}
+      data-territory={r.id}
       style:left="{r.x}px"
       style:top="{r.y}px"
       style:width="{r.w}px"
@@ -2043,15 +2048,16 @@
       {#each ["left", "right"] as const as edge (edge)}
         <div
           class="ledge"
-          class:sizing={sizing?.cwd === r.cwd && sizing.edge === edge}
+          class:sizing={sizing?.id === r.id && sizing.edge === edge}
           data-grip
           data-cwd={r.cwd}
+          data-territory={r.id}
           style:left="{(edge === 'left' ? r.x : r.x + r.w) - GRIP_W / 2}px"
           style:top="{r.y}px"
           style:width="{GRIP_W}px"
           style:height="{r.h}px"
           style:z-index={Z_CARD - 1}
-          title="drag to change how many cards stand across {r.project}"
+          title="drag to change how many cards stand across {r.label}"
           role="presentation"
           onpointerdown={(e) => sizeDown(e, r, edge)}
           onpointermove={sizeMove}
@@ -2065,7 +2071,7 @@
            keeps up with the cursor while the rectangle waits for the next
            level: two lines a slot apart is the wall saying what it is about to
            do, and one line would be the wall either lying or stuttering. -->
-      {#if sizingAt?.cwd === r.cwd}
+      {#if sizingAt?.id === r.id}
         <div
           class="edging"
           style:left="{sizeRaw - 1}px"
@@ -2081,15 +2087,16 @@
          the one part of a territory that is a thing rather than an area. -->
     <div
       class="name"
-      data-region={r.cwd}
+      data-region={r.id}
+      data-territory={r.id}
       data-cwd={r.cwd}
       style:left="{r.x + 11}px"
       style:top="{r.y + 8}px"
       style:z-index={Z_CHIP}
-      title="{r.project} — drag to move it, and everything in it"
+      title="{r.label} — drag to move it, and everything in it"
       role="presentation"
     >
-      {r.project}
+      {r.label}
     </div>
 
     <!-- Dev servers belong to the territory, not to a panel somewhere else:
@@ -2148,7 +2155,7 @@
           <button
             class="chip add"
             data-add={r.cwd}
-            title="New conversation in {r.project} — right-click to choose a model"
+            title="New conversation in {r.label} — right-click to choose a model"
             onclick={() => onadd?.(r.cwd)}>+</button
           >
           <button

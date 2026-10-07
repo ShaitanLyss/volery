@@ -62,13 +62,18 @@ pub(crate) const TERRITORY: &str = "territory";
 /// seed and the read all walk this.
 const KINDS: &[(&str, &str, &str)] = &[
     (CARD, "placement", "conversation_id"),
-    (PROJECT, "project", "root_path"),
-    /* `TERRITORY` is deliberately NOT here yet. The reconcile below clears as
-       well as sets, so a kind listed with no rows written for it would empty
-       `territory.glass_x` on the first arrangement change — throwing away the
-       values `migrate_v42` seeded from the projects, before anything has had a
-       chance to read them. It joins this list in the same change that makes
-       `stick_territory` the caller and re-keys the existing rows. */
+    /* A region's spot is the *territory's*, not the project's — `PROJECT` was
+       here until v43, keyed on a `root_path`, which stopped being an identity
+       the moment one checkout could carry three regions. `migrate_v43` re-keys
+       the rows, and it has to land in the same change as this line: the
+       reconcile below clears as well as sets, so a kind in this list with no
+       rows written for it empties that table's `glass_x` on the first
+       arrangement change. The `PROJECT` constant stays because `v41`'s merge
+       still rewrites rows under the old kind, which is correct — that rung runs
+       before this one.
+
+       See `.claude/rules/arrange.md`. */
+    (TERRITORY, "territory", "id"),
     (IMAGE, "reference_image", "id"),
     (WIDGET, "widget", "id"),
     (TIMELINE, "timeline", "id"),
@@ -81,7 +86,7 @@ const KINDS: &[(&str, &str, &str)] = &[
 #[derive(Debug, Default, Serialize)]
 pub struct GlassSpots {
     pub cards: HashMap<String, [f64; 2]>,
-    pub projects: HashMap<String, [f64; 2]>,
+    pub territories: HashMap<String, [f64; 2]>,
     pub images: HashMap<String, [f64; 2]>,
     pub widgets: HashMap<String, [f64; 2]>,
     pub timelines: HashMap<String, [f64; 2]>,
@@ -91,7 +96,7 @@ impl GlassSpots {
     fn slot(&mut self, kind: &str) -> &mut HashMap<String, [f64; 2]> {
         match kind {
             CARD => &mut self.cards,
-            PROJECT => &mut self.projects,
+            TERRITORY => &mut self.territories,
             IMAGE => &mut self.images,
             WIDGET => &mut self.widgets,
             _ => &mut self.timelines,
@@ -445,7 +450,7 @@ mod tests {
         conn.execute_batch(
             r#"
             CREATE TABLE placement (conversation_id TEXT PRIMARY KEY, glass_x REAL, glass_y REAL);
-            CREATE TABLE project (root_path TEXT PRIMARY KEY, glass_x REAL, glass_y REAL);
+            CREATE TABLE territory (id TEXT PRIMARY KEY, glass_x REAL, glass_y REAL);
             CREATE TABLE reference_image (id TEXT PRIMARY KEY, glass_x REAL, glass_y REAL);
             CREATE TABLE widget (id TEXT PRIMARY KEY, glass_x REAL, glass_y REAL);
             CREATE TABLE timeline (id TEXT PRIMARY KEY, glass_x REAL, glass_y REAL);
@@ -575,14 +580,14 @@ mod tests {
         // glass cannot be half-done — this is the assertion that says so.
         let conn = db();
         conn.execute("INSERT INTO placement VALUES ('c', 1.0, 2.0)", []).unwrap();
-        conn.execute("INSERT INTO project VALUES ('/p', 3.0, 4.0)", []).unwrap();
+        conn.execute("INSERT INTO territory VALUES ('t1', 3.0, 4.0)", []).unwrap();
         conn.execute("INSERT INTO reference_image VALUES ('i', 5.0, 6.0)", []).unwrap();
         conn.execute("INSERT INTO widget VALUES ('w', 7.0, 8.0)", []).unwrap();
         conn.execute("INSERT INTO timeline VALUES ('t', 9.0, 10.0)", []).unwrap();
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         let s = spots_in(&conn, "one").unwrap();
         assert_eq!(s.cards.get("c"), Some(&[1.0, 2.0]));
-        assert_eq!(s.projects.get("/p"), Some(&[3.0, 4.0]));
+        assert_eq!(s.territories.get("t1"), Some(&[3.0, 4.0]));
         assert_eq!(s.images.get("i"), Some(&[5.0, 6.0]));
         assert_eq!(s.widgets.get("w"), Some(&[7.0, 8.0]));
         assert_eq!(s.timelines.get("t"), Some(&[9.0, 10.0]));
@@ -627,22 +632,25 @@ mod tests {
 
     #[test]
     fn a_thing_that_is_gone_leaves_every_room() {
-        /* A project's ref is its `root_path`, which is the one id here that
-           gets reused: stick a territory to the glass, remove it, add the same
-           folder back, and the row found a new thing with its name. */
+        /* A spot outlives the thing it was for unless something takes it off
+           every arrangement, not only the one in front of you. The territory
+           ids this is keyed on are uuids and are never reused, so what this
+           guards now is a row nobody can name again rather than one that finds
+           a new owner — which was the sharper failure while a region's ref was
+           its `root_path`. */
         let conn = db();
-        conn.execute("INSERT INTO project VALUES ('/p', 3.0, 4.0)", []).unwrap();
+        conn.execute("INSERT INTO territory VALUES ('t1', 3.0, 4.0)", []).unwrap();
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
-        forget(&conn, PROJECT, "/p");
+        forget(&conn, TERRITORY, "t1");
         // Gone from the room it was deleted in, and from the other one too.
-        assert!(spots_in(&conn, "two").unwrap().projects.is_empty());
-        assert!(spots_in(&conn, "one").unwrap().projects.is_empty());
+        assert!(spots_in(&conn, "two").unwrap().territories.is_empty());
+        assert!(spots_in(&conn, "one").unwrap().territories.is_empty());
         // And the folder added back is on the wall, not where the old one was.
-        conn.execute("UPDATE project SET glass_x = NULL, glass_y = NULL", []).unwrap();
+        conn.execute("UPDATE territory SET glass_x = NULL, glass_y = NULL", []).unwrap();
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         let back: Option<f64> = conn
-            .query_row("SELECT glass_x FROM project WHERE root_path = '/p'", [], |r| r.get(0))
+            .query_row("SELECT glass_x FROM territory WHERE id = 't1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(back, None);
     }

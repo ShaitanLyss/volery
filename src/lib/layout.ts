@@ -31,7 +31,16 @@ export type Lod = "field" | "wall" | "open";
 
 /** The minimum a thing needs to be placeable. `Conversation` satisfies it
  *  structurally, which keeps this file free of Svelte. */
-export type Placeable = { id: string; cwd: string; project: string };
+export type Placeable = {
+  id: string;
+  cwd: string;
+  project: string;
+  projectId: string;
+  /** Which grouping inside that project it stands in, or null for one written
+   *  before territories existed. A null is resolved here rather than refused —
+   *  see `layout`. */
+  territoryId?: string | null;
+};
 
 /** A project as the store knows it. `Project` satisfies it structurally.
  *
@@ -43,8 +52,22 @@ export type Placeable = { id: string; cwd: string; project: string };
  *  territory still flows on the wall, still consumes its cell, and still holds
  *  its ground against the others. Only the paint moves. */
 export type Territory = {
+  /** The grouping's own id, and the region's identity everywhere on the wall.
+   *
+   *  It was the `root_path` until v42, which is why so much of the front end
+   *  still speaks of a region by its folder. A folder cannot be an identity
+   *  once one checkout can carry three regions: both would answer to the same
+   *  string, and a drag on either would move both. */
+  id: string;
+  projectId: string;
+  /** What this grouping is called. */
   name: string;
-  root_path: string;
+  /** What the project it belongs to is called. Carried rather than looked up,
+   *  so this file stays pure and knows nothing about where projects live. */
+  project: string;
+  /** The folder every card in it works in. Not an identity — several
+   *  territories share one. */
+  cwd: string;
   x?: number | null;
   y?: number | null;
   glassX?: number | null;
@@ -367,7 +390,18 @@ export const CARD_BOX: Record<Lod, { w: number; h: number }> = {
 };
 
 export type Region = {
+  /** The territory's id — the region's identity on the wall. Everything that
+   *  used to key a region on `cwd` keys on this: the selection, the undo
+   *  records, the drag, the menu, the control surface's territory ops. */
+  id: string;
+  /** The project's name. */
   project: string;
+  /** The grouping's own name. */
+  name: string;
+  /** What is drawn on the handle — see `regionLabel`. */
+  label: string;
+  /** The folder. Still here, and still what a card opened in this region works
+   *  in; just no longer the thing that says *which* region. */
   cwd: string;
   x: number;
   y: number;
@@ -392,6 +426,25 @@ export type Laid<T> = {
    *  origin that it has from the region's wall origin. */
   glass: Spot | null;
 };
+
+/** What a region's handle says: the project, and the grouping where that adds
+ *  something.
+ *
+ *  Both names, because with three regions over one checkout the folder alone no
+ *  longer tells you which one you are looking at — and the grouping alone would
+ *  lose which repo it is, which is the thing you need most when eleven regions
+ *  are on the wall at once.
+ *
+ *  **Except when they are the same word.** `migrate_v42` named every backfilled
+ *  territory after its project, which is every region on every wall that
+ *  existed before this, so an unconditional pair would have renamed the whole
+ *  wall to `nova · nova` on first launch. The condition is "does the second name
+ *  say anything the first did not" rather than "does this project have more than
+ *  one territory": a lone grouping you have renamed to `experiments` is worth
+ *  both names, and counting the siblings would have hidden it. */
+export function regionLabel(project: string, name: string): string {
+  return name && name !== project ? `${project} · ${name}` : project;
+}
 
 export function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
@@ -508,13 +561,34 @@ function slotUnder(
 export function layout<T extends Placeable>(
   convs: T[],
   placements: Record<string, Placement>,
-  projects: Territory[] = [],
+  territories: Territory[] = [],
 ): { regions: Region[]; laid: Laid<T>[] } {
+  /* Which grouping a card stands in, and the two fallbacks under it.
+     `territoryId` is null for a row written before v42 and for one written by
+     an older build, and an unrecognised id is what a card left behind by a
+     forgotten territory would carry if the move in `forget_territory_row` ever
+     failed to reach it. Neither may be able to leave a card *undrawn* — a card
+     that is not on the wall is a conversation you cannot get back to, which is
+     the worst thing this function can do. So: its own grouping, else its
+     project's first, else its folder, which is the pre-territory behaviour and
+     still catches a cwd with no project row at all.
+
+     Resolved here rather than by the caller because this is the half with the
+     test, and because every caller would otherwise have to remember it. */
+  const known = new Set(territories.map((t) => t.id));
+  const firstOf = new Map<string, string>();
+  for (const t of territories) if (!firstOf.has(t.projectId)) firstOf.set(t.projectId, t.id);
+  const homeOf = (c: Placeable): string => {
+    if (c.territoryId && known.has(c.territoryId)) return c.territoryId;
+    return firstOf.get(c.projectId) ?? c.cwd;
+  };
+
   const groups = new Map<string, T[]>();
   for (const c of convs) {
-    const g = groups.get(c.cwd);
+    const home = homeOf(c);
+    const g = groups.get(home);
     if (g) g.push(c);
-    else groups.set(c.cwd, [c]);
+    else groups.set(home, [c]);
   }
 
   /* Territories come from the projects, not from the cards standing in them.
@@ -528,24 +602,30 @@ export function layout<T extends Placeable>(
      but a cwd is not required to be one — keeps its place at the end rather
      than being dropped. */
   type Entry = {
+    id: string;
     cwd: string;
     name?: string;
+    project?: string;
     x?: number | null;
     y?: number | null;
     glass?: Spot | null;
     cols: number;
   };
-  const order: Entry[] = projects.map((p) => ({
-    cwd: p.root_path,
-    name: p.name,
-    x: p.x,
-    y: p.y,
-    glass: spotOf(p),
-    cols: colsOf(p),
+  const order: Entry[] = territories.map((t) => ({
+    id: t.id,
+    cwd: t.cwd,
+    name: t.name,
+    project: t.project,
+    x: t.x,
+    y: t.y,
+    glass: spotOf(t),
+    cols: colsOf(t),
   }));
-  const known = new Set(order.map((o) => o.cwd));
-  for (const cwd of groups.keys()) {
-    if (!known.has(cwd)) order.push({ cwd, cols: REGION_COLS });
+  for (const home of groups.keys()) {
+    /* A group keyed on something that is not a territory — the `c.cwd` fallback
+       above — still gets a region, at the end. Same promise the old code made
+       to a cwd with no project row. */
+    if (!known.has(home)) order.push({ id: home, cwd: home, cols: REGION_COLS });
   }
 
   /* Where the placed territories stand, before anything is settled around them:
@@ -557,7 +637,7 @@ export function layout<T extends Placeable>(
       x: o.x!,
       y: o.y!,
       w: regionWidth(o.cols),
-      h: territoryHeight((groups.get(o.cwd) ?? []).length, o.cols),
+      h: territoryHeight((groups.get(o.id) ?? []).length, o.cols),
     }));
 
   /* How far down each column has been filled, and how many territories have
@@ -569,8 +649,8 @@ export function layout<T extends Placeable>(
   const regions: Region[] = [];
   const laid: Laid<T>[] = [];
 
-  for (const { cwd, name, x: px, y: py, glass: rg, cols } of order) {
-    const members = groups.get(cwd) ?? [];
+  for (const { id, cwd, name, project, x: px, y: py, glass: rg, cols } of order) {
+    const members = groups.get(id) ?? [];
     const w = regionWidth(cols);
     let x: number;
     let y: number;
@@ -646,11 +726,15 @@ export function layout<T extends Placeable>(
       deepest = Math.max(deepest, Math.floor(s / cols) + 1);
     }
 
+    /* The project's own name when the store has one. Falling back to a
+       member's is only for a cwd with no project row — and reading it off a
+       card is lossy anyway, since a worktree card calls itself "skein · fix". */
+    const projectName = project ?? members[0]?.project ?? cwd;
     regions.push({
-      /* The project's own name when the store has one. Falling back to a
-         member's is only for a cwd with no project row — and reading it off a
-         card is lossy anyway, since a worktree card calls itself "skein · fix". */
-      project: name ?? members[0]?.project ?? cwd,
+      id,
+      project: projectName,
+      name: name ?? projectName,
+      label: regionLabel(projectName, name ?? projectName),
       cwd,
       x,
       y,

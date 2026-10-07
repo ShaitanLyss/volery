@@ -287,8 +287,8 @@ export function forget(past: Past, at: Realm, id: string): Past {
 /** Where every territory stands. Structurally typed so this file stays free of
  *  `layout.ts` — `Territory` satisfies it, as does a project row. */
 export function standsOf(
-  projects: {
-    root_path: string;
+  territories: {
+    id: string;
     x?: number | null;
     y?: number | null;
     glassX?: number | null;
@@ -297,8 +297,8 @@ export function standsOf(
   }[],
 ): Map<string, Stand> {
   return new Map(
-    projects.map((p) => [
-      p.root_path,
+    territories.map((p) => [
+      p.id,
       {
         x: p.x ?? null,
         y: p.y ?? null,

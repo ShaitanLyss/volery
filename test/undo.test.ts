@@ -318,8 +318,8 @@ describe("forget", () => {
 
 describe("standsOf and shifted", () => {
   const projects = [
-    { root_path: "C:/a", x: 10, y: 20 },
-    { root_path: "C:/b", x: null, y: null, glassX: 5, glassY: 6 },
+    { id: "C:/a", x: 10, y: 20 },
+    { id: "C:/b", x: null, y: null, glassX: 5, glassY: 6 },
   ];
 
   test("reads where every territory stands, absences and all", () => {
@@ -345,8 +345,8 @@ describe("standsOf and shifted", () => {
   test("names every territory that moved, not only the one asked about", () => {
     const before = standsOf(projects);
     const after = standsOf([
-      { root_path: "C:/a", x: 99, y: 20 },
-      { root_path: "C:/b", x: 40, y: 40, glassX: 5, glassY: 6 },
+      { id: "C:/a", x: 99, y: 20 },
+      { id: "C:/b", x: 40, y: 40, glassX: 5, glassY: 6 },
     ]);
     const edits = shifted(before, after);
     expect(edits.map((e) => e.id).sort()).toEqual(["C:/a", "C:/b"]);
@@ -358,8 +358,8 @@ describe("standsOf and shifted", () => {
   test("leaves out the ones that did not move", () => {
     const before = standsOf(projects);
     const after = standsOf([
-      { root_path: "C:/a", x: 10, y: 20 },
-      { root_path: "C:/b", x: 40, y: 40, glassX: 5, glassY: 6 },
+      { id: "C:/a", x: 10, y: 20 },
+      { id: "C:/b", x: 40, y: 40, glassX: 5, glassY: 6 },
     ]);
     expect(shifted(before, after).map((e) => e.id)).toEqual(["C:/b"]);
   });
@@ -370,7 +370,7 @@ describe("standsOf and shifted", () => {
 
   /* A project opened between the two readings has no `was` to go back to. */
   test("a territory that appeared in between is skipped", () => {
-    const after = standsOf([...projects, { root_path: "C:/c", x: 1, y: 1 }]);
+    const after = standsOf([...projects, { id: "C:/c", x: 1, y: 1 }]);
     expect(shifted(standsOf(projects), after)).toEqual([]);
   });
 });

@@ -2376,8 +2376,9 @@ export class Control {
               { at: "placement", id, was, now: { ...h.studio.placements[id] } },
             ]);
           } else if (kind === "region") {
-            const p = h.skein.projects.find((q) => q.root_path === id);
-            h.skein.stickProject(id, at);
+            const terr = h.skein.firstTerritoryAt(id) ?? id;
+            const p = h.skein.territories.find((q) => q.id === terr);
+            h.skein.stickTerritory(terr, at);
             if (p) {
               h.undo.did("moving a territory on the glass", [
                 {
@@ -2442,11 +2443,11 @@ export class Control {
         /* Observed rather than predicted, exactly as the menu's own handler does
            it: handing a territory back to the grid runs `#settlePlaces`, which
            can move one nobody named. See `stands`/`shifted` in `App.svelte`. */
-        const before = standsOf(h.skein.projects);
-        h.skein.placeProject(cwd, x, y);
+        const before = standsOf(h.skein.territories);
+        h.skein.placeTerritory(h.skein.firstTerritoryAt(cwd) ?? cwd, x, y);
         h.undo.did(
           x === null || y === null ? "settling a territory back in" : "moving a territory",
-          shifted(before, standsOf(h.skein.projects)),
+          shifted(before, standsOf(h.skein.territories)),
         );
         await settle();
         return {
@@ -2471,11 +2472,11 @@ export class Control {
         if (!cwd) throw new Error("size needs a cwd");
         const cols =
           op.cols === undefined || op.cols === null ? null : Number(op.cols);
-        const before = standsOf(h.skein.projects);
-        h.skein.sizeProject(cwd, cols);
+        const before = standsOf(h.skein.territories);
+        h.skein.sizeTerritory(h.skein.firstTerritoryAt(cwd) ?? cwd, cols);
         h.undo.did(
           "resizing a territory",
-          shifted(before, standsOf(h.skein.projects)),
+          shifted(before, standsOf(h.skein.territories)),
         );
         await settle();
         return {

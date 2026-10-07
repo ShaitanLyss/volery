@@ -396,9 +396,16 @@ export class Portage {
           skein.learnProject(project);
           if (!here) {
             out.projects++;
-            /* By the root it was stored under, which is not always `wasRoot`. */
-            if (p.x !== null && p.y !== null) skein.placeProject(project.root_path, p.x, p.y);
-            if (p.cols !== null) skein.sizeProject(project.root_path, p.cols);
+            /* By the root it was stored under, which is not always `wasRoot`,
+               and then onto the grouping that root arrived with. A carried
+               layout has no territory ids in it — no id travels — so what it
+               can say is "the region this folder had", which is the one
+               `ensure_project` has just minted. */
+            const terr = skein.firstTerritoryAt(project.root_path);
+            if (terr) {
+              if (p.x !== null && p.y !== null) skein.placeTerritory(terr, p.x, p.y);
+              if (p.cols !== null) skein.sizeTerritory(terr, p.cols);
+            }
           }
           out.groups += await this.#groupsFor(project, p.wasRoot, p.groups);
           /* And what it tells its cards, by the same top-up rule the wall's took

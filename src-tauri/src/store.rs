@@ -349,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 42;
+const SCHEMA_VERSION: i64 = 43;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -397,6 +397,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (40, migrate_v40),
     (41, migrate_v41),
     (42, migrate_v42),
+    (43, migrate_v43),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2481,12 +2482,47 @@ fn migrate_v42(conn: &Connection) -> Result<(), String> {
 
            So the spot follows the caller, not the schema. `territory.glass_x`
            is seeded above from the project's and read by nobody yet; the rows
-           are re-keyed in the rung that lands beside the front end switching to
-           `stick_territory`, where the two halves can be wrong together or
-           right together and not one of each. */
+           are re-keyed in `migrate_v43`, which lands beside the front end
+           switching to `stick_territory`, where the two halves can be wrong
+           together or right together and not one of each. */
         let _ = &root_path;
     }
 
+    Ok(())
+}
+
+/// The other half of v42: the glass follows the region onto the territory.
+///
+/// Held back one rung on purpose, and the reason is in `migrate_v42` and in
+/// `arrange::KINDS`. A stuck region's spot was `(kind: 'project', ref:
+/// <root_path>)`, and a `root_path` stopped being an identity the moment one
+/// checkout could carry three regions — both would answer to the same string,
+/// so sticking either would move both.
+///
+/// Matched through the project rather than on the path directly, because by now
+/// a path may have several territories and only one of them can inherit what was
+/// one region's spot. The first is the one the backfill made, which is the
+/// region that was there when the spot was written.
+///
+/// A row whose `ref` names no project on this wall is left alone rather than
+/// deleted — `arrange::reconcile` ignores what it cannot match, and a spot for a
+/// territory that comes back (a layout re-imported, a folder re-opened) is worth
+/// more than the bytes it costs.
+fn migrate_v43(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE glass_spot
+            SET kind = 'territory',
+                ref = (SELECT t.id FROM territory t
+                         JOIN project p ON p.id = t.project_id
+                        WHERE p.root_path = glass_spot.ref
+                        ORDER BY t.created_at, t.id LIMIT 1)
+          WHERE kind = 'project'
+            AND EXISTS (SELECT 1 FROM territory t
+                          JOIN project p ON p.id = t.project_id
+                         WHERE p.root_path = glass_spot.ref)",
+        [],
+    )
+    .map_err(|e| format!("migrate v43: {e}"))?;
     Ok(())
 }
 
@@ -2922,26 +2958,26 @@ fn ensure_project_row(conn: &Connection, root_path: String) -> Result<Project, S
 /// `save_placement`, one call each, because that is already what a card's
 /// position means and a territory drag is a drag of each of them too.
 #[tauri::command]
-pub fn place_project(
+pub fn place_territory(
     store: tauri::State<'_, Store>,
-    root_path: String,
+    id: String,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
-    place_row(&conn, &root_path, x, y)
+    place_row(&conn, &id, x, y)
 }
 
 /// The write itself, so it can be tested without an app around it.
 fn place_row(
     conn: &Connection,
-    root_path: &str,
+    id: &str,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
     conn.execute(
-        "UPDATE project SET x = ?2, y = ?3 WHERE root_path = ?1",
-        params![root_path, x, y],
+        "UPDATE territory SET x = ?2, y = ?3 WHERE id = ?1",
+        params![id, x, y],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -2961,20 +2997,20 @@ fn place_row(
 /// beside the arithmetic that turns a count into a width, so there is one
 /// answer to "how wide is that" rather than a floor here and a ceiling there.
 #[tauri::command]
-pub fn size_project(
+pub fn size_territory(
     store: tauri::State<'_, Store>,
-    root_path: String,
+    id: String,
     cols: Option<i64>,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
-    size_row(&conn, &root_path, cols)
+    size_row(&conn, &id, cols)
 }
 
 /// The write itself, so the round trip can be tested without an app around it.
-fn size_row(conn: &Connection, root_path: &str, cols: Option<i64>) -> Result<(), String> {
+fn size_row(conn: &Connection, id: &str, cols: Option<i64>) -> Result<(), String> {
     conn.execute(
-        "UPDATE project SET cols = ?2 WHERE root_path = ?1",
-        params![root_path, cols],
+        "UPDATE territory SET cols = ?2 WHERE id = ?1",
+        params![id, cols],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -3060,29 +3096,29 @@ pub async fn reroot_project(
 /// its cell on the wall, so putting it back drops it among its neighbours
 /// exactly where it was and nothing else moves.
 #[tauri::command]
-pub fn stick_project(
+pub fn stick_territory(
     store: tauri::State<'_, Store>,
-    root_path: String,
+    id: String,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
     let conn = store.0.lock().unwrap();
-    stick_row(&conn, &root_path, x, y)
+    stick_row(&conn, &id, x, y)
 }
 
 /// The write itself, so the round trip can be tested without an app around it.
 fn stick_row(
     conn: &Connection,
-    root_path: &str,
+    id: &str,
     x: Option<f64>,
     y: Option<f64>,
 ) -> Result<(), String> {
     conn.execute(
-        "UPDATE project SET glass_x = ?2, glass_y = ?3 WHERE root_path = ?1",
-        params![root_path, x, y],
+        "UPDATE territory SET glass_x = ?2, glass_y = ?3 WHERE id = ?1",
+        params![id, x, y],
     )
     .map_err(|e| e.to_string())?;
-    crate::arrange::note(conn, crate::arrange::PROJECT, root_path, x, y);
+    crate::arrange::note(conn, crate::arrange::TERRITORY, id, x, y);
     Ok(())
 }
 
@@ -3284,57 +3320,8 @@ fn forget_territory_row(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Where a territory sits on the wall. `None`/`None` hands it back to the grid.
-#[tauri::command]
-pub fn place_territory(
-    store: tauri::State<'_, Store>,
-    id: String,
-    x: Option<f64>,
-    y: Option<f64>,
-) -> Result<(), String> {
-    let conn = store.0.lock().unwrap();
-    conn.execute(
-        "UPDATE territory SET x = ?2, y = ?3 WHERE id = ?1",
-        params![id, x, y],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
-/// How wide a territory is, in columns of cards. `None` gives it the default.
-/// Clamping stays in `layout.ts::colsOf`, beside the arithmetic that reads it.
-#[tauri::command]
-pub fn size_territory(
-    store: tauri::State<'_, Store>,
-    id: String,
-    cols: Option<i64>,
-) -> Result<(), String> {
-    let conn = store.0.lock().unwrap();
-    conn.execute(
-        "UPDATE territory SET cols = ?2 WHERE id = ?1",
-        params![id, cols],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
-/// Stick a territory to the glass, or take it off.
-#[tauri::command]
-pub fn stick_territory(
-    store: tauri::State<'_, Store>,
-    id: String,
-    x: Option<f64>,
-    y: Option<f64>,
-) -> Result<(), String> {
-    let conn = store.0.lock().unwrap();
-    conn.execute(
-        "UPDATE territory SET glass_x = ?2, glass_y = ?3 WHERE id = ?1",
-        params![id, x, y],
-    )
-    .map_err(|e| e.to_string())?;
-    crate::arrange::note(&conn, crate::arrange::TERRITORY, &id, x, y);
-    Ok(())
-}
 
 /// Move a card from one grouping to another.
 ///
@@ -3716,18 +3703,45 @@ fn forget_row(conn: &Connection, root_path: &str) -> Result<bool, String> {
             if open == 1 { " is" } else { "s are" }
         ));
     }
+    /* Read **before** the delete, because `territory.project_id` cascades and a
+       moment later there is nothing left to ask. That ordering is the whole of
+       this: the ids are what the glass rows are keyed on, and a spot nobody can
+       name again is a row that sits in every arrangement for ever.
+
+       It used to be one call keyed on `root_path`, which was the one id in
+       `arrange::KINDS` that got *reused* — so without it, a territory stuck to
+       the glass, removed, then added back from the same folder came back still
+       stuck, at the old one's spot, in a room nobody had put it in. A territory
+       id is a uuid and is never reused, so that exact return is gone; what is
+       left is the ordinary duty not to leave rows behind for a thing that no
+       longer exists. */
+    let stuck = territory_ids_at(conn, root_path)?;
     let gone = conn
         .execute("DELETE FROM project WHERE root_path = ?1", params![root_path])
         .map_err(|e| e.to_string())?;
-    /* And off the glass in every room. A project's glass spot is keyed on its
-       `root_path`, which is the one id in `arrange::KINDS` that gets *reused* —
-       so without this, a territory stuck to the glass, removed, and then added
-       back from the same folder came back still stuck, at the old one's spot,
-       in a room nobody had put it in. See `arrange::forget`. */
     if gone > 0 {
-        crate::arrange::forget(conn, crate::arrange::PROJECT, root_path);
+        for tid in &stuck {
+            crate::arrange::forget(conn, crate::arrange::TERRITORY, tid);
+        }
     }
     Ok(gone > 0)
+}
+
+/// Every territory of the project rooted at a path, ids only.
+fn territory_ids_at(conn: &Connection, root_path: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT t.id FROM territory t
+               JOIN project p ON p.id = t.project_id
+              WHERE p.root_path = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map(params![root_path], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
 }
 
 /// Adopt a conversation Claude Code recorded, as a card on the wall.
@@ -9471,25 +9485,26 @@ mod tests {
     #[test]
     fn a_territory_remembers_where_it_was_put_and_can_be_given_back_to_the_grid() {
         let conn = db();
-        seed_project(&conn, "p1", "C:/x");
+        let p = ensure_project_row(&conn, "C:/x".to_string()).unwrap();
+        let t = first_territory(&conn, &p.id).unwrap();
 
         let at = || -> (Option<f64>, Option<f64>) {
-            conn.query_row("SELECT x, y FROM project WHERE root_path='C:/x'", [], |r| {
+            conn.query_row("SELECT x, y FROM territory WHERE id = ?1", params![t], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap()
         };
-        assert_eq!(at(), (None, None), "a new project starts in the grid's hands");
+        assert_eq!(at(), (None, None), "a new territory starts in the grid's hands");
 
-        place_row(&conn, "C:/x", Some(1100.0), Some(560.0)).unwrap();
+        place_row(&conn, &t, Some(1100.0), Some(560.0)).unwrap();
         assert_eq!(at(), (Some(1100.0), Some(560.0)));
 
         // Moved again — one row, not two positions.
-        place_row(&conn, "C:/x", Some(20.0), Some(30.0)).unwrap();
+        place_row(&conn, &t, Some(20.0), Some(30.0)).unwrap();
         assert_eq!(at(), (Some(20.0), Some(30.0)));
 
         // "tidy it back onto the grid" is the same command with nothing in it.
-        place_row(&conn, "C:/x", None, None).unwrap();
+        place_row(&conn, &t, None, None).unwrap();
         assert_eq!(at(), (None, None));
     }
 
@@ -9499,35 +9514,36 @@ mod tests {
     #[test]
     fn a_territory_remembers_how_wide_it_was_made_and_can_be_given_the_default_back() {
         let conn = db();
-        seed_project(&conn, "p1", "C:/x");
+        let p = ensure_project_row(&conn, "C:/x".to_string()).unwrap();
+        let t = first_territory(&conn, &p.id).unwrap();
 
         let cols = || -> Option<i64> {
-            conn.query_row("SELECT cols FROM project WHERE root_path='C:/x'", [], |r| {
+            conn.query_row("SELECT cols FROM territory WHERE id = ?1", params![t], |r| {
                 r.get(0)
             })
             .unwrap()
         };
         assert_eq!(cols(), None, "a new territory is whatever width the wall is");
 
-        size_row(&conn, "C:/x", Some(4)).unwrap();
+        size_row(&conn, &t, Some(4)).unwrap();
         assert_eq!(cols(), Some(4));
 
         // Widened again — one row, not two widths.
-        size_row(&conn, "C:/x", Some(1)).unwrap();
+        size_row(&conn, &t, Some(1)).unwrap();
         assert_eq!(cols(), Some(1));
 
         // And the position is untouched by any of it: they are two facts.
-        place_row(&conn, "C:/x", Some(12.0), Some(34.0)).unwrap();
-        size_row(&conn, "C:/x", Some(3)).unwrap();
+        place_row(&conn, &t, Some(12.0), Some(34.0)).unwrap();
+        size_row(&conn, &t, Some(3)).unwrap();
         let at: (Option<f64>, Option<f64>) = conn
-            .query_row("SELECT x, y FROM project WHERE root_path='C:/x'", [], |r| {
+            .query_row("SELECT x, y FROM territory WHERE id = ?1", params![t], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap();
         assert_eq!(at, (Some(12.0), Some(34.0)));
 
         // "back to its usual width" is the same command with nothing in it.
-        size_row(&conn, "C:/x", None).unwrap();
+        size_row(&conn, &t, None).unwrap();
         assert_eq!(cols(), None);
     }
 
@@ -9550,8 +9566,13 @@ mod tests {
             .collect();
         assert!(cols.contains(&"x".to_string()));
         assert!(cols.contains(&"y".to_string()));
-        // An existing territory keeps flowing until somebody moves it.
-        place_row(&conn, "C:/x", Some(7.0), Some(8.0)).unwrap();
+        /* An existing territory keeps flowing until somebody moves it — and the
+           grouping it is moved by is one `migrate_v42` made for it on the way
+           up, which is the half of that rung an old database depends on. */
+        let t: String = conn
+            .query_row("SELECT id FROM territory", [], |r| r.get(0))
+            .unwrap();
+        place_row(&conn, &t, Some(7.0), Some(8.0)).unwrap();
     }
 
     /// The glass is beside the wall, never instead of it. This is the whole
@@ -9561,27 +9582,28 @@ mod tests {
     #[test]
     fn sticking_a_territory_leaves_its_place_on_the_wall_alone() {
         let conn = db();
-        seed_project(&conn, "p1", "C:/x");
-        place_row(&conn, "C:/x", Some(1100.0), Some(560.0)).unwrap();
+        let p = ensure_project_row(&conn, "C:/x".to_string()).unwrap();
+        let t = first_territory(&conn, &p.id).unwrap();
+        place_row(&conn, &t, Some(1100.0), Some(560.0)).unwrap();
 
         let at = || -> (Option<f64>, Option<f64>, Option<f64>, Option<f64>) {
             conn.query_row(
-                "SELECT x, y, glass_x, glass_y FROM project WHERE root_path='C:/x'",
-                [],
+                "SELECT x, y, glass_x, glass_y FROM territory WHERE id = ?1",
+                params![t],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap()
         };
         assert_eq!(at(), (Some(1100.0), Some(560.0), None, None));
 
-        stick_row(&conn, "C:/x", Some(40.0), Some(90.0)).unwrap();
+        stick_row(&conn, &t, Some(40.0), Some(90.0)).unwrap();
         assert_eq!(
             at(),
             (Some(1100.0), Some(560.0), Some(40.0), Some(90.0)),
             "sticking says nothing about where the territory belongs"
         );
 
-        stick_row(&conn, "C:/x", None, None).unwrap();
+        stick_row(&conn, &t, None, None).unwrap();
         assert_eq!(
             at(),
             (Some(1100.0), Some(560.0), None, None),
@@ -10676,9 +10698,22 @@ mod tests {
             format!("{canon}\\.claude\\worktrees\\feat"),
             "a worktree that is not on disk is rebased rather than resolved"
         );
-        let spot: String =
-            conn.query_row("SELECT ref FROM glass_spot", [], |r| r.get(0)).unwrap();
-        assert_eq!(spot, canon);
+        /* The spot followed its territory, which is what v41 is about — but the
+           ladder does not stop at v41, and by the end v43 has re-keyed every
+           stuck region from a root path onto a territory id. So what proves v41
+           worked is no longer the string: it is that the one spot on this wall
+           names the one territory of the one project, which it could only do by
+           having been rebased onto the canonical root first and then carried
+           across by the match on `project.root_path`. */
+        let (kind, spot): (String, String) = conn
+            .query_row("SELECT kind, ref FROM glass_spot", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        let territory: String =
+            conn.query_row("SELECT id FROM territory", [], |r| r.get(0)).unwrap();
+        assert_eq!(kind, "territory");
+        assert_eq!(spot, territory);
         /* Nothing was merged, so nothing was said. */
         let said: i64 = conn.query_row("SELECT COUNT(*) FROM chronicle", [], |r| r.get(0)).unwrap();
         assert_eq!(said, 0);

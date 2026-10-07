@@ -520,6 +520,11 @@ export class Conversation {
   readonly cwd: string;
   readonly project: string;
   readonly projectId: string;
+  /** Which grouping inside that project the card stands in, or null for a row
+   *  written before v42 — which `layout` resolves to the project's first rather
+   *  than refusing to draw. Mutable, because a card can be moved between
+   *  groupings without being anything else. */
+  territoryId = $state<string | null>(null);
   /** The app quit or crashed while this was mid-turn. That turn did not
    *  survive, and the card says so rather than pretending it finished. */
   interrupted = $state(false);
@@ -1293,6 +1298,7 @@ export class Conversation {
     aside?: boolean;
     kind?: string | null;
     named_by_hand?: boolean;
+    territoryId?: string | null;
     /** Optional because a row written before schema v16 has neither. */
     account_label?: string | null;
     bypass_caps?: boolean;
@@ -1325,6 +1331,7 @@ export class Conversation {
        truth about it: no card was ever named by hand before there was a way
        to do it. */
     c.namedByHand = row.named_by_hand ?? false;
+    c.territoryId = row.territoryId ?? null;
     c.model = row.model ?? undefined;
     /* Guarded rather than cast: the column is free text, and a level from a
        newer build is one this one cannot describe. Nothing beats showing a

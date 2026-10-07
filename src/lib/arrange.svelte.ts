@@ -19,7 +19,7 @@ import { NO_ARRANGEMENT, fingerprint, nearest, type Known, type Screen } from ".
  *  `arrange.rs::GlassSpots`. */
 export type GlassSpots = {
   cards: Record<string, [number, number]>;
-  projects: Record<string, [number, number]>;
+  territories: Record<string, [number, number]>;
   images: Record<string, [number, number]>;
   widgets: Record<string, [number, number]>;
   timelines: Record<string, [number, number]>;

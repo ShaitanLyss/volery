@@ -242,30 +242,30 @@
       if (i) board.put(i);
       else void board.remove(id);
     },
-    territory(cwd, at) {
+    territory(id, at) {
       if (!at) return;
-      const p = skein.projects.find((q) => q.root_path === cwd);
+      const p = skein.territories.find((q) => q.id === id);
       if (!p) return;
       /* The width goes back **first**, and the order is load-bearing rather
-         than arbitrary. `placeProject(cwd, null, null)` is not a write but a
+         than arbitrary. `placeTerritory(id, null, null)` is not a write but a
          request to re-pack (`#settlePlaces`), and the packing reads the width —
          so putting the position back before the width re-packs a narrow
          territory as though it were still the wide one, and writes that down.
          Undoing a left-edge resize of a territory that had been flowing was
          exactly that case: it came back at the right width in the wrong place. */
-      if ((p.cols ?? null) !== at.cols) skein.sizeProject(cwd, at.cols);
+      if ((p.cols ?? null) !== at.cols) skein.sizeTerritory(id, at.cols);
       /* And each half only if it differs, which is not tidiness either: asking
          for a re-pack nobody's gesture asked for can move a territory this step
          was never about. */
       if ((p.x ?? null) !== at.x || (p.y ?? null) !== at.y) {
-        skein.placeProject(cwd, at.x, at.y);
+        skein.placeTerritory(id, at.x, at.y);
       }
       const spot =
         at.glassX === null || at.glassY === null
           ? null
           : { x: at.glassX, y: at.glassY };
       if ((p.glassX ?? null) !== (spot?.x ?? null) || (p.glassY ?? null) !== (spot?.y ?? null)) {
-        skein.stickProject(cwd, spot);
+        skein.stickTerritory(id, spot);
       }
     },
   };
@@ -1238,7 +1238,7 @@
        a room's coordinates, so an act holding one from the room you have just
        left can never be written back honestly. */
     for (const id of studio.adoptGlass(spots.cards)) undo.drop("placement", id);
-    for (const cwd of skein.adoptProjectGlass(spots.projects)) undo.drop("territory", cwd);
+    for (const id of skein.adoptTerritoryGlass(spots.territories)) undo.drop("territory", id);
     for (const id of board.adoptGlass(spots.images)) undo.drop("image", id);
     for (const id of widgets.adoptGlass(spots.widgets)) undo.drop("widget", id);
     skein.timelines.adoptGlass(spots.timelines);
@@ -1813,10 +1813,17 @@
       };
     } else if (regionEl?.dataset.cwd) {
       const cwd = regionEl.dataset.cwd;
+      /* Two keys, because a region is two things at once now: a *grouping*,
+         which is what you drag, widen, stick and forget, and the *folder* its
+         cards work in, which is what dev servers, git actions and opening a
+         card are about. One repo can carry three regions, so the folder can no
+         longer stand for the region — and the region id can never stand for the
+         folder. See `layout.ts`'s `Territory`. */
+      const terr = regionEl.dataset.territory ?? cwd;
       target = {
         kind: "region",
         empty: !skein.convs.some((c) => c.cwd === cwd),
-        moved: territoryMoved(cwd),
+        moved: territoryMoved(terr),
         /* Offered when it would *do* something, which is stricter than "has a
            width stored": an imported layout can carry a count that happens to
            equal the default, and so can a future change of default. Both would
@@ -1852,11 +1859,11 @@
         else if (id.startsWith("widget:")) hangWidget(id.slice(7), where);
         else if (id === "reflow") {
           const before = stands();
-          skein.placeProject(cwd, null, null);
+          skein.placeTerritory(terr, null, null);
           undo.did("settling a territory back in", moved(before));
         } else if (id === "rewidth") {
           const before = stands();
-          skein.sizeProject(cwd, null);
+          skein.sizeTerritory(terr, null);
           undo.did("resizing a territory", moved(before));
         } else if (id === "guidance") {
           /* Opened on this territory, by id — the panel speaks the store's
@@ -1867,7 +1874,7 @@
         } else if (id === "forget") {
           /* Same reasoning as a card being closed: the project row is gone, so
              an act about where its territory stood can never be applied. */
-          undo.drop("territory", cwd);
+          undo.drop("territory", terr);
           void skein.forgetProject(cwd);
         }
       };
@@ -1968,7 +1975,7 @@
    *  offered as a no-op; see the note where it is passed. */
   function heldByGlassTerritory(cwd: string, id: string): boolean {
     if (spotOf(studio.placements[id])) return false;
-    return !!spotOf(skein.projects.find((p) => p.root_path === cwd));
+    return !!spotOf(skein.territories.find((t) => t.cwd === cwd));
   }
 
   /** Write a card's placement down, whole.
@@ -1987,7 +1994,7 @@
   /** Where every territory stands right now, for the undo stack to compare
    *  against afterwards — see `standsOf`/`shifted` in `undo.ts` for why a
    *  territory gesture has to be observed rather than predicted. */
-  const stands = () => standsOf(skein.projects);
+  const stands = () => standsOf(skein.territories);
   const moved = (before: Map<string, Stand>) => shifted(before, stands());
 
   /** Is this territory somewhere other than where the grid would have put it?
@@ -1996,19 +2003,17 @@
    *  into the far wall needs a way back that is not hunting for it. Offered only
    *  when it would do something — computed on the right-click rather than kept,
    *  since it is one layout pass and nothing else asks. */
-  function territoryMoved(cwd: string): boolean {
-    const p = skein.projects.find((p) => p.root_path === cwd);
-    if (!p || p.x === null || p.y === null) return false;
+  function territoryMoved(id: string): boolean {
+    const t = skein.territories.find((t) => t.id === id);
+    if (!t || t.x == null || t.y == null) return false;
     const flowed = layout(
       [],
       {},
       /* This one handed back to the grid, the rest holding their cells — so a
          territory sitting exactly where it was first put reads as unmoved. */
-      skein.projects.map((q) =>
-        q.root_path === cwd ? { ...q, x: null, y: null } : q,
-      ),
-    ).regions.find((r) => r.cwd === cwd);
-    return !!flowed && (Math.abs(flowed.x - p.x) > 1 || Math.abs(flowed.y - p.y) > 1);
+      skein.territories.map((q) => (q.id === id ? { ...q, x: null, y: null } : q)),
+    ).regions.find((r) => r.id === id);
+    return !!flowed && (Math.abs(flowed.x - t.x) > 1 || Math.abs(flowed.y - t.y) > 1);
   }
 
   /** What the wall can be given, straight off the catalogue — so a new kind of
@@ -4305,7 +4310,7 @@
         bind:this={canvas}
         convs={skein.convs}
         leaving={skein.leaving}
-        projects={skein.projects}
+        projects={skein.territories}
         {asana}
         {studio}
         {board}
@@ -4395,10 +4400,10 @@
         ontimelinearchive={(id) => void skein.timelines.archive(id)}
         ontimelineplace={(id, x, y) => void skein.timelines.place(id, x, y)}
         onpin={(id) => savePlacement(id)}
-        onplace={(cwd, x, y) => skein.placeProject(cwd, x, y)}
-        onsize={(cwd, cols) => skein.sizeProject(cwd, cols)}
+        onplace={(id, x, y) => skein.placeTerritory(id, x, y)}
+        onsize={(id, cols) => skein.sizeTerritory(id, cols)}
         onstick={(id) => savePlacement(id)}
-        onstickproject={(cwd, at) => skein.stickProject(cwd, at)}
+        onstickproject={(id, at) => skein.stickTerritory(id, at)}
       />
       {#if focused && showDetail}
         <aside

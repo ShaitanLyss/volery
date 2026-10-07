@@ -2,11 +2,28 @@ import { describe, expect, test } from "bun:test";
 import { glassAt, offsetBy, spotOf, stickTo } from "../src/lib/glass";
 import { CARD_BOX, layout, REGION_HEAD, REGION_PAD, SLOT_W } from "../src/lib/layout";
 
-const conv = (id: string, cwd = "C:/a") => ({ id, cwd, project: "a" });
+/* A territory keyed on its folder, so these cases go on reading as "the region
+   over C:/a" — what is new in v42 is tested where it is new. */
+const conv = (id: string, cwd = "C:/a") => ({
+  id,
+  cwd,
+  project: "a",
+  projectId: cwd,
+  territoryId: cwd,
+});
 const proj = (
   root_path: string,
   extra: Record<string, number | null> = {},
-) => ({ name: root_path, root_path, x: 0, y: 0, ...extra });
+) => ({
+  id: root_path,
+  projectId: root_path,
+  name: root_path,
+  project: root_path,
+  cwd: root_path,
+  x: 0,
+  y: 0,
+  ...extra,
+});
 
 describe("stickTo", () => {
   test("lands where the thing already looked to be", () => {
