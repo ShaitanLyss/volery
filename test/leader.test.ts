@@ -155,6 +155,8 @@ describe("the which-key hint", () => {
       { keys: "a", label: "archived timelines" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
+      { keys: "gn", label: "another grouping here" },
+      { keys: "gr", label: "rename this grouping" },
       { keys: "ia", label: "I'm away / back" },
       { keys: "p", label: "questions that piled up" },
       { keys: "tc", label: "casse-tête" },

@@ -234,6 +234,84 @@ const HOLD_SWEEP_MS = 60_000;
 export class Skein {
   projects = $state<Project[]>([]);
 
+  /** Another grouping in a project you already have.
+   *
+   *  Answers the new grouping's id so the caller can put the handle straight
+   *  into an editable state — a region that arrives named "new grouping" with
+   *  no caret in it is one you need a second gesture to finish. */
+  async makeTerritory(projectId: string, name: string): Promise<string | null> {
+    try {
+      const t = await invoke<Grouping>("make_territory", { projectId, name });
+      this.groupings = [...this.groupings, t];
+      /* So it flows into a cell rather than sitting at the origin — the same
+         call `learnProject` makes for the same reason. */
+      this.#settlePlaces();
+      return t.id;
+    } catch (e) {
+      this.fault = String(e);
+      return null;
+    }
+  }
+
+  /** What a grouping is called. Written through, then sent: the handle is being
+   *  looked at as you press Enter, and a round trip to SQLite first would show
+   *  the old name for a frame. */
+  renameTerritory(id: string, name: string) {
+    this.groupings = this.groupings.map((g) => (g.id === id ? { ...g, name } : g));
+    void invoke("rename_territory", { id, name }).catch((e) => {
+      this.fault = String(e);
+    });
+  }
+
+  /** Take a grouping off the wall. Its cards move to whatever is left of its
+   *  project — rearranging furniture must never be able to end a conversation —
+   *  and the store refuses a project's last one.
+   *
+   *  Awaited and re-read rather than written through, which is the opposite
+   *  bargain from the three above and is the right one here: this is the only
+   *  one of them the store can *refuse*, and a wall that had already dropped
+   *  the region would be showing a refusal as though it had been obeyed. */
+  async forgetTerritory(id: string): Promise<boolean> {
+    try {
+      await invoke("forget_territory", { id });
+    } catch (e) {
+      this.fault = String(e);
+      return false;
+    }
+    const heir = this.#heirOf(id);
+    this.groupings = this.groupings.filter((g) => g.id !== id);
+    if (heir) {
+      for (const c of this.convs) if (c.territoryId === id) c.territoryId = heir;
+    }
+    return true;
+  }
+
+  /** Where the store will have put the cards of a grouping being forgotten:
+   *  the oldest of its project's others, which is what `forget_territory_row`
+   *  picks. Read before the row goes, for the reason Rust reads it first. */
+  #heirOf(id: string): string | null {
+    const g = this.groupings.find((x) => x.id === id);
+    if (!g) return null;
+    return this.groupings.find((x) => x.projectId === g.projectId && x.id !== id)?.id ?? null;
+  }
+
+  /** Move a card into another grouping of its own project. */
+  async setCardTerritory(conversationId: string, territoryId: string) {
+    const c = this.convs.find((x) => x.id === conversationId);
+    const was = c?.territoryId ?? null;
+    if (c) c.territoryId = territoryId;
+    try {
+      await invoke("set_card_territory", { conversationId, territoryId });
+    } catch (e) {
+      /* Put it back where it was. The store refuses a grouping belonging to a
+         different project, and a card drawn in a region it was refused is the
+         wall disagreeing with its own database — the shape `restore.md` calls
+         out for a close that failed. */
+      if (c) c.territoryId = was;
+      this.fault = String(e);
+    }
+  }
+
   /** The first grouping of the project rooted at a folder, or `null`.
    *
    *  The bridge for the two callers that still speak in paths and should: an

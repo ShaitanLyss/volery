@@ -52,7 +52,8 @@ export type Verb =
   | { kind: "toy"; toy: ShelfId }
   | { kind: "open"; what: "timelines" | "pile" }
   | { kind: "window"; act: "span" | "panel" | "dock" }
-  | { kind: "presence"; act: "toggle" };
+  | { kind: "presence"; act: "toggle" }
+  | { kind: "grouping"; act: "new" | "rename" };
 
 /** One sequence the leader opens onto.
  *
@@ -113,10 +114,21 @@ export const CHORDS: readonly Chord[] = [
      letter, because placing a window is several verbs (maximise, minimise,
      which screen) and they want to sit together in the hint. */
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
+  /* `g` is the grouping family — how this folder's work is arranged on the
+     wall, which is what v42 made a thing you can have more than one of. A
+     family rather than two letters off the top, per the rule above the table:
+     making one and naming one are two verbs about the same noun and want to
+     sit together in the hint, and a third (moving a card into one) has
+     somewhere to go when it earns a chord of its own.
+
+     Both act on the focused card's territory, since that is the one thing the
+     wall always knows you mean — the same target `/rename` takes. */
   /* And where the two things you work *in* are moored. A chord cannot point at
      a place on the screen, so each cycles its three sites — starting from the
      edge that surface has always had, so going round the ring puts you back
      without having to remember which way it goes. See `berth.ts`. */
+  { keys: "gn", label: "another grouping here", verb: { kind: "grouping", act: "new" } },
+  { keys: "gr", label: "rename this grouping", verb: { kind: "grouping", act: "rename" } },
   { keys: "wp", label: "panel: right / left / floating", verb: { kind: "window", act: "panel" } },
   { keys: "wd", label: "dock: bottom / top / floating", verb: { kind: "window", act: "dock" } },
   /* Away mode, and it has two chords on purpose. `z` is the one you reach for

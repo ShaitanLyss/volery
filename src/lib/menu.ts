@@ -76,6 +76,17 @@ export type MenuTarget = {
    *  Default false, so an ordinary territory needs to say nothing to be offered
    *  everything — the caller with the answer is the one that has to speak. */
   nowhere?: boolean;
+  /** This is the only grouping its project has, so taking it off the wall
+   *  would leave its cards nowhere to stand — `forget_territory` refuses it,
+   *  and an item that is always refused is an item that reads as broken. The
+   *  gesture for taking a folder off the wall is `forget this project`, which
+   *  is offered a few lines below and says so. */
+  lone?: boolean;
+  /* region / card: the other groupings in this project, to move a card into or
+     to name beside this one. Empty for a project carrying only one, which is
+     every project until somebody makes a second — so the items below it simply
+     do not appear, rather than appearing and doing nothing. */
+  groupings?: { id: string; name: string }[];
   /* widget: what it can be switched between, and what it is on. Handed in
      rather than looked up, because the catalogue is the widgets' business and
      this file's only business is what a right-click offers.
@@ -310,6 +321,24 @@ export function menuFor(t: MenuTarget): MenuItem[] {
             )
           : null,
         t.plan && (t.presets ?? []).length ? sep : null,
+        /* Which grouping of its project the card stands in. A submenu for the
+           reason `handoff` has one — the list is as long as the project has
+           regions — and absent entirely for a project with only one, which is
+           every project until somebody makes a second. The card's own grouping
+           is already filtered out by the caller, so a submenu that appears
+           always has something in it to pick. */
+        (t.groupings ?? []).length
+          ? more(
+              "regroup",
+              "move it to",
+              (t.groupings ?? []).map((g) => ({
+                kind: "item" as const,
+                id: `regroup:${g.id}`,
+                label: g.name,
+              })),
+            )
+          : null,
+        (t.groupings ?? []).length ? sep : null,
         t.dormant ? item("wake", "wake it") : null,
         /* The thing that was missing when a card and a terminal wanted the same
            conversation: the session id is what `--resume` takes, and until now
@@ -510,6 +539,39 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            territory's other two numbers. Withheld on the same test: a territory
            standing at the width every other one is has nothing to give back. */
         t.sized ? item("rewidth", "back to its usual width") : null,
+        /* Another region over the same checkout. This is the gesture the whole
+           of v42 exists for, and it sits with the two above because all three
+           answer "how is this folder's work arranged on the wall" — not with
+           `new conversation`, which is about starting work rather than about
+           where it stands.
+
+           Withheld from the chat territory for the reason the two conversation
+           items are: it is a folder of Skein's own holding cards that have no
+           project, and a second grouping of nothing is furniture with nothing
+           to put in it. */
+        sep,
+        t.chat
+          ? null
+          : {
+              kind: "item" as const,
+              id: "new-grouping",
+              label: "another grouping of this project…",
+              /* The chord, where the mouse user will see it — the house form,
+                 and the rule that a gesture with a key says so. */
+              note: "space then g n",
+            },
+        t.chat
+          ? null
+          : {
+              kind: "item" as const,
+              id: "rename-grouping",
+              label: "rename this grouping…",
+              note: "space then g r",
+            },
+        /* Offered only where it would do something. The last grouping of a
+           project is refused by the store, and a menu entry whose only answer
+           is a refusal is one this file's standing rule says not to draw. */
+        t.chat || t.lone ? null : item("drop-grouping", "take this grouping off the wall", true),
         /* Only once it is standing empty. A territory outlives its last card so
            you can start again in it; forgetting is how you say you won't, and
            it is not something to offer next to live work. */

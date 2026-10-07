@@ -404,6 +404,33 @@
   /* One leader for the wall, and the only place a chord becomes an action. A
      verb rather than a mode is what lets this reach two unrelated subsystems
      without either of them knowing the other exists. */
+  /** `<space>gn` and `<space>gr`, both against the focused card's grouping.
+   *
+   *  The focused card is the target because it is the one thing the wall always
+   *  knows you mean — the same target `/rename` takes, and the reason neither
+   *  chord needs a region under the pointer. With nothing focused there is no
+   *  grouping to act on and the chord says so rather than guessing at one: a
+   *  key that silently picks a region for you is worse than a key that does
+   *  nothing, because you find out where it went afterwards. */
+  function groupingChord(act: "new" | "rename") {
+    const conv = focused;
+    const t = conv
+      ? (skein.territories.find((q) => q.id === conv.territoryId) ??
+        skein.territories.find((q) => q.projectId === conv.projectId))
+      : null;
+    if (!t) {
+      skein.fault = "focus a card first — a grouping is a grouping of its project";
+      return;
+    }
+    if (act === "rename") {
+      canvas?.nameTerritory(t.id, t.name);
+      return;
+    }
+    void skein.makeTerritory(t.projectId, "new grouping").then((made) => {
+      if (made) canvas?.nameTerritory(made, "new grouping");
+    });
+  }
+
   const leader = new Leader((verb) => {
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.kind === "open") {
@@ -416,6 +443,7 @@
       else berths.cycleDock();
     }
     else if (verb.kind === "presence") void togglePresence();
+    else if (verb.kind === "grouping") groupingChord(verb.act);
     else if (verb.toy === "synth") synth.show();
     /* The rest of the shelf is the away gate's puzzles, opened on purpose
        rather than met on the way back to work. Same surface, `mode="play"` —
@@ -1640,6 +1668,14 @@
         studio.selectOnly(conv.id);
         target = {
           kind: "card",
+          /* The other groupings of this card's project, so it can be moved
+             between them. Its own is filtered out — "move it to where it
+             already is" is a row that does nothing — and a project carrying
+             only one yields an empty list, which the menu drops rather than
+             drawing a submenu you have to open to find empty. */
+          groupings: skein.territories
+            .filter((t) => t.projectId === conv.projectId && t.id !== conv.territoryId)
+            .map((t) => ({ id: t.id, name: t.name })),
           dormant: conv.dormant,
           pinned: !!studio.placements[conv.id]?.pinned,
           /* Its *own* spot, not whether it happens to be drawn on the pane. */
@@ -1680,6 +1716,8 @@
              rows decorative. */
           if (id.startsWith("hand:"))
             void skein.handOff(conv, presetById(id.slice(5)) ?? null);
+          else if (id.startsWith("regroup:"))
+            void skein.setCardTerritory(conv.id, id.slice(8));
           else if (id === "wake") void skein.wake(conv);
           else if (id === "aside") skein.setAside(conv, !conv.aside);
           else if (id === "bypass") skein.setBypass(conv, !conv.bypassCaps);
@@ -1824,6 +1862,15 @@
         kind: "region",
         empty: !skein.convs.some((c) => c.cwd === cwd),
         moved: territoryMoved(terr),
+        /* Whether taking it off the wall would leave its cards nowhere to
+           stand — the store refuses that, and the menu does not draw an item
+           whose only answer is a refusal. */
+        lone:
+          skein.territories.filter(
+            (t) =>
+              t.projectId ===
+              skein.territories.find((q) => q.id === terr)?.projectId,
+          ).length < 2,
         /* Offered when it would *do* something, which is stricter than "has a
            width stored": an imported layout can carry a count that happens to
            equal the default, and so can a future change of default. Both would
@@ -1871,6 +1918,23 @@
              not a case: the region was drawn from one. */
           const p = skein.projects.find((x) => x.root_path === cwd);
           guiding = { focus: p?.id ?? null };
+        } else if (id === "new-grouping") {
+          const t = skein.territories.find((q) => q.id === terr);
+          if (t) {
+            void skein.makeTerritory(t.projectId, "new grouping").then((made) => {
+              /* Straight into the handle, selected — see `nameTerritory`. The
+                 placeholder is never what anybody wants, and a region you have
+                 to go and find a second gesture to name is a region most people
+                 would leave called "new grouping". */
+              if (made) canvas?.nameTerritory(made, "new grouping");
+            });
+          }
+        } else if (id === "rename-grouping") {
+          const t = skein.territories.find((q) => q.id === terr);
+          if (t) canvas?.nameTerritory(t.id, t.name);
+        } else if (id === "drop-grouping") {
+          undo.drop("territory", terr);
+          void skein.forgetTerritory(terr);
         } else if (id === "forget") {
           /* Same reasoning as a card being closed: the project row is gone, so
              an act about where its territory stood can never be applied. */
@@ -4404,6 +4468,7 @@
         onsize={(id, cols) => skein.sizeTerritory(id, cols)}
         onstick={(id) => savePlacement(id)}
         onstickproject={(id, at) => skein.stickTerritory(id, at)}
+        onnameterritory={(id, name) => skein.renameTerritory(id, name)}
       />
       {#if focused && showDetail}
         <aside

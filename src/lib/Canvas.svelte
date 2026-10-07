@@ -135,6 +135,7 @@
     ontimelinearchive,
     ontimelineplace,
     onadd,
+    onnameterritory,
   }: {
     convs: Conversation[];
     /** Where the home screen is inside the glass, in glass pixels, or null
@@ -298,11 +299,32 @@
     ontimelineplace?: (id: string, x: number | null, y: number | null) => void;
     /** New conversation in an existing project. `worktree` branches it. */
     onadd?: (cwd: string, worktree?: string) => void;
+    /** A grouping has been given a new name. */
+    onnameterritory?: (id: string, name: string) => void;
   } = $props();
 
   /** Which territory is showing its "name a worktree" input. */
   let branching = $state<string | null>(null);
   let branchName = $state("");
+
+  /** Which territory's handle is being typed into, and what is in it.
+   *
+   *  The same shape `branching` has, and for the same two reasons: a snippet
+   *  has no state of its own, and a territory stuck to the glass is drawn by
+   *  both frames off one snippet — so holding it per territory rather than per
+   *  element is what makes the two copies open and close together. */
+  let renamingTerr = $state<string | null>(null);
+  let terrName = $state("");
+
+  /** Put a grouping's handle into an editable state, selected.
+   *
+   *  Exported because the gesture that *makes* a grouping is a menu item up in
+   *  `App`, and a new region that arrives already named "new grouping" with no
+   *  caret in it is one you have to go and find a second gesture for. */
+  export function nameTerritory(id: string, initial: string) {
+    renamingTerr = id;
+    terrName = initial;
+  }
 
   /** Which territory has an action's arc fanned out.
    *
@@ -2096,7 +2118,36 @@
       title="{r.label} — drag to move it, and everything in it"
       role="presentation"
     >
-      {r.label}
+      {#if renamingTerr === r.id}
+        <!-- Focused and selected on appearance, for the reason the worktree
+             field above is: this is opened by a menu item, so without it the
+             name you type goes wherever focus happened to be. Selected rather
+             than merely focused because a grouping made by `another grouping of
+             this project…` arrives carrying a placeholder, and the first thing
+             anybody does is replace it. -->
+        <input
+          class="naming"
+          bind:value={terrName}
+          spellcheck="false"
+          {@attach (el: HTMLInputElement) => {
+            el.focus();
+            el.select();
+          }}
+          onblur={() => (renamingTerr = null)}
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              if (terrName.trim()) onnameterritory?.(r.id, terrName.trim());
+              renamingTerr = null;
+              terrName = "";
+            } else if (e.key === "Escape") {
+              renamingTerr = null;
+              terrName = "";
+            }
+          }}
+        />
+      {:else}
+        {r.label}
+      {/if}
     </div>
 
     <!-- Dev servers belong to the territory, not to a panel somewhere else:
@@ -2842,6 +2893,29 @@
   .name:hover {
     color: var(--paper-mute);
     background: var(--surface);
+  }
+  /* The handle, being typed into. Inherits the name's own type on purpose —
+     what you are editing should read as the thing you clicked, not as a form
+     that opened over it — and only the things a text field genuinely needs are
+     reset. Achromatic, per the house rule that colour is status. */
+  .naming {
+    font-family: var(--util);
+    font-size: 0.64rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--paper);
+    background: var(--well);
+    border: 1px solid var(--paper-faint);
+    border-radius: 3px;
+    padding: 0.1rem 0.25rem;
+    margin: -0.1rem -0.25rem;
+    width: 11ch;
+    cursor: text;
+  }
+  .naming:focus {
+    outline: none;
+    border-color: var(--paper-mute);
   }
   .name:active {
     cursor: grabbing;

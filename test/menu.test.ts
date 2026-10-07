@@ -228,6 +228,13 @@ describe("the list is shaped like something a person meant", () => {
       "adopt",
       "image",
       "glass",
+      /* A second region over the same checkout, and the way back. `lone` is not
+         set on this bare target, so "take this grouping off the wall" is
+         offered — the caller with the answer is the one that has to speak, the
+         same default `nowhere` takes. */
+      "new-grouping",
+      "rename-grouping",
+      "drop-grouping",
       "explorer",
       "guidance",
     ]);
