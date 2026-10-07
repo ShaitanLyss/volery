@@ -53,7 +53,8 @@ export type Verb =
   | { kind: "open"; what: "timelines" | "pile" | "flyway" }
   | { kind: "window"; act: "span" | "panel" | "dock" }
   | { kind: "presence"; act: "toggle" }
-  | { kind: "grouping"; act: "new" | "rename" };
+  | { kind: "grouping"; act: "new" | "rename" }
+  | { kind: "sink"; act: "open" | "drop" };
 
 /** One sequence the leader opens onto.
  *
@@ -117,6 +118,20 @@ export const CHORDS: readonly Chord[] = [
      itself does rather than anything on the wall. A family rather than a
      letter, because placing a window is several verbs (maximise, minimise,
      which screen) and they want to sit together in the hint. */
+  /* `s` is the sink, and it is a family rather than a letter because there are
+     two gestures and they are nothing alike: *read the pile* and *add to it*.
+     `ss` is the family's main verb, after `ff` — doubling the family letter for
+     the thing you mostly came for is nvchad's shape and is already the one
+     taught by the finder.
+
+     The sink has no chord before this at all: `Basin.svelte` is a *widget*, so
+     the only way to read the pile was to hang one on the wall, and the only way
+     to add to it by hand was to find that widget first. Both of those are the
+     wrong shape for the moment they are wanted — you are in the middle of
+     something else, and the whole value of writing a finding down is that it
+     costs nothing to do and nothing to come back from. */
+  { keys: "ss", label: "the sink", verb: { kind: "sink", act: "open" } },
+  { keys: "sd", label: "drop something in the sink", verb: { kind: "sink", act: "drop" } },
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
   /* `g` is the grouping family — how this folder's work is arranged on the
      wall, which is what v42 made a thing you can have more than one of. A

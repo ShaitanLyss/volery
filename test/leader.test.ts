@@ -160,6 +160,8 @@ describe("the which-key hint", () => {
       { keys: "ia", label: "I'm away / back" },
       { keys: "k", label: "flyway key" },
       { keys: "p", label: "questions that piled up" },
+      { keys: "sd", label: "drop something in the sink" },
+      { keys: "ss", label: "the sink" },
       { keys: "tc", label: "casse-tête" },
       { keys: "td", label: "dérivée" },
       { keys: "tk", label: "croquis" },

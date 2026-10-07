@@ -7,6 +7,8 @@
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import type { Conversation } from "./lib/conversation.svelte";
   import { clock } from "./lib/conversation.svelte";
+  import Drop from "./lib/Drop.svelte";
+  import Sieve from "./lib/Sieve.svelte";
   import { Attention } from "./lib/attention.svelte";
   import { Presence } from "./lib/presence.svelte";
   import { lasted } from "./lib/presence";
@@ -447,6 +449,10 @@
     }
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.kind === "grouping") groupingChord(verb.act);
+    else if (verb.kind === "sink") {
+      if (verb.act === "drop") showDrop = true;
+      else showSink = true;
+    }
     else if (verb.toy === "synth") synth.show();
     /* The rest of the shelf is the away gate's puzzles, opened on purpose
        rather than met on the way back to work. Same surface, `mode="play"` —
@@ -1140,6 +1146,16 @@
      `chrome.test.ts` call it and renaming it buys nothing. */
   let showKeyring = $state(false);
   let showFlyway = $state(false);
+  /* The sink's two gestures, which had no keyboard path at all before — the
+     Basin is a widget, so reading the pile meant hanging one on the wall and
+     adding to it meant finding that widget first. See `leader.ts`. */
+  let showSink = $state(false);
+  let showDrop = $state(false);
+
+  /** Conversation id → what that card is called, so a sink row can say who
+   *  found it. A long-lived pile is mostly cards that have since closed, which
+   *  `sink.ts::finder` is what answers for. */
+  const cardNames = $derived(new Map(skein.convs.map((c) => [c.id, c.title])));
   /* The timeline archive, behind `<space>a` and a header button that is only
      there once something has been archived. */
   let showAnnals = $state(false);
@@ -3434,6 +3450,8 @@
         showAccounts ||
         showKeyring ||
         showFlyway ||
+        showSink ||
+        showDrop ||
         showAnnals ||
         unfinished ||
         openRun ||
@@ -4282,6 +4300,21 @@
   {/if}
   {#if showFlyway}
     <Flyway onclose={() => (showFlyway = false)} />
+  {/if}
+  {#if showSink}
+    <Sieve
+      sink={skein.sink}
+      names={cardNames}
+      now={clock.t}
+      onreveal={(id) => {
+        showSink = false;
+        revealRow("conversation", id);
+      }}
+      onclose={() => (showSink = false)}
+    />
+  {/if}
+  {#if showDrop}
+    <Drop sink={skein.sink} onclose={() => (showDrop = false)} />
   {/if}
   {#if showKeyring}
     <Keyring keyring={creds} {devops} onclose={() => (showKeyring = false)} />

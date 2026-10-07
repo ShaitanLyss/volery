@@ -19,6 +19,7 @@ import {
   proposed,
   reading,
   refusal,
+  search,
   stateOf,
   waiting,
   type Item,
@@ -293,5 +294,80 @@ describe("the words on a row", () => {
     expect(nothing("bug", false)).toBe("no bugs waiting");
     expect(nothing("all", true)).toBe("nothing settled yet");
     expect(nothing("bug", true)).toBe("nothing settled yet");
+  });
+});
+
+describe("finding one in the pile", () => {
+  const it_ = (over: Partial<Item>): Item => ({
+    id: "abcd1234-0000",
+    projectId: null,
+    kind: "bug",
+    title: "ask_user times out",
+    body: "the call parks for ten minutes",
+    paths: [],
+    from: null,
+    droppedAt: 0,
+    touchedAt: 0,
+    voices: 1,
+    heldBy: null,
+    heldAt: null,
+    holdStale: false,
+    settledAt: null,
+    settledNote: null,
+    editedAt: null,
+    ...over,
+  });
+
+  test("an empty query is everything, so the box opens onto the pile", () => {
+    const all = [it_({}), it_({ id: "b", title: "something else" })];
+    expect(search(all, "").length).toBe(2);
+    expect(search(all, "   ").length).toBe(2);
+  });
+
+  test("every term must appear, in any field and any order", () => {
+    const all = [
+      it_({ id: "a", title: "ask_user times out", body: "parks for ten minutes" }),
+      it_({ id: "b", title: "the dock eats a key", body: "nothing to do with questions" }),
+    ];
+    /* One word from the title and one from the body — which is the whole point:
+       you do not have to know which field you remember it from. */
+    expect(search(all, "ask parks").map((i) => i.id)).toEqual(["a"]);
+    expect(search(all, "parks ask").map((i) => i.id)).toEqual(["a"]);
+    /* Substring, not word — `adopt.ts::narrow` is the same, and "ask" finding
+       "asking" is the behaviour anybody typing half a word expects. So the
+       negative case has to be a term genuinely absent from the other row. */
+    expect(search(all, "ask dock").length).toBe(0);
+  });
+
+  test("it is found by kind, by path and by id as well", () => {
+    const all = [it_({ id: "abcd1234-0000", kind: "chore", paths: ["src/lib/sink.ts"] })];
+    expect(search(all, "chore").length).toBe(1);
+    expect(search(all, "sink.ts").length).toBe(1);
+    expect(search(all, "abcd1234").length).toBe(1);
+  });
+
+  test("case never matters", () => {
+    const all = [it_({ title: "Ask_User Times Out" })];
+    expect(search(all, "ASK_USER").length).toBe(1);
+  });
+
+  /* The spelling `mcp__skein__sink` documents to every agent on the wall. The
+     surface a person searches from has to mean the same thing by it. */
+  test("a quoted phrase is kept together", () => {
+    const all = [
+      it_({ id: "a", title: "ask_user times out in a non-interactive session" }),
+      it_({ id: "b", title: "out of times, ask_user" }),
+    ];
+    expect(search(all, '"times out"').map((i) => i.id)).toEqual(["a"]);
+    /* Unquoted, both words appear in both. */
+    expect(search(all, "times out").length).toBe(2);
+  });
+
+  /* A term matching across the join of two fields would find rows nobody meant
+     — `adopt.ts::haystack` learned this and the rule is the same here. */
+  test("a term cannot match across two fields", () => {
+    const all = [it_({ title: "the dock", body: "eats a key" })];
+    expect(search(all, "dockeats").length).toBe(0);
+    expect(search(all, "dock eats").length).toBe(1);
   });
 });

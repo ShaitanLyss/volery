@@ -300,3 +300,48 @@ export function refusal(e: Edit): string | null {
 export function pending(items: Item[]): number {
   return items.filter((i) => i.settledAt === null && !held(i)).length;
 }
+
+/** The terms of a query, with quoted phrases kept whole.
+ *
+ *  `mcp__skein__sink` documents this spelling to every agent on the wall —
+ *  *words that must all appear, in any case; "quote" a phrase to keep it
+ *  together* — so the surface a person searches from has to mean the same
+ *  thing by it. A second spelling of one idea is the shape that makes somebody
+ *  conclude the search is broken when it merely disagrees with itself. */
+export function terms(query: string): string[] {
+  const out: string[] = [];
+  for (const m of query.toLowerCase().matchAll(/"([^"]*)"|(\S+)/g)) {
+    const t = (m[1] ?? m[2] ?? "").trim();
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/** Everything one item can be found by, as one string.
+ *
+ *  Joined on a **newline** rather than a space, which is `adopt.ts::haystack`'s
+ *  rule and is here for the same reason: a term must not be able to match
+ *  across the join of two fields, or a query finds a row whose kind happens to
+ *  end where its title begins. */
+function findableIn(i: Item): string {
+  return [i.title, i.body, i.kind, i.paths.join("\n"), i.id]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+}
+
+/** The items matching `query`, in the order they were given.
+ *
+ *  Every term has to appear somewhere, in any field and in any order — so
+ *  "ask timeout" finds the parked-question item without anybody having to know
+ *  which word is in the title and which is in the body. An empty query is
+ *  everything, which is what makes the search box safe to open onto a full
+ *  pile rather than an empty one. */
+export function search(items: Item[], query: string): Item[] {
+  const want = terms(query);
+  if (!want.length) return [...items];
+  return items.filter((i) => {
+    const hay = findableIn(i);
+    return want.every((t) => hay.includes(t));
+  });
+}
