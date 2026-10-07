@@ -32,3 +32,4 @@
 
 pub mod key;
 pub mod seal;
+pub mod sync;
