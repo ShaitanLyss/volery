@@ -27,7 +27,7 @@ mod docket;
 /// The rows a forge answers in, and the two providers that fill them. `forge`
 /// is vocabulary-neutral on purpose — see its header for the line between a
 /// projection that is honest and one that is a lie.
-mod flyway;
+pub mod flyway;
 pub mod forge;
 mod github;
 /// Public so `examples/find-probe.rs` can drive the real search rather than a
@@ -62,6 +62,7 @@ mod signin;
 mod shell;
 mod sketch;
 mod sink;
+mod sinksync;
 /// Everything under the dock's slash that is *not* Volery's own: the CLI's
 /// built-ins, a project's `.claude/commands/`, and every skill. Asked of a
 /// `claude` over the control route rather than worked out here — see the

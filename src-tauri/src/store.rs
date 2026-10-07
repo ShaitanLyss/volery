@@ -349,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 44;
+const SCHEMA_VERSION: i64 = 45;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -399,6 +399,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (42, migrate_v42),
     (43, migrate_v43),
     (44, migrate_v44),
+    (45, migrate_v45),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -430,7 +431,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
 /// which is belt and braces for the transaction — and not only that, since it
 /// is what lets an already-wedged database walk itself out rather than needing
 /// the surgery this one needed.
-fn migrate(conn: &Connection) -> Result<(), String> {
+pub(crate) fn migrate(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(|e| format!("read schema version: {e}"))?;
@@ -2550,6 +2551,171 @@ fn migrate_v44(conn: &Connection) -> Result<(), String> {
         params![crate::flyway::key::host_name()],
     )
     .map_err(|e| format!("migrate v44: {e}"))?;
+    Ok(())
+}
+
+/// The sink's half of the flyway: an outbox, a set of voices, and the stamps
+/// that let a later statement beat an earlier one. See `sinksync.rs`, which is
+/// what reads all of it.
+///
+/// **A CREATE and three ALTERs, and a backfill that is the point of the rung.**
+/// An item that existed before this wall joined a flyway has to be *said* once
+/// or no other wall ever hears of it, so every existing row becomes a `Dropped`
+/// event (oldest first, so the log reads in the order things happened), plus a
+/// `Settled` or a `Held` where the row is one. Voices were a bare count until
+/// now: the names are not recoverable, so the first voice is the card that
+/// dropped it (or this machine, when you did) and the rest get a stable
+/// placeholder, which keeps the count true and cannot collide with a real name.
+/// Those placeholders are never shipped — only `Seconded` events carry a name.
+///
+/// `held_ev`, `settled_ev` and `worded_ev` are the instant of the latest
+/// statement about that field, kept apart from `held_at`/`settled_at`/
+/// `edited_at` because the real columns are *cleared* by a release or an
+/// unsettling, and a cleared column cannot tell a late older event from a newer
+/// one.
+fn migrate_v45(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS flyway_event (
+            host     TEXT NOT NULL,
+            seq      INTEGER NOT NULL,
+            event    TEXT NOT NULL,
+            applied  INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (host, seq)
+        );
+        CREATE INDEX IF NOT EXISTS flyway_event_waiting ON flyway_event(applied) WHERE applied = 0;
+        CREATE TABLE IF NOT EXISTS sink_voice (
+            item_id  TEXT NOT NULL,
+            who      TEXT NOT NULL,
+            PRIMARY KEY (item_id, who)
+        );
+        CREATE TABLE IF NOT EXISTS sink_alias (
+            old_id  TEXT PRIMARY KEY,
+            new_id  TEXT NOT NULL
+        );
+        "#,
+    )
+    .map_err(|e| format!("migrate v45: {e}"))?;
+    for col in ["held_ev", "settled_ev", "worded_ev"] {
+        add_column(conn, "sink_item", col, "INTEGER NOT NULL DEFAULT 0")?;
+    }
+
+    /* Only a wall that has not already been through this. A rung and its stamp
+       share a transaction so a re-run is not expected, but the cost of being
+       wrong is every item said twice under new sequence numbers, so an outbox
+       that already holds anything is taken as the answer. */
+    let said: i64 = conn
+        .query_row("SELECT COUNT(*) FROM flyway_event", [], |r| r.get(0))
+        .map_err(|e| format!("migrate v45: {e}"))?;
+    if said > 0 {
+        return Ok(());
+    }
+    use crate::flyway::sync::{What, Event, Stamp};
+    let host = crate::flyway::key::host_name();
+    struct Old {
+        id: String,
+        project: Option<String>,
+        kind: String,
+        title: String,
+        body: String,
+        paths: String,
+        from: Option<String>,
+        at: i64,
+        voices: i64,
+        held_by: Option<String>,
+        held_at: Option<i64>,
+        settled_at: Option<i64>,
+        note: Option<String>,
+        edited: Option<i64>,
+        origin: Option<String>,
+    }
+    let old: Vec<Old> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project_id, kind, title, body, paths, from_id, dropped_at, voices,
+                        held_by, held_at, settled_at, settled_note, edited_at, origin_host
+                   FROM sink_item ORDER BY dropped_at, id",
+            )
+            .map_err(|e| format!("migrate v45: {e}"))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Old {
+                    id: r.get(0)?,
+                    project: r.get(1)?,
+                    kind: r.get(2)?,
+                    title: r.get(3)?,
+                    body: r.get(4)?,
+                    paths: r.get(5)?,
+                    from: r.get(6)?,
+                    at: r.get(7)?,
+                    voices: r.get(8)?,
+                    held_by: r.get(9)?,
+                    held_at: r.get(10)?,
+                    settled_at: r.get(11)?,
+                    note: r.get(12)?,
+                    edited: r.get(13)?,
+                    origin: r.get(14)?,
+                })
+            })
+            .map_err(|e| format!("migrate v45: {e}"))?;
+        let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("migrate v45: {e}"))?;
+        rows
+    };
+    let mut seq: i64 = conn
+        .query_row("SELECT COALESCE(MAX(seq), 0) FROM flyway_event WHERE host = ?1", params![host], |r| {
+            r.get(0)
+        })
+        .map_err(|e| format!("migrate v45: {e}"))?;
+    let mut say = |what: What| -> Result<(), String> {
+        seq += 1;
+        let e = Event { stamp: Stamp { host: host.clone(), seq: seq as u64 }, what };
+        conn.execute(
+            "INSERT OR IGNORE INTO flyway_event (host, seq, event, applied) VALUES (?1, ?2, ?3, 1)",
+            params![host, seq, serde_json::to_string(&e).map_err(|x| x.to_string())?],
+        )
+        .map(|_| ())
+        .map_err(|x| format!("migrate v45: {x}"))
+    };
+    for o in old {
+        let scope: Option<String> = match &o.project {
+            Some(p) => conn
+                .query_row("SELECT name FROM project WHERE id = ?1", params![p], |r| r.get(0))
+                .optional()
+                .map_err(|e| format!("migrate v45: {e}"))?,
+            None => None,
+        };
+        let origin = o.origin.clone().unwrap_or_else(|| host.clone());
+        let first = o.from.clone().unwrap_or_else(|| origin.clone());
+        for i in 0..o.voices.max(1) {
+            let who = if i == 0 { first.clone() } else { format!("legacy:{}:{}", o.id, i + 1) };
+            conn.execute(
+                "INSERT OR IGNORE INTO sink_voice (item_id, who) VALUES (?1, ?2)",
+                params![o.id, who],
+            )
+            .map_err(|e| format!("migrate v45: {e}"))?;
+        }
+        say(What::Dropped {
+            id: o.id.clone(),
+            scope,
+            kind: o.kind,
+            title: o.title,
+            body: o.body,
+            paths: o.paths,
+            from: o.from,
+            at: o.at,
+            host: origin,
+        })?;
+        if let Some(at) = o.settled_at {
+            say(What::Settled { id: o.id.clone(), note: o.note.unwrap_or_default(), at })?;
+        } else if let (Some(by), Some(at)) = (o.held_by, o.held_at) {
+            say(What::Held { id: o.id.clone(), by, at })?;
+        }
+        conn.execute(
+            "UPDATE sink_item SET held_ev = ?2, settled_ev = ?3, worded_ev = ?4 WHERE id = ?1",
+            params![o.id, o.held_at.unwrap_or(0), o.settled_at.unwrap_or(0), o.edited.unwrap_or(0)],
+        )
+        .map_err(|e| format!("migrate v45: {e}"))?;
+    }
     Ok(())
 }
 
@@ -7013,6 +7179,23 @@ pub fn put_sink_item(
     paths: &str,
     from_id: Option<&str>,
 ) -> Result<SinkPut, String> {
+    /* The row and the event that says so commit together — see `sinksync.rs`. */
+    crate::sinksync::atomic(conn, || {
+        put_sink_item_in(conn, id, project_id, kind, title, body, paths, from_id)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn put_sink_item_in(
+    conn: &Connection,
+    id: &str,
+    project_id: Option<&str>,
+    kind: &str,
+    title: &str,
+    body: &str,
+    paths: &str,
+    from_id: Option<&str>,
+) -> Result<SinkPut, String> {
     let at = now();
     let existing: Option<(String, String, i64, Option<String>)> = conn
         .query_row(
@@ -7031,7 +7214,7 @@ pub fn put_sink_item(
            saying it twice is not — that is one agent repeating itself, and
            counting it would make `voices` a measure of how talkative a card is
            rather than of how widely the thing is felt. */
-        let another = from_id.is_some() && from_id != old_from.as_deref();
+        let _ = &old_from;
         let mut body_now = old_body.clone();
         let mut body_omitted = 0usize;
         if !body.is_empty() && !old_body.contains(body) {
@@ -7043,6 +7226,23 @@ pub fn put_sink_item(
             let cut = crate::clip::keep(&body_now, MAX_SINK_BODY);
             body_omitted = cut.omitted;
             body_now = cut.marked(BODY_REMEDY);
+        }
+        /* Whether it is a *voice* is a question about a set, not about the last
+           card to speak: a card that spoke, was followed by another and speaks
+           again is still one. Only a card has a name to add — you saying it a
+           second time is not a voice, as it never was. */
+        let another = match from_id {
+            Some(who) => crate::sinksync::add_voice(conn, &old, who)?,
+            None => false,
+        };
+        if another {
+            crate::sinksync::record(
+                conn,
+                crate::flyway::sync::What::Seconded {
+                    id: old.clone(),
+                    by: from_id.unwrap_or_default().to_string(),
+                },
+            )?;
         }
         let voices_now = voices + i64::from(another);
         conn.execute(
@@ -7078,6 +7278,22 @@ pub fn put_sink_item(
         ],
     )
     .map_err(|e| format!("drop into sink: {e}"))?;
+    let host = crate::flyway::key::host_name();
+    crate::sinksync::add_voice(conn, id, from_id.unwrap_or(&host))?;
+    crate::sinksync::record(
+        conn,
+        crate::flyway::sync::What::Dropped {
+            id: id.to_string(),
+            scope: crate::sinksync::scope_of(conn, project_id),
+            kind: kind.to_string(),
+            title: title.to_string(),
+            body: body.clone(),
+            paths: paths.to_string(),
+            from: from_id.map(str::to_string),
+            at,
+            host,
+        },
+    )?;
     Ok(SinkPut { id: id.to_string(), merged: false, voices: 1, body_omitted: cut.omitted })
 }
 
@@ -7108,16 +7324,33 @@ pub fn edit_sink_item(
     cutoff: i64,
 ) -> bool {
     let at = now();
-    conn.execute(
-        "UPDATE sink_item SET kind = ?2, title = ?3, body = ?4, paths = ?5,
-                              edited_at = ?6, touched_at = ?6
-          WHERE id = ?1
-            AND settled_at IS NULL
-            AND (held_by IS NULL OR held_at < ?7)",
-        params![id, kind, title, body, paths, at, cutoff],
-    )
-    .unwrap_or(0)
-        > 0
+    crate::sinksync::atomic(conn, || {
+        let n = conn
+            .execute(
+                "UPDATE sink_item SET kind = ?2, title = ?3, body = ?4, paths = ?5,
+                                      edited_at = ?6, touched_at = ?6
+                  WHERE id = ?1
+                    AND settled_at IS NULL
+                    AND (held_by IS NULL OR held_at < ?7)",
+                params![id, kind, title, body, paths, at, cutoff],
+            )
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            crate::sinksync::record(
+                conn,
+                crate::flyway::sync::What::Reworded {
+                    id: id.to_string(),
+                    kind: kind.to_string(),
+                    title: title.to_string(),
+                    body: body.to_string(),
+                    paths: paths.to_string(),
+                    at,
+                },
+            )?;
+        }
+        Ok(n > 0)
+    })
+    .unwrap_or(false)
 }
 
 /// Take an item, or put it back — `by` of `None` releases it.
@@ -7134,15 +7367,29 @@ pub fn hold_sink_item(
     expect: Option<&str>,
 ) -> bool {
     let at = now();
-    conn.execute(
-        "UPDATE sink_item SET held_by = ?2, held_at = ?3, touched_at = ?4
-          WHERE id = ?1
-            AND settled_at IS NULL
-            AND ((held_by IS NULL AND ?5 IS NULL) OR held_by = ?5)",
-        params![id, by, by.map(|_| at), at, expect],
-    )
-    .unwrap_or(0)
-        > 0
+    crate::sinksync::atomic(conn, || {
+        let n = conn
+            .execute(
+                "UPDATE sink_item SET held_by = ?2, held_at = ?3, touched_at = ?4
+                  WHERE id = ?1
+                    AND settled_at IS NULL
+                    AND ((held_by IS NULL AND ?5 IS NULL) OR held_by = ?5)",
+                params![id, by, by.map(|_| at), at, expect],
+            )
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            let id = id.to_string();
+            crate::sinksync::record(
+                conn,
+                match by {
+                    Some(by) => crate::flyway::sync::What::Held { id, by: by.to_string(), at },
+                    None => crate::flyway::sync::What::Released { id, at },
+                },
+            )?;
+        }
+        Ok(n > 0)
+    })
+    .unwrap_or(false)
 }
 
 /// Refresh a hold this card already has, so a long piece of work does not go
@@ -7159,30 +7406,60 @@ pub fn touch_sink_hold(conn: &Connection, id: &str, by: &str) -> bool {
 
 /// Mark it addressed. Not a DELETE — see `migrate_v18`.
 pub fn settle_sink_item(conn: &Connection, id: &str, note: Option<&str>) -> bool {
-    conn.execute(
-        "UPDATE sink_item SET settled_at = ?2, settled_note = ?3, held_by = NULL,
-                              held_at = NULL, touched_at = ?2
-          WHERE id = ?1 AND settled_at IS NULL",
-        params![id, now(), note],
-    )
-    .unwrap_or(0)
-        > 0
+    let at = now();
+    crate::sinksync::atomic(conn, || {
+        let n = conn
+            .execute(
+                "UPDATE sink_item SET settled_at = ?2, settled_note = ?3, held_by = NULL,
+                                      held_at = NULL, touched_at = ?2
+                  WHERE id = ?1 AND settled_at IS NULL",
+                params![id, at, note],
+            )
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            crate::sinksync::record(
+                conn,
+                crate::flyway::sync::What::Settled {
+                    id: id.to_string(),
+                    note: note.unwrap_or_default().to_string(),
+                    at,
+                },
+            )?;
+        }
+        Ok(n > 0)
+    })
+    .unwrap_or(false)
 }
 
 /// Put a settled item back, because it turned out not to be addressed.
 pub fn unsettle_sink_item(conn: &Connection, id: &str) -> bool {
-    conn.execute(
-        "UPDATE sink_item SET settled_at = NULL, settled_note = NULL, touched_at = ?2
-          WHERE id = ?1 AND settled_at IS NOT NULL",
-        params![id, now()],
-    )
-    .unwrap_or(0)
-        > 0
+    let at = now();
+    crate::sinksync::atomic(conn, || {
+        let n = conn
+            .execute(
+                "UPDATE sink_item SET settled_at = NULL, settled_note = NULL, touched_at = ?2
+                  WHERE id = ?1 AND settled_at IS NOT NULL",
+                params![id, at],
+            )
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            crate::sinksync::record(
+                conn,
+                crate::flyway::sync::What::Unsettled { id: id.to_string(), at },
+            )?;
+        }
+        Ok(n > 0)
+    })
+    .unwrap_or(false)
 }
 
 /// Yours to throw away. No agent reaches this — an item an agent believes is
 /// finished with is `settle_sink_item`, which keeps the record.
 pub fn drop_sink_item(conn: &Connection, id: &str) -> bool {
+    /* Not an event: the flyway's vocabulary has no word for a deletion, so this
+       stays local — and the events already stored under the id are what stop a
+       replay from bringing it back. Its voices go with it. */
+    let _ = conn.execute("DELETE FROM sink_voice WHERE item_id = ?1", params![id]);
     conn.execute("DELETE FROM sink_item WHERE id = ?1", params![id])
         .unwrap_or(0)
         > 0
@@ -7191,10 +7468,39 @@ pub fn drop_sink_item(conn: &Connection, id: &str) -> bool {
 /// Let go of everything one card is holding. Called where a card closes and
 /// where it is cleared: the item stays, the claim on it does not.
 pub fn release_sink_holds_of(conn: &Connection, held_by: &str) -> usize {
-    conn.execute(
-        "UPDATE sink_item SET held_by = NULL, held_at = NULL WHERE held_by = ?1",
-        params![held_by],
-    )
+    release_where(conn, "held_by = ?1", Some(held_by))
+}
+
+/// Let go of every hold matching a condition, and say each one was let go.
+///
+/// The condition is one of two fixed strings from this file, never anything a
+/// card wrote, so it is spliced rather than bound.
+fn release_where(conn: &Connection, cond: &str, arg: Option<&str>) -> usize {
+    crate::sinksync::atomic(conn, || {
+        let ids: Vec<String> = {
+            let mut stmt = conn
+                .prepare(&format!("SELECT id FROM sink_item WHERE held_by IS NOT NULL AND ({cond})"))
+                .map_err(|e| e.to_string())?;
+            let found: Result<Vec<String>, rusqlite::Error> = (|| match arg {
+                Some(a) => stmt.query_map(params![a], |r| r.get(0))?.collect(),
+                None => stmt.query_map([], |r| r.get(0))?.collect(),
+            })();
+            found.map_err(|e| e.to_string())?
+        };
+        let at = now();
+        for id in &ids {
+            conn.execute(
+                "UPDATE sink_item SET held_by = NULL, held_at = NULL WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            crate::sinksync::record(
+                conn,
+                crate::flyway::sync::What::Released { id: id.clone(), at },
+            )?;
+        }
+        Ok(ids.len())
+    })
     .unwrap_or(0)
 }
 
@@ -7205,12 +7511,11 @@ pub fn release_sink_holds_of(conn: &Connection, held_by: &str) -> usize {
 /// clears the *hold* and leaves the item. An item is not somebody's to take away
 /// by closing their card. See `migrate_v18`.
 pub fn sweep_sink_holds(conn: &Connection) -> usize {
-    conn.execute(
-        "UPDATE sink_item SET held_by = NULL, held_at = NULL
-          WHERE held_by IN (SELECT id FROM conversation WHERE closed_at IS NOT NULL)",
-        [],
+    release_where(
+        conn,
+        "held_by IN (SELECT id FROM conversation WHERE closed_at IS NOT NULL)",
+        None,
     )
-    .unwrap_or(0)
 }
 
 /// How many items this card is holding, for the cap.
@@ -10335,6 +10640,42 @@ mod tests {
     }
 
     /* ── the sink ─────────────────────────────────────────────────────────── */
+
+    /* The rung's whole point: an item that existed before this wall joined a
+       flyway is said once, with its count kept and its state carried. */
+    #[test]
+    fn v45_says_what_was_already_in_the_pile_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        for (_, step) in STEPS.iter().take(44) {
+            step(&conn).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO project (id, name, root_path, created_at) VALUES ('p1', 'skein', 'C:/x', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO sink_item (id, project_id, kind, title, body, dropped_at, touched_at, voices, from_id)
+               VALUES ('a', 'p1', 'bug', 'open one', 'b', 10, 10, 3, 'c1');
+             INSERT INTO sink_item (id, project_id, kind, title, body, dropped_at, touched_at, voices, settled_at, settled_note)
+               VALUES ('b', NULL, 'note', 'done one', 'b', 20, 20, 1, 30, 'fixed');",
+        )
+        .unwrap();
+        migrate_v45(&conn).unwrap();
+        migrate_v45(&conn).unwrap(); // a re-run says nothing twice
+
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM flyway_event", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 3, "two drops and one settling");
+        let voices: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sink_voice WHERE item_id = 'a'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(voices, 3, "the count survives as names");
+        let ev: i64 = conn
+            .query_row("SELECT settled_ev FROM sink_item WHERE id = 'b'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ev, 30);
+    }
+
 
     fn seed_card(conn: &Connection, id: &str, closed: bool) {
         conn.execute(
