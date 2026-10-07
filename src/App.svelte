@@ -3672,6 +3672,7 @@
     "accounts",
     "guide",
     "token",
+    "flyway",
     "chime",
     "layout",
   ];
@@ -3716,6 +3717,7 @@
     "chime",
     "layout",
     "token",
+    "flyway",
     "away",
     /* Given up after `away` and before the readings, which is as late as a verb
        gets here. It is only in the bar at all when something is waiting, and
