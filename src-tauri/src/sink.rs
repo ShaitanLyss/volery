@@ -1809,6 +1809,12 @@ fn as_json(i: &SinkItem, now: i64) -> Value {
         "settledAt": i.settled_at,
         "settledNote": i.settled_note,
         "editedAt": i.edited_at,
+        /* Which machine first saw it. The agent-facing listing has said this
+           since v44 and the *wall* could not, which is the wrong way round —
+           the listing is read by something that cannot be surprised, and the
+           pile is read by somebody who can. See `store::SinkItem::origin_host`
+           on why it is attribution and never identity. */
+        "originHost": i.origin_host,
     })
 }
 
@@ -1898,17 +1904,21 @@ pub async fn sink_edit(
        backstop rather than the first they hear of it. */
     let body = crate::clip::keep(body.trim(), crate::store::MAX_SINK_BODY)
         .marked(crate::store::BODY_REMEDY);
-    /* The same bar `do_drop` sets, and for the same span of time: a title on its
-       own is a thing nobody will be able to act on in a month. An edit that
-       emptied the body would take an item below the bar it had to clear to get
-       in. */
-    if body.is_empty() {
-        return Err(
-            "an item needs a body — a title on its own is a thing nobody will be able to \
-             act on in a month"
-                .into(),
-        );
-    }
+    /* **A body is not required here, and that is a correction rather than an
+       omission.** This used to refuse an empty one on `do_drop`'s argument —
+       a title alone is a thing nobody will be able to act on in a month — which
+       is a fair bar for an *agent* writing a finding somebody else will pick up,
+       and the wrong one for you.
+
+       You may drop a title-only item by hand (`Drop.svelte`, `<space>sd`), so a
+       surface that then refused to let you *reword* it was refusing to save a
+       thing it had let you make. The cost of that bar is not a better item, it
+       is the note never being written at all.
+
+       `do_drop` keeps the requirement, and the asymmetry there is the point
+       rather than a leftover: the author is the difference. An agent has the
+       context at the moment it drops and will not be there in November; you are
+       writing for yourself and can finish it when you come back. */
     let kind = kind
         .map(|k| k.to_lowercase())
         .filter(|k| KINDS.contains(&k.as_str()))

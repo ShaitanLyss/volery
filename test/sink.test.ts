@@ -22,6 +22,7 @@ import {
   search,
   stateOf,
   waiting,
+  whence,
   type Item,
 } from "../src/lib/sink";
 
@@ -238,18 +239,28 @@ describe("rewording one", () => {
     expect(moved(i, proposed({ ...at, paths: " a.ts " }))).toBe(false);
   });
 
-  /* The two refusals the face can make instantly. The other three — held,
-     settled, and a title another item already holds — need the table and come
-     back from Rust as a sentence. These two are the bar `do_drop` sets, and an
-     edit must not take an item below the bar it cleared to get in. */
-  test("a title and a body, which is the bar an agent's drop clears", () => {
+  /* The one refusal the face can make instantly. The others — held, settled,
+     and a title another item already holds — need the table and come back from
+     Rust as a sentence. */
+  test("a title is the whole of what an item cannot be without", () => {
     expect(refusal(proposed({ title: " ", body: "b", kind: "note", paths: "" }))).toBe(
       "an item needs a title",
     );
-    expect(refusal(proposed({ title: "t", body: " ", kind: "note", paths: "" }))).toContain(
-      "act on in a month",
-    );
     expect(refusal(proposed({ title: "t", body: "b", kind: "note", paths: "" }))).toBeNull();
+  });
+
+  /* **A body is not required**, and this is the assertion that keeps it that
+     way. `Drop.svelte` lets you leave a title-only item by hand, so a surface
+     that refused to let you reword one would be refusing to save a thing it had
+     let you make. `sink_edit` agrees — a front end that offered a save Rust then
+     refused would be worse than the asymmetry it replaced.
+
+     The agent-facing `do_drop` still asks for one, and that asymmetry is the
+     point rather than a leftover: an agent has the context at the moment it
+     drops and will not be there in November. */
+  test("an edit may leave the body empty, as a hand-dropped item does", () => {
+    expect(refusal(proposed({ title: "t", body: " ", kind: "note", paths: "" }))).toBeNull();
+    expect(refusal(proposed({ title: "t", body: "", kind: "note", paths: "" }))).toBeNull();
   });
 });
 
@@ -369,5 +380,56 @@ describe("finding one in the pile", () => {
     const all = [it_({ title: "the dock", body: "eats a key" })];
     expect(search(all, "dockeats").length).toBe(0);
     expect(search(all, "dock eats").length).toBe(1);
+  });
+});
+
+describe("which machine a finding came from", () => {
+  const from = (originHost: string | null): Item => ({
+    id: "a",
+    projectId: null,
+    kind: "bug",
+    title: "t",
+    body: "b",
+    paths: [],
+    from: null,
+    droppedAt: 0,
+    touchedAt: 0,
+    voices: 1,
+    heldBy: null,
+    heldAt: null,
+    holdStale: false,
+    settledAt: null,
+    settledNote: null,
+    editedAt: null,
+    originHost,
+  });
+
+  /* On a wall in no flyway every row would otherwise carry the same word — a
+     word per row for a fact nobody is asking about. The agent-facing listing
+     has taken exactly this line since v44. */
+  test("says nothing when the finding was seen here", () => {
+    expect(whence(from("desk"), "desk")).toBe("");
+    expect(whence(from("DESK"), "desk")).toBe("");
+    expect(whence(from("desk"), " DESK ")).toBe("");
+  });
+
+  test("names the machine when it was somewhere else", () => {
+    expect(whence(from("laptop"), "desk")).toBe("laptop");
+  });
+
+  /* A row written before the flyway existed, and one from a build that does not
+     send the field. Neither is "from somewhere else" — it is not known. */
+  test("says nothing when there is nothing to say", () => {
+    expect(whence(from(null), "desk")).toBe("");
+    expect(whence(from(""), "desk")).toBe("");
+    expect(whence(from("   "), "desk")).toBe("");
+  });
+
+  /* The field survives the wire, which is the half that was missing: Rust has
+     stored it since v44 and `as_json` never sent it, so the wall could not say
+     what the tool already could. */
+  test("it comes off the wire", () => {
+    expect(normalize({ id: "a", title: "t", originHost: "laptop" })?.originHost).toBe("laptop");
+    expect(normalize({ id: "a", title: "t" })?.originHost).toBeNull();
   });
 });

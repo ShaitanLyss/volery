@@ -34,6 +34,14 @@ export class Sink {
   /** Bumped on every settled read, so a widget can tell "nothing in it" from
    *  "not looked yet" without a second flag. */
   read = $state(0);
+  /** What this machine calls itself, so a row can say where a finding came from
+   *  **only when that is somewhere else** — see `sink.ts::whence`.
+   *
+   *  Held here rather than passed to each face, because every surface that
+   *  draws a row needs it and a prop is a thing a surface can forget: forgetting
+   *  it would silently relabel every remote finding as local, which reads as
+   *  correct. Asked once, since a machine does not rename itself mid-session. */
+  here = $state("");
 
   #watchers = new Set<string>();
   #busy = false;
@@ -66,6 +74,12 @@ export class Sink {
     if (this.#busy) return;
     this.#busy = true;
     try {
+      /* Asked alongside the first read rather than in a constructor: `invoke`
+         is not available until the app is up, and this is the first moment the
+         sink talks to Rust anyway. */
+      if (!this.here) {
+        this.here = await invoke<string>("flyway_host").catch(() => "");
+      }
       const [open, done] = await Promise.all([
         invoke<unknown>("read_sink", { projectId: null, settled: false }),
         invoke<unknown>("read_sink", { projectId: null, settled: true }),

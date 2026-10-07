@@ -109,14 +109,27 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         }
     });
 
-    /* And ask the others what we have missed, for ever. */
+    /* And ask the others what we have missed — **now, then for ever.**
+    
+       The sleep is after the ask rather than before it, which is the whole of
+       the difference between joining a flyway and watching nothing happen for
+       the better part of a minute. `arrive` is called when a key is entered as
+       well as at launch, so the ask-first order is also what makes pasting an
+       invite produce an answer on the spot: the panel says the link is up, and
+       by the time you have read that, the pile has arrived.
+    
+       That window is exactly when somebody is watching to see whether it
+       worked, and a feature that is indistinguishable from a broken one for
+       forty-five seconds is one people give up on at second thirty. */
     let asking = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(EVERY).await;
             if let Err(e) = pull(asking.clone()).await {
+                /* A peer that is asleep is the ordinary case, not a fault —
+                   the other machine is a laptop in a bag most of the day. */
                 log::debug!("flyway: nothing came back this time: {e}");
             }
+            tokio::time::sleep(EVERY).await;
         }
     });
 

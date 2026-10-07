@@ -73,6 +73,7 @@
     refusal,
     stateOf,
     waiting,
+    whence,
     type Draft,
     type Item,
     type Kind,
@@ -132,7 +133,12 @@
     if (!t) return;
     /* Wall-wide, for the billboard's reason: something you write by hand is not
        standing in any one project — you are. */
-    await sink.add(t, bodyText.trim() || t, draftKind, [], null);
+    /* The body as typed, empty and all. This used to fall back to the title
+       when it was blank — which satisfied a requirement that no longer exists
+       by writing the same sentence twice, and made an item somebody dashed off
+       indistinguishable from one they filled in. `Drop.svelte` never did it;
+       the two surfaces now agree. */
+    await sink.add(t, bodyText.trim(), draftKind, [], null);
     title = "";
     bodyText = "";
     draftKind = "note";
@@ -323,7 +329,8 @@
           {next.kind} · dropped by {finder(next, names)}, {waiting(next, now)} ago{#if next.voices > 1}
             · {next.voices} conversations have met it{/if}{#if next.editedAt !== null && next.from}
             · you have reworded it since{/if}{#if stateOf(next) === "lapsed"}
-            · {holder(next, names)} took it and let it lapse{/if}
+            · {holder(next, names)} took it and let it lapse{/if}{#if whence(next, sink.here)}
+            · seen on {whence(next, sink.here)}{/if}
         </p>
         <div class="verbs">
           <button

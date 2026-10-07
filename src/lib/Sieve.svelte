@@ -26,7 +26,16 @@
    * leaving you to wonder, which is the same honesty the Basin's own face
    * keeps.
    */
-  import { KINDS, finder, reading, search, stateOf, waiting, type Item, type Kind } from "./sink";
+  import {
+    KINDS,
+    finder,
+    reading,
+    search,
+    stateOf,
+    waiting,
+    whence,
+    type Kind,
+  } from "./sink";
   import type { Sink } from "./sink.svelte";
 
   let {
@@ -123,7 +132,9 @@
           </span>
           <span class="under">
             {finder(i, names)} · {waiting(i, now)} ago{#if stateOf(i) !== "waiting"} ·
-              {stateOf(i)}{/if}
+              {stateOf(i)}{/if}{#if whence(i, sink.here)} · <span class="whence"
+                >{whence(i, sink.here)}</span
+              >{/if}
           </span>
         </button>
       {:else}
@@ -268,6 +279,13 @@
   .under {
     font-size: 0.68rem;
     color: var(--paper-faint);
+  }
+  /* Which machine it came from, drawn only when that is not this one. Marked
+     rather than coloured — colour is status here. */
+  .whence {
+    font-family: var(--util);
+    letter-spacing: 0.06em;
+    color: var(--paper-mute);
   }
   .nothing {
     margin: 1.5rem 0 0;

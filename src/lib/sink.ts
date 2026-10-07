@@ -48,6 +48,10 @@ export type Item = {
   /** When you last reworded it, or null for an item still in the words it was
    *  dropped in. See `store.rs::migrate_v22`. */
   editedAt: number | null;
+  /** Which machine first saw it, or null for a row written before the flyway
+   *  existed. **Attribution, never identity** — nothing matches on it, so one
+   *  finding dropped on two machines is still one item with two voices. */
+  originHost: string | null;
 };
 
 function str(v: unknown, fallback = ""): string {
@@ -94,6 +98,7 @@ export function normalize(raw: unknown): Item | null {
     settledAt: maybeNum(r.settledAt),
     settledNote: typeof r.settledNote === "string" ? r.settledNote : null,
     editedAt: maybeNum(r.editedAt),
+    originHost: typeof r.originHost === "string" ? r.originHost : null,
   };
 }
 
@@ -287,9 +292,17 @@ export function moved(item: Item, e: Edit): boolean {
  *  built for. */
 export function refusal(e: Edit): string | null {
   if (!e.title) return "an item needs a title";
-  if (!e.body) {
-    return "an item needs a body — a title on its own is a thing nobody will be able to act on in a month";
-  }
+  /* **A body is not required**, and the reason is consistency rather than
+     leniency. `Drop.svelte` lets you leave a title-only item by hand, so a
+     surface that refused to let you reword one would be refusing to save a
+     thing it had let you make — and the cost of that bar is not a better item,
+     it is the note never being written. `sink_edit` agrees, which is the half
+     that matters: a front end that offered a save Rust then refused would be
+     worse than the asymmetry it replaced.
+
+     The agent-facing `do_drop` still asks for one. The author is the
+     difference: an agent has the context at the moment it drops and will not be
+     there in November. */
   return null;
 }
 
@@ -344,4 +357,18 @@ export function search(items: Item[], query: string): Item[] {
     const hay = findableIn(i);
     return want.every((t) => hay.includes(t));
   });
+}
+
+/** Which machine a finding came from, **when that is worth saying**.
+ *
+ *  Empty for anything seen on this wall, and for a row written before the
+ *  flyway existed. The agent-facing listing has taken exactly this line since
+ *  v44 and the reason is the same: on a wall in no flyway every row would
+ *  otherwise carry the same word, which is a word per row for a fact nobody is
+ *  asking about. Once a pile is shared, the rows that say something are the
+ *  ones from somewhere else — which is also the only time anybody wonders. */
+export function whence(item: Item, here: string): string {
+  const h = (item.originHost ?? "").trim();
+  if (!h) return "";
+  return h.toLowerCase() === here.trim().toLowerCase() ? "" : h;
 }
