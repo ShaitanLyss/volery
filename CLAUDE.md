@@ -154,6 +154,19 @@ bun tools/probe-rm.ts              # what `deny: Bash(rm -rf:*)` actually stops.
                                    # is nothing a card can call — it is given PowerShell and
                                    # no Bash tool at all. One real turn
 bun tools/probe-gates.ts           # what PostToolUse hands a hook, and what it does NOT
+cd src-tauri && cargo run --example migrate-check -- <dir with a COPY of skein.db>
+                                   # walk a copy of a real wall up to this build's schema and
+                                   # say what survived: the counts, and one line per invariant
+                                   # the new schema establishes. Refuses the installed wall's
+                                   # own directory, because the obvious path to type is the
+                                   # dangerous one. A migration's unit tests only ever meet the
+                                   # rows somebody thought to write; this is the half they
+                                   # cannot reach
+cd src-tauri && cargo run --example flyway-probe   # what a network lets the flyway out
+                                   # through — whether UDP escapes and whether TLS validates
+                                   # with this machine's own roots. Reads the network it is
+                                   # run on, so it answers nothing useful from home: see
+                                   # `docs/FLYWAY-PROBE.md`, which is the errand
 bun tools/probe-migrate.ts         # whether a session can be picked up where the repo lives
                                    # at a different path — the whole of whether a card can be
                                    # *moved* to another machine. Two directories stand in for
