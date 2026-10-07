@@ -30,7 +30,9 @@
    going over a wire, something above is not calling what it should be. */
 #![allow(dead_code)]
 
+pub mod fleet;
 pub mod key;
 pub mod seal;
 pub mod session;
 pub mod sync;
+pub mod wire;
