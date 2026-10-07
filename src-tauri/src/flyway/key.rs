@@ -34,6 +34,13 @@ const TARGET: &str = "dev.skein.studio/flyway-key";
 /// for "what has this app got of mine" will read it.
 const WHO: &str = "volery flyway";
 
+/// What separates the key from the machine name in a stored invite.
+///
+/// Not a character the phrase alphabet contains, so splitting can never cut a
+/// key in half — Crockford base32 is digits and consonants, and this is
+/// neither.
+const SPLIT: char = '·';
+
 /// The key this wall is a member by, or `None` if it has never been given one.
 ///
 /// Every failure is `None`: a vault that cannot be read and a wall that has
@@ -41,8 +48,29 @@ const WHO: &str = "volery flyway";
 /// one path that genuinely needs to tell them apart is the panel, which asks
 /// `held` instead.
 pub fn wall_key() -> Option<WallKey> {
-    let phrase = crate::vault::read_at(TARGET)?;
-    WallKey::from_phrase(&phrase).ok()
+    let held = crate::vault::read_at(TARGET)?;
+    WallKey::from_phrase(held.split(SPLIT).next()?).ok()
+}
+
+/// The machine named by the invite this wall joined with, if it was somebody
+/// else's.
+///
+/// **This is the whole of the bootstrap**, and it is why an invite carries a
+/// name at all: dialling needs a peer's identity, the identity is derived from
+/// the key and the machine's name, so one name is enough to find one wall — and
+/// every other wall on the flyway is learned from that one.
+///
+/// A wall that *started* its flyway has its own name stored here, which is not
+/// a peer. Filtered rather than special-cased at the call site, because the one
+/// thing worse than not dialling anybody is a wall dialling itself and
+/// deadlocking against its own accept loop.
+pub fn joined_peer() -> Option<String> {
+    let held = crate::vault::read_at(TARGET)?;
+    let host = held.split(SPLIT).nth(1)?.trim().to_string();
+    if host.is_empty() || host.eq_ignore_ascii_case(&host_name()) {
+        return None;
+    }
+    Some(host)
 }
 
 /// Whether this wall has a key at all, without reading it.
@@ -56,12 +84,22 @@ pub fn held() -> bool {
 /// the door with a reason rather than stored and found to be wrong later — at
 /// which point the symptom is "the other wall cannot see me" and the cause is
 /// four layers down.
-pub fn join(phrase: &str) -> Result<(), String> {
+pub fn join(invite: &str) -> Result<(), String> {
+    let mut parts = invite.splitn(2, SPLIT);
+    let phrase = parts.next().unwrap_or("");
+    let peer = parts.next().map(str::trim).unwrap_or("");
     let key = WallKey::from_phrase(phrase)?;
+    if peer.is_empty() {
+        return Err(
+            "that invite names no machine, so there is nobody to dial — copy the whole of it, \
+             including the part after the dot"
+                .to_string(),
+        );
+    }
     /* Stored in its canonical spelling rather than as typed, so the vault never
        holds one person's spacing and another's case. `phrase()` is the round
        trip `seal.rs` tests. */
-    crate::vault::store_at(TARGET, WHO, &key.phrase())
+    crate::vault::store_at(TARGET, WHO, &format!("{}{SPLIT}{}", key.phrase(), peer))
 }
 
 /// Start a flyway: a fresh key, stored, and handed back **once** so it can be
@@ -73,9 +111,14 @@ pub fn join(phrase: &str) -> Result<(), String> {
 /// key is held.
 pub fn start() -> Result<String, String> {
     let key = WallKey::generate()?;
-    let phrase = key.phrase();
-    crate::vault::store_at(TARGET, WHO, &phrase)?;
-    Ok(phrase)
+    /* The invite is the key **and this machine's name**, because the other wall
+       has to be able to find this one and an identity is derived from the two
+       together (`WallKey::node_secret`). The alternative was a 52-character
+       node id in the invite or a rendezvous server; a name is the thing a
+       person can already read. */
+    let invite = format!("{}{SPLIT}{}", key.phrase(), host_name());
+    crate::vault::store_at(TARGET, WHO, &invite)?;
+    Ok(invite)
 }
 
 /// Leave the flyway. The key goes; what it reached does not follow by itself,

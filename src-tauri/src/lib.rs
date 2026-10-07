@@ -333,6 +333,7 @@ pub fn run() {
         .manage(browser::Browser::default())
         .manage(Runs::default())
         .manage(Asks::default())
+        .manage(flyway::link::Flyway::default())
         .manage(presence::Presence::default())
         .manage(aside::Asides::default())
         /* The one open microphone, and never more than one. Default is closed:
@@ -447,6 +448,22 @@ pub fn run() {
                background. A wall closed with a browser up comes back with one.
                See `browser::resume_at_launch`. */
             browser::resume_at_launch(app.handle());
+            /* Join the flyway, if this wall has a key. After the store, because
+               the outbox and the watermark it syncs are rows; in the background
+               and unawaited, because binding an endpoint reaches a lookup
+               service and nothing about a window should wait on somebody else's
+               DNS. A wall with no key does nothing here and says nothing, which
+               is every wall until somebody enters one. */
+            {
+                let linking = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match flyway::link::arrive(linking).await {
+                        Ok(true) => log::info!("flyway: this wall is on it"),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("flyway: could not take a place: {e}"),
+                    }
+                });
+            }
             /* Bind the ask endpoint before any conversation can be spawned,
                so every one of them gets a working --mcp-config. */
             let port = ask::start(app.handle().clone())?;
@@ -641,6 +658,9 @@ pub fn run() {
             store::stick_territory,
             store::size_territory,
             flyway::key::flyway_held,
+            flyway::link::flyway_arrive,
+            flyway::link::flyway_pull,
+            flyway::link::flyway_linked,
             flyway::key::flyway_start,
             flyway::key::flyway_join,
             flyway::key::flyway_leave,

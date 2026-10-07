@@ -32,6 +32,7 @@
 
 pub mod fleet;
 pub mod key;
+pub mod link;
 pub mod seal;
 pub mod session;
 pub mod sync;
