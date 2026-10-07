@@ -35,3 +35,4 @@ pub mod key;
 pub mod seal;
 pub mod session;
 pub mod sync;
+pub mod wire;
