@@ -107,7 +107,7 @@
 
     {#if phrase}
       <section>
-        <h3>your wall key</h3>
+        <h3>your invite</h3>
         <p class="phrase">{phrase}</p>
         <div class="pair">
           <button class="act go" onclick={copy}>{copied ? "copied" : "copy it"}</button>
@@ -123,7 +123,11 @@
     {#if held === false}
       <section>
         <h3>start one</h3>
-        <p class="aside">Makes a fresh key on this machine and shows it to you once.</p>
+        <p class="aside">
+          Makes a fresh key on this machine and shows the invite once. The invite is that key
+          and this machine's name — the name is how the other wall finds this one, so copy the
+          whole of it.
+        </p>
         <div class="pair">
           <button class="act go" disabled={busy} onclick={start}>start a flyway</button>
         </div>
@@ -137,7 +141,7 @@
           autocomplete="off"
           spellcheck="false"
           autofocus
-          placeholder="paste the wall key from another machine"
+          placeholder="paste the invite from another machine"
           value={typed}
           oninput={(e) => (typed = e.currentTarget.value)}
           onkeydown={(e) => e.key === "Enter" && void join()}
