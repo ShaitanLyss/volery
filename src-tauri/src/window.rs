@@ -110,18 +110,64 @@ pub fn settle<R: Runtime>(app: &AppHandle<R>, saved: Option<Frame>) {
     /* Who has the keyboard right now, asked *before* the show, because the show
        is what takes it away from them. `None` unless we mean to give it back —
        see `opens_quietly`. */
-    let interrupted = opens_quietly().then(foreground).flatten();
+    let quiet = opens_quietly();
+    let interrupted = quiet.then(foreground).flatten();
+    /* **Shown without activating, then asked to the front only when wanted.**
+       `main` is created `"focus": false` (`tauri.conf.json`), which is tao's
+       `MARKER_DONT_FOCUS`: its first show is `SW_SHOWNOACTIVATE` rather than
+       `SW_SHOW`. The studio then asks for the foreground the ordinary way; a
+       driven wall does not, and is tucked to the bottom of the z-order while
+       still hidden so the show finds it there.
+
+       What this replaced was a show that took the foreground and a hand-back
+       that returned it, which still drew the lab in front of what you were
+       working in for the moment between the two — on every launch, and
+       `tauri dev` relaunches on every rebuild. Measured 2026-10-08 with a 5ms
+       sampler of the foreground and z-order: the lab held the keyboard for
+       ~2s per launch under the old order. */
+    if quiet {
+        tuck(&win);
+    }
     /* Unconditionally, and this is the one line here that must not be allowed
        to become conditional: every failure above leaves a window in the wrong
        place, which you can drag, while a `show` that got skipped leaves an app
-       with no window at all and no gesture that asks for one. */
+       with no window at all and no gesture that asks for one. The tuck only
+       changes *where* it shows, never whether. */
     let _ = win.show();
-    /* So the quiet open is a *return* of the foreground rather than a refusal to
-       take it, and the guarantee above survives untouched. */
+    if !quiet {
+        let _ = win.set_focus();
+    }
+    /* The old return of the foreground stays as the backstop, for whatever the
+       no-activate show did not hold — a no-op when nothing was taken. */
     if let Some(prev) = interrupted {
         hand_back(&win, prev);
     }
 }
+
+/// Put the window at the bottom of the z-order while it is still hidden, so
+/// the show that follows draws it behind everything. The z-order is kept for a
+/// hidden window, and nothing here activates it.
+#[cfg(windows)]
+fn tuck<R: Runtime>(win: &WebviewWindow<R>) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let Ok(ours) = win.hwnd() else { return };
+    unsafe {
+        let _ = SetWindowPos(
+            ours,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn tuck<R: Runtime>(_win: &WebviewWindow<R>) {}
 
 /// Should the studio open without taking the foreground?
 ///

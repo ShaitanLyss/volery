@@ -22,7 +22,8 @@
         "visible": false,
         "backgroundColor": "#151210",
         "decorations": false,
-        "shadow": true
+        "shadow": true,
+        "focus": false
       },
       {
         "label": "peek",
@@ -37,7 +38,8 @@
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "focus": false
+        "focus": false,
+        "focusable": false
       }
     ],
     "security": {

@@ -232,20 +232,40 @@ The window is not visually branded, because `decorations: false` means the title
 `App.svelte` and the header draws its own name. An empty wall plus the control chip is what
 tells the two apart.
 
-**An armed wall opens at the back.** `window::settle` reads who holds the foreground *before*
-it shows, and when `SKEIN_CONTROL` is set it hands the keyboard straight back and drops the
-window to the bottom of the z-order (`opens_quietly`, `hand_back`). It still opens, at full
-size, un-minimised, where it was placed — it just does not interrupt what you were typing
-into. `tauri dev` rebuilds on every source change, including changes another card on the wall
-is making, so a lab instance that grabbed focus each time would be one you stopped starting.
+**An armed wall opens at the back.** `main` is created
+`"focus": false`, which is tao's `MARKER_DONT_FOCUS`: its first show is `SW_SHOWNOACTIVATE`.
+`window::settle` then asks for the foreground only for the real studio (`set_focus`); a wall
+with `SKEIN_CONTROL` set is tucked to the bottom of the z-order *while still hidden*
+(`opens_quietly`, `tuck`) so the show finds it there, keyboard untouched. `tauri dev` rebuilds
+on every source change, including changes another card on the wall is making, so a lab that
+surfaced on each relaunch would be one you stopped starting.
+
+The first cut showed the window, which took the foreground, and then handed it back
+(`hand_back`, still there as a backstop). That is the only order Windows permits for *giving*
+the foreground away, and it was measured as "z-index 42 of 43" afterwards — but the moment in
+between was the bug: a 5ms sampler of the foreground and the z-order (2026-10-08) caught the lab
+holding the keyboard for ~2s per launch, over the studio Lyss was working in. **Measure the
+transition, not the resting state** — a check taken after the fact cannot see a window that was
+in front for two seconds and then went back.
+
+The peek, which is the lab's as much as the studio's, was the other half: an always-on-top
+window raised whenever the wall is not focused and something waits, which on a driven wall is
+always. `Attention.isDriven` silences the whole ladder while the control surface is armed, as
+away mode does; `wall.test.ts` asserts the reading instead and that no peek went up. And the
+peek is `"focusable": false` everywhere, since tao honours `"focus": false` for a window's
+*first* show only — every later show was `SW_SHOW`, and took the keyboard for a beat.
 
 The show itself stays unconditional, which matters: the comment above `win.show()` is there
-because a skipped show is an app with no window and no gesture that asks for one. So this is
-a *return* of the foreground after taking it, not a refusal to take it — which is also the
-only order Windows permits, since a process may only give the foreground away while it holds
-it. Measured on the lab: z-index 42 of 43, `iconic=False`, foreground still on the real
-studio. Gated on `SKEIN_CONTROL` rather than on the lab identifier, because a wall being
-driven from outside is the thing that shouldn't grab focus, whichever store it opened.
+because a skipped show is an app with no window and no gesture that asks for one. Gated on
+`SKEIN_CONTROL` rather than on the lab identifier, because a wall being driven from outside is
+the thing that shouldn't grab focus, whichever store it opened.
+
+**Capturing a driven wall without raising it** is `PrintWindow` with
+`PW_RENDERFULLCONTENT`, which reads a window wherever it is in the z-order — *if* it has
+painted. Chromium stops painting a fully covered window, so a lab at the bottom gives stale
+frames unless it was launched with
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows"`.
+Never raise it to capture — that is the interruption this section exists to prevent.
 
 `test/fixtures/bash-described.json` and `…-undescribed.json` are the shape to copy for a
 `feed` fixture: the same real 97-line Bash call, differing in exactly one field, so feeding
