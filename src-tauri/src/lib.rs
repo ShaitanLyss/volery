@@ -27,6 +27,7 @@ mod docket;
 /// The rows a forge answers in, and the two providers that fill them. `forge`
 /// is vocabulary-neutral on purpose — see its header for the line between a
 /// projection that is honest and one that is a lie.
+mod flyway;
 mod forge;
 mod github;
 /// Public so `examples/find-probe.rs` can drive the real search rather than a
@@ -638,6 +639,11 @@ pub fn run() {
             store::place_territory,
             store::stick_territory,
             store::size_territory,
+            flyway::key::flyway_held,
+            flyway::key::flyway_start,
+            flyway::key::flyway_join,
+            flyway::key::flyway_leave,
+            flyway::key::flyway_host,
             store::make_territory,
             store::rename_territory,
             store::forget_territory,

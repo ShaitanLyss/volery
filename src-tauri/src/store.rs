@@ -349,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 43;
+const SCHEMA_VERSION: i64 = 44;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -398,6 +398,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (41, migrate_v41),
     (42, migrate_v42),
     (43, migrate_v43),
+    (44, migrate_v44),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2523,6 +2524,32 @@ fn migrate_v43(conn: &Connection) -> Result<(), String> {
         [],
     )
     .map_err(|e| format!("migrate v43: {e}"))?;
+    Ok(())
+}
+
+/// Which machine a finding was first seen on.
+///
+/// The sink is about to be shared across a flyway — one pile over all of one
+/// person's walls — and a row that does not say where it came from is a row you
+/// cannot place. "That is the bug I hit on the laptop" is most of how anybody
+/// finds an item again weeks later.
+///
+/// **Backfilled with this machine's name, not left null.** Every row already in
+/// the file *was* dropped here, so writing that down is recording a fact rather
+/// than guessing one — and a null would be indistinguishable from a row that
+/// arrived over the wire before the column meant anything.
+///
+/// Nullable all the same, because the column is read by a listing and never by
+/// a match: an item with no origin is an item whose row is one word shorter.
+/// Nothing may key on it — see `SinkItem::origin_host` on why putting the host
+/// in the address would undo the merge the sink exists for.
+fn migrate_v44(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "sink_item", "origin_host", "TEXT")?;
+    conn.execute(
+        "UPDATE sink_item SET origin_host = ?1 WHERE origin_host IS NULL",
+        params![crate::flyway::key::host_name()],
+    )
+    .map_err(|e| format!("migrate v44: {e}"))?;
     Ok(())
 }
 
@@ -6783,11 +6810,21 @@ pub struct SinkItem {
     /// When you last reworded it, or `None` for an item still in the words it
     /// was dropped in. See `migrate_v22`.
     pub edited_at: Option<i64>,
+    /// Which machine this was dropped on, for a sink shared across a flyway.
+    ///
+    /// **Attribution, never identity.** It is written once and never read by
+    /// anything that *matches* — the merge is on the title, as it always was,
+    /// so the same finding dropped on the desktop and on the laptop becomes one
+    /// item with two voices rather than two items. Putting the host in the
+    /// address would undo the one rule the sink exists to keep, and it would do
+    /// it exactly where a shared sink makes twins most likely. See
+    /// `migrate_v44`.
+    pub origin_host: Option<String>,
 }
 
 const SINK_COLS: &str = "id, project_id, kind, title, body, paths, from_id, dropped_at, \
                          touched_at, voices, held_by, held_at, settled_at, settled_note, \
-                         edited_at";
+                         edited_at, origin_host";
 
 fn sink_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<SinkItem> {
     Ok(SinkItem {
@@ -6806,6 +6843,7 @@ fn sink_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<SinkItem> {
         settled_at: r.get(12)?,
         settled_note: r.get(13)?,
         edited_at: r.get(14)?,
+        origin_host: r.get(15)?,
     })
 }
 
@@ -6990,9 +7028,23 @@ pub fn put_sink_item(
     let body = cut.marked(BODY_REMEDY);
     conn.execute(
         "INSERT INTO sink_item (id, project_id, kind, title, body, paths, from_id,
-                                dropped_at, touched_at, voices)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1)",
-        params![id, project_id, kind, title, body, paths, from_id, at],
+                                dropped_at, touched_at, voices, origin_host)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 1, ?9)",
+        params![
+            id,
+            project_id,
+            kind,
+            title,
+            body,
+            paths,
+            from_id,
+            at,
+            /* Stamped at the drop and never rewritten — including by a merge,
+               which deliberately leaves the first machine's name on the item.
+               The host that *first* saw a thing is the useful fact; a column
+               that moved to whoever seconded it last would say nothing. */
+            crate::flyway::key::host_name()
+        ],
     )
     .map_err(|e| format!("drop into sink: {e}"))?;
     Ok(SinkPut { id: id.to_string(), merged: false, voices: 1, body_omitted: cut.omitted })
@@ -10505,6 +10557,87 @@ mod tests {
     }
 
     /// A wall-wide item is everybody's, the same way a wall-wide notice is.
+    /// The one invariant a shared sink rests on: **the host is attribution, not
+    /// identity.** The same finding dropped on two machines has to merge into
+    /// one item with two voices, exactly as two cards on one machine do — and
+    /// the surviving row keeps the name of the machine that saw it *first*,
+    /// which is the useful fact. A column that joined the address would make a
+    /// twin per machine, and it would do it precisely where a shared pile makes
+    /// twins most likely.
+    #[test]
+    fn a_finding_seen_on_two_machines_is_one_item_with_two_voices() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        /* Stands in for a row that arrived over the flyway: same title, a
+           different machine, which is the case the merge has to survive. */
+        conn.execute(
+            "INSERT INTO sink_item
+               (id, project_id, kind, title, body, paths, dropped_at, touched_at, voices, origin_host)
+             VALUES ('from-away', 'p1', 'bug', 'ask_user times out', 'seen on the laptop', '', 1, 1, 1, 'laptop')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE sink_item SET from_id = 'card-away'", []).unwrap();
+
+        let put = put_sink_item(
+            &conn,
+            &uuid_v4(),
+            Some("p1"),
+            "bug",
+            "ask_user times out",
+            "and again here",
+            "",
+            /* A different card, so the second sighting is a *voice* and not the
+               same card repeating itself — the rule `put_sink_item` already
+               had, and the one this test must not accidentally restate. What
+               is being asserted here is only that the host plays no part in
+               the match. */
+            Some("card-here"),
+        )
+        .unwrap();
+
+        assert!(put.merged, "the host must play no part in matching");
+        assert_eq!(put.id, "from-away");
+        assert_eq!(put.voices, 2);
+
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sink_item", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let whence: Option<String> = conn
+            .query_row("SELECT origin_host FROM sink_item", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            whence.as_deref(),
+            Some("laptop"),
+            "a merge leaves the first machine's name on the item"
+        );
+    }
+
+    /// Every row already in the file was dropped on this machine, so saying so
+    /// is recording a fact rather than guessing one — and a null would be
+    /// indistinguishable from a row that arrived over the wire.
+    #[test]
+    fn the_rung_names_the_machine_every_existing_finding_was_seen_on() {
+        let conn = db();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO sink_item (id, project_id, kind, title, body, dropped_at, touched_at)
+             VALUES ('old', 'p1', 'note', 'from before', 'b', 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE sink_item SET origin_host = NULL", []).unwrap();
+
+        migrate_v44(&conn).unwrap();
+
+        let whence: Option<String> = conn
+            .query_row("SELECT origin_host FROM sink_item WHERE id = 'old'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(whence, Some(crate::flyway::key::host_name()));
+    }
+
     #[test]
     fn a_project_read_includes_the_wall_wide_items() {
         let conn = db();

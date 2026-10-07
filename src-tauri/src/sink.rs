@@ -763,8 +763,20 @@ fn row(i: &SinkItem, now: i64, caller: &str, scopes: &Scopes) -> String {
         Some(at) => format!(" · settled {}", ago(now - at)),
         None => String::new(),
     };
+    /* Where it was first seen, and **only when that is not here**.
+       
+       On a wall that is in no flyway every row would otherwise carry the same
+       word, which is a word per row of every read for a fact nobody needs: the
+       budget note above is about exactly this. Once a sink is shared, the rows
+       that say something are the ones from somewhere else, which is also the
+       only time anybody is asking. Same shape as the territory handle drawing
+       one name when both are the same word. */
+    let whence = match &i.origin_host {
+        Some(h) if !h.is_empty() && *h != scopes.here => format!(" · {h}"),
+        _ => String::new(),
+    };
     format!(
-        "- [{}] {} · {}{voices} — {}{hold}{settled}\n",
+        "- [{}] {} · {}{voices} — {}{whence}{hold}{settled}\n",
         short(&i.id),
         scopes.tag_of(i),
         i.kind,
@@ -1389,6 +1401,10 @@ fn scope_tag(item_project: Option<&str>, mine: Option<&str>, name: Option<&str>)
 struct Scopes {
     mine: Option<String>,
     names: Vec<(String, String)>,
+    /// What *this* machine is called, so a row can say where a finding came
+    /// from only when that is somewhere else. Read once per call for the same
+    /// reason the names are.
+    here: String,
 }
 
 impl Scopes {
@@ -1403,7 +1419,7 @@ impl Scopes {
             .into_iter()
             .map(|p| (p.id, p.name))
             .collect();
-        Scopes { mine: me.project_id.clone(), names }
+        Scopes { mine: me.project_id.clone(), names, here: crate::flyway::key::host_name() }
     }
 
     /// The territory's name, if the roster has one for it.
@@ -2059,6 +2075,30 @@ mod tests {
         assert_eq!(pile_note(OPEN_PER_CARD_NUDGE + 5, true), "");
     }
 
+    /// A row says where a finding came from **only when that is somewhere
+    /// else**. On a wall in no flyway — which is every wall until somebody
+    /// joins one — every row would otherwise carry the same word, which is a
+    /// word per row of every read for a fact nobody is asking about. The budget
+    /// note on `scope_tag` is about exactly this.
+    #[test]
+    fn a_row_says_which_machine_only_when_it_was_another_one() {
+        let now = 0;
+        let mut here = item(None, None);
+        here.origin_host = Some("desk".into());
+        let drawn = row(&here, now, "card", &scopes());
+        assert!(!drawn.contains("desk"), "{drawn}");
+
+        let mut away = item(None, None);
+        away.origin_host = Some("laptop".into());
+        let drawn = row(&away, now, "card", &scopes());
+        assert!(drawn.contains(" · laptop"), "{drawn}");
+
+        /* And an item from before the column means one shorter row, never a
+           row that says nothing in two words. */
+        let drawn = row(&item(None, None), now, "card", &scopes());
+        assert!(!drawn.contains(" ·  "), "{drawn}");
+    }
+
     fn item(held_by: Option<&str>, held_at: Option<i64>) -> SinkItem {
         SinkItem {
             id: "abcd1234-0000".into(),
@@ -2076,6 +2116,7 @@ mod tests {
             settled_at: None,
             settled_note: None,
             edited_at: None,
+            origin_host: None,
         }
     }
 
@@ -2083,6 +2124,7 @@ mod tests {
     /// rendered by a test that is not about the scope column.
     fn scopes() -> Scopes {
         Scopes {
+            here: "desk".into(),
             mine: Some("p1".into()),
             names: vec![("p1".into(), "skein".into())],
         }
@@ -2165,6 +2207,7 @@ mod tests {
         assert_eq!(hits.len(), 2);
 
         let scopes = Scopes {
+            here: "desk".into(),
             mine: Some("p1".into()),
             names: vec![("p1".into(), "skein".into())],
         };

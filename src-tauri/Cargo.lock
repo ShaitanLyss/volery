@@ -4520,6 +4520,7 @@ dependencies = [
  "librespot-playback",
  "log",
  "portable-pty",
+ "ring",
  "rmpv",
  "rusqlite",
  "rustls-native-certs",
