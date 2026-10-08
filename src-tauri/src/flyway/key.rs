@@ -113,13 +113,8 @@ pub fn join(invite: &str) -> Result<(), String> {
     crate::vault::store_at(TARGET, WHO, &format!("{}{SPLIT}{}", key.phrase(), peer))
 }
 
-/// Start a flyway: a fresh key, stored, and handed back **once** so it can be
-/// shown to the person who asked for it.
-///
-/// Returned rather than readable-on-demand because a secret the UI can ask for
-/// at any time is a secret on screen at times nobody chose. Getting it onto the
-/// second machine is a thing you do now; afterwards the panel says only that a
-/// key is held.
+/// Start a flyway: a fresh key, stored, and handed back so it can be shown to
+/// the person who asked for it. See `invite` for reading it back afterwards.
 pub fn start() -> Result<String, String> {
     let key = WallKey::generate()?;
     /* The invite is the key **and this machine's name**, because the other wall
@@ -130,6 +125,32 @@ pub fn start() -> Result<String, String> {
     let invite = format!("{}{SPLIT}{}", key.phrase(), host_name());
     crate::vault::store_at(TARGET, WHO, &invite)?;
     Ok(invite)
+}
+
+/// The invite this wall was started with, read back out of the vault.
+///
+/// **This was deliberately not here, and the reasoning was right about the
+/// hazard and wrong about the work.** The argument was that a secret the UI can
+/// ask for at any time is a secret on screen at times nobody chose, so `start`
+/// handed its invite back once and the panel afterwards said only that a key is
+/// held. What that missed is *when* the second machine arrives: a flyway is
+/// started on the machine you are at and joined from the machine you are at
+/// tomorrow, so the one moment the invite is shown is a moment you are not yet
+/// standing in front of the wall that needs it. Lose the clipboard — close the
+/// panel, reboot, come back a day later — and the only gesture left is `start`,
+/// which mints a *fresh* key and silently orphans every wall already holding
+/// the old one. An unreadable secret whose only recovery is destroying it is
+/// not a safe secret, it is a trap with good manners.
+///
+/// So the hazard is answered where it actually lives, which is the drawing
+/// rather than the reading: the panel keeps it hidden and reveals on a press,
+/// and forgets it when the panel closes. A press is a time somebody chose.
+///
+/// Nothing is derived or re-minted here — the vault holds the invite in its
+/// canonical spelling (`start` and `join` both store it that way), so this is
+/// the same string, not a second opinion about what it was.
+pub fn invite() -> Option<String> {
+    crate::vault::read_at(TARGET)
 }
 
 /// Leave the flyway. The key goes; what it reached does not follow by itself,
@@ -192,6 +213,14 @@ pub async fn flyway_start() -> Result<String, String> {
 #[tauri::command]
 pub async fn flyway_join(phrase: String) -> Result<(), String> {
     crate::off_main(move || join(&phrase)).await?
+}
+
+/// The invite again, for getting it onto a machine that is not in front of you
+/// yet. Refused rather than answered empty when there is nothing to show, so a
+/// panel cannot draw a reveal over nothing.
+#[tauri::command]
+pub async fn flyway_invite() -> Result<String, String> {
+    crate::off_main(|| invite().ok_or_else(|| "this wall is not in a flyway".to_string())).await?
 }
 
 #[tauri::command]

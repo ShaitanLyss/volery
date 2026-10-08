@@ -8,10 +8,11 @@
    * so fitting it in would mean either a row that lies about its shape or a table
    * whose third entry costs code. A thing that does not fit is better out.
    *
-   * It never shows the key back. `flyway_held` is a boolean and the phrase from
-   * `flyway_start` is held in this component for the one reading and dropped when
-   * the panel closes — a secret the UI can ask for at any time is a secret on
-   * screen at times nobody chose. */
+   * It shows the key only when asked. `flyway_held` is a boolean, and the phrase
+   * — whether it came from `flyway_start` or from `flyway_invite` — is held in
+   * this component and dropped when the panel closes. The rule is that a secret
+   * must not be on screen at a time nobody chose; a press is a time somebody
+   * chose, and `key.rs::invite` has why making it unreadable was worse. */
 
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -31,7 +32,7 @@
   let held = $state<boolean | null>(null);
   let host = $state("");
   let typed = $state("");
-  let phrase = $state(""); // shown once, never re-fetched
+  let phrase = $state(""); // hidden until asked for, and dropped when the panel closes
   let linked = $state(false);
   let busy = $state(false);
   let fault = $state("");
@@ -119,6 +120,22 @@
     });
   };
 
+  /* The invite again, for the machine that was not in front of you when the
+     flyway was started — which is the ordinary case, since you start one here
+     and join from the office tomorrow. It was once unreadable on the argument
+     that a secret the UI can ask for at any time is on screen at times nobody
+     chose; that hazard is real and it lives in the *drawing*, which is where it
+     is answered. Hidden until this press, and `phrase` is dropped when the
+     panel closes exactly as the started one always was. `key.rs::invite` has
+     the whole argument, including what the old shape cost: with the clipboard
+     gone the only gesture left was `start`, which mints a fresh key and
+     silently orphans every wall holding the old one. */
+  const reveal = () =>
+    act(async () => {
+      phrase = await invoke<string>("flyway_invite");
+      copied = false;
+    });
+
   const leave = () =>
     act(async () => {
       await invoke("flyway_leave");
@@ -154,7 +171,7 @@
     <p class="aside">
       Your walls on several machines, linked. Membership is one secret — the wall key — and
       entering it on a machine is the whole of joining. It lives in the Windows credential
-      vault and nothing hands it back.
+      vault and is shown only when you ask for it.
     </p>
 
     {#if phrase}
@@ -166,8 +183,8 @@
           <button class="act" onclick={() => (phrase = "")}>i have it</button>
         </div>
         <p class="aside">
-          This is the only time it will be shown. Enter it on the other machine now — it cannot
-          be read back from here afterwards.
+          Enter it on every other machine that should be on this flyway. It is kept hidden
+          here, not thrown away — "show my invite" brings it back.
         </p>
       </section>
     {/if}
@@ -218,6 +235,7 @@
           {/if}
         </p>
         <div class="pair">
+          <button class="act" disabled={busy || !!phrase} onclick={reveal}>show my invite</button>
           <button class="act" disabled={busy} onclick={leave}>leave the flyway</button>
         </div>
       </section>
