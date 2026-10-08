@@ -146,8 +146,53 @@ reports `listeners.skein` / `listeners.attention` / `listeners.actions` so a lea
 from outside: they must not climb across an edit (7, 3 and 2 today). Module-level timers need the same care — see the
 `clock` interval's `window` handle in `conversation.svelte.ts`.
 
-`test/wall.test.ts` only ever creates conversations under `.scratch/walltest/`, and closes
-them in `afterAll`. Keep it that way, so running it cannot disturb real work on the wall.
+`test/wall.test.ts` only ever creates conversations under `.scratch/walltest/`, closes each
+test's own cards in `afterEach`, and sweeps the subtree in `afterAll`. Keep it that way, so
+running it cannot disturb real work on the wall.
+
+**The `afterEach` is about memory, not tidiness.** `open` spawns a real `claude` per card, a
+dozen processes and about a gigabyte of commit with its MCP servers (`processes.md`), and the
+suite opens thirty-odd. Held to `afterAll`, they took free commit on this 32 GB machine from
+fifteen gigabytes to half of one (2026-10-08, sampled every 3s). The lab then died mid-run with
+`memory allocation of 131072 bytes failed`, and every later test failed "Unable to connect" —
+from a different test each run, depending on what else the machine was doing. That was a good
+part of sink 64e5003c's "the red moves between runs". It was also a suite that could take the
+user's own apps down with it. No test may reach back for a card an earlier one opened; open
+your own.
+
+### Running it from a card, which is how it is run now
+
+Three traps, each of which turned a run into noise that read as product failures. All three
+were hit together on 2026-10-08, and nothing in the output points at any of them.
+
+- **The wall's reaper kills a lab you launched in the background.** `perf.rs::sweep`, once a
+  minute, `taskkill /T`s any process in a card's job whose parent has gone and that is over a
+  minute old. A lab started from a card is in that card's job, and Git Bash's `&` or `exec`
+  leaves a Windows process whose parent is already gone, even while your command is still
+  running. So the lab, its launcher and the test runner under it vanished 60–120s in, with an
+  empty log and no crash event. **Launch it natively and wait on it.** In PowerShell,
+  `& skein.exe` or `Start-Process` from a script that stays up keeps every ancestor alive back
+  to `claude.exe`. Run `bun test` from PowerShell too, for the same reason.
+- **Another card's edit hot-reloads your lab mid-run.** Every front-end save in this shared
+  tree reaches a `bun run dev:lab` vite, the studio generation moves, and `ctl()` correctly
+  refuses every later answer as a ghost. Thirty failures, none of them real. **For a run you
+  mean to read, serve a frozen build:** `vite build --outDir .scratch-$SKEIN_CARD/dist`, then
+  `vite preview --outDir … --port 1421 --strictPort`. A debug `skein.exe` loads whatever
+  answers on :1421, so it never knows the difference, and the build is the tree as it was when
+  you took it. Say on the board that :1421 is yours and frozen, since other cards' labs load
+  from it too.
+- **A store of its own is `VOLERY_WALL_DIR`, and images do not load there.** Copy
+  `target\debug\skein.exe` and its DLLs into your scratch directory (a rebuild cannot then
+  replace it under you). Run it with `VOLERY_SECOND=1`, `VOLERY_WALL_DIR` pointing at a fresh
+  directory per run and `SKEIN_CONTROL=1`, and set `SKEIN_ID` to the folder's name under
+  `%APPDATA%` so the suite finds its `control.json`. Give it a `VOLERY_FLYWAY_HOST` of its own,
+  or it joins the flyway as the installed wall. The cost: reference images are written under
+  that directory, outside the asset protocol's `$APPDATA/references/**`. A pasted image then
+  decodes to the fallback box, and `a pasted image lands under the cursor` fails at `img.w`
+  for that reason alone.
+
+Measured that way, three consecutive runs on fresh stores gave the same answer: 81 pass,
+11 skip (the `ti` real-input tests), 1 fail, the paste test above.
 
 **It used to say `.scratch/`, and that was not a small difference.** `.scratch/` is shared by
 every card on this wall, so the afterAll sweep — deliberately wide, to collect leftovers from

@@ -32,7 +32,7 @@
  * card and forgot its territory. See `.claude/rules/control.md`.
  */
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
@@ -46,6 +46,7 @@ import { join, sep } from "node:path";
 import { judge, parseEndpoint, pidAlive, type Endpoint } from "../tools/endpoint";
 import { menuFor, type MenuItem } from "../src/lib/menu";
 import { MOTIONS } from "../src/lib/motion";
+import { RESTS } from "../src/lib/reaping";
 import { offersOf } from "../src/lib/widgets";
 
 /** Which instance this suite is driving, the way `tools/ctl.ts` decides it and
@@ -230,6 +231,27 @@ beforeAll(async () => {
   if (!live) return;
   mkdirSync(WALL, { recursive: true });
   card = await newCard();
+});
+
+/* Every card a test opens is closed when that test is done, except the shared
+ * scratch card the whole suite talks to.
+ *
+ * `open` spawns a real `claude` for every card — a dozen processes and about a
+ * gigabyte of commit each, MCP servers included (`.claude/rules/processes.md`) —
+ * and this suite opens thirty-odd of them. Held to the end, they took the
+ * machine's free commit from fifteen gigabytes to half of one on a 32 GB box
+ * (measured 2026-10-08, sampled every 3s), and the lab died partway through the
+ * run with `memory allocation of 131072 bytes failed`: every test after that
+ * point failed with "Unable to connect", and which test it died in depended on
+ * what else the machine was doing. That was a good part of why this suite's red
+ * moved between runs. It is also a suite that can take the user's own apps down
+ * with it. No test reaches back for a card an earlier one opened; the cards are
+ * per-test by construction, and now they are per-test in memory too. */
+afterEach(async () => {
+  if (!live) return;
+  for (const id of opened.splice(0)) {
+    if (id !== card) await ctl("close", { id }).catch(() => {});
+  }
 });
 
 afterAll(async () => {
@@ -495,7 +517,9 @@ t("your words are on the wall before the process has them", async () => {
   expect(
     after.lines.filter((l: Reply) => l.kind === "you" && l.text === text).length,
   ).toBe(1);
-});
+  /* A real spawn, a resume and a real turn, waited on for up to fifteen seconds
+     above — so bun's default five was a timeout this test could not help hitting. */
+}, 30_000);
 
 /* ── what the agent said, folded into markdown ────────────────────────── */
 
@@ -583,17 +607,34 @@ t("the ring warms to the failing colour as the window fills", async () => {
   const work = root.nodes[0].styles["--st-work"];
   expect(fail).not.toBe(work);
 
-  const ring = async () => {
+  const ring = async (id: string) => {
     const r = await ctl("dom", {
-      selector: `[data-conv="${card}"] .ring .fill`,
+      selector: `[data-conv="${id}"] .ring .fill`,
       styles: ["stroke"],
     });
     expect(r.count).toBe(1);
     return r.nodes[0].styles.stroke;
   };
 
-  /* The previous test left this card at 91%, which is past the 0.85 threshold. */
-  const hot = await ring();
+  /* A card at 91% of whatever window it has, which is past the 0.85 threshold.
+     This leaned on the scratch card being left at 182k by an earlier test, which
+     is 91% only of a 200k window — and a fresh card is drawn against the window
+     its configured model declares, so on a machine whose default carries `[1m]`
+     182k is 18% and the two rings were rightly the same colour. */
+  const full = await newCard();
+  const { contextWindow } = await cardOf(full);
+  await ctl("feed", {
+    id: full,
+    event: {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "nearly out of room" }],
+        usage: { input_tokens: Math.round(contextWindow * 0.91) },
+      },
+    },
+  });
+  expect((await cardOf(full)).ctx).toBeGreaterThan(0.85);
+  const hot = await ring(full);
 
   const fresh = await newCard();
   await ctl("feed", {
@@ -1017,7 +1058,9 @@ t("a pasted image lands under the cursor", async () => {
   const want = { x: (at.x - view.x) / view.scale, y: (at.y - view.y) / view.scale };
   expect(img.x + img.w / 2).toBeCloseTo(want.x, 0);
   expect(img.y + img.h / 2).toBeCloseTo(want.y, 0);
-  expect(surface.width).toBeGreaterThan(at.x);
+  /* `w`, which is what the `dom` op reports a rect as — `width` was undefined,
+     and bun refuses to compare that rather than calling it smaller. */
+  expect(surface.w).toBeGreaterThan(at.x);
 
   /* The bytes really became a file the asset protocol will serve: the node is
      on the wall, and it was sized from the decoded image rather than from the
@@ -1753,11 +1796,10 @@ ti("a click on the ground lets go of the card; a drag across it does not", async
   const was = (await snapshot()).viewport;
   await ctl("viewport", { x: 0, y: 0, scale: 1 });
 
-  /* Two cards in hand, so a pan has something to lose. */
-  const ids = (await snapshot()).cards
-    .filter((c: Reply) => inside(c.cwd, SUITE))
-    .map((c: Reply) => c.id)
-    .slice(0, 2);
+  /* Two cards in hand, so a pan has something to lose. Its own second card
+     rather than one an earlier test left open — each test's cards are closed
+     when it ends (see `afterEach`). */
+  const ids = [card, await newCard()];
   await ctl("focus", { id: ids[0] });
   await ctl("select", { ids });
   expect((await snapshot()).selected).toEqual(ids);
@@ -1906,15 +1948,23 @@ t("every territory has a place of its own, and can be carried elsewhere", async 
      position has to be *written down* (otherwise it depends on the project list,
      and forgetting one in the middle slides every later territory a cell along,
      leaving the cards pinned inside them behind), and it has to be movable. */
-  const here = await newCard();
+  /* A territory of its own, holding one card and nothing pinned. `place` moves
+     the territory and nothing else — carrying pinned cards is the drag's job —
+     so a card the test above pinned inside `wall` stayed behind when `wall`
+     moved, gave its slot back to the flow, and every flowing card shifted one
+     slot further than the delta asserted here. */
+  const dir = `${SUITE}\\carried`;
+  mkdirSync(dir, { recursive: true });
+  const here = (await ctl("open", { dir })).id as string;
+  opened.push(here);
   const project = async () =>
-    (await snapshot()).projects.find((p: Reply) => p.root === WALL);
+    (await snapshot()).projects.find((p: Reply) => p.root === dir);
 
   const p0 = await project();
   expect(p0.x).not.toBeNull();
   expect(p0.y).not.toBeNull();
 
-  const sel = '.region[data-cwd$="wall"]';
+  const sel = '.region[data-cwd$="carried"]';
   const box = async () => (await ctl("dom", { selector: sel })).nodes[0].rect;
   const cardBox = async () =>
     (await snapshot()).dom.cardNodes.find((n: Reply) => n.id === here);
@@ -1923,15 +1973,22 @@ t("every territory has a place of its own, and can be carried elsewhere", async 
   const wasCard = await cardBox();
   const { scale } = (await snapshot()).viewport;
 
-  await ctl("place", { cwd: WALL, x: p0.x + 400, y: p0.y + 240 });
+  await ctl("place", { cwd: dir, x: p0.x + 400, y: p0.y + 240 });
 
   const moved = await box();
   expect(Math.abs(moved.x - wasRegion.x - 400 * scale)).toBeLessThan(2);
   expect(Math.abs(moved.y - wasRegion.y - 240 * scale)).toBeLessThan(2);
 
   /* The cards standing in it came along — this one flows, so it moves because
-     its slot is measured off the territory's origin. */
-  const carried = await cardBox();
+     its slot is measured off the territory's origin. Waited for rather than read
+     once: the region is redrawn in place but a card *glides* to its new slot, so
+     a reading taken straight after the op catches it most of the way there. */
+  const carried = await until(
+    "the card to arrive in the carried territory",
+    cardBox,
+    (c: Reply) =>
+      Math.abs(c.x - wasCard.x - 400 * scale) < 2 && Math.abs(c.y - wasCard.y - 240 * scale) < 2,
+  );
   expect(Math.abs(carried.x - wasCard.x - 400 * scale)).toBeLessThan(2);
   expect(Math.abs(carried.y - wasCard.y - 240 * scale)).toBeLessThan(2);
 
@@ -1943,7 +2000,7 @@ t("every territory has a place of its own, and can be carried elsewhere", async 
   /* Settling it back packs it in among the others again — against their real
      heights, so where it lands depends on the wall, not on a fixed pitch. What
      has to hold is that it is somewhere, and no longer where we put it. */
-  await ctl("place", { cwd: WALL });
+  await ctl("place", { cwd: dir });
   const back = await project();
   expect(back.x).not.toBeNull();
   expect(back.y).not.toBeNull();
@@ -2031,6 +2088,7 @@ t("the wall answers a right-click itself, and Chromium never does", async () => 
       kind: "ground",
       offers: offersOf(),
       picks: MOTIONS.map((m) => ({ id: `motion:${m.id}`, label: m.label, on: false })),
+      options: [RESTS.map((r) => ({ id: `rest:${r.id}`, label: r.label, on: false }))],
     }),
   );
 
@@ -2276,7 +2334,10 @@ t("the sampler runs only while something is reading it", async () => {
     (m) => m.watchers === base,
   );
   if (base === 0) expect(after!.sampling).toBe(false);
-});
+  /* The first reading alone is about four and a half seconds on this machine —
+     enumerating several hundred processes twice, since a CPU share is a delta —
+     so bun's default five was spent before the row could be looked for. */
+}, 20_000);
 
 /* ── the wall's ambience ──────────────────────────────────────────────── */
 
@@ -2478,7 +2539,22 @@ t("a second answer replaces the contents rail rather than lengthening it", async
   const mine = await newCard();
   await ctl("focus", { id: mine });
 
+  /* Two rounds, so a prompt between them. The rail is scoped to a *round* —
+     everything since you last spoke — and not to a message, so two answers fed
+     back to back were one round of two messages, the cap rightly said plain
+     `contents`, and this asserted the shape of a rule that had been replaced. */
   for (const [n, head] of [["one", "the older answer"], ["two", "the newer answer"]]) {
+    if (n === "two") {
+      await ctl("feed", {
+        id: mine,
+        event: {
+          type: "user",
+          message: { role: "user", content: [{ type: "text", text: "and the next thing" }] },
+          parent_tool_use_id: null,
+          isReplay: true,
+        },
+      });
+    }
     await ctl("feed", {
       id: mine,
       event: {
@@ -2654,25 +2730,25 @@ t("escape reaches the running turn first, and lets go on the next press", async 
   expect((await snapshot()).dom.transcriptOpen).toBe(false);
 });
 
-/* ── letting go of the tail, and taking it back ───────────────────────── *
+/* ── letting go of the tail, and keeping it let go ────────────────────── *
  *
- * The one behaviour on the panel whose whole point is that it happens while
- * nobody is watching — which is exactly why it shipped doing nothing at all for
- * two months. `watching` was declared with a default of `true` so the panel
- * renders without a studio around it, and `App.svelte` mounted `<Transcript>`
- * without the prop, so the re-arm was unreachable. Nothing on the wall said so:
- * the symptom is not a view that stayed put, it is a view that reads as *near
- * the start of the conversation*, because a pixel offset three quarters of the
- * way down a short column is a tenth of the way down the long one an agent
- * spends ten minutes writing underneath it.
+ * This section used to assert the opposite: that a panel held mid-column while
+ * the studio was in the background *came back* to the tail when something
+ * arrived. That re-arm was a repair for a `following` flag that let go of itself
+ * — the clamp, scroll anchoring, a late write — and once `3da8146` made only a
+ * hand able to let go of the tail, every remaining release was a decision, so
+ * the re-arm could only ever overwrite one. It was taken out for Lyss's report
+ * (sink b14e1606: read a card scrolled up, click into an editor, a relay lands,
+ * come back, place gone) and `panel.md` records the spec it now answers to:
+ * **scrolled up, never move, whatever arrives.** The test stayed behind asserting
+ * the repair, and failed against a panel doing exactly what it was asked.
  *
  * The blur is real and nothing has to be poked to get it: the terminal running
- * this suite is what has focus, which is the condition itself rather than a
- * simulation of one. So this test steals nothing and needs no second opt-in — it
- * only needs the studio to be where `test:wall` always leaves it, in the
- * background. */
+ * this suite is what has focus, which is the condition the re-arm fired in. So
+ * this test steals nothing and needs no second opt-in — it only needs the studio
+ * to be where `test:wall` always leaves it, in the background. */
 
-t("a panel nobody is looking at comes back to the newest thing said", async () => {
+t("a panel held mid-column stays held while the studio is away and the card talks", async () => {
   const mine = await newCard();
   await ctl("focus", { id: mine });
 
@@ -2707,9 +2783,9 @@ t("a panel nobody is looking at comes back to the newest thing said", async () =
   const held = await snapshot();
   expect(held.panel.scrollTop).toBeLessThan(parked.scrollMax - 200);
 
-  /* The precondition, asserted rather than assumed: with the studio focused
-     there is no re-arm to observe and every number below would be the follow
-     doing its ordinary job. */
+  /* The precondition, asserted rather than assumed: with the studio focused the
+     condition the old re-arm fired in is not met, and holding still would prove
+     nothing about it. */
   expect(held.attention.windowFocused).toBe(false);
 
   /* And the agent gets on with it — four rounds of it, which is what you left
@@ -2717,16 +2793,17 @@ t("a panel nobody is looking at comes back to the newest thing said", async () =
   for (const n of ["the first round you missed", "the second", "the third", "the fourth"]) {
     await say(filler(n));
   }
-
-  /* Back at the tail, not back where you were holding: the column is five times
-     the length it was, so the place you had is now the top of it. Unfixed, this
-     reports `scrollTop` 0 against a `scrollMax` near 7000. */
-  const back = await until(
-    "the panel to take the tail back up",
+  const grown = await until(
+    "the column to take the four rounds",
     reading,
-    (p) => p.scrollMax > parked.scrollMax * 2 && p.scrollTop >= p.scrollMax - 40,
+    (p) => p.scrollMax > parked.scrollMax * 2,
   );
-  expect(back.scrollTop).toBeGreaterThan(held.panel.scrollTop);
+
+  /* Still where you were holding. Appending below the view moves no `scrollTop`,
+     so anything more than a line's slack here is the panel having decided for
+     you; the old re-arm put it at the tail, five times further down. */
+  expect(Math.abs(grown.scrollTop - held.panel.scrollTop)).toBeLessThan(40);
+  expect(grown.scrollTop).toBeLessThan(grown.scrollMax - 200);
 }, 30_000);
 
 /* The other half of the tail — a turn writing in bursts shaking the panel off it
@@ -2752,8 +2829,16 @@ t("ctrl+wheel over the panel sets how big the reading is", async () => {
     (s) => s.dom.transcriptOpen === true,
   );
 
-  const start = await snapshot();
-  expect(start.panel.reading).toBe(1);
+  /* From 100%, put there rather than assumed. The size lives in localStorage,
+     which outlives a run and is shared by every webview of this origin — so a
+     run that died between the zoom below and the reset at the end left every
+     later run starting at 200%, failing here with nothing wrong. */
+  await ctl("key", { key: "0", ctrl: true, selector: ".surface" });
+  const start = await until(
+    "the reading to start from 100%",
+    () => snapshot(),
+    (s) => s.panel.reading === 1,
+  );
   const base = start.panel.linePx;
   expect(base).toBeGreaterThan(0);
 
@@ -2862,9 +2947,15 @@ const shellSettled = () =>
     30_000,
   );
 
-/** Whatever the scrollback says now, colour already stripped. */
+/** Whatever the scrollback says now, colour already stripped.
+ *
+ *  Of the shell on screen, named: `show` with no `cwd` *selects* the wall's own
+ *  project first, so a bare read switched the panel back to it — invisible
+ *  while every test's second shell happened to be that project, and a test
+ *  reading another project's shell got that one's scrollback instead. */
 async function shellLines(tail = 40): Promise<{ kind: string; failed: boolean; text: string }[]> {
-  const r = await ctl("shell", { do: "show", tail });
+  const active = (await snapshot()).shell.active;
+  const r = await ctl("shell", { do: "show", tail, ...(active ? { cwd: active } : {}) });
   return r.shell.lines;
 }
 
@@ -2976,15 +3067,22 @@ t("each project keeps its own shell, and switching does not disturb it", async (
   await shellSettled();
 
   /* A second project, and the panel goes with it: a fresh shell, a fresh
-     scrollback, and the first one still standing behind it. */
-  await ctl("shell", { do: "select", cwd: WALL });
+     scrollback, and the first one still standing behind it.
+
+     A project no earlier test has touched. This was `wall`, whose session the
+     tests above had already opened, `cd`'d into the suite root, closed and
+     restarted — and a shell restarted after a close starts where its session
+     last was rather than at the root, so "fresh" was not a thing it could be. */
+  const fresh = `${SUITE}\\shells`;
+  mkdirSync(fresh, { recursive: true });
+  await ctl("shell", { do: "select", cwd: fresh });
   const there = await until(
     "the second project's shell to come up",
     () => snapshot(),
-    (s) => s.shell.active === WALL && s.shell.live && !s.shell.busy,
+    (s) => s.shell.active === fresh && s.shell.live && !s.shell.busy,
     30_000,
   );
-  expect(there.shell.cwd.toLowerCase()).toBe(WALL.toLowerCase());
+  expect(there.shell.cwd.toLowerCase()).toBe(fresh.toLowerCase());
   /* Not the other project's output. This is the whole of what one-per-project
      buys, and a shared shell would have shown `in-scratch` here. */
   expect((await shellLines()).some((l) => l.text.includes("in-scratch"))).toBe(false);
@@ -3009,7 +3107,7 @@ t("each project keeps its own shell, and switching does not disturb it", async (
   expect((await shellLines()).some((l) => l.text.includes("in-scratch"))).toBe(true);
 
   await ctl("shell", { do: "close" });
-  await ctl("shell", { do: "select", cwd: WALL });
+  await ctl("shell", { do: "select", cwd: fresh });
   await ctl("shell", { do: "close" });
   await ctl("shell", { do: "hide" });
 }, 90_000);
@@ -3032,6 +3130,10 @@ t("hanging up an instrument is one step, and the step names it", async () => {
   await ctl("undo.clear");
   const { id } = await ctl("widget.add", { kind: "clock", x: 260, y: 260 });
   hung.push(id as string);
+  /* Where it actually hangs. `widget.add` takes a *screen* point and centres the
+     widget on it, so its `x` was never 260 — the assertion below compared a
+     corner in canvas space with a centre in screen space. */
+  const hungAt = (await snapshot()).widgets.find((w: Reply) => w.id === id);
 
   const past = await undoState();
   expect(past.back).toBe(1);
@@ -3058,8 +3160,8 @@ t("hanging up an instrument is one step, and the step names it", async () => {
     (s) => s.widgets.some((w: Reply) => w.id === id),
   );
   const back = again.widgets.find((w: Reply) => w.id === id);
-  expect(back.x).toBe(260);
-  expect(back.y).toBe(260);
+  expect(back.x).toBe(hungAt.x);
+  expect(back.y).toBe(hungAt.y);
   /* Written down too, or it comes back for this session only. */
   await until(
     "the widget row to come back",
@@ -3096,8 +3198,12 @@ t("taking an instrument down can be taken back, with its knobs", async () => {
 });
 
 t("turning a knob and turning it again comes home, however it fused", async () => {
-  await ctl("undo.clear");
   await withWidget("clock", { x: 340, y: 380 }, async (id) => {
+    /* Cleared *after* the widget is up. Hanging it is an act of its own, so
+       cleared before, stepping back "until there is nothing left" took the
+       widget down too — the overshoot this test exists to rule out, caused by
+       the test. */
+    await ctl("undo.clear");
     const first = (await snapshot()).widgets.find((w: Reply) => w.id === id).variant;
     await ctl("widget.set", { id, key: "variant", value: "digital" });
     await ctl("widget.set", { id, key: "variant", value: "analog" });
@@ -3413,11 +3519,21 @@ ti("End reaches the bottom of the file, because the sheet holds the keyboard", a
  * that could only see the second could not tell a misparse from a dead handle.
  */
 
+/** The scratch card's title, made one only it has.
+ *
+ *  Every card this suite opens is `untitled`, so by the time these run the
+ *  scratch card's own title names a dozen cards — "select untitled" is honestly
+ *  ambiguous, the grammar escalates, and the `voice.say` tests then sat on a
+ *  steward call until bun's timeout. The claim here is that the parse ran
+ *  against the live wall, which a name nobody else carries is what proves. */
+async function soleTitle(): Promise<string> {
+  await ctl("rename", { card, name: "lantern" });
+  return (await cardOf(card)).title as string;
+}
+
 t("a sentence it is certain of resolves against the real wall", async () => {
-  /* The scratch card by its own title, which is what a mouth would produce.
-     Nothing here needs the title to be anything in particular: the claim is
-     that the wall the parse ran against is the live one. */
-  const { title } = await cardOf(card);
+  /* The scratch card by its own title, which is what a mouth would produce. */
+  const title = await soleTitle();
   const heard = await ctl("voice.hear", { say: `select ${title}` });
   expect(heard.escalated).toBe(false);
   expect(heard.plan.steps.map((s: { op: string }) => s.op)).toEqual(["select"]);
@@ -3426,7 +3542,7 @@ t("a sentence it is certain of resolves against the real wall", async () => {
 });
 
 t("a sentence with more in it than the grammar can account for escalates", async () => {
-  const { title } = await cardOf(card);
+  const title = await soleTitle();
   const heard = await ctl("voice.hear", { say: `select ${title} and tell it to stop` });
   expect(heard.escalated).toBe(true);
   expect(heard.plan).toBeNull();
@@ -3434,18 +3550,18 @@ t("a sentence with more in it than the grammar can account for escalates", async
 
 t("a plan that only changes how you look at the wall simply happens", async () => {
   await ctl("deselect");
-  const { title } = await cardOf(card);
+  const title = await soleTitle();
   const said = await ctl("voice.say", { say: `select ${title}` });
   expect(said.kind).toBe("carried");
   expect(said.outcome).toEqual({ kind: "done", ran: 1 });
   /* Success says nothing, which is the design and not an empty field. */
   expect(said.spoke).toBe("");
   /* And the wall actually moved — the claim the parse alone cannot make. */
-  expect((await snapshot()).studio.selected).toContain(card);
+  expect((await snapshot()).selected).toContain(card);
 });
 
 t("a plan that would change the wall is held for a yes", async () => {
-  const { title } = await cardOf(card);
+  const title = await soleTitle();
   const said = await ctl("voice.say", { say: `stop ${title}` });
   expect(said.kind).toBe("confirm");
   expect(said.plan.needs).toBe("confirmation");
@@ -3455,11 +3571,11 @@ t("a plan that would change the wall is held for a yes", async () => {
 });
 
 t("deselecting by voice is the wall's own deselect", async () => {
-  const { title } = await cardOf(card);
+  const title = await soleTitle();
   await ctl("voice.say", { say: `select ${title}` });
-  expect((await snapshot()).studio.selected.length).toBeGreaterThan(0);
+  expect((await snapshot()).selected.length).toBeGreaterThan(0);
   await ctl("voice.say", { say: "deselect" });
-  expect((await snapshot()).studio.selected).toEqual([]);
+  expect((await snapshot()).selected).toEqual([]);
 });
 
 /* ── the wall listening, driven with text ────────────────────────────────
@@ -3477,7 +3593,7 @@ t("deselecting by voice is the wall's own deselect", async () => {
  */
 
 t("a sentence nobody addressed is heard and not acted on", async () => {
-  const { title } = await cardOf(card);
+  const title = await soleTitle();
   const heard = await ctl("voice.heard", { say: `we should probably stop ${title} before lunch` });
   /* Held up so a working microphone can be told from a dead one — and that is
      the whole of what happens to it. */
