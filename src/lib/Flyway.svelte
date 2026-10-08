@@ -19,6 +19,7 @@
     acceptingReading,
     flywayError,
     flywayReading,
+    nothingHeard,
     otherWalls,
     wallLine,
     worthJoining,
@@ -146,7 +147,7 @@
   >
     <header>
       <h2>flyway</h2>
-      <span class="reading">{flywayReading(held, host)}</span>
+      <span class="reading">{flywayReading(held, host, linked)}</span>
       <button class="x" onclick={onclose} aria-label="Close">&times;</button>
     </header>
 
@@ -240,8 +241,13 @@
         {#if otherWalls(walls).length === 0}
           <p class="aside">
             None heard from yet. A wall is learned from the one it joined through, and from
-            any wall that dials this one.
+            any wall that dials this one. If one was expected, it is one of these:
           </p>
+          <ul class="causes">
+            {#each nothingHeard(linked) as why (why)}
+              <li class="aside">{why}</li>
+            {/each}
+          </ul>
         {:else}
           <ul class="walls">
             {#each otherWalls(walls) as w (w.host)}
@@ -403,6 +409,16 @@
   .go {
     color: var(--paper);
     border-color: var(--paper-faint);
+  }
+  /* Marked, where `.walls` is not: these are candidates to read down and rule
+     out one by one, and a bare stack of sentences reads as a paragraph that has
+     lost its commas. The roster above is a list of things, which needs no mark. */
+  .causes {
+    margin: 0.3rem 0 0;
+    padding-left: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
   }
   .walls {
     list-style: none;

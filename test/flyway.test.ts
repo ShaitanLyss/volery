@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { flywayError, flywayReading, worthJoining } from "../src/lib/flyway";
+import { flywayError, flywayReading, nothingHeard, worthJoining } from "../src/lib/flyway";
 
 describe("the flyway panel's voice", () => {
   test("a rejection is quoted as it came", () => {
@@ -10,10 +10,34 @@ describe("the flyway panel's voice", () => {
   });
 
   test("the reading names the machine only when linked", () => {
-    expect(flywayReading(null, "x")).toBe("asking…");
-    expect(flywayReading(false, "x")).toBe("not in a flyway");
-    expect(flywayReading(true, "office")).toBe("linked — this machine is office");
-    expect(flywayReading(true, "")).toContain("unnamed");
+    expect(flywayReading(null, "x", true)).toBe("asking…");
+    expect(flywayReading(false, "x", false)).toBe("not in a flyway");
+    expect(flywayReading(true, "office", true)).toBe("linked — this machine is office");
+    expect(flywayReading(true, "", true)).toContain("unnamed");
+  });
+
+  /* The heading used to be computed off `held` alone, so a wall whose endpoint
+     never came up read "linked" at the top and "the link is not up — nothing is
+     syncing" four lines below. The heading is the line that gets read. */
+  test("a key held with the link down does not read as linked", () => {
+    expect(flywayReading(true, "office", false)).toBe("office — the link is not up");
+    expect(flywayReading(true, "office", false)).not.toContain("linked");
+    expect(flywayReading(true, "", false)).toContain("unnamed");
+  });
+
+  test("an empty roster names what to check, likeliest first", () => {
+    const up = nothingHeard(true);
+    expect(up.length).toBe(3);
+    /* Asleep before blocked: the probe is a five-minute errand and a shut lid
+       is the common case, so the order is the whole of the advice. */
+    expect(up[0]).toContain("not running");
+    expect(up[1]).toContain("network");
+    expect(up[2]).toContain("different key");
+    /* And with no place on the flyway there is only one thing it can be, so
+       the three guesses would be three wrong ones. */
+    const down = nothingHeard(false);
+    expect(down.length).toBe(1);
+    expect(down[0]).toContain("restarting volery");
   });
 
   test("only emptiness is refused before the vault sees it", () => {

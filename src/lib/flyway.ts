@@ -14,10 +14,43 @@ export function flywayError(e: unknown): string {
   return s.trim() || "that did not work";
 }
 
-/** The one line the panel opens with. */
-export function flywayReading(held: boolean | null, host: string): string {
+/** The one line the panel opens with.
+ *
+ *  **It takes `linked` because holding a key is not being on the flyway**, and
+ *  the heading said "linked" off `held` alone while the section below it said
+ *  "the link is not up — nothing is syncing". A panel that contradicts itself
+ *  in two lines is worse than either sentence on its own: the heading is what
+ *  gets read, and it was the one that could not be true. `linked` is read only
+ *  when a key is held, since a wall with no key has no link to be down. */
+export function flywayReading(held: boolean | null, host: string, linked: boolean): string {
   if (held === null) return "asking…";
-  return held ? `linked — this machine is ${host || "unnamed"}` : "not in a flyway";
+  if (!held) return "not in a flyway";
+  const me = host || "unnamed";
+  return linked ? `linked — this machine is ${me}` : `${me} — the link is not up`;
+}
+
+/** Why the roster is empty, likeliest first.
+ *
+ *  An empty roster is the state Lyss is most likely to meet on a machine she
+ *  has only just pasted a key into, and "none heard from yet" is true and
+ *  useless: it names no next move. These do.
+ *
+ *  **Ordered by how likely each is rather than how alarming.** A laptop with
+ *  its lid shut is the common case and a gateway eating the link is the one
+ *  that costs a five-minute errand to establish, so naming the network first
+ *  would send somebody to `docs/FLYWAY-PROBE.md` about a machine that is merely
+ *  asleep. A wall that *has* been heard from and then went quiet is not this
+ *  reading at all — `wallLine` says so in its own words, with how long. */
+export function nothingHeard(linked: boolean): string[] {
+  if (!linked)
+    return [
+      "this machine has no place on the flyway yet, so nothing can arrive until it has — restarting volery is the first thing to try",
+    ];
+  return [
+    "the other wall is not running — a laptop asleep, or volery closed on it",
+    "this network will not let the link out, which an office gateway may well do — the flyway probe is what settles it",
+    "the other wall holds a different key",
+  ];
 }
 
 /** Whether a typed phrase is worth sending at all. Only emptiness: the rest is
