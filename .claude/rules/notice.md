@@ -123,6 +123,9 @@ notices in place the register is the passive history and the notice is the thing
 
 ### What is not done
 
-- Notices raised by a card on another machine of a flyway: not considered.
+- ~~Notices raised by a card on another machine of a flyway~~ — they travel now: the rows ride
+  the card's digest and are taken down from another wall over the prompt wire with
+  `askId: "notice:<id>"` (`notice::afar`, `answer_starts_nothing`). Nothing in this file's
+  detector or holds changed; `elsewhere.md`, *Notices travel too*, has the rest.
 - A parked notice, like a parked ask, does not survive a restart; its card's turn dies with
   the process anyway. Rest and card notices are rows and do.

@@ -84,6 +84,7 @@ import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
 import type { Answers, AskQuestion } from "./asking";
+import type { Removal } from "./afar";
 import { capInput, landed, type ToolCall } from "./toolcall";
 import {
   afterAck,
@@ -419,6 +420,11 @@ export type PendingAsk = {
    *  exists to avoid. See `answerAsk`. */
   ours: boolean;
   since: number;
+  /** On a removal confirmation (`remove.rs`), the evidence that lets it be
+   *  answered from another wall — the machine, the resolved paths and what is
+   *  at them. Read only when `ours`, and carried in the card's digest
+   *  (`afar.ts`); this wall's own panel draws the prose question as before. */
+  remove?: Removal | null;
 };
 
 /** A one-second tick. Urgency decays with neglect, so the wall has to know

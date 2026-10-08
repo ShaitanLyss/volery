@@ -430,6 +430,21 @@ guarding anything the user's own config touches. Every reason in `hooks.rs` open
 `volery:`; the user's deny produces the CLI's own wording and nothing of the kind. Hers is the
 Bash tool's, these are every shell's, and hers still comes first where a Bash tool exists.
 
+## Answered from another machine
+
+A removal confirmation can be answered from another wall on the flyway — Lyss's decision (sink
+`7207a6d9`), against the first proposal that it should stay on the machine it would act on:
+whether to go through with a delete is her judgement, not Volery's to withhold. What she gives
+up there is the glance, so the question carries `evidence` beside its prose — the machine, each
+target as this machine resolved it, kind, entries, size, floors, inside the card's own tree or
+not, git's word, other writers, live servers, the reason — and the far wall composes its
+question from those fields alone. `travels` is the gate on this machine: an answer from afar
+reaches the settle only if the parked question's evidence still reads whole. Nothing about the
+delete changed — it is still permanent, the refusals still re-run in `settle_delete` at the
+moment of deleting, and that last re-check is what makes a confirmation from another laptop a
+decision about the tree as it is. `elsewhere.md`, *A removal confirmed from another wall*, has
+the far half.
+
 ## What is not covered, and is somebody else's decision
 
 **The bang shell is not hooked and deliberately so.** Alt+I's console and the `!` line in the

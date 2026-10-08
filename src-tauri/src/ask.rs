@@ -577,13 +577,11 @@ pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Resu
 ///   uuid and cannot collide, so this is not a guard against chance; it is the
 ///   far wall's own claim about which card it was looking at, checked rather
 ///   than believed.
-/// - **only `ask_user` travels.** A question Volery composed — closing a card,
-///   taking a notice down, removing a path — has an act behind it (`ours`,
-///   `act`), and an answer to it *does* the thing. Whether those travel, and
-///   with what in front of the person answering, is decided (sink `7207a6d9`:
-///   the machine named, the path as that machine resolves it, what is there)
-///   and not built; until it is, the answer is refused here, on the machine
-///   the act would happen on, rather than trusted to the far wall's drawing.
+/// - **`ask_user` travels, and of Volery's own questions only a removal
+///   does.** A question Volery composed has an act behind it (`ours`, `act`),
+///   and an answer to it *does* the thing — see `afar_may_answer`, which is
+///   checked here, on the machine the act would happen on, rather than trusted
+///   to the far wall's drawing.
 pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer: &str) -> Result<(), String> {
     let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
     let parked = {
@@ -597,7 +595,7 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
             Some(p) if p.conversation_id != card => {
                 return Err("that question belongs to another card on this wall".into())
             }
-            Some(p) if p.ours || p.act.is_some() => {
+            Some(p) if !afar_may_answer(p.ours, p.act.as_ref().map(|(t, _)| t.as_str()), &p.args) => {
                 return Err("that question is this wall's own — about closing or removing something \
                             here — and is answered on the machine it is about"
                     .into())
@@ -609,6 +607,36 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
         .tx
         .send(crate::clean::scrub(answer).into_owned())
         .map_err(|_| "the asking turn has gone".to_string())
+}
+
+/// Whether a parked question may be answered from another wall.
+///
+/// An agent's `ask_user` always may: the answer is information flowing back to
+/// the agent, and what it does with it is the agent's. A question Volery
+/// composed (`ours`, or with an `act` behind it) is different — the answer
+/// *does* the thing — and of those exactly one crosses:
+///
+/// - **a removal carrying its evidence** (`remove::travels`). Lyss's decision,
+///   sink `7207a6d9`: whether to go through with a delete is her judgement, not
+///   Volery's to withhold because she is at the other laptop. What she gives up
+///   by not being at this machine is the glance, so it crosses only with the
+///   machine, the path as this machine resolved it and what is there. One that
+///   cannot carry those is refused, never asked as a bare path.
+/// - **not a close, and not an unpost.** A card on another wall has its own
+///   close already (`spawn::close_from_afar`, asked as a person from the
+///   shadow's ✕), and a board notice is this wall's coordination with its own
+///   cards; neither is a question somebody at another machine is better placed
+///   to answer than the one it is about.
+/// - **not `smith`'s or `docket`'s writes**: an answer re-enters a write to
+///   somebody else's service, and nothing about that confirmation was built to
+///   be read from elsewhere.
+///
+/// Pure, so the boundary is held by a test rather than by reading.
+pub(crate) fn afar_may_answer(ours: bool, act: Option<&str>, question: &Value) -> bool {
+    if !ours && act.is_none() {
+        return true;
+    }
+    ours && act == Some(crate::presence::REMOVE_ACT) && crate::remove::travels(question)
 }
 
 /// A design the user can look at instead of imagine.
@@ -4628,5 +4656,37 @@ mod tests {
         /* Left in the slot, because the parking thread reads it to recognise
            the reply the flip composes. */
         assert!(held.lock().unwrap().is_some());
+    }
+
+    /// What may be answered from another wall: an agent's question always; of
+    /// Volery's own, only a removal carrying the evidence a person at the other
+    /// machine needs (sink `7207a6d9`). A close, an unpost and a write to
+    /// somebody else's service are answered where they would act.
+    #[test]
+    fn of_volerys_own_questions_only_a_removal_with_its_evidence_crosses() {
+        let plain = json!({ "question": "teal or amber?" });
+        assert!(afar_may_answer(false, None, &plain));
+
+        let removal = json!({
+            "questions": [],
+            "remove": {
+                "machine": "home",
+                "reason": "a stale build",
+                "targets": [{
+                    "path": "C:\\work\\nova\\dist", "kind": "directory", "exists": true,
+                    "entries": 12, "bytes": 4096, "capped": false, "own": true
+                }]
+            }
+        });
+        assert!(afar_may_answer(true, Some(crate::presence::REMOVE_ACT), &removal));
+        /* The same delete without what the far wall must show: refused, never
+           asked as a bare path. */
+        assert!(!afar_may_answer(true, Some(crate::presence::REMOVE_ACT), &plain));
+        /* Evidence on something that is not a removal proves nothing. */
+        assert!(!afar_may_answer(true, None, &removal));
+        assert!(!afar_may_answer(true, Some("docket"), &removal));
+        /* And an agent's own ask_user dressed up with a `remove` block is
+           still just an ask_user — it is `ours` that makes the evidence ours. */
+        assert!(!afar_may_answer(false, Some(crate::presence::REMOVE_ACT), &removal));
     }
 }

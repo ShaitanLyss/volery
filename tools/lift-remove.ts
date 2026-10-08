@@ -103,6 +103,8 @@ const REMOVE_ITEMS = [
   "fn ignored_scratch",
   "fn unasked",
   "fn why_unasked",
+  "fn evidence",
+  "fn travels",
   "const REMOVE_TOOL",
 ];
 
@@ -169,6 +171,8 @@ const REMOVE_TESTS = [
   "an_ignored_scratch_directory_inside_a_repository_goes_unasked",
   "the_no_click_result_names_the_tier",
   "a_temp_directory_pointed_somewhere_broad_is_not_one",
+  "a_removal_carries_what_the_glance_would_have_said",
+  "a_removal_missing_any_of_it_does_not_travel",
 ];
 
 /** The move guard's own, minus the one that needs `reply`. */

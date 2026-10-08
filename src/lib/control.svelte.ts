@@ -25,6 +25,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import type { Conversation } from "./conversation.svelte";
 import { SKIPPED, composeAnswer, isComplete, panelsOf, stepAt } from "./asking";
+import { noticeLine } from "./notice";
 import { stripAnsi } from "./ansi";
 import { screenText } from "./nvim";
 import type { Ambience } from "./ambience.svelte";
@@ -785,6 +786,15 @@ export class Control {
         cut: h.skein.flights.cut,
         waiting: { ...h.skein.flights.inbox },
       },
+      /* The wall's notice queue, as the dock reads it — what a notice taken
+         down from another wall has to be seen leaving (`afar.ts`). */
+      noticeQueue: h.skein.noticeQueue.map((n) => ({
+        id: n.id,
+        conversationId: n.conversationId,
+        kind: n.kind,
+        askId: n.askId ?? null,
+        line: noticeLine(n.text),
+      })),
       /* What is standing on the billboard. `watchers` is reported beside it for
          `listeners`' reason: the reader is idle until a widget attaches, so an
          empty `notices` on a wall with nothing hung up is the feature working
@@ -834,7 +844,14 @@ export class Control {
             open: s.open.includes(a),
             headers: a.questions.map((q) => q.header),
             answers: [...a.answers],
+            /* A removal is `ours`, and its words are composed here from the
+               evidence — reported so a run can read what the person was shown. */
+            ours: a.ours,
+            question: a.ours ? (a.questions[0]?.question ?? "") : undefined,
           })),
+          /* Its notices this wall may take down now — none while its wall is
+             unheard, none while an answer to one is on its way. */
+          notices: s.notices.map((n) => ({ id: n.id, kind: n.kind, line: noticeLine(n.text) })),
         })),
         births: { ...h.elsewhere.births },
       },

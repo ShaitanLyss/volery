@@ -892,6 +892,99 @@ pub(crate) fn question(reason: &str, surveys: &[Survey]) -> Value {
     })
 }
 
+/* ── the question, carried to another wall ────────────────────────────────*/
+
+/// What a removal confirmation carries when it may be answered from another
+/// machine, as structured fields rather than prose.
+///
+/// **Lyss's decision, against the first proposal** (sink `7207a6d9`): a card on
+/// one laptop asking to delete may be answered from the other, because whether
+/// to go through with it is her judgement and not Volery's to withhold. What
+/// she gives up by not being at that machine is the *glance* — the folder in
+/// Explorer, the size in a terminal — so the confirmation that crosses owes
+/// what the glance would have said, about the disk it is actually about:
+///
+/// - **the machine**, by the name the flyway knows it by — the whole risk is
+///   confirming against the wrong filesystem, so the far wall checks this is
+///   the wall it heard the question from before it draws it at all;
+/// - **the path as this machine resolves it** — the survey's canonical path,
+///   never the string the card typed, which on another machine names a
+///   different place or nothing;
+/// - **what is there** — file, directory or link, how many entries under it and
+///   how large, whether either is only a floor, whether it is inside the card's
+///   own working tree, and git's word on it;
+/// - the card's reason.
+///
+/// The prose question beside it says all of this too, and the far wall does not
+/// draw it: it draws a question it composes from *these* fields, so that a
+/// field missing is a question it cannot compose — and refuses — rather than a
+/// sentence that quietly went unsaid. `travels` is the same rule on this side,
+/// for an answer arriving.
+///
+/// Words only, as `ask_user`'s question is: no file contents and no listing.
+/// What a directory holds is not what the decision turns on; its size and who
+/// else is in it are.
+pub(crate) fn evidence(reason: &str, surveys: &[Survey], cwd: &str, machine: &str) -> Value {
+    let targets: Vec<Value> = surveys
+        .iter()
+        .map(|s| {
+            json!({
+                "path": s.path,
+                "kind": if s.is_link { "link" } else if s.is_dir { "directory" } else { "file" },
+                "exists": s.exists,
+                "entries": s.files,
+                "bytes": s.bytes,
+                "capped": s.capped,
+                /* Inside the directory the card's own process runs in — the
+                   worktree where there is one. `refuse` already stops anything
+                   the card is standing *inside*; this is the other direction,
+                   and it is the fact that most changes how a delete reads from
+                   far away: a card clearing its own build output, or reaching
+                   out of its tree into something else's. */
+                "own": !cwd.is_empty() && under(cwd, &s.path),
+                "repo": s.repo_root.is_some(),
+                "tracked": s.tracked,
+                "writers": s.writers,
+                "servers": s.servers,
+            })
+        })
+        .collect();
+    json!({
+        "machine": machine,
+        "reason": reason.trim(),
+        "targets": targets,
+    })
+}
+
+/// Whether a parked question is a removal that carries everything a person on
+/// another machine would need to decide it — the gate `ask::answer_from_afar`
+/// asks before it lets an answer from another wall do the deleting.
+///
+/// The far wall applies the same reading before it draws the question; this is
+/// the second lock, on the machine the delete would happen on, because what the
+/// far wall drew is a claim and what is parked here is the fact. Strict in the
+/// direction that refuses: a field missing or the wrong shape is a question
+/// that does not travel, and its answer is refused with the reason the old rule
+/// gave.
+pub(crate) fn travels(question: &Value) -> bool {
+    let Some(e) = question.get("remove") else { return false };
+    let named = |v: &Value| v.as_str().is_some_and(|s| !s.trim().is_empty());
+    let Some(targets) = e.get("targets").and_then(Value::as_array) else { return false };
+    named(&e["machine"])
+        && named(&e["reason"])
+        && !targets.is_empty()
+        && targets.len() <= MAX_PATHS
+        && targets.iter().all(|t| {
+            named(&t["path"])
+                && matches!(t["kind"].as_str(), Some("file" | "directory" | "link"))
+                && t["exists"] == Value::Bool(true)
+                && t["entries"].is_u64()
+                && t["bytes"].is_u64()
+                && t["capped"].is_boolean()
+                && t["own"].is_boolean()
+        })
+}
+
 /* ── the schema ───────────────────────────────────────────────────────────*/
 
 /// What a card reads before it calls this.
@@ -1416,7 +1509,11 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
             why_unasked(&surveys, &temps, &mine),
         ));
     }
-    let q = question(reason, &surveys);
+    let mut q = question(reason, &surveys);
+    /* Beside the prose, never instead of it: this wall's own panel draws the
+       question as it always has, and the fields are what lets another wall
+       draw one about the right disk — see `evidence`. */
+    q["remove"] = evidence(reason, &surveys, &g.cwd, &crate::flyway::key::host_name());
 
     Writing::Ask {
         question: q,
@@ -1816,6 +1913,74 @@ mod tests {
         assert!(body.contains("nova dev (nova)"), "{body}");
         assert!(body.contains("cold recompile"), "{body}");
         assert!(body.contains("clearing a corrupt turbopack manifest"), "{body}");
+    }
+
+    /// What another wall needs to decide a delete it cannot see: the machine,
+    /// the path as this machine resolved it, and what is there. Sink
+    /// `7207a6d9`'s list, as fields the far wall composes its own question
+    /// from — and `travels` is the gate an answer from there passes.
+    #[test]
+    fn a_removal_carries_what_the_glance_would_have_said() {
+        let mut s = dir("C:\\Users\\lyss\\workbench\\nova\\.next");
+        s.repo_root = Some("C:\\Users\\lyss\\workbench\\nova".into());
+        let mut q = question("a corrupt manifest", std::slice::from_ref(&s));
+        q["remove"] = evidence("  a corrupt manifest ", &[s], "C:\\Users\\lyss\\workbench\\nova", "home");
+        let e = &q["remove"];
+        assert_eq!(e["targets"][0]["repo"], true);
+        assert_eq!(e["machine"], "home");
+        assert_eq!(e["reason"], "a corrupt manifest");
+        let t = &e["targets"][0];
+        assert_eq!(t["path"], "C:\\Users\\lyss\\workbench\\nova\\.next");
+        assert_eq!(t["kind"], "directory");
+        assert_eq!(t["entries"], 9627);
+        assert_eq!(t["bytes"], 5_690_000_000u64);
+        assert_eq!(t["own"], true);
+        assert!(travels(&q));
+
+        /* Outside the card's own tree reads as such — the fact that most
+           changes how a delete looks from another machine. */
+        let away = evidence("x", &[dir("D:\\other\\dist")], "C:\\Users\\lyss\\workbench\\nova", "home");
+        assert_eq!(away["targets"][0]["own"], false);
+        /* And a prefix is not containment. */
+        let sib = evidence("x", &[dir("C:\\Users\\lyss\\workbench\\nova-old\\dist")], "C:\\Users\\lyss\\workbench\\nova", "home");
+        assert_eq!(sib["targets"][0]["own"], false);
+    }
+
+    /// A question that cannot carry what the far wall needs does not travel,
+    /// and its answer from another wall is refused — never asked as a path.
+    #[test]
+    fn a_removal_missing_any_of_it_does_not_travel() {
+        let whole = || json!({ "remove": evidence("why", &[dir("C:\\x\\dist")], "C:\\x", "home") });
+        assert!(travels(&whole()));
+        /* No evidence at all: `close`, `unpost`, an old question. */
+        assert!(!travels(&question("why", &[dir("C:\\x\\dist")])));
+        assert!(!travels(&json!({})));
+        for (field, bad) in [
+            ("machine", json!("")),
+            ("reason", json!("  ")),
+            ("targets", json!([])),
+            ("targets", json!("C:\\x\\dist")),
+        ] {
+            let mut q = whole();
+            q["remove"][field] = bad;
+            assert!(!travels(&q), "{field}");
+        }
+        for (field, bad) in [
+            ("path", json!("")),
+            ("kind", json!("folder")),
+            ("exists", json!(false)),
+            ("entries", json!(-1)),
+            ("bytes", json!("5 GB")),
+            ("capped", Value::Null),
+            ("own", Value::Null),
+        ] {
+            let mut q = whole();
+            q["remove"]["targets"][0][field] = bad;
+            assert!(!travels(&q), "{field}");
+        }
+        let mut many = whole();
+        many["remove"]["targets"] = json!(vec![many["remove"]["targets"][0].clone(); MAX_PATHS + 1]);
+        assert!(!travels(&many));
     }
 
     #[test]

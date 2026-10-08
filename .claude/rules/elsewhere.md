@@ -466,6 +466,11 @@ question's template rather than beside it (`afar.ts`).
   the attention ladder — one row per card, its newest notice, and none for a card that has a
   question open, as a local card with a pending ask has no notice row.
 
+Demonstrated 2026-10-09 between two walls of one frozen build (`lab`, `lab2`): a card on lab2
+finished a turn, its "finished" notice was in lab2's queue and on lab's shadow, dock and
+attention ladder within seconds, and pressing *acknowledge* in lab's dock emptied lab2's queue
+inside a second.
+
 ### A removal confirmed from another wall
 
 The one of Volery's own three questions that crosses, and it crosses because Lyss overruled
@@ -508,6 +513,15 @@ running out of it, and the card's reason. Words only — no listing, no contents
 - **The answer is the label.** `composeAnswer` of one question is the option's label, so a
   click sends `delete it` and `remove::approved` reads only that, verbatim; `test/afar.test.ts`
   reads both labels out of `remove.rs` so a renamed button cannot ship as a no.
+
+Demonstrated 2026-10-09 between the same two walls: a card on lab2 called `remove` on a
+directory outside any repository and outside temp, so it asked. lab drew *delete on lab2* with
+the resolved path, "a directory, 26 B in 4 files" (right to the byte), inside the card's own
+tree and not in git, the reason and the permanence line, and the peek ladder carried it as
+`blocked`. *delete it* pressed in lab's dock came back `taken`, the directory was gone from
+disk one second later with the file beside it untouched, and the card on lab2 reported the
+delete and then raised a "finished" notice of its own, which lab drew in turn. Stopping lab2
+took its standing notice off lab once the wall went unheard.
 
 ### Roots run between walls
 

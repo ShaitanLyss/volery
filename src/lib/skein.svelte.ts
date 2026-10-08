@@ -63,6 +63,7 @@ import {
   restNotice,
   type Notice,
 } from "./notice";
+import { readRemoval } from "./afar";
 import {
   repairWorthTrying,
   sayNothingToRepair,
@@ -723,6 +724,10 @@ export class Skein {
           answers: blankAnswers(questions),
           ours: e.payload.ours === true,
           since: Date.now(),
+          /* A removal's evidence, which is what lets it be answered from
+             another wall (`afar.ts`). Only on Volery's own: an agent's
+             question carrying the same block is still an agent's question. */
+          remove: e.payload.ours === true ? readRemoval((raw as { remove?: unknown }).remove) : null,
         });
         c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
       }),
@@ -3727,25 +3732,33 @@ export class Skein {
    *  gesture here, and it is what you asked for. The take comes before the
    *  send, `later::serve_due`'s ordering: an interruption between the two
    *  loses a follow-up rather than delivering it twice. */
-  async followUpNotice(n: Notice, reply: string) {
+  async followUpNotice(n: Notice, reply: string): Promise<boolean> {
     const said = reply.trim();
-    if (!said) return this.acknowledgeNotice(n);
+    if (!said) {
+      await this.acknowledgeNotice(n);
+      return true;
+    }
     this.notices = this.notices.filter((x) => x.id !== n.id);
     if (n.askId) {
-      await invoke("answer_ask", { askId: n.askId, answer: parkedReply(said) }).catch((err) => {
-        this.fault = String(err);
-      });
-      return;
+      return invoke("answer_ask", { askId: n.askId, answer: parkedReply(said) }).then(
+        () => true,
+        (err) => {
+          this.fault = String(err);
+          return false;
+        },
+      );
     }
     const taken = await invoke<unknown>("notice_take", { id: n.id }).catch(() => null);
     if (!taken) {
       /* Somebody got there first — the card stirred and took it down, or it was
          closed. Say so: a reply that vanishes looks exactly like one sent. */
       this.fault = "that notice had already come down, so your reply was not sent";
-      return;
+      return false;
     }
+    /* Whether it went is answered for the one caller that has to say so to
+       somebody else — a follow-up typed on another wall (`Elsewhere.#take`). */
     const c = this.#byId.get(n.conversationId);
-    if (c) await this.send(c, followUpText(n, said));
+    return c ? this.send(c, followUpText(n, said)) : false;
   }
 
   /* ── the horizon ─────────────────────────────────────────────────────
