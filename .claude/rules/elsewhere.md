@@ -224,6 +224,30 @@ Demonstrated 2026-10-08 between two walls of one build: a card on lab2 parked on
 0.6s and the card resumed and said "square" at 2.7s. Then a question left up while lab2 was
 killed: past 90s it was no longer offered and the panel said why.
 
+### And it reaches you when you are not looking
+
+The dashboard's claim is that you can look away from it. A remote question that only took the
+dock reached you only while Volery was the window in front; in any other window nothing said a
+card on the other machine had stopped, which is the failure this feature exists to prevent, at
+exactly the distance the flyway added.
+
+So a remote question feeds **the existing ladder** — taskbar flash, then the peek, then the
+chime (`attention.svelte.ts`) — as a `blocked` row, through one more injected list beside
+`instruments` and `notices` (`shadow.ts::remoteQuestions`). Not a second ladder: the ladder
+already never needed a `Conversation`, only rows, which is what let a rung countdown join it.
+One row per card, its oldest open question, because a local card is one row for its
+`pendingAsk` and the peek keys its rows on the id. `key` is the ask, so a card that asks again
+after being answered rings again. The shadow's own `open` decides what counts, so a question
+whose answer is on its way, or whose wall has gone quiet, is not news either.
+`waitedSeconds` is measured from `askedAt`, which is what keeps a question that arrived with a
+wall this one had just met from ringing as fresh. Clicking the row (`peek:goto`) lands on the
+shadow by `focusShadow`, so its question is in the dock and its panel is open.
+
+Demonstrated 2026-10-08: a question parked on lab2, lab unfocused and undriven — the peek came
+up reading "one thing wants you · proj-b · on lab2", and a real click on it brought lab to the
+front on that card with the question in the dock. A wall with the control surface armed stays
+silent on purpose (`isDriven`), so a lab run reads the rows off `snapshot.attention.items`.
+
 ### What is not here
 
 - **The transcript.** A digest is the tier; streaming a conversation is a much larger tier and
@@ -232,7 +256,5 @@ killed: past 90s it was no longer offered and the panel said why.
   reads as one that failed to load.
 - **Notices travelling** (sink `16864f3d` item 2). A card that finished or ended on a question
   shows its tier on the shadow, but the notice queue is this wall's.
-- **The peek, the taskbar flash and the chime** for a remote question. The card goes amber on
-  the wall and the question takes the dock, but `attention.svelte.ts` folds local cards only.
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.

@@ -43,7 +43,8 @@
 
 import { spanOf, UNACKNOWLEDGED_LINE, type Ending, type Tier } from "./classify";
 import { layout, REGION_GAP, regionWidth, type Box, type Laid, type Region } from "./layout";
-import type { AskQuestion } from "./asking";
+import { askHeadline, type AskQuestion } from "./asking";
+import { nameBesideProject } from "./naming";
 
 /** The digest's shape version — this file's, not the wire's. Read leniently: a
  *  newer wall's digest is drawn from whatever fields this build understands. */
@@ -678,4 +679,60 @@ export function standElsewhere<T extends { id: string; host: string; project: st
     y += r.h + REGION_GAP;
   }
   return { regions, laid };
+}
+
+/* ── getting your attention ─────────────────────────────────────────── */
+
+/** A question parked on another wall, in the attention ladder's words — one
+ *  row per card, its oldest open question, exactly as a local card is one row
+ *  for its `pendingAsk`.
+ *
+ *  **The dashboard's claim is that you can look away from it.** A question
+ *  that only reached the dock reached you only while you were looking at
+ *  Volery; in another window nothing said a card on the other machine had
+ *  stopped, which is the failure this whole feature exists to prevent, at
+ *  exactly the distance the flyway added. So these feed `attention.svelte.ts`'s
+ *  own ladder — taskbar flash, peek, chime — as `blocked` items, rather than a
+ *  second ladder growing beside it: one answer to "how does the wall get your
+ *  attention".
+ *
+ *  `open` is the shadow's own reading, so a question whose answer is on its
+ *  way, or whose wall has gone quiet, is not news either. `key` is the ask, so
+ *  a card that asks again after being answered rings again. `waitedSeconds` is
+ *  from the question's estimated asking on this wall's clock (`askedAt`), which
+ *  is what lets the ladder tell a question that arrived with a wall it had just
+ *  met — old, not news — from one asked a moment ago. */
+export function remoteQuestions(
+  shadows: readonly {
+    id: string;
+    host: string;
+    project: string;
+    title: string;
+    open: readonly { askId: string; questions: AskQuestion[]; since: number }[];
+  }[],
+  now: number,
+): {
+  id: string;
+  key: string;
+  project: string;
+  title: string;
+  kind: "blocked";
+  detail: string;
+  waitedSeconds: number;
+}[] {
+  return shadows.flatMap((s) => {
+    const a = s.open[0];
+    if (!a) return [];
+    return [
+      {
+        id: s.id,
+        key: a.askId,
+        project: `${s.project} · on ${s.host}`,
+        title: nameBesideProject(s.title),
+        kind: "blocked" as const,
+        detail: askHeadline(a.questions),
+        waitedSeconds: Math.max(0, Math.floor((now - a.since) / 1000)),
+      },
+    ];
+  });
 }

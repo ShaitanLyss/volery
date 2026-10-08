@@ -17,6 +17,7 @@ import {
   sentReading,
   askHere,
   askedAt,
+  remoteQuestions,
   standElsewhere,
   steadyDoing,
   ELSEWHERE_COLS,
@@ -413,5 +414,51 @@ describe("a question that travels", () => {
     const a = { askId: "a", since: 10_000, questions: [] };
     expect(askedAt(a, 70_000, 3_600_000)).toBe(3_600_000 - 60_000);
     expect(askedAt(a, null, 500)).toBe(500);
+  });
+});
+
+describe("a remote question reaching you when you are not looking", () => {
+  const q = (question: string, header = "h") => ({ header, question, options: [] });
+  const shadow = (over: object = {}) => ({
+    id: "elsewhere:lab:c1",
+    host: "lab",
+    project: "skein",
+    title: "fix the ring",
+    open: [
+      { askId: "a1", questions: [q("round or square?")], since: 10_000 },
+      { askId: "a2", questions: [q("later?")], since: 20_000 },
+    ],
+    ...over,
+  });
+
+  /* One row per card, as a local card is — and the peek keys its rows on id. */
+  test("is one blocked row per card, its oldest question, keyed on the ask", () => {
+    expect(remoteQuestions([shadow()], 70_000)).toEqual([
+      {
+        id: "elsewhere:lab:c1",
+        key: "a1",
+        project: "skein · on lab",
+        title: "fix the ring",
+        kind: "blocked",
+        detail: "round or square?",
+        waitedSeconds: 60,
+      },
+    ]);
+  });
+
+  test("a card with nothing open — answered, on its way, or its wall quiet — is no row", () => {
+    expect(remoteQuestions([shadow({ open: [] })], 0)).toEqual([]);
+  });
+
+  test("several decisions name their headers, as a local one does", () => {
+    const rows = remoteQuestions(
+      [shadow({ open: [{ askId: "a", questions: [q("x", "shape"), q("y", "colour")], since: 0 }] })],
+      0,
+    );
+    expect(rows[0]!.detail).toBe("2 decisions: shape · colour");
+  });
+
+  test("never a negative wait, whatever the estimate", () => {
+    expect(remoteQuestions([shadow()], 0)[0]!.waitedSeconds).toBe(0);
   });
 });

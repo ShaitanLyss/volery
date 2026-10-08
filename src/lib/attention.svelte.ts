@@ -124,6 +124,12 @@ export class Attention {
      *  over the user's own studio for a minute at a time. Silenced exactly as
      *  away mode silences it, bookkeeping kept. */
     private isDriven: () => boolean = () => false,
+    /** Questions parked on cards on *other* walls, as `blocked` rows
+     *  (`shadow.ts::remoteQuestions`). Injected for `instruments`' reason, and
+     *  on this ladder rather than one of their own: a card on another machine
+     *  that stops to ask is the same news as one here, and the whole point of
+     *  the flyway is that you need not be looking at the wall to hear it. */
+    private elsewhere: () => PeekItem[] = () => [],
   ) {
     this.#wire();
   }
@@ -227,6 +233,9 @@ export class Attention {
         });
       }
     }
+    /* A question on another wall, already only the ones this wall may answer
+       — none from a wall gone quiet, none whose answer is on its way. */
+    out.push(...this.elsewhere());
     /* No grace period for an instrument, unlike an overdue card: you set the
        thing yourself and asked to be told, so waiting twenty seconds before
        saying so would be the wall second-guessing an explicit instruction. */

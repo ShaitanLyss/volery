@@ -146,6 +146,7 @@
   import Transcript from "./lib/Transcript.svelte";
   import Yonder from "./lib/Yonder.svelte";
   import { Elsewhere, type Shadow } from "./lib/shadows.svelte";
+  import { remoteQuestions } from "./lib/shadow";
   import Servers from "./lib/Servers.svelte";
   import Processes from "./lib/Processes.svelte";
   /* The component is `Console` and the class it draws is `Shell`, which is not
@@ -560,6 +561,13 @@
         canvas?.revealWidget(id);
         return;
       }
+      /* And a card on another wall, which is no card here: focused the one way
+         a shadow is, so its question is in the dock and its panel is open. */
+      const shadow = elsewhere.find(id);
+      if (shadow) {
+        focusShadow(shadow);
+        return;
+      }
       focusedId = id;
       studio.selectOnly(id);
     },
@@ -589,6 +597,7 @@
     /* Read lazily: `control` is constructed further down, and the ladder only
        asks once the wall is ticking. */
     () => control.endpoint !== null,
+    () => remoteQuestions(elsewhere.shadows, clock.t),
   );
 
   /** Countdowns that have run out, as things wanting your attention.
