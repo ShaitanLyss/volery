@@ -337,46 +337,34 @@ describe("ordering", () => {
     expect(orderReviews([broken, wants])[0]).toBe(wants);
   });
 
-  test("among the running, the longest running comes first", () => {
-    /* Twenty minutes in is either nearly done or stuck, and either way it is
-       the one to look at. */
-    const brief = run({ status: "inProgress", result: "", startedAt: NOW - MIN, finishedAt: 0 });
-    const long = run({
-      status: "inProgress",
-      result: "",
-      startedAt: NOW - 20 * MIN,
-      finishedAt: 0,
-    });
-    expect(orderRuns([brief, long], NOW)[0]).toBe(long);
+  test("runs go newest first, by when they were queued", () => {
+    const older = run({ id: "older", queuedAt: NOW - 30 * MIN });
+    const newer = run({ id: "newer", queuedAt: NOW - MIN });
+    expect(orderRuns([older, newer]).map((r) => r.id)).toEqual(["newer", "older"]);
   });
 
-  test("among the finished, newest first", () => {
-    const older = run({ finishedAt: NOW - 30 * MIN });
-    const newer = run({ finishedAt: NOW - MIN });
-    expect(orderRuns([older, newer], NOW)[0]).toBe(newer);
+  test("a fresh failure does not jump above a newer run", () => {
+    /* The bug, 2026-10-08: two red runs, then the fix pushed and building.
+       The reds sorted above it while they were inside the settling window, and
+       the widget read as "red again" about a run that was going green. */
+    const red1 = run({ id: "red1", result: "failed", queuedAt: NOW - 25 * MIN, finishedAt: NOW - 14 * MIN });
+    const red2 = run({ id: "red2", result: "failed", queuedAt: NOW - 12 * MIN, finishedAt: NOW - 3 * MIN });
+    const fix = run({ id: "fix", status: "inProgress", result: "", queuedAt: NOW - MIN, finishedAt: 0 });
+    expect(orderRuns([red1, red2, fix]).map((r) => r.id)).toEqual(["fix", "red2", "red1"]);
   });
 
-  test("a failure outranks a pass only while it is news", () => {
-    /* The bug: every failure ever fetched sorted above every pass, the widget
-       sliced to its rows, and the list read as nothing but red. */
-    const fresh = run({ id: "fresh", result: "failed", finishedAt: NOW - 2 * MIN });
-    const pass = run({ id: "pass", finishedAt: NOW - 5 * MIN });
-    const stale = run({ id: "stale", result: "failed", finishedAt: NOW - 3 * 24 * 60 * MIN });
-    expect(orderRuns([stale, pass, fresh], NOW).map((r) => r.id)).toEqual([
-      "fresh",
-      "pass",
-      "stale",
-    ]);
+  test("a row does not move when its run finishes", () => {
+    /* Queued, not finished: a long run that ends after a short later one stays
+       below it, so the list never reshuffles under a reader. */
+    const long = run({ id: "long", queuedAt: NOW - 20 * MIN, finishedAt: NOW - MIN });
+    const short = run({ id: "short", queuedAt: NOW - 10 * MIN, finishedAt: NOW - 8 * MIN });
+    expect(orderRuns([long, short]).map((r) => r.id)).toEqual(["short", "long"]);
   });
 
-  test("a run waiting on a person does not age out of the top", () => {
-    const parkedRun = gh({
-      id: "parked",
-      result: "action_required",
-      finishedAt: NOW - 3 * 24 * 60 * MIN,
-    });
-    const pass = run({ id: "pass" });
-    expect(orderRuns([pass, parkedRun], NOW)[0].id).toBe("parked");
+  test("runs queued in the same instant keep a stable order", () => {
+    const a = run({ id: "a", queuedAt: NOW });
+    const b = run({ id: "b", queuedAt: NOW });
+    expect(orderRuns([a, b]).map((r) => r.id)).toEqual(orderRuns([b, a]).map((r) => r.id));
   });
 
   test("reviews go oldest first within a tier — a stale one is worse", () => {
@@ -390,7 +378,7 @@ describe("ordering", () => {
   test("neither ordering mutates what it was given", () => {
     const runs = [run({ id: "a" }), run({ id: "b", status: "inProgress", result: "" })];
     const before = runs.map((r) => r.id);
-    orderRuns(runs, NOW);
+    orderRuns(runs);
     expect(runs.map((r) => r.id)).toEqual(before);
   });
 });
@@ -607,20 +595,16 @@ describe("what a github run is", () => {
 
   test("a github run is still just a row to everything that orders rows", () => {
     /* The claim the whole seam rests on: the questions a wall asks are
-       forge-independent. One list, sorted by how much each row wants you,
-       with no clustering by service. */
+       forge-independent. One list, newest first, with no clustering by
+       service. */
     const rows = [
-      gh({ id: "g1", result: "success" }),
-      run({ id: "a1", result: "failed" }),
-      gh({ id: "g2", result: "failure" }),
-      run({ id: "a2", status: "inProgress", result: "" }),
+      gh({ id: "g1", result: "success", queuedAt: NOW - 4 * MIN }),
+      run({ id: "a1", result: "failed", queuedAt: NOW - 3 * MIN }),
+      gh({ id: "g2", result: "failure", queuedAt: NOW - 2 * MIN }),
+      run({ id: "a2", status: "inProgress", result: "", queuedAt: NOW - MIN }),
     ];
-    const order = orderRuns(rows, NOW).map((r) => r.id);
-    /* Both failures first, then the running one, then the pass — and the two
-       failures are one from each forge, interleaved rather than grouped. */
-    expect(order.slice(0, 2).sort()).toEqual(["a1", "g2"]);
-    expect(order[2]).toBe("a2");
-    expect(order[3]).toBe("g1");
+    /* Interleaved by time, one forge then the other, rather than grouped. */
+    expect(orderRuns(rows).map((r) => r.id)).toEqual(["a2", "g2", "a1", "g1"]);
   });
 });
 

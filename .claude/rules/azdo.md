@@ -203,16 +203,19 @@ own for how it is drawn (`list`, `lanes`, `dots`).
 - **`live` is not a strict in-progress filter.** A pipeline that failed ninety seconds ago is
   the single most useful row this widget can draw, and a strict filter makes it vanish at the
   moment it matters, so finished runs stay for `SETTLING_MS`.
-- **The same window bounds the ordering, and it did not until 2026-10-01.** `orderRuns`
-  weighed every failure above every pass however old, and the widget slices to the rows it
-  has room for — so under `all` or `mine` the list was nothing but red, last week's failures
-  standing over this morning's greens. A finished run now sorts by its colour only while it
-  is inside `SETTLING_MS` (`weighed`), then by recency like any history; it is still drawn
-  rust. A run waiting on a person (`ask`) never ages out, since nothing about it is history.
+- **Runs are newest first, by when they were queued, and by nothing else.** This took two
+  tries. First `orderRuns` weighed every failure above every pass however old, so under `all`
+  or `mine` the list was nothing but red. Then (2026-10-01) colour was bounded to
+  `SETTLING_MS` — and a failure inside that window still sorted above a *newer* run, so on
+  2026-10-08 a fix building after two red runs sat under them and the widget read as "red
+  again" about a pipeline going green. **The runs list is a log, and position has to say
+  which row is current; colour already says which is red.** One ordering cannot do both, and
+  trying to is how a widget lies about the present. Queued rather than finished so a row
+  never moves when its run ends.
 - **Colour is status here exactly as everywhere else.** Azure DevOps' own UI has a colour per
-  state; this has the wall's four, and introduces no hue. Runs order by how much they want you
-  and then longest-running first; reviews order the same way and then **oldest** first — the
-  opposite, deliberately, because a stale pull request is a problem where a stale build is
+  state; this has the wall's four, and introduces no hue. Reviews order by how much they want
+  you and then **oldest** first — unlike runs, deliberately, because a pull request is a
+  standing state where a run is an event: a stale pull request is a problem, a stale build
   merely history.
 - **A row is a link and nothing else.** No re-run, no cancel, no approve — a deliberate floor
   rather than an unfinished edge. This wall spawns agents with

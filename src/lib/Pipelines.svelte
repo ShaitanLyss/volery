@@ -97,7 +97,7 @@
   $effect(() => () => devops.detach(widget.id));
 
   const half = $derived(devops.runs);
-  const shown = $derived(orderRuns(scopeRuns(half.rows, scope, now), now));
+  const shown = $derived(orderRuns(scopeRuns(half.rows, scope, now)));
   const tally = $derived(tallyRuns(half.rows, now));
   const rows = $derived(shown.slice(0, wanted));
   const rest = $derived(shown.length - rows.length);

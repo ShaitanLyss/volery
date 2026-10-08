@@ -373,8 +373,9 @@ const WEIGHT: Record<Health, number> = {
 
 /** Projects in the order they want looking at, then alphabetically.
  *
- *  Worst first, which is the same judgement `orderRuns` makes: the row you most
- *  want is the one that just went wrong, and a grid sorted by name buries it
+ *  Worst first, because a status is a standing state rather than an event in a
+ *  log (contrast `orderRuns`, which is newest first): the row you most want is
+ *  the one that is in trouble, and a grid sorted by name buries it
  *  wherever the alphabet left it.
  *
  *  `none` sorts *after* `on-track` and before the finished ones. It is not
