@@ -27,19 +27,15 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
 
 const FLEET = "src-tauri/src/flyway/fleet.rs";
 const CLEAN = "src-tauri/src/clean.rs";
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 const HOST = "src-tauri/target/debug/deps";
 
 function rlibOf(name: string): string {
-  const hit = readdirSync(DEPS).find((f) => new RegExp(`^lib${name}-[0-9a-f]+\\.rlib$`).test(f));
-  if (!hit) {
-    console.error(`no ${name} rlib in ${DEPS} — run \`bash tools/check-gnu.sh\` first so cargo builds one.`);
-    process.exit(1);
-  }
-  return join(DEPS, hit);
+  return newestRlib(name);
 }
 
 const read = (p: string) => readFileSync(p, "utf8").replace(/\r\n/g, "\n");
@@ -95,7 +91,7 @@ try {
     ],
     /* Load-bearing, as in every lift: bare `rustc` takes the msvc default and
        dies on `link: extra operand`, which names nothing (sink b282b54c). */
-    { encoding: "utf8", env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" } },
+    { encoding: "utf8", env: rustEnv() },
   );
   if (build.status !== 0) {
     console.error(build.stderr || build.stdout);

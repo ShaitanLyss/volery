@@ -202,6 +202,13 @@ script died on `cd src-tauri` instead. Three fixes, and each covers a different 
   code, and it is not a real limit: the deps are sitting in the target directory and a lifted
   file can link them.
 
+  *The directory is the gnu tree's only on a machine with no MSVC.* Where MSVC is installed
+  (since 2026-08-17 here) the rlibs are `src-tauri/target/debug/deps`, built by plain `cargo
+  check`, and the gnu tree should not be rebuilt for the lifts' sake — it is tens of gigabytes
+  for a workaround nothing needs. `tools/lift-scan.ts` (`depsDir`, `rustEnv`, `newestRlib`)
+  picks the directory and the matching `RUSTUP_TOOLCHAIN` as one decision, preferring the MSVC
+  tree, and `bun run lifts` is what runs every lift this way. The recipe by hand, for the gnu case:
+
   ```bash
   D=src-tauri/target/x86_64-pc-windows-gnu/debug/deps
   rustc --test --edition 2021 -A dead_code \

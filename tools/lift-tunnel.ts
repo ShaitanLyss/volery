@@ -42,7 +42,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, rustEnv } from "./lift-scan.ts";
 
 const TUNNEL = "src-tauri/src/tunnel.rs";
 
@@ -116,7 +116,7 @@ try {
     /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies on
        `link: extra operand`, which names nothing that points at the cause.
        Two cards found this independently — sink b282b54c and 276f26ca. */
-    { encoding: "utf8", env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" } },
+    { encoding: "utf8", env: rustEnv() },
   );
   if (build.status !== 0) {
     console.error(build.stderr || build.stdout);

@@ -49,10 +49,10 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { rustEnv } from "./lift-scan.ts";
 
 /** The modules in the generated crate root, in the order they are declared. */
 const MODULES = ["clean", "clip"];
-const TOOLCHAIN = "stable-x86_64-pc-windows-gnu";
 
 const sources = MODULES.map((name) => {
   const path = `src-tauri/src/${name}.rs`;
@@ -90,10 +90,12 @@ try {
   }
   writeFileSync(root, MODULES.map((m) => `mod ${m};\n`).join(""));
 
+  /* Borrows no rlib, so `rustEnv()` gives it whichever toolchain the lifts that do would
+     use, and the default one when no tree has been built. */
   const build = spawnSync(
-    "rustup",
-    ["run", TOOLCHAIN, "rustc", "--edition", "2021", "--test", root, "-o", exe],
-    { encoding: "utf8" },
+    "rustc",
+    ["--edition", "2021", "--test", root, "-o", exe],
+    { encoding: "utf8", env: rustEnv() },
   );
   if (build.status !== 0) {
     console.error(build.stderr || build.stdout || "rustc did not run");

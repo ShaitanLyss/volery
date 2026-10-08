@@ -58,10 +58,10 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/ask.rs";
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 
 /** The pure declarations, in the order they have to be declared.
  *
@@ -142,21 +142,7 @@ function findTest(name: string): string {
  *  (itoa, ryu, memchr, serde) come off `-L dependency`, which is why only the
  *  one `--extern` is needed. */
 function serdeJsonRlib(): string {
-  let names: string[];
-  try {
-    names = readdirSync(DEPS);
-  } catch {
-    throw new Error(
-      `${DEPS} does not exist — run \`bash tools/check-gnu.sh\` once so cargo builds the rlibs this borrows.`,
-    );
-  }
-  const hit = names.filter((n) => /^libserde_json-[0-9a-f]+\.rlib$/.test(n));
-  if (!hit.length) throw new Error(`no libserde_json-*.rlib in ${DEPS} — run tools/check-gnu.sh first`);
-  /* Several hashes means several graphs' worth of artefacts. Newest wins, and
-     it says so rather than choosing silently — if the pick is wrong, rustc
-     refuses to link rather than producing something subtly other. */
-  if (hit.length > 1) console.error(`note: ${hit.length} serde_json rlibs in ${DEPS}, using ${hit[hit.length - 1]}`);
-  return join(DEPS, hit[hit.length - 1]);
+  return newestRlib("serde_json");
 }
 
 const rlib = serdeJsonRlib();
@@ -201,7 +187,7 @@ try {
       /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies on
          `link: extra operand`, which names nothing that points at the cause.
          Sink b282b54c and 276f26ca, found independently. */
-      env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" },
+      env: rustEnv(),
     },
   );
   if (build.status !== 0) {

@@ -38,7 +38,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, rustEnv } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/servers.rs";
 
@@ -176,7 +176,7 @@ try {
   const build = spawnSync(
     "rustc",
     ["--test", "--edition", "2021", "-A", "dead_code", file, "-o", exe],
-    { encoding: "utf8", env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" } },
+    { encoding: "utf8", env: rustEnv() },
   );
   if (build.status !== 0) {
     console.error(build.stderr || build.stdout);

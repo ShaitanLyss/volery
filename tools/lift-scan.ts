@@ -53,6 +53,9 @@
  * right about the braces and nothing else.
  */
 
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+
 /** What `scan` carries between lines, plus what it noticed about the last one. */
 export type ScanState = {
   /** Brace depth, counting code braces only. */
@@ -227,4 +230,102 @@ export function blockAt(lines: string[], i: number, where: string): string {
     if (!seen && state.semi && state.depth === 0) return lines.slice(from, j + 1).join("\n");
   }
   throw new Error(`unterminated block at ${where}:${i + 1}`);
+}
+
+/* ── Which toolchain a lift compiles with, and the rlibs it borrows ─────────────
+ *
+ * Every lift that needs `serde_json` borrows a compiled one out of cargo's own
+ * target directory, and rustc will only link an rlib built by the same compiler
+ * that is reading it. So *where the rlibs are* and *which rustc reads them* are
+ * one decision, and it is made here — they were two constants in every file, and
+ * the day the gnu target tree went away (C: hit zero bytes on 2026-10-08 and 65 GB
+ * were cleared to get out) twenty-five lifts kept naming it. Mixing an MSVC rlib
+ * with a gnu rustc fails as `E0514`/"found crate compiled by an incompatible
+ * version", which names nothing a person would act on.
+ *
+ * The order is the machine's, not a preference for one toolchain:
+ *
+ * 1. `src-tauri/target/debug/deps` — what plain `cargo check`/`cargo test` builds
+ *    with the default toolchain. This is the common case now that MSVC is
+ *    installed (`.claude/rules/build.md`), and it costs nothing extra.
+ * 2. `src-tauri/target/x86_64-pc-windows-gnu/debug/deps` — what
+ *    `tools/check-gnu.sh` builds. Only a machine with no MSVC has this, and it is
+ *    still a real case.
+ *
+ * A lift that borrows no rlib (it only needs a rustc) still asks for
+ * `rustEnv()`: it gets the toolchain of whichever tree exists, and when neither
+ * does it gets the default one rather than an error, since nothing it does needs
+ * a tree.
+ */
+const MSVC_DEPS = "src-tauri/target/debug/deps";
+const GNU_DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const SERDE_JSON = /^libserde_json-[0-9a-f]+\.rlib$/;
+
+export type RustTarget = { deps: string; toolchain: string };
+
+function holdsSerdeJson(dir: string): boolean {
+  try {
+    return readdirSync(dir).some((n) => SERDE_JSON.test(n));
+  } catch {
+    return false;
+  }
+}
+
+/** The deps directory and the toolchain that built it, or null when neither
+ *  tree has been built. */
+export function findTarget(): RustTarget | null {
+  if (holdsSerdeJson(MSVC_DEPS)) return { deps: MSVC_DEPS, toolchain: "stable-x86_64-pc-windows-msvc" };
+  if (holdsSerdeJson(GNU_DEPS)) return { deps: GNU_DEPS, toolchain: "stable-x86_64-pc-windows-gnu" };
+  return null;
+}
+
+/** As `findTarget`, but says what is missing. The sentence is for whoever runs
+ *  `bun run lifts` on a clean checkout, so it names both ways out. */
+export function rustTarget(): RustTarget {
+  const t = findTarget();
+  if (t) return t;
+  throw new Error(
+    `no compiled serde_json to borrow: neither ${MSVC_DEPS} nor ${GNU_DEPS} holds a libserde_json-*.rlib. ` +
+      `Build one with \`cd src-tauri && cargo check --lib\` (the default toolchain), ` +
+      `or \`bash tools/check-gnu.sh\` on a machine with no MSVC.`,
+  );
+}
+
+/** Where the borrowed rlibs live. Throws if no tree has been built. */
+export function depsDir(): string {
+  return rustTarget().deps;
+}
+
+/** The `RUSTUP_TOOLCHAIN` that reads `depsDir()`; undefined (the default
+ *  toolchain) when no tree exists, which is right for a lift that borrows
+ *  nothing. */
+export function toolchain(): string | undefined {
+  return findTarget()?.toolchain;
+}
+
+/** `process.env` with `RUSTUP_TOOLCHAIN` set to match `depsDir()`, or removed
+ *  when there is no tree — an inherited one from the caller's shell would
+ *  otherwise be the very mismatch this exists to prevent. */
+export function rustEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const tc = toolchain();
+  if (tc) env.RUSTUP_TOOLCHAIN = tc;
+  else delete env.RUSTUP_TOOLCHAIN;
+  return env;
+}
+
+/** A compiled crate's rlib, by name. Several hashes sit side by side — one per
+ *  feature set and profile that has been built — and a directory listing's
+ *  first is arbitrary, so the newest by mtime wins: it is the one the last
+ *  build wanted. If it is the wrong one rustc refuses to link rather than
+ *  producing something subtly other, so a wrong pick is loud, not silent. */
+export function newestRlib(name: string): string {
+  const dir = depsDir();
+  const re = new RegExp(`^lib${name}-[0-9a-f]+\\.rlib$`);
+  const hit = readdirSync(dir)
+    .filter((n) => re.test(n))
+    .map((n) => ({ n, t: statSync(join(dir, n)).mtimeMs }))
+    .sort((a, b) => b.t - a.t);
+  if (!hit.length) throw new Error(`no lib${name}-*.rlib in ${dir} — has the crate been built?`);
+  return join(dir, hit[0].n);
 }

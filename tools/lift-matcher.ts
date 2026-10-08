@@ -112,3 +112,6 @@ if (passes !== expected) {
   process.exit(1);
 }
 console.log(`lift-matcher: ${passes} assertions pass.`);
+/* The line `tools/lifts.ts` greps for. Without it the runner reads this lift as red, however
+   many assertions held — it asks for a count, and an unparseable success is not one. */
+console.log(`test result: ok. ${passes} passed; 0 failed;`);

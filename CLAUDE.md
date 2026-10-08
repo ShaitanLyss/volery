@@ -181,12 +181,16 @@ bun run lifts                      # every lift below, and a *pass count* assert
                                    # ~90s. The list below is a sample, not the set — the
                                    # script globs `tools/lift-*.ts` so a new one is covered
                                    # without being added to anything
+                                   # Compiles with whichever toolchain built the rlibs it borrows —
+                                   # `src-tauri/target/debug/deps` (default/MSVC) first, the gnu
+                                   # tree only where that is all there is — chosen together by
+                                   # `lift-scan.ts`. Needs one `cargo check --lib` to have run
 bun tools/lift-gates.ts            # actually run standing_gates' assertions, no cargo
 bun tools/lift-jobs.ts             # same, for the background-work reading and the bound
                                    # that stops it repeating while the work merely runs
 bun tools/lift-tunnel.ts           # same, for the spotify tunnel's ipv4-first sort
 bun tools/lift-later.ts            # same, for the wake envelope relay.ts parses
-bun tools/lift-roster.ts           # same, for the whole MCP roster contract (needs check-gnu once)
+bun tools/lift-roster.ts           # same, for the whole MCP roster contract (needs a built serde_json rlib, see `bun run lifts`)
 bun tools/lift-project.ts          # same, for which files a version bump may touch
 bun tools/lift-aside.ts            # same, for /btw's one-at-a-time claim and its frame
 bun tools/lift-selfhood.ts         # same, for what a card is told about itself and its parent

@@ -30,14 +30,14 @@
  * **It regenerates from `project.rs` on every run and keeps nothing.**
  */
 
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, depsDir, newestRlib, rustEnv } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/project.rs";
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 /** Where a **proc macro** lands, which is not beside everything else.
  *
  *  `VersionFile` derives `Serialize`, so this lift needs `serde_derive` — and a
@@ -105,28 +105,17 @@ function findTest(name: string): string {
 /** `serde`'s rlib, found by hash rather than named — `VersionFile` derives
  *  `Serialize`, and deriving it is part of what is being lifted. */
 function serdeRlib(): { rlib: string; derive: string } {
-  let names: string[];
-  try {
-    names = readdirSync(DEPS);
-  } catch {
-    throw new Error(
-      `${DEPS} does not exist — run \`bash tools/check-gnu.sh\` once so cargo builds the rlibs this borrows.`,
-    );
+  /* The proc-macro is a *host* artefact, so it comes out of `target/debug/deps`
+     whichever toolchain `depsDir()` chose. Newest by mtime, for the reason
+     `newestRlib` gives. */
+  const dlls = readdirSync(HOST_DEPS)
+    .filter((n) => /^serde_derive-[0-9a-f]+\.dll$/.test(n))
+    .map((n) => ({ n, t: statSync(join(HOST_DEPS, n)).mtimeMs }))
+    .sort((a, b) => b.t - a.t);
+  if (!dlls.length) {
+    throw new Error(`no serde_derive-*.dll in ${HOST_DEPS} — run \`cd src-tauri && cargo check --lib\` first`);
   }
-  const pick = (dir: string, re: RegExp, what: string) => {
-    const hit = readdirSync(dir).filter((n) => re.test(n));
-    if (!hit.length) throw new Error(`no ${what} in ${dir} — run tools/check-gnu.sh first`);
-    /* Several hashes means several graphs' worth of artefacts. Newest wins, and
-       it says so rather than choosing silently — if the pick is wrong, rustc
-       refuses to link rather than producing something subtly other. */
-    if (hit.length > 1) console.error(`note: ${hit.length} ${what} in ${dir}, using ${hit[hit.length - 1]}`);
-    return join(dir, hit[hit.length - 1]);
-  };
-  void names;
-  return {
-    rlib: pick(DEPS, /^libserde-[0-9a-f]+\.rlib$/, "libserde-*.rlib"),
-    derive: pick(HOST_DEPS, /^serde_derive-[0-9a-f]+\.dll$/, "serde_derive-*.dll"),
-  };
+  return { rlib: newestRlib("serde"), derive: join(HOST_DEPS, dlls[0].n) };
 }
 
 const { rlib, derive } = serdeRlib();
@@ -174,7 +163,7 @@ try {
       /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies on
          `link: extra operand`, which names nothing that points at the cause.
          Sink b282b54c and 276f26ca, found independently. */
-      env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" },
+      env: rustEnv(),
     },
   );
   if (build.status !== 0) {

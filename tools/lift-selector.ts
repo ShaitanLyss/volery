@@ -39,9 +39,9 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 const SELECTOR = "src-tauri/src/selector.rs";
 
 /** The pure declarations, in the order they have to be declared.
@@ -154,13 +154,7 @@ function findTest(name: string): string {
   throw new Error(`could not find test "${name}" in ${SELECTOR} — has it been renamed?`);
 }
 
-const rlib = readdirSync(DEPS).find((f) => /^libserde_json-[0-9a-f]+\.rlib$/.test(f));
-if (!rlib) {
-  console.error(
-    `no serde_json rlib in ${DEPS} — run \`bash tools/check-gnu.sh\` first so cargo builds one.`,
-  );
-  process.exit(1);
-}
+const rlib = newestRlib("serde_json");
 
 /** Drop `serde::Serialize` from a lifted derive, and *only* that.
  *
@@ -205,7 +199,7 @@ try {
       "-A",
       "dead_code",
       "--extern",
-      `serde_json=${join(DEPS, rlib)}`,
+      `serde_json=${rlib}`,
       "-L",
       `dependency=${DEPS}`,
       file,
@@ -214,7 +208,7 @@ try {
     ],
     /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies on
        `link: extra operand`, which names nothing that points at the cause. */
-    { encoding: "utf8", env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" } },
+    { encoding: "utf8", env: rustEnv() },
   );
   if (build.status !== 0) {
     console.error(build.stderr || build.stdout);

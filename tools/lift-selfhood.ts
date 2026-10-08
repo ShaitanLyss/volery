@@ -28,7 +28,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, rustEnv } from "./lift-scan.ts";
 
 const SRC = "src-tauri/src/supervisor.rs";
 const STORE = "src-tauri/src/store.rs";
@@ -177,7 +177,7 @@ try {
          with `link: extra operand`, which is the misleading failure at the top
          of `.claude/rules/build.md`. Sink b282b54c is two cards discovering that
          the documented recipe omitted this line, hours apart. */
-      env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" },
+      env: rustEnv(),
     },
   );
   if (build.status !== 0) {

@@ -37,7 +37,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 
 const LATER = "src-tauri/src/later.rs";
 const RELAY = "src-tauri/src/relay.rs";
@@ -123,17 +123,9 @@ function relayModule(): string {
 /** `serde_json`'s rlib, found by hash rather than named — `pick` takes a
  *  `&Value` and the two schemas are `json!`, so this lift grew the `--extern`
  *  `lift-spawn.ts` already carries. The hash moves with the dependency graph. */
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 function serdeJsonRlib(): string {
-  let names: string[];
-  try {
-    names = readdirSync(DEPS);
-  } catch {
-    throw new Error(`${DEPS} does not exist — run \`bash tools/check-gnu.sh\` once first.`);
-  }
-  const hit = names.filter((n) => /^libserde_json-[0-9a-f]+\.rlib$/.test(n));
-  if (!hit.length) throw new Error(`no libserde_json-*.rlib in ${DEPS} — run check-gnu.sh first`);
-  return join(DEPS, hit[hit.length - 1]);
+  return newestRlib("serde_json");
 }
 
 const body = [
@@ -173,7 +165,7 @@ try {
     /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies on
        `link: extra operand`, which names nothing that points at the cause.
        Two cards found this independently — sink b282b54c and 276f26ca. */
-    { encoding: "utf8", env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" } },
+    { encoding: "utf8", env: rustEnv() },
   );
   if (build.status !== 0) {
     console.error(build.stderr || build.stdout);

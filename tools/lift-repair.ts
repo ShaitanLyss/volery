@@ -50,17 +50,12 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 
 const TEXT = "src-tauri/src/repair/text.rs";
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 
-const rlib = readdirSync(DEPS).find((f) => /^libserde_json-[0-9a-f]+\.rlib$/.test(f));
-if (!rlib) {
-  console.error(
-    `no serde_json rlib in ${DEPS} — run \`bash tools/check-gnu.sh\` first so cargo builds one.`,
-  );
-  process.exit(1);
-}
+const rlib = newestRlib("serde_json");
 
 /* Normalised first: the tree is checked out with CRLF here, and every match
    below is written with the `\n` a Rust source file is read as. */
@@ -103,7 +98,7 @@ try {
       "-A",
       "dead_code",
       "--extern",
-      `serde_json=${join(DEPS, rlib)}`,
+      `serde_json=${rlib}`,
       "-L",
       `dependency=${DEPS}`,
       file,
@@ -113,7 +108,7 @@ try {
     /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies on
        `link: extra operand`, which names nothing that points at the cause.
        Two cards found this independently — sink b282b54c and 276f26ca. */
-    { encoding: "utf8", env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" } },
+    { encoding: "utf8", env: rustEnv() },
   );
   if (build.status !== 0) {
     console.error(build.stderr || build.stdout);

@@ -105,7 +105,7 @@ for (const t of fixture) db.run(t.sql);
 
 /** The kinds `arrange.rs` walks, read out of its own `KINDS` table so a sixth
  *  thing on the glass cannot be lifted against only five. */
-const KINDS = [...ARRANGE.matchAll(/\(\s*(CARD|PROJECT|IMAGE|WIDGET|TIMELINE)\s*,\s*"(\w+)"\s*,\s*"(\w+)"\s*\)/g)].map(
+const KINDS = [...ARRANGE.matchAll(/\(\s*(CARD|TERRITORY|IMAGE|WIDGET|TIMELINE)\s*,\s*"(\w+)"\s*,\s*"(\w+)"\s*\)/g)].map(
   (m) => ({ kind: m[1].toLowerCase(), table: m[2], idc: m[3] }),
 );
 ok("KINDS names all five things that can stand on the glass", KINDS.length === 5, `found ${KINDS.length}`);

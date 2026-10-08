@@ -80,9 +80,9 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 
 /** What to lift, per file, in the order it has to be declared.
  *
@@ -146,6 +146,8 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "fn send_schema",
       "fn touched_schema",
       "fn recall_schema",
+      /* A test in `supervisor.rs` spells it `crate::relay::handle_of`. */
+      "fn handle_of",
     ],
   },
   {
@@ -161,6 +163,12 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "const AWAY_TOOL",
       "const MAX_PER_CARD",
       "const DEFERRED_OPENING",
+      /* `deferred_note` and `pile_full` take a `Queued`, and `Queued`'s own text is
+         built from the second opening — a lift that omits a parameter's type fails to
+         compile rather than at the assertion. */
+      "const UNATTENDED_OPENING",
+      "enum Queued",
+      "impl Queued",
       "fn deferred_note",
       "fn pile_full",
       "fn schema",
@@ -270,6 +278,8 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
       "const ANSWER_MAX",
       "fn client_timeout_ms",
       "fn preview_schema",
+      /* `file_schema` is `preview_schema`'s sibling and `tool_schema` calls both. */
+      "fn file_schema",
       "fn option_schema",
       "fn tool_schema",
       "fn always",
@@ -333,6 +343,9 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
  *  guards below can be run here at all. */
 const TEST_ITEMS: Array<{ file: string; items: string[] }> = [
   { file: "src-tauri/src/supervisor.rs", items: ["const SPEAKING_SOURCES"] },
+  /* The byte ceiling the loaded-tier test holds the tier to, declared in the
+     module beside the test rather than above it. */
+  { file: "src-tauri/src/ask.rs", items: ["const CEILING"] },
 ];
 
 const TESTS: Array<{ file: string; names: string[] }> = [
@@ -450,24 +463,7 @@ function reader(file: string) {
  *  The hash is a function of the whole dependency graph, so writing one down
  *  would make this script wrong the first time anything moved. */
 function serdeJsonRlib(): string {
-  let names: string[];
-  try {
-    names = readdirSync(DEPS);
-  } catch {
-    throw new Error(
-      `${DEPS} does not exist — run \`bash tools/check-gnu.sh\` once so cargo builds the rlibs this borrows.`,
-    );
-  }
-  const hit = names.filter((n) => /^libserde_json-[0-9a-f]+\.rlib$/.test(n));
-  if (hit.length === 0) {
-    throw new Error(`no libserde_json-*.rlib in ${DEPS} — run tools/check-gnu.sh first`);
-  }
-  /* More than one means two graphs' worth of artefacts are sitting there. The
-     newest wins, and it says so rather than choosing silently. */
-  if (hit.length > 1) {
-    console.error(`note: ${hit.length} serde_json rlibs in deps, using ${hit[hit.length - 1]}`);
-  }
-  return join(DEPS, hit[hit.length - 1]);
+  return newestRlib("serde_json");
 }
 
 /** The module paths the lifted code still spells out.
@@ -511,6 +507,44 @@ const body: string[] = [
   "use std::borrow::Cow;",
   ...MODULES.map((m) => `pub mod ${m} { pub use super::*; }`),
 ];
+
+/** The modules whose items are *not* flattened into the root, because the name
+ *  they would take there is already taken — `notice::schema` and
+ *  `presence::schema` are both `schema`, and a root with two of them does not
+ *  compile. So these come in as real modules at the path the lifted text spells
+ *  out, each carrying the real declarations rather than a copy.
+ *
+ *  `flyway` is a directory (`flyway/reach.rs` is `crate::flyway::reach`), which is
+ *  why this one nests. `Birth` is here for the `born_for` field the supervisor's
+ *  `Spec` carries; it derives `serde::Serialize`, which is why the build below
+ *  borrows `serde` as well as `serde_json`. */
+const NESTED: Array<{ path: string[]; file: string; items: string[] }> = [
+  { path: ["notice"], file: "src-tauri/src/notice.rs", items: ["const NOTICE_TOOL", "fn schema"] },
+  { path: ["flyway", "fleet"], file: "src-tauri/src/flyway/fleet.rs", items: ["const NEEDS"] },
+  { path: ["flyway", "reach"], file: "src-tauri/src/flyway/reach.rs", items: ["const WALLS_TOOL", "fn walls_schema"] },
+  { path: ["flyway", "here"], file: "src-tauri/src/flyway/here.rs", items: ["struct Birth"] },
+];
+
+/** `NESTED`, as source: one `pub mod` per path segment, shared prefixes merged. */
+function nestedModules(): string {
+  type Node = { body: string[]; kids: Map<string, Node> };
+  const root: Node = { body: [], kids: new Map() };
+  for (const { path, file, items } of NESTED) {
+    let at = root;
+    for (const seg of path) {
+      if (!at.kids.has(seg)) at.kids.set(seg, { body: [], kids: new Map() });
+      at = at.kids.get(seg)!;
+    }
+    const { find } = reader(file);
+    at.body.push("use serde_json::{json, Value};", ...items.map(find));
+  }
+  const draw = (n: Node): string[] => [
+    ...n.body,
+    ...[...n.kids].flatMap(([name, kid]) => [`pub mod ${name} {`, ...draw(kid), "}"]),
+  ];
+  return draw(root).join("\n\n");
+}
+body.push(nestedModules());
 for (const { file, items } of SOURCES) {
   const { find } = reader(file);
   body.push(`// ---- ${file} ----`);
@@ -575,8 +609,14 @@ try {
       "dead_code",
       "--extern",
       `serde_json=${serdeJsonRlib()}`,
+      /* For `Birth`'s derive. The proc-macro itself is found through the host
+         directory below, as `lift-fleet.ts` does. */
+      "--extern",
+      `serde=${newestRlib("serde")}`,
       "-L",
       `dependency=${DEPS}`,
+      "-L",
+      "dependency=src-tauri/target/debug/deps",
       file,
       "-o",
       exe,
@@ -584,11 +624,12 @@ try {
     {
       encoding: "utf8",
       env: {
-        ...process.env,
-        /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies
-           on `link: extra operand`, which names nothing that points at the
-           cause. Sink b282b54c and 276f26ca, found independently. */
-        RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu",
+        /* Load-bearing: the toolchain has to be the one that built the rlibs in
+           `depsDir()`, which `rustEnv()` decides together with it; a bare `rustc`
+           on a machine with no MSVC dies on `link: extra operand`, which names
+           nothing that points at the cause. Sink b282b54c and 276f26ca, found
+           independently. */
+        ...rustEnv(),
         /* `dispatch` answers `initialize` with `env!("CARGO_PKG_VERSION")`,
            read from the *compiler's* environment. Nothing here asserts the
            version, so the value is arbitrary — supplying one is what lets the

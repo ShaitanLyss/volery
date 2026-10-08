@@ -62,9 +62,9 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 const HOOKS = "src-tauri/src/hooks.rs";
 const ASK = "src-tauri/src/ask.rs";
 const BROWSER = "src-tauri/src/browser.rs";
@@ -83,8 +83,11 @@ const HOOKS_ITEMS = [
   "fn diagnoses_browser",
   "fn stall_note",
   "const PRE_TOOL_TIMEOUT_S",
-  "fn settings",
-];
+  /* What `settings` registers as its broad PreToolUse matcher. It comes because the
+     test below asserts the *real* matcher, and a stub would assert nothing. */
+  "const UNHOOKED_TOOLS",
+  "fn unhooked_matcher",
+  "fn settings",];
 
 /** And the other end of the prefix claim. Lifted verbatim rather than stubbed:
  *  the whole point of `the_wake_prefix_is_the_server_the_config_registers` is
@@ -163,20 +166,7 @@ const cl = reader(CLEAN);
 
 /** The `serde_json` rlib cargo already built, found by hash rather than named. */
 function serdeJsonRlib(): string {
-  let names: string[];
-  try {
-    names = readdirSync(DEPS);
-  } catch {
-    throw new Error(
-      `${DEPS} does not exist — run \`bash tools/check-gnu.sh\` once so cargo builds the ` +
-        `rlibs this borrows.`,
-    );
-  }
-  const hit = names.filter((n) => /^libserde_json-[0-9a-f]+\.rlib$/.test(n)).sort();
-  if (hit.length === 0) {
-    throw new Error(`no libserde_json-*.rlib in ${DEPS} — run tools/check-gnu.sh first`);
-  }
-  return join(DEPS, hit[hit.length - 1]);
+  return newestRlib("serde_json");
 }
 
 /* `crate::ask::mcp_config` and `crate::browser::mcp_server` resolve to these,
@@ -236,11 +226,12 @@ try {
     {
       encoding: "utf8",
       env: {
-        ...process.env,
-        /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies
-           on `link: extra operand`, which names nothing that points at the
-           cause. Sink b282b54c and 276f26ca, found independently. */
-        RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu",
+        /* Load-bearing: the toolchain has to be the one that built the rlibs in
+           `depsDir()`, which `rustEnv()` decides together with it; a bare `rustc`
+           on a machine with no MSVC dies on `link: extra operand`, which names
+           nothing that points at the cause. Sink b282b54c and 276f26ca, found
+           independently. */
+        ...rustEnv(),
       },
     },
   );

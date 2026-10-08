@@ -44,7 +44,7 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, rustEnv } from "./lift-scan.ts";
 
 const HOOKS = "src-tauri/src/hooks.rs";
 const STORE = "src-tauri/src/store.rs";
@@ -172,7 +172,7 @@ try {
          toolchain and dies with `link: extra operand`, which reads as a missing
          MSVC linker rather than as a missing environment variable. Sink
          b282b54c is two cards hitting exactly this hours apart. */
-      env: { ...process.env, RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu" },
+      env: rustEnv(),
     },
   );
   if (build.status !== 0) {

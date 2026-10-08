@@ -109,7 +109,8 @@ if (bad.length > 0) {
       `\nRun \`bun tools/lift-<name>.ts\` for the whole message. A lift that will not compile is` +
       `\nusually a \`crate::\` call added to a module it covers, or an item renamed under its list;` +
       `\nfix the list rather than deleting the assertion.` +
-      `\nIf it is a missing serde_json rlib, run \`bash tools/check-gnu.sh\` once first.`,
+      `\nIf it is a missing serde_json rlib, run \`cd src-tauri && cargo check --lib\` once first` +
+      `\n(\`bash tools/check-gnu.sh\` on a machine with no MSVC).`,
   );
   process.exit(1);
 }

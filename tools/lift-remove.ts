@@ -59,9 +59,9 @@ import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { blockAt } from "./lift-scan.ts";
+import { blockAt, depsDir, rustEnv, newestRlib } from "./lift-scan.ts";
 
-const DEPS = "src-tauri/target/x86_64-pc-windows-gnu/debug/deps";
+const DEPS = depsDir();
 const REMOVE = "src-tauri/src/remove.rs";
 const HOOKS = "src-tauri/src/hooks.rs";
 
@@ -238,23 +238,7 @@ const hk = reader(HOOKS);
 
 /** The `serde_json` rlib cargo already built, found by hash rather than named. */
 function serdeJsonRlib(): string {
-  let names: string[];
-  try {
-    names = readdirSync(DEPS);
-  } catch {
-    throw new Error(
-      `${DEPS} does not exist — run \`bash tools/check-gnu.sh\` once so cargo builds the ` +
-        `rlibs this borrows.`,
-    );
-  }
-  const hit = names.filter((n) => /^libserde_json-[0-9a-f]+\.rlib$/.test(n)).sort();
-  if (hit.length === 0) {
-    throw new Error(`no libserde_json-*.rlib in ${DEPS} — run tools/check-gnu.sh first`);
-  }
-  if (hit.length > 1) {
-    console.error(`note: ${hit.length} serde_json rlibs in deps, using ${hit[hit.length - 1]}`);
-  }
-  return join(DEPS, hit[hit.length - 1]);
+  return newestRlib("serde_json");
 }
 
 /* The two halves go in modules of their own rather than side by side, because
@@ -316,11 +300,12 @@ try {
     {
       encoding: "utf8",
       env: {
-        ...process.env,
-        /* Load-bearing: bare `rustc` takes the msvc default toolchain and dies
-           on `link: extra operand`, which names nothing that points at the
-           cause. Sink b282b54c and 276f26ca, found independently. */
-        RUSTUP_TOOLCHAIN: "stable-x86_64-pc-windows-gnu",
+        /* Load-bearing: the toolchain has to be the one that built the rlibs in
+           `depsDir()`, which `rustEnv()` decides together with it; a bare `rustc`
+           on a machine with no MSVC dies on `link: extra operand`, which names
+           nothing that points at the cause. Sink b282b54c and 276f26ca, found
+           independently. */
+        ...rustEnv(),
       },
     },
   );
