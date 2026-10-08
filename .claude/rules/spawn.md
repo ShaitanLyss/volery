@@ -536,6 +536,10 @@ card passes under it rather than across its title, with no rim arithmetic to get
   there, one frame in, until the wall happened to move again. `ensureLoop` is idempotent and
   every paint calls it, so the churn `flow.md` warns about is avoided by the loop not being
   reactive at all rather than by choosing dependencies carefully.
+- **Roots run between walls too** (`kinAcross`). Either end may be a shadow, and a root
+  whose ends are on two machines is stitched. A parent on a wall this one cannot hear at all
+  is drawn as a stray: a short root fading out at its free end. `elsewhere.md`, *Roots run
+  between walls*, has where the parentage crosses and why each missing end reads as it does.
 - **A pair with an end off the wall is not half a root.** `familiesOf` drops it, and
   `store::lineage` asks the narrower question one layer earlier so the wall is never handed
   rows it will only throw away. The rows themselves stay, per the table's own note.
