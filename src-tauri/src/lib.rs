@@ -415,10 +415,31 @@ pub fn run() {
                launch — see `browser::ensure_session_file`. */
             browser::ensure_session_file(app.handle());
 
-            let dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("no app data dir: {e}"))?;
+            /* `VOLERY_WALL_DIR` puts the store somewhere else, and exists for
+               one test: two walls of *this* build on one machine, which the
+               flyway cannot be proved without. The lab is one wall; a second
+               process of the same binary with `VOLERY_SECOND=1` and this set
+               is the other, with a database of its own. Test plumbing in the
+               family of `SKEIN_CONTROL` — nothing a person sets, and the
+               identifier-keyed folder is untouched when it is absent. */
+            let dir = match std::env::var("VOLERY_WALL_DIR") {
+                Ok(d) if !d.trim().is_empty() => {
+                    let d = std::path::PathBuf::from(d.trim());
+                    std::fs::create_dir_all(&d).map_err(|e| format!("could not make {}: {e}", d.display()))?;
+                    /* The asset scope in tauri.conf.json is everything
+                       under `$APPDATA/references`, which is the identifier's
+                       folder — so a wall with its store moved writes pasted
+                       images where the webview may not read them, and every
+                       one drew as the fallback box (found by 34a24070's wall
+                       suite). The moved folder is allowed beside it. */
+                    let _ = app.asset_protocol_scope().allow_directory(d.join("references"), true);
+                    d
+                }
+                _ => app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|e| format!("no app data dir: {e}"))?,
+            };
             /* Nothing after this line can run without the database, so this is
                the one failure that stops the app rather than degrading it — and
                `main` is created hidden, so returning the error alone is a
@@ -662,6 +683,17 @@ pub fn run() {
             flyway::link::flyway_arrive,
             flyway::link::flyway_pull,
             flyway::link::flyway_linked,
+            flyway::link::flyway_roster,
+            flyway::link::flyway_setup,
+            flyway::link::flyway_set_accepting,
+            flyway::link::flyway_set_bound,
+            flyway::link::flyway_publish_cards,
+            flyway::link::flyway_remote_cards,
+            flyway::link::flyway_opened,
+            flyway::link::flyway_failed,
+            flyway::link::flyway_births,
+            flyway::link::flyway_prompt,
+            flyway::link::flyway_prompt_answer,
             flyway::key::flyway_start,
             flyway::key::flyway_join,
             flyway::key::flyway_leave,

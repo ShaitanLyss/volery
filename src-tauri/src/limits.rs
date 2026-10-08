@@ -704,6 +704,26 @@ pub async fn read_allowances(
     .await
 }
 
+/// How full this wall's allowance is, for the flyway's roster to announce:
+/// each account's fullest window, and of those the account with the most room
+/// left — since that is where the waterfall would put a new card. `None` when
+/// nothing has been read.
+///
+/// **Only what is already cached, never a request.** The announcement runs on
+/// the flyway's tick, and an ask from there would be a second poller of this
+/// endpoint behind the floor the widgets keep — the one thing this file's
+/// hush exists to stop. A wall nobody is watching the allowance on announces
+/// none, which the roster draws as unknown rather than as empty.
+pub fn headroom_used(app: &AppHandle) -> Option<u8> {
+    let state = app.try_state::<Limits>()?;
+    let all = state.0.lock().ok()?;
+    all.values()
+        .filter_map(|c| c.last.as_ref())
+        .filter_map(|r| r.windows.iter().map(|w| w.used).fold(None, |m: Option<f64>, u| Some(m.map_or(u, |m| m.max(u)))))
+        .fold(None, |m: Option<f64>, u| Some(m.map_or(u, |m| m.min(u))))
+        .map(|u| u.clamp(0.0, 100.0).round() as u8)
+}
+
 /// One account's answer. A `report` or a `fault`, and exactly one of them.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

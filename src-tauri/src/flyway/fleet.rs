@@ -388,6 +388,30 @@ pub struct Ask {
     /// The asker's wall clock when it asked. See `CLOCK_SLACK_MS` for why an
     /// ask carries both this and an age.
     pub asked_at: i64,
+    /// Which model family the card opens on, and how hard it thinks — the
+    /// same two words `spawn.rs` takes, validated against the same lists on
+    /// *both* ends, since the two walls may not be the same build. `None` for
+    /// whatever that machine is set up for.
+    ///
+    /// Carried because what a card costs is the asker's decision: it divided
+    /// the job and knows which lane is small (sink `564bd55d`). Not the
+    /// account, which is a fact about the machine the card runs on and is
+    /// therefore that wall's ladder to choose from. `#[serde(default)]`, so a
+    /// wall from before these fields reads an ask without them as "no
+    /// preference" rather than failing the frame.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// The card on the addressee's wall that `brief` is for — set on a
+    /// **prompt** and on nothing else. A prompt travels under its own tag
+    /// (`FleetMsg::Prompt`), never under `Ask`: a wall from before prompts
+    /// skips a tag it has no word for (`frame.rs`), where it would read a field
+    /// it had never heard of as absent and open a card with the prompt as its
+    /// brief. So the tag is what says which a request is, and an `Ask` arriving
+    /// with this set has it taken off.
+    #[serde(default)]
+    pub card: Option<String>,
 }
 
 /// Why a wall would not open a card, in terms somebody can act on.
@@ -521,6 +545,15 @@ pub enum FleetMsg {
     Roster { walls: Vec<Heard>, greeting: bool },
     Ask { ask: Ask, age_ms: u64 },
     Answer { answer: Answer, age_ms: u64 },
+    /// A prompt for a card on another wall: an `Ask` whose `card` is set and
+    /// whose `brief` is the prompt. Everything an ask was red-teamed for holds
+    /// for it unchanged — it is not idempotent (twice is two prompts and twice
+    /// the money), so it is keyed, remembered and aged exactly as an ask is,
+    /// and passed on by walls in between. Its answer is an ordinary `Answer`:
+    /// `Opened { card }` means the card took it, and a refusal is a refusal —
+    /// no new outcome, because a wall from before prompts relays answers too,
+    /// and an outcome it had no word for would fail its whole exchange.
+    Prompt { ask: Ask, age_ms: u64 },
 }
 
 /// A card this wall has agreed to open. Handed to the wiring, which opens it
@@ -539,6 +572,20 @@ pub struct Spawn {
     /// Must be recorded on the card and drawn. See the module comment. Its
     /// `host` is also half of what `opened` and `failed` are keyed on.
     pub asked_by: Origin,
+    /// As the ask carried them. See `Ask::model`.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+/// A prompt this wall has agreed to hand to one of its cards. The wiring gives
+/// it to that card's own send path and then calls `Fleet::taken` or
+/// `Fleet::refused` — exactly one, for `Spawn`'s reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deliver {
+    pub request: String,
+    pub card: String,
+    pub text: String,
+    pub asked_by: Origin,
 }
 
 /// Everything one message caused.
@@ -548,6 +595,8 @@ pub struct Reply {
     pub say: Vec<FleetMsg>,
     /// Cards to open here.
     pub open: Vec<Spawn>,
+    /// Prompts to hand to cards here.
+    pub deliver: Vec<Deliver>,
     /// Answers to asks *this* wall made, arriving for the first time. The
     /// wiring hands each to whoever asked, which is the receipt.
     pub answered: Vec<Answer>,
@@ -621,6 +670,21 @@ pub struct Request {
     pub territory: Territory,
     pub brief: String,
     pub title: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+/// What a person or a card hands `Fleet::prompt`.
+#[derive(Debug, Clone)]
+pub struct PromptRequest {
+    /// A uuid — see `Ask::id`.
+    pub id: String,
+    /// The card asking, or `None` for a person.
+    pub from_card: Option<String>,
+    pub to: String,
+    /// The card on that wall.
+    pub card: String,
+    pub text: String,
 }
 
 /// An ask or answer's identity: the asking host and the request id. The id
@@ -671,6 +735,10 @@ pub struct Fleet {
     /// cannot know about a card that has not been opened yet. Never pruned —
     /// the wiring owes every `Spawn` a report.
     in_flight: BTreeMap<Key, i64>,
+    /// The same, for prompts handed to cards here — kept apart so a prompt in
+    /// flight never counts against this wall's bound on *cards* opened for
+    /// other walls.
+    delivering: BTreeMap<Key, i64>,
     /// This wall's own asks that nobody has answered yet, by id.
     waiting: BTreeMap<String, Waiting>,
     /// Walls a person took off the roster, with the version they had then. A
@@ -692,6 +760,7 @@ impl Fleet {
             asks: BTreeMap::new(),
             answers: BTreeMap::new(),
             in_flight: BTreeMap::new(),
+            delivering: BTreeMap::new(),
             waiting: BTreeMap::new(),
             forgotten: BTreeMap::new(),
             namesake: false,
@@ -724,6 +793,11 @@ impl Fleet {
 
     pub fn entry(&self, host: &str) -> Option<&Entry> {
         self.roster.get(host)
+    }
+
+    /// An ask or prompt this wall still remembers, by its key.
+    pub fn asked(&self, asked_by: &str, request: &str) -> Option<&Ask> {
+        self.asks.get(&(asked_by.to_string(), request.to_string())).map(|h| &h.it)
     }
 
     pub fn answer(&self, asked_by: &str, request: &str) -> Option<&Answer> {
@@ -839,6 +913,9 @@ impl Fleet {
             brief: r.brief,
             title: r.title,
             asked_at: now,
+            model: r.model,
+            effort: r.effort,
+            card: None,
         };
         self.asks.insert(
             key,
@@ -846,6 +923,65 @@ impl Fleet {
         );
         self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false });
         Ok(FleetMsg::Ask { ask, age_ms: 0 })
+    }
+
+    /// Send a prompt to a card on another wall, with `ask`'s rules: a retry
+    /// under the same id is the same prompt, an old id is never re-minted, and
+    /// a wall that is quiet is refused here rather than sent a prompt that
+    /// would wait for its lid to lift — the hazard `ASK_TTL_MS` exists for.
+    pub fn prompt(&mut self, r: PromptRequest, now: i64) -> Result<FleetMsg, Unsendable> {
+        let key = (self.me.clone(), r.id.clone());
+        if let Some(h) = self.answers.get(&key) {
+            return Err(Unsendable::AlreadyAnswered { answer: Box::new(h.it.clone()) });
+        }
+        if let Some(h) = self.asks.get(&key) {
+            if age(now, h.origin_at) > ASK_TTL_MS as u64 {
+                return Err(Unsendable::Expired { id: r.id });
+            }
+            return Ok(FleetMsg::Prompt { ask: h.it.clone(), age_ms: age(now, h.origin_at) });
+        }
+        if r.to == self.me {
+            return Err(Unsendable::ThisWall);
+        }
+        let Some(there) = self.roster.get(&r.to) else {
+            return Err(Unsendable::UnknownHost {
+                host: r.to,
+                known: self.roster.keys().filter(|h| **h != self.me).cloned().collect(),
+            });
+        };
+        let quiet = there.quiet_for(now);
+        if quiet > QUIET_AFTER_MS as u64 {
+            return Err(Unsendable::Quiet { host: r.to, for_ms: quiet });
+        }
+        let ask = Ask {
+            id: r.id.clone(),
+            from: Origin { host: self.me.clone(), card: r.from_card },
+            to: r.to,
+            territory: Territory { identity: String::new(), name: String::new() },
+            brief: r.text,
+            title: None,
+            asked_at: now,
+            model: None,
+            effort: None,
+            card: Some(r.card),
+        };
+        self.asks.insert(
+            key,
+            Held { it: ask.clone(), origin_at: now, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
+        );
+        self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false });
+        Ok(FleetMsg::Prompt { ask, age_ms: 0 })
+    }
+
+    /// The card a `Deliver` was for has the prompt.
+    pub fn taken(&mut self, asked_by: &str, request: &str, card: &str, now: i64) -> Option<FleetMsg> {
+        self.settle_from(true, asked_by, request, Outcome::Opened { card: card.to_string() }, now)
+    }
+
+    /// The card a `Deliver` was for could not be given it.
+    pub fn refused(&mut self, asked_by: &str, request: &str, reason: &str, now: i64) -> Option<FleetMsg> {
+        let refusal = Refusal::CouldNotStart { reason: reason.to_string() };
+        self.settle_from(true, asked_by, request, Outcome::Refused { refusal }, now)
     }
 
     /// The card a `Spawn` asked for is open. Returns the answer to say, or
@@ -866,8 +1002,12 @@ impl Fleet {
     /// memory had already pruned, and the card opened with no answer ever
     /// sent and a later redelivery told it had expired.
     fn settle(&mut self, asked_by: &str, request: &str, outcome: Outcome, now: i64) -> Option<FleetMsg> {
+        self.settle_from(false, asked_by, request, outcome, now)
+    }
+
+    fn settle_from(&mut self, prompt: bool, asked_by: &str, request: &str, outcome: Outcome, now: i64) -> Option<FleetMsg> {
         let key = (asked_by.to_string(), request.to_string());
-        let keep_until = self.in_flight.remove(&key)?;
+        let keep_until = if prompt { self.delivering.remove(&key)? } else { self.in_flight.remove(&key)? };
         let answer = Answer { request: key.1.clone(), by: self.me.clone(), asked_by: key.0.clone(), outcome };
         Some(self.record(key, answer, now, keep_until.max(now.saturating_add(ANSWER_KEPT_MS))))
     }
@@ -934,60 +1074,20 @@ impl Fleet {
             }
 
             FleetMsg::Ask { ask, age_ms } => {
+                /* Never a prompt under this tag — see `Ask::card`. */
+                let ask = Ask { card: None, ..clean_ask(ask) };
+                self.hear_ask(ask, age_ms, now, here, &mut reply);
+            }
+
+            FleetMsg::Prompt { ask, age_ms } => {
                 let ask = clean_ask(ask);
-                let key = (ask.from.host.clone(), ask.id.clone());
-                /* **The repeat.** An ask this wall has seen is never decided
-                   twice — that is the second card. If this wall is the one it
-                   was for and has answered, the repeat is most likely the asker
-                   retrying because the answer was lost, so the answer is said
-                   again; the asker's own dedup makes that free if it was not. */
-                if self.asks.contains_key(&key) || self.answers.contains_key(&key) || self.in_flight.contains_key(&key) {
-                    if ask.to == self.me {
-                        if let Some(h) = self.answers.get(&key) {
-                            reply.say.push(FleetMsg::Answer { answer: h.it.clone(), age_ms: age(now, h.origin_at) });
-                        }
-                    }
+                /* A prompt for no card is nothing anybody could deliver, and
+                   it is dropped rather than refused: there is no card on any
+                   wall it could have been meant for. */
+                if ask.card.as_deref().is_none_or(str::is_empty) {
                     return reply;
                 }
-                let origin_at = now.saturating_sub(clamp(age_ms));
-
-                if ask.to != self.me {
-                    /* Passed on only while the addressee could still act on it,
-                       by either measure. Without this a stale ask bounced
-                       between two relays for ever: hop age does not grow in
-                       transit, so each remembered it for less than the time it
-                       took to come back. Dropped rather than remembered — a
-                       repeat is dropped again, and says nothing either way. */
-                    if age(now, origin_at) > ASK_TTL_MS as u64 || stamp_age(now, ask.asked_at) > ASK_TTL_MS + CLOCK_SLACK_MS {
-                        return reply;
-                    }
-                    self.asks.insert(
-                        key,
-                        Held { it: ask.clone(), origin_at, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
-                    );
-                    reply.say.push(FleetMsg::Ask { ask, age_ms: age(now, origin_at) });
-                    return reply;
-                }
-
-                let keep_until = now
-                    .saturating_add(ANSWER_KEPT_MS)
-                    .max(ask.asked_at.saturating_add(ASK_TTL_MS + CLOCK_SLACK_MS + 1));
-                self.asks.insert(key.clone(), Held { it: ask.clone(), origin_at, keep_until });
-                match self.decide(&ask, age_ms, now, here) {
-                    Ok(spawn) => {
-                        self.in_flight.insert(key, keep_until);
-                        reply.open.push(spawn);
-                    }
-                    Err(refusal) => {
-                        let answer = Answer {
-                            request: key.1.clone(),
-                            by: self.me.clone(),
-                            asked_by: key.0.clone(),
-                            outcome: Outcome::Refused { refusal },
-                        };
-                        reply.say.push(self.record(key, answer, now, keep_until));
-                    }
-                }
+                self.hear_ask(ask, age_ms, now, here, &mut reply);
             }
 
             FleetMsg::Answer { answer, age_ms } => {
@@ -1029,13 +1129,89 @@ impl Fleet {
         reply
     }
 
-    /// Whether to open a card for this ask, against this wall's facts now.
-    ///
-    /// The ask's own trustworthiness first — its clock and its age — then
-    /// whether this wall takes anything, then the territory, then the bounds,
-    /// so the refusal names the thing that would have to change first rather
-    /// than the third of three.
-    fn decide(&self, ask: &Ask, hop_age: u64, now: i64, here: &Facts) -> Result<Spawn, Refusal> {
+    /// An ask or a prompt arriving — one path for both, so the rules that
+    /// keep a repeat from being a second card keep it from being a second
+    /// prompt too. `ask.card` says which (`Ask::card`).
+    fn hear_ask(&mut self, ask: Ask, age_ms: u64, now: i64, here: &Facts, reply: &mut Reply) {
+        let prompt = ask.card.is_some();
+        let key = (ask.from.host.clone(), ask.id.clone());
+        /* **The repeat.** An ask this wall has seen is never decided
+           twice — that is the second card. If this wall is the one it
+           was for and has answered, the repeat is most likely the asker
+           retrying because the answer was lost, so the answer is said
+           again; the asker's own dedup makes that free if it was not. */
+        if self.asks.contains_key(&key)
+            || self.answers.contains_key(&key)
+            || self.in_flight.contains_key(&key)
+            || self.delivering.contains_key(&key)
+        {
+            if ask.to == self.me {
+                if let Some(h) = self.answers.get(&key) {
+                    reply.say.push(FleetMsg::Answer { answer: h.it.clone(), age_ms: age(now, h.origin_at) });
+                }
+            }
+            return;
+        }
+        let origin_at = now.saturating_sub(clamp(age_ms));
+
+        if ask.to != self.me {
+            /* Passed on only while the addressee could still act on it,
+               by either measure. Without this a stale ask bounced
+               between two relays for ever: hop age does not grow in
+               transit, so each remembered it for less than the time it
+               took to come back. Dropped rather than remembered — a
+               repeat is dropped again, and says nothing either way. */
+            if age(now, origin_at) > ASK_TTL_MS as u64 || stamp_age(now, ask.asked_at) > ASK_TTL_MS + CLOCK_SLACK_MS {
+                return;
+            }
+            self.asks.insert(
+                key,
+                Held { it: ask.clone(), origin_at, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
+            );
+            reply.say.push(tagged(ask, age(now, origin_at)));
+            return;
+        }
+
+        let keep_until = now
+            .saturating_add(ANSWER_KEPT_MS)
+            .max(ask.asked_at.saturating_add(ASK_TTL_MS + CLOCK_SLACK_MS + 1));
+        self.asks.insert(key.clone(), Held { it: ask.clone(), origin_at, keep_until });
+        let decided = if prompt {
+            /* A prompt has no territory and counts against no bound; what it
+               shares with an ask is the trust and the switch. Whether the card
+               exists, and will take it, is the wiring's to answer. */
+            self.trust(&ask, age_ms, now)
+                .and_then(|()| if here.accepting { Ok(()) } else { Err(Refusal::NotAccepting) })
+                .map(|()| {
+                    self.delivering.insert(key.clone(), keep_until);
+                    reply.deliver.push(Deliver {
+                        request: ask.id.clone(),
+                        card: ask.card.clone().unwrap_or_default(),
+                        text: ask.brief.clone(),
+                        asked_by: ask.from.clone(),
+                    });
+                })
+        } else {
+            self.decide(&ask, age_ms, now, here).map(|spawn| {
+                self.in_flight.insert(key.clone(), keep_until);
+                reply.open.push(spawn);
+            })
+        };
+        if let Err(refusal) = decided {
+            let answer = Answer {
+                request: key.1.clone(),
+                by: self.me.clone(),
+                asked_by: key.0.clone(),
+                outcome: Outcome::Refused { refusal },
+            };
+            reply.say.push(self.record(key, answer, now, keep_until));
+        }
+    }
+
+    /// Whether the ask itself can be trusted — its clock and its age — before
+    /// anything about this wall is asked. The first half of `decide`, shared
+    /// with prompts.
+    fn trust(&self, ask: &Ask, hop_age: u64, now: i64) -> Result<(), Refusal> {
         /* The skew the roster has *measured*, when it has. This is what makes
            the stamp check below honest: the stamp can only catch a frame the
            transport held if the clocks agree to within the slack, and nothing
@@ -1057,6 +1233,17 @@ impl Fleet {
         if hop_age > ASK_TTL_MS as u64 || by_clock > ASK_TTL_MS + CLOCK_SLACK_MS {
             return Err(Refusal::Expired { waited_ms: hop_age.max(by_clock.max(0) as u64) });
         }
+        Ok(())
+    }
+
+    /// Whether to open a card for this ask, against this wall's facts now.
+    ///
+    /// The ask's own trustworthiness first — its clock and its age — then
+    /// whether this wall takes anything, then the territory, then the bounds,
+    /// so the refusal names the thing that would have to change first rather
+    /// than the third of three.
+    fn decide(&self, ask: &Ask, hop_age: u64, now: i64, here: &Facts) -> Result<Spawn, Refusal> {
+        self.trust(ask, hop_age, now)?;
         if !here.accepting {
             return Err(Refusal::NotAccepting);
         }
@@ -1075,6 +1262,8 @@ impl Fleet {
             brief: ask.brief.clone(),
             title: ask.title.clone(),
             asked_by: ask.from.clone(),
+            model: ask.model.clone(),
+            effort: ask.effort.clone(),
         })
     }
 
@@ -1141,7 +1330,7 @@ impl Fleet {
             .filter(|(k, _)| !self.answers.contains_key(*k))
             .filter(|(_, h)| age(now, h.origin_at) <= ASK_TTL_MS as u64)
             .filter(|(_, h)| stamp_age(now, h.it.asked_at) <= ASK_TTL_MS + CLOCK_SLACK_MS)
-            .map(|(_, h)| FleetMsg::Ask { ask: h.it.clone(), age_ms: age(now, h.origin_at) });
+            .map(|(_, h)| tagged(h.it.clone(), age(now, h.origin_at)));
         let answers = self
             .answers
             .values()
@@ -1168,6 +1357,15 @@ fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
         }
     }
     None
+}
+
+/// An ask under the tag that says what it is — see `Ask::card`.
+fn tagged(ask: Ask, age_ms: u64) -> FleetMsg {
+    if ask.card.is_some() {
+        FleetMsg::Prompt { ask, age_ms }
+    } else {
+        FleetMsg::Ask { ask, age_ms }
+    }
 }
 
 fn heard(e: &Entry, now: i64) -> Heard {
@@ -1212,6 +1410,9 @@ fn clean_ask(a: Ask) -> Ask {
         brief: sc(&a.brief),
         title: sc_opt(a.title),
         asked_at: a.asked_at,
+        model: sc_opt(a.model),
+        effort: sc_opt(a.effort),
+        card: sc_opt(a.card),
     }
 }
 
@@ -1330,6 +1531,8 @@ mod tests {
             territory,
             brief: "build the thing".into(),
             title: None,
+            model: None,
+            effort: None,
         }
     }
 
@@ -1342,6 +1545,9 @@ mod tests {
             brief: "b".into(),
             title: None,
             asked_at,
+            model: None,
+            effort: None,
+            card: None,
         }
     }
 
@@ -2032,6 +2238,115 @@ mod tests {
         lap.hear(FleetMsg::Answer { answer, age_ms: 0 }, 10);
         assert_eq!(lap.answered[0].by, "desk");
         assert_eq!(lap.answered[0].outcome, Outcome::Opened { card: "card".into() });
+    }
+
+    fn prompt_req(id: &str, to: &str, card: &str) -> PromptRequest {
+        PromptRequest { id: id.into(), from_card: None, to: to.into(), card: card.into(), text: "carry on".into() }
+    }
+
+    /// A prompt crosses, is handed to the card, and its answer comes back as
+    /// taken — and the repeat a lost answer provokes is not a second prompt.
+    #[test]
+    fn a_prompt_is_delivered_once_and_answered_as_taken() {
+        let mut lap = Fleet::new("lap", 0);
+        let mut desk = Fleet::new("desk", 0);
+        lap.on(announced("desk", 1, 0, 0), 0, &open_facts());
+        let m = lap.prompt(prompt_req("p1", "desk", "card-9"), 10).unwrap();
+        assert!(matches!(m, FleetMsg::Prompt { .. }));
+
+        let r = desk.on(m.clone(), 10, &open_facts());
+        assert_eq!(r.deliver.len(), 1);
+        assert_eq!(r.deliver[0].card, "card-9");
+        assert_eq!(r.deliver[0].text, "carry on");
+        assert!(r.open.is_empty(), "a prompt never opens a card");
+
+        let again = desk.on(m.clone(), 20, &open_facts());
+        assert!(again.deliver.is_empty(), "the same prompt twice is one prompt");
+
+        let answer = desk.taken("lap", "p1", "card-9", 30).unwrap();
+        let back = lap.on(answer, 40, &open_facts());
+        assert_eq!(back.answered.len(), 1);
+        assert_eq!(back.answered[0].outcome, Outcome::Opened { card: "card-9".into() });
+
+        /* And a repeat after the answer says the answer again, not the prompt. */
+        let late = desk.on(m, 50, &open_facts());
+        assert!(late.deliver.is_empty());
+        assert!(matches!(late.say.as_slice(), [FleetMsg::Answer { .. }]));
+    }
+
+    /// The tag is what says a request is a prompt. An `Ask` carrying a card is
+    /// an ask — which is the reading a wall from before prompts would make of
+    /// it anyway, and the reason prompts never travel under that tag.
+    #[test]
+    fn an_ask_carrying_a_card_is_still_an_ask() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { card: Some("card-9".into()), ..raw_ask("r", "lap", "desk", 0) };
+        let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &open_facts());
+        assert_eq!(r.open.len(), 1);
+        assert!(r.deliver.is_empty());
+        /* And it is remembered without the card, so it gossips as an ask. */
+        assert!(desk.asked("lap", "r").unwrap().card.is_none());
+    }
+
+    #[test]
+    fn a_wall_that_takes_no_work_refuses_a_prompt_too() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { card: Some("card-9".into()), ..raw_ask("p", "lap", "desk", 0) };
+        let closed = Facts { accepting: false, ..open_facts() };
+        let r = desk.on(FleetMsg::Prompt { ask, age_ms: 0 }, 0, &closed);
+        assert!(r.deliver.is_empty());
+        assert_eq!(refusal_in(&r.say), Some(&Refusal::NotAccepting));
+    }
+
+    /// A prompt in flight is not a card opened for another wall, and must not
+    /// fill the bound that counts those.
+    #[test]
+    fn a_prompt_in_flight_does_not_count_against_the_card_bound() {
+        let mut desk = Fleet::new("desk", 0);
+        let bounded = Facts { bound: Bound { live: Some(1), per_hour: None }, ..open_facts() };
+        let p = Ask { card: Some("card-9".into()), ..raw_ask("p", "lap", "desk", 0) };
+        assert_eq!(desk.on(FleetMsg::Prompt { ask: p, age_ms: 0 }, 0, &bounded).deliver.len(), 1);
+        let r = desk.on(FleetMsg::Ask { ask: raw_ask("r", "lap", "desk", 0), age_ms: 0 }, 0, &bounded);
+        assert_eq!(r.open.len(), 1, "the prompt still in hand must not have used the slot");
+    }
+
+    /// A relay passes a prompt on as a prompt, and a wall that arrives later
+    /// hears it as one.
+    #[test]
+    fn a_prompt_relayed_or_gossiped_keeps_its_tag() {
+        let mut server = Fleet::new("server", 0);
+        let ask = Ask { card: Some("card-9".into()), ..raw_ask("p", "lap", "desk", 0) };
+        let r = server.on(FleetMsg::Prompt { ask, age_ms: 0 }, 0, &open_facts());
+        assert!(matches!(r.say.as_slice(), [FleetMsg::Prompt { .. }]));
+        assert!(server.open(10).iter().any(|m| matches!(m, FleetMsg::Prompt { .. })));
+        assert!(!server.open(10).iter().any(|m| matches!(m, FleetMsg::Ask { .. })));
+    }
+
+    #[test]
+    fn a_prompt_for_no_card_is_dropped() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { card: Some(String::new()), ..raw_ask("p", "lap", "desk", 0) };
+        let r = desk.on(FleetMsg::Prompt { ask, age_ms: 0 }, 0, &open_facts());
+        assert!(r.deliver.is_empty() && r.say.is_empty());
+    }
+
+    /// What a card costs is the asker's decision and has to arrive whole — and
+    /// an ask from a build that predates the two fields must still read, as no
+    /// preference, rather than failing the frame and every frame beside it.
+    #[test]
+    fn the_model_and_effort_travel_and_an_older_ask_still_reads() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { model: Some("sonnet".into()), effort: Some("low".into()), ..raw_ask("r", "lap", "desk", 0) };
+        let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &open_facts());
+        assert_eq!(r.open[0].model.as_deref(), Some("sonnet"));
+        assert_eq!(r.open[0].effort.as_deref(), Some("low"));
+
+        let mut v = serde_json::to_value(FleetMsg::Ask { ask: raw_ask("r2", "lap", "desk", 0), age_ms: 0 }).unwrap();
+        v["ask"].as_object_mut().unwrap().remove("model");
+        v["ask"].as_object_mut().unwrap().remove("effort");
+        let older: FleetMsg = serde_json::from_value(v).expect("an ask without the new fields still reads");
+        let r = desk.on(older, 0, &open_facts());
+        assert_eq!(r.open[0].model, None);
     }
 
     /// A corrupt frame — an age of `u64::MAX`, a stamp at either end of `i64`

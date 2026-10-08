@@ -1027,6 +1027,79 @@ fn chunk(w: &mut dyn Write, body: &str) -> std::io::Result<()> {
     w.flush()
 }
 
+/// Park a call on an answer that comes from somewhere other than a person —
+/// another wall, over the flyway — and stream keep-alives while it waits.
+///
+/// `park_and_stream` is the shape for a question: it draws a panel, scales its
+/// deadline to the reading, and can queue the question when nobody comes. None
+/// of that applies to a remote spawn, which has no panel, no reader and a
+/// deadline set by the protocol (`fleet::ASK_TTL_MS`); what it shares is the
+/// part that took three sittings to get right — the stream rather than a held
+/// body, written by hand so the bytes reach the wire, with a progress note per
+/// `FEED_EVERY` so neither the CLI's idle watchdog nor Bun's fetch clock gives
+/// up first. So that part is reused and the rest is not.
+///
+/// The receiver's sender is held by the flyway; when this gives up, `rx` is
+/// dropped, and an answer that arrives afterwards finds nobody listening and
+/// is delivered to the card as a message instead (`link::Link::tell`).
+pub(crate) fn park_for_answer(
+    id: &Value,
+    progress: Option<Value>,
+    req: tiny_http::Request,
+    rx: std::sync::mpsc::Receiver<String>,
+    window: Duration,
+    waiting: &str,
+    on_timeout: String,
+) {
+    let mut w = req.into_writer();
+    let head = "HTTP/1.1 200 OK\r\n\
+                Content-Type: text/event-stream\r\n\
+                Cache-Control: no-cache\r\n\
+                Transfer-Encoding: chunked\r\n\
+                \r\n";
+    if w.write_all(head.as_bytes()).and_then(|()| chunk(&mut *w, ": parked\n\n")).is_err() {
+        return;
+    }
+    let started = Instant::now();
+    let mut fed: u64 = 0;
+    let reply = loop {
+        let left = window.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break on_timeout;
+        }
+        match rx.recv_timeout(FEED_EVERY.min(left)) {
+            Ok(text) => break text,
+            Err(RecvTimeoutError::Disconnected) => break on_timeout,
+            Err(RecvTimeoutError::Timeout) => {
+                if started.elapsed() >= window {
+                    break on_timeout;
+                }
+                fed += 1;
+                let note = match &progress {
+                    Some(token) => sse(&json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": { "progressToken": token, "progress": fed, "message": waiting }
+                    })),
+                    None => ": waiting\n\n".to_string(),
+                };
+                if chunk(&mut *w, &note).is_err() {
+                    return;
+                }
+            }
+        }
+    };
+    let _ = chunk(
+        &mut *w,
+        &sse(&json!({
+            "jsonrpc": "2.0", "id": id,
+            "result": { "content": [{ "type": "text", "text": reply }] }
+        })),
+    )
+    .and_then(|()| w.write_all(b"0\r\n\r\n"))
+    .and_then(|()| w.flush());
+}
+
 /// What the answer *means*, for a parked call that is not `ask_user`.
 ///
 /// `ask_user` needs none of this: the reply to the agent is the answer, word for
@@ -2629,6 +2702,45 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            twice either, since two readings of the same wall are
                            two things to keep in step. `spawn::close` decides
                            once and hands back what to do about it. */
+                        /* `spawn` naming another wall is the fourth, and
+                           always: the answer comes from that wall, a few
+                           seconds away at best. Routed here, ahead of the
+                           roster chain, for `close`'s reason — that chain has
+                           already committed to answering on the spot. A
+                           `spawn` with no `host` (or this wall's own name) is
+                           not caught and goes down the chain as it always
+                           has. */
+                        if tool == crate::spawn::SPAWN_TOOL && crate::spawn::names_another_wall(&args) {
+                            match crate::spawn::elsewhere(&app, &conversation_id, &args) {
+                                crate::spawn::Elsewhere::Now(said) => respond(
+                                    req,
+                                    json!({
+                                        "jsonrpc": "2.0", "id": id,
+                                        "result": { "content": [
+                                            { "type": "text", "text": said }
+                                        ] }
+                                    }),
+                                ),
+                                crate::spawn::Elsewhere::Wait(rx, host) => park_for_answer(
+                                    &id,
+                                    progress,
+                                    req,
+                                    rx,
+                                    /* As long as the ask can still be acted on
+                                       there, and half a minute for the answer
+                                       to come back — past that the far wall
+                                       refuses it as expired, so nothing it says
+                                       can be "opened" unless a card really was. */
+                                    Duration::from_millis(
+                                        (crate::flyway::fleet::ASK_TTL_MS + 30_000) as u64,
+                                    ),
+                                    &format!("waiting for {host} to open the card"),
+                                    crate::spawn::elsewhere_waiting(&host),
+                                ),
+                            }
+                            return;
+                        }
+
                         if tool == crate::spawn::CLOSE_TOOL {
                             match crate::spawn::close(&app, &conversation_id, &args) {
                                 crate::spawn::Closing::Now(said) => {

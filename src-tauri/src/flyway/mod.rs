@@ -4,33 +4,38 @@
 //! route — what lets a project exist on several machines at once, with cards
 //! hosted wherever the repo, the toolchain and the credentials actually are.
 //!
-//! The design is in `.claude/rules/flyway.md`. What is here so far is the half
-//! that needs no network and can be tested without one:
+//! Bottom to top, and each file's own comment is its design:
 //!
 //! - `seal` — the key, the rooms it names, and the frames it seals. Everything
 //!   above it may assume the pipe is hostile, which is what makes the choice of
 //!   transport an engineering decision rather than a security one.
+//! - `key` — the key's home in the credential vault, the invite, `host_name`.
+//! - `sync`, `session` — how two sinks converge, and what two walls say about
+//!   one. Pure.
+//! - `fleet` — the roster, and asking another wall to open a card. Pure.
+//! - `cards` — what each wall's cards look like, carried and never read. Pure.
+//! - `frame` — how those three vocabularies share one frame.
+//! - `wire` — iroh: QUIC, dial by public key, relay fallback. The only file
+//!   that knows about the transport, so the transport stays replaceable.
+//! - `here` — the rows the fleet keeps and the facts a wall announces.
+//! - `link` — the thing that runs: a tick, the pushes, and the commands.
 //!
-//! What is deliberately *not* here yet is the transport. The first one will be
-//! sealed frames over TCP/443 through `crate::forge::tls` — not because it is
-//! the fastest but because it is the one that certainly works from an office
-//! network, where the gateway intercepts TLS and QUIC is commonly dropped
-//! outright. `forge::tls` merges the native root store with `webpki-roots`
-//! precisely so an intercepted connection validates, and that merge is this
-//! app's hardest-won network lesson; anything here that grew its own root set
-//! would fail on exactly one network and work everywhere it was tested.
+//! **The wire carries work, never secrets.** The wall key is the one exception,
+//! and a person carries it, in an invite, deliberately. A remote spawn needing
+//! a credential the far machine lacks is refused there, with the reason; no
+//! token, sealed or not, ever crosses, because a credential entered once must
+//! not come to exist in two places.
 
-/* The seal is built ahead of the thing that will call it, so in a non-test
-   build most of it is reached by nothing yet. Allowed here rather than left to
-   warn, because nine warnings nobody can act on are what hides the tenth that
-   somebody can — and narrowed to this module so the rest of the crate keeps
-   its unused code loud.
+/* There used to be an `allow(dead_code)` here, while the seal and the sync were
+   built ahead of anything that called them, with a note that it came off with
+   the transport. It has: every module is reached from `link.rs`, and what a
+   non-test build does not call is `pub` and therefore not dead to a library
+   crate in any case. */
 
-   **This comes off with the transport.** If it is still here once frames are
-   going over a wire, something above is not calling what it should be. */
-#![allow(dead_code)]
-
+pub mod cards;
 pub mod fleet;
+pub mod frame;
+pub mod here;
 pub mod key;
 pub mod link;
 pub mod seal;

@@ -308,7 +308,7 @@ pub const SPAWN_MODELS: [&str; 3] = ["haiku", "sonnet", "opus"];
 ///
 /// Folded for case and trimmed, because `"Sonnet"` is the same intention and
 /// refusing it would teach nothing.
-fn asked_model(args: &Value) -> Result<Option<String>, String> {
+pub(crate) fn asked_model(args: &Value) -> Result<Option<String>, String> {
     let Some(raw) = args.get("model").and_then(Value::as_str) else {
         return Ok(None);
     };
@@ -376,7 +376,7 @@ const EFFORTLESS: [&str; 1] = ["haiku"];
 ///   card whose model this wall never chose and cannot name. The parent almost
 ///   certainly meant a family too, and asking it to say which costs one call.
 /// - **an effort on [`EFFORTLESS`].** See that constant.
-fn asked_effort(args: &Value, model: Option<&str>) -> Result<Option<String>, String> {
+pub(crate) fn asked_effort(args: &Value, model: Option<&str>) -> Result<Option<String>, String> {
     let Some(raw) = args.get("effort").and_then(Value::as_str) else {
         return Ok(None);
     };
@@ -699,6 +699,29 @@ pub fn spawn_schema() -> Value {
                          registered, is switched off, or is not signed in is refused with \
                          the list of what is here — so a guess costs one call, not a card. \
                          `accounts` lists the labels, their tiers and their last readings."
+                },
+                "host": {
+                    "type": "string",
+                    "description":
+                        "Optional. Open the card on **another of the user's machines** \
+                         instead of this one — a wall's name as the flyway knows it, such as \
+                         the laptop or the build box. Use it when the work has to run where \
+                         the repository, the toolchain or the credentials actually are. Name \
+                         a wall this one has not heard from and the answer lists the ones it \
+                         has.\n\n\
+                         With `host`, `project` names a territory **on that wall**, as it \
+                         announces them; leave it out and the card stands in the territory \
+                         there with your own project's name. `account` cannot go with it — \
+                         accounts belong to a machine, and that wall's own ladder picks. \
+                         `model` and `effort` travel as they do here.\n\n\
+                         The call waits for that wall to answer, which is usually a few \
+                         seconds, and returns the card's handle there or the reason it \
+                         refused. That wall must have been switched to take work from other \
+                         walls, by a person sitting at it. The card it opens runs on that \
+                         machine with its whole shell, and it is not reachable from here: \
+                         `send`, `recall` and `close` do not cross. So the brief is even more \
+                         the whole channel than usual — write it so the card can finish \
+                         without asking you anything."
                 }
             },
             "required": ["prompt"]
@@ -1733,6 +1756,165 @@ fn clip_brief(s: &str, max: usize) -> (String, usize) {
         crate::supervisor::MCP_PREFIX,
     );
     (text, omitted)
+}
+
+/* ── on another machine ────────────────────────────────────────────────────
+ *
+ * `host` asks another wall to open the card, over the flyway. Everything this
+ * file refuses about a card it refuses here first, on this side, before
+ * anything crosses — an empty brief, a model or effort nobody can resolve, a
+ * chat card asking at all — and then the far wall decides against its own
+ * facts (`fleet::Fleet::decide`) and opens it through *its* `#openIn`. So the
+ * birth path is still one path: this side asks, and the wall the card lands on
+ * opens it exactly as it would open one of its own children.
+ *
+ * Two of `do_spawn`'s rules change shape across the wire rather than going
+ * away. **Where it stands** is still a territory named rather than a path —
+ * now a territory *that* wall announced, resolved there against its own table
+ * (`flyway/here.rs`), so no path written on this machine ever reaches the
+ * other. And **a card opened here** carries `account`; a card opened there
+ * cannot, because an account is a credential on a machine and the wire carries
+ * work, never secrets.
+ */
+
+/// Whether a spawn names a wall other than this one.
+pub fn names_another_wall(args: &Value) -> bool {
+    args.get("host")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|h| !h.is_empty() && !h.eq_ignore_ascii_case(&crate::flyway::key::host_name()))
+}
+
+/// What a remote spawn does with the tool call: answer at once, or park until
+/// the far wall answers.
+pub enum Elsewhere {
+    Now(String),
+    Wait(std::sync::mpsc::Receiver<String>, String),
+}
+
+/// Ask another wall to open a card. The guards that are about what a card *is*
+/// run here, before anything crosses.
+pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
+    let host = args.get("host").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let Some(prompt) = args.get("prompt").and_then(Value::as_str).map(str::trim) else {
+        return Elsewhere::Now("no `prompt` was given, so no card was asked for".into());
+    };
+    if prompt.is_empty() {
+        return Elsewhere::Now(
+            "the prompt was empty — a card opened with nothing to do is a process and an API \
+             turn spent on nothing, so none was asked for"
+                .into(),
+        );
+    }
+    if args.get("account").and_then(Value::as_str).is_some_and(|a| !a.trim().is_empty()) {
+        return Elsewhere::Now(format!(
+            "`account` cannot go with `host`, so no card was asked for — an account is a sign-in on \
+             one machine, and {host} picks from its own. Leave `account` out."
+        ));
+    }
+    let title = args
+        .get("title")
+        .and_then(Value::as_str)
+        .map(|t| clip(t.trim(), MAX_TITLE))
+        .filter(|t| !t.is_empty());
+    let model = match asked_model(args) {
+        Ok(m) => m,
+        Err(why) => return Elsewhere::Now(why),
+    };
+    let effort = match asked_effort(args, model.as_deref()) {
+        Ok(e) => e,
+        Err(why) => return Elsewhere::Now(why),
+    };
+    let me = {
+        let Some(store) = app.try_state::<Store>() else {
+            return Elsewhere::Now("the store is unavailable".into());
+        };
+        let Ok(conn) = store.0.lock() else {
+            return Elsewhere::Now("the store is unavailable".into());
+        };
+        crate::store::roster_one(&conn, caller)
+    };
+    let Some(me) = me else {
+        return Elsewhere::Now("this card is not on the wall, so it has nowhere to ask from".into());
+    };
+    /* The chat refusal crosses the wire unchanged: a chat card opening a
+       project card on another machine is the line from the open web to a
+       shell, with a network in the middle of it. */
+    if me.kind == "chat" {
+        return Elsewhere::Now(
+            "this is a chat card: it stands outside the wall's projects and reaches nothing on \
+             any machine, so it cannot open a card that would. Tell the user what you would have \
+             opened and where, and let them do it."
+                .into(),
+        );
+    }
+    let Some(link) = crate::flyway::link::link(app) else {
+        return Elsewhere::Now(
+            "this wall is not on a flyway, so it has no other machines to open a card on — the \
+             user joins one from the flyway panel (space then k). Leave `host` out to open the \
+             card here."
+                .into(),
+        );
+    };
+
+    /* The territory, resolved against what that wall announced. An unknown
+       host is left for `Fleet::ask` to refuse, since it says which walls *are*
+       known; any territory will do to get it there. */
+    let asked = args.get("project").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty());
+    let territory = match link.territories_of(&host) {
+        None => crate::flyway::fleet::Territory { identity: me.project.clone(), name: me.project.clone() },
+        Some(offered) => {
+            let want = asked.unwrap_or(me.project.as_str());
+            match offered.iter().find(|t| t.name.eq_ignore_ascii_case(want) || t.identity == want) {
+                Some(t) => t.clone(),
+                None => {
+                    let has = if offered.is_empty() {
+                        "no territories at all".to_string()
+                    } else {
+                        offered.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+                    };
+                    let said = match asked {
+                        Some(p) => format!("{host} has no territory called {p:?}"),
+                        None => format!(
+                            "you named no `project`, and {host} has no territory called {:?}, \
+                             which is the one you stand in here",
+                            me.project
+                        ),
+                    };
+                    return Elsewhere::Now(format!(
+                        "{said}, so no card was asked for. It offers: {has}. Name one of those \
+                         with `project`, or ask the user to open the repository on {host} first \
+                         — a path cannot be named across machines at all."
+                    ));
+                }
+            }
+        }
+    };
+
+    let request = crate::flyway::fleet::Request {
+        id: crate::store::uuid_v4(),
+        card: Some(caller.to_string()),
+        to: host.clone(),
+        territory,
+        brief: prompt.to_string(),
+        title,
+        model,
+        effort,
+    };
+    match link.ask_spawn(request) {
+        Ok(rx) => Elsewhere::Wait(rx, host),
+        Err(why) => Elsewhere::Now(format!("no card was asked for: {why}")),
+    }
+}
+
+/// What the parked call says when the far wall has not answered in time.
+pub fn elsewhere_waiting(host: &str) -> String {
+    format!(
+        "{host} has not answered yet. The ask stands for a couple of minutes more: if {host} opens \
+         the card you will be told by a message from the wall, and if it does not you will be told \
+         that too. **Do not ask again** — a second ask is a second card if the first one lands. \
+         Carry on with something else, and tell the user what you asked for and where."
+    )
 }
 
 /// The roster chain's half of this server's two tools, which is one of them.

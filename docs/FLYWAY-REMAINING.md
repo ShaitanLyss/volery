@@ -49,68 +49,105 @@ installed wall.
 
 ---
 
-## What is left, in dependency order
+## What was left, and is now done (2026-10-08, cards c86101fa and a2a4468e)
 
-### 1. Wire `fleet.rs` into the envelope — **the gate on everything else**
+### 1. `fleet.rs` is in the envelope, and the sink travels both ways
 
-`fleet.rs` is written, reviewed and tested, and **nothing calls it**. Its
-messages (`FleetMsg`: `Roster`, `Ask`, `Answer`) need to ride the same sealed
-frames `session::Msg` does, and `link.rs` needs to drive it.
+`frame.rs` is the envelope: an untagged union of the sink's, the fleet's and
+the cards' vocabularies, so a bare v1 sink frame is still a frame. The ALPN is
+`volery/flyway/2`; a wall still answers v1 and dials it when a peer refuses 2
+(`error 120: peer doesn't support any known protocol`, read by
+`wire::refused_protocol`), which is what keeps an installed 0.42 wall syncing.
+A frame naming a `msg` this build has no word for is skipped, not fatal, so the
+next vocabulary needs no ALPN bump.
 
-What the Fleet owes its caller, from the card that wrote it:
+**The cadence decision**, argued at the top of `link.rs`: one tick at 30s
+(`ANNOUNCE_EVERY_MS` — the roster's period, which the sink now shares), and
+everything somebody is waiting for **pushed** at once as a one-shot exchange —
+an ask to its addressee, an answer to its asker, a prompt, a changed cards
+snapshot (≤1/s). No held connection. The old "nobody pushes" paragraph was true
+of sink events and was generalised to the whole protocol; it is corrected in
+place.
 
-- Every message: `fleet.on(msg, now, &facts)` → `Reply { say, open, answered }`.
-  Everything in `say` is gossip, safe to send to every peer, and must reach at
-  least the sender.
-- Every `open: Spawn`: exactly one `opened(asked_by_host, request, card, now)`
-  or `failed(asked_by_host, request, reason, now)`.
-- Timers: `announce(facts, now)` every 30s, `prune(now)` on a tick.
-- **Persistence:** `Fleet::new(me, last_version)`. Persist `fleet.version()`
-  after each `announce` and hand it back on start, or a restart after a clock
-  correction freezes this wall on every peer's roster.
-- `fleet.namesake()` is true when another machine announces under this wall's
-  name — worth drawing, because both would open a card for one ask.
+**The sink was one-directional, and nobody had noticed.** The wall that starts
+a flyway has its own name in its invite and dialled nobody; the joiner's
+`Hello` carried a watermark and no events. So nothing a joiner said ever
+reached the wall that invited it — the "257 events crossed" proof covered one
+direction. Fixed twice over: the dial set is now the invite's host (a *seed*)
+∪ every host on the roster ∪ every host that has dialled in, and every pull is
+followed by a push of whatever the answer's watermark shows the other wall
+lacks. **Proved app-to-app against the installed 0.42 wall**, read straight out
+of both SQLite files: a finding dropped on the lab reached the installed wall
+(`events by host: …, lab=1`), one dropped on the installed wall before the lab
+started arrived on it cold, and one dropped after the walls met arrived live.
 
-`link.rs`'s `answer_with` and `pull` are where this goes. Note the current
-protocol is **pull-only and symmetric** — every wall dials every peer and asks
-for what it is missing; nobody pushes. That is argued at the top of `link.rs`
-and is right for a sink. A roster and a spawn request are *not* a sink: an ask
-that waits up to 45s for the other wall's next pull is an ask nobody will use.
-**This is the design decision the next card has to make**, and the two honest
-options are: shorten the interval for fleet traffic only, or hold a connection
-open. Do not simply reuse the sink's cadence without arguing it.
+`Fleet::version()` and the cards version are persisted (`flyway_setting`,
+schema **v47**, with `flyway_birth`). `#![allow(dead_code)]` is off `flyway/`
+and `sinksync.rs`.
 
-### 2. Remote spawn, reaching the real spawn path
+### 2. Remote spawn is real
 
-`mcp__skein__spawn` grows a `host`. An arriving `Ask` becomes a card through
-**the existing birth path** — `Skein.#openIn`, which `spawn.rs` is emphatic is
-the one correct way a card comes into being. Read `.claude/rules/spawn.md`
-first; its bounds (a territory named rather than a path, never a chat card)
-hold unchanged for a remote asker, and `spawn.rs`'s `MAX_LIVE` / `MAX_PER_HOUR`
-become per-roost bounds on arriving work.
+`mcp__skein__spawn` takes `host`. `spawn::elsewhere` refuses on this side
+everything about a card that can be refused here — empty brief, bad model or
+effort, a chat card, `account` with `host` (accounts are per machine; the wire
+carries work, never secrets) — and resolves `project` against the territories
+*that* wall announced. The call parks (`ask::park_for_answer`, keep-alives over
+SSE) until the answer comes, or tells the card it will be told later by a wall
+message and **not to ask again**.
 
-**A card born over the flyway must say so on its face.** The user's protection
-here is not that a fan-out was prevented but that it is *visible* — a remotely
-born card running `--dangerously-skip-permissions` is the whole risk, and
-`seal.rs`'s module comment argues why holding the key is already full trust.
-A chronicle row naming the asking wall is the minimum.
+The far wall decides against its live facts (`Fleet::decide`: the switch, the
+territory, its own bounds), resolves the root from **its own** table
+(`here::root_for` — never a path the asker wrote; a name two of its projects
+share is refused with the reason), writes `flyway_birth` *before* the emit,
+puts a chronicle row up naming the asking wall, and opens the card through
+`Skein.openSpawned` → `#openIn`. The card's system prompt says who asked, from
+which machine, and that nothing on this wall reaches back (`Selfhood.born_for`).
+The card's face says so (`bornFor`, a2a4468e).
+
+**Demonstrated** between two walls of this build on one machine (two processes,
+`VOLERY_SECOND` + `VOLERY_WALL_DIR` + `VOLERY_FLYWAY_HOST`/`_PEER`): a card on
+`lab2` called `spawn{host:"lab"}`, a card opened on `lab` in ~10s, answered its
+brief, and the asker's call returned the handle. With the switch off, the same
+ask came back at once: *"lab is not taking work from other walls — switch that
+on in the flyway panel on lab"*.
+
+The person's switch and the roster are in the flyway panel (`space k`, then `a`).
+The switch defaults to off and gates prompts as well as spawns.
 
 ### 3. Seeing and prompting a remote card
 
-The part that makes it a *dashboard* rather than a remote spawn button. Needs:
+The digest is a2a4468e's — produced by the owning wall's front end, one opaque
+snapshot per wall, carried by `cards.rs`, never read in Rust, aged from
+publish, not relayed, and never sent before the front end has published.
+Prompts ride `FleetMsg::Prompt` — an `Ask` with a `card`, under a tag of its own
+so no fleet build can misread one as a spawn — with every rule the ask was
+red-teamed for. **Demonstrated** across the same two walls: a card on one wall
+drawn on the other, prompted from the other's dock, `taken`, and its answer
+read back in the next snapshot.
 
-- A **digest** per remote card — id, title, territory, host, status tier, ctx,
-  idle, last line — enough to draw a card at any density.
-  **The taxonomy lives in `classify.ts`, in TypeScript**, so Rust cannot produce
-  a digest. The honest shape is: the owning wall's front end produces it and the
-  link ships it. Do not port the taxonomy to Rust without a shared fixture
-  corpus run by both suites — that drift is silent and lands on the machine you
-  cannot see.
-- Drawing a shadow card. `Conversation` assumes a process; a shadow has none.
-- Sending a prompt to one. The echo machinery (`Conversation.echo`, `pending` /
-  `awaited`) is already subtle — read the architecture note in CLAUDE.md. A
-  remote prompt needs a **fourth** mark: queued-but-not-yet-left-this-machine.
-  A link that is down must not look like an agent that is thinking.
+## What is left
+
+### Smaller things
+
+- **A read of the roster for agents.** An agent learns host names only from a
+  refusal (`UnknownHost` lists them). A deferred `walls` tool would be the
+  honest answer; `accounts`' "a field only a mistake can teach" is the argument.
+- **`Fleet::namesake()` is not drawn.** Another machine under this wall's name
+  is two cards for one ask. Note that any copy of the app run on this machine
+  without `VOLERY_FLYWAY_HOST` joins the flyway as `COMPUTERNAME` — the
+  installed wall's own identity — because the vault key is shared.
+- **`Fleet::forget`** has no gesture: a retired machine stays on the roster,
+  drawn quiet, for ever.
+- **One startup panic, seen once and not reproduced**: a second wall restarted
+  seconds after killing the first died with *"state() called before manage()
+  for Store"* on a runtime thread and then on the main thread. `arrive` now
+  uses `try_state`; if it recurs, the backtrace (copy `skein.pdb` beside the
+  exe) will name the caller.
+- **Testing two walls on one machine** wants a binary copied out of
+  `target\debug` (with its DLLs) so another card's edit does not rebuild it
+  out from under you, its own `WEBVIEW2_USER_DATA_FOLDER` (two processes on one
+  identifier's webview folder never attach), and launching from PowerShell —
+  a parentless process is reaped by the installed wall's orphan sweep.
 
 ### 4. Moving a card between hosts
 

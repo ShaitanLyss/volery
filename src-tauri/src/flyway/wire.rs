@@ -40,26 +40,82 @@
 //! default verifies against a compiled-in copy of Mozilla's roots, which is the
 //! client that passes everywhere it is tested and fails on the network with a
 //! TLS-intercepting gateway in front of it.
+//!
+//! ### Two languages, and answering one dial at a time no longer
+//!
+//! The wire speaks `ALPN` — the envelope of `frame.rs` — and still answers and
+//! dials `ALPN_V1`, the sink alone, so a wall one release behind keeps syncing.
+//! And dials are answered each on a task of their own: one at a time was right
+//! while the only dial was a pull every forty-five seconds, and wrong once a
+//! push can arrive mid-pull and wait out the pull's whole round trip behind it.
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
-use iroh::endpoint::{presets, Connection};
-use iroh::{Endpoint, EndpointId, SecretKey};
+use iroh::endpoint::{presets, Connection, Incoming};
 use iroh::tls::CaTlsConfig;
+use iroh::{Endpoint, EndpointId, SecretKey};
 
+use super::frame::{self, Frame, Read};
 use super::seal::WallKey;
-use super::session::Msg;
 
 /// What this protocol is called on the wire. Versioned, so a wall running an
 /// older build is refused at the handshake with something legible rather than
 /// connecting and failing to parse a frame later.
-pub const ALPN: &[u8] = b"volery/flyway/1";
+///
+/// **2** is the envelope (`frame.rs`): the sink, the fleet and the cards on one
+/// connection. A frame of v1 is a frame of v2 — the envelope is untagged and a
+/// bare sink message is one of its variants — so this wall still *answers* v1,
+/// and still *dials* it when a peer refuses 2. That pair is what keeps two
+/// machines one release apart syncing their sink in both directions while the
+/// second one updates, instead of each going quiet to the other.
+pub const ALPN: &[u8] = b"volery/flyway/2";
+pub const ALPN_V1: &[u8] = b"volery/flyway/1";
 
 /// The most one frame may be. A peer that announces a larger one is refused
 /// rather than allocated for — the only thing on the other end *should* be
 /// another Volery, and a bound is what makes that "should" cost nothing to be
 /// wrong about.
 const MAX_FRAME: usize = 8 * 1024 * 1024;
+
+/// How long one exchange may take, dial included.
+///
+/// A peer that is asleep is the ordinary case, and how long iroh takes to give
+/// up on one depends on what the lookup service last heard about it — so
+/// without a bound of our own a sleeping laptop holds its slot in a tick for
+/// however long a relay takes to say so. Twenty seconds is far past a real
+/// exchange (a few round trips and a few frames) and well inside a tick.
+const EXCHANGE_WITHIN: Duration = Duration::from_secs(20);
+
+/// Why an exchange came to nothing, in the one distinction the caller acts on.
+#[derive(Debug)]
+pub enum Fault {
+    /// The far wall answered and does not speak this version — an older build.
+    /// Worth a second dial in the old language; nothing else is.
+    Older(String),
+    /// Asleep, unreachable, or broken. The next tick will try again.
+    Other(String),
+}
+
+impl std::fmt::Display for Fault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Fault::Older(e) => write!(f, "that wall runs an older Volery ({e})"),
+            Fault::Other(e) => f.write_str(e),
+        }
+    }
+}
+
+/// Who dialled, and in which language.
+#[derive(Debug, Clone, Copy)]
+pub struct Dialler {
+    pub id: EndpointId,
+    /// Spoke `ALPN` rather than `ALPN_V1`. An old wall must be answered in
+    /// sink frames alone, or its reader fails on the first frame it has no
+    /// word for and drops the events that came before it.
+    pub current: bool,
+}
 
 /// A bound endpoint: this wall, reachable by the identity its key implies.
 pub struct Wire {
@@ -83,7 +139,9 @@ impl Wire {
             .secret_key(secret)
             /* The load-bearing line. See the module note. */
             .ca_tls_config(CaTlsConfig::system())
-            .alpns(vec![ALPN.to_vec()])
+            /* Current first: when a dialler offers several, the order here is
+               the preference. Ours only ever offer one at a time. */
+            .alpns(vec![ALPN.to_vec(), ALPN_V1.to_vec()])
             .bind()
             .await
             .map_err(|e| format!("could not take a place on the flyway: {e}"))?;
@@ -106,17 +164,31 @@ impl Wire {
 
     /// Say something to another wall and hear what it says back.
     ///
-    /// One connection per exchange, which is the right shape for a sink that
-    /// settles in a few frames and the wrong one for a live transcript. When
-    /// the second comes, it wants a connection held open and this becomes the
-    /// thing it is built on rather than the thing it replaces.
-    pub async fn exchange(&self, peer: EndpointId, out: Vec<Msg>) -> Result<Vec<Msg>, String> {
-        let conn = self
-            .endpoint
-            .connect(peer, ALPN)
-            .await
-            .map_err(|e| format!("could not reach that wall: {e}"))?;
-        let got = self.talk(&conn, out).await;
+    /// One connection per exchange — for a pull and for a push alike, since a
+    /// push here is a pull's shape: send, finish, read (see `link.rs` on why
+    /// nothing is held open). `current: false` dials in the old language, and
+    /// the caller is the one who knows to send it only sink frames.
+    pub async fn exchange(&self, peer: EndpointId, out: Vec<Frame>, current: bool) -> Result<Vec<Frame>, Fault> {
+        let alpn = if current { ALPN } else { ALPN_V1 };
+        match tokio::time::timeout(EXCHANGE_WITHIN, self.exchange_on(peer, alpn, out)).await {
+            Ok(got) => got,
+            Err(_) => Err(Fault::Other(format!(
+                "no answer within {}s — that wall is probably asleep",
+                EXCHANGE_WITHIN.as_secs()
+            ))),
+        }
+    }
+
+    async fn exchange_on(&self, peer: EndpointId, alpn: &[u8], out: Vec<Frame>) -> Result<Vec<Frame>, Fault> {
+        let conn = self.endpoint.connect(peer, alpn).await.map_err(|e| {
+            let why = format!("could not reach that wall: {e}");
+            if refused_protocol(&why) {
+                Fault::Older(why)
+            } else {
+                Fault::Other(why)
+            }
+        })?;
+        let got = self.talk(&conn, out).await.map_err(Fault::Other);
         /* Closed explicitly so the far side learns it is over now rather than
            on a timeout — a dropped QUIC connection is indistinguishable from a
            slow one until the idle timer fires. */
@@ -124,23 +196,28 @@ impl Wire {
         got
     }
 
+    /// The next wall to dial in, or `None` once the endpoint has closed.
+    ///
+    /// Split from answering so the caller can answer each on its own task —
+    /// see the module note.
+    pub async fn next_dial(&self) -> Option<Incoming> {
+        self.endpoint.accept().await
+    }
+
     /// Answer one wall that dialled us.
     ///
-    /// `reply` is handed what arrived and says what to send back, which keeps
-    /// every decision about *meaning* in `session.rs` and leaves this file
-    /// knowing only about bytes.
-    pub async fn serve_one<F>(&self, reply: F) -> Result<(), String>
+    /// `reply` is handed what arrived and who sent it, and says what to send
+    /// back, which keeps every decision about *meaning* in `link.rs` and leaves
+    /// this file knowing only about bytes.
+    pub async fn answer<F, Fut>(&self, incoming: Incoming, reply: F) -> Result<(), String>
     where
-        F: FnOnce(Vec<Msg>) -> Vec<Msg>,
+        F: FnOnce(Vec<Frame>, Dialler) -> Fut,
+        Fut: Future<Output = Vec<Frame>>,
     {
-        let incoming = self
-            .endpoint
-            .accept()
-            .await
-            .ok_or_else(|| "the endpoint has closed".to_string())?;
         let conn = incoming
             .await
             .map_err(|e| format!("a wall dialled and did not finish: {e}"))?;
+        let who = Dialler { id: conn.remote_id(), current: conn.alpn() == ALPN };
 
         let (mut send, mut recv) = conn
             .accept_bi()
@@ -148,15 +225,17 @@ impl Wire {
             .map_err(|e| format!("no stream: {e}"))?;
 
         let heard = self.read_all(&mut recv).await?;
-        for m in reply(heard) {
+        for m in reply(heard, who).await {
             self.write_one(&mut send, &m).await?;
         }
         send.finish().map_err(|e| format!("could not finish: {e}"))?;
-        conn.closed().await;
+        /* Bounded, so a dialler that never closes holds this task and nothing
+           else — which is what one task per dial bought. */
+        let _ = tokio::time::timeout(EXCHANGE_WITHIN, conn.closed()).await;
         Ok(())
     }
 
-    async fn talk(&self, conn: &Connection, out: Vec<Msg>) -> Result<Vec<Msg>, String> {
+    async fn talk(&self, conn: &Connection, out: Vec<Frame>) -> Result<Vec<Frame>, String> {
         let (mut send, mut recv) = conn
             .open_bi()
             .await
@@ -172,11 +251,7 @@ impl Wire {
         self.read_all(&mut recv).await
     }
 
-    async fn write_one(
-        &self,
-        send: &mut iroh::endpoint::SendStream,
-        m: &Msg,
-    ) -> Result<(), String> {
+    async fn write_one(&self, send: &mut iroh::endpoint::SendStream, m: &Frame) -> Result<(), String> {
         let plain = serde_json::to_vec(m).map_err(|e| format!("could not write a frame: {e}"))?;
         let sealed = self.key.seal(&self.room, &plain)?;
         let n = u32::try_from(sealed.len()).map_err(|_| "that frame is too large".to_string())?;
@@ -189,7 +264,7 @@ impl Wire {
         Ok(())
     }
 
-    async fn read_all(&self, recv: &mut iroh::endpoint::RecvStream) -> Result<Vec<Msg>, String> {
+    async fn read_all(&self, recv: &mut iroh::endpoint::RecvStream) -> Result<Vec<Frame>, String> {
         let mut out = Vec::new();
         loop {
             let mut len = [0u8; 4];
@@ -207,9 +282,54 @@ impl Wire {
                 .await
                 .map_err(|e| format!("a frame was cut short: {e}"))?;
             let plain = self.key.open(&self.room, &buf)?;
-            let m: Msg = serde_json::from_slice(&plain)
-                .map_err(|e| format!("a frame was not one of ours: {e}"))?;
-            out.push(m);
+            match frame::read(&plain)? {
+                Read::Frame(f) => out.push(*f),
+                /* A newer build's word. See `frame.rs` on why this is not the
+                   end of the exchange. */
+                Read::Unknown(tag) => {
+                    log::debug!("flyway: passed over a `{tag}` frame this build has no word for")
+                }
+            }
         }
+    }
+}
+
+/// Whether a dial failed because the far wall does not speak this version.
+///
+/// Read off the error's words, which is the thing this codebase usually
+/// refuses to do — and it is done here because the fallback it gates is
+/// harmless when it is wrong in either direction. A false yes costs one extra
+/// dial in the old language, which a wall that is merely asleep refuses just
+/// the same; a false no leaves an old wall's sink unsynced until it updates,
+/// which is what every wall did before this existed. The TLS alert for "no
+/// protocol in common" is 120, and the transport spells it as a crypto error
+/// carrying that number.
+fn refused_protocol(why: &str) -> bool {
+    let w = why.to_lowercase();
+    w.contains("application protocol")
+        || w.contains("known protocol")
+        || w.contains("alpn")
+        || w.contains("error 120")
+        || w.contains("0x178")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_older_wall_is_told_apart_from_a_sleeping_one() {
+        assert!(refused_protocol("could not reach that wall: the cryptographic handshake failed: error 120"));
+        assert!(refused_protocol("peer doesn't support any known protocol"));
+        assert!(!refused_protocol("could not reach that wall: timed out"));
+        assert!(!refused_protocol("No addressing information available"));
+    }
+
+    /// The versions are what the handshake is refused on, so the current one
+    /// must differ from the one it falls back to — or the fallback is a loop.
+    #[test]
+    fn the_two_languages_are_two() {
+        assert_ne!(ALPN, ALPN_V1);
+        assert!(ALPN.starts_with(b"volery/flyway/"));
     }
 }

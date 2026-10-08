@@ -65,6 +65,17 @@ pub fn wall_key() -> Option<WallKey> {
 /// thing worse than not dialling anybody is a wall dialling itself and
 /// deadlocking against its own accept loop.
 pub fn joined_peer() -> Option<String> {
+    /* Who to dial first, overridden — test plumbing in the shape of
+       `VOLERY_FLYWAY_HOST` below, and for the same reason. Every wall on one
+       machine reads one vault, so they all hold one invite naming one seed;
+       a second lab wall that should find the first by name has no other way to
+       be told it. Never set on a real machine, where the invite is the seed. */
+    if let Ok(v) = std::env::var("VOLERY_FLYWAY_PEER") {
+        let v = v.trim();
+        if !v.is_empty() && !v.eq_ignore_ascii_case(&host_name()) {
+            return Some(crate::clip::keep(v, 40).kept);
+        }
+    }
     let held = crate::vault::read_at(TARGET)?;
     let host = held.split(SPLIT).nth(1)?.trim().to_string();
     if host.is_empty() || host.eq_ignore_ascii_case(&host_name()) {

@@ -360,6 +360,10 @@ pub struct Selfhood {
     pub handle: String,
     /// Who opened it, where they stand, and whether that is somewhere else.
     pub spawned_by: Option<crate::store::Provenance>,
+    /// The other wall that asked for it over the flyway, if one did — a card
+    /// on *this* machine whose parent is on another, which `spawned_by` cannot
+    /// say because the parent is in no table here.
+    pub born_for: Option<crate::flyway::here::Birth>,
 }
 
 fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> String {
@@ -815,6 +819,30 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
                      it — that costs one message and is always cheaper than inferring what \
                      it meant.",
                     p.parent,
+                ));
+            }
+
+            /* The flyway's half of the same sentence, for a card whose parent
+               is on another machine. It is not in `spawned` — that table is
+               this wall's — so without this the card is told nothing and reads
+               its brief as something the person at *this* keyboard typed. And
+               the honest part is the second sentence: nothing reaches the
+               asking card from here yet, so a card told to report back would
+               be sent on an errand. */
+            if let Some(b) = &me.born_for {
+                let who = match &b.asker_card {
+                    Some(c) => format!("card `{}` on", crate::relay::handle_of(c)),
+                    None => "the person at".to_string(),
+                };
+                prompt.push_str(&format!(
+                    "\n\n**You were opened at another machine's request.** Your first turn is a \
+                     brief written by {who} the wall called `{}`, which asked for you over the \
+                     flyway — you run on this machine, in this repository, and it does not. \
+                     Nothing on this wall reaches it: `{MCP_PREFIX}send` and `{MCP_PREFIX}list` \
+                     cover this machine only. So say what you did, and anything you could not \
+                     do, plainly in your own reply — that is where the user will read it, from \
+                     either machine.",
+                    b.host,
                 ));
             }
         }
@@ -1276,6 +1304,12 @@ fn spawn_now(
     let me = Selfhood {
         handle: crate::relay::handle_of(&id),
         spawned_by: crate::store::provenance_of(&app.state::<crate::store::Store>(), &id),
+        born_for: app
+            .state::<crate::store::Store>()
+            .0
+            .lock()
+            .ok()
+            .and_then(|c| crate::flyway::here::birth_of(&c, &id)),
     };
 
     /* And the same fact where a shell command can reach it without asking
@@ -3192,16 +3226,16 @@ mod tests {
         };
         vec![
             None,
-            Some(Selfhood { handle: "4bd5340b".into(), spawned_by: None }),
+            Some(Selfhood { born_for: None, handle: "4bd5340b".into(), spawned_by: None }),
             Some(fullest()),
-            Some(Selfhood {
+            Some(Selfhood { born_for: None,
                 handle: "f618d9b7".into(),
                 spawned_by: Some(parent(Some("skein"), false)),
             }),
             /* A parent that has since been closed, which is the arm that names
                no project and must not send the card off to `send` to somebody
                who is not there. */
-            Some(Selfhood {
+            Some(Selfhood { born_for: None,
                 handle: "f618d9b7".into(),
                 spawned_by: Some(parent(None, true)),
             }),
@@ -3217,6 +3251,7 @@ mod tests {
     /// `list` can see.
     fn fullest() -> Selfhood {
         Selfhood {
+            born_for: None,
             handle: "f618d9b7".into(),
             spawned_by: Some(crate::store::Provenance {
                 parent: "092198b5".into(),
@@ -3224,6 +3259,32 @@ mod tests {
                 elsewhere: true,
             }),
         }
+    }
+
+    /// A card a wall on another machine asked for is told so, by that wall's
+    /// name and the asking card's handle — and is told nothing here reaches
+    /// it, because a card sent to report back to a handle no tool can address
+    /// has been sent on an errand.
+    #[test]
+    fn a_card_born_for_another_wall_is_told_so_and_where_to_say_what_it_did() {
+        let born = Selfhood {
+            born_for: Some(crate::flyway::here::Birth {
+                card: "4bd5340b-0000".into(),
+                host: "the-build-box".into(),
+                asker_card: Some("0cf05791-0000".into()),
+            }),
+            handle: "4bd5340b".into(),
+            spawned_by: None,
+        };
+        let p = append_prompt(false, false, Some(&born));
+        assert!(p.contains("another machine's request"), "{p}");
+        assert!(p.contains("`the-build-box`") && p.contains("`0cf05791`"), "{p}");
+        assert!(p.contains("Nothing on this wall reaches it"), "{p}");
+        /* Not a card the user opened, and not a chat card, which is told none
+           of its selfhood at all. */
+        let mine = Selfhood { born_for: None, handle: "4bd5340b".into(), spawned_by: None };
+        assert!(!append_prompt(false, false, Some(&mine)).contains("another machine"));
+        assert!(!append_prompt(true, false, Some(&born)).contains("another machine"));
     }
 
     /// The bug this guards is silent from both ends: the tools are there and
@@ -4143,7 +4204,7 @@ mod tests {
 
         /* A parent standing here needs no widening, and saying so anyway would
            teach every card to reach for the wider scope by reflex. */
-        let beside = Selfhood {
+        let beside = Selfhood { born_for: None,
             handle: "f618d9b7".into(),
             spawned_by: Some(crate::store::Provenance {
                 parent: "092198b5".into(),
@@ -4159,7 +4220,7 @@ mod tests {
            worth naming — but it cannot be sent to, and a card dispatched to a
            handle that answers nothing has been given an errand instead of the
            truth. */
-        let orphan = Selfhood {
+        let orphan = Selfhood { born_for: None,
             handle: "f618d9b7".into(),
             spawned_by: Some(crate::store::Provenance {
                 parent: "092198b5".into(),
@@ -4176,7 +4237,7 @@ mod tests {
     /// wrong: a card that believes it has an orchestrator goes looking for one.
     #[test]
     fn a_card_the_user_opened_is_told_no_such_thing() {
-        let me = Selfhood { handle: "4bd5340b".into(), spawned_by: None };
+        let me = Selfhood { born_for: None, handle: "4bd5340b".into(), spawned_by: None };
         let p = append_prompt(false, true, Some(&me));
         assert!(!p.contains("spawned card"), "an ordinary card was told it was spawned: {p}");
         assert!(p.contains("4bd5340b"), "it should still know its own handle: {p}");

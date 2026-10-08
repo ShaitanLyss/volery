@@ -49,10 +49,6 @@
 //!   merge appending words to a body, a hold being refreshed (`touch_sink_hold`),
 //!   and your deleting an item outright.
 
-/* `receive`, `events_after` and `watermark` wait for the transport, as the rest
-   of `flyway` does; this comes off with `flyway/mod.rs`'s own allow. */
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use rusqlite::{params, Connection, OptionalExtension};

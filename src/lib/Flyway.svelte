@@ -14,7 +14,16 @@
    * screen at times nobody chose. */
 
   import { invoke } from "@tauri-apps/api/core";
-  import { flywayError, flywayReading, worthJoining } from "./flyway";
+  import { listen } from "@tauri-apps/api/event";
+  import {
+    acceptingReading,
+    flywayError,
+    flywayReading,
+    otherWalls,
+    wallLine,
+    worthJoining,
+    type Wall,
+  } from "./flyway";
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -26,6 +35,10 @@
   let busy = $state(false);
   let fault = $state("");
   let copied = $state(false);
+  /* Whether this wall takes work from other walls — a person's switch, and
+     `flyway/here.rs` reads anything but a yes as no. */
+  let accepting = $state<boolean | null>(null);
+  let walls = $state<Wall[]>([]);
 
   async function ask() {
     try {
@@ -35,6 +48,10 @@
          they must not look alike: a wall whose endpoint could not bind has a
          key and syncs nothing. `flyway_linked` is the second question. */
       linked = await invoke<boolean>("flyway_linked");
+      if (held) {
+        accepting = (await invoke<{ accepting: boolean }>("flyway_setup")).accepting;
+        walls = await invoke<Wall[]>("flyway_roster");
+      }
     } catch (e) {
       fault = flywayError(e);
     }
@@ -42,6 +59,29 @@
   $effect(() => {
     void ask();
   });
+  /* The roster as it changes, while the panel is up. Folded off the event the
+     link already emits every time a wall is heard from — nothing here asks
+     again on a clock. */
+  $effect(() => {
+    const off = listen<Wall[]>("flyway:roster", (e) => (walls = e.payload));
+    return () => void off.then((f) => f());
+  });
+
+  const toggle = () =>
+    act(async () => {
+      await invoke("flyway_set_accepting", { on: !accepting });
+    });
+
+  /* `a` throws the switch while the panel is up and nothing is being typed —
+     the keyboard reaches everything here, per the house rule. */
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape") return onclose();
+    const typing = e.target instanceof HTMLInputElement;
+    if (!typing && held && e.key === "a" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      void toggle();
+    }
+  }
 
   async function act(f: () => Promise<void>) {
     if (busy) return;
@@ -94,7 +134,7 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
+<svelte:window onkeydown={onKey} />
 
 <div class="scrim" onmousedown={onclose} role="presentation">
   <div
@@ -179,6 +219,39 @@
         <div class="pair">
           <button class="act" disabled={busy} onclick={leave}>leave the flyway</button>
         </div>
+      </section>
+      <section>
+        <h3>work from other walls</h3>
+        <p class="aside">{acceptingReading(accepting)}</p>
+        <div class="pair">
+          <button
+            class="act"
+            class:go={!accepting}
+            disabled={busy || accepting === null}
+            onclick={toggle}
+            title="take work from other walls, or stop (a)"
+          >
+            {accepting ? "stop taking work" : "take work from other walls"}
+          </button>
+        </div>
+      </section>
+      <section>
+        <h3>the other walls</h3>
+        {#if otherWalls(walls).length === 0}
+          <p class="aside">
+            None heard from yet. A wall is learned from the one it joined through, and from
+            any wall that dials this one.
+          </p>
+        {:else}
+          <ul class="walls">
+            {#each otherWalls(walls) as w (w.host)}
+              <li title={w.reason ?? ""}>
+                <code>{w.host}</code>
+                <span class="aside">{wallLine(w)}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </section>
     {/if}
 
@@ -330,6 +403,19 @@
   .go {
     color: var(--paper);
     border-color: var(--paper-faint);
+  }
+  .walls {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .walls li {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
   }
   .oops {
     text-align: left;
