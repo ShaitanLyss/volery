@@ -18,7 +18,7 @@
   import { untrack } from "svelte";
   import Ask from "./Ask.svelte";
   import Notice from "./Notice.svelte";
-  import { noticeShown } from "./notice";
+  import { noticeShown, type Notice as NoticeRow } from "./notice";
   import type { Skein } from "../lib/skein.svelte";
   import type { Conversation, PendingAsk } from "../lib/conversation.svelte";
   import type { Shadow } from "./shadows.svelte";
@@ -41,6 +41,8 @@
     remote = null,
     remoteAsk = null,
     onremoteanswer,
+    remoteNotice = null,
+    onremotenotice,
     onremoteselect,
     targets,
     waiting,
@@ -78,6 +80,13 @@
      *  where it stands in the queue. */
     remoteAsk?: { shadow: Shadow; sheet: PendingAsk; focused: boolean } | null;
     onremoteanswer?: (shadow: Shadow, sheet: PendingAsk) => void;
+    /** A notice standing in another wall's queue — the focused shadow's, or
+     *  else the first any shadow has. Drawn by the panel a local notice uses;
+     *  where it stands is in the markup. */
+    remoteNotice?: { shadow: Shadow; notice: NoticeRow; focused: boolean } | null;
+    /** Take it down over there: an empty reply acknowledges, anything else is
+     *  a follow-up sent to the card. */
+    onremotenotice?: (shadow: Shadow, notice: NoticeRow, reply: string) => void;
     onremoteselect?: (shadow: Shadow) => void;
     /** Everything a send would reach: the gathering, or the focused card, or
      *  nothing at all. */
@@ -182,6 +191,12 @@
      an agent stopped mid-turn on a clock. So one only shows with no ask up. */
   const notice = $derived(
     asking || remoteShown ? null : noticeShown(focused?.id, skein.noticeQueue, heldNotice),
+  );
+  /* A notice from another wall: ahead of this wall's own only when its card is
+     the one in the ring, otherwise behind them — the same place a remote
+     question takes among the asks. */
+  const remoteNoticeShown = $derived(
+    asking || remoteShown || !remoteNotice ? null : remoteNotice.focused || !notice ? remoteNotice : null,
   );
   const noticeCard = $derived(
     notice ? (skein.convs.find((c) => c.id === notice.conversationId) ?? null) : null,
@@ -362,6 +377,21 @@
   />
 {/snippet}
 
+<!-- A notice standing on another wall, in the panel a local one uses. No
+     `onstir`: no touch travels, and a notice holding a turn open over there
+     counts its own window. Taking it down goes back down the prompt wire. -->
+{#snippet elsewhereNotice(r: { shadow: Shadow; notice: NoticeRow; focused: boolean })}
+  <Notice
+    notice={r.notice}
+    project="{r.shadow.project} · on {r.shadow.host}"
+    title={r.shadow.title}
+    elsewhere={!r.focused}
+    onack={() => onremotenotice?.(r.shadow, r.notice, "")}
+    onfollow={(text) => onremotenotice?.(r.shadow, r.notice, text)}
+    onselect={() => onremoteselect?.(r.shadow)}
+  />
+{/snippet}
+
 <footer
   bind:clientHeight={height}
   class="dock"
@@ -406,6 +436,8 @@
     />
   {:else if remoteShown}
     {@render elsewhereAsk(remoteShown)}
+  {:else if remoteNoticeShown?.focused}
+    {@render elsewhereNotice(remoteNoticeShown)}
   {:else if notice && noticeCard}
     {@const n = notice}
     {@const card = noticeCard}
@@ -419,6 +451,8 @@
       onstir={() => skein.stirNotice(n)}
       onselect={() => onselect(card)}
     />
+  {:else if remoteNoticeShown}
+    {@render elsewhereNotice(remoteNoticeShown)}
   {/if}
   {#if shownCard && waitingOnYou > 1}
     {@const shown = shownCard}

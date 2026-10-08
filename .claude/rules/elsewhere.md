@@ -33,10 +33,10 @@ and it shares exactly one thing with a card: the **face**. `Card.svelte` takes a
 `CardFace` both satisfy; every *gesture* still takes a `Conversation`. What a shadow gets on
 the wall is precisely what was built for it:
 
-- **Drawn**, by `layout()` itself (`standElsewhere`), one region per other wall in the wall's
-  **left** margin — territories flow rightward from the origin, so the left edge is the one
-  that stays put. Four columns, fixed, so another machine opening cards does not reshape the
-  region. Dotted border where a territory's is dashed.
+- **Drawn**, by `layout()` itself (`standElsewhere`), in the wall's **left** margin —
+  territories flow rightward from the origin, so the left edge is the one that stays put — as
+  **a section per project under each wall's name**. See *Sectioned by project* below. Dotted
+  border where a territory's is dashed.
 - **Focused**, on the same `focusedId` a card uses, so focusing one lets go of the other.
   `focusedShadow` is a separate derived of a separate type.
 - **Spoken to**, from the dock (`App.sendElsewhere`) — text only. A `!` line, pictures and
@@ -49,11 +49,19 @@ the wall is precisely what was built for it:
 - **Reached by keyboard**, `<space> e e`, which steps through them. Deliberately not a third
   arm of the Tab cycle: both arms walk `canvas.order()`, whose cards are handed to the
   selection and the waiting cycle.
+- **Stuck to the glass**, from its own right-click menu or `<space> c g` on the focused one,
+  and dragged about there by its own gesture. Its spot is session-only — see *On the glass*
+  below, which is the one gesture a shadow shares with a card and the argument for why it
+  needed no row.
 
 And nothing else. The node carries `data-shadow`, never `data-conv`, so `nodeOf` reads a press
-on one as bare ground — no pick, no drag, no pin (which would write a placement row keyed on an
-id this store has never seen), no card menu. Its one control is a ✕ (and `<space>cc` on the
-focused one) that **asks its own wall to close it** — a person's close, which that wall allows
+on one as bare ground — no pick, no carry on the wall, no pin (which would write a placement
+row keyed on an id this store has never seen), no card menu: its right-click is a menu of its
+own (`menu.ts`'s `shadow` kind), the glass and the close and nothing else, since everything a
+card's menu offers besides reaches for a process or a session on the other machine. Before it
+had one, a right-click on a shadow fell through to the *ground's* menu and offered to open a
+project underneath it. Its one control is a ✕ (and `<space>cc` on the focused one) that
+**asks its own wall to close it** — a person's close, which that wall allows
 whatever its switch says and whoever opened the card (Lyss: closing only stops work and cannot
 hurt the other machine). It asks first when the digest says working or jobs (`closing.ts`, the
 same plate as a local close), is refused by *this* wall for a peer without `close_by_person` in
@@ -67,6 +75,110 @@ needed a guard; here it needed nothing, which is the point.
 wakes when you type. A shadow has no row and no process here, ever. It is drawn muted when its
 wall goes quiet, borrowing the dormant fill because "the light is what's missing" is exactly
 true — but the words say *not heard from*, never *dormant*.
+
+### Sectioned by project
+
+Lyss: *"all my shadow cards are one big grid, they should be sectioned by projects."* The first
+cut made one region per **host** and laid every one of that machine's cards into it, whatever
+project each was in — and a territory per project is the whole organising idea of this wall,
+so a remote machine's cards were the one place the wall stopped reading the way it reads. Now
+`standElsewhere` makes one region per **(host, project)**, stacked down the left margin. The
+digest already carried `project`, so nothing new crosses the link.
+
+- **The host is a heading over its sections, not a prefix on each.** `lab · skein` down the
+  column eight times is the host said eight times. So `heads` puts the wall's name once, in
+  `HOST_HEAD` of room above its first section, and each section's chip says only the project.
+  The heading is a new thing to draw rather than a territory's chip — no row, no handle, no
+  drag — and it carries *not heard from* where the old region's chip did. Two levels of
+  grouping read off the spacing before the words: sections a `REGION_GAP` apart, walls two.
+- **Hosts by name, sections by name within one** (`sectionOrder`, case folded). Most recently
+  active is the better order for a list you read once and the worse one for a place you come
+  back to: a section that jumped to the top because a card in it spoke would move every section
+  under it, which is the position-is-memory rule `layout.ts` is built on.
+- **A card with no project** — an older build's digest, or one that sent `""` — stands in a
+  section called `no project`, last, and never in one called nothing. A chat card is not this
+  case: the owner names its project `chat`, and it gets a section by that name.
+- **Project, not the owner's territory.** The digest carries `territory` too, and sectioning by
+  it would mirror the other wall exactly — but a grouping's name is free text a person typed,
+  two of them on different projects can both be "new grouping", and the merge would put
+  unrelated cards in one box. A project is stable, and is what Lyss asked for.
+- **Still four columns, every section.** The comment over `ELSEWHERE_COLS` used to justify four
+  by a region holding a whole machine. That reason went, and four stayed for another: the
+  sections stack down one margin, so their cost is paid in *height*. A busy project — this
+  repository, on the other laptop, at dozens of cards — at a territory's two columns is a strip
+  taller than any screen. Width is the cheap direction there, and one width keeps the column's
+  edges straight. Fixed, still, so a machine opening cards does not reshape a section.
+- **The id is `sectionId`**, a JSON pair, because both halves are free text and a separator
+  either could contain is not a separator.
+
+### On the glass, for this session
+
+Sink `dbf55968`: Lyss tried to put a shadow on the glass from her work laptop and could not. The
+glass is where you put what you want to keep an eye on while working elsewhere, and a card on
+another machine is *the* thing you want to keep an eye on while working elsewhere — so of all
+the gestures a shadow lacked, this was the one it was made for.
+
+**The decision was where its spot lives, and it lives in memory.** Everything else on the glass
+is a pair of columns on a row, reconciled per screen arrangement by `arrange::adopt` — and a
+shadow has no row on this wall and never will. Two ways to give it one were open: persist it
+(a table keyed on host and remote id), or keep the spot only for as long as this window is up.
+It is the second, for three reasons:
+
+1. **A persisted spot outlives what it points at.** A card closed over there while this wall
+   was shut, a laptop rebuilt, a wall renamed: each leaves a spot for a card that will never
+   arrive again, with nothing on screen to say so and nothing that would ever clean it up.
+2. **`arrange::KINDS` clears as well as sets.** Listing a kind there with no rows behind it
+   empties that table's `glass_x` on the next arrangement change, and the obvious careless rung
+   could reach the real glass's tables. The safe version is a migration, a table and a new
+   reconcile arm for a spot that is only worth anything while its wall is talking.
+3. **The panel already made this choice.** What was said to a shadow from here is in memory
+   only, on the argument that it is only worth tracking while somebody is here. A spot on the
+   glass is the same kind of thing: a person's arrangement for the session they are in.
+
+The memory is `ShadowGlass` (`shadow.ts`, pure and tested) held by `Elsewhere.glass`:
+
+- **Keyed on the shadow id**, which is `shadowKey(host, card)` — two walls' cards cannot share
+  a spot.
+- **Per room**, because `arrange.md`'s one-glass-per-room is about screens, not about rows:
+  a spot made unspread read back spread is a pile in the corner. `enterRoom` keeps a room's
+  spots apart from the others, gives a room seen before its own back, and copies the room just
+  left into one never seen, **shifted by the panes' origins** — `arrange::adopt`'s copy by the
+  same rule. App calls `adoptRoom` beside `arrange::adopt`'s answer with the same key and
+  origin. A spot stuck before the monitors first answered belongs to the first room named.
+- **A quiet wall keeps its spots.** `Elsewhere.walls` is never pruned, so a wall that goes
+  quiet still carries its cards (drawn as not heard from), and a lid that opens again finds its
+  cards where you stuck them.
+- **A card its wall closed lets go of its spot**, in every room (`keepOnly`, run by
+  `#reconcile` with the ids the snapshots still carry) — its id will not come back, so the spot
+  would otherwise point at nothing for the rest of the session. A wall that is gone for good
+  stays drawn muted for the session, spots included, which is the truth: it is the last thing
+  that wall said. A restart clears it, which is the session-only half.
+
+**What it gets on the pane and what it does not.** Drawn at `wall` density by the same
+`glassAt` clamp a stuck card gets; its section keeps the slot, because `standElsewhere` lays
+out every shadow as if nothing were stuck (the glass's first rule). **Dragged by its own
+gesture** (`Canvas.shadowDown`), the way a timeline plate is — not the wall's carry, which hauls
+a *selection*, and `pick.ts`'s kinds each write their move to a row. A left press that does not
+travel is still the click that focuses it. **No undo record**: the stack's realms each put a row
+back and a shadow has none; the same menu item takes it off again.
+
+### What a shadow still does not get
+
+An audit of the four kinds' gestures against shadows, done with the glass. Each is a gap, not a
+design, unless it says so:
+
+- **The marquee and the selection** (`standing()`, `pick.ts`). A band across shadows selects
+  nothing, a ctrl-click adds nothing, and so a shadow is never carried with other things. A
+  fifth `Kind` is the shape that would fix it, and it is a real cost: `Haul`/`World` grow an
+  array, every consumer of `studio.picks` has to know a pick can be a card with no row
+  (`studio.selected` is cards only, so the dock and broadcast are safe), and a carry on the
+  *wall* has nowhere to write. Not done.
+- **Tab.** Deliberately not — see *Reached by keyboard* above.
+- **Delete**, the dock's gathering and broadcast: images and widgets only, and `selected` is
+  this wall's cards. A shadow cannot be in either, which is right.
+- **Moving one on the wall.** By design: a section is laid out, not arranged.
+- **Strands and roots.** `cardBoxes` has no shadows, so no strands, roots or wisps reach one —
+  61057379 is drawing roots across walls as this is written.
 
 ### The digest is the owner's front end's, and Rust does not read it
 
@@ -199,9 +311,10 @@ them from my work laptop" is simply not true while a question can strand a card.
 
 - **The question rides the snapshot.** `CardDigest.asks` carries each parked question's words —
   header, question, options — and `since` on the owner's clock, read against the snapshot's `at`
-  the way `restingSince` is (`askedAt`). Volery's own questions (`ours`: close, unpost, remove)
-  never travel; they are answered on the machine they would act on, and the link refuses an
-  answer to one anyway.
+  the way `restingSince` is (`askedAt`). Volery's own questions (`ours`) do not ride `asks`:
+  close and unpost never travel, and a removal travels in a field of its own, with evidence —
+  see *A removal confirmed from another wall* below, because this sentence used to say none of
+  the three ever would.
 - **Words only.** A preview's markup is code another wall would run and can be large; a file's
   path means nothing on another machine. Both are left behind, and `shows` puts a sentence on
   the question saying a design went with it that only the other wall can show — an approval
@@ -320,11 +433,173 @@ file and answered in markdown; opening its shadow's panel on lab drew the prompt
 `Read` (opening onto the path and the file's six lines) and the heading and bold list. A
 second turn on lab2 appeared in lab's open panel on its own, 3 → 6 lines.
 
+### Notices travel too
+
+A notice exists to tell you a card wants you — finished, ended on a question, gave up, or said
+something itself (`notice.md`) — and its queue was this wall's. So a card on the home laptop
+finishing while Lyss sat at the office showed its tier on the shadow and nothing else: the one
+thing notices are for stopped at the machine boundary. Sink `16864f3d` item 2, built on the
+question's template rather than beside it (`afar.ts`).
+
+- **The rows ride the digest** (`CardDigest.notices`): id, kind, text capped at 6,000,
+  `raisedAt` on the owner's clock, and the ask id when the notice is holding its card's turn
+  open. `notice.rs` and `notice.ts` still decide *whether* a notice is raised — the detector
+  and the holds were measured and are not re-derived here; what crosses is the notice.
+- **Drawn by the same `Notice.svelte`**, keyed on the shadow (`noticeHere`) so it can never be
+  mistaken for a row of this wall's own queue, behind every question and every local notice
+  unless its card is the one in the ring — the place a remote question takes among the asks.
+  Not answerable while its wall is unheard, `open`'s honesty, and hidden while the answer
+  travels, given back with a fault if it is refused.
+- **Taking one down is an answer that names the notice**, down the prompt wire with
+  `askId: "notice:<id>"` and the text `acknowledged` or the follow-up as typed. Not a new tag:
+  a wall from before this reads the prefixed id as an ask id, finds no such question and
+  refuses, which is right from a wall that never published the notice. The owning wall's
+  `deliver_here` hands it to the front end (`PromptHere.notice`), and `Elsewhere.#take` makes
+  the same two gestures its own dock makes — `acknowledgeNotice`, `followUpNotice` — so the
+  queue, the card and the register cannot tell the two apart. A notice holding a turn open is
+  answered by its real ask id instead, into the call, exactly as a question is.
+- **The switch.** An acknowledgement starts nothing and passes "take work from other walls"
+  like a question's answer; a **follow-up** is a message that wakes the card, and is held to
+  the switch like any prompt (`notice::answer_starts_nothing`). Only a person's: an agent on
+  another wall has no business clearing this wall's queue, and `deliver_here` refuses one.
+- **It rings.** `afar.ts::remoteNotices` joins `remoteQuestions` on the same injected list of
+  the attention ladder — one row per card, its newest notice, and none for a card that has a
+  question open, as a local card with a pending ask has no notice row.
+
+### A removal confirmed from another wall
+
+The one of Volery's own three questions that crosses, and it crosses because Lyss overruled
+the proposal that it should not: *"it should be my judgement whether to go through it or not,
+blocked away by volery."* (sink `7207a6d9`). Close stays local — a shadow has its own close,
+asked as a person from its ✕ — and unpost stays local, since a board notice is one wall's
+coordination with its own cards. **The next person will read the old sentence in `ask.rs` or
+here and think none of the three travel; `ask::afar_may_answer` is the rule, and holds it by
+test.**
+
+The care is all in what the confirmation carries, because what she gives up by not being at
+that machine is the glance. `remove::evidence` writes it beside the prose question: the
+machine (`flyway::key::host_name`), each target's path **as that machine resolved it**
+(canonical, a link's parent canonicalised rather than the link followed), file, directory or
+link, how many entries and how large, whether either is only a floor, whether it is inside the
+card's own working tree, git's word on it, the other cards that wrote there and any dev server
+running out of it, and the card's reason. Words only — no listing, no contents.
+
+- **The far wall composes the question from those fields alone** (`afar.ts::removalHere`) and
+  never draws the owner's prose. A field missing is then a question it cannot compose, and
+  `readRemoval` refuses the whole removal rather than drawing less: a confirmation reduced to a
+  path string is exactly the version that deserved the original worry.
+- **Named for the wall it was heard from**, which the link vouches for, and not drawn at all if
+  the evidence names a different machine. The header the peek prints is `delete on <host>`,
+  and the body opens on *that machine's disk, not this machine's*.
+- **A field of its own** (`CardDigest.removals`), never inside `asks`. An older far wall reads
+  `asks` alone, so a removal there would reach it as an ordinary question with no machine on
+  it; in a field of its own it reaches that wall as nothing.
+- **Checked again on the machine it would act on.** `answer_from_afar` lets an answer to an
+  `ours` question through only for a removal whose parked question still carries evidence that
+  passes `remove::travels` — the far wall's drawing is a claim, the parked question is the
+  fact. And the delete itself still re-runs every refusal at the moment of deleting
+  (`settle_delete`), which is what makes a confirmation from afar about the tree as it is
+  rather than as it was described.
+- **Refused at once to a quiet wall, never queued.** The question is not offered once its wall
+  is unheard, `Elsewhere.answer` refuses a click already on its way when the wall goes quiet,
+  and the fleet refuses a prompt into a quiet wall — so a confirmation cannot land hours later
+  on a card running `--dangerously-skip-permissions`. Its own window (`answer_window`) bounds
+  the rest, as it does locally.
+- **The answer is the label.** `composeAnswer` of one question is the option's label, so a
+  click sends `delete it` and `remove::approved` reads only that, verbatim; `test/afar.test.ts`
+  reads both labels out of `remove.rs` so a renamed button cannot ship as a no.
+
+### Roots run between walls
+
+Lyss: *"tentacles should draw always between parent and children, regardless of where they
+live, local local, remote local, local remote, remote remote."* The roots (`lineage.ts`,
+`Lineage.svelte`, and `spawn.md` for what a root is) were drawn from `Skein.kin`, which is
+this wall's `spawned` table. So when the flyway put other machines' cards on the wall, three
+of the four cases stopped drawing, and the missing one that matters most is an orchestrator
+opening cards on the other laptop, which is what remote spawn is for.
+
+**The drawing barely changed, because the ids were already right.** `familiesOf` keys on ids
+that are unique on this wall, and a shadow's is `shadowKey(host, card)`. (That function now
+lives in `shadow.ts`, so `lineage.ts` can name one without runes.) So the work was a complete
+`Kin[]` (`kinAcross`, read as `Elsewhere.kin`) and one box map holding shadows as well as
+cards (`Canvas.rootBoxes`). That map is kept separate from `cardBoxes` because `Flow` and
+`Wisps` read `cardBoxes`, and no strand box is one of the things a shadow does not get.
+
+- **Two sources, and neither costs a round trip.** A child *here* is in this wall's own
+  `spawned` rows or its `flyway_birth` rows, and a birth already names the asking card:
+  `here::Birth::asker_card` has always crossed to the front end, which only ever kept the host
+  (`Elsewhere.askedBy` keeps both; `births` is left as the control surface reports it). A
+  child *over there* says who its parent is in its own digest. `CardDigest.parent` is
+  `{ host, card }`, where `host: null` means *the card's own wall*, so the owner needs no flyway
+  name to describe a local spawn. `flyway_births` was the other candidate and is the wrong one.
+  It is answered by the child's wall, so it costs a request per wall. It also only knows births
+  that crossed, while remote → remote (a card on the other laptop opened by a card beside it)
+  is in that wall's `spawned` table, which only its digest can say.
+- **One parent per child, first source wins**: this wall's table, then its births, then
+  another wall's word. A confused fleet must not draw a card with two roots coming in.
+- **An older wall sends no `parent`, which reads as null.** That means no root, and never a
+  parent called `""` (`readParent` drops an id that is empty after scrubbing). While this wall
+  does not yet know its own flyway name, a shadow naming a *third* wall is skipped rather than
+  guessed at. It might be this wall, and a stray drawn to a card standing right here would
+  be wrong.
+
+**A missing end has three causes, and each gets a different answer.** This is the
+honest-reading question, and it is where the thought went:
+
+- **The parent's wall is quiet.** Its shadows stay up, muted, and so does the root.
+  Parentage is structure, not status, and it is as true of a card on a laptop in a bag as of
+  one streaming now. The charge *is* status, and it follows the child's face (`Canvas.charged`
+  reads `Shadow.tier`), so a quiet wall's child carries no current. A current running into a
+  machine nobody can reach is the lie *A quiet wall's cards claim nothing* exists to prevent,
+  drawn in the ground.
+- **The parent has been closed.** This wall holds that wall's snapshot and the card is not in
+  it, so the pair is dropped, exactly as a local pair with a closed parent is. A card whose
+  parent has gone is a card, not half a root.
+- **The parent is on a wall this one holds no word from at all.** That could be a third
+  machine this one does not hear, or a wall whose first snapshot has not arrived. The family is
+  real and continues somewhere this wall cannot draw, so the pair carries `unseen` and is drawn
+  as a **stray**: a short root coming into the child from the west, where other walls stand,
+  with its free end faded into the ground (`strayFor`, `STRAY_FADE`). It has no charge, since
+  one end of the work is out of sight. A limb to a guessed position would be a claim nobody
+  made about where a card is. Drawing nothing would say a person opened the card.
+
+**A root between two machines is stitched.** Colour is status, so the difference cannot be
+colour. The vocabulary already existed: a territory's border is dashed, another wall's region
+is dotted, and a prompt that has left this wall is drawn in the other wall's stitch. So a root
+whose two ends run on different machines is the same tapered root cut across at even
+intervals. A root between two cards of the *same* other wall is solid, because on that wall
+it is an ordinary root. Three details hold the stitching together:
+
+- **Spaced along the curve's length, not its parameter** (`stitches`), or the stitches bunch
+  where the cubic is slow.
+- **The first stitch starts at 0 and the last ends at 1**, always, because those are the two
+  stretches carried under a card (`seat`/`tuck`). A root that began or ended in a gap would
+  show its cut end on the ground, which is the defect *under the card* in `lineage.ts` removes.
+- **Each stitch is a subpath of the same body**, so a stitched limb sharing a trunk with a
+  solid one still unions into it. There is no sheen on a stitched root, since a stroke would
+  bridge the very gaps that say it crosses.
+
+**No growth for a shadow's root.** A shadow appearing does not mean a card was just opened;
+it may be a wall that has just been heard. A root that grew would claim a birth nobody saw.
+The one live case that is known is a birth *here* heard on `flyway:born`, which stamps `at`,
+and that root grows.
+
+Demonstrated 2026-10-08 between two walls of one build (`lab61`, `lab62`). The spawns were
+real `spawn` tools/calls made to each card's own MCP endpoint, because the lab account had
+run out. A card on lab61 opened one on lab62, a card on lab62 opened one beside it, and one
+opened on lab61. On lab62 that drew a solid root to its local child, a stitched root to the
+shadow of its child on lab61, and a stitched root from lab61's shadow into the local "child of
+lab61". On lab61 it drew the mirror, plus a solid root between two lab62 shadows. Two
+stitched roots along one row of cards overlap into something like a ladder. That is the row,
+not the drawing, and it is the same thing a local root does passing under a neighbour.
+
 ### What is not here
 
+- **A root to a child on a wall this one cannot see.** The parent's wall records the birth
+  (`flyway_child`), but nothing hands it to the front end, and a wall that asked for a card
+  almost always hears the wall it asked. A stray is drawn on the child's side only.
 - **The whole scrollback.** 120 lines from the end, which is the round you are in and the one
   before; older rounds stay on the owning wall, and the panel says so.
-- **Notices travelling** (sink `16864f3d` item 2). A card that finished or ended on a question
-  shows its tier on the shadow, but the notice queue is this wall's.
+- **A close or an unpost confirmed from afar**, deliberately — see above.
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.

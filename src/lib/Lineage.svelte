@@ -14,9 +14,10 @@
    *   traffic, below them is structure. It also means a root arriving at a card
    *   passes under it rather than across its title.
    *
-   * - **Screen space, canvas-space widths.** Endpoints come from `cardBoxes`,
-   *   which is already in screen pixels for `Flow`; the widths are scaled by
-   *   `studio.scale` and clamped, because a root is a thing on the ground beside
+   * - **Screen space, canvas-space widths.** Endpoints come from `rootBoxes`,
+   *   which is `Flow`'s `cardBoxes` with the shadows added, already in screen
+   *   pixels; the widths are scaled by `studio.scale` and clamped, because a
+   *   root is a thing on the ground beside
    *   the cards rather than light crossing a room. See the note over `BASE`.
    *
    * - **One fill for all of it.** Every limb of every family goes into a single
@@ -43,12 +44,16 @@
     FILL_ALPHA,
     HALO_ALPHA,
     SHEEN_ALPHA,
+    STRAY_FADE,
     chargeAt,
     familiesOf,
     limbsFor,
     outline,
     spine,
     stirring,
+    stitches,
+    strayFor,
+    straysOf,
     withdrawing,
     type Departing,
     type Kin,
@@ -61,11 +66,14 @@
     scale,
     charged,
   }: {
-    /** Every recorded parentage the wall knows. Pairs whose ends are not both
-     *  on the wall are dropped by `familiesOf`, so this needs no filtering. */
+    /** Every recorded parentage the wall knows, whichever machine each end
+     *  runs on (`Elsewhere.kin`). Pairs whose ends are not both on the wall are
+     *  dropped by `familiesOf` and `unseen` ones drawn by `straysOf`, so this
+     *  needs no filtering. */
     kin: readonly Kin[];
-    /** Every card's box in screen pixels, by id — `Canvas`'s `cardBoxes`, the
-     *  same map `Flow` is given. */
+    /** Every card's box in screen pixels, by id, and every shadow's —
+     *  `Canvas`'s `rootBoxes`, which is `cardBoxes` (the map `Flow` is given)
+     *  with the other walls' cards added. */
     boxes: ReadonlyMap<string, Box>;
     /** The wall's zoom, which the widths follow. */
     scale: number;
@@ -141,6 +149,16 @@
         going.delete(limb.child);
       }
     }
+    /* A card whose parent is on a wall this one cannot see. There is no parent
+       box to anchor its retreat to, so it is filed under the parent's shadow
+       id — which is not on the wall, and `withdrawing` reads that as "use the
+       coordinates it left with". */
+    for (const kid of straysOf(kin, boxes)) {
+      const limb = strayFor(kid, { scale, now, still });
+      live.push({ limb, alpha: 1 });
+      fresh.set(limb.child, { limb, parent: kid.parent, anchor: centreOf(kid.box) });
+      going.delete(limb.child);
+    }
     for (const [child, was] of seen) {
       if (fresh.has(child) || going.has(child)) continue;
       /* Nothing to animate under `prefers-reduced-motion`: the finished state of
@@ -179,17 +197,40 @@
        share on the way home. `nonzero` rather than `evenodd`: overlapping
        subpaths have to add up, not cancel out. */
     const bodies = new Map<number, Path2D>();
+    /* A root between two machines is laid in stitches (`lineage.ts`, "across
+       walls"): the same outline cut into stretches, each a subpath of the same
+       body — so a stitched limb sharing a trunk with a solid one still unions
+       into it instead of darkening where they coincide. A stray is filled on
+       its own with its free end faded out, since a gradient belongs to a fill
+       and the rest of the body must not wear it. */
+    const loose: { body: Path2D; limb: Limb; alpha: number }[] = [];
     for (const { limb, alpha } of limbs) {
-      const ring = outline(limb);
-      if (ring.length === 0) continue;
-      const body = bodies.get(alpha) ?? new Path2D();
-      body.moveTo(ring[0].x, ring[0].y);
-      for (let i = 1; i < ring.length; i += 1) body.lineTo(ring[i].x, ring[i].y);
-      body.closePath();
-      bodies.set(alpha, body);
+      const spans: [number, number][] = limb.across ? stitches(limb, scale) : [[0, 1]];
+      const body = limb.loose ? new Path2D() : (bodies.get(alpha) ?? new Path2D());
+      let drew = false;
+      for (const [from, to] of spans) {
+        const ring = outline(limb, undefined, from, to);
+        if (ring.length === 0) continue;
+        body.moveTo(ring[0].x, ring[0].y);
+        for (let i = 1; i < ring.length; i += 1) body.lineTo(ring[i].x, ring[i].y);
+        body.closePath();
+        drew = true;
+      }
+      if (!drew) continue;
+      if (limb.loose) loose.push({ body, limb, alpha });
+      else bodies.set(alpha, body);
     }
     for (const [alpha, body] of bodies) {
       ctx.fillStyle = rgba(root, FILL_ALPHA * alpha);
+      ctx.fill(body, "nonzero");
+    }
+    for (const { body, limb, alpha } of loose) {
+      const [a, , , b] = limb.spine;
+      const fade = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+      fade.addColorStop(0, rgba(root, 0));
+      fade.addColorStop(STRAY_FADE, rgba(root, FILL_ALPHA * alpha));
+      fade.addColorStop(1, rgba(root, FILL_ALPHA * alpha));
+      ctx.fillStyle = fade;
       ctx.fill(body, "nonzero");
     }
 
@@ -198,7 +239,9 @@
        is a stroke and strokes do not union. */
     ctx.lineCap = "round";
     for (const { limb, alpha } of limbs) {
-      if (limb.reach <= 0.05) continue;
+      /* Not on a stitched root: a stroke is continuous, so it would bridge the
+         very gaps that say the root crosses between machines. */
+      if (limb.reach <= 0.05 || limb.across) continue;
       const pts = spine(limb, 0, 0.55, 10);
       ctx.strokeStyle = rgba(sheen, SHEEN_ALPHA * alpha);
       ctx.lineWidth = Math.max(0.7, limb.base * 0.34);
@@ -218,6 +261,10 @@
          than a second flag — a limb drawn at anything less than its full weight
          is one that is leaving. */
       if (alpha < 1 || !charged.has(limb.child) || limb.reach < 1) continue;
+      /* Nor on a stray: a charge is work moving between two cards, and one of
+         them is on a wall this one cannot see. The card's own colour still says
+         it is working. */
+      if (limb.loose) continue;
       /* Held rather than absent under `prefers-reduced-motion`, per `Flow`: what
          a charge says is that this child is working, and none of that is in the
          movement. A wall that answers the preference by drawing nothing has

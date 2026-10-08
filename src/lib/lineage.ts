@@ -78,14 +78,27 @@ import {
   type Box,
   type Pt,
 } from "./flow";
+import { shadowKey } from "./shadow";
 
 /** One recorded parentage. `born` is set only for a card opened in *this*
  *  session, and it is what the growth animation is timed off — a wall restored
- *  from disk draws its roots already grown, because they were. */
-export type Kin = { parent: string; child: string; born?: number | null };
+ *  from disk draws its roots already grown, because they were.
+ *
+ *  `parent` and `child` are ids **unique on this wall**: a card's own id, or a
+ *  shadow's `shadowKey(host, card)`. `across` is a pair whose two ends run on
+ *  different machines, and is drawn stitched — see "across walls" below.
+ *  `unseen` names the wall a parent runs on when this wall holds no word from
+ *  that wall at all, and such a pair is drawn as a stray rather than a limb. */
+export type Kin = {
+  parent: string;
+  child: string;
+  born?: number | null;
+  across?: boolean;
+  unseen?: string;
+};
 
 /** A card and where it is, in screen pixels. */
-export type Kid = { id: string; box: Box; born?: number | null };
+export type Kid = { id: string; box: Box; born?: number | null; across?: boolean };
 
 /* ── the knobs ─────────────────────────────────────────────────────────────
  *
@@ -218,6 +231,11 @@ export type Limb = {
   /** How many limbs share this limb's trunk, for anything that wants to know
    *  whether the fork is real. */
   siblings: number;
+  /** Its two cards run on different machines: drawn in stitches. */
+  across?: boolean;
+  /** Its parent end is free on the ground, because the parent is on a wall
+   *  this one cannot see: drawn fading out at that end. See `strayFor`. */
+  loose?: boolean;
 };
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -374,6 +392,7 @@ export function limbsFor(
         tuck: seatDepth(k.box, to, unit(into, to), tip + clear),
         reach: reachOf(k.born, opts.now, opts.still),
         siblings: group.length,
+        ...(k.across ? { across: true } : {}),
       });
     });
   }
@@ -404,19 +423,23 @@ export function halfWidthAt(p: number, base: number, tip: number): number {
  *  — see "under the card" above. The far end only once the limb has *arrived*:
  *  before that it is a growing head in mid-air with no card to hide under, and
  *  pushing it forward would be a root reaching past where it has got to. */
-export function outline(limb: Limb, steps = STEPS): Pt[] {
-  if (limb.reach <= 0.02) return [];
+export function outline(limb: Limb, steps = STEPS, from = 0, to = 1): Pt[] {
+  if (limb.reach <= 0.02 || to - from <= 0) return [];
   const [a, c1, c2, b] = limb.spine;
   const n = Math.max(2, Math.round(steps));
   const up: Pt[] = [];
   const down: Pt[] = [];
   for (let i = 0; i <= n; i += 1) {
-    const p = i / n;
+    /* `from`..`to` is a stretch of what exists, for a stitch — see `stitches`.
+       Only the stretch that reaches an end is carried past it: a stitch in the
+       middle of a root has no card to hide under. */
+    const p = from + (i / n) * (to - from);
     const t = p * limb.reach;
     const at = pointOn(a, c1, c2, b, t);
     const tan = tangentOn(a, c1, c2, b, t);
     const hw = halfWidthAt(p, limb.base, limb.tip);
-    const past = i === 0 ? -limb.seat : i === n && limb.reach >= 1 ? limb.tuck : 0;
+    const past =
+      i === 0 && from === 0 ? -limb.seat : i === n && to === 1 && limb.reach >= 1 ? limb.tuck : 0;
     const x = at.x + tan.x * past;
     const y = at.y + tan.y * past;
     up.push({ x: x - tan.y * hw, y: y + tan.x * hw });
@@ -570,8 +593,9 @@ export function familiesOf(
     const pb = boxes.get(k.parent);
     const cb = boxes.get(k.child);
     if (!pb || !cb) continue;
+    if (k.unseen !== undefined) continue;
     const kids = byParent.get(k.parent) ?? [];
-    kids.push({ id: k.child, box: cb, born: k.born });
+    kids.push({ id: k.child, box: cb, born: k.born, ...(k.across ? { across: true } : {}) });
     byParent.set(k.parent, kids);
   }
   return [...byParent.entries()].map(([id, kids]) => ({
@@ -579,4 +603,254 @@ export function familiesOf(
     parent: boxes.get(id)!,
     kids,
   }));
+}
+
+/* ── across walls ──────────────────────────────────────────────────────────
+ *
+ * Once the flyway put cards from other machines on the wall, the roots stopped
+ * at its edge: `Skein.kin` is this wall's `spawned` table, so an orchestrator
+ * opening cards on the other laptop — the gesture remote spawn exists for —
+ * drew nothing at all. Lyss: *"tentacles should draw always between parent and
+ * children, regardless of where they live."*
+ *
+ * **Nothing about the drawing had to change for it**, because every id handed
+ * to `familiesOf` is already unique on this wall — a card's own, or a shadow's
+ * `shadowKey(host, card)` — and shadows have real boxes. The work is a complete
+ * `Kin[]`, and it comes from two sources, neither of which costs a round trip:
+ *
+ * - **A child here, a parent anywhere** — this wall's own `spawned` rows, and
+ *   its `flyway_birth` rows for a card another wall asked for. The birth names
+ *   the asking host *and* the asking card, and has always crossed to the front
+ *   end (`here::Birth::asker_card`); the front end only ever kept the host.
+ * - **A child over there** — the child's own wall says who its parent is, in
+ *   its digest (`CardDigest.parent`). Two short strings per card, folded with
+ *   everything else the digest carries, so it is published when it changes and
+ *   never on a clock. `host: null` means *the card's own wall*, so the owner
+ *   need not know its own flyway name to describe a local spawn.
+ *
+ * `flyway_births` was the alternative carrier for the far case, and it is the
+ * wrong one: it is answered by the *child's* wall, so reaching it from the
+ * parent's is a request per wall, and it knows only births that crossed — a
+ * card on the other laptop opened by a card beside it there (remote → remote)
+ * is in that wall's `spawned` table, which only that wall's digest can say.
+ *
+ * ### A pair with an end missing
+ *
+ * Three ways, and they want different answers:
+ *
+ * - **The parent's wall is quiet.** Its shadows stay on the wall, muted, and so
+ *   does the root: parentage is as true of a card on a laptop in a bag as of
+ *   one streaming now, and it is structure rather than status. The charge, which
+ *   *is* status, follows the child's face, and a quiet wall's faces stop
+ *   claiming work (`faceOf`).
+ * - **The parent has been closed.** We hold its wall's snapshot and the card is
+ *   not in it. Dropped, exactly as a local pair with a closed parent is: a card
+ *   whose parent has gone is a card, not half a root.
+ * - **The parent is on a wall this one holds no word from at all** — a third
+ *   machine this one does not hear, or a wall whose first snapshot has not
+ *   arrived. That family is real and continues somewhere this wall cannot draw,
+ *   so the pair carries `unseen` and is drawn as a **stray**: a short root
+ *   coming into the child from the west — the margin other walls stand in —
+ *   whose far end fades into the ground rather than stopping. Not a limb to a
+ *   guessed position, which would be a claim about where a card is that nobody
+ *   made; and not nothing, which would say this card was opened by hand.
+ *
+ * ### A root between two machines is stitched
+ *
+ * Colour is status, so the difference cannot be colour. The vocabulary already
+ * exists: a territory's border is dashed and another wall's region is dotted,
+ * and a prompt that has left this wall is drawn in the other wall's stitch. So
+ * a root whose two ends run on different machines is laid in stitches — the
+ * same tapered root, cut across at even intervals — and one between two cards
+ * of the same other wall is solid, because on that wall it is an ordinary root.
+ * The stitches are spaced in screen pixels along the curve's *length*, not its
+ * parameter, or they bunch where the cubic is slow.
+ */
+
+/** A stitch and the gap after it, in screen pixels at 1:1. Scaled with the
+ *  zoom like the widths, and clamped, so a root at `field` density is still
+ *  visibly cut and one zoomed in is not a row of beads. */
+export const STITCH = 10;
+export const STITCH_GAP = 5;
+const STITCH_SCALE_MIN = 0.5;
+
+/** How long a stray is, in screen pixels at 1:1 — about the gap between two
+ *  card slots, so it lies in the gutter rather than across a neighbour. */
+export const STRAY_LEN = 46;
+export const STRAY_MIN = 16;
+/** Its slope: in from the west and a little from above, which is where other
+ *  walls' regions stand (`standElsewhere`). */
+const STRAY_RISE = 0.28;
+/** How much of a stray, from its free end, fades in. Read by the canvas. */
+export const STRAY_FADE = 0.6;
+
+/** The cumulative length along what exists of a limb, at `n + 1` samples. */
+function lengths(limb: Limb, n: number): number[] {
+  const [a, c1, c2, b] = limb.spine;
+  const out = [0];
+  let prev = pointOn(a, c1, c2, b, 0);
+  for (let i = 1; i <= n; i += 1) {
+    const pt = pointOn(a, c1, c2, b, (i / n) * limb.reach);
+    out.push(out[i - 1] + Math.hypot(pt.x - prev.x, pt.y - prev.y));
+    prev = pt;
+  }
+  return out;
+}
+
+/** The stretches of a stitched root, as `[from, to]` fractions of what exists —
+ *  the arguments `outline` takes.
+ *
+ *  The first starts at 0 and the last ends at 1, always: those are the two that
+ *  are carried under a card, so a root that began or ended in a gap would show
+ *  its cut end on the ground — the defect "under the card" exists to remove.
+ *  The period is stretched to fit a whole number of stitches between them. A
+ *  root too short for two is one stitch, which is a solid root; there is no
+ *  honest way to cut a thing that small. */
+export function stitches(limb: Limb, scale: number): [number, number][] {
+  const k = clamp(scale, STITCH_SCALE_MIN, 1);
+  const on = STITCH * k;
+  const off = STITCH_GAP * k;
+  const n = 48;
+  const cum = lengths(limb, n);
+  const total = cum[n];
+  const count = Math.floor((total + off) / (on + off));
+  if (count < 2) return [[0, 1]];
+  const period = (total + off) / count;
+  const at = (s: number): number => {
+    if (s <= 0) return 0;
+    if (s >= total) return 1;
+    let i = 1;
+    while (i < n && cum[i] < s) i += 1;
+    const seg = cum[i] - cum[i - 1] || 1;
+    return (i - 1 + (s - cum[i - 1]) / seg) / n;
+  };
+  const out: [number, number][] = [];
+  for (let i = 0; i < count; i += 1) {
+    const s = i * period;
+    out.push([at(s), i === count - 1 ? 1 : at(s + period - off)]);
+  }
+  return out;
+}
+
+/** A card on another wall, as far as its parentage goes. */
+export type AfarKin = {
+  /** `shadowKey(host, card)` — its id on this wall. */
+  id: string;
+  /** The wall it runs on. */
+  host: string;
+  /** Its digest's word: the parent's wall (null for the child's own) and the
+   *  parent's id there. Null for a card nobody opened, *and* for one whose wall
+   *  is too old to say — the two are read the same way, as nothing to draw. */
+  parent: { host: string | null; card: string } | null;
+};
+
+/** Who asked for a card on this wall, out of `flyway_birth`. `card` is null
+ *  when a person asked rather than a card — a birth with no root to draw. */
+export type Asked = { host: string; card: string | null; at?: number | null };
+
+/** Every pair this wall can draw, whichever machine each end runs on.
+ *
+ *  `heard` is the walls this one holds a snapshot from: a parent on one of them
+ *  that is not on the wall has been closed, and a parent on any other wall is
+ *  `unseen`. `me` is this wall's flyway name, and while it is not yet known a
+ *  shadow naming a third wall is skipped rather than guessed at — it might be
+ *  this one, and a stray drawn to a card standing right here would be wrong.
+ *
+ *  One parent per child, first source wins, in the order the sources are
+ *  trusted: this wall's own table, then its own births, then what another wall
+ *  says. A correct fleet never offers two; a confused one must not draw a card
+ *  with two roots coming in. */
+export function kinAcross(o: {
+  kin: readonly Kin[];
+  births: Readonly<Record<string, Asked>>;
+  shadows: readonly AfarKin[];
+  me: string;
+  heard: ReadonlySet<string>;
+}): Kin[] {
+  const out: Kin[] = [];
+  const had = new Set<string>();
+  const take = (k: Kin) => {
+    if (!k.parent || k.parent === k.child || had.has(k.child)) return;
+    had.add(k.child);
+    out.push(k);
+  };
+  for (const k of o.kin) take(k);
+  for (const [child, b] of Object.entries(o.births)) {
+    if (!b.card || !b.host || b.host === o.me) continue;
+    take({
+      parent: shadowKey(b.host, b.card),
+      child,
+      across: true,
+      ...(b.at != null ? { born: b.at } : {}),
+      ...(o.heard.has(b.host) ? {} : { unseen: b.host }),
+    });
+  }
+  for (const s of o.shadows) {
+    if (!s.parent?.card) continue;
+    const host = s.parent.host ?? s.host;
+    if (!host) continue;
+    if (o.me && host === o.me) {
+      take({ parent: s.parent.card, child: s.id, across: true });
+      continue;
+    }
+    if (!o.me && host !== s.host) continue;
+    take({
+      parent: shadowKey(host, s.parent.card),
+      child: s.id,
+      ...(host !== s.host ? { across: true } : {}),
+      ...(o.heard.has(host) ? {} : { unseen: host }),
+    });
+  }
+  return out;
+}
+
+/** The strays worth drawing: an `unseen` pair whose child is on the wall.
+ *  `parent` comes back beside it for the retreat, which keys on it. */
+export function straysOf(
+  kin: readonly Kin[],
+  boxes: ReadonlyMap<string, Box>,
+): (Kid & { parent: string })[] {
+  const out: (Kid & { parent: string })[] = [];
+  for (const k of kin) {
+    if (k.unseen === undefined) continue;
+    const box = boxes.get(k.child);
+    if (box) out.push({ id: k.child, box, born: k.born, parent: k.parent });
+  }
+  return out;
+}
+
+/** The root of a card whose parent is on a wall this one cannot see.
+ *
+ *  A whole root, short, with its parent end free: in from the west at a shallow
+ *  slope and tucked under the child like any other. It has no `seat`, since
+ *  there is no card at that end to hide a chord under — the canvas fades that
+ *  end out instead (`STRAY_FADE`), which is the reading: *this continues
+ *  somewhere you cannot see from here.* */
+export function strayFor(kid: Kid, opts: { scale: number; now: number; still?: boolean }): Limb {
+  const c = centreOf(kid.box);
+  const far = { x: c.x - 1e5, y: c.y - STRAY_RISE * 1e5 };
+  const to = rimPoint(kid.box, far);
+  const u = unit(far, c);
+  const len = clamp(STRAY_LEN * opts.scale, STRAY_MIN, STRAY_LEN);
+  const from = { x: to.x - u.x * len, y: to.y - u.y * len };
+  /* A slight bow, so it reads as a root laid on the ground rather than a ruled
+     line — the same side every time, since a stray has no siblings to splay
+     from. */
+  const bow = len * 0.08;
+  const fork = { x: from.x + (u.x * len) / 3 - u.y * bow, y: from.y + (u.y * len) / 3 + u.x * bow };
+  const into = { x: to.x - (u.x * len) / 3 - u.y * bow, y: to.y - (u.y * len) / 3 + u.x * bow };
+  const { base, tip } = halfWidths(opts.scale, 1);
+  const clear = SEAT_CLEAR * Math.max(1, opts.scale);
+  return {
+    child: kid.id,
+    spine: [from, fork, into, to],
+    base,
+    tip,
+    seat: 0,
+    tuck: seatDepth(kid.box, to, unit(into, to), tip + clear),
+    reach: reachOf(kid.born, opts.now, opts.still),
+    siblings: 1,
+    across: true,
+    loose: true,
+  };
 }

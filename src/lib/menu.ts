@@ -16,7 +16,8 @@ export type MenuKind =
   | "region"
   | "ground"
   | "editable"
-  | "prose";
+  | "prose"
+  | "shadow";
 
 /** One option among several, of which one is in force — a widget's variant. */
 export type Pick = { id: string; label: string; on: boolean };
@@ -50,6 +51,9 @@ export type MenuTarget = {
      labels, the shape `pinned` and `aside` already have — it is one state with
      two sides and only ever one of them is available. */
   glass?: boolean;
+  /** shadow: the wall the card is on, named in the item that asks it to close
+   *  the card — the close happens there, not here. */
+  host?: string;
   /* card: drawn on the glass, but only because its whole territory is stuck
      there. The item is left off entirely — "put it back on the wall" would be a
      promise the card cannot keep while its territory is still carrying it, and
@@ -398,6 +402,18 @@ export function menuFor(t: MenuTarget): MenuItem[] {
         t.spoken ? item("clear", "clear it — start fresh") : null,
         item("close", "close", true),
       ].filter(Boolean) as MenuItem[]);
+
+    /* A card on another wall. Two things, because two are all this wall can
+       do with one: the glass, whose spot for it lives in memory here and
+       nowhere else, and asking its own wall to close it. Everything a card's
+       menu offers besides — wake, resume, processes, set aside, the accounts —
+       is about a process and a session that are on the other machine. */
+    case "shadow":
+      return [
+        glassItem(t.glass),
+        sep,
+        item("close", t.host ? `close it on ${t.host}` : "close it", true),
+      ];
 
     case "image":
       return [

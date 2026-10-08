@@ -43,19 +43,30 @@ import {
   askHere,
   DIGEST_V,
   digestOf,
+  enterRoom,
   faceOf,
   idleOf,
+  keepOnly,
+  NO_SHADOW_GLASS,
   promptRefusal,
   readSnapshot,
   readTail,
   sameCards,
+  shadowKey,
+  stickShadow,
   tailOf,
   weave,
   type WireLine,
   type CardDigest,
   type Sent,
   type SentEvent,
+  type Room,
+  type ShadowGlass,
 } from "./shadow";
+import type { Spot } from "./glass";
+import { kinAcross, type Asked } from "./lineage";
+import { noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
+import type { Notice } from "./notice";
 
 /** The least time between two snapshots offered to the link. */
 const PUBLISH_EVERY_MS = 1_000;
@@ -148,6 +159,37 @@ export class Shadow {
   open = $derived(this.#open());
   #open(): PendingAsk[] {
     return this.face.unheard ? [] : this.sheets.filter((a) => !this.answering.includes(a.askId));
+  }
+
+  /** Notices taken down from here whose answer has not been refused — hidden
+   *  meanwhile, as an answered question is. By the digest's own notice id. */
+  acking = $state<string[]>([]);
+
+  /** The notices standing in its wall's queue that this wall may take down,
+   *  drawn as this wall's own (`afar.ts::noticeHere`), raised-at put on this
+   *  wall's clock by `askedAt`'s arithmetic. **None while its wall is
+   *  unheard**, `open`'s honesty: the notice may have been acknowledged
+   *  there, and one not confirmed as still standing must not look like one
+   *  waiting on you. */
+  notices = $derived.by((): Notice[] => {
+    if (this.face.unheard) return [];
+    const w = this.#walls.walls[this.host];
+    return this.digest.notices
+      .filter((n) => !this.acking.includes(n.id))
+      .map((n) => noticeHere(n, this.id, w ? askedAt({ since: n.raisedAt }, w.at, w.madeAt) : Date.now()));
+  });
+
+  /** Where it is stuck to the glass in the room in front of you, or null for
+   *  one standing in its wall's section. Read off the walls' memory rather than
+   *  held here, because that memory is per room and outlives this object — see
+   *  `ShadowGlass`. */
+  get glass(): Spot | null {
+    return this.#walls.glass.spots[this.id] ?? null;
+  }
+
+  /** Stick it to the glass, move it there, or take it off with `null`. */
+  stick(at: Spot | null) {
+    this.#walls.stick(this.id, at);
   }
 
   face = $derived(this.#face());
@@ -313,9 +355,10 @@ export class Shadow {
   }
 }
 
-export function shadowKey(host: string, card: string): string {
-  return `elsewhere:${host}:${card}`;
-}
+/* In `shadow.ts` now, beside the digest, so `lineage.ts` can address a root to
+   a shadow without importing runes. Re-exported for everything that already
+   reached for it here. */
+export { shadowKey };
 
 /** Every other wall's cards, and this wall's offered to them. */
 export class Elsewhere {
@@ -334,6 +377,15 @@ export class Elsewhere {
    *  host. Kept apart from the cards themselves because the link may say so
    *  before the card is on the wall, and stamped onto each as it arrives. */
   births = $state<Record<string, string>>({});
+  /** The same births with the asking *card* beside the host — what a root to
+   *  the card that asked is drawn from. Its own map rather than a widening of
+   *  `births`, which the control surface reports as it stands. `at` only on a
+   *  birth heard live, so a root grows for a card opened now and a restored one
+   *  is simply there, as `Skein.kin`'s are. */
+  askedBy = $state<Record<string, Asked>>({});
+  /** Which shadows are stuck to the glass, per room — session-only, see
+   *  `ShadowGlass` in `shadow.ts` for why there is no row behind it. */
+  glass = $state.raw<ShadowGlass>(NO_SHADOW_GLASS);
 
   #skein: Skein;
   #byId = new Map<string, Shadow>();
@@ -342,6 +394,8 @@ export class Elsewhere {
   #byPrompt = new Map<string, Shadow>();
   /** The same for a close, which is answered on the same event. */
   #byClose = new Map<string, Shadow>();
+  /** And for a notice taken down from here: which shadow, which notice. */
+  #byNotice = new Map<string, { shadow: Shadow; notice: string }>();
   #listeners = new Listeners();
   /** Prompts from other walls this wall has taken, by id, with the answer each
    *  got — or null while it is being delivered. See `#take`. */
@@ -352,6 +406,19 @@ export class Elsewhere {
   #pending: CardDigest[] | null = null;
   #lastAt = 0;
   #timer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Every root this wall can draw, wherever each end runs — see
+   *  `lineage.ts::kinAcross`. What `Canvas` hands `Lineage`, in place of
+   *  `Skein.kin` alone. */
+  readonly kin = $derived.by(() =>
+    kinAcross({
+      kin: this.#skein.kin,
+      births: this.askedBy,
+      shadows: this.shadows.map((s) => ({ id: s.id, host: s.host, parent: s.digest.parent ?? null })),
+      me: this.me,
+      heard: new Set(Object.keys(this.walls)),
+    }),
+  );
 
   constructor(skein: Skein) {
     this.#skein = skein;
@@ -382,25 +449,32 @@ export class Elsewhere {
     l.keep(
       listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string }>("flyway:prompt-answer", (e) => {
         if (this.#closed(e.payload.id, e.payload.outcome, e.payload.why)) return;
+        this.#noticed(e.payload.id, e.payload.outcome, e.payload.why);
         this.#fold(e.payload.id, { kind: "answer", outcome: e.payload.outcome, why: e.payload.why });
       }),
     );
     l.keep(
-      listen<{ id: string; from: { host: string; card: string | null }; card: string; text: string }>(
+      listen<{ id: string; from: { host: string; card: string | null }; card: string; text: string; notice?: string }>(
         "flyway:prompt",
         (e) => void this.#take(e.payload),
       ),
     );
     l.keep(listen<{ id: string; card: string }>("flyway:tail", (e) => void this.#lend(e.payload)));
     l.keep(
-      listen<{ card: string; host: string }>("flyway:born", (e) => {
+      listen<{ card: string; host: string; askerCard?: string | null }>("flyway:born", (e) => {
         this.births[e.payload.card] = e.payload.host;
+        this.askedBy[e.payload.card] = { host: e.payload.host, card: e.payload.askerCard ?? null, at: Date.now() };
       }),
     );
     void invoke<string>("flyway_host").then((h) => (this.me = h)).catch(() => {});
-    void invoke<{ card: string; host: string }[]>("flyway_births")
+    void invoke<{ card: string; host: string; askerCard?: string | null }[]>("flyway_births")
       .then((all) => {
-        for (const b of all) this.births[b.card] = b.host;
+        for (const b of all) {
+          this.births[b.card] = b.host;
+          /* Never over a live one: the event may have landed first, and its
+             `at` is what makes that root grow rather than appear. */
+          this.askedBy[b.card] ??= { host: b.host, card: b.askerCard ?? null };
+        }
       })
       .catch(() => {});
     void invoke<RosterRow[]>("flyway_roster").then((r) => this.#heard(r)).catch(() => {});
@@ -457,7 +531,21 @@ export class Elsewhere {
       lines: c.lines,
       jobs: c.jobs,
       asks: c.asks,
+      notices: this.#skein.notices,
+      parent: this.#parentOf(c.id),
     };
+  }
+
+  /** Who opened a card here, as its digest says it: another wall's card if one
+   *  asked for it, a card on this wall if one spawned it (`host: null`, which
+   *  the reader takes as this wall). Read off `kinAcross`'s own inputs rather
+   *  than its output, which also holds roots between two *shadows* — another
+   *  wall's business to publish, not this one's. */
+  #parentOf(id: string): { host: string | null; card: string } | null {
+    const b = this.askedBy[id];
+    if (b?.card) return { host: b.host, card: b.card };
+    const k = this.#skein.kin.find((k) => k.child === id);
+    return k ? { host: null, card: k.parent } : null;
   }
 
   /** Coalesce: the newest set wins, and it goes at most once a second. */
@@ -551,6 +639,22 @@ export class Elsewhere {
     }
     for (const id of [...this.#byId.keys()]) if (!keep.has(id)) this.#byId.delete(id);
     this.shadows = next;
+    this.glass = keepOnly(this.glass, keep);
+  }
+
+  /* ── the glass ─────────────────────────────────────────────────────── */
+
+  /** Stick a shadow to the glass at a point in glass pixels, or take it off
+   *  with `null`. Nothing is written anywhere — see `ShadowGlass`. */
+  stick(id: string, at: Spot | null) {
+    if (!at && !this.glass.spots[id]) return;
+    this.glass = stickShadow(this.glass, id, at);
+  }
+
+  /** The screens changed: put the glass in the room now in front of you.
+   *  Called beside `arrange::adopt`'s own answer, with the same key and origin. */
+  adoptRoom(room: Room) {
+    this.glass = enterRoom(this.glass, room);
   }
 
   /** Bring a shadow's sheets in line with the questions its digest carries:
@@ -568,9 +672,40 @@ export class Elsewhere {
           since: askedAt(a, w.at, w.madeAt),
         },
     );
+    /* A removal is drawn from its evidence alone, and only when the evidence
+       names the wall it was heard from — `removalHere` refuses otherwise, and a
+       removal it refuses is not drawn at all rather than drawn as a path. */
+    for (const r of s.digest.removals) {
+      const kept = was.get(r.askId);
+      if (kept) {
+        now.push(kept);
+        continue;
+      }
+      const questions = removalHere(r.removal, s.host);
+      if (!questions) continue;
+      now.push({
+        askId: r.askId,
+        questions,
+        answers: blankAnswers(questions),
+        ours: true,
+        since: askedAt(r, w.at, w.madeAt),
+      });
+    }
     if (now.length !== s.sheets.length || now.some((a, i) => a !== s.sheets[i])) s.sheets = now;
     const live = new Set(now.map((a) => a.askId));
     if (s.answering.some((id) => !live.has(id))) s.answering = s.answering.filter((id) => live.has(id));
+    const standing = new Set(s.digest.notices.map((n) => n.id));
+    if (s.acking.some((id) => !standing.has(id))) s.acking = s.acking.filter((id) => standing.has(id));
+  }
+
+  /** The first notice on another wall this one may take down — what the dock
+   *  shows when nothing anywhere is asking and nothing here has a notice. */
+  firstNotice(): { shadow: Shadow; notice: Notice } | null {
+    for (const shadow of this.shadows) {
+      const notice = shadow.notices[0];
+      if (notice) return { shadow, notice };
+    }
+    return null;
   }
 
   /** The first question on another wall this one may answer — what the dock
@@ -599,12 +734,66 @@ export class Elsewhere {
     const about = sheet.questions[0]?.header ?? "a question";
     s.sent.push({ id, text, at: Date.now(), state: "queued", askId: sheet.askId, about });
     this.#byPrompt.set(id, s);
+    /* Refused on the spot, never queued for a wall that comes back: a
+       confirmation landing hours later on a card running with the machine in
+       its hands is the thing that must not happen. `open` already hides the
+       question from an unheard wall; this is the second lock, for a click
+       already on its way when the wall went quiet. */
+    if (s.face.unheard) {
+      this.#fold(id, { kind: "unsent", why: `${s.host} has not been heard from — nothing was sent` });
+      return;
+    }
     s.answering = [...s.answering, sheet.askId];
     try {
       await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, askId: sheet.askId });
     } catch (e) {
       this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
     }
+  }
+
+  /** Take down a notice standing in another wall's queue — acknowledged with
+   *  an empty reply, followed up otherwise — over the prompt wire, naming the
+   *  notice (`afar.ts::noticeAnswer`). Hidden while the answer travels and
+   *  given back if it is refused. A follow-up is drawn among what was said to
+   *  the card, as a prompt is; an acknowledgement says nothing to the card and
+   *  is not. */
+  async answerNotice(s: Shadow, n: Notice, reply = "") {
+    const d = s.digest.notices.find((x) => `${s.id}:${x.id}` === n.id);
+    if (!d) return;
+    const { answers, text } = noticeAnswer(d, reply);
+    const id = crypto.randomUUID();
+    const said = reply.trim();
+    if (said) {
+      s.sent.push({ id, text: said, at: Date.now(), state: "queued" });
+      this.#byPrompt.set(id, s);
+    }
+    if (s.face.unheard) {
+      const why = `${s.host} has not been heard from — nothing was sent`;
+      this.#fold(id, { kind: "unsent", why });
+      this.#skein.fault = `that notice is on ${s.host}: ${why}`;
+      return;
+    }
+    this.#byNotice.set(id, { shadow: s, notice: d.id });
+    s.acking = [...s.acking, d.id];
+    try {
+      await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, askId: answers });
+    } catch (e) {
+      const why = String(e) || "the link would not take it";
+      this.#noticed(id, "refused", why);
+      this.#fold(id, { kind: "unsent", why });
+    }
+  }
+
+  /** A notice's answer settled. Refused gives the notice back and says why:
+   *  an acknowledgement that silently did nothing leaves a notice you believe
+   *  gone standing on a wall you are not looking at. */
+  #noticed(id: string, outcome: "taken" | "refused", why?: string) {
+    const r = this.#byNotice.get(id);
+    if (!r) return;
+    this.#byNotice.delete(id);
+    if (outcome === "taken") return;
+    r.shadow.acking = r.shadow.acking.filter((x) => x !== r.notice);
+    this.#skein.fault = `${r.shadow.host} did not take that notice down: ${why || "refused"}`;
   }
 
   /** Send a prompt to a card on another wall. Drawn at once, as a local send
@@ -684,7 +873,15 @@ export class Elsewhere {
    *  from (`Conversation.note`). `taken` means this wall has it and the card's
    *  own transcript is now the honest account — including a send that fails
    *  there, which this wall's panel draws as it would any failed send. */
-  async #take(p: { id: string; from: { host: string; card: string | null }; card: string; text: string }) {
+  async #take(p: {
+    id: string;
+    from: { host: string; card: string | null };
+    card: string;
+    text: string;
+    /** Set when this takes down one of the card's notices rather than being a
+     *  prompt — see `afar.ts`. */
+    notice?: string;
+  }) {
     /* A redelivered frame gets the answer the first one got, and never a
        second send. The link already drops repeats; this is the second lock on
        the same door, because a prompt taken twice is two turns on a card
@@ -710,6 +907,31 @@ export class Elsewhere {
     const conv = this.#skein.convs.find((c) => c.id === p.card);
     const refusal = promptRefusal(!!conv, this.me);
     if (!conv || refusal) return this.#settle(p, "refused", refusal ?? undefined);
+
+    /* A notice taken down from another wall: the same two gestures the dock
+       here makes, on the row this wall holds — so the queue, the card and the
+       register cannot tell a click there from one here. */
+    if (p.notice) {
+      const n = this.#skein.notices.find((x) => x.id === p.notice && x.conversationId === conv.id && !x.askId);
+      if (!n) {
+        return this.#settle(
+          p,
+          "refused",
+          `that notice is no longer standing on ${this.me || "that wall"} — acknowledged there, or the card has moved on`,
+        );
+      }
+      if (p.text.trim() === NOTICE_AFAR_ACK) {
+        await this.#skein.acknowledgeNotice(n);
+        return this.#settle(p, "taken");
+      }
+      conv.note(`sent from ${p.from.host}`);
+      const went = await this.#skein.followUpNotice(n, p.text).catch(() => false);
+      return this.#settle(
+        p,
+        went ? "taken" : "refused",
+        went ? undefined : `${this.me || "that wall"} could not deliver it — ${conv.activity}`,
+      );
+    }
 
     conv.note(`sent from ${p.from.host}`);
     let sent = false;

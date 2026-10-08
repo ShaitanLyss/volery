@@ -148,6 +148,7 @@
   import Yonder from "./lib/Yonder.svelte";
   import { Elsewhere, type Shadow } from "./lib/shadows.svelte";
   import { remoteQuestions } from "./lib/shadow";
+  import { remoteNotices } from "./lib/afar";
   import Servers from "./lib/Servers.svelte";
   import Processes from "./lib/Processes.svelte";
   /* The component is `Console` and the class it draws is `Shell`, which is not
@@ -458,7 +459,10 @@
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.kind === "grouping") groupingChord(verb.act);
     else if (verb.kind === "elsewhere") focusElsewhere();
-    else if (verb.kind === "card") closeFocused();
+    else if (verb.kind === "card") {
+      if (verb.act === "glass") glassFocused();
+      else closeFocused();
+    }
     else if (verb.kind === "sink") {
       if (verb.act === "drop") showDrop = true;
       else showSink = true;
@@ -599,7 +603,10 @@
     /* Read lazily: `control` is constructed further down, and the ladder only
        asks once the wall is ticking. */
     () => control.endpoint !== null,
-    () => remoteQuestions(elsewhere.shadows, clock.t),
+    /* A card on another wall asking, or with a notice standing in its wall's
+       queue — the same rows this wall's own make, one per card, the question
+       first (`afar.ts::remoteNotices` leaves out a card that has one). */
+    () => [...remoteQuestions(elsewhere.shadows, clock.t), ...remoteNotices(elsewhere.shadows, clock.t)],
   );
 
   /** Countdowns that have run out, as things wanting your attention.
@@ -916,6 +923,14 @@
     const mine = focusedShadow?.open[0];
     if (focusedShadow && mine) return { shadow: focusedShadow, sheet: mine, focused: true };
     const any = elsewhere.firstAsking();
+    return any ? { ...any, focused: false } : null;
+  });
+  /** A notice standing on another wall this one may take down, by the same
+   *  rule: the focused shadow's first, else the first any shadow has. */
+  const remoteNotice = $derived.by(() => {
+    const mine = focusedShadow?.notices[0];
+    if (focusedShadow && mine) return { shadow: focusedShadow, notice: mine, focused: true };
+    const any = elsewhere.firstNotice();
     return any ? { ...any, focused: false } : null;
   });
   /* A card you are looking at finishing is something you watched, so it raises
@@ -1363,6 +1378,9 @@
        from the outside, which is exactly the one that has to be reported. */
     if (arrangements.fault) skein.fault = arrangements.fault;
     if (!spots) return;
+    /* Shadows first, and with no undo to tell: their glass is in memory, per
+       room, under the same key and origin the store was just given. */
+    elsewhere.adoptRoom({ key: arrangements.key, origin });
     /* Each holder answers what it actually moved, and the stack is told to
        forget those records. Not `undo.clear()`: the stack also holds renames
        and deletions that have nothing to do with screens, and losing the
@@ -1720,6 +1738,11 @@
     const addEl = el.closest("[data-add]") as HTMLElement | null;
     const imageEl = el.closest("[data-image]") as HTMLElement | null;
     const widgetEl = el.closest("[data-widget]") as HTMLElement | null;
+    /* A card on another wall. Never `data-conv`, so it reaches none of the
+       card branch's verbs — which is right, since every one of them takes a
+       `Conversation` — and before this it fell through to the *ground*'s menu,
+       offering to open a project under a card. */
+    const shadowEl = el.closest("[data-shadow]") as HTMLElement | null;
     /* Both the territory and the name that carries it — right-clicking the
        handle you just dragged should reach the project it belongs to. */
     const regionEl = el.closest("[data-cwd]") as HTMLElement | null;
@@ -1853,6 +1876,19 @@
             ]);
           } else if (id === "glass") canvas?.toggleGlass("card", conv.id);
           else if (id === "close") void closeConv(conv);
+        };
+      }
+    } else if (shadowEl?.dataset.shadow) {
+      const s = elsewhere.find(shadowEl.dataset.shadow);
+      if (s) {
+        /* The focus, as a card's right-click takes it, and not the panel —
+           a menu is a question about the thing, not a visit to it. */
+        studio.clearSelection();
+        focusedId = s.id;
+        target = { kind: "shadow", glass: !!s.glass, host: s.host };
+        act = (id) => {
+          if (id === "glass") canvas?.toggleGlass("shadow", s.id);
+          else if (id === "close") closeElsewhere(s);
         };
       }
     } else if (imageEl?.dataset.image) {
@@ -3742,6 +3778,19 @@
     void elsewhere.close(s);
   }
 
+  /** `<space>cg`: stick whichever card has the focus to the glass, or put it
+   *  back — on this wall or another. A card drawn on the pane only because its
+   *  territory is stuck there is refused, as the menu refuses it: the territory
+   *  would go on carrying it. */
+  function glassFocused() {
+    if (focused) {
+      if (heldByGlassTerritory(focused.cwd, focused.id)) {
+        skein.fault = "this card is on the glass with its grouping — move the grouping instead";
+      } else canvas?.toggleGlass("card", focused.id);
+    } else if (focusedShadow) canvas?.toggleGlass("shadow", focusedShadow.id);
+    else skein.fault = "no card has the focus to put on the glass";
+  }
+
   /** `<space>cc`: close whichever card has the focus, on this wall or another. */
   function closeFocused() {
     if (focused) void closeConv(focused);
@@ -4650,7 +4699,7 @@
         }}
         ambience={wallAmbience}
         flights={skein.flights}
-        lineage={skein.kin}
+        lineage={elsewhere.kin}
         billboard={skein.board}
         sink={skein.sink}
         gates={skein.gates}
@@ -4833,6 +4882,8 @@
     remote={focusedShadow}
     {remoteAsk}
     onremoteanswer={(s, sheet) => void elsewhere.answer(s, sheet)}
+    {remoteNotice}
+    onremotenotice={(s, n, reply) => void elsewhere.answerNotice(s, n, reply)}
     onremoteselect={(s) => focusShadow(s)}
     {targets}
     {waiting}

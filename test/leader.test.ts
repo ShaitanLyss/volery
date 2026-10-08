@@ -154,6 +154,10 @@ describe("away mode has two spellings of one verb", () => {
     expect(chord("", "c")).toMatchObject({ kind: "pending", open: "c" });
   });
 
+  test("cg puts the focused card on the glass, or takes it off", () => {
+    expect(chord("c", "g")).toMatchObject({ kind: "fire", verb: { kind: "card", act: "glass" } });
+  });
+
   test("i alone is a prefix rather than a chord", () => {
     expect(chord("", "i")).toMatchObject({ kind: "pending", open: "i" });
   });
@@ -164,6 +168,7 @@ describe("the which-key hint", () => {
     expect(offers("")).toEqual([
       { keys: "a", label: "archived timelines" },
       { keys: "cc", label: "close this card" },
+      { keys: "cg", label: "this card on the glass / back" },
       { keys: "ee", label: "a card on another wall" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },

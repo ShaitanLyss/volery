@@ -46,6 +46,17 @@ import { spanOf, UNACKNOWLEDGED_LINE, type Ending, type Tier } from "./classify"
 import { layout, REGION_GAP, regionWidth, type Box, type Laid, type Region } from "./layout";
 import { askHeadline, type AskQuestion } from "./asking";
 import { nameBesideProject } from "./naming";
+import type { Notice } from "./notice";
+import {
+  noticesOf,
+  readNotices,
+  readRemovals,
+  removalsOf,
+  type DigestNotice,
+  type DigestRemoval,
+  type Removal,
+} from "./afar";
+import type { Spot } from "./glass";
 
 /** The digest's shape version — this file's, not the wire's. Read leniently: a
  *  newer wall's digest is drawn from whatever fields this build understands. */
@@ -105,7 +116,23 @@ export type CardDigest = {
   /** Questions the card is parked on, oldest first — what lets a card asking
    *  on one machine be answered from another. See `DigestAsk`. */
   asks: DigestAsk[];
+  /** Volery's own removal confirmations the card is parked on, each with the
+   *  evidence a person at another machine needs — the one of Volery's own
+   *  questions that travels (`afar.ts`). A field of its own rather than part of
+   *  `asks`, so a wall from before it sees nothing rather than a bare path. */
+  removals: DigestRemoval[];
+  /** The card's notices standing in its wall's queue, oldest first. */
+  notices: DigestNotice[];
+  /** The card that opened this one, or null if a person did. `host` is the
+   *  wall that card runs on, and **null means this card's own wall** — so the
+   *  owner describes a local spawn without needing to know its own flyway
+   *  name. What lets another wall draw the root (`lineage.ts::kinAcross`).
+   *  An older wall sends nothing here, which reads as null: no root, never a
+   *  parent called "". */
+  parent: DigestParent | null;
 };
+
+export type DigestParent = { host: string | null; card: string };
 
 /** A parked `ask_user` question, as it travels.
  *
@@ -209,7 +236,19 @@ export type DigestSource = {
   /** `Conversation.asks`. Volery's own questions (`ours`) never travel: a
    *  close, an unpost or a delete is answered on the machine it would act on,
    *  and the link refuses an answer to one regardless. */
-  asks: readonly { askId: string; since: number; ours: boolean; questions: readonly AskQuestion[] }[];
+  asks: readonly {
+    askId: string;
+    since: number;
+    ours: boolean;
+    questions: readonly AskQuestion[];
+    /** A removal's evidence (`remove::evidence`), on Volery's own. */
+    remove?: Removal | null;
+  }[];
+  /** The wall's notice queue — this card's are picked out of it. */
+  notices?: readonly Notice[];
+  /** Who opened it: `Skein.kin` for a card here, `flyway_birth` for one another
+   *  wall asked for. Optional so a caller with no lineage to hand says nothing. */
+  parent?: DigestParent | null;
 };
 
 /** `Conversation.doing` without the parts that count.
@@ -272,7 +311,32 @@ export function digestOf(c: DigestSource): CardDigest {
           shows: !!(q.preview || q.file || q.options.some((o) => o.preview || o.file)),
         })),
       })),
+    removals: removalsOf(c.asks).slice(0, ASKS_CAP),
+    notices: noticesOf(c.notices ?? [], c.id),
+    parent: c.parent?.card
+      ? { host: c.parent.host ? capText(c.parent.host, TITLE_CAP) : null, card: capText(c.parent.card, ID_CAP) }
+      : null,
   };
+}
+
+/** A card id as it travels. Ids are uuids; this is a bound, not a format. */
+const ID_CAP = 64;
+
+/** Unique on this wall: the host and the card's own id. What a shadow is keyed
+ *  on, and what a root to or from one is addressed by. */
+export function shadowKey(host: string, card: string): string {
+  return `elsewhere:${host}:${card}`;
+}
+
+/** A parent off the wire, or null. A card id that is empty after scrubbing is
+ *  no parent at all — the brief's one hard rule for an older or broken wall. */
+function readParent(raw: unknown): DigestParent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const card = typeof r.card === "string" ? scrub(r.card).trim().slice(0, ID_CAP) : "";
+  if (!card) return null;
+  const host = typeof r.host === "string" ? str(r.host, TITLE_CAP).trim() : "";
+  return { host: host || null, card };
 }
 
 /** Whether two sets of digests would draw the same — what decides a publish.
@@ -334,6 +398,9 @@ export function readDigest(raw: unknown): CardDigest | null {
     said: str(r.said, SAID_CAP),
     jobs: Math.min(99, Math.max(0, Math.floor(jobs))),
     asks: readAsks(r.asks),
+    removals: readRemovals(r.removals),
+    notices: readNotices(r.notices),
+    parent: readParent(r.parent),
   };
 }
 
@@ -391,7 +458,7 @@ export function askHere(a: DigestAsk, host: string): AskQuestion[] {
 /** When a question was asked, on this wall's clock — by the same arithmetic as
  *  `idleOf`, so no term compares two machines' clocks. Without the owner's
  *  `at`, the snapshot's arrival is the best this wall knows. */
-export function askedAt(a: DigestAsk, at: number | null, madeAt: number): number {
+export function askedAt(a: Pick<DigestAsk, "since">, at: number | null, madeAt: number): number {
   return at === null ? madeAt : madeAt - Math.max(0, at - a.since);
 }
 
@@ -633,14 +700,77 @@ export function promptRefusal(cardHere: boolean, me: string): string | null {
 
 /* ── where they stand ───────────────────────────────────────────────── */
 
-/** How many cards wide a wall's region is. Fixed rather than grown with the
- *  count, because a region that changes shape as cards open on a machine you
- *  are not looking at is the wall rearranging itself for a reason you cannot
- *  see. Four rather than a territory's two because one region holds a whole
- *  machine's cards, and two columns of eighty is a strip nobody can frame. */
+/** How many cards wide each project's section is. Fixed rather than grown with
+ *  the count, because a section that changes shape as cards open on a machine
+ *  you are not looking at is the wall rearranging itself for a reason you
+ *  cannot see.
+ *
+ *  Still four, not a territory's two, though a section now holds one project
+ *  rather than a whole machine. The sections stack down one margin, so their
+ *  cost is paid in *height*: a busy project on the other laptop — the one this
+ *  repo is, with dozens of cards — at two columns is a strip taller than any
+ *  screen, and the whole column has to be framed to be read. Width is the
+ *  cheap direction here, and every section the same width keeps the column's
+ *  edges straight. */
 export const ELSEWHERE_COLS = 4;
 
-/** One region per other wall, in the wall's left margin.
+/** The room above a wall's sections for its name. Not a region's head
+ *  (`REGION_HEAD`, which is inside the box): this sits over the first one. */
+export const HOST_HEAD = 34;
+
+/** What a section is called when its cards carry no project at all — a digest
+ *  from a build that did not send one, or one that sent "". Never a section
+ *  called "", which would be a box with nothing on its handle. */
+export const NO_PROJECT = "no project";
+
+/** A section of another wall's cards: one project of one host. */
+export type Elsewhere = Region & { host: string };
+/** The name over a wall's sections, in canvas units. */
+export type HostHead = { host: string; x: number; y: number; w: number };
+
+/** Which section a card stands in, by its project — the empty one folded into
+ *  `NO_PROJECT`. */
+export function sectionOf(project: string): string {
+  return project.trim() || NO_PROJECT;
+}
+
+/** A wall's sections in the order they stand: by name, case folded, and the
+ *  one with no project last since it is the leftovers rather than a project.
+ *
+ *  **By name, not by what moved last.** Most-recently-active is the useful
+ *  order for a list you read once; this is a place you come back to, and a
+ *  section that jumped to the top because a card in it spoke would move every
+ *  section under it — the position-is-memory rule `layout.ts` is built on.
+ *  Alphabetical is also the order the owner's own territories are easiest to
+ *  find in when you know what you are looking for, which is the only way
+ *  anybody looks for something on another machine. */
+export function sectionOrder(projects: readonly string[]): string[] {
+  return [...new Set(projects.map(sectionOf))].sort((a, b) => {
+    if (a === NO_PROJECT || b === NO_PROJECT) return a === NO_PROJECT ? 1 : b === NO_PROJECT ? -1 : 0;
+    return a.localeCompare(b, undefined, { sensitivity: "base" }) || a.localeCompare(b);
+  });
+}
+
+/** The id a section is known by. Host and project are both free text, so they
+ *  go in as a JSON pair rather than joined by a separator either may contain. */
+export function sectionId(host: string, project: string): string {
+  return `elsewhere:${JSON.stringify([host, project])}`;
+}
+
+/** One region per project per other wall, in the wall's left margin.
+ *
+ *  **A section per project**, because that is the organising idea of the whole
+ *  wall: here every project is a territory, and a machine's cards read as one
+ *  undivided grid was the one place that reading broke down (Lyss: *"they
+ *  should be sectioned by projects"*). The digest already carries `project`,
+ *  so nothing new crosses the link.
+ *
+ *  **The host is a heading, not a prefix.** Every section of a wall stacks
+ *  under one name (`heads`), so `lab · skein` is not spelled out down the
+ *  column eight times. The heading is drawn over the first section, in the
+ *  `HOST_HEAD` of room left above it, and a wall's sections sit a project gap
+ *  apart while two walls sit a wider one apart — so the grouping is read off
+ *  the spacing before the words.
  *
  *  **Left, because that is the edge that stays put.** Territories flow
  *  rightward from the origin and a new one is added on the right, so a region
@@ -652,34 +782,136 @@ export const ELSEWHERE_COLS = 4;
  *  pitch a card from this one does and every density's `CARD_BOX` holds. The
  *  regions it returns are *not* territories — no row, no drag, no grouping
  *  verbs — and the caller draws them with none of a territory's handles.
- *  `beside` is everything already standing on the wall. */
+ *  `beside` is everything already standing on the wall. Hosts stand in name
+ *  order; within one, `sectionOrder`. */
 export function standElsewhere<T extends { id: string; host: string; project: string }>(
   shadows: readonly T[],
   beside: readonly Box[],
-): { regions: (Region & { host: string })[]; laid: Laid<T>[] } {
+): { regions: Elsewhere[]; heads: HostHead[]; laid: Laid<T>[] } {
   const hosts = [...new Set(shadows.map((s) => s.host))].sort();
-  if (!hosts.length) return { regions: [], laid: [] };
+  if (!hosts.length) return { regions: [], heads: [], laid: [] };
   const w = regionWidth(ELSEWHERE_COLS);
   const left = beside.length ? Math.min(...beside.map((b) => b.x)) : 0;
   const x = left - w - REGION_GAP * 2;
   let y = beside.length ? Math.min(...beside.map((b) => b.y)) : 0;
 
-  const regions: (Region & { host: string })[] = [];
+  const regions: Elsewhere[] = [];
+  const heads: HostHead[] = [];
   const laid: Laid<T>[] = [];
   for (const host of hosts) {
-    const id = `elsewhere:${host}`;
-    const mine = shadows.filter((s) => s.host === host);
-    const placed = layout(
-      mine.map((s) => ({ id: s.id, cwd: id, project: s.project, projectId: id, territoryId: id, s })),
-      {},
-      [{ id, projectId: id, name: host, project: host, cwd: id, x, y, cols: ELSEWHERE_COLS }],
-    );
-    const r = placed.regions[0]!;
-    regions.push({ ...r, host });
-    for (const n of placed.laid) laid.push({ ...n, conv: n.conv.s });
-    y += r.h + REGION_GAP;
+    const theirs = shadows.filter((s) => s.host === host);
+    heads.push({ host, x, y, w });
+    y += HOST_HEAD;
+    for (const project of sectionOrder(theirs.map((s) => s.project))) {
+      const id = sectionId(host, project);
+      const mine = theirs.filter((s) => sectionOf(s.project) === project);
+      const placed = layout(
+        mine.map((s) => ({ id: s.id, cwd: id, project, projectId: id, territoryId: id, s })),
+        {},
+        [{ id, projectId: id, name: project, project, cwd: id, x, y, cols: ELSEWHERE_COLS }],
+      );
+      const r = placed.regions[0]!;
+      regions.push({ ...r, host });
+      for (const n of placed.laid) laid.push({ ...n, conv: n.conv.s });
+      y += r.h + REGION_GAP;
+    }
+    /* A wall apart from the next by more than a project is from its neighbour,
+       so the two levels of grouping read off the spacing. */
+    y += REGION_GAP;
   }
-  return { regions, laid };
+  return { regions, heads, laid };
+}
+
+/* ── on the glass, for as long as this window is up ─────────────────── */
+
+/** Where each shadow stuck to the glass sits, by shadow id (`shadowKey` — the
+ *  host and the card's id on it, so two walls' cards can never share a spot).
+ *
+ *  **Session-only, on purpose.** Everything else on the glass is a column on a
+ *  row, reconciled per screen arrangement by `arrange.rs`. A shadow has no row
+ *  here and never will: it is held in memory off the link, and a spot written
+ *  down for one would outlive the thing it points at — a card on a laptop that
+ *  has since been rebuilt, a wall renamed, a card closed over there while this
+ *  wall was shut. A spot that survives a restart pointing at nothing is a
+ *  promise the wall cannot keep, and adding the kind to `arrange::KINDS` with no
+ *  rows behind it would clear that table's `glass_x` on the next arrangement
+ *  change. So the glass remembers a shadow the way the panel remembers what was
+ *  said to one: in memory, and only while somebody is here to have put it
+ *  there. See `.claude/rules/elsewhere.md`. */
+export type Spots = Record<string, Spot>;
+
+/** The room the glass is in: `arrangements.key` and where the pane's origin
+ *  sat in it — the two things `arrange::adopt` is told. */
+export type Room = { key: string; origin: [number, number] };
+
+/** The glass's memory of shadows, per screen arrangement — `arrange.md`'s
+ *  "one glass per room" kept in memory for the one kind that has no columns. */
+export type ShadowGlass = {
+  room: Room | null;
+  spots: Spots;
+  rooms: Record<string, { origin: [number, number]; spots: Spots }>;
+};
+
+export const NO_SHADOW_GLASS: ShadowGlass = { room: null, spots: {}, rooms: {} };
+
+/** Walk into another room.
+ *
+ *  The first room this window identifies keeps whatever was stuck before it was
+ *  known — at launch there is nothing, and anything stuck in the moment before
+ *  the monitors answered was stuck *in* that room. A room already seen this
+ *  session gets back what it had. One never seen gets the room just left,
+ *  shifted by the difference between the two panes' origins, which is
+ *  `arrange::adopt`'s copy made by the same rule — so spreading over every
+ *  screen finds a shadow where it was, not piled onto whichever monitor the
+ *  union starts at. */
+export function enterRoom(g: ShadowGlass, room: Room): ShadowGlass {
+  if (!g.room) return { ...g, room };
+  if (g.room.key === room.key) return { ...g, room };
+  const rooms = { ...g.rooms, [g.room.key]: { origin: g.room.origin, spots: g.spots } };
+  const seen = rooms[room.key];
+  if (seen) return { room: { key: room.key, origin: seen.origin }, spots: seen.spots, rooms };
+  const dx = room.origin[0] - g.room.origin[0];
+  const dy = room.origin[1] - g.room.origin[1];
+  const spots: Spots = {};
+  for (const [id, at] of Object.entries(g.spots)) spots[id] = { x: at.x + dx, y: at.y + dy };
+  return { room, spots, rooms };
+}
+
+/** Stick one shadow to the glass in the room in front of you, or take it off. */
+export function stickShadow(g: ShadowGlass, id: string, at: Spot | null): ShadowGlass {
+  const spots = { ...g.spots };
+  if (at) spots[id] = { x: at.x, y: at.y };
+  else delete spots[id];
+  return { ...g, spots };
+}
+
+/** Forget every spot whose shadow is no longer on the wall, in every room.
+ *
+ *  Asked with the ids the snapshots still carry — and a wall that has gone
+ *  quiet still carries its cards, drawn as not heard from, so a laptop that
+ *  shuts its lid and opens it again finds its cards where you stuck them. What
+ *  this lets go of is a card its own wall has *closed*: its id will not come
+ *  back, so its spot would point at nothing for the rest of the session.
+ *  Answers the same object when nothing went, so a snapshot that changed only a
+ *  card's activity writes nothing. */
+export function keepOnly(g: ShadowGlass, alive: ReadonlySet<string>): ShadowGlass {
+  const trim = (s: Spots): Spots | null => {
+    const gone = Object.keys(s).filter((id) => !alive.has(id));
+    if (!gone.length) return null;
+    const next = { ...s };
+    for (const id of gone) delete next[id];
+    return next;
+  };
+  let changed = false;
+  const spots = trim(g.spots);
+  if (spots) changed = true;
+  const rooms: ShadowGlass["rooms"] = {};
+  for (const [k, r] of Object.entries(g.rooms)) {
+    const t = trim(r.spots);
+    if (t) changed = true;
+    rooms[k] = t ? { origin: r.origin, spots: t } : r;
+  }
+  return changed ? { room: g.room, spots: spots ?? g.spots, rooms } : g;
 }
 
 /* ── getting your attention ─────────────────────────────────────────── */

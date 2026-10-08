@@ -56,7 +56,7 @@ export type Verb =
   | { kind: "grouping"; act: "new" | "rename" }
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" }
-  | { kind: "card"; act: "close" };
+  | { kind: "card"; act: "close" | "glass" };
 
 /** One sequence the leader opens onto.
  *
@@ -176,6 +176,12 @@ export const CHORDS: readonly Chord[] = [
      close was none: the ✕ and the right-click menu were all there was. It asks
      first when the card is doing something (`closing.ts`). */
   { keys: "cc", label: "close this card", verb: { kind: "card", act: "close" } },
+  /* `cg`: stick the focused card to the glass, or put it back. There was no
+     key for the glass at all — the right-click was the whole of it — and a
+     card on another wall, the thing you most want kept in front of you while
+     you work elsewhere, is reached by keyboard (`ee`) and so wants its glass
+     the same way. */
+  { keys: "cg", label: "this card on the glass / back", verb: { kind: "card", act: "glass" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];

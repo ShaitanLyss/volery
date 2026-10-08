@@ -24,10 +24,18 @@ import {
   spine,
   stirring,
   type Kid,
+  type Limb,
+  kinAcross,
+  stitches,
+  strayFor,
+  straysOf,
+  STRAY_LEN,
+  STRAY_MIN,
   type Kin,
 } from "../src/lib/lineage";
 import { tangentOn, type Box, type Pt } from "../src/lib/flow";
 import { MAX_SCALE } from "../src/lib/zoom";
+import { shadowKey } from "../src/lib/shadow";
 
 const CARD = { w: 240, h: 150 };
 
@@ -592,5 +600,172 @@ describe("the flat base is under the card at every bearing", () => {
       );
     }
     expect(worst).toBeLessThan(0.25);
+  });
+});
+
+describe("roots across walls", () => {
+  const me = "desk";
+  const heard = new Set(["lab"]);
+  const none = {} as Record<string, never>;
+
+  /* Lyss: "local local, remote local, local remote, remote remote." */
+  test("all four cases come out keyed on this wall's ids", () => {
+    const kin = kinAcross({
+      kin: [{ parent: "p", child: "c" }],
+      births: { here: { host: "lab", card: "lp" } },
+      shadows: [
+        { id: shadowKey("lab", "lc"), host: "lab", parent: { host: "desk", card: "p" } },
+        { id: shadowKey("lab", "lc2"), host: "lab", parent: { host: null, card: "lp" } },
+      ],
+      me,
+      heard,
+    });
+    expect(kin).toEqual([
+      { parent: "p", child: "c" },
+      { parent: shadowKey("lab", "lp"), child: "here", across: true },
+      { parent: "p", child: shadowKey("lab", "lc"), across: true },
+      /* Both ends on lab: an ordinary root there, so solid here too. */
+      { parent: shadowKey("lab", "lp"), child: shadowKey("lab", "lc2") },
+    ]);
+  });
+
+  test("a parent on a wall this one holds no word from is unseen, not dropped", () => {
+    const kin = kinAcross({
+      kin: [],
+      births: { here: { host: "far", card: "fp" } },
+      shadows: [{ id: shadowKey("lab", "lc"), host: "lab", parent: { host: "far", card: "fp" } }],
+      me,
+      heard,
+    });
+    expect(kin.map((k) => k.unseen)).toEqual(["far", "far"]);
+    expect(kin.every((k) => k.across)).toBe(true);
+  });
+
+  /* A person on the other wall asked, or an older wall said nothing. */
+  test("no asking card, or no parent at all, is no root", () => {
+    const kin = kinAcross({
+      kin: [],
+      births: { here: { host: "lab", card: null } },
+      shadows: [{ id: shadowKey("lab", "lc"), host: "lab", parent: null }],
+      me,
+      heard,
+    });
+    expect(kin).toEqual([]);
+  });
+
+  /* It might name this wall; a stray to a card standing right here is wrong. */
+  test("while this wall's own name is unknown, a third wall is not guessed at", () => {
+    const shadows = [
+      { id: shadowKey("lab", "a"), host: "lab", parent: { host: "desk", card: "p" } },
+      { id: shadowKey("lab", "b"), host: "lab", parent: { host: null, card: "lp" } },
+    ];
+    const kin = kinAcross({ kin: [], births: none, shadows, me: "", heard });
+    expect(kin).toEqual([{ parent: shadowKey("lab", "lp"), child: shadowKey("lab", "b") }]);
+  });
+
+  test("one parent per child, this wall's own record first", () => {
+    const kin = kinAcross({
+      kin: [{ parent: "p", child: "c" }],
+      births: { c: { host: "lab", card: "lp" } },
+      shadows: [],
+      me,
+      heard,
+    });
+    expect(kin).toEqual([{ parent: "p", child: "c" }]);
+  });
+
+  test("a birth heard live grows; one read back is simply there", () => {
+    const [live] = kinAcross({ kin: [], births: { c: { host: "lab", card: "lp", at: 5 } }, shadows: [], me, heard });
+    const [read] = kinAcross({ kin: [], births: { c: { host: "lab", card: "lp" } }, shadows: [], me, heard });
+    expect(live.born).toBe(5);
+    expect(read.born).toBeUndefined();
+  });
+
+  test("an unseen pair is a stray, never half a limb", () => {
+    const boxes = new Map<string, Box>([["c", at(400, 0)]]);
+    const kin: Kin[] = [{ parent: shadowKey("far", "p"), child: "c", across: true, unseen: "far" }];
+    expect(familiesOf(kin, boxes)).toEqual([]);
+    const strays = straysOf(kin, boxes);
+    expect(strays.map((s) => [s.id, s.parent])).toEqual([["c", shadowKey("far", "p")]]);
+    expect(straysOf(kin, new Map())).toEqual([]);
+  });
+
+  test("a stitched limb is told apart all the way to the canvas", () => {
+    const boxes = new Map<string, Box>([
+      ["p", PARENT],
+      ["a", at(900, 0)],
+    ]);
+    const [family] = familiesOf([{ parent: "p", child: "a", across: true }], boxes);
+    const [limb] = limbsFor(family.parent, family.kids, { scale: 1, now: 0 });
+    expect(limb.across).toBe(true);
+  });
+});
+
+describe("stitches", () => {
+  const [limb] = limbsFor(PARENT, [kid("a", 900, 0)], { scale: 1, now: 0 });
+
+  /* The ends are the stretches carried under a card; a root that began or
+     ended in a gap would show its cut on the ground. */
+  test("start at the parent and end at the child", () => {
+    const s = stitches(limb, 1);
+    expect(s[0][0]).toBe(0);
+    expect(s[s.length - 1][1]).toBe(1);
+  });
+
+  test("are evenly cut, with a gap between each", () => {
+    const s = stitches(limb, 1);
+    expect(s.length).toBeGreaterThan(20);
+    for (let i = 1; i < s.length; i += 1) expect(s[i][0]).toBeGreaterThan(s[i - 1][1]);
+    for (const [a, b] of s) expect(b).toBeGreaterThan(a);
+  });
+
+  test("spaced along the length, not the curve's parameter", () => {
+    const s = stitches(limb, 1);
+    const pt = (p: number) => spine(limb, p, p, 1)[0];
+    const lens = s.slice(1, -1).map(([a, b]) => dist(pt(a), pt(b)));
+    const lo = Math.min(...lens);
+    const hi = Math.max(...lens);
+    expect(hi - lo).toBeLessThan(1.5);
+  });
+
+  test("a root too short to cut is one stitch, which is solid", () => {
+    const short = { ...limb, spine: [{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 6, y: 0 }, { x: 9, y: 0 }] as Limb["spine"] };
+    expect(stitches(short, 1)).toEqual([[0, 1]]);
+  });
+
+  test("a stretch of the outline is carried under a card only at an end", () => {
+    const whole = outline(limb);
+    const first = outline(limb, undefined, 0, 0.1);
+    const middle = outline(limb, undefined, 0.4, 0.5);
+    expect(first[0]).toEqual(whole[0]);
+    /* The middle stitch's first chord is on the curve, not pushed back along it. */
+    const t0 = spine(limb, 0.4, 0.4, 1)[0];
+    const mid = { x: (middle[0].x + middle[middle.length - 1].x) / 2, y: (middle[0].y + middle[middle.length - 1].y) / 2 };
+    expect(dist(mid, t0)).toBeLessThan(1e-6);
+  });
+});
+
+describe("a stray", () => {
+  const card = at(400, 0);
+  const s = strayFor({ id: "c", box: card }, { scale: 1, now: 0 });
+
+  test("comes in from the west and arrives at the card", () => {
+    const [from, , , to] = s.spine;
+    expect(from.x).toBeLessThan(card.x);
+    expect(from.y).toBeLessThan(to.y);
+    expect(dist(from, to)).toBeCloseTo(STRAY_LEN, 5);
+    expect(Math.abs(to.x - card.x)).toBeLessThan(6);
+  });
+
+  test("is free at the parent end and tucked under the child", () => {
+    expect(s.loose).toBe(true);
+    expect(s.across).toBe(true);
+    expect(s.seat).toBe(0);
+    expect(s.tuck).toBeGreaterThan(0);
+  });
+
+  test("shortens with the zoom, and never vanishes", () => {
+    const far = strayFor({ id: "c", box: card }, { scale: 0.05, now: 0 });
+    expect(dist(far.spine[0], far.spine[3])).toBeCloseTo(STRAY_MIN, 5);
   });
 });

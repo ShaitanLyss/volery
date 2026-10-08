@@ -145,10 +145,12 @@
     /** Cards on other walls in the flyway (`shadows.svelte.ts`).
      *
      *  Deliberately **not** in `convs` and never handed to anything that takes
-     *  a card: they are drawn, and they can be focused, and that is all the wall
-     *  does with them. No pick, no drag, no pin, no menu, no strand box, no Tab
-     *  order — every one of those writes a row or reaches a process keyed on a
-     *  card id this machine does not have. See the head of `shadow.ts`. */
+     *  a card: they are drawn, focused, stuck to the glass and dragged about on
+     *  it, and that is all the wall does with them. No pick, no pin, no strand
+     *  box, no Tab order — every one of those writes a row or reaches a process
+     *  keyed on a card id this machine does not have. The glass is the one
+     *  gesture they share, because its spot for a shadow is in memory and
+     *  nowhere else (`ShadowGlass`). See `.claude/rules/elsewhere.md`. */
     shadows?: readonly Shadow[];
     /** Where the home screen is inside the glass, in glass pixels, or null
      *  while the studio is on one screen and the two are the same box.
@@ -704,6 +706,111 @@
   function unheard(host: string): boolean {
     return shadows.find((s) => s.host === host)?.face.unheard ?? false;
   }
+  /* The same split `wallCards` / `glassCards` make, on the shadow's own spot.
+     The section keeps the slot either way — `standElsewhere` lays out every
+     shadow as if nothing were stuck, which is the glass's first rule. */
+  const wallShadows = $derived(elsewhere.laid.filter((n) => !n.conv.glass));
+  const glassShadows = $derived(
+    elsewhere.laid
+      .filter((n) => n.conv.glass)
+      .map((n) => ({ ...n, ...glassAt(n.conv.glass!, CARD_BOX.wall, paneBox, keepout) })),
+  );
+
+  /** `cardBoxes` and every shadow's box, for the roots, which run between a
+   *  parent and its children wherever each one runs (`lineage.ts::kinAcross`).
+   *  Its own map rather than shadows added to `cardBoxes`, which `Flow` and
+   *  `Wisps` are handed too — no strand box is one of the things a shadow does
+   *  not get (`elsewhere.md`), and a map both read is a guard both share. */
+  const rootBoxes = $derived.by(() => {
+    const out = new Map(cardBoxes);
+    const lod = studio.lod;
+    for (const n of wallShadows) {
+      out.set(n.conv.id, screenBox({ x: n.x, y: n.y, w: CARD_BOX[lod].w, h: CARD_BOX[lod].h }, view));
+    }
+    for (const n of glassShadows) {
+      out.set(n.conv.id, { x: n.x, y: n.y, w: CARD_BOX.wall.w, h: CARD_BOX.wall.h });
+    }
+    return out;
+  });
+  /** `working`, and the shadows whose own wall says they are working. Read off
+   *  the face, so a quiet wall's card — which `faceOf` stops claiming work for —
+   *  carries no charge either: a current running into a laptop in a bag is the
+   *  lie `elsewhere.md` exists to prevent, drawn in the ground. */
+  const charged = $derived(
+    new Set([...working, ...shadows.filter((s) => s.tier === "work").map((s) => s.id)]),
+  );
+
+  /* ── carrying a shadow about the glass ──────────────────────────────────
+   *
+   * Its own gesture rather than the wall's carry, the way a timeline plate's
+   * is (`Lintel.svelte`). The carry hauls a *selection*, and a shadow is not in
+   * the selection: `pick.ts`'s kinds each write their move to a row, and a
+   * shadow has none. So a left press on one answers for itself — it travels and
+   * drags, or it does not and is the click that focuses it — and `groundDown`
+   * already leaves a left press on `[data-shadow]` alone. Only on the glass:
+   * on the wall a shadow stands in its section and nothing moves it. */
+  let shadowHeld: {
+    s: Shadow;
+    sx: number;
+    sy: number;
+    ox: number;
+    oy: number;
+    moved: boolean;
+    el: HTMLElement;
+    pointer: number;
+  } | null = null;
+
+  function shadowDown(n: { conv: Shadow; x: number; y: number }, e: PointerEvent) {
+    if (e.button !== 0) return;
+    /* From where it is *drawn*, less the pane's offset — the clamped spot is
+       the honest origin, as `worldNow` says of everything else on the pane. */
+    shadowHeld = {
+      s: n.conv,
+      sx: e.clientX,
+      sy: e.clientY,
+      ox: n.x - paneBox.x,
+      oy: n.y - paneBox.y,
+      moved: false,
+      el: e.currentTarget as HTMLElement,
+      pointer: e.pointerId,
+    };
+    window.addEventListener("pointermove", shadowMove);
+    window.addEventListener("pointerup", shadowUp);
+    window.addEventListener("pointercancel", shadowUp);
+  }
+
+  function shadowMove(e: PointerEvent) {
+    const h = shadowHeld;
+    if (!h) return;
+    if (!h.moved) {
+      if (Math.hypot(e.clientX - h.sx, e.clientY - h.sy) < DRAG_SLOP) return;
+      h.moved = true;
+      /* A pointer that is no longer active cannot be captured, and the throw
+         would end this handler before the move it is about. The capture is a
+         nicety here — the window listeners carry the drag either way. */
+      try {
+        h.el.setPointerCapture?.(h.pointer);
+      } catch {}
+    }
+    h.s.stick({ x: h.ox + e.clientX - h.sx, y: h.oy + e.clientY - h.sy });
+  }
+
+  function shadowUp() {
+    const h = shadowHeld;
+    shadowHeld = null;
+    window.removeEventListener("pointermove", shadowMove);
+    window.removeEventListener("pointerup", shadowUp);
+    window.removeEventListener("pointercancel", shadowUp);
+    if (!h) return;
+    if (h.el.hasPointerCapture?.(h.pointer)) h.el.releasePointerCapture(h.pointer);
+    /* The click this release is about to produce is the drag's. */
+    if (h.moved) suppressClick = true;
+  }
+  $effect(() => () => {
+    window.removeEventListener("pointermove", shadowMove);
+    window.removeEventListener("pointerup", shadowUp);
+    window.removeEventListener("pointercancel", shadowUp);
+  });
   const glassWidgets = $derived(
     widgets.items
       .filter((w) => spotOf(w))
@@ -757,10 +864,21 @@
    *  the pane's own box are all here. Everything lands where it already looked
    *  to be, at its 1:1 size, centred on where its middle was (`stickTo`). */
   export function toggleGlass(
-    kind: "card" | "image" | "widget" | "region",
+    kind: "card" | "image" | "widget" | "region" | "shadow",
     id: string,
   ) {
-    if (kind === "card") {
+    if (kind === "shadow") {
+      /* No undo record, and that is the kind's nature rather than an
+         omission: the stack's realms each put a *row* back, and a shadow has
+         none — the gesture that takes it back is the same item again. */
+      const n = elsewhere.laid.find((l) => l.conv.id === id);
+      if (!n) return;
+      n.conv.stick(
+        n.conv.glass
+          ? null
+          : stickTo({ x: n.x, y: n.y, ...CARD_BOX[studio.lod] }, view, CARD_BOX.wall, paneBox),
+      );
+    } else if (kind === "card") {
       const n = model.laid.find((l) => l.conv.id === id);
       if (!n) return;
       /* Off the glass reads its *own* spot, not `n.glass`: a card inside a
@@ -1972,13 +2090,14 @@
    *  looking at changes. The density stays put because it is a deliberate choice
    *  — this shows you the card, it does not decide how you are reading the wall. */
   export function reveal(id: string) {
-    const n =
-      model.laid.find((l) => l.conv.id === id) ?? elsewhere.laid.find((l) => l.conv.id === id);
+    const shadow = elsewhere.laid.find((l) => l.conv.id === id);
+    const n = model.laid.find((l) => l.conv.id === id) ?? shadow;
     if (!n) return;
     /* Nothing to reveal: a card on the glass is already in front of you, and
        panning the wall to the slot it still owns would move the view for no
-       visible reason — the card under the ring would not have budged. */
-    if (n.glass) return;
+       visible reason — the card under the ring would not have budged. A
+       shadow's spot is its own and not the layout's, so it is asked apart. */
+    if (n.glass || shadow?.conv.glass) return;
     const box = CARD_BOX[studio.lod];
     revealBox(n.x, n.y, box.w, box.h);
   }
@@ -2379,6 +2498,34 @@
      `animate:` has to sit on the immediate child of a keyed each block and a
      `{@render}` is not one — so the wrapper is written twice below and only
      what is inside it is shared. -->
+<!-- A card on another wall, in either frame. `data-shadow` rather than
+     `data-conv`: `nodeOf` reads the latter as a card to pick and carry, and
+     carrying one writes a placement. On the glass it carries itself
+     (`shadowDown`) and draws at `wall` density, as a stuck card does. -->
+{#snippet shadowNode(n: { conv: Shadow; x: number; y: number }, glass: boolean)}
+  <div
+    class="node"
+    data-shadow={n.conv.id}
+    style:left="{n.x}px"
+    style:top="{n.y}px"
+    style:z-index={Z_CARD}
+    onpointerdown={glass ? (e) => shadowDown(n, e) : undefined}
+    onclickcapture={glass ? nodeClickCapture : undefined}
+    role="presentation"
+  >
+    <Card
+      conv={n.conv}
+      focused={n.conv.id === focusedId}
+      lod={glass ? "wall" : studio.lod}
+      onfocus={(e) => {
+        if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        onfocus(n.conv.id);
+      }}
+      onclose={onclosewall ? () => onclosewall(n.conv) : undefined}
+    />
+  </div>
+{/snippet}
+
 {#snippet cardBody(n: Laid<Conversation>, lod: Lod, scale: number)}
   {#if n.conv.seats.length}
     <Seats seats={n.conv.seats} {scale} />
@@ -2472,7 +2619,7 @@
        under it rather than across its title, with no rim arithmetic to get
        right. Screen space either way; `cardBoxes` is the same map both are
        given. See `lineage.ts`. -->
-  <Lineage kin={lineage} boxes={cardBoxes} scale={studio.scale} charged={working} />
+  <Lineage kin={lineage} boxes={rootBoxes} scale={studio.scale} {charged} />
 
   <!-- Two nested boxes, and which property does which half is the whole reason
        the text on this wall is sharp. See the note over `.pan` in the styles. -->
@@ -2521,11 +2668,23 @@
         </div>
       {/each}
 
-      <!-- Other walls, each a region of its own. Not a territory: no `data-cwd`,
-           no `data-territory`, no `data-region`, so every press here is bare
-           ground to the wall's gestures and nothing that writes a row can be
-           aimed at one. The border is dotted where a territory's is dashed —
-           still a stitch, and visibly a different kind of boundary. -->
+      <!-- Other walls, a section per project under each wall's name. Not a
+           territory: no `data-cwd`, no `data-territory`, no `data-region`, so
+           every press here is bare ground to the wall's gestures and nothing
+           that writes a row can be aimed at one. The border is dotted where a
+           territory's is dashed — still a stitch, and visibly a different kind
+           of boundary. -->
+      {#each elsewhere.heads as h (h.host)}
+        <div
+          class="host elsewhere"
+          style:left="{h.x + 11}px"
+          style:top="{h.y + 8}px"
+          style:z-index={Z_CHIP}
+          title="{h.host}, another wall in this flyway — only what each card is doing travels here, and a prompt to one is sent to {h.host} (space then e e)"
+        >
+          {h.host}{unheard(h.host) ? " · not heard from" : ""}
+        </div>
+      {/each}
       {#each elsewhere.regions as r (r.id)}
         <div
           class="region elsewhere"
@@ -2539,39 +2698,14 @@
           style:left="{r.x + 11}px"
           style:top="{r.y + 8}px"
           style:z-index={Z_CHIP}
-          title="cards on {r.host}, another wall in this flyway — only what each is doing travels here, and a prompt to one is sent to {r.host} (space then e e)"
+          title="{r.name} on {r.host}"
         >
-          {r.host}{unheard(r.host) ? " · not heard from" : ""}
+          {r.name}
         </div>
       {/each}
 
-      <!-- `data-shadow` rather than `data-conv`: `nodeOf` reads the latter as a
-           card to pick and carry, and carrying one writes a placement. -->
-      {#each elsewhere.laid as n (n.conv.id)}
-        <div
-          class="node"
-          data-shadow={n.conv.id}
-          style:left="{n.x}px"
-          style:top="{n.y}px"
-          style:z-index={Z_CARD}
-          role="presentation"
-        >
-          <Card
-            conv={n.conv}
-            focused={n.conv.id === focusedId}
-            lod={studio.lod}
-            onfocus={(e) => {
-              if (e.shiftKey || e.ctrlKey || e.metaKey) return;
-              onfocus(n.conv.id);
-            }}
-            onclose={onclosewall
-              ? () => {
-                  const s = shadows.find((s) => s.id === n.conv.id);
-                  if (s) onclosewall(s);
-                }
-              : undefined}
-          />
-        </div>
+      {#each wallShadows as n (n.conv.id)}
+        {@render shadowNode(n, false)}
       {/each}
     </div>
   </div>
@@ -2622,6 +2756,10 @@
 
   {#each glassWidgets as w (w.id)}
     {@render instrument(w, true)}
+  {/each}
+
+  {#each glassShadows as n (n.conv.id)}
+    {@render shadowNode(n, true)}
   {/each}
 
   {#each glassCards as n (n.conv.id)}
@@ -2898,6 +3036,20 @@
     border-style: dotted;
   }
   .name.elsewhere {
+    cursor: default;
+  }
+  /* The wall a column of sections belongs to, over the first of them. A shade
+     louder than a section's name, since it is the level above it — the same
+     faint ink, never a colour: chrome is achromatic here. */
+  .host.elsewhere {
+    position: absolute;
+    font-family: var(--util);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--paper-mute);
+    white-space: nowrap;
     cursor: default;
   }
   .region.picked {

@@ -114,6 +114,17 @@ spread is the other trigger and that one genuinely *is* an event. Everything pas
 question is bounded by `settle`, which returns nothing at all unless the fingerprint moved —
 so the residue of a focus is one `currentMonitor` call.
 
+### The one kind with no columns
+
+A card on another wall (`elsewhere.md`) can be stuck to the glass and has **no row here** to
+carry a spot, so it is not in `arrange::KINDS` and must never be added to it without rows
+behind it: `adopt` clears as well as sets, and a kind listed with nothing written for it
+empties that table's `glass_x` on the next arrangement change. Its spots are session-only and
+kept per room *in memory* by the same rules this file states — a room seen before gets its own
+back, a room never seen copies the one just left shifted by the panes' origins — in
+`shadow.ts::enterRoom`, called from `settleArrangement` beside `adopt` with the same key and
+origin. `elsewhere.md` argues why it is not persisted.
+
 ### What the undo stack is told
 
 A glass position is a room's coordinates, so an act holding one from the room you have just

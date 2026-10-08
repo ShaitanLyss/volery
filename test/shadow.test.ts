@@ -21,6 +21,15 @@ import {
   standElsewhere,
   steadyDoing,
   ELSEWHERE_COLS,
+  HOST_HEAD,
+  NO_PROJECT,
+  sectionId,
+  sectionOrder,
+  enterRoom,
+  stickShadow,
+  keepOnly,
+  NO_SHADOW_GLASS,
+  type Room,
   type CardDigest,
   type DigestSource,
   type Sent,
@@ -78,7 +87,30 @@ describe("making a digest", () => {
       said: "done — the ring no longer pegs",
       jobs: 0,
       asks: [],
+      removals: [],
+      notices: [],
+      parent: null,
     });
+  });
+
+  /* What lets another wall draw the root to a card's parent (`lineage.ts`,
+     "across walls"). `host: null` is the card's own wall. */
+  test("carries who opened the card, and survives the wire", () => {
+    const local = digestOf(source({ parent: { host: null, card: "p1" } }));
+    expect(local.parent).toEqual({ host: null, card: "p1" });
+    const afar = digestOf(source({ parent: { host: "desk", card: "p2" } }));
+    expect(readDigest(JSON.parse(JSON.stringify(afar)))?.parent).toEqual({ host: "desk", card: "p2" });
+  });
+
+  /* Two walls are never upgraded together: an older digest has no `parent`,
+     and a broken one must never become a parent called "". */
+  test("an older or broken wall's parent reads as none", () => {
+    const base = digestOf(source());
+    const { parent: _, ...old } = base;
+    expect(readDigest(old)?.parent).toBeNull();
+    expect(readDigest({ ...base, parent: { host: "desk", card: "\u0000 " } })?.parent).toBeNull();
+    expect(readDigest({ ...base, parent: "p1" })?.parent).toBeNull();
+    expect(readDigest({ ...base, parent: { host: "", card: "p1" } })?.parent).toEqual({ host: null, card: "p1" });
   });
 
   /* The said line is agent output, and it crosses a machine. */
@@ -295,39 +327,174 @@ describe("the owning wall's side", () => {
 });
 
 describe("where other walls stand", () => {
-  const s = (host: string, n: number) => ({ id: `elsewhere:${host}:${n}`, host, project: "skein" });
+  const s = (host: string, n: number, project = "skein") => ({
+    id: `elsewhere:${host}:${project}:${n}`,
+    host,
+    project,
+  });
 
   test("nothing elsewhere stands nowhere", () => {
-    expect(standElsewhere([], [{ x: 0, y: 0, w: 10, h: 10 }])).toEqual({ regions: [], laid: [] });
+    expect(standElsewhere([], [{ x: 0, y: 0, w: 10, h: 10 }])).toEqual({ regions: [], heads: [], laid: [] });
   });
 
   /* The left edge is the one territories do not grow from. */
-  test("in the left margin of everything already standing", () => {
-    const { regions } = standElsewhere([s("lab", 1)], [
+  test("in the left margin of everything already standing, under its wall's name", () => {
+    const { regions, heads } = standElsewhere([s("lab", 1)], [
       { x: 100, y: 40, w: 300, h: 300 },
       { x: -50, y: 200, w: 100, h: 100 },
     ]);
-    expect(regions[0]!.x).toBe(-50 - regionWidth(ELSEWHERE_COLS) - REGION_GAP * 2);
-    expect(regions[0]!.y).toBe(40);
+    const x = -50 - regionWidth(ELSEWHERE_COLS) - REGION_GAP * 2;
+    expect(heads).toEqual([{ host: "lab", x, y: 40, w: regionWidth(ELSEWHERE_COLS) }]);
+    expect(regions[0]!.x).toBe(x);
+    expect(regions[0]!.y).toBe(40 + HOST_HEAD);
     expect(regions[0]!.host).toBe("lab");
+    expect(regions[0]!.name).toBe("skein");
   });
 
-  test("one region per wall, stacked in name order, each holding its own", () => {
-    const shadows = [s("zed", 1), s("lab", 1), s("lab", 2), s("lab", 3), s("lab", 4), s("lab", 5)];
+  /* Lyss: "all my shadow cards are one big grid, they should be sectioned by
+     projects". A project is a territory on every wall; a machine's cards were
+     the one place that reading broke down. */
+  test("a section per project, each holding only its own cards", () => {
+    const shadows = [
+      s("lab", 1, "skein"),
+      s("lab", 2, "atelier"),
+      s("lab", 3, "skein"),
+      s("lab", 4, "atelier"),
+      s("lab", 5, "skein"),
+    ];
     const { regions, laid } = standElsewhere(shadows, []);
-    expect(regions.map((r) => r.host)).toEqual(["lab", "zed"]);
-    const [lab, zed] = regions;
-    /* Five cards on four columns is two rows. */
-    expect(lab!.h).toBeGreaterThanOrEqual(2 * SLOT_H);
-    expect(zed!.y).toBe(lab!.y + lab!.h + REGION_GAP);
+    expect(regions.map((r) => r.name)).toEqual(["atelier", "skein"]);
     for (const n of laid) {
-      const r = n.conv.host === "lab" ? lab! : zed!;
+      const r = regions.find((r) => r.name === n.conv.project)!;
       expect(n.x).toBeGreaterThanOrEqual(r.x);
       expect(n.x).toBeLessThan(r.x + r.w);
       expect(n.y).toBeGreaterThanOrEqual(r.y);
       expect(n.y).toBeLessThan(r.y + r.h);
     }
     expect(laid.map((n) => n.conv)).toEqual(expect.arrayContaining(shadows));
+    expect(laid).toHaveLength(shadows.length);
+  });
+
+  test("a wall's sections stack a project gap apart, and two walls a wider one", () => {
+    const shadows = [s("zed", 1), s("lab", 1, "b"), s("lab", 2, "a"), s("lab", 3, "a"), s("lab", 4, "a"), s("lab", 5, "a"), s("lab", 6, "a")];
+    const { regions, heads } = standElsewhere(shadows, []);
+    expect(heads.map((h) => h.host)).toEqual(["lab", "zed"]);
+    expect(regions.map((r) => [r.host, r.name])).toEqual([
+      ["lab", "a"],
+      ["lab", "b"],
+      ["zed", "skein"],
+    ]);
+    const [a, b, zed] = regions;
+    /* Five cards on four columns is two rows. */
+    expect(a!.h).toBeGreaterThanOrEqual(2 * SLOT_H);
+    expect(a!.y).toBe(heads[0]!.y + HOST_HEAD);
+    expect(b!.y).toBe(a!.y + a!.h + REGION_GAP);
+    expect(heads[1]!.y).toBe(b!.y + b!.h + REGION_GAP * 2);
+    expect(zed!.y).toBe(heads[1]!.y + HOST_HEAD);
+    /* One column down the margin, every section the same width. */
+    expect(new Set(regions.map((r) => r.x)).size).toBe(1);
+    expect(new Set(regions.map((r) => r.w)).size).toBe(1);
+  });
+
+  test("the same project on two walls is two sections, never one", () => {
+    const { regions } = standElsewhere([s("lab", 1), s("zed", 1)], []);
+    expect(regions.map((r) => r.id)).toEqual([sectionId("lab", "skein"), sectionId("zed", "skein")]);
+    expect(new Set(regions.map((r) => r.id)).size).toBe(2);
+  });
+
+  /* Free text on both sides, so a separator one could contain is not one. */
+  test("a section id cannot be forged by a host or project carrying the separator", () => {
+    expect(sectionId("a:b", "c")).not.toBe(sectionId("a", "b:c"));
+  });
+
+  test("a card with no project stands in a section of its own, last, never called nothing", () => {
+    const { regions, laid } = standElsewhere([s("lab", 1, ""), s("lab", 2, "  "), s("lab", 3, "zz")], []);
+    expect(regions.map((r) => r.name)).toEqual(["zz", NO_PROJECT]);
+    expect(regions.every((r) => r.name.trim() !== "")).toBe(true);
+    expect(laid).toHaveLength(3);
+  });
+
+  /* By name, so a section does not move because a card in it spoke. */
+  test("sections stand in name order, whatever case they are in", () => {
+    expect(sectionOrder(["skein", "Atelier", "caravan", "", "atelier"])).toEqual([
+      "atelier",
+      "Atelier",
+      "caravan",
+      "skein",
+      NO_PROJECT,
+    ]);
+  });
+});
+
+describe("a shadow on the glass", () => {
+  const A = "elsewhere:lab:1";
+  const B = "elsewhere:lab:2";
+  const one: Room = { key: "one", origin: [0, 0] };
+  const spread: Room = { key: "spread", origin: [1920, 40] };
+
+  test("stuck and taken off again, in the room in front of you", () => {
+    let g = enterRoom(NO_SHADOW_GLASS, one);
+    g = stickShadow(g, A, { x: 10, y: 20 });
+    expect(g.spots).toEqual({ [A]: { x: 10, y: 20 } });
+    g = stickShadow(g, A, null);
+    expect(g.spots).toEqual({});
+  });
+
+  /* At launch nothing is known until the monitors answer, and anything stuck
+     in that moment was stuck in the room they are about to name. */
+  test("the first room keeps what was stuck before it was known", () => {
+    const g = enterRoom(stickShadow(NO_SHADOW_GLASS, A, { x: 5, y: 5 }), one);
+    expect(g.room).toEqual(one);
+    expect(g.spots[A]).toEqual({ x: 5, y: 5 });
+  });
+
+  /* `arrange::adopt`'s copy, by the same rule: the same place on the home
+     screen, not the same numbers in a bigger room. */
+  test("a room never seen copies the one just left, shifted by the panes' origins", () => {
+    let g = enterRoom(NO_SHADOW_GLASS, one);
+    g = stickShadow(g, A, { x: 100, y: 100 });
+    g = enterRoom(g, spread);
+    expect(g.spots[A]).toEqual({ x: 2020, y: 140 });
+  });
+
+  test("a room seen before gets back what it had", () => {
+    let g = enterRoom(NO_SHADOW_GLASS, one);
+    g = stickShadow(g, A, { x: 100, y: 100 });
+    g = enterRoom(g, spread);
+    g = stickShadow(g, A, { x: 3000, y: 500 });
+    g = stickShadow(g, B, { x: 2500, y: 300 });
+    g = enterRoom(g, one);
+    expect(g.spots).toEqual({ [A]: { x: 100, y: 100 } });
+    g = enterRoom(g, spread);
+    expect(g.spots).toEqual({ [A]: { x: 3000, y: 500 }, [B]: { x: 2500, y: 300 } });
+  });
+
+  test("entering the room you are in changes nothing", () => {
+    let g = enterRoom(NO_SHADOW_GLASS, one);
+    g = stickShadow(g, A, { x: 1, y: 2 });
+    expect(enterRoom(g, one).spots).toEqual(g.spots);
+    expect(enterRoom(g, one).rooms).toEqual({});
+  });
+
+  /* A card its own wall closed will not come back, so its spot is let go —
+     in every room, not just this one. */
+  test("a spot whose card is gone is forgotten everywhere", () => {
+    let g = enterRoom(NO_SHADOW_GLASS, one);
+    g = stickShadow(g, A, { x: 1, y: 1 });
+    g = stickShadow(g, B, { x: 2, y: 2 });
+    g = enterRoom(g, spread);
+    g = keepOnly(g, new Set([B]));
+    expect(Object.keys(g.spots)).toEqual([B]);
+    expect(Object.keys(g.rooms.one!.spots)).toEqual([B]);
+  });
+
+  /* A quiet wall's cards are still in its last snapshot, so they are still
+     alive here: a laptop that shut its lid and opened it again finds its cards
+     where you stuck them. */
+  test("a wall that went quiet keeps its spots, and nothing changed writes nothing", () => {
+    let g = enterRoom(NO_SHADOW_GLASS, one);
+    g = stickShadow(g, A, { x: 1, y: 1 });
+    expect(keepOnly(g, new Set([A, B]))).toBe(g);
   });
 });
 
