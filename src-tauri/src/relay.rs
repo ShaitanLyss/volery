@@ -1320,6 +1320,88 @@ fn tail_of_transcript(path: &std::path::Path, n: usize) -> Result<Vec<String>, S
     }
 }
 
+/// Standard base64 (padding optional), or `None` on any foreign character.
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.trim_end_matches('=').bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// A protobuf varint at `at`: `(value, next)`.
+fn varint(buf: &[u8], at: usize) -> Option<(u64, usize)> {
+    let mut v = 0u64;
+    let mut shift = 0;
+    for (i, b) in buf.iter().enumerate().skip(at) {
+        if shift >= 63 {
+            return None;
+        }
+        v |= ((b & 0x7f) as u64) << shift;
+        if b & 0x80 == 0 {
+            return Some((v, i + 1));
+        }
+        shift += 7;
+    }
+    None
+}
+
+/// Field `field`'s last length-delimited value, or `None` if absent or the
+/// buffer is not a well-formed message — which, as in the CLI's own reader,
+/// refuses the whole buffer rather than returning what came before the fault.
+fn proto_bytes(buf: &[u8], field: u64) -> Option<&[u8]> {
+    let mut found = None;
+    let mut i = 0;
+    while i < buf.len() {
+        let (key, next) = varint(buf, i)?;
+        i = next;
+        match key & 7 {
+            0 => i = varint(buf, i)?.1,
+            1 => i = i.checked_add(8)?,
+            5 => i = i.checked_add(4)?,
+            2 => {
+                let (len, start) = varint(buf, i)?;
+                let end = start.checked_add(usize::try_from(len).ok()?)?;
+                if end > buf.len() {
+                    return None;
+                }
+                if key >> 3 == field {
+                    found = Some(&buf[start..end]);
+                }
+                i = end;
+            }
+            _ => return None,
+        }
+    }
+    if i == buf.len() { found } else { None }
+}
+
+/// Whether a thinking block's signature says the server tagged it narration.
+/// Port of `classify.ts::isNarrationSignature` (read that for the measurement):
+/// base64 → field 2 → field 1 → field 8 == "narration", fail-closed.
+fn is_narration_signature(sig: &str) -> bool {
+    let Some(bytes) = b64_decode(sig) else { return false };
+    proto_bytes(&bytes, 2)
+        .and_then(|o| proto_bytes(o, 1))
+        .and_then(|i| proto_bytes(i, 8))
+        .is_some_and(|k| k == b"narration")
+}
+
 /// The last `n` speeches in `[from, EOF)`, oldest first.
 ///
 /// A read that does not start at byte 0 drops its first line, per
@@ -1358,13 +1440,33 @@ fn speeches_from(
             .and_then(|m| m.get("content"))
             .and_then(Value::as_array);
         let Some(blocks) = blocks else { continue };
+        /* Speech is `text` blocks and narration, in block order. Narration is
+           prose between tool calls that this CLI delivers as a `thinking` block
+           whose signature the server tagged — see `is_narration_signature`. */
         let text: String = blocks
             .iter()
-            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                Some("text") => b.get("text").and_then(Value::as_str),
+                Some("thinking") => b
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .filter(|t| !t.trim().is_empty())
+                    .filter(|_| {
+                        is_narration_signature(
+                            b.get("signature").and_then(Value::as_str).unwrap_or(""),
+                        )
+                    }),
+                _ => None,
+            })
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join("\n");
-        let text = text.trim();
+        /* Scrubbed here as `ask::respond` would: this text goes back out in a
+           `tools/call` result and a control character in it is a 400 for the
+           reader's next request. */
+        let text = crate::clean::scrub(text.trim()).into_owned();
+        let text = text.as_str();
         if text.is_empty() {
             continue;
         }
@@ -1559,6 +1661,41 @@ mod tests {
         let two = tail_of_transcript(&path, 2).unwrap();
         assert_eq!(two, vec!["second", "third"]);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Narration — mid-turn prose this CLI delivers as a `thinking` block whose
+    /// signature the server tagged — is speech; ordinary thinking is not. Real
+    /// signatures of each kind, shared with `test/classify.test.ts`.
+    #[test]
+    fn recall_includes_narration_and_not_plain_thinking() {
+        let fx: Value =
+            serde_json::from_str(include_str!("../../test/fixtures/signatures.json")).unwrap();
+        let narration = fx["narration"].as_str().unwrap();
+        let thinking = fx["thinking"].as_str().unwrap();
+        assert!(is_narration_signature(narration));
+        assert!(!is_narration_signature(thinking));
+        assert!(!is_narration_signature(""));
+        assert!(!is_narration_signature("not base64 !!"));
+        assert!(!is_narration_signature(&narration[..narration.len() / 2]));
+
+        let dir = std::env::temp_dir().join(format!("skein-recall-{}", crate::store::uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let line = |blocks: Value| {
+            json!({"type":"assistant","message":{"content":blocks}}).to_string()
+        };
+        let lines = [
+            line(json!([
+                {"type":"thinking","thinking":"reasoning stays private","signature":thinking},
+                {"type":"thinking","thinking":"I checked the store.\u{0}","signature":narration},
+                {"type":"thinking","thinking":"","signature":narration},
+                {"type":"text","text":"done"}
+            ])),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let got = tail_of_transcript(&path, 4).unwrap();
+        assert_eq!(got, vec!["I checked the store.\ndone"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -169,8 +169,13 @@ read.
   `recall` is for when you need to know what happened. The description draws that line
   explicitly, and a test asserts it does, because an agent handed a roster and no cheap way to
   read it will use the expensive one.
-- **Only `assistant` text.** Thinking is not something the card *said* and a tool call is
-  machinery; what is wanted is the account it gave its user.
+- **Only `assistant` speech.** A tool call is machinery and real reasoning is not something
+  the card *said*; what is wanted is the account it gave its user. Speech is `text` blocks
+  **and narration** — mid-turn prose that arrives as a `thinking` block whose signature the
+  server tagged (`panel.md`, "Narration"). `is_narration_signature` is `classify.ts`'s port,
+  fail-closed, with a hand-rolled base64 since the crate has no such dependency, and it is
+  tested against the same `test/fixtures/signatures.json`. Without it `recall` of a card on
+  a recent CLI missed most of what it said between tool calls (sink `0d0806da`).
 - **Read from the end, in a window that doubles.** The first cut streamed every line, which is
   fine for the median transcript (28 KB) and not fine for the one that matters: the card that
   has been working all day is both the one worth recalling and the one whose `.jsonl` runs to
