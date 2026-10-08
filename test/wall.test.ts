@@ -43,6 +43,7 @@ import { join, sep } from "node:path";
    match on one afternoon. Which is exactly how the old one rotted (sink
    37c1ea15). Everything else in this file stays black-box, because everything
    else is behaviour rather than a projection. */
+import { judge, parseEndpoint, pidAlive, type Endpoint } from "../tools/endpoint";
 import { menuFor, type MenuItem } from "../src/lib/menu";
 import { MOTIONS } from "../src/lib/motion";
 import { offersOf } from "../src/lib/widgets";
@@ -98,16 +99,25 @@ const IMAGE = join(REPO, "src-tauri", "icons", "128x128.png");
 
 type Reply = Record<string, any>;
 
-let ep: { port: number; token: string } | null = null;
+let ep: Endpoint | null = null;
 let health: Reply | null = null;
 
 if (existsSync(CONTROL)) {
-  ep = await Bun.file(CONTROL).json();
-  health = await fetch(`http://127.0.0.1:${ep!.port}/health`)
-    .then((r) => r.json() as Promise<Reply>)
-    /* A stale control.json is exactly what `cleanup()` on exit is meant to
-       prevent, but an older build may still have left one behind. */
-    .catch(() => null);
+  ep = parseEndpoint(await Bun.file(CONTROL).json().catch(() => null));
+  if (ep) {
+    health = await fetch(`http://127.0.0.1:${ep.port}/health`)
+      .then((r) => r.json() as Promise<Reply>)
+      /* A stale control.json is what `cleanup()` on exit prevents, but a crash
+         skips it, and the port may since belong to something else. */
+      .catch(() => null);
+    /* Same gate as tools/ctl.ts: the token only goes to the pid that wrote it. */
+    const verdict = judge(
+      ep,
+      ep.pid === undefined ? null : pidAlive(ep.pid),
+      health?.name === "skein" ? (Number.isInteger(health.pid) ? health.pid : -1) : null,
+    );
+    if (verdict.kind !== "live") health = null;
+  }
 }
 
 const live = !!health?.attached;

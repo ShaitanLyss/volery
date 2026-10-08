@@ -15,8 +15,9 @@
  * startup, so nothing has to be copied by hand.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { healthPid, judge, parseEndpoint, pidAlive, type Endpoint } from "./endpoint.ts";
 
 /** Which wall to talk to, as the identifier naming its `%APPDATA%` folder.
  *
@@ -33,7 +34,13 @@ const IDENTIFIER = process.env.SKEIN_ID?.trim() || "dev.skein.studio";
 
 const CONTROL_FILE = join(process.env.APPDATA ?? "", IDENTIFIER, "control.json");
 
-function endpoint(): { port: number; token: string } {
+/** Read control.json and confirm it still describes a live Volery before any
+ *  request — and above all before the token — leaves. A dead pid means the
+ *  file is stale (a crash skips `Control::cleanup`), so it is removed, unless
+ *  it changed since we read it, which means a new instance just wrote it. A
+ *  live pid whose port does not answer as that pid is *refused but kept*: it
+ *  may simply still be starting. */
+async function endpoint(): Promise<Endpoint> {
   if (!existsSync(CONTROL_FILE)) {
     console.error(
       `no control.json at ${CONTROL_FILE}\n` +
@@ -45,7 +52,36 @@ function endpoint(): { port: number; token: string } {
     );
     process.exit(2);
   }
-  return JSON.parse(readFileSync(CONTROL_FILE, "utf8"));
+  const raw = readFileSync(CONTROL_FILE, "utf8");
+  let ep: Endpoint | null = null;
+  try {
+    ep = parseEndpoint(JSON.parse(raw));
+  } catch {}
+  if (!ep) {
+    console.error(`${CONTROL_FILE} is not a control endpoint — refusing to use it`);
+    process.exit(2);
+  }
+  const verdict = judge(ep, ep.pid === undefined ? null : pidAlive(ep.pid), await healthPid(ep.port));
+  if (verdict.kind === "live") return ep;
+  if (verdict.kind === "dead") {
+    let removed = false;
+    try {
+      if (readFileSync(CONTROL_FILE, "utf8") === raw) {
+        unlinkSync(CONTROL_FILE);
+        removed = true;
+      }
+    } catch {}
+    console.error(
+      `stale control.json (${verdict.why})${removed ? " — removed it" : ""}; no Volery is running here.\n` +
+        `Start one with SKEIN_CONTROL=1. Nothing was sent.`,
+    );
+  } else {
+    console.error(
+      `control.json at ${CONTROL_FILE} cannot be trusted (${verdict.why}). Nothing was sent` +
+        ` — the token stays here. If Volery is still starting, try again.`,
+    );
+  }
+  process.exit(3);
 }
 
 /** `k=v`, `k:@file`, or a bare word (the op name). */
@@ -86,7 +122,7 @@ if (!op) {
   process.exit(2);
 }
 
-const { port, token } = endpoint();
+const { port, token } = await endpoint();
 const base = `http://127.0.0.1:${port}`;
 
 let res: Response;
