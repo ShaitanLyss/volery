@@ -1,6 +1,47 @@
+<script module lang="ts">
+  import type { Conversation } from "./conversation.svelte";
+
+  /** Everything a card face reads, as a shape rather than a class.
+   *
+   *  A `Conversation` is one, and so is a `Shadow` — a card that lives on
+   *  another wall (`shadows.svelte.ts`). The face is the one thing the two
+   *  genuinely share, so it is the one thing typed loosely enough for both;
+   *  every *gesture* on a card still takes a `Conversation`, which a shadow
+   *  cannot be passed as. That asymmetry is the design, not a gap in it — see
+   *  the head of `shadow.ts`. */
+  export type CardFace = Pick<
+    Conversation,
+    | "title"
+    | "project"
+    | "tier"
+    | "working"
+    | "dormant"
+    | "doing"
+    | "idleSeconds"
+    | "ctx"
+    | "aside"
+    | "busy"
+    | "streaming"
+    | "accountLabel"
+    | "bypassCaps"
+    | "compactFrac"
+    | "holding"
+    | "planDoc"
+  > & {
+    gear: string;
+    lines: readonly { kind: string; text: string }[];
+    jobs: readonly { label: string }[];
+    /** The wall this card is on, when it is not this one. Read off the face
+     *  rather than passed beside it, so no surface that draws a card can
+     *  forget to say where it is. */
+    elsewhere?: { host: string; unheard: boolean };
+    /** The wall that asked for this card to be opened here, if one did. */
+    bornFor?: string | null;
+  };
+</script>
+
 <script lang="ts">
   import { waterfall } from "./waterfall.svelte";
-  import type { Conversation } from "./conversation.svelte";
   import { cardName } from "./naming";
   import { planTitle } from "./gears";
 
@@ -18,7 +59,7 @@
     onclose,
     onplan,
   }: {
-    conv: Conversation;
+    conv: CardFace;
     focused?: boolean;
     selected?: boolean;
     pinned?: boolean;
@@ -30,7 +71,9 @@
      *  Empty for every other card, and for a draft the palette has claimed. */
     draft?: string;
     onfocus: (e: MouseEvent) => void;
-    onclose: () => void;
+    /** Close it. Absent where there is nothing here to close — a card on
+     *  another wall, which only the wall it is on can end. */
+    onclose?: () => void;
     /** Open the plan this card has written. Absent where there is nowhere to
      *  open it — the peek window draws cards too and has no file viewer. */
     onplan?: (path: string) => void;
@@ -162,6 +205,24 @@
             title={conv.bypassCaps
               ? `spending the ${acct} account, ignoring the caps you set`
               : `spending the ${acct} account`}>{acct}{conv.bypassCaps ? " uncapped" : ""}</span
+          >
+        {/if}
+        <!-- Where the card is, when that is not here, and who asked for it
+             when somebody elsewhere did. Both in the qualifier row beside the
+             account, which is already the line that answers "where is this
+             card from" — and both achromatic, because neither is a status: a
+             card on another wall can be working, asking or failed exactly like
+             one on this one. -->
+        {#if conv.elsewhere}
+          <span
+            class="host"
+            title="this card is on {conv.elsewhere.host} — only what it is doing travels between walls; its transcript stays there"
+            >on {conv.elsewhere.host}</span
+          >
+        {/if}
+        {#if conv.bornFor}
+          <span class="host" title="opened on this wall because {conv.bornFor} asked for it"
+            >from {conv.bornFor}</span
           >
         {/if}
       </span>
@@ -324,11 +385,13 @@
     </button>
   {/if}
 
-  <button class="shut" onclick={onclose} aria-label="Close conversation">
-    <svg viewBox="0 0 10 10" aria-hidden="true"
-      ><path d="M2 2l6 6M8 2L2 8" /></svg
-    >
-  </button>
+  {#if onclose}
+    <button class="shut" onclick={onclose} aria-label="Close conversation">
+      <svg viewBox="0 0 10 10" aria-hidden="true"
+        ><path d="M2 2l6 6M8 2L2 8" /></svg
+      >
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -459,6 +522,15 @@
      this label exists to show — would never be drawn at all. So the row is a
      flex, the name shrinks, and the account is `flex: none`. */
   .acct {
+    flex: none;
+    color: var(--paper-faint);
+    opacity: 0.75;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+  }
+  /* Beside `.acct` and drawn the same way, for `.acct`'s reason: the place
+     keeps its width and the project name gives way. */
+  .host {
     flex: none;
     color: var(--paper-faint);
     opacity: 0.75;

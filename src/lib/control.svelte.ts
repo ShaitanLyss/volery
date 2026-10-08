@@ -78,6 +78,7 @@ import { limitIn, runIn, variantOf, type WidgetKind } from "./widgets";
 import type { Cycle } from "./cycle.svelte";
 import { elapsed, phaseOf, phraseFor, standing } from "./timing";
 import type { Skein } from "./skein.svelte";
+import type { Elsewhere } from "./shadows.svelte";
 import type { Studio } from "./studio.svelte";
 import type { Undo } from "./undo.svelte";
 import { shifted, standsOf } from "./undo";
@@ -90,6 +91,11 @@ export type Endpoint = { port: number; token: string };
  *  the control surface owns no state of its own and can't drift from the UI. */
 export type ControlHost = {
   skein: Skein;
+  /** Cards on other walls. Here because the one claim worth testing about them
+   *  is a sequence across two processes — a card opened on one wall is drawn on
+   *  the other, and a prompt typed there arrives here — and only a reading
+   *  from outside can hold both ends. */
+  elsewhere: Elsewhere;
   studio: Studio;
   board: Board;
   widgets: Widgets;
@@ -794,6 +800,30 @@ export class Control {
           stale: n.stale,
         })),
       },
+      /* Other walls' cards, as this one draws them. `unheard` beside `tier`
+         for `aside`'s reason: a quiet wall's working card is drawn `rest`, which
+         is the feature, and from out here it is the same string as a card that
+         really is resting. `sent` is every prompt said to it from here, with the
+         state its line is drawn in — the fourth state included. */
+      elsewhere: {
+        me: h.elsewhere.me,
+        heardAt: { ...h.elsewhere.heardAt },
+        shadows: h.elsewhere.shadows.map((s) => ({
+          id: s.id,
+          host: s.host,
+          card: s.card,
+          title: s.title,
+          project: s.project,
+          tier: s.tier,
+          working: s.working,
+          unheard: s.face.unheard,
+          doing: s.doing,
+          idleSeconds: s.idleSeconds,
+          said: s.digest.said,
+          sent: s.sent.map((p) => ({ text: p.text, state: p.state, why: p.why ?? null })),
+        })),
+        births: { ...h.elsewhere.births },
+      },
       cards: h.skein.convs.map((c) => ({
         id: c.id,
         /* Equal to `id` until the card is cleared, and the only way to see from
@@ -828,6 +858,8 @@ export class Control {
            set aside and one that is merely resting both read `rest`, which is
            the intended effect and therefore the thing a test cannot see. */
         aside: c.aside,
+        /* The wall that asked for this card, if one did — what its face says. */
+        bornFor: c.bornFor,
         /* The gear, for exactly the reason `kind` is reported: from out here a
            planning card and a making card differ in a dashed border and one
            word in a footer, while what they are *allowed to do* is the whole
@@ -1074,6 +1106,7 @@ export class Control {
          which is how one `result` event became two `turn` rows. */
       listeners: {
         skein: h.skein.listenerCount,
+        elsewhere: h.elsewhere.listenerCount,
         attention: h.attention.listenerCount,
         actions: h.actions.listenerCount,
         shell: h.shell.listenerCount,

@@ -910,6 +910,47 @@ export class Skein {
     );
 
     keep(
+      /* A card another *wall* asked for, over the flyway. `flyway/link.rs` has
+         decided that it may exist, where it stands — a territory on this wall,
+         found by name in this wall's own table, never a path the asker wrote —
+         and what its id is. This is the opening, and it is `openSpawned`'s,
+         for that method's own reason: a card born at a distance is not a
+         special kind of card, and a second birth path is the one that drifts.
+
+         Then the answer goes back, and it has to go back exactly once
+         (`Fleet::opened` / `failed`): until it does, the ask counts against
+         this wall's bound and the asking card is parked waiting. Opened means
+         the card is on the wall *and* its brief has been handed to it, since
+         `openSpawned` sends before it returns. `#openIn` reports a failure by
+         writing `fault` and returning nothing, so the reason is read off that —
+         and only if it changed, or an unrelated error from earlier would be
+         sent to another machine as the reason this card did not open. */
+      listen<{
+        id: string;
+        cwd: string;
+        prompt: string;
+        title: string | null;
+        model: string | null;
+        effort: string | null;
+        fromHost: string;
+        fromCard: string | null;
+      }>("flyway:spawn", (e) => {
+        const { id, cwd, prompt, title, model, effort } = e.payload;
+        const before = this.fault;
+        void (async () => {
+          await this.openSpawned(id, cwd, null, prompt, title, model, effort, null);
+          if (this.#byId.has(id)) {
+            await invoke("flyway_opened", { id }).catch(() => {});
+          } else {
+            const reason =
+              this.fault && this.fault !== before ? this.fault : "the wall could not open it";
+            await invoke("flyway_failed", { id, reason }).catch(() => {});
+          }
+        })();
+      }),
+    );
+
+    keep(
       /* And the other end of the same gesture: a card taking one of its own
          children off the wall. Through `close` like any other closing, which is
          `openSpawned`'s argument in reverse — the ordering that gesture depends
@@ -3162,10 +3203,16 @@ export class Skein {
    *  process and resumes a session, and a transcript that shows nothing until
    *  that finishes has swallowed what you typed. `Conversation.echo` marks the
    *  line pending until the wire echoes it back, so the transcript still says
-   *  which words the agent has and which are merely on their way. */
-  async send(conv: Conversation, text: string, turn?: Turn) {
+   *  which words the agent has and which are merely on their way.
+   *
+   *  Answers whether this wall now has the prompt: written to the process, or
+   *  held for an account to free up, which keeps it rather than losing it. False
+   *  only when the send failed and the line says so. Read by a prompt that came
+   *  from another wall, which has to tell the asker which (`shadows.svelte.ts`);
+   *  every caller here ignores it. */
+  async send(conv: Conversation, text: string, turn?: Turn): Promise<boolean> {
     conv.echo(text, turn && { echo: turn.echo, shots: turn.shots });
-    await this.#deliver(conv, text, turn);
+    const sent = await this.#deliver(conv, text, turn);
     /* A model switch carries its usual effort with it — see `effortForModel`.
        Sent as a second prompt of its own because `/effort` is the CLI's and the
        wire has no other way to set it (`set_effort` is refused); the transcript
@@ -3178,9 +3225,10 @@ export class Skein {
       conv.echo(line);
       await this.#deliver(conv, line);
     }
+    return sent;
   }
 
-  async #deliver(conv: Conversation, text: string, turn?: Turn) {
+  async #deliver(conv: Conversation, text: string, turn?: Turn): Promise<boolean> {
     /* Ahead of the wake, and it has to be. `#moveTo` ends the card's process to
        change the account, so settling first means the wake below spawns once,
        already on the right subscription — where settling after would spawn on
@@ -3190,10 +3238,14 @@ export class Skein {
        account) and `#settleAccount` has already said so on the card, so there
        is nothing to fail here: the text is kept, not lost. The echoed line is
        left standing to be sent when an account frees up. */
-    if (!(await this.#settleAccount(conv, text))) return;
+    /* Kept only if *this* text is what the slot now holds. `#hold` refuses to
+       overwrite a different prompt already waiting there, so a card already
+       holding one drops the second — and answering "kept" off `held` alone
+       told another wall a prompt had arrived that nothing would ever send. */
+    if (!(await this.#settleAccount(conv, text))) return conv.held?.text === text;
     if (conv.dormant && !(await this.wake(conv))) {
       conv.echoFailed(text, "could not wake");
-      return;
+      return false;
     }
     /* The card face has been wearing this name since you started typing it, cut
        by this same function — so `titleFromPrompt` is shared rather than inlined
@@ -3235,9 +3287,11 @@ export class Skein {
          that has opted out of telling you it has finished. Only on a delivered
          prompt: a send that never left has changed nothing about the card. */
       if (conv.aside) this.setAside(conv, false);
+      return true;
     } catch (err) {
       this.fault = String(err);
       conv.echoFailed(text, "not sent");
+      return false;
     }
   }
 

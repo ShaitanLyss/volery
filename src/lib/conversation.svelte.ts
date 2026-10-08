@@ -662,6 +662,14 @@ export class Conversation {
    *  must not be roused (`rousing.ts`). */
   aside = $state(false);
 
+  /** The wall that asked for this card to be opened here, or null for one
+   *  opened on this wall. A card born over the flyway runs with the machine in
+   *  its hands like every project card, and the only protection that design
+   *  offers is that a fan-out is *visible* — so the card says where it came
+   *  from on its own face, which every surface that draws one reads. Set by
+   *  `Elsewhere` from the link's record of births, never by the card. */
+  bornFor = $state<string | null>(null);
+
   /** Questions the agent is *blocked* on, via our own ask_user MCP tool, in the
    *  order they arrived. Unlike every other tier this is not an inference: the
    *  turn is genuinely parked and nothing will happen until it is answered.

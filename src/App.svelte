@@ -144,6 +144,8 @@
     type Draft,
   } from "./lib/drafts";
   import Transcript from "./lib/Transcript.svelte";
+  import Yonder from "./lib/Yonder.svelte";
+  import { Elsewhere, type Shadow } from "./lib/shadows.svelte";
   import Servers from "./lib/Servers.svelte";
   import Processes from "./lib/Processes.svelte";
   /* The component is `Console` and the class it draws is `Shell`, which is not
@@ -196,6 +198,10 @@
 
   const studio = new Studio();
   const skein = new Skein(studio);
+  /* The cards on other walls in the flyway, and this wall's cards as they see
+     them. Holds subscriptions and an effect, so it is released below. */
+  const elsewhere = new Elsewhere(skein);
+  elsewhere.attach();
   const board = new Board();
   const widgets = new Widgets();
   /* One stacking order for the whole wall (see layout.ts), so each of the two
@@ -449,6 +455,7 @@
     }
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.kind === "grouping") groupingChord(verb.act);
+    else if (verb.kind === "elsewhere") focusElsewhere();
     else if (verb.kind === "sink") {
       if (verb.act === "drop") showDrop = true;
       else showSink = true;
@@ -513,7 +520,7 @@
      wall. */
   const bang = new Bang(
     (id) => skein.convs.find((c) => c.id === id) ?? null,
-    (conv, text) => skein.send(conv, text),
+    async (conv, text) => void (await skein.send(conv, text)),
   );
   /* Project verbs. Its faults go to the same red bar everything else's do —
      a build that failed is not a different kind of news from a spawn that did. */
@@ -623,6 +630,7 @@
     clearTimeout(keeping);
     keep(field.draft);
     skein.detach();
+    elsewhere.detach();
     attention.detach();
     actions.detach();
     control.detach();
@@ -885,6 +893,11 @@
   let spawning = $state(false);
 
   const focused = $derived(skein.convs.find((c) => c.id === focusedId) ?? null);
+  /** The card on another wall that has the focus, if the focus is one. The same
+   *  `focusedId` as a card's, so focusing one lets go of the other — but a
+   *  different object and a different type, so nothing that acts on `focused`
+   *  can be handed it. See `shadow.ts`. */
+  const focusedShadow = $derived(focused ? null : elsewhere.find(focusedId));
   /* A card you are looking at finishing is something you watched, so it raises
      no notice — the user's choice. All three facts live here, so this is where
      the question is answered for `Skein`. */
@@ -2609,7 +2622,12 @@
   async function runBang(handOver: boolean) {
     const cmd = field.bangText;
     const card = bangCard;
-    if (!cmd || !card) return;
+    /* No card with a field you can type in is a card on another wall: a `!`
+       line runs in a directory on this machine, and that card has none here.
+       Refused out loud, as `send` refuses the same line, rather than left
+       sitting in the field looking sent. */
+    if (!card) return field.refuse();
+    if (!cmd) return;
     bang.close();
     field.put("");
     await bang.run(card, cmd, handOver);
@@ -2779,6 +2797,13 @@
   }
 
   async function send(broadcast = false) {
+    /* A card on another wall is spoken to and nothing else. No palette, none
+       of this wall's commands, no `!` line and no pictures: the text goes as
+       words, and the other wall's own send path decides what they mean there —
+       a CLI command like `/compact` is carried out on that machine exactly as if
+       it had been typed at its keyboard. What cannot travel is refused rather
+       than dropped, and the dock says which. */
+    if (focusedShadow && targets.length === 0) return sendElsewhere(focusedShadow);
     /* With a value lit the line is complete, so Enter runs it.
        
        *Sends* it, if it is the CLI's — those commands are carried out by being
@@ -2822,6 +2847,43 @@
     if (found) return runCommand(found.cmd, broadcast, found.arg);
 
     await sendText(text, broadcast);
+  }
+
+  /** The dock's Enter, aimed at a card on another wall.
+   *
+   *  Words only, and every way a line could mean something *here* is refused
+   *  rather than shipped as text. The palette is the trap: it still opens over a
+   *  `/`, offering this wall's commands, and sending its line raw would put
+   *  `/gear planning` in front of the far agent as a prompt about the word
+   *  "planning" (the bug `gears.md` records) and `/btw …` into the conversation
+   *  as a real turn, on a card running with that machine in its hands. So a
+   *  half-typed name completes, as it would here; a whole one that is this
+   *  wall's own is refused; and one that belongs to the CLI goes, because the
+   *  far wall carries it out exactly as if it had been typed there.
+   *
+   *  A wall drawn as unheard is refused here too, with the draft kept: the card
+   *  already says why, and clearing the field into a line nobody is looking at
+   *  would be the send looking like it went. */
+  async function sendElsewhere(s: Shadow) {
+    if (field.banging || field.shots.list.length || s.face.unheard) return field.refuse();
+    if (field.choicePick && field.choosing) {
+      const { cmd } = field.choosing;
+      if (cmd.by === "skein") return field.refuse();
+      return speakElsewhere(s, completionForChoice(cmd, field.choicePick));
+    }
+    if (field.commandPick) {
+      if (!field.whole) return completeName(field.commandPick);
+      if (field.commandPick.by === "skein") return field.refuse();
+    }
+    const text = field.text.trim();
+    if (!text || resolveCommand(text)) return field.refuse();
+    return speakElsewhere(s, text);
+  }
+
+  async function speakElsewhere(s: Shadow, text: string) {
+    field.put("");
+    field.at = 0;
+    await elsewhere.send(s, text);
   }
 
   /** Step along the cards that want something, in urgency order.
@@ -2887,6 +2949,27 @@
     focusedId = conv.id;
     studio.selectOnly(conv.id);
     canvas?.reveal(conv.id);
+  }
+
+  /** Step to the next card on another wall, and open its panel.
+   *
+   *  The only keyboard path to one, and deliberately not a third arm of
+   *  `cycleTab`: both of those walk `canvas.order()`, whose cards are handed on
+   *  to gestures — the selection, the waiting cycle — that a card elsewhere
+   *  cannot take. Nothing is *selected*, for the same reason: a selection is a
+   *  set of cards a broadcast would reach. */
+  function focusElsewhere() {
+    const all = elsewhere.shadows;
+    if (!all.length) {
+      skein.fault = "no cards on another wall yet — they arrive once another wall in this flyway is heard from (space then k)";
+      return;
+    }
+    const at = all.findIndex((s) => s.id === focusedId);
+    const next = all[(at + 1) % all.length]!;
+    studio.clearSelection();
+    focusedId = next.id;
+    showDetail = true;
+    canvas?.reveal(next.id);
   }
 
   /** Let go of the card: no ring, no gathering, no panel.
@@ -3521,7 +3604,7 @@
       !e.metaKey &&
       !e.altKey &&
       !menu &&
-      targets.length > 0 &&
+      (targets.length > 0 || !!focusedShadow) &&
       !isTyping(e.target)
     ) {
       /* The character is carried across by hand rather than left to the
@@ -3603,6 +3686,7 @@
      the only reason a spoken plan lands where a mouse would. */
   const hands: ControlHost = {
     skein,
+    elsewhere,
     studio,
     board,
     widgets,
@@ -4449,10 +4533,11 @@
   <main class="wall" class:sizing={!!grip}>
     <!-- A project with no cards is still a place on the wall, and the only
          place its "+" lives — so an empty territory keeps the canvas up. -->
-    {#if skein.convs.length || skein.projects.length || board.images.length || widgets.items.length}
+    {#if skein.convs.length || skein.projects.length || board.images.length || widgets.items.length || elsewhere.shadows.length}
       <Canvas
         bind:this={canvas}
         convs={skein.convs}
+        shadows={elsewhere.shadows}
         leaving={skein.leaving}
         projects={skein.territories}
         {asana}
@@ -4550,7 +4635,7 @@
         onstickproject={(id, at) => skein.stickTerritory(id, at)}
         onnameterritory={(id, name) => skein.renameTerritory(id, name)}
       />
-      {#if focused && showDetail}
+      {#if (focused || focusedShadow) && showDetail}
         <aside
           class="side"
           class:moored-left={berths.panel.site === "left"}
@@ -4607,17 +4692,21 @@
             onpointercancel={moorUp}
             ondblclick={() => moorReset("panel")}
           ></div>
-          <Transcript
-            bind:this={transcript}
-            conv={focused}
-            read={reading}
-            rails={railsOn}
-            watching={attention.focused}
-            onhistory={(c) => void skein.loadHistory(c)}
-            onfile={(path, line) =>
-              void finder.lookAt(focused.kind === "project" ? focused.cwd : "", path, line)}
-            onread={setRead}
-          />
+          {#if focused}
+            <Transcript
+              bind:this={transcript}
+              conv={focused}
+              read={reading}
+              rails={railsOn}
+              watching={attention.focused}
+              onhistory={(c) => void skein.loadHistory(c)}
+              onfile={(path, line) =>
+                void finder.lookAt(focused.kind === "project" ? focused.cwd : "", path, line)}
+              onread={setRead}
+            />
+          {:else if focusedShadow}
+            <Yonder shadow={focusedShadow} />
+          {/if}
         </aside>
       {/if}
     {:else}
@@ -4649,6 +4738,7 @@
     {skein}
     {bang}
     {focused}
+    remote={focusedShadow}
     {targets}
     {waiting}
     {clashing}

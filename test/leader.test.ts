@@ -144,6 +144,11 @@ describe("away mode has two spellings of one verb", () => {
     });
   });
 
+  test("ee reaches a card on another wall, and e alone waits for the verb", () => {
+    expect(chord("e", "e")).toMatchObject({ kind: "fire", verb: { kind: "elsewhere", act: "next" } });
+    expect(chord("", "e")).toMatchObject({ kind: "pending", open: "e" });
+  });
+
   test("i alone is a prefix rather than a chord", () => {
     expect(chord("", "i")).toMatchObject({ kind: "pending", open: "i" });
   });
@@ -153,6 +158,7 @@ describe("the which-key hint", () => {
   test("the leader alone offers every chord, by its whole letters", () => {
     expect(offers("")).toEqual([
       { keys: "a", label: "archived timelines" },
+      { keys: "ee", label: "a card on another wall" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
       { keys: "gn", label: "another grouping here" },

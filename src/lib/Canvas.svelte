@@ -71,6 +71,8 @@
   import type { Kin } from "./lineage";
   import Bump from "./Bump.svelte";
   import Card from "./Card.svelte";
+  import type { Shadow } from "./shadows.svelte";
+  import { standElsewhere } from "./shadow";
   import Seats from "./Seats.svelte";
   import ImageNode from "./ImageNode.svelte";
   import WidgetNode from "./WidgetNode.svelte";
@@ -80,6 +82,7 @@
 
   let {
     convs,
+    shadows = [],
     leaving = [],
     projects,
     studio,
@@ -138,6 +141,14 @@
     onnameterritory,
   }: {
     convs: Conversation[];
+    /** Cards on other walls in the flyway (`shadows.svelte.ts`).
+     *
+     *  Deliberately **not** in `convs` and never handed to anything that takes
+     *  a card: they are drawn, and they can be focused, and that is all the wall
+     *  does with them. No pick, no drag, no pin, no menu, no strand box, no Tab
+     *  order — every one of those writes a row or reaches a process keyed on a
+     *  card id this machine does not have. See the head of `shadow.ts`. */
+    shadows?: readonly Shadow[];
     /** Where the home screen is inside the glass, in glass pixels, or null
      *  while the studio is on one screen and the two are the same box.
      *
@@ -673,6 +684,22 @@
       .map((i) => ({ ...i, ...glassAt(spotOf(i)!, { w: i.w, h: i.h }, paneBox, keepout) })),
   );
   const wallWidgets = $derived(widgets.items.filter((w) => !spotOf(w)));
+
+  /* Other walls' cards, in the left margin of everything standing on this one.
+     Measured against the wall's own regions, images and widgets — the same set
+     `fitAll` frames — so a region of another machine's cards never lands on
+     top of something of yours. */
+  const elsewhere = $derived(
+    standElsewhere(shadows, [
+      ...wallRegions,
+      ...[...wallImages, ...wallWidgets].map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h })),
+    ]),
+  );
+  /** Whether a wall has gone quiet, read off its cards — every card on one wall
+   *  shares the answer, so the first is asked. */
+  function unheard(host: string): boolean {
+    return shadows.find((s) => s.host === host)?.face.unheard ?? false;
+  }
   const glassWidgets = $derived(
     widgets.items
       .filter((w) => spotOf(w))
@@ -1071,10 +1098,16 @@
        that does not travel lands on its card — so the wall must not also read
        it as a press on bare glass and let go of everything on the release.
        The two buttons that pan still reach past it, as they reach past
-       everything. */
+       everything.
+
+       A card on another wall is the same case. It is nothing the wall can pick
+       or carry, so to `nodeOf` it is bare ground — and a plain click on it would
+       release as "let go of everything", closing the panel before its own click
+       opened it again, and a modified click would drop the whole selection and
+       focus nothing. Its left press is its own. */
     if (
       e.button === 0 &&
-      (e.target as HTMLElement | null)?.closest?.("[data-timeline]")
+      (e.target as HTMLElement | null)?.closest?.("[data-timeline], [data-shadow]")
     ) {
       return;
     }
@@ -1935,7 +1968,8 @@
    *  looking at changes. The density stays put because it is a deliberate choice
    *  — this shows you the card, it does not decide how you are reading the wall. */
   export function reveal(id: string) {
-    const n = model.laid.find((l) => l.conv.id === id);
+    const n =
+      model.laid.find((l) => l.conv.id === id) ?? elsewhere.laid.find((l) => l.conv.id === id);
     if (!n) return;
     /* Nothing to reveal: a card on the glass is already in front of you, and
        panning the wall to the slot it still owns would move the view for no
@@ -1987,6 +2021,7 @@
        at would zoom the wall out to frame an empty patch of it. */
     const boxes = [
       ...wallRegions,
+      ...elsewhere.regions,
       ...[...wallImages, ...wallWidgets].map((n) => ({
         project: "",
         cwd: n.id,
@@ -2481,6 +2516,53 @@
           {@render cardBody(n, studio.lod, studio.scale)}
         </div>
       {/each}
+
+      <!-- Other walls, each a region of its own. Not a territory: no `data-cwd`,
+           no `data-territory`, no `data-region`, so every press here is bare
+           ground to the wall's gestures and nothing that writes a row can be
+           aimed at one. The border is dotted where a territory's is dashed —
+           still a stitch, and visibly a different kind of boundary. -->
+      {#each elsewhere.regions as r (r.id)}
+        <div
+          class="region elsewhere"
+          style:left="{r.x}px"
+          style:top="{r.y}px"
+          style:width="{r.w}px"
+          style:height="{r.h}px"
+        ></div>
+        <div
+          class="name elsewhere"
+          style:left="{r.x + 11}px"
+          style:top="{r.y + 8}px"
+          style:z-index={Z_CHIP}
+          title="cards on {r.host}, another wall in this flyway — only what each is doing travels here, and a prompt to one is sent to {r.host} (space then e e)"
+        >
+          {r.host}{unheard(r.host) ? " · not heard from" : ""}
+        </div>
+      {/each}
+
+      <!-- `data-shadow` rather than `data-conv`: `nodeOf` reads the latter as a
+           card to pick and carry, and carrying one writes a placement. -->
+      {#each elsewhere.laid as n (n.conv.id)}
+        <div
+          class="node"
+          data-shadow={n.conv.id}
+          style:left="{n.x}px"
+          style:top="{n.y}px"
+          style:z-index={Z_CARD}
+          role="presentation"
+        >
+          <Card
+            conv={n.conv}
+            focused={n.conv.id === focusedId}
+            lod={studio.lod}
+            onfocus={(e) => {
+              if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+              onfocus(n.conv.id);
+            }}
+          />
+        </div>
+      {/each}
     </div>
   </div>
 </div>
@@ -2799,6 +2881,15 @@
     pointer-events: none;
   }
 
+  /* Another machine. Dotted where a territory is dashed — the same faint ink,
+     so it reads as an address like every region, and a different stitch, so
+     it never reads as one of this wall's. Not a handle: nothing here moves. */
+  .region.elsewhere {
+    border-style: dotted;
+  }
+  .name.elsewhere {
+    cursor: default;
+  }
   .region.picked {
     border-color: var(--paper-faint);
     border-style: dashed;

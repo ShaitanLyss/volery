@@ -1,0 +1,516 @@
+/* The cards on other walls, and this wall's cards as the others see them.
+ *
+ * Both halves of `shadow.ts`, with the runes and the wire attached. What a
+ * digest is, why the front end makes it, why a shadow is not a card and how a
+ * prompt to one is drawn are all argued there; this file is the plumbing.
+ *
+ * ### Publishing is folded, not polled
+ *
+ * The snapshot is an `$effect` over the wall's cards, and every field it reads
+ * is already state or a derived over the event fold — so it re-runs when a card
+ * actually changes and at no other time. The one field that changes with no
+ * event behind it, how long a card has rested, is shipped as the moment it came
+ * to rest rather than as a count, and `steadyDoing` drops the two countdowns
+ * `doing` carries for the same reason. CLAUDE.md names three places this app
+ * goes and looks; this is deliberately not a fourth.
+ *
+ * What is bounded is the *send*, which is the expensive half: a snapshot is
+ * offered to Rust at most once a second, and only when it would draw
+ * differently from the last one offered. A wall with ten working cards changes
+ * many times a second and is published once.
+ *
+ * ### Nothing is published before the wall has loaded
+ *
+ * A snapshot replaces the last one wholesale and a card missing from it reads
+ * as closed. `Skein.load` paints from SQLite before any card has a process, so
+ * a snapshot taken in that window would flash every card not yet read as gone
+ * on every other wall. `skein.loaded` gates it — a version number stops an
+ * *older* snapshot from winning, not a premature one.
+ */
+
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { clock } from "./conversation.svelte";
+import type { Conversation } from "./conversation.svelte";
+import type { Skein } from "./skein.svelte";
+import { spanOf, type Tier } from "./classify";
+import { Listeners } from "./listeners";
+import {
+  advance,
+  DIGEST_V,
+  digestOf,
+  faceOf,
+  idleOf,
+  promptRefusal,
+  readSnapshot,
+  sameCards,
+  type CardDigest,
+  type Sent,
+  type SentEvent,
+} from "./shadow";
+
+/** The least time between two snapshots offered to the link. */
+const PUBLISH_EVERY_MS = 1_000;
+
+/** How many taken prompt ids to remember. The link refuses anything older than
+ *  the fleet's TTL, so only the last few minutes' worth can ever repeat. */
+const TAKEN_KEPT = 500;
+
+/** One other wall's last word about its cards. */
+type Wall = {
+  /** The owning wall's clock when it made the snapshot. */
+  at: number | null;
+  /** This wall's estimate of the same moment: arrival less the link's age. */
+  madeAt: number;
+  cards: CardDigest[];
+};
+
+/** What the link says about a wall's roster entry. Only `quietMs` is read here;
+ *  the rest is carried for the panel. */
+export type RosterRow = {
+  host: string;
+  /** The row is this wall's own. */
+  me?: boolean;
+  quietMs: number;
+  standing?: string;
+  reason?: string;
+};
+
+/** A card on another wall, drawn on this one.
+ *
+ *  It wears the fields `Card.svelte` reads, so the wall draws it with the same
+ *  face a card has — and it has none of the methods anything that acts on a
+ *  card needs, so it cannot be handed to one. That is the point of it being a
+ *  class of its own rather than a `Conversation` with a flag: see the head of
+ *  `shadow.ts`. */
+export class Shadow {
+  /** Unique on this wall — the host and the card's own id — and what the
+   *  focus, the layout and the keyboard address it by. */
+  readonly id: string;
+  readonly host: string;
+  /** The card's id on the wall that owns it: what a prompt is addressed to. */
+  readonly card: string;
+
+  digest = $state.raw<CardDigest>(null as unknown as CardDigest);
+  /** What has been said to it from here, oldest first. Not persisted, like a
+   *  `!` line: nothing about it is in any session file, and a prompt is only
+   *  worth tracking while somebody is waiting on it. */
+  sent = $state<Sent[]>([]);
+
+  #walls: Elsewhere;
+
+  constructor(walls: Elsewhere, host: string, d: CardDigest) {
+    this.#walls = walls;
+    this.host = host;
+    this.card = d.id;
+    this.id = shadowKey(host, d.id);
+    this.digest = d;
+  }
+
+  /** How long since this card's wall was last heard, on the wall's one tick. */
+  quietMs = $derived(this.#quiet());
+  #quiet(): number {
+    const heard = this.#walls.heardAt[this.host];
+    return heard === undefined ? Infinity : Math.max(0, clock.t - heard);
+  }
+
+  #idle = $derived.by(() => {
+    const w = this.#walls.walls[this.host];
+    return w ? idleOf(this.digest, w.at, w.madeAt, clock.t) : 0;
+  });
+
+  face = $derived(this.#face());
+  #face() {
+    return faceOf(this.digest, this.host, this.quietMs, this.#idle);
+  }
+
+  /* ── what `Card.svelte` reads ─────────────────────────────────────── */
+
+  get title() {
+    return this.digest.title;
+  }
+  get project() {
+    return this.digest.project;
+  }
+  get tier(): Tier {
+    return this.face.tier;
+  }
+  get working() {
+    return this.face.working;
+  }
+  get dormant() {
+    return this.face.dormant;
+  }
+  get doing() {
+    return this.face.doing;
+  }
+  get idleSeconds() {
+    return this.face.idleSeconds;
+  }
+  get ctx() {
+    return this.digest.ctx;
+  }
+  /** Off while the wall is unheard: the card face says `set aside` ahead of
+   *  everything else, and that would hide the one line that matters then. */
+  get aside() {
+    return this.digest.aside && !this.face.unheard;
+  }
+  get gear() {
+    return this.digest.planning ? "planning" : "making";
+  }
+  get busy() {
+    return this.digest.jobs > 0 && !this.face.unheard;
+  }
+  /** The face draws a count and a tooltip of labels; a digest carries only the
+   *  count, so the labels say where the work is rather than inventing what. */
+  get jobs() {
+    return Array.from({ length: this.busy ? this.digest.jobs : 0 }, () => ({
+      label: `background work on ${this.host}`,
+    }));
+  }
+  lines = $derived(this.digest.said ? [{ kind: "text", text: this.digest.said }] : []);
+  readonly streaming = "";
+  readonly accountLabel = null;
+  readonly bypassCaps = false;
+  readonly compactFrac = null;
+  readonly holding = null;
+  readonly planDoc = null;
+  get elsewhere() {
+    return { host: this.host, unheard: this.face.unheard };
+  }
+}
+
+export function shadowKey(host: string, card: string): string {
+  return `elsewhere:${host}:${card}`;
+}
+
+/** Every other wall's cards, and this wall's offered to them. */
+export class Elsewhere {
+  /** Each wall's last snapshot, by host. */
+  walls = $state<Record<string, Wall>>({});
+  /** When each wall was last heard from, on this wall's clock — the roster's
+   *  word, or a snapshot arriving, whichever is later. */
+  heardAt = $state<Record<string, number>>({});
+  /** The link's roster, for the panel. */
+  roster = $state<RosterRow[]>([]);
+  /** Every shadow on the wall, in host order and then the owner's order. */
+  shadows = $state<Shadow[]>([]);
+  /** This wall's own name on the flyway, or "" until asked. */
+  me = $state("");
+  /** Cards on *this* wall that another wall asked for, by card id → the asking
+   *  host. Kept apart from the cards themselves because the link may say so
+   *  before the card is on the wall, and stamped onto each as it arrives. */
+  births = $state<Record<string, string>>({});
+
+  #skein: Skein;
+  #byId = new Map<string, Shadow>();
+  /** Where a prompt's events go: its shadow, even after the card has left the
+   *  wall, so an answer arriving late lands on the object that asked. */
+  #byPrompt = new Map<string, Shadow>();
+  #listeners = new Listeners();
+  /** Prompts from other walls this wall has taken, by id, with the answer each
+   *  got — or null while it is being delivered. See `#take`. */
+  #taken = new Map<string, { outcome: "taken" | "refused"; why?: string } | null>();
+  #stopEffects: () => void;
+
+  #offered: CardDigest[] | null = null;
+  #pending: CardDigest[] | null = null;
+  #lastAt = 0;
+  #timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(skein: Skein) {
+    this.#skein = skein;
+    this.#stopEffects = $effect.root(() => {
+      $effect(() => {
+        if (!this.#skein.loaded) return;
+        this.#offer(this.#skein.convs.map((c) => digestOf(this.#sourceOf(c))));
+      });
+      /* Whichever arrives second — the card or the link's word about it — is
+         what stamps it, so neither order leaves a remotely born card silent. */
+      $effect(() => {
+        for (const c of this.#skein.convs) {
+          const h = this.births[c.id];
+          if (h !== undefined && c.bornFor !== h) c.bornFor = h;
+        }
+      });
+    });
+  }
+
+  /** Start listening, and read what the link already holds. Every command here
+   *  may not exist — an older build, or a wall that has never joined a flyway —
+   *  and a wall with no flyway is a wall with no shadows, not a fault. */
+  attach() {
+    const l = this.#listeners;
+    l.keep(listen<{ host: string; ageMs: number; snapshot: unknown }>("flyway:cards", (e) => this.#arrived(e.payload)));
+    l.keep(listen<RosterRow[]>("flyway:roster", (e) => this.#heard(e.payload)));
+    l.keep(listen<{ id: string }>("flyway:prompt-left", (e) => this.#fold(e.payload.id, { kind: "left" })));
+    l.keep(
+      listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string }>("flyway:prompt-answer", (e) =>
+        this.#fold(e.payload.id, { kind: "answer", outcome: e.payload.outcome, why: e.payload.why }),
+      ),
+    );
+    l.keep(
+      listen<{ id: string; from: { host: string; card: string | null }; card: string; text: string }>(
+        "flyway:prompt",
+        (e) => void this.#take(e.payload),
+      ),
+    );
+    l.keep(
+      listen<{ card: string; host: string }>("flyway:born", (e) => {
+        this.births[e.payload.card] = e.payload.host;
+      }),
+    );
+    void invoke<string>("flyway_host").then((h) => (this.me = h)).catch(() => {});
+    void invoke<{ card: string; host: string }[]>("flyway_births")
+      .then((all) => {
+        for (const b of all) this.births[b.card] = b.host;
+      })
+      .catch(() => {});
+    void invoke<RosterRow[]>("flyway_roster").then((r) => this.#heard(r)).catch(() => {});
+    void invoke<{ host: string; ageMs: number; quietMs: number; snapshot: unknown }[]>("flyway_remote_cards")
+      .then((all) => {
+        for (const w of all) {
+          this.#arrived(w, false);
+          this.#hear(w.host, w.quietMs);
+        }
+      })
+      .catch(() => {});
+  }
+
+  detach() {
+    this.#listeners.detach();
+    this.#stopEffects();
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = null;
+  }
+
+  get listenerCount(): number {
+    return this.#listeners.size;
+  }
+
+  /** Read off `shadows` rather than the map beside it, which is not state: a
+   *  card closed on its own wall has to let go of the focus here the moment its
+   *  snapshot drops it, and only a reactive read is told. */
+  find(id: string | null): Shadow | null {
+    return id === null ? null : (this.shadows.find((s) => s.id === id) ?? null);
+  }
+
+  /* ── this wall's cards, outward ───────────────────────────────────── */
+
+  #sourceOf(c: Conversation) {
+    const t = c.territoryId ? this.#skein.territories.find((t) => t.id === c.territoryId) : undefined;
+    return {
+      id: c.id,
+      title: c.title,
+      project: c.project,
+      territory: t?.name ?? c.project,
+      kind: c.kind,
+      tier: c.tier,
+      ending: c.ending,
+      dormant: c.dormant,
+      working: c.working,
+      aside: c.aside,
+      gear: c.gear,
+      activity: c.activity,
+      held: c.held,
+      stalled: c.stalled,
+      unacknowledged: c.unacknowledged,
+      restingSince: c.restingSince,
+      ctx: c.ctx,
+      lines: c.lines,
+      jobs: c.jobs,
+    };
+  }
+
+  /** Coalesce: the newest set wins, and it goes at most once a second. */
+  #offer(cards: CardDigest[]) {
+    if (this.#offered && sameCards(cards, this.#offered)) {
+      this.#pending = null;
+      return;
+    }
+    this.#pending = cards;
+    if (this.#timer) return;
+    const wait = Math.max(0, this.#lastAt + PUBLISH_EVERY_MS - Date.now());
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      const next = this.#pending;
+      this.#pending = null;
+      if (!next) return;
+      this.#offered = next;
+      this.#lastAt = Date.now();
+      void invoke("flyway_publish_cards", {
+        snapshot: { v: DIGEST_V, at: Date.now(), cards: next },
+      }).catch(() => {
+        /* No flyway, or a build without the command: the snapshot has nowhere
+           to go and nothing here is owed a reading of why. Forgetting what was
+           offered means the next change offers the whole set again, which is
+           what a link coming up later wants. */
+        this.#offered = null;
+      });
+    }, wait);
+  }
+
+  /* ── other walls' cards, inward ───────────────────────────────────── */
+
+  #hear(host: string, quietMs: number) {
+    /* A missing figure is no news, not news of "just now" — and NaN here would
+       have compared false against every bound and read as heard for ever. */
+    if (!host || host === this.me || !Number.isFinite(quietMs)) return;
+    const at = Date.now() - Math.max(0, quietMs);
+    const was = this.heardAt[host];
+    if (was === undefined || at > was) this.heardAt[host] = at;
+  }
+
+  #heard(rows: RosterRow[]) {
+    if (!Array.isArray(rows)) return;
+    this.roster = rows;
+    for (const r of rows) {
+      if (r.me) {
+        /* The link knows this wall's name before `flyway_host` has answered
+           here; taking it from the roster too means a wall can never draw its
+           own cards as somebody else's. */
+        if (!this.me) this.me = r.host;
+        continue;
+      }
+      this.#hear(r.host, r.quietMs);
+    }
+  }
+
+  #arrived(p: { host: string; ageMs: number; snapshot: unknown }, live = true) {
+    const snap = readSnapshot(p.snapshot);
+    if (!snap || !p.host || p.host === this.me) return;
+    const now = Date.now();
+    /* Never let an older snapshot replace a newer one. Both `at`s are the same
+       wall's clock, so comparing them is fair — and the case is real at launch,
+       when the link's stored copy can answer after a live one has arrived. */
+    const held = this.walls[p.host];
+    if (held && held.at !== null && snap.at !== null && snap.at < held.at) return;
+    this.walls[p.host] = { at: snap.at, madeAt: now - Math.max(0, p.ageMs || 0), cards: snap.cards };
+    /* A snapshot is sent only by the wall it describes — the link does not
+       relay them — so one arriving is that wall being heard. */
+    if (live) this.#hear(p.host, 0);
+    this.#reconcile();
+  }
+
+  /** Keep each shadow as the same object across snapshots, so the prompts said
+   *  to it and the focus on it survive the wall it is on changing. */
+  #reconcile() {
+    const keep = new Set<string>();
+    const next: Shadow[] = [];
+    for (const host of Object.keys(this.walls).sort()) {
+      for (const d of this.walls[host]!.cards) {
+        const id = shadowKey(host, d.id);
+        keep.add(id);
+        let s = this.#byId.get(id);
+        if (s) s.digest = d;
+        else {
+          s = new Shadow(this, host, d);
+          this.#byId.set(id, s);
+        }
+        next.push(s);
+      }
+    }
+    for (const id of [...this.#byId.keys()]) if (!keep.has(id)) this.#byId.delete(id);
+    this.shadows = next;
+  }
+
+  /* ── speaking to one ──────────────────────────────────────────────── */
+
+  /** Send a prompt to a card on another wall. Drawn at once, as a local send
+   *  is, and marked for what it is until the other wall answers. */
+  async send(s: Shadow, text: string) {
+    const id = crypto.randomUUID();
+    s.sent.push({ id, text, at: Date.now(), state: "queued" });
+    this.#byPrompt.set(id, s);
+    /* Refused here when the card is drawn as unheard, in the words the card is
+       already wearing — the link would refuse it too, but a wall that says one
+       thing on the card and another under the prompt is arguing with itself. */
+    if (s.face.unheard) {
+      const span = Number.isFinite(s.quietMs) ? ` for ${spanOf(s.quietMs / 1000)}` : "";
+      this.#fold(id, { kind: "unsent", why: `${s.host} has not been heard from${span} — nothing was sent` });
+      return;
+    }
+    try {
+      await invoke("flyway_prompt", { id, to: s.host, card: s.card, text });
+    } catch (e) {
+      this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
+    }
+  }
+
+  #fold(id: string, ev: SentEvent) {
+    const s = this.#byPrompt.get(id);
+    if (!s) return;
+    const i = s.sent.findIndex((p) => p.id === id);
+    if (i < 0) return;
+    const next = advance(s.sent[i]!, ev);
+    s.sent[i] = next;
+    /* An answer is final (`advance`), so nothing further can be owed to it and
+       the route can go — which is what keeps this map from growing for the life
+       of the window. */
+    if (next.state === "taken" || next.state === "refused") this.#byPrompt.delete(id);
+  }
+
+  /* ── a prompt arriving for one of this wall's cards ───────────────── */
+
+  /** Hand a prompt from another wall to the card it is for, through the same
+   *  send path a prompt typed here takes — waking a dormant card, the echo and
+   *  its marks, all of it — and say what became of it.
+   *
+   *  It arrives *introduced*: a `you` line nobody at this keyboard typed is the
+   *  transcript putting words in somebody's mouth unless it says where they came
+   *  from (`Conversation.note`). `taken` means this wall has it and the card's
+   *  own transcript is now the honest account — including a send that fails
+   *  there, which this wall's panel draws as it would any failed send. */
+  async #take(p: { id: string; from: { host: string; card: string | null }; card: string; text: string }) {
+    /* A redelivered frame gets the answer the first one got, and never a
+       second send. The link already drops repeats; this is the second lock on
+       the same door, because a prompt taken twice is two turns on a card
+       running with the machine in its hands. Re-answering is the useful half: a
+       repeat usually means the first answer was lost on the way back. */
+    /* Keyed on the asking wall *and* the id, the fleet's lesson: the id alone
+       was its first cut, and two walls minting the same one swallowed each
+       other's asks. A uuid makes that unlikely here; the key makes it moot. */
+    const key = `${p.from.host}\u0000${p.id}`;
+    const known = this.#taken.get(key);
+    if (known !== undefined) {
+      if (known) this.#answer(p, known.outcome, known.why);
+      return;
+    }
+    this.#taken.set(key, null);
+    if (this.#taken.size > TAKEN_KEPT) this.#taken.delete(this.#taken.keys().next().value!);
+
+    /* Before the wall has read its cards every card looks absent, and "it may
+       have been closed" would be a false thing to tell the asker. */
+    if (!this.#skein.loaded) {
+      return this.#settle(p, "refused", `${this.me || "that wall"} is still starting — send it again in a moment`);
+    }
+    const conv = this.#skein.convs.find((c) => c.id === p.card);
+    const refusal = promptRefusal(!!conv, this.me);
+    if (!conv || refusal) return this.#settle(p, "refused", refusal ?? undefined);
+
+    conv.note(`sent from ${p.from.host}`);
+    let sent = false;
+    try {
+      sent = await this.#skein.send(conv, p.text);
+    } catch {
+      sent = false;
+    }
+    this.#settle(
+      p,
+      sent ? "taken" : "refused",
+      sent ? undefined : `${this.me || "that wall"} could not deliver it — ${conv.activity}`,
+    );
+  }
+
+  #settle(p: { id: string; from: { host: string } }, outcome: "taken" | "refused", why?: string) {
+    this.#taken.set(`${p.from.host}\u0000${p.id}`, { outcome, why });
+    this.#answer(p, outcome, why);
+  }
+
+  #answer(p: { id: string; from: { host: string } }, outcome: "taken" | "refused", why?: string) {
+    void invoke("flyway_prompt_answer", { id: p.id, askedBy: p.from.host, outcome, why }).catch(() => {
+      /* Nothing here can do better than the asker's own give-up, which says
+         it does not know — and that is the truth if this never arrives. */
+    });
+  }
+}

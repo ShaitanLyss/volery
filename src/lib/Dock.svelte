@@ -21,6 +21,7 @@
   import { noticeShown } from "./notice";
   import type { Skein } from "../lib/skein.svelte";
   import type { Conversation } from "../lib/conversation.svelte";
+  import type { Shadow } from "./shadows.svelte";
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
   import { askShown } from "./asking";
@@ -37,6 +38,7 @@
     skein,
     bang,
     focused,
+    remote = null,
     targets,
     waiting,
     clashing,
@@ -62,6 +64,11 @@
     bang: Bang;
     /** The card in the ring, if there is one. */
     focused: Conversation | null;
+    /** The card in the ring when it is on another wall — never at the same time
+     *  as `focused`. Its own prop and its own type, so that nothing here that
+     *  acts on a card can be aimed at one by accident; all the dock does with it
+     *  is say where a prompt would go and let one be typed. */
+    remote?: Shadow | null;
     /** Everything a send would reach: the gathering, or the focused card, or
      *  nothing at all. */
     targets: Conversation[];
@@ -411,6 +418,18 @@
       {#if focused.interrupted}
         <span class="hint warn">last turn was interrupted</span>
       {/if}
+    {:else if remote}
+      <span class="count">To</span>
+      <span class="tgt"><b>{remote.project}</b> {nameBesideProject(remote.title)}</span>
+      <!-- Where the words will go, and the limits of what can: a prompt is
+           carried to the other wall as text, so this wall's commands, a `!`
+           line and pictures stay here. Said up front rather than discovered
+           as a refusal flash. -->
+      {#if remote.face.unheard}
+        <span class="hint warn">on {remote.host}, not heard from — a prompt would be refused</span>
+      {:else}
+        <span class="hint">on {remote.host} — words only, sent there</span>
+      {/if}
     {:else}
       <span class="count dim">No card focused</span>
     {/if}
@@ -665,8 +684,10 @@
             ? `Say something to all ${targets.length}…`
             : focused
               ? "Say something…"
-              : "Open a conversation first"}
-        disabled={targets.length === 0}
+              : remote
+                ? `Say something to ${remote.host}…`
+                : "Open a conversation first"}
+        disabled={targets.length === 0 && !remote}
         spellcheck={!field.banging}
         rows="1"
       ></textarea>

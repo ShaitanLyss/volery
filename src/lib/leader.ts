@@ -54,7 +54,8 @@ export type Verb =
   | { kind: "window"; act: "span" | "panel" | "dock" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" }
-  | { kind: "sink"; act: "open" | "drop" };
+  | { kind: "sink"; act: "open" | "drop" }
+  | { kind: "elsewhere"; act: "next" };
 
 /** One sequence the leader opens onto.
  *
@@ -159,6 +160,15 @@ export const CHORDS: readonly Chord[] = [
 
      The `i` family has no other member yet. That is fine — `t` was a family of
      one for a while too, and a letter spent on a family is spent once. */
+  /* `e` is elsewhere: the other walls in the flyway. A family rather than a
+     letter on `s`'s argument — reaching a card over there and putting a card
+     over there are two verbs about one place, and the second has somewhere to
+     go when it earns a chord. `ee` is the one you came for, doubled as `ss`
+     and `ff` are: the next card on another wall, which is the only keyboard
+     path to one, since a card elsewhere is in neither Tab cycle — both of
+     those walk this wall's cards and hand each to gestures a card elsewhere
+     cannot take. */
+  { keys: "ee", label: "a card on another wall", verb: { kind: "elsewhere", act: "next" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];
