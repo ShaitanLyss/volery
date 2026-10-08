@@ -316,3 +316,33 @@ Never raise it to capture — that is the interruption this section exists to pr
 `feed` fixture: the same real 97-line Bash call, differing in exactly one field, so feeding
 each into a fresh card is a controlled experiment rather than two anecdotes.
 
+
+### Testing in-memory state wants a frozen front end, because other cards keep remounting yours
+
+Found 2026-10-08 by `f8fb825e`, testing a shadow's glass spot — which is session-only and
+therefore lives in memory and nowhere else. The test kept coming back with an empty glass and
+four shadows correctly in place, which reads exactly like a bug in the feature.
+
+It was not. **Another card edited `App.svelte`**, vite's HMR remounted the app in the lab wall
+being driven, and in-memory state went with it. Several cards work in this tree at once, so
+any of them touching any file the dev server watches wipes the thing under test at a moment
+nothing records.
+
+Two things make it worth a section rather than a footnote:
+
+- **It fails as a wrong answer, not as an error.** Nothing in the lab says "the app you are
+  driving was just remounted"; the state is simply gone, so the reading is plausible and
+  wrong. The card nearly filed a real bug against its own correct code, and only went looking
+  because it checked whether the page had reloaded before believing the result.
+- **It cannot happen to an installed build**, which is what makes it a *harness* fault rather
+  than a finding. A real wall has no HMR. So a test that only fails under `vite dev` is
+  telling you about the harness; prove that before chasing the feature.
+
+**The fix is to freeze the front end**: `vite build` into your own scratch directory and serve
+it with `vite preview` on a port of your own, then point the lab at that. The bytes then stop
+moving for the length of the test, whoever else is editing. It costs one build and removes a
+whole class of false reading.
+
+This belongs here rather than in the subsystem's own rule because it is about how anything
+holding state in memory is tested on a wall several agents share — the glass is simply the
+first thing that had any.
