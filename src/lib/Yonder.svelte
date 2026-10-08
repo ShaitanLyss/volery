@@ -9,6 +9,7 @@
      that the conversation itself stays on the other machine, because a panel
      that looked like a transcript with most of it missing would read as one
      that failed to load. */
+  import { untrack } from "svelte";
   import { clock } from "./conversation.svelte";
   import { cardName } from "./naming";
   import Transcript from "./Transcript.svelte";
@@ -34,6 +35,29 @@
   } = $props();
 
   const name = $derived(cardName(shadow.title, ""));
+
+  /* The conversation is read when this panel opens and again whenever the
+     card's own wall says it has moved on — a new settled line, a new activity
+     (which is what a run of tool calls with nothing said between them
+     changes), a turn opening or closing — and when its wall is heard again,
+     so a read refused while it was quiet is not the last word. Folded off the
+     snapshot and the roster that already arrive, never a timer: the string is
+     what changes, so a snapshot that only moved another card reads nothing.
+     Untracked, since the read writes the state it would otherwise depend on. */
+  const moved = $derived(
+    [
+      shadow.id,
+      shadow.digest.said,
+      shadow.digest.doing,
+      shadow.digest.restingSince,
+      shadow.working,
+      shadow.face.unheard,
+    ].join("\u0000"),
+  );
+  $effect(() => {
+    void moved;
+    untrack(() => void shadow.readTail());
+  });
 
   /** The card's activity line, with the suffix a card face would put on it —
    *  same rule as `Card.svelte`'s label, so the two cannot disagree. */
@@ -64,6 +88,9 @@
     the last of this card's conversation, read from {shadow.host} — older rounds stay there.
     what you send it is marked until {shadow.host} says it has it.
   </p>
+  {#if shadow.tailState === "error" && shadow.tailWhy}
+    <p class="note">could not read its conversation — {shadow.tailWhy}</p>
+  {/if}
 
   <!-- Whether it is stopped on you. Answered in the dock, where a question on
        this wall is, so the two are never answered in two different places. A

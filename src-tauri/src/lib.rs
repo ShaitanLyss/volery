@@ -694,6 +694,8 @@ pub fn run() {
             flyway::link::flyway_births,
             flyway::link::flyway_prompt,
             flyway::link::flyway_prompt_answer,
+            flyway::link::flyway_tail,
+            flyway::link::flyway_tail_answer,
             flyway::key::flyway_start,
             flyway::key::flyway_join,
             flyway::key::flyway_invite,

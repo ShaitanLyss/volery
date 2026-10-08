@@ -14,7 +14,9 @@
 //!   one. Pure.
 //! - `fleet` — the roster, and asking another wall to open a card. Pure.
 //! - `cards` — what each wall's cards look like, carried and never read. Pure.
-//! - `frame` — how those three vocabularies share one frame.
+//! - `tail` — one card's conversation, pulled by a wall with a panel open on
+//!   it and answered in the same exchange. Pure.
+//! - `frame` — how those vocabularies share one frame.
 //! - `wire` — iroh: QUIC, dial by public key, relay fallback. The only file
 //!   that knows about the transport, so the transport stays replaceable.
 //! - `here` — the rows the fleet keeps and the facts a wall announces.
@@ -42,4 +44,5 @@ pub mod reach;
 pub mod seal;
 pub mod session;
 pub mod sync;
+pub mod tail;
 pub mod wire;

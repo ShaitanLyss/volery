@@ -820,6 +820,11 @@ export class Control {
           doing: s.doing,
           idleSeconds: s.idleSeconds,
           said: s.digest.said,
+          /* The conversation read off its own wall: how far the read got, why
+             it failed if it did, and how many lines came back. */
+          tailState: s.tailState,
+          tailWhy: s.tailWhy,
+          tailLines: s.tail?.length ?? null,
           sent: s.sent.map((p) => ({ text: p.text, state: p.state, why: p.why ?? null, askId: p.askId ?? null })),
           /* Every question it is parked on, and whether this wall may answer it
              now — not while one is on its way, and none while its wall is

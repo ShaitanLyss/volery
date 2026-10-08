@@ -47,7 +47,9 @@ import {
   idleOf,
   promptRefusal,
   readSnapshot,
+  readTail,
   sameCards,
+  tailOf,
   weave,
   type WireLine,
   type CardDigest,
@@ -215,6 +217,46 @@ export class Shadow {
    *  showing a conversation with a hole in it. `none` is the far wall having
    *  answered that it has nothing — a cleared card, or one that never spoke. */
   tailState = $state<"unread" | "loading" | "ready" | "none" | "error">("unread");
+  /** Why the last read came to nothing, in the far wall's or the link's own
+   *  words — a quiet wall, an older one, a card closed since it was drawn. */
+  tailWhy = $state<string | null>(null);
+  #reading = false;
+  #again = false;
+
+  /** Read the conversation off the wall it runs on (`flyway_tail`). Pulled
+   *  when a panel is open on it and never gossiped: a transcript is large and
+   *  wanted one card at a time (`flyway/tail.rs`).
+   *
+   *  One read in flight; asked again meanwhile, it reads once more after,
+   *  since the second ask means the card has moved on since the first. Only a
+   *  first read says `loading` — a refresh keeps what is drawn, and a refresh
+   *  that fails keeps it too, because what was read is still what was said. */
+  async readTail(): Promise<void> {
+    if (this.#reading) {
+      this.#again = true;
+      return;
+    }
+    this.#reading = true;
+    try {
+      do {
+        this.#again = false;
+        if (this.tail === null) this.tailState = "loading";
+        try {
+          const raw = await invoke<unknown>("flyway_tail", { host: this.host, card: this.card });
+          const t = raw == null ? [] : readTail(raw);
+          if (!t) throw new Error(`${this.host} sent something that is not a conversation`);
+          this.tail = t;
+          this.tailState = t.length ? "ready" : "none";
+          this.tailWhy = null;
+        } catch (e) {
+          this.tailWhy = String((e as Error)?.message ?? e);
+          if (this.tail === null) this.tailState = "error";
+        }
+      } while (this.#again);
+    } finally {
+      this.#reading = false;
+    }
+  }
 
   /** The column, as the transcript draws it.
    *
@@ -341,6 +383,7 @@ export class Elsewhere {
         (e) => void this.#take(e.payload),
       ),
     );
+    l.keep(listen<{ id: string; card: string }>("flyway:tail", (e) => void this.#lend(e.payload)));
     l.keep(
       listen<{ card: string; host: string }>("flyway:born", (e) => {
         this.births[e.payload.card] = e.payload.host;
@@ -647,6 +690,34 @@ export class Elsewhere {
       sent ? "taken" : "refused",
       sent ? undefined : `${this.me || "that wall"} could not deliver it — ${conv.activity}`,
     );
+  }
+
+  /* ── a card's conversation, asked for by another wall ─────────────── */
+
+  /** Make one of this wall's cards' tails for a wall with a panel open on it.
+   *  The scrollback and the live lines, as this wall's own panel would draw
+   *  them — so a card nobody here has opened has its transcript read off disk
+   *  first, as opening it here would. Always answered, for `#take`'s reason:
+   *  the far panel can only say "reading…" until it is. */
+  async #lend(p: { id: string; card: string }) {
+    const answer = (lines: WireLine[] | null, why?: string) =>
+      void invoke("flyway_tail_answer", { id: p.id, lines, why }).catch(() => {
+        /* The asker's own bound says it was not read in time. */
+      });
+    const me = this.me || "that wall";
+    try {
+      if (!this.#skein.loaded) return answer(null, `${me} is still starting — open it again in a moment`);
+      const conv = this.#skein.convs.find((c) => c.id === p.card);
+      if (!conv) return answer(null, `no card ${p.card.slice(0, 8)} is open on ${me} — it may have been closed since`);
+      try {
+        await this.#skein.loadHistory(conv);
+      } catch {
+        /* What is live is still worth reading without the scrollback. */
+      }
+      answer(tailOf([...conv.history, ...conv.lines]));
+    } catch (e) {
+      answer(null, `${me} could not make that card's conversation — ${String((e as Error)?.message ?? e)}`);
+    }
   }
 
   #settle(p: { id: string; from: { host: string } }, outcome: "taken" | "refused", why?: string) {

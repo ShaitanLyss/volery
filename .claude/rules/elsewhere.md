@@ -4,6 +4,7 @@ paths:
   - "src/lib/shadows.svelte.ts"
   - "src/lib/Yonder.svelte"
   - "test/shadow.test.ts"
+  - "src-tauri/src/flyway/tail.rs"
 ---
 
 # Cards on other walls
@@ -257,12 +258,65 @@ the tier is passed on as the owner's word and never re-derived, a missing or mis
 is empty, a card with no id is skipped, every string is scrubbed and capped, and a quiet
 wall's cards say `unknown` — the honesty `faceOf` keeps on the glass, kept in the tool too.
 
+### The conversation itself, pulled while a panel is open on it
+
+A digest is the tier; a conversation is the other kind of thing — hundreds of kilobytes,
+wanted one card at a time, and only while somebody is reading it. So it is **never
+gossiped**. Opening the panel on a shadow (`Yonder.svelte`) asks the owning wall for that
+card's tail (`flyway_tail`), and the panel draws it through the same `Transcript.svelte` a
+local card uses: folded tool calls that open onto their arguments and result, markdown, the
+rails.
+
+- **One exchange, answered on the same stream** (`flyway/tail.rs`). Every other request
+  between walls is answered by the far wall dialling *back* with a fleet `answer`, which is
+  kept and re-said every tick (`Fleet::open`) — right for an act, ruinous for a reading: a
+  400k tail re-said to every peer every thirty seconds is the transcript gossiped after all.
+  So the far wall holds the dialler's stream open while its front end makes the tail and
+  writes it back there (`Link::answer_all`). Nothing is kept on either side, nothing retries.
+- **The owning front end makes it, parked the way `ask.rs` parks a `tools/call`.** The tail
+  is `tailOf` over `history` and `lines` — the taxonomy stays in TypeScript — so an arriving
+  `tail` is a oneshot under a fresh id, a `flyway:tail` event, and `flyway_tail_answer`
+  handing it back (`Elsewhere.#lend`). A card nobody on the owning wall has opened has its
+  scrollback read off disk first, as opening it there would. Twelve seconds, well inside the
+  asker's twenty-second exchange, and always answered — "still starting", "no card … is
+  open", or the lines.
+- **Bounded on the way out and again on the way in** (`tail::fit`): an array of at most 120
+  objects of at most 16 fields, every string scrubbed (`crate::clean`) and capped, nothing
+  nested past a call, the whole budget — field names included — spent from the newest line
+  backwards and never exceeded, not even for the newest. Lines of which none could be read
+  is a broken answer, not an empty conversation. A different build's agent output
+  is going into this card's panel; `readTail` caps too, and Rust is not the hole between.
+- **Refused at once, never waited on** (`Link::tail_reachable`): an unknown wall, a quiet one
+  (the roster's 90s, in the fleet's own words), or one too old — a wall that can answer says
+  `tail` in its `Facts::can`. Not one of `fleet::CAN`, since those are the acts an *agent*
+  may ask and a wall missing one is told to agents as unsteerable; a 0.43 wall is steerable
+  and merely unreadable. Even sent, an older wall passes over `tail` as a word it has no use
+  for (`frame::take`) and its sink carries on.
+- **Not gated by "take work from other walls".** That switch is about *starting* work; a read
+  starts nothing, and gating it would be a wall whose cards you can see and not read — the
+  argument that already lets an answer to a parked question through.
+- **Refreshed off the snapshot, not a clock.** While the panel is open, `Yonder` re-reads
+  when the card's settled last line, its activity (`doing` — the only field a run of tool
+  calls with nothing said between them moves), its resting moment or `working` changes, and
+  when its wall is heard again — a `$derived` string, so a snapshot that moved *another* card
+  reads nothing, and a read refused while the wall was quiet is not the last word (found in
+  review: without `unheard` in the string, an idle card's panel stayed on the error for good).
+  One read in flight and one queued behind it (`Shadow.readTail`). Only a first read says
+  `loading`; a refresh that fails keeps what was read, since it is still what was said, and
+  puts the reason in `tailWhy`.
+- **A read never moves the tick's backoff.** `read_tail` leaves `failing` alone: a read that
+  ran long — a relay, a far scrollback read off disk — is not a wall asleep, and marking it
+  would let reading a transcript decide when two walls next sync.
+
+Demonstrated 2026-10-08 between two walls of one build (`lab`, `lab2`): a card on lab2 read a
+file and answered in markdown; opening its shadow's panel on lab drew the prompt, the folded
+`Read` (opening onto the path and the file's six lines) and the heading and bold list. A
+second turn on lab2 appeared in lab's open panel on its own, 3 → 6 lines.
+
 ### What is not here
 
-- **The transcript.** A digest is the tier; streaming a conversation is a much larger tier and
-  `FLYWAY-REMAINING.md` says what it costs. `Yonder.svelte` says in words that the conversation
-  stays on the other machine, because a panel shaped like a transcript with most of it missing
-  reads as one that failed to load.
+- **The whole scrollback.** 120 lines from the end, which is the round you are in and the one
+  before; older rounds stay on the owning wall, and the panel says so.
 - **Notices travelling** (sink `16864f3d` item 2). A card that finished or ended on a question
   shows its tier on the shadow, but the notice queue is this wall's.
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it

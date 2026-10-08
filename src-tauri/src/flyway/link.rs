@@ -104,6 +104,7 @@ use super::frame::Frame;
 use super::here;
 use super::key;
 use super::session::Msg;
+use super::tail::{self, TailMsg};
 use super::wire::{Dialler, Fault, Wire};
 use crate::store::Store;
 
@@ -129,6 +130,19 @@ const BACKOFF_MAX_MS: i64 = 5 * 60_000;
 /// most once a second and only on change; this is the same bound on the wire,
 /// so a burst of changes is one push carrying the last of them.
 const CARDS_EVERY: Duration = Duration::from_secs(1);
+
+/// How long a wall asked for a card's conversation waits for its own front end
+/// to make it. The asker's whole exchange is bounded at twenty seconds
+/// (`wire.rs`), dial included, so this has to be well inside that or the
+/// answer is written to a stream nobody is reading. Making a tail is a fold
+/// over lines already in memory — milliseconds — unless the card's scrollback
+/// has to be read off disk first, which is the case this leaves room for.
+const TAIL_WITHIN: Duration = Duration::from_secs(12);
+
+/// The most tails one exchange may ask for. A panel asks for one, and the
+/// waits are serial, so a second could only be answered after the asker's
+/// twenty seconds had run out — anything asking for more is not this app.
+const TAILS_PER_EXCHANGE: usize = 1;
 
 /// The running link, if this wall has a key.
 #[derive(Default)]
@@ -168,6 +182,11 @@ pub struct Link {
     prompts_out: StdMutex<HashMap<String, PromptOut>>,
     /// Prompts handed to cards here, by the asker's host and request id.
     prompts_in: StdMutex<HashMap<(String, String), i64>>,
+    /// Conversations another wall asked for, parked until this wall's front
+    /// end has made them — `ask.rs`'s shape, a channel per request under an id
+    /// the front end answers by. Keyed on an id minted here rather than the
+    /// asker's, so two walls asking at once cannot answer each other.
+    tails: StdMutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Value, String>>>>,
     cards_due: AtomicBool,
 }
 
@@ -286,6 +305,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         opening: StdMutex::new(HashMap::new()),
         prompts_out: StdMutex::new(HashMap::new()),
         prompts_in: StdMutex::new(HashMap::new()),
+        tails: StdMutex::new(HashMap::new()),
         cards_due: AtomicBool::new(false),
     });
     *state.link.lock().map_err(|_| "the flyway is wedged".to_string())? = Some(link.clone());
@@ -306,7 +326,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
                 let me = l.clone();
                 let out = l
                     .wire
-                    .answer(incoming, move |heard, who| async move { me.answer(heard, who) })
+                    .answer(incoming, move |heard, who| async move { me.answer_all(heard, who).await })
                     .await;
                 if let Err(e) = out {
                     /* A failed dial is somebody else's network, not a reason
@@ -428,7 +448,7 @@ impl Link {
                    the fleet's in-flight count; taken out here so the bound does
                    not count it twice. */
                 remote_last_hour: here::births_since(&conn, self.now() - 60 * 60_000).saturating_sub(in_flight),
-                can: fleet::CAN.iter().map(|c| c.to_string()).collect(),
+                can: fleet::CAN.iter().chain(std::iter::once(&tail::WORD)).map(|c| c.to_string()).collect(),
                 ..Facts::default()
             };
             (f, here::open_cards(&conn))
@@ -664,12 +684,36 @@ impl Link {
                         self.emit_cards(a);
                     }
                 }
+                /* A tail is only ever read by the exchange that asked for it
+                   (`read_tail`), which takes it out before this sees the rest. */
+                Frame::Tail(_) => {}
             }
         }
         if fleet_spoke {
             self.emit_roster();
         }
         (news, theirs)
+    }
+
+    /// Answer a wall that dialled us, a card's conversation included.
+    ///
+    /// The tail is the one answer that waits on something — this wall's front
+    /// end — so it is taken out first, everything else is answered as it
+    /// always was, and the tails are written after. Held to the current
+    /// language: an old wall never asks, and a frame that somehow came from one
+    /// is answered as though it had not.
+    async fn answer_all(self: Arc<Self>, heard: Vec<Frame>, who: Dialler) -> Vec<Frame> {
+        let (asks, rest): (Vec<Frame>, Vec<Frame>) =
+            heard.into_iter().partition(|f| matches!(f, Frame::Tail(TailMsg::Tail { .. })));
+        let mut out = self.answer(rest, who);
+        if who.current {
+            for f in asks.into_iter().take(TAILS_PER_EXCHANGE) {
+                if let Frame::Tail(TailMsg::Tail { id, card }) = f {
+                    out.push(Frame::Tail(self.tail_here(id, card).await));
+                }
+            }
+        }
+        out
     }
 
     /// Answer a wall that dialled us.
@@ -1285,6 +1329,124 @@ impl Link {
         }
     }
 
+    /* ── a card's conversation, read from another wall ─────────────────────── */
+
+    /// Make one of this wall's cards' tails for a wall that asked, by asking
+    /// this wall's front end — the only thing that can, since what a line is
+    /// is `classify.ts`'s. Parked as `ask.rs` parks a `tools/call`: a channel
+    /// under a fresh id, an event carrying it, and `flyway_tail_answer`
+    /// handing the answer back by that id.
+    ///
+    /// **Not gated by "take work from other walls".** That switch is about
+    /// *starting* work, and reading a transcript starts nothing; gating it
+    /// would be a wall whose cards you can see and not read — the argument
+    /// that already lets an answer to a parked question through.
+    async fn tail_here(self: &Arc<Self>, id: String, card: String) -> TailMsg {
+        let card: String = crate::clean::scrub(card.trim()).chars().take(80).collect();
+        let said = |lines: Option<Value>, why: Option<String>| TailMsg::Tailed {
+            id: id.clone(),
+            card: card.clone(),
+            lines,
+            why,
+        };
+        if card.is_empty() {
+            return said(None, Some("no card was named".into()));
+        }
+        let local = crate::store::uuid_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Ok(mut t) = self.tails.lock() {
+            t.insert(local.clone(), tx);
+        }
+        let _ = self.app.emit("flyway:tail", TailHere { id: local.clone(), card: card.clone() });
+        let got = tokio::time::timeout(TAIL_WITHIN, rx).await;
+        /* Whatever happened, the slot is this call's to clear: an answer has
+           taken it already, and a timeout leaves it behind. */
+        if let Ok(mut t) = self.tails.lock() {
+            t.remove(&local);
+        }
+        match got {
+            /* Bounded on the way out as well as on the way in: the front end
+               caps it, and this is the wall's own last word on what leaves. */
+            Ok(Ok(Ok(lines))) => match tail::fit(lines) {
+                Some(lines) => said(Some(lines), None),
+                None => said(None, Some(format!("{} made something that is not a conversation", self.me))),
+            },
+            Ok(Ok(Err(why))) => said(None, Some(why)),
+            Ok(Err(_)) | Err(_) => said(
+                None,
+                Some(format!("{} did not read that card's conversation in time — try opening it again", self.me)),
+            ),
+        }
+    }
+
+    /// The front end's answer to a `flyway:tail`.
+    fn tail_answered(&self, id: &str, answer: Result<Value, String>) -> Result<(), String> {
+        let tx = self
+            .tails
+            .lock()
+            .map_err(|_| "the flyway is wedged".to_string())?
+            .remove(id)
+            .ok_or("nobody is waiting for that conversation any more")?;
+        tx.send(answer).map_err(|_| "the wall that asked has stopped waiting".to_string())
+    }
+
+    /// Whether a tail could be asked of `host` at all — said at once, before
+    /// anything is dialled, for a2a4468e's rule that a wall which cannot answer
+    /// is told so now and never waited on. Unknown, quiet and too old are the
+    /// three the roster can already see.
+    fn tail_reachable(&self, host: &str) -> Result<(), String> {
+        if host.eq_ignore_ascii_case(&self.me) {
+            return Err("that card is on this wall".into());
+        }
+        let now = self.now();
+        let f = self.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?;
+        let Some(e) = f.entry(host) else {
+            let known: Vec<String> = f.roster().filter(|e| e.host != self.me).map(|e| e.host.clone()).collect();
+            return Err(fleet::Unsendable::UnknownHost { host: host.into(), known }.reason());
+        };
+        let quiet = e.quiet_for(now);
+        if quiet > fleet::QUIET_AFTER_MS as u64 {
+            return Err(fleet::Unsendable::Quiet { host: host.into(), for_ms: quiet }.reason());
+        }
+        let can = e.facts.can.iter().any(|c| c == tail::WORD);
+        drop(f);
+        if !can || self.speaks_older(host) {
+            return Err(format!(
+                "{host} runs an older Volery, which cannot show its cards' conversations to another \
+                 wall — update it, or read the card there"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Ask `host` for one card's tail, and keep the answer out of the same
+    /// exchange — with the id it was asked under. Everything else the far wall
+    /// says back, its cards most often, is folded in as any answer is.
+    async fn read_tail(self: &Arc<Self>, host: &str, card: &str) -> Result<(String, Vec<TailMsg>), String> {
+        let peer = self.wire.peer(host)?;
+        let id = crate::store::uuid_v4();
+        let ask = Frame::Tail(TailMsg::Tail { id: id.clone(), card: card.to_string() });
+        /* Neither outcome touches `failing`. That is the tick's backoff, and a
+           read that ran long — a slow relay, a far front end reading a large
+           scrollback off disk — is not a wall asleep; marking it would make
+           reading a transcript decide when the two walls next sync. */
+        let back = self
+            .wire
+            .exchange(peer, vec![ask], true)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e}"))?;
+        let mut tails = Vec::new();
+        let mut rest = Vec::new();
+        for f in back {
+            match f {
+                Frame::Tail(m) => tails.push(m),
+                other => rest.push(other),
+            }
+        }
+        self.take(rest, Some(host));
+        Ok((id, tails))
+    }
+
     /* ── the cards ─────────────────────────────────────────────────────────── */
 
     fn publish_cards(self: &Arc<Self>, snapshot: Value) -> Result<(), String> {
@@ -1521,6 +1683,14 @@ fn prompt_why(r: &Refusal, by: &str) -> String {
 }
 
 /* ── what crosses to the front end ─────────────────────────────────────────── */
+
+/// A conversation another wall asked for, as this wall's front end is handed
+/// the question. `id` is minted here; see `Link::tails`.
+#[derive(Serialize, Clone)]
+struct TailHere {
+    id: String,
+    card: String,
+}
 
 #[derive(Serialize, Clone)]
 struct PromptLeft {
@@ -1816,6 +1986,51 @@ pub async fn flyway_prompt_answer(
         .await?;
     }
     Ok(())
+}
+
+/// Read one card's conversation off the wall it runs on — pulled when a panel
+/// opens on its shadow, never gossiped (see `tail.rs`).
+///
+/// `Ok(Some(lines))` is the tail, as `shadow.ts::readTail` reads it;
+/// `Ok(None)` is the far wall saying the card has nothing to show; `Err` is
+/// the sentence the panel draws — and a wall that cannot answer, unknown,
+/// quiet or too old, is that at once rather than a request that hangs.
+#[tauri::command]
+pub async fn flyway_tail(app: AppHandle, host: String, card: String) -> Result<Option<Value>, String> {
+    let Some(l) = current(&app) else {
+        return Err("this wall is not on a flyway, so it cannot read another wall's card".into());
+    };
+    let host = host.trim().to_string();
+    let card = card.trim().to_string();
+    if host.is_empty() || card.is_empty() {
+        return Err("no card was named".into());
+    }
+    /* The roster's lock off the main thread, for `flyway_publish_cards`'s
+       reason; the exchange itself is network, and awaits rather than blocks. */
+    let check = l.clone();
+    let h = host.clone();
+    crate::off_main(move || check.tail_reachable(&h)).await??;
+    let (id, said) = l.read_tail(&host, &card).await?;
+    /* The bound on arrival walks every string of up to half a megabyte —
+       CPU, so it goes where blocking work goes. */
+    crate::off_main(move || match tail::answer_in(&said, &id, &host)? {
+        tail::Read::Lines(v) => Ok(Some(v)),
+        tail::Read::Nothing => Ok(None),
+    })
+    .await?
+}
+
+/// This wall's front end's answer to a `flyway:tail`: the lines `tailOf`
+/// made, or why there are none. Neither is "the card has nothing to show",
+/// which is an empty list.
+#[tauri::command]
+pub async fn flyway_tail_answer(app: AppHandle, id: String, lines: Option<Value>, why: Option<String>) -> Result<(), String> {
+    let Some(l) = current(&app) else { return Ok(()) };
+    let answer = match why.map(|w| crate::clean::scrub(w.trim()).into_owned()).filter(|w| !w.is_empty()) {
+        Some(why) => Err(why),
+        None => Ok(lines.unwrap_or_else(|| Value::Array(Vec::new()))),
+    };
+    crate::off_main(move || l.tail_answered(&id, answer)).await?
 }
 
 /// The card a prompt in hand was addressed to, for the answer to name.

@@ -1,7 +1,8 @@
 //! What one sealed frame carries.
 //!
-//! Three vocabularies share the wire — the sink's (`session::Msg`), the
-//! fleet's (`fleet::FleetMsg`) and the cards' (`cards::CardsMsg`) — and each
+//! Four vocabularies share the wire — the sink's (`session::Msg`), the
+//! fleet's (`fleet::FleetMsg`), the cards' (`cards::CardsMsg`) and a card's
+//! conversation read on demand (`tail::TailMsg`) — and each
 //! names its messages under one tag, `msg`, with no name used twice. So the
 //! envelope is **untagged**: a frame is whichever vocabulary its `msg` belongs
 //! to, and a bare `session::Msg` from a wall that only ever spoke the sink is
@@ -43,6 +44,7 @@ use serde_json::Value;
 use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
 use super::session::Msg;
+use super::tail::TailMsg;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -50,6 +52,7 @@ pub enum Frame {
     Sink(Msg),
     Fleet(FleetMsg),
     Cards(CardsMsg),
+    Tail(TailMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -96,10 +99,10 @@ pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
     Ok(())
 }
 
-/// Every `msg` this build reads. Held against the three enums by a test, so a
+/// Every `msg` this build reads. Held against the four enums by a test, so a
 /// variant added to one of them without this list is caught rather than
 /// silently skipped as "from a newer build".
-const KNOWN: &[&str] = &["hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards"];
+const KNOWN: &[&str] = &["hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards", "tail", "tailed"];
 
 #[cfg(test)]
 mod tests {
@@ -134,6 +137,27 @@ mod tests {
             snapshot: serde_json::json!({ "v": 1, "cards": [] }),
         });
         assert_eq!(round(cards.clone()), cards);
+    }
+
+    /// The tail's two words come back as themselves, and — the half a 0.43
+    /// wall depends on — a `tail` frame read by a build with no word for it is
+    /// passed over like any newer word, so the sink beside it still arrives.
+    #[test]
+    fn a_tail_reads_here_and_is_only_a_newer_word_to_an_older_wall() {
+        let ask = Frame::Tail(TailMsg::Tail { id: "r".into(), card: "c".into() });
+        assert_eq!(round(ask.clone()), ask);
+        let said = Frame::Tail(TailMsg::Tailed {
+            id: "r".into(),
+            card: "c".into(),
+            lines: Some(serde_json::json!([{ "kind": "text", "text": "hi" }])),
+            why: None,
+        });
+        assert_eq!(round(said.clone()), said);
+        /* What a build from before `tail` makes of it: the read the older
+           `KNOWN` list gives, which is `Unknown` and so skipped. */
+        let bytes = serde_json::to_vec(&ask).unwrap();
+        let tag = serde_json::from_slice::<Value>(&bytes).unwrap()["msg"].as_str().unwrap().to_string();
+        assert!(!["hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards"].contains(&tag.as_str()));
     }
 
     /// The whole of backward compatibility: an old wall's frame, written by
@@ -184,7 +208,7 @@ mod tests {
     }
 
     /// `KNOWN` is the list a malformed frame is told apart from a newer one
-    /// by, so it must be exactly the tags the three enums produce.
+    /// by, so it must be exactly the tags the four enums produce.
     #[test]
     fn the_known_words_are_the_ones_the_enums_write() {
         let mut written: Vec<String> = vec![
@@ -192,6 +216,8 @@ mod tests {
             serde_json::to_value(Msg::Events { events: vec![] }).unwrap(),
             serde_json::to_value(FleetMsg::Roster { walls: vec![], greeting: false }).unwrap(),
             serde_json::to_value(CardsMsg::Cards { host: String::new(), version: 0, age_ms: 0, snapshot: Value::Null }).unwrap(),
+            serde_json::to_value(TailMsg::Tail { id: String::new(), card: String::new() }).unwrap(),
+            serde_json::to_value(TailMsg::Tailed { id: String::new(), card: String::new(), lines: None, why: None }).unwrap(),
         ]
         .into_iter()
         .map(|v| v["msg"].as_str().unwrap().to_string())
