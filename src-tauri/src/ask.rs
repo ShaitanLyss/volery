@@ -1867,6 +1867,17 @@ pub(crate) fn roster() -> Vec<Value> {
             "take a card off the wall, close a conversation I opened, tidy up a \
              child card that has finished and reported",
         ),
+        /* Deferred: a card reaches for it only once the work involves another
+           machine, and by then it has the word in hand — a spawn with `host`,
+           a brief saying it was opened from another wall, or a user who said
+           "the laptop". `send`'s loaded `host` line names it in full. */
+        found_by(
+            reads_only(crate::flyway::reach::walls_schema()),
+            "the user's other machines, other walls on the flyway, which hosts can I \
+             open a card on, laptop desktop build box, remote cards and their handles, \
+             the card I spawned on another machine, the card that opened me from \
+             another wall",
+        ),
         found_by(
             reads_only(crate::servers::server_log_schema()),
             "local dev server output on this machine, local build error, local \
@@ -2903,6 +2914,32 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            `spawn` with no `host` (or this wall's own name) is
                            not caught and goes down the chain as it always
                            has. */
+                        /* `send`, `recall` and `close` naming another wall
+                           are the fifth, and always: like a remote spawn the
+                           answer comes from that wall, and like `close` the
+                           chain below has already committed to answering on
+                           the spot. Ahead of `close`'s own arm, which would
+                           otherwise read a card on another machine as one on
+                           this wall. With no `host`, or this wall's own name,
+                           `afar` answers `None` and nothing changes. */
+                        if let Some(afar) = crate::flyway::reach::afar(&app, &conversation_id, &tool, &args) {
+                            match afar {
+                                crate::flyway::reach::Afar::Now(said) => respond(
+                                    req,
+                                    json!({
+                                        "jsonrpc": "2.0", "id": id,
+                                        "result": { "content": [
+                                            { "type": "text", "text": said }
+                                        ] }
+                                    }),
+                                ),
+                                crate::flyway::reach::Afar::Wait { rx, waiting, timeout, window } => {
+                                    park_for_answer(&id, progress, req, rx, window, &waiting, timeout)
+                                }
+                            }
+                            return;
+                        }
+
                         if tool == crate::spawn::SPAWN_TOOL && crate::spawn::names_another_wall(&args) {
                             match crate::spawn::elsewhere(&app, &conversation_id, &args) {
                                 crate::spawn::Elsewhere::Now(said) => respond(
@@ -3286,6 +3323,9 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 crate::timeline::handle(&app, &conversation_id, &tool, &args)
                             })
                             .or_else(|| crate::spawn::handle(&app, &conversation_id, &tool, &args))
+                            .or_else(|| {
+                                crate::flyway::reach::handle(&app, &conversation_id, &tool, &args)
+                            })
                             /* Last in the chain and answered on this thread
                                like the rest of it, which is the thing to check
                                before adding anything else here: `server` can

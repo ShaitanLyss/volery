@@ -248,6 +248,15 @@ up reading "one thing wants you · proj-b · on lab2", and a real click on it br
 front on that card with the question in the dock. A wall with the control surface armed stays
 silent on purpose (`isDriven`), so a lab run reads the rows off `snapshot.attention.items`.
 
+### And Rust reads four fields of it, once
+
+`walls` (`flyway/reach.rs`) is the agents' view of the other walls, and a card wants the
+cards' handles in it. So `reach::cards_in` reads `id`, `title`, `project` and a state out of
+the snapshot — the one place Rust looks inside. It keeps the bargain rather than breaking it:
+the tier is passed on as the owner's word and never re-derived, a missing or mistyped field
+is empty, a card with no id is skipped, every string is scrubbed and capped, and a quiet
+wall's cards say `unknown` — the honesty `faceOf` keeps on the glass, kept in the tool too.
+
 ### What is not here
 
 - **The transcript.** A digest is the tier; streaming a conversation is a much larger tier and

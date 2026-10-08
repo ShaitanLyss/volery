@@ -718,10 +718,11 @@ pub fn spawn_schema() -> Value {
                          seconds, and returns the card's handle there or the reason it \
                          refused. That wall must have been switched to take work from other \
                          walls, by a person sitting at it. The card it opens runs on that \
-                         machine with its whole shell, and it is not reachable from here: \
-                         `send`, `recall` and `close` do not cross. So the brief is even more \
-                         the whole channel than usual — write it so the card can finish \
-                         without asking you anything."
+                         machine with its whole shell. `send`, `recall` and `close` reach it \
+                         with the same `host` and the handle this returns, and it is told who \
+                         opened it so it can `send` back to you. Further prompts to it need \
+                         that wall still taking work, so write the brief to finish without \
+                         asking you anything."
                 }
             },
             "required": ["prompt"]
@@ -786,6 +787,16 @@ pub fn close_schema() -> Value {
                          about a card they may not have looked at in hours, and a question \
                          carrying no reason is one they can only answer by going and reading \
                          it. Say what happened, not that it is tidy."
+                },
+                "host": {
+                    "type": "string",
+                    "description":
+                        "Optional: the wall the card is on, when you opened it on another \
+                         of the user's machines with `spawn` — `card` is then the handle \
+                         that call returned. Only a card you opened there closes this way, \
+                         and nobody is asked: the person at that machine is not the one \
+                         watching. Mid-turn, set aside, or a plan still on its timeline are \
+                         refused there as they are here."
                 }
             },
             "required": ["card"]
@@ -1300,6 +1311,56 @@ pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
             }
         }
     }
+}
+
+/// A close asked for by the card on another wall that asked for this one —
+/// `fleet::may_reach` has already said it is the origin. What is left is what
+/// the local close refuses whoever asks, and one thing more.
+///
+/// - **Set aside and mid-turn are refused**, with `NotYours`' own sentences:
+///   neither is about who asked, so being on another machine changes nothing.
+/// - **A timeline still in flight is refused rather than asked about.** Here a
+///   card's own child with a timeline goes to the user, because they asked to
+///   decide when a plan they have been watching ends (`timeline.rs`). There is
+///   no such question to put across a network — the person who would be asked
+///   is at the asking machine, and the one in front of this wall is not the one
+///   watching it close — so it is the user here who closes it, and the refusal
+///   says so.
+///
+/// Then it goes as an agent's close here goes: `close:asked`, so the wall
+/// takes it off with the fade an agent's close gets, and a chronicle row naming
+/// the wall that asked, since nobody in this room did.
+pub(crate) fn close_from_afar(app: &AppHandle, row: &crate::store::RosterRow, host: &str) -> Result<(), String> {
+    let (aside, timeline) = {
+        let store = app.try_state::<Store>().ok_or("the store is unavailable")?;
+        let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;
+        (crate::store::is_aside(&conn, &row.id), crate::timeline::live_summary(&conn, &row.id))
+    };
+    let (_, mid_turn) = app.state::<crate::supervisor::Supervisor>().liveness(&row.id);
+    let title = if row.title.trim().is_empty() { crate::relay::handle_of(&row.id) } else { row.title.clone() };
+    if aside {
+        return Err(NotYours::Aside.say(&title));
+    }
+    if mid_turn {
+        return Err(NotYours::Working.say(&title));
+    }
+    if let Some(tl) = timeline {
+        return Err(format!(
+            "{title:?} has a timeline still in flight ({tl}), and closing it would end a plan the \
+             user on this machine is watching — that is theirs to decide, and nobody here can be \
+             asked from another wall. Tell the user it is finished and let them close it."
+        ));
+    }
+    let _ = app.emit("close:asked", CloseAsked { id: row.id.clone(), parent_id: String::new() });
+    crate::chronicle::note(
+        app,
+        None,
+        "volery",
+        "note",
+        &format!("{host} closed a card here — {title}"),
+        "the card that asked for it over the flyway is done with it",
+    );
+    Ok(())
 }
 
 /// Where a `project` argument says the child stands, decided against the wall's

@@ -434,6 +434,14 @@ pub fn send_schema() -> Value {
                          you want them to do about it. Name files by path. Keep it to \
                          what they need — this is the whole of what they will get, and \
                          they cannot ask you a follow-up question."
+                },
+                "host": {
+                    "type": "string",
+                    "description":
+                        "Optional: the wall the card is on, when it is on another of the \
+                         user's machines — a card `spawn` opened there, or the one that \
+                         opened you. `to` is then that card's handle there, one card only. \
+                         `walls` lists the walls and their cards."
                 }
             },
             "required": ["to", "message"]
@@ -1037,6 +1045,16 @@ pub fn recall_schema() -> Value {
                     "description":
                         "Which conversation, by the handle `list` gave, or by its exact \
                          title."
+                },
+                "host": {
+                    "type": "string",
+                    "description":
+                        "Optional: the wall the card is on, when it is on another of the \
+                         user's machines — `card` is then its handle there, as `spawn` or \
+                         `walls` gave it. That wall reads the card's transcript and sends \
+                         back the same few speeches a recall here would. A card you opened \
+                         there may always be read; any other only if that wall takes work \
+                         from other walls."
                 }
             },
             "required": ["card"]
@@ -1224,51 +1242,149 @@ fn do_recall(app: &AppHandle, caller: &str, args: &Value) -> String {
     if row.id == caller {
         return "that is this conversation — you already have its transcript.".into();
     }
+    match said_by(app, row) {
+        Ok(said) => recalled(&row.title, &row.id, None, &said),
+        Err(why) => why,
+    }
+}
 
+/// What a card on this wall has said, oldest first — or the sentence saying
+/// why there is nothing to read. Shared by `recall` here and a recall from
+/// another wall (`flyway::link`), so the two read a card the same way and fail
+/// the same way.
+pub(crate) fn said_by(app: &AppHandle, row: &RosterRow) -> Result<Vec<String>, String> {
+    let Some(store) = app.try_state::<Store>() else {
+        return Err("the store is unavailable".into());
+    };
     let (cwd, session) = {
         let Ok(conn) = store.0.lock() else {
-            return "the store is unavailable".into();
+            return Err("the store is unavailable".into());
         };
         crate::store::session_of(&conn, &row.id).unwrap_or((row.cwd.clone(), None))
     };
     let Some(session) = session else {
-        return format!(
+        return Err(format!(
             "{} has not taken a turn yet, so it has said nothing to read.",
             handle_of(&row.id)
-        );
+        ));
     };
-    let path = match crate::supervisor::transcript_path(app, &cwd, &session) {
-        Ok(p) => p,
-        Err(e) => return format!("could not work out where that card's transcript is: {e}"),
-    };
-    let said = match tail_of_transcript(&path, RECALL_TURNS) {
-        Ok(s) => s,
-        /* Named rather than smoothed over: "it has said nothing" and "the file is
-           not there" are answered completely differently, and an agent told the
-           first would report to the user that a card had been idle when in fact
-           Skein could not find its transcript. */
-        Err(e) => return format!("could not read that card's transcript: {e}"),
-    };
+    let path = crate::supervisor::transcript_path(app, &cwd, &session)
+        .map_err(|e| format!("could not work out where that card's transcript is: {e}"))?;
+    /* Named rather than smoothed over: "it has said nothing" and "the file is
+       not there" are answered completely differently, and an agent told the
+       first would report to the user that a card had been idle when in fact
+       Skein could not find its transcript. */
+    let said = tail_of_transcript(&path, RECALL_TURNS)
+        .map_err(|e| format!("could not read that card's transcript: {e}"))?;
     if said.is_empty() {
-        return format!(
+        return Err(format!(
             "{} has a transcript but nothing in it that reads as speech yet.",
             handle_of(&row.id)
-        );
+        ));
     }
+    Ok(said)
+}
 
+/// A recall's answer as the asking agent reads it. `host` names the wall the
+/// card is on when that is not this one, because "what it believes it has
+/// done" is then about a repository on another machine.
+pub(crate) fn recalled(title: &str, id: &str, host: Option<&str>, said: &[String]) -> String {
     let who = {
-        let t = row.title.trim();
-        if t.is_empty() { handle_of(&row.id) } else { t.to_string() }
+        let t = title.trim();
+        if t.is_empty() { handle_of(id) } else { t.to_string() }
+    };
+    let there = host.map(|h| format!(" on {h}")).unwrap_or_default();
+    let ask = match host {
+        Some(h) => format!("`mcp__skein__send` with `host: \"{h}\"`"),
+        None => "`mcp__skein__send`".to_string(),
     };
     format!(
-        "The last {} thing{} {who} ({}) said, oldest first:\n\n{}\n\nThat is its own \
+        "The last {} thing{} {who} ({}){there} said, oldest first:\n\n{}\n\nThat is its own \
          account of what it has been doing, not a check on whether it did it. If you need \
-         something *from* it, `mcp__skein__send`.",
+         something *from* it, {ask}.",
         said.len(),
         if said.len() == 1 { "" } else { "s" },
-        handle_of(&row.id),
+        handle_of(id),
         said.join("\n\n---\n\n")
     )
+}
+
+/* ── from another wall ────────────────────────────────────────────────────── */
+
+/// What a message from a card on another machine reads like to the card it
+/// reaches. `envelope`'s shape, which `relay.ts` already folds — the sender's
+/// title, its handle, its project — with the wall named after the project, and
+/// a trailer that says how to answer, since `send` with no `host` would look
+/// for the sender on this wall and not find it.
+///
+/// The title and project are the far wall's labels, believed: the far wall is a
+/// member of the flyway and every member is trusted with this machine already
+/// (`fleet.rs`, "Attribution, not authorisation"). What is not believed is
+/// anything that would change what the message *is* — that is this wall's
+/// envelope, written here, around words that are only ever the body.
+pub(crate) fn afar_envelope(host: &str, from_card: &str, title: Option<&str>, project: Option<&str>, body: &str) -> String {
+    /* One line, whatever the far wall sent: a newline in a title would end the
+       header `relay.ts` reads the sender from, and the message would then be
+       drawn as something the person here typed — the one outcome the mark
+       exists to prevent. */
+    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = one_line(title.unwrap_or("")).replace('"', "'");
+    let name = if name.is_empty() { "a card".to_string() } else { name };
+    let host_line = one_line(host);
+    let place = match project.map(one_line).filter(|p| !p.is_empty()) {
+        Some(p) => format!("{p} on {host_line}"),
+        None => host_line.clone(),
+    };
+    let body = crate::clean::scrub(body);
+    format!(
+        "{RELAY_MARK} from \"{name}\" ({}) in {place} —\n\n{body}\n\n\
+         (This came from another agent, on the Volery wall called {host} — another machine, \
+         not the user. Act on it if it bears on your work, reply with the `mcp__skein__send` \
+         tool with `host: \"{host}\"` if it needs an answer, and say nothing back if it does \
+         not.)",
+        handle_of(from_card),
+    )
+}
+
+/// Put a message from another wall into a card's hands — live if it is awake,
+/// and otherwise into its inbox with a wake, exactly as a message addressed to
+/// it by name on this wall would be (`do_send`). Returns what became of it.
+///
+/// The text is already in its envelope (`afar_envelope`), so it is stored as a
+/// **self-row**: `drain_inbox` hands those over as written rather than wrapping
+/// them in a second envelope naming a sender who is not on this wall.
+///
+/// The card is marked as acting on a message, one hop in, so a broadcast it
+/// tries while it does is refused here as one would be after any message — a
+/// fan-out started by another machine is still a fan-out.
+pub(crate) fn deliver_from_afar(app: &AppHandle, card: &str, text: &str) -> Result<&'static str, String> {
+    let store = app.try_state::<Store>().ok_or("the store is unavailable")?;
+    let relays = app.try_state::<Relays>().ok_or("the relay is unavailable")?;
+    let awake = crate::supervisor::deliver(app, card, text).is_ok();
+    let chain = crate::store::uuid_v4();
+    {
+        let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;
+        crate::store::record_relay(&conn, &crate::store::uuid_v4(), card, card, text, &chain, 1, awake)?;
+    }
+    if awake {
+        arm(&relays, app, card, &chain, 1);
+        return Ok("delivered");
+    }
+    let _ = app.emit("relay:wake", RelayWake { to: card.to_string() });
+    Ok("woken")
+}
+
+/// Count a send to another wall against the caller's minute, the same window a
+/// send on this wall is counted in — `MAX_SENDS`' loop guard does not stop at
+/// the edge of the machine.
+pub(crate) fn count_send(app: &AppHandle, caller: &str) -> Result<(), String> {
+    let relays = app.try_state::<Relays>().ok_or("the relay is unavailable")?;
+    throttled(&relays, caller).map(|_| ()).map_err(|wait| {
+        format!(
+            "this card has sent {MAX_SENDS} messages in the last minute, which is the runaway \
+             limit — nothing was sent; try again in {wait}s if it still matters"
+        )
+    })
 }
 
 /// Where the search for a card's last words starts, in bytes back from EOF.
@@ -1478,8 +1594,8 @@ fn speeches_from(
             text,
             MAX_RECALL_CHARS,
             "This is the card's own account, cut to fit. If the tail matters, \
-             `mcp__skein__send` and ask it — do not report a conclusion drawn from a \
-             clipped report.",
+             `mcp__skein__send` and ask it (with the same `host`, if it is on another \
+             wall) — do not report a conclusion drawn from a clipped report.",
         ));
         while ring.len() > n {
             ring.pop_front();
@@ -1591,6 +1707,29 @@ mod tests {
     use super::*;
 
     /* ── seeing rather than speaking ──────────────────────────────────────── */
+
+    /// The two numbers a recall is read with here bound one from another wall.
+    #[test]
+    fn a_recall_from_another_wall_carries_no_more_than_one_here() {
+        assert_eq!(crate::flyway::fleet::RECALL_MOST, RECALL_TURNS);
+        assert_eq!(crate::flyway::fleet::RECALL_CHARS, MAX_RECALL_CHARS);
+    }
+
+    /// A message from another machine wears the envelope the panel already
+    /// folds, says which machine, and tells the agent how to answer — `send`
+    /// with no `host` would look for the sender on this wall and not find it.
+    #[test]
+    fn a_message_from_another_wall_says_where_and_how_to_answer() {
+        let text = afar_envelope("box", "0cf05791-aaaa", Some("say \"hi\""), Some("skein"), "do\u{0} it");
+        let head = text.lines().next().unwrap();
+        assert_eq!(head, "[skein relay] from \"say 'hi'\" (0cf05791) in skein on box —");
+        assert!(text.contains("do it") && !text.contains('\u{0}'));
+        assert!(text.contains("`host: \"box\"`") && text.contains("not the user"), "{text}");
+        let bare = afar_envelope("box", "0cf05791", None, None, "x");
+        assert!(bare.starts_with("[skein relay] from \"a card\" (0cf05791) in box —"), "{bare}");
+        let broken = afar_envelope("box", "0cf05791", Some("two\nlines"), Some(" sk\r\nein "), "x");
+        assert!(broken.starts_with("[skein relay] from \"two lines\" (0cf05791) in sk ein on box —\n"), "{broken}");
+    }
 
     /// The whole argument for these two living here rather than being a `send`:
     /// both descriptions have to say that reading is free and a message is not,

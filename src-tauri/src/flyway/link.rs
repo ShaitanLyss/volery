@@ -99,7 +99,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
 use super::cards::{Arrived, Cards};
-use super::fleet::{self, Answer, Deliver, Facts, Fleet, FleetMsg, Outcome, PromptRequest, Refusal, Request, Spawn, Standing};
+use super::fleet::{self, Act, Answer, Deliver, Facts, Fleet, FleetMsg, Origin, Outcome, PromptRequest, Refusal, Request, Spawn, Standing};
 use super::frame::Frame;
 use super::here;
 use super::key;
@@ -181,8 +181,51 @@ struct PromptOut {
     asked_at: i64,
 }
 
+/// What one of this wall's own asks was for — which decides what its answer
+/// reads like, and whether an answer that comes after the call returned is
+/// worth a turn on the card that asked (`Link::tell`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Wants {
+    /// A card opened there. Always told, late or not: a card running on
+    /// another machine that its asker believes was never opened is the one
+    /// outcome nobody can afford to leave unsaid.
+    Spawn,
+    /// A message delivered. Told late only if it was refused — a turn spent on
+    /// "it arrived after all" buys nothing, and one spent on "it never arrived"
+    /// is the asker learning its report went nowhere.
+    Send,
+    /// A card's words read back. Never told late: a reading is only worth
+    /// having while somebody waits for it, and the asker was already told to
+    /// try again.
+    Recall,
+    /// A card taken off. Told late either way, for `Spawn`'s reason in reverse.
+    Close,
+}
+
+impl Wants {
+    fn of(act: Act) -> Self {
+        match act {
+            Act::Prompt => Wants::Send,
+            Act::Recall => Wants::Recall,
+            Act::Close => Wants::Close,
+        }
+    }
+
+    fn worth_telling_late(self, a: &Answer) -> bool {
+        match self {
+            Wants::Spawn | Wants::Close => true,
+            Wants::Send => matches!(a.outcome, Outcome::Refused { .. }),
+            Wants::Recall => false,
+        }
+    }
+}
+
 /// One of this wall's own asks, and who to tell when it is answered.
 struct Waiter {
+    wants: Wants,
+    /// The card it was about on the far wall, as the asker addressed it —
+    /// for a send, a recall or a close.
+    there: Option<String>,
     /// The card that asked, if one did.
     card: Option<String>,
     /// The parked tool call, while it is still listening.
@@ -385,6 +428,7 @@ impl Link {
                    the fleet's in-flight count; taken out here so the bound does
                    not count it twice. */
                 remote_last_hour: here::births_since(&conn, self.now() - 60 * 60_000).saturating_sub(in_flight),
+                can: fleet::CAN.iter().map(|c| c.to_string()).collect(),
                 ..Facts::default()
             };
             (f, here::open_cards(&conn))
@@ -721,7 +765,10 @@ impl Link {
     fn route(self: &Arc<Self>, say: &[FleetMsg], except: Option<&str>) {
         for m in say {
             let to = match m {
-                FleetMsg::Ask { ask, .. } | FleetMsg::Prompt { ask, .. } => Some(ask.to.clone()),
+                FleetMsg::Ask { ask, .. }
+                | FleetMsg::Prompt { ask, .. }
+                | FleetMsg::Recall { ask, .. }
+                | FleetMsg::Close { ask, .. } => Some(ask.to.clone()),
                 FleetMsg::Answer { answer, .. } => Some(answer.asked_by.clone()),
                 FleetMsg::Roster { .. } => None,
             };
@@ -749,6 +796,8 @@ impl Link {
             w.insert(
                 r.id.clone(),
                 Waiter {
+                    wants: Wants::Spawn,
+                    there: None,
                     card: r.card.clone(),
                     tx: Some(tx),
                     to: r.to.clone(),
@@ -763,13 +812,50 @@ impl Link {
         Ok(rx)
     }
 
+    /// Send to, recall or close a card on another wall, for an agent here. What
+    /// comes back is a receiver the parked tool call waits on, as a spawn's is;
+    /// `Err` is said at once — an unknown wall, a quiet one, one too old to
+    /// understand the request — and nothing is queued for later, for
+    /// a2a4468e's reason: a lid that lifts eight hours on is not when anybody
+    /// wanted this to happen.
+    pub fn reach_card(self: &Arc<Self>, act: Act, r: PromptRequest) -> Result<mpsc::Receiver<String>, String> {
+        let now = self.now();
+        let msg = self
+            .fleet
+            .lock()
+            .map_err(|_| "the fleet is wedged".to_string())?
+            .reach(act, r.clone(), now)
+            .map_err(|u| u.reason())?;
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut w) = self.waiting.lock() {
+            w.insert(
+                r.id.clone(),
+                Waiter {
+                    wants: Wants::of(act),
+                    there: Some(r.card.clone()),
+                    card: r.from_card.clone(),
+                    tx: Some(tx),
+                    to: r.to.clone(),
+                    territory: String::new(),
+                    title: None,
+                    gave_up: false,
+                    asked_at: now,
+                },
+            );
+        }
+        self.push(r.to, vec![Frame::Fleet(msg)]);
+        Ok(rx)
+    }
+
     /// One of this wall's asks has been answered.
     fn answered(&self, a: Answer) {
         if let Some(p) = self.prompts_out.lock().ok().and_then(|mut o| o.remove(&a.request)) {
             let _ = p;
             let (outcome, why) = match &a.outcome {
-                Outcome::Opened { .. } => ("taken", None),
                 Outcome::Refused { refusal } => ("refused", Some(prompt_why(refusal, &a.by))),
+                /* A person's prompt is only ever answered `Opened`; anything
+                   else that is not a refusal still means the far wall took it. */
+                Outcome::Opened { .. } | Outcome::Said { .. } => ("taken", None),
             };
             let _ = self.app.emit(
                 "flyway:prompt-answer",
@@ -780,8 +866,25 @@ impl Link {
         let Some(w) = self.waiting.lock().ok().and_then(|mut w| w.remove(&a.request)) else {
             return;
         };
-        let text = receipt(&a, &w, &self.me);
-        self.tell(w, text);
+        /* The pair written down the moment the answer says the card opened —
+           it is what lets that card's report back through this wall's switch
+           (`fleet::may_reach`, `migrate_v48`). Before the receipt, so a reply
+           that races the receipt still finds it. */
+        if let (Wants::Spawn, Outcome::Opened { card }, Some(parent)) = (w.wants, &a.outcome, &w.card) {
+            if let Some(store) = self.store() {
+                if let Ok(conn) = store.0.lock() {
+                    if let Err(e) = here::record_child(&conn, &a.by, card, parent, &a.request, self.now()) {
+                        log::warn!("flyway: could not write down the card {} opened for {parent}: {e}", a.by);
+                    }
+                }
+            }
+        }
+        let text = match w.wants {
+            Wants::Spawn => receipt(&a, &w, &self.me),
+            _ => reached(&a, &w),
+        };
+        let late = w.wants.worth_telling_late(&a);
+        self.tell(w, text, late);
     }
 
     /// Nobody answered one of this wall's asks in time.
@@ -809,8 +912,18 @@ impl Link {
         let w = {
             let Ok(mut all) = self.waiting.lock() else { return };
             let Some(w) = all.get_mut(request) else { return };
+            /* A send, a recall or a close parks for half a minute and says
+               then that it does not know; by `GIVE_UP_MS` that call returned
+               long ago, and saying "still nothing" costs the card a turn to
+               learn what it was already told. The waiter stays, so a late
+               answer that is worth a turn still finds it. */
+            if w.wants != Wants::Spawn {
+                return;
+            }
             w.gave_up = true;
             Waiter {
+                wants: w.wants,
+                there: w.there.clone(),
                 card: w.card.clone(),
                 tx: w.tx.take(),
                 to: w.to.clone(),
@@ -826,16 +939,19 @@ impl Link {
              of. If an answer arrives late you will be told; ask again later, or ask another wall.",
             w.to, w.territory
         );
-        self.tell(w, text);
+        self.tell(w, text, true);
     }
 
     /// Put an answer in front of whoever asked: the parked tool call while it
     /// is still listening, and the card itself afterwards.
-    fn tell(&self, w: Waiter, text: String) {
+    fn tell(&self, w: Waiter, text: String, late: bool) {
         if let Some(tx) = w.tx {
             if tx.send(text.clone()).is_ok() {
                 return;
             }
+        }
+        if !late {
+            return;
         }
         let Some(card) = w.card else { return };
         let mark = crate::relay::RELAY_MARK;
@@ -1008,59 +1124,145 @@ impl Link {
         }
     }
 
-    /// A prompt this wall agreed to: refused at once if the card is not here
-    /// to take it, and otherwise handed to the front end, which gives it to the
-    /// card through its own send path — waking it if it is dormant, echoing it
-    /// into the transcript — and answers with `flyway_prompt_answer`.
+    /// A request for one of this wall's cards — a prompt, a recall or a close
+    /// — that the fleet has found trustworthy. Everything about the *card* is
+    /// decided here, in this order, and each step answers the asker if it is
+    /// the last:
+    ///
+    /// 1. **Which card.** The address is resolved against this wall's own
+    ///    roster by `relay::resolve`, the one answer to what a handle or a
+    ///    title means — so an ambiguous title is refused by name here exactly
+    ///    as it is to a `send` on this wall, and nothing the asker wrote is ever
+    ///    an id this wall did not mint.
+    /// 2. **Whether this asker may.** `fleet::may_reach`, with the two facts
+    ///    about this card that only this wall has: who asked for it
+    ///    (`flyway_birth`) and whether the asker is a card it opened elsewhere
+    ///    (`flyway_child`).
+    /// 3. **Doing it.** An answer goes straight into the parked call; an
+    ///    agent's message goes in through the relay, in an envelope saying where
+    ///    it came from; a person's prompt goes to the front end, which sends it
+    ///    as one typed here; a recall reads the transcript off the serving task;
+    ///    a close goes through `spawn::close_from_afar`, which keeps the local
+    ///    close's refusals.
     fn deliver_here(self: &Arc<Self>, d: Deliver) {
-        /* An answer to a parked question goes straight into the parked call —
-           the channel a click in this wall's own dock uses — and is answered
-           taken or refused on the spot, with no front end in between. */
-        if let Some(ask_id) = d.answers.clone() {
-            let outcome = crate::ask::answer_from_afar(&self.app, &d.card, &ask_id, &d.text);
-            let now = self.now();
-            let m = self.fleet.lock().ok().and_then(|mut f| match &outcome {
-                Ok(()) => f.taken(&d.asked_by.host, &d.request, &d.card, now),
-                Err(why) => f.refused(&d.asked_by.host, &d.request, why, now),
-            });
+        let now = self.now();
+        let host = d.asked_by.host.clone();
+        let request = d.request.clone();
+        let answer = |l: &Arc<Self>, m: Option<FleetMsg>| {
             if let Some(m) = m {
-                self.route(&[m], None);
+                l.route(&[m], None);
             }
-            return;
-        }
-        let open = self
-            .store()
-            .and_then(|s| s.0.lock().ok().map(|c| here::open_cards(&c).iter().any(|id| *id == d.card)));
-        if open != Some(true) {
-            let m = self.fleet.lock().ok().and_then(|mut f| {
-                f.refused(
-                    &d.asked_by.host,
-                    &d.request,
-                    &format!(
+        };
+        let refuse = |l: &Arc<Self>, why: String| {
+            let m = l.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now));
+            answer(l, m);
+        };
+
+        let found = self.store().and_then(|store| {
+            let conn = store.0.lock().ok()?;
+            let rows = crate::store::roster(&conn, None).ok()?;
+            let row = match crate::relay::resolve(&rows, &d.card) {
+                Ok(row) => row.clone(),
+                Err(why) => {
+                    let shared = rows.iter().filter(|r| r.title.trim().eq_ignore_ascii_case(d.card.trim())).count() > 1;
+                    return Some(Err((why, shared)));
+                }
+            };
+            let born = here::birth_of(&conn, &row.id).map(|b| Origin { host: b.host, card: b.asker_card });
+            let replies = d
+                .asked_by
+                .card
+                .as_deref()
+                .is_some_and(|c| here::is_child_of(&conn, &d.asked_by.host, c, &row.id));
+            Some(Ok((row, born, replies)))
+        });
+        let (row, born, replies) = match found {
+            Some(Ok(it)) => it,
+            /* Two cards share the title: `resolve`'s own sentence, which names
+               them by handle, is the useful answer. Anything else is the card
+               not being here, said as the dock has always said it. */
+            Some(Err((why, true))) => return refuse(self, format!("{why} — on {}", self.me)),
+            Some(Err((_, false))) => {
+                return refuse(
+                    self,
+                    format!(
                         "no card {} is open on {} — it may have been closed since it was drawn there",
-                        crate::relay::handle_of(&d.card),
+                        d.card.trim(),
                         self.me
                     ),
-                    self.now(),
                 )
-            });
-            if let Some(m) = m {
-                self.route(&[m], None);
             }
-            return;
+            None => return refuse(self, format!("{} could not read its own wall just then — try again", self.me)),
+        };
+
+        if let Err(refusal) = fleet::may_reach(d.act, &d.asked_by, d.accepting, d.answers.is_some(), born.as_ref(), replies) {
+            let m = self.fleet.lock().ok().and_then(|mut f| f.refuse(&host, &request, refusal, now));
+            return answer(self, m);
         }
-        if let Ok(mut p) = self.prompts_in.lock() {
-            p.insert((d.asked_by.host.clone(), d.request.clone()), self.now());
+
+        match d.act {
+            /* An answer to a parked question goes straight into the parked call
+               — the channel a click in this wall's own dock uses — and is
+               answered taken or refused on the spot, with no front end in
+               between. */
+            Act::Prompt if d.answers.is_some() => {
+                let ask_id = d.answers.clone().unwrap_or_default();
+                let outcome = crate::ask::answer_from_afar(&self.app, &row.id, &ask_id, &d.text);
+                let m = self.fleet.lock().ok().and_then(|mut f| match &outcome {
+                    Ok(()) => f.taken(&host, &request, &row.id, now),
+                    Err(why) => f.refused(&host, &request, why, now),
+                });
+                answer(self, m);
+            }
+            /* From an agent: through the relay, as a `send` on this wall is, so
+               a dormant card wakes to read it and the card is marked as acting
+               on a message. Never through the front end's `Skein.send`, which
+               would echo it as a line the person here typed. */
+            Act::Prompt if d.asked_by.card.is_some() => {
+                let from = d.asked_by.card.as_deref().unwrap_or_default();
+                let text = crate::relay::afar_envelope(&host, from, d.from_title.as_deref(), d.from_project.as_deref(), &d.text);
+                let m = match crate::relay::deliver_from_afar(&self.app, &row.id, &text) {
+                    Ok(_) => self.fleet.lock().ok().and_then(|mut f| f.taken(&host, &request, &row.id, now)),
+                    Err(why) => self.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now)),
+                };
+                answer(self, m);
+            }
+            /* From a person at another wall's dock: the front end sends it as
+               though typed here, introduced, and answers `flyway_prompt_answer`. */
+            Act::Prompt => {
+                if let Ok(mut p) = self.prompts_in.lock() {
+                    p.insert((host.clone(), request.clone()), now);
+                }
+                let _ = self.app.emit(
+                    "flyway:prompt",
+                    PromptHere { id: request, from: PromptFrom { host, card: d.asked_by.card }, card: row.id, text: d.text },
+                );
+            }
+            /* A transcript read is a file read, up to eight megabytes of it, and
+               this is the serving task — so it goes where blocking work goes,
+               and answers when it is done. */
+            Act::Recall => {
+                let l = self.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let read = crate::relay::said_by(&l.app, &row);
+                    let now = l.now();
+                    let m = l.fleet.lock().ok().and_then(|mut f| match read {
+                        Ok(said) => f.said(&host, &request, &row.id, &row.title, said, now),
+                        Err(why) => f.refused(&host, &request, &why, now),
+                    });
+                    if let Some(m) = m {
+                        l.route(&[m], None);
+                    }
+                });
+            }
+            Act::Close => {
+                let m = match crate::spawn::close_from_afar(&self.app, &row, &host) {
+                    Ok(()) => self.fleet.lock().ok().and_then(|mut f| f.taken(&host, &request, &row.id, now)),
+                    Err(why) => self.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now)),
+                };
+                answer(self, m);
+            }
         }
-        let _ = self.app.emit(
-            "flyway:prompt",
-            PromptHere {
-                id: d.request,
-                from: PromptFrom { host: d.asked_by.host, card: d.asked_by.card },
-                card: d.card,
-                text: d.text,
-            },
-        );
     }
 
     /// The front end's report on a prompt it was handed: taken, or why not.
@@ -1182,6 +1384,37 @@ impl Link {
             .collect()
     }
 
+    /// Every wall on the roster with its latest cards, for the `walls` tool.
+    /// The standing is the roster's own word, so an agent and the flyway
+    /// panel are told the same thing about a wall.
+    pub fn walls_seen(&self) -> Vec<super::reach::WallSeen> {
+        let now = self.now();
+        let snapshots: BTreeMap<String, Value> = self
+            .cards
+            .lock()
+            .map(|c| c.theirs(now).into_iter().map(|a| (a.host, a.snapshot)).collect())
+            .unwrap_or_default();
+        let Ok(f) = self.fleet.lock() else { return Vec::new() };
+        f.roster()
+            .map(|e| super::reach::WallSeen {
+                host: e.host.clone(),
+                standing: match e.standing(now) {
+                    Standing::Open => "open",
+                    Standing::Closed => "closed",
+                    Standing::Full(_) => "full",
+                    Standing::Quiet { .. } => "quiet",
+                },
+                quiet_ms: e.quiet_for(now),
+                accepting: e.facts.accepting,
+                territories: e.facts.territories.iter().map(|t| t.name.clone()).collect(),
+                cards_live: e.facts.cards_live,
+                cards_working: e.facts.cards_working,
+                can: e.facts.can.clone(),
+                snapshot: snapshots.get(&e.host).cloned(),
+            })
+            .collect()
+    }
+
     fn emit_roster(&self) {
         let _ = self.app.emit("flyway:roster", self.roster());
     }
@@ -1215,16 +1448,65 @@ fn receipt(a: &Answer, w: &Waiter, me: &str) -> String {
             };
             format!(
                 "{by} opened a card in its {territory} territory — its handle there is {handle}. It \
-                 runs on that machine, not this one: `mcp__skein__send`, `recall` and `close` do not \
-                 reach it from here, and it is not in this wall's `list`. It has the brief you wrote \
-                 and nothing else of yours, and it was told it was opened from {me}, so it will say \
-                 what it did in its own transcript on {by}. Tell the user you have opened it, on which \
-                 machine, and what for.{called}",
+                 runs on that machine, not this one, and it is not in this wall's \
+                 `mcp__skein__list`. Reach it with `host: \"{by}\"` and `{handle}`: \
+                 `mcp__skein__recall` to read what it has said and `mcp__skein__close` when it is \
+                 done, both yours whatever {by} is set to; `mcp__skein__send` to tell it more, \
+                 which needs {by} still taking work from other walls. It has the brief you wrote \
+                 and nothing else of yours, and it was told it was opened from {me} by you, so it \
+                 can report back — this wall lets that report through even while it takes no \
+                 work from other walls. Tell the user you have opened it, on which machine, and \
+                 what for.{called}",
                 by = a.by,
                 territory = w.territory,
             )
         }
         Outcome::Refused { refusal } => format!("no card was opened: {}", refusal.reason(&a.by)),
+        /* Never the answer to a spawn; said rather than unreachable, since a
+           confused far wall is not a reason to panic here. */
+        Outcome::Said { .. } => format!("{} answered the ask with something that is not a card — nothing was opened that this wall knows of", a.by),
+    }
+}
+
+/// The sentence an agent reads when a send, a recall or a close comes back.
+fn reached(a: &Answer, w: &Waiter) -> String {
+    let by = &a.by;
+    let there = w.there.as_deref().unwrap_or("that card");
+    /* The switch's own sentence is about opening a card in a territory; here it
+       is about reaching into one that is already open, and the exception the
+       gate makes is worth saying, since it is the thing an orchestrator can do
+       about it. */
+    if let Outcome::Refused { refusal: Refusal::NotAccepting } = &a.outcome {
+        return format!(
+            "{by} is not taking work from other walls, so {there} was not reached — while that is \
+             switched off, {by} lets in only answers to a card's own questions, a card's report to \
+             the card that opened it, and the card that opened one reading or closing it. Ask the \
+             user to switch it on in the flyway panel on {by} if this should go through."
+        );
+    }
+    match (&a.outcome, w.wants) {
+        (Outcome::Refused { refusal }, Wants::Send) => {
+            format!("not delivered to {there} on {by}: {}", prompt_why(refusal, by))
+        }
+        (Outcome::Refused { refusal }, Wants::Recall) => {
+            format!("nothing was read from {there} on {by}: {}", prompt_why(refusal, by))
+        }
+        (Outcome::Refused { refusal }, _) => {
+            format!("{there} on {by} was not closed: {}", prompt_why(refusal, by))
+        }
+        (Outcome::Said { card, title, said }, _) => crate::relay::recalled(title, card, Some(by.as_str()), said),
+        (Outcome::Opened { card }, Wants::Close) => format!(
+            "{by} is taking {} off its wall. Its transcript stays on {by} and the session can be \
+             adopted back there, so this is the card going away rather than the work. Tell the user \
+             which one you closed, on which machine, and what it finished.",
+            crate::relay::handle_of(card)
+        ),
+        (Outcome::Opened { card }, _) => format!(
+            "delivered to {} on {by} — that card has it, or, if it was asleep, is being woken and \
+             will read this first. Neither is it having answered: a reply comes back as a message \
+             from it, if one is needed.",
+            crate::relay::handle_of(card)
+        ),
     }
 }
 
@@ -1501,7 +1783,7 @@ pub async fn flyway_prompt(
         return Err("an empty prompt is nothing to send".into());
     }
     crate::off_main(move || {
-        l.send_prompt(PromptRequest { id, from_card: None, to, card, text, answers: ask_id })
+        l.send_prompt(PromptRequest { id, from_card: None, to, card, text, answers: ask_id, title: None, project: None })
     })
     .await?
 }

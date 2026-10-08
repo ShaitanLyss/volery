@@ -99,7 +99,7 @@ pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
 /// Every `msg` this build reads. Held against the three enums by a test, so a
 /// variant added to one of them without this list is caught rather than
 /// silently skipped as "from a newer build".
-const KNOWN: &[&str] = &["hello", "events", "roster", "ask", "answer", "prompt", "cards"];
+const KNOWN: &[&str] = &["hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards"];
 
 #[cfg(test)]
 mod tests {
@@ -198,7 +198,7 @@ mod tests {
         .collect();
         /* `ask` and `answer` want whole structs to build; their tags are the
            variant names under `rename_all = "snake_case"`. */
-        written.extend(["ask".to_string(), "answer".to_string(), "prompt".to_string()]);
+        written.extend(["ask", "answer", "prompt", "recall", "close"].map(str::to_string));
         written.sort();
         let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
         known.sort();

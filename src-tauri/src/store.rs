@@ -349,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 47;
+const SCHEMA_VERSION: i64 = 48;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -402,6 +402,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (45, migrate_v45),
     (46, migrate_v46),
     (47, migrate_v47),
+    (48, migrate_v48),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2780,6 +2781,38 @@ fn migrate_v47(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v47: {e}"))
+}
+
+/// The other half of `flyway_birth`: a card **this** wall asked another to
+/// open, written by the asking wall when the answer says it opened.
+///
+/// It is what lets the child talk back. A card born on another machine may
+/// `send` to the card that asked for it whether or not this wall takes work
+/// from other walls — a report on work this card asked for starts nothing new
+/// (`fleet::may_reach`) — and the only way *this* wall can tell that report
+/// from any other card's message is to have written the pair down when the
+/// card was opened. Trusting the far wall to say "I am its child" would make
+/// the switch a thing any wall on the flyway could talk its way past.
+///
+/// Keyed on the host and the far card's id, which is the whole of how the
+/// child is addressed from here. No foreign key to `conversation`: the parent
+/// is a row here, the child is a row on another machine, and nothing sweeps
+/// this — the lineage outlives either end being closed, as `spawned`'s does.
+fn migrate_v48(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS flyway_child (
+            host       TEXT NOT NULL,
+            card       TEXT NOT NULL,
+            parent_id  TEXT NOT NULL,
+            request    TEXT NOT NULL,
+            at         INTEGER NOT NULL,
+            PRIMARY KEY (host, card)
+        );
+        CREATE INDEX IF NOT EXISTS flyway_child_parent ON flyway_child(parent_id, at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v48: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,

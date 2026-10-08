@@ -196,6 +196,32 @@ read.
 - **It is that card's own account, not a check on it.** The reply says so: what a conversation
   believes it has done is not what is in the repository.
 
+## Across machines
+
+`send` and `recall` take `host` (`flyway/reach.rs`), and so does `close`. Without it nothing
+here changes. With it the request rides the flyway and **the wall the card is on decides**:
+the address is resolved there by `resolve`, and `fleet::may_reach` says who may — the far
+wall's switch gates a prompt (work) but not an answer, nor a child's report to the card that
+opened it; a recall is the origin's always and anyone else's through the switch.
+`docs/FLYWAY-REMAINING.md` §4 has the whole of it. What is this file's:
+
+- **An agent's message from another wall is a relay**, in `afar_envelope` — `envelope`'s shape
+  with `on <host>` after the project, which `relay.ts`'s `HEADED` already reads, and a trailer
+  that says to answer with `host`, since a bare `send` would look for the sender here. It is
+  delivered by `deliver_from_afar` as a **self-row**, already enveloped, so `drain_inbox`
+  hands it over as written; the card is armed one hop in, so it cannot broadcast on the back of
+  a message from another machine either.
+- **The rate limit counts a send to another wall** (`count_send`) in the same minute as one
+  here. One card per call, no broadcast words: a fan-out across machines is deliberate calls.
+- **The call parks, briefly, where a local send does not.** Delivery here cannot be refused
+  by anything but the caller; there, a switch, a roster and a clock all get a say, and a
+  refusal that arrived after the call returned would be a report the agent believes it made.
+  A late refusal reaches the card as a wall message; a late "delivered" does not, since a
+  turn spent learning good news it was already half-told buys nothing.
+- **`recall` reads the same way on both ends** — `said_by` is the one reader, and the far wall's
+  answer is capped again on arrival to `RECALL_TURNS`/`MAX_RECALL_CHARS` (held equal to
+  `fleet::RECALL_MOST`/`RECALL_CHARS` by a test).
+
 ## A message to yourself, later
 
 `wake_me` (`later.rs`). The worst thing a card can do with a turn is spend it waiting, and

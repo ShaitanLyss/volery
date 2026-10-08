@@ -3,8 +3,8 @@
 //! `fleet.rs` is pure: it is handed a `Facts` and the last roster version, and
 //! never reads a store. This is the other side of that bargain — the rows the
 //! fleet's wiring reads and writes (`flyway_setting`, `flyway_birth`, schema
-//! v47) and the one function that assembles a `Facts` from the wall as it is
-//! now. Kept out of `store.rs` for `sinksync.rs`'s reason: it is one subsystem's
+//! v47; `flyway_child`, v48) and the one function that assembles a `Facts`
+//! from the wall as it is now. Kept out of `store.rs` for `sinksync.rs`'s reason: it is one subsystem's
 //! SQL, and the file every card edits does not need to carry it.
 //!
 //! ### A territory, as another machine names it
@@ -163,6 +163,52 @@ pub fn births_since(conn: &Connection, since: i64) -> u32 {
         .unwrap_or(0)
 }
 
+/* ── cards this wall asked others to open ──────────────────────────────────── */
+
+/// A card on another wall that a card here asked for — `migrate_v48`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Child {
+    pub host: String,
+    pub card: String,
+    pub parent: String,
+}
+
+/// Written when the answer says the card opened, by the wall that asked. A
+/// repeat of the same answer is the same row.
+pub fn record_child(conn: &Connection, host: &str, card: &str, parent: &str, request: &str, at: i64) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO flyway_child (host, card, parent_id, request, at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![host, card, parent, request, at],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Whether that card on that wall is one `parent` asked for — the whole of
+/// what makes its message a reply rather than work (`fleet::may_reach`).
+/// Exact on all three: an id from the far wall's answer, never a prefix.
+pub fn is_child_of(conn: &Connection, host: &str, card: &str, parent: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM flyway_child WHERE host = ?1 AND card = ?2 AND parent_id = ?3",
+        params![host, card, parent],
+        |_| Ok(()),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// Every card a card here asked another wall for, oldest first.
+pub fn children_of(conn: &Connection, parent: &str) -> Vec<Child> {
+    let Ok(mut stmt) = conn.prepare("SELECT host, card, parent_id FROM flyway_child WHERE parent_id = ?1 ORDER BY at") else {
+        return Vec::new();
+    };
+    stmt.query_map(params![parent], |r| Ok(Child { host: r.get(0)?, card: r.get(1)?, parent: r.get(2)? }))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
 /* ── territories ──────────────────────────────────────────────────────────── */
 
 /// One place a card can stand, as this wall has it.
@@ -306,6 +352,22 @@ mod tests {
         assert_eq!(births_since(&conn, 2_000), 0);
         unrecord_birth(&conn, "c1");
         assert_eq!(births_since(&conn, 0), 0);
+    }
+
+    /// A child is known by the wall it is on, its full id there, and the card
+    /// here that asked for it — all three, so a namesake card on another wall,
+    /// a prefix of the id, or another parent here reads as no child at all.
+    #[test]
+    fn a_child_elsewhere_is_known_by_all_three_or_not_at_all() {
+        let conn = db();
+        record_child(&conn, "box", "c-full-id", "parent-1", "r1", 5).unwrap();
+        record_child(&conn, "box", "c-full-id", "parent-1", "r1", 5).unwrap();
+        assert!(is_child_of(&conn, "box", "c-full-id", "parent-1"));
+        assert!(!is_child_of(&conn, "lap", "c-full-id", "parent-1"));
+        assert!(!is_child_of(&conn, "box", "c-full", "parent-1"));
+        assert!(!is_child_of(&conn, "box", "c-full-id", "parent-2"));
+        assert_eq!(children_of(&conn, "parent-1").len(), 1, "a repeated answer is one row");
+        assert!(children_of(&conn, "parent-2").is_empty());
     }
 
     #[test]

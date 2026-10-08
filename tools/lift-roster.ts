@@ -70,6 +70,7 @@
 
 import {
   copyFileSync,
+  mkdirSync,
   readFileSync,
   writeFileSync,
   mkdtempSync,
@@ -77,7 +78,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { blockAt } from "./lift-scan.ts";
 
@@ -546,7 +547,10 @@ writeFileSync(file, body.join("\n\n"));
  *
  * They are copied verbatim, which is the whole point: the assertion reads the
  * real prose out of the real files. */
-const speaking = [...body.join("\n").matchAll(/include_str!\("([A-Za-z0-9_]+\.rs)"\)/g)].map(
+/* A path, not only a name: `flyway/link.rs` answers tool calls too, and a
+   pattern that stopped at the slash would leave it uncopied and the lift
+   unbuildable — which reads as rot rather than as a missing file. */
+const speaking = [...body.join("\n").matchAll(/include_str!\("([A-Za-z0-9_/]+\.rs)"\)/g)].map(
   (m) => m[1],
 );
 if (speaking.length === 0) {
@@ -556,6 +560,7 @@ if (speaking.length === 0) {
   );
 }
 for (const name of new Set(speaking)) {
+  mkdirSync(dirname(join(dir, name)), { recursive: true });
   copyFileSync(join("src-tauri", "src", name), join(dir, name));
 }
 

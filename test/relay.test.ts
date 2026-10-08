@@ -79,6 +79,22 @@ describe("who it came from", () => {
   test("something that is not one is nobody at all", () => {
     expect(relayFrom("just a prompt")).toBeNull();
   });
+
+  /* `relay::afar_envelope` — a card on another machine, under the shape this
+     file already reads: the wall rides after the project, so nothing here had
+     to learn a sixth header, and the note to the model comes off the body like
+     any other. The literal is that function's output, held in step by its own
+     Rust test of the first line. */
+  test("a card on another wall is a sender like any other, with its wall named", () => {
+    const afar =
+      `${RELAY_MARK} from "builder" (0cf05791) in skein on box —\n\nthe tests pass\n\n` +
+      `(This came from another agent, on the Volery wall called box — another machine, not the user. ` +
+      `Act on it if it bears on your work, reply with the \`mcp__skein__send\` tool with \`host: "box"\` ` +
+      `if it needs an answer, and say nothing back if it does not.)`;
+    expect(relayFrom(afar)).toEqual({ name: "builder", handle: "0cf05791", project: "skein on box" });
+    expect(relayBody(afar)).toBe("the tests pass");
+    expect(relayCap(afar)).toBe("from builder");
+  });
 });
 
 describe("the body", () => {

@@ -38,6 +38,7 @@ pub mod frame;
 pub mod here;
 pub mod key;
 pub mod link;
+pub mod reach;
 pub mod seal;
 pub mod session;
 pub mod sync;

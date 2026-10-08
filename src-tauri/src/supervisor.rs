@@ -825,25 +825,43 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
             /* The flyway's half of the same sentence, for a card whose parent
                is on another machine. It is not in `spawned` — that table is
                this wall's — so without this the card is told nothing and reads
-               its brief as something the person at *this* keyboard typed. And
-               the honest part is the second sentence: nothing reaches the
-               asking card from here yet, so a card told to report back would
-               be sent on an errand. */
+               its brief as something the person at *this* keyboard typed.
+
+               **And now it can report back**, which it could not until the
+               flyway carried `send`: the asking wall wrote the pair down when
+               this card opened (`flyway_child`), and lets the report through
+               its switch, since a reply to work it asked for starts none
+               (`fleet::may_reach`). Only to that card — the sentence names the
+               one address that works and says the rest of that wall does not
+               open to it the same way. A person who asked gets no such line:
+               there is no card to send to, so the reply is where it lands. */
             if let Some(b) = &me.born_for {
-                let who = match &b.asker_card {
-                    Some(c) => format!("card `{}` on", crate::relay::handle_of(c)),
-                    None => "the person at".to_string(),
-                };
-                prompt.push_str(&format!(
-                    "\n\n**You were opened at another machine's request.** Your first turn is a \
-                     brief written by {who} the wall called `{}`, which asked for you over the \
-                     flyway — you run on this machine, in this repository, and it does not. \
-                     Nothing on this wall reaches it: `{MCP_PREFIX}send` and `{MCP_PREFIX}list` \
-                     cover this machine only. So say what you did, and anything you could not \
-                     do, plainly in your own reply — that is where the user will read it, from \
-                     either machine.",
-                    b.host,
-                ));
+                match &b.asker_card {
+                    Some(c) => {
+                        let handle = crate::relay::handle_of(c);
+                        prompt.push_str(&format!(
+                            "\n\n**You were opened at another machine's request.** Your first turn \
+                             is a brief written by card `{handle}` on the wall called `{host}`, which \
+                             asked for you over the flyway — you run on this machine, in this \
+                             repository, and it does not. Report back to it when you have finished \
+                             or are stuck with `{MCP_PREFIX}send` and `to: \"{handle}\"`, \
+                             `host: \"{host}\"` — that wall lets a report to the card that opened \
+                             you through even while it takes no other work, and that card cannot \
+                             see your transcript. `{MCP_PREFIX}list` covers this machine only. Say what you did plainly in your own reply too — that is \
+                             where the user will read it.",
+                            host = b.host,
+                        ));
+                    }
+                    None => prompt.push_str(&format!(
+                        "\n\n**You were opened at another machine's request.** Your first turn is a \
+                         brief written by the person at the wall called `{}`, which asked for you \
+                         over the flyway — you run on this machine, in this repository, and it does \
+                         not. No card there is waiting on you, so say what you did, and anything you \
+                         could not do, plainly in your own reply — that is where the user will read \
+                         it, from either machine.",
+                        b.host,
+                    )),
+                }
             }
         }
     }
@@ -3262,9 +3280,10 @@ mod tests {
     }
 
     /// A card a wall on another machine asked for is told so, by that wall's
-    /// name and the asking card's handle — and is told nothing here reaches
-    /// it, because a card sent to report back to a handle no tool can address
-    /// has been sent on an errand.
+    /// name and the asking card's handle — and told the exact `send` that
+    /// reaches it there, since that is now the one address it always has. A
+    /// person who asked leaves no card to report to, and the card is not sent
+    /// looking for one.
     #[test]
     fn a_card_born_for_another_wall_is_told_so_and_where_to_say_what_it_did() {
         let born = Selfhood {
@@ -3279,7 +3298,19 @@ mod tests {
         let p = append_prompt(false, false, Some(&born));
         assert!(p.contains("another machine's request"), "{p}");
         assert!(p.contains("`the-build-box`") && p.contains("`0cf05791`"), "{p}");
-        assert!(p.contains("Nothing on this wall reaches it"), "{p}");
+        assert!(p.contains("`to: \"0cf05791\"`, `host: \"the-build-box\"`"), "{p}");
+        let person = Selfhood {
+            born_for: Some(crate::flyway::here::Birth {
+                card: "4bd5340b-0000".into(),
+                host: "the-build-box".into(),
+                asker_card: None,
+            }),
+            handle: "4bd5340b".into(),
+            spawned_by: None,
+        };
+        let p = append_prompt(false, false, Some(&person));
+        assert!(p.contains("the person at the wall called `the-build-box`"), "{p}");
+        assert!(p.contains("No card there is waiting on you") && !p.contains("Report back"), "{p}");
         /* Not a card the user opened, and not a chat card, which is told none
            of its selfhood at all. */
         let mine = Selfhood { born_for: None, handle: "4bd5340b".into(), spawned_by: None };
@@ -3746,6 +3777,12 @@ mod tests {
         ("supervisor.rs", include_str!("supervisor.rs")),
         ("timeline.rs", include_str!("timeline.rs")),
         ("notice.rs", include_str!("notice.rs")),
+        /* In a subdirectory, so the scan below cannot find them: listed by
+           hand because both answer tool calls — `reach.rs` its own and
+           `link.rs` the receipts a remote spawn, send, recall and close
+           come back with. */
+        ("flyway/link.rs", include_str!("flyway/link.rs")),
+        ("flyway/reach.rs", include_str!("flyway/reach.rs")),
     ];
 
     /// **The list above is hand-written, so this is what keeps it honest.**

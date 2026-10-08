@@ -806,6 +806,13 @@ two remaining refusals are chosen by — and the test that eventually took a thi
   deliberately made of nothing but pixels, because a delay built out of *state* would put the
   card back in reach of everything the removal exists to take it out of. `restore.md`, "An
   agent's close fades; yours goes at once", is the argument and the three things it costs.
+- **A card on another wall closes on its origin's say-so and nobody else's** (`close` with
+  `host`, `spawn::close_from_afar`). The origin is the card `flyway_birth` names on that wall —
+  "a card you opened closes at once" carried across. Anything else is **refused rather than
+  asked**, which is this file's own test applied honestly: refusing is right where there is
+  nobody who could usefully answer, and the person at the far machine is not the one watching
+  the close. Mid-turn and set aside are refused there as here, and a card with a timeline in
+  flight is refused rather than put to a user who is not in the conversation.
 - **A card can be both ends now.** With generations unbounded a card may have a root coming
   in and roots going out, and nothing needed changing for it: `familiesOf` groups by parent, so
   such a card simply appears once as somebody's kid and once as somebody's parent. What the

@@ -94,6 +94,20 @@
 //! - **The roster version was the clock**, which goes backwards across a
 //!   restart after a clock correction, and every peer then ignored the wall
 //!   until its clock caught up.
+//!
+//! ### Reaching a card once it is open
+//!
+//! Opening a card over there and then having no reach to it is a spawn button,
+//! not an orchestrator. So a request can carry a **card** and an **act**: a
+//! prompt (the oldest of the three, a person's from the dock or now an agent's
+//! `send`), a recall, or a close. All three ride one path — `reach` to ask,
+//! `hear_ask` to hear — because every rule an ask was red-teamed for holds for
+//! each: keyed on the asking host and the id, remembered, aged by hop and by
+//! stamp, and never sent to a wall that is quiet.
+//!
+//! What differs is only who may, and that is `may_reach`, read in full there.
+//! It is asked by the wiring rather than here, after the address is resolved,
+//! because two of its inputs are about the one card the address names.
 
 use std::collections::BTreeMap;
 
@@ -226,6 +240,9 @@ pub struct Facts {
     /// account at 96% is a machine where the new card stops within the hour,
     /// which is the single most useful thing to know before choosing it.
     pub allowance_used: Option<u8>,
+    /// What an agent on another wall may ask of this one's cards — see `CAN`.
+    /// Absent on a wall from before it, which reads as none.
+    pub can: Vec<String>,
 }
 
 /// One wall's statement about itself.
@@ -424,6 +441,104 @@ pub struct Ask {
     /// would use.
     #[serde(default)]
     pub answers: Option<String>,
+    /// What a request carrying a `card` asks of it. **Never on the wire as a
+    /// field** — the tag says it (`FleetMsg::Prompt`, `Recall`, `Close`), for
+    /// `card`'s reason: a field a wall from before it has never heard of reads
+    /// as absent, and an absent act would read as a prompt. So it is set from
+    /// the tag on arrival and read back into one when the request is passed on
+    /// (`tagged`), and means nothing on an ask with no card.
+    #[serde(skip)]
+    pub act: Act,
+}
+
+/// What a request for a card on another wall wants done to it.
+///
+/// A prompt is work; the other two are not, and that difference is the whole of
+/// how the far wall's switch treats them — see `may_reach`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Act {
+    /// Hand it this text, as a turn.
+    #[default]
+    Prompt,
+    /// Read back what it has said, off its own transcript, the way `recall`
+    /// does on its own wall.
+    Recall,
+    /// Take it off the wall.
+    Close,
+}
+
+/// The words a wall announces in `Facts::can`, one per thing an agent on
+/// another wall may ask of its cards beyond a person's prompt. An asker checks
+/// for the word before sending, so a wall one release behind refuses on the
+/// spot instead of skipping a tag it has no word for and leaving the asker to
+/// wait out `GIVE_UP_MS` — and an agent's message is never delivered by a wall
+/// that would hand it over raw, with nothing to say it came from an agent.
+pub const CAN: [&str; 3] = ["send", "recall", "close"];
+
+/// The word a request needs the far wall to have announced, if any. A person's
+/// prompt needs none: every wall that speaks the fleet takes those.
+pub fn needs(act: Act, from_card: bool) -> Option<&'static str> {
+    match act {
+        Act::Prompt if !from_card => None,
+        Act::Prompt => Some(CAN[0]),
+        Act::Recall => Some(CAN[1]),
+        Act::Close => Some(CAN[2]),
+    }
+}
+
+/// Whether a request may reach a card on this wall, and if not, why.
+///
+/// Pure, and asked by the wiring rather than by `Fleet::on`, because two of its
+/// inputs are facts about *one card* — who asked for it, and who it asked for —
+/// and the card is only known once the address has been resolved against this
+/// wall's own roster (`relay::resolve`, the one answer to what an address
+/// means). `Fleet` checks what it can about the request itself — its clock, its
+/// age — and hands the rest over with the switch as it stood.
+///
+/// - `born_for` is where the target card came from, if another wall asked for
+///   it (`flyway_birth`). `from` matching it — the same wall *and* the same
+///   card, a person's ask never counting — is its **origin**.
+/// - `replies` is that `from` is a card the target itself opened on that wall
+///   (`flyway_child`), so this is the child answering its parent.
+///
+/// **The switch is a person saying this machine takes no work from other
+/// walls**, so it gates what starts work and nothing else:
+///
+/// - **A prompt** is a turn, which is work — held to the switch, with two
+///   exceptions that start nothing new. An answer to a question the card parked
+///   (`answering`) is the reply it stopped and asked for. A message from a card
+///   this card opened over there (`replies`) is the report on work this card
+///   asked for, and refusing it would strand the orchestrator waiting on a
+///   child that has finished — Lyss's decision, the same as an answer's. A
+///   prompt from the origin is *not* excepted: steering a card is more work,
+///   and the person who turned the switch off meant that.
+/// - **A recall** is a read and starts nothing, so the origin may always read
+///   what it asked for. Anything else goes through the switch, though recall
+///   costs this wall no turn: it is another machine reaching into a transcript
+///   on this disk, past what this wall chose to publish (the digest's capped
+///   `said`), and the switch is the one consent a person here has given to
+///   other walls reaching in at all.
+/// - **A close** stops work rather than starting it, so the switch does not
+///   enter into it — but only the origin may, which is `spawn.rs`'s "a card you
+///   opened closes on your say-so" carried across. Any other close is refused
+///   rather than asked about: the person who would be asked is at the *other*
+///   machine, and the one in front of this wall is not the one watching.
+pub fn may_reach(
+    act: Act,
+    from: &Origin,
+    accepting: bool,
+    answering: bool,
+    born_for: Option<&Origin>,
+    replies: bool,
+) -> Result<(), Refusal> {
+    let origin = from.card.is_some() && born_for == Some(from);
+    match act {
+        Act::Prompt if accepting || answering || replies => Ok(()),
+        Act::Recall if accepting || origin => Ok(()),
+        Act::Close if origin => Ok(()),
+        Act::Close => Err(Refusal::NotOpenedFor),
+        Act::Prompt | Act::Recall => Err(Refusal::NotAccepting),
+    }
 }
 
 /// Why a wall would not open a card, in terms somebody can act on.
@@ -458,6 +573,10 @@ pub enum Refusal {
     /// is missing, the directory is gone. The reason is the receiving wall's
     /// own words.
     CouldNotStart { reason: String },
+    /// A close from anybody but the card that asked for that one — see
+    /// `may_reach`. No new outcome for a wall from before it to fail on that it
+    /// would not fail on anyway: only a wall that announces `close` is sent one.
+    NotOpenedFor,
 }
 
 impl Refusal {
@@ -518,6 +637,12 @@ impl Refusal {
                 "{host} tried to open the card and could not: {reason} — nothing was opened \
                  there, so once that is fixed it is safe to ask again"
             ),
+            Refusal::NotOpenedFor => format!(
+                "{host} closes one of its cards from another wall only at the request of the \
+                 card that asked for it, and that is not you — there is nobody at {host} to put \
+                 the question to from here. Nothing was closed; tell the user which card you \
+                 would close on {host} and why, and let them do it there"
+            ),
         };
         crate::clean::scrub(&s).into_owned()
     }
@@ -529,7 +654,24 @@ pub enum Outcome {
     /// The new card's id on the wall that opened it.
     Opened { card: String },
     Refused { refusal: Refusal },
+    /// A recall's answer: the last things that card said, oldest first, off
+    /// its own transcript. Its own outcome because it is the one answer that
+    /// carries more than an id — and kept out of the gossip (`Fleet::gossip`),
+    /// since a recall is up to six long speeches meant for one card, and the
+    /// tick would otherwise say it again to every wall for ten minutes. A wall
+    /// from before it reads the frame as malformed and passes over it
+    /// (`frame.rs`), which costs a relay of that build nothing else.
+    Said { card: String, title: String, said: Vec<String> },
 }
+
+/// The most speeches a recall carries, and the most of each — the same two
+/// numbers `relay::do_recall` reads a card with on its own wall
+/// (`RECALL_TURNS`, `MAX_RECALL_CHARS`; a test there holds them equal), so a
+/// recall across the wire answers no more than one here would. Applied again
+/// on arrival: the far wall is trusted, but a broken one must not put a
+/// megabyte into an agent's context because nothing on this side checked.
+pub const RECALL_MOST: usize = 6;
+pub const RECALL_CHARS: usize = 24_000;
 
 /// The one reply an ask gets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -566,6 +708,12 @@ pub enum FleetMsg {
     /// no new outcome, because a wall from before prompts relays answers too,
     /// and an outcome it had no word for would fail its whole exchange.
     Prompt { ask: Ask, age_ms: u64 },
+    /// Read a card's last words — a prompt's shape, a recall's act. Answered
+    /// with `Outcome::Said`, or a refusal.
+    Recall { ask: Ask, age_ms: u64 },
+    /// Take a card off its wall. Answered `Opened { card }` when the wall is
+    /// taking it off — no new outcome, for `Prompt`'s reason — or a refusal.
+    Close { ask: Ask, age_ms: u64 },
 }
 
 /// A card this wall has agreed to open. Handed to the wiring, which opens it
@@ -595,11 +743,23 @@ pub struct Spawn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deliver {
     pub request: String,
+    /// What to do to the card. Every act is handed over this way and settled
+    /// with `taken`, `said`, `refused` or `refuse` — exactly one.
+    pub act: Act,
+    /// **An address, not yet an id** — a handle, an id or an exact title, as
+    /// the asker wrote it. The wiring resolves it against this wall's own
+    /// roster, which is the one place what an address means is decided.
     pub card: String,
     pub text: String,
     pub asked_by: Origin,
     /// The parked question this answers, if it is an answer — see `Ask::answers`.
     pub answers: Option<String>,
+    /// The switch as it stood when this arrived, for `may_reach`.
+    pub accepting: bool,
+    /// What the asking card is called and where it stands, as its own wall
+    /// says — for the envelope a message from it arrives in. Labels, believed.
+    pub from_title: Option<String>,
+    pub from_project: Option<String>,
 }
 
 /// Everything one message caused.
@@ -634,6 +794,9 @@ pub enum Unsendable {
     /// A retry of an ask that has already been answered. The answer is the
     /// thing the caller was missing, so it is handed back rather than the ask.
     AlreadyAnswered { answer: Box<Answer> },
+    /// That wall does not announce the word this request needs (`CAN`) — it is
+    /// a build from before it.
+    Older { host: String, what: &'static str },
 }
 
 impl Unsendable {
@@ -667,7 +830,14 @@ impl Unsendable {
                 Outcome::Refused { refusal } => {
                     format!("already answered: {}", refusal.reason(&answer.by))
                 }
+                Outcome::Said { .. } => format!("already answered by {}", answer.by),
             },
+            Unsendable::Older { host, what } => format!(
+                "{host} runs a Volery from before a card on another wall could {} its cards, \
+                 so nothing was sent — it would be skipped there, or handed over with nothing \
+                 to say an agent wrote it. Ask the user to update Volery on {host}",
+                if *what == CAN[0] { "message" } else { what },
+            ),
         };
         crate::clean::scrub(&s).into_owned()
     }
@@ -701,6 +871,11 @@ pub struct PromptRequest {
     pub text: String,
     /// The question this answers, or `None` for an ordinary prompt.
     pub answers: Option<String>,
+    /// The asking card's title and project, for the envelope its message
+    /// arrives in over there. `None` for a person, who is introduced by the
+    /// wall's name alone.
+    pub title: Option<String>,
+    pub project: Option<String>,
 }
 
 /// An ask or answer's identity: the asking host and the request id. The id
@@ -933,6 +1108,7 @@ impl Fleet {
             effort: r.effort,
             card: None,
             answers: None,
+            act: Act::Prompt,
         };
         self.asks.insert(
             key,
@@ -947,6 +1123,19 @@ impl Fleet {
     /// a wall that is quiet is refused here rather than sent a prompt that
     /// would wait for its lid to lift — the hazard `ASK_TTL_MS` exists for.
     pub fn prompt(&mut self, r: PromptRequest, now: i64) -> Result<FleetMsg, Unsendable> {
+        self.reach(Act::Prompt, r, now)
+    }
+
+    /// Prompt, recall or close a card on another wall — one path for all
+    /// three, so the rules `prompt` was built with hold for each: keyed,
+    /// remembered, never re-minted, and never sent to a wall that is quiet. A
+    /// recall is a read and harmless twice, but it rides the same rules rather
+    /// than a lighter set: one shape is one thing to get right.
+    ///
+    /// The one rule added is the word the far wall must have announced
+    /// (`needs`), checked here because an older wall cannot say no — it would
+    /// skip the tag and leave the asker waiting for an answer that cannot come.
+    pub fn reach(&mut self, act: Act, r: PromptRequest, now: i64) -> Result<FleetMsg, Unsendable> {
         let key = (self.me.clone(), r.id.clone());
         if let Some(h) = self.answers.get(&key) {
             return Err(Unsendable::AlreadyAnswered { answer: Box::new(h.it.clone()) });
@@ -955,7 +1144,7 @@ impl Fleet {
             if age(now, h.origin_at) > ASK_TTL_MS as u64 {
                 return Err(Unsendable::Expired { id: r.id });
             }
-            return Ok(FleetMsg::Prompt { ask: h.it.clone(), age_ms: age(now, h.origin_at) });
+            return Ok(tagged(h.it.clone(), age(now, h.origin_at)));
         }
         if r.to == self.me {
             return Err(Unsendable::ThisWall);
@@ -970,25 +1159,33 @@ impl Fleet {
         if quiet > QUIET_AFTER_MS as u64 {
             return Err(Unsendable::Quiet { host: r.to, for_ms: quiet });
         }
+        if let Some(word) = needs(act, r.from_card.is_some()) {
+            if !there.facts.can.iter().any(|c| c == word) {
+                return Err(Unsendable::Older { host: r.to, what: word });
+            }
+        }
         let ask = Ask {
             id: r.id.clone(),
             from: Origin { host: self.me.clone(), card: r.from_card },
             to: r.to,
-            territory: Territory { identity: String::new(), name: String::new() },
+            /* A prompt has no territory to ask for; the name is where the
+               asking card stands, for the envelope over there. */
+            territory: Territory { identity: String::new(), name: r.project.unwrap_or_default() },
             brief: r.text,
-            title: None,
+            title: r.title,
             asked_at: now,
             model: None,
             effort: None,
             card: Some(r.card),
             answers: r.answers,
+            act,
         };
         self.asks.insert(
             key,
             Held { it: ask.clone(), origin_at: now, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
         );
         self.waiting.insert(r.id, Waiting { asked_at: now, given_up: false });
-        Ok(FleetMsg::Prompt { ask, age_ms: 0 })
+        Ok(tagged(ask, 0))
     }
 
     /// The card a `Deliver` was for has the prompt.
@@ -1000,6 +1197,18 @@ impl Fleet {
     pub fn refused(&mut self, asked_by: &str, request: &str, reason: &str, now: i64) -> Option<FleetMsg> {
         let refusal = Refusal::CouldNotStart { reason: reason.to_string() };
         self.settle_from(true, asked_by, request, Outcome::Refused { refusal }, now)
+    }
+
+    /// A delivery refused for a reason this file names — the switch, or a
+    /// close from somebody other than the origin (`may_reach`).
+    pub fn refuse(&mut self, asked_by: &str, request: &str, refusal: Refusal, now: i64) -> Option<FleetMsg> {
+        self.settle_from(true, asked_by, request, Outcome::Refused { refusal }, now)
+    }
+
+    /// What a recalled card said, oldest first.
+    pub fn said(&mut self, asked_by: &str, request: &str, card: &str, title: &str, said: Vec<String>, now: i64) -> Option<FleetMsg> {
+        let outcome = Outcome::Said { card: card.to_string(), title: title.to_string(), said };
+        self.settle_from(true, asked_by, request, outcome, now)
     }
 
     /// The card a `Spawn` asked for is open. Returns the answer to say, or
@@ -1059,6 +1268,11 @@ impl Fleet {
     /// ask is decided against them, never against what was last announced.
     pub fn on(&mut self, m: FleetMsg, now: i64, here: &Facts) -> Reply {
         let mut reply = Reply::default();
+        let act = match &m {
+            FleetMsg::Recall { .. } => Act::Recall,
+            FleetMsg::Close { .. } => Act::Close,
+            _ => Act::Prompt,
+        };
         match m {
             FleetMsg::Roster { walls, greeting } => {
                 let mut theirs: BTreeMap<String, u64> = BTreeMap::new();
@@ -1093,13 +1307,18 @@ impl Fleet {
 
             FleetMsg::Ask { ask, age_ms } => {
                 /* Never a prompt under this tag — see `Ask::card`. */
-                let ask = Ask { card: None, answers: None, ..clean_ask(ask) };
+                let ask = Ask { card: None, answers: None, act: Act::Prompt, ..clean_ask(ask) };
                 self.hear_ask(ask, age_ms, now, here, &mut reply);
             }
 
-            FleetMsg::Prompt { ask, age_ms } => {
-                let ask = clean_ask(ask);
-                /* A prompt for no card is nothing anybody could deliver, and
+            FleetMsg::Prompt { ask, age_ms } | FleetMsg::Recall { ask, age_ms } | FleetMsg::Close { ask, age_ms } => {
+                /* The tag is the act, and nothing else is — see `Ask::act`.
+                   Only a prompt answers a question. */
+                let mut ask = Ask { act, ..clean_ask(ask) };
+                if act != Act::Prompt {
+                    ask.answers = None;
+                }
+                /* A request for no card is nothing anybody could deliver, and
                    it is dropped rather than refused: there is no card on any
                    wall it could have been meant for. */
                 if ask.card.as_deref().is_none_or(str::is_empty) {
@@ -1195,28 +1414,28 @@ impl Fleet {
             .max(ask.asked_at.saturating_add(ASK_TTL_MS + CLOCK_SLACK_MS + 1));
         self.asks.insert(key.clone(), Held { it: ask.clone(), origin_at, keep_until });
         let decided = if prompt {
-            /* A prompt has no territory and counts against no bound; what it
-               shares with an ask is the trust and the switch. Whether the card
-               exists, and will take it, is the wiring's to answer.
-
-               **An answer is not held to the switch.** The switch is a person
-               deciding this machine takes no *work* from other walls; an
-               answer starts nothing — it is the reply a card on this machine
-               stopped and asked for, and refusing it would strand that card on
-               a question nobody here is going to answer. */
-            let answering = ask.answers.is_some();
-            self.trust(&ask, age_ms, now)
-                .and_then(|()| if here.accepting || answering { Ok(()) } else { Err(Refusal::NotAccepting) })
-                .map(|()| {
-                    self.delivering.insert(key.clone(), keep_until);
-                    reply.deliver.push(Deliver {
-                        request: ask.id.clone(),
-                        card: ask.card.clone().unwrap_or_default(),
-                        text: ask.brief.clone(),
-                        asked_by: ask.from.clone(),
-                        answers: ask.answers.clone(),
-                    });
-                })
+            /* A prompt, a recall or a close has no territory and counts
+               against no bound; what it shares with an ask is the trust. The
+               switch is the wiring's to apply, with `may_reach`, because two
+               of the exceptions to it are facts about the one card the address
+               names — and what an address names is only known once it has been
+               resolved against this wall's roster. So the switch travels with
+               the delivery, as it stood when the request arrived. */
+            self.trust(&ask, age_ms, now).map(|()| {
+                self.delivering.insert(key.clone(), keep_until);
+                let named = |s: &str| (!s.trim().is_empty()).then(|| s.to_string());
+                reply.deliver.push(Deliver {
+                    request: ask.id.clone(),
+                    act: ask.act,
+                    card: ask.card.clone().unwrap_or_default(),
+                    text: ask.brief.clone(),
+                    asked_by: ask.from.clone(),
+                    answers: ask.answers.clone(),
+                    accepting: here.accepting,
+                    from_title: ask.title.as_deref().and_then(named),
+                    from_project: named(&ask.territory.name),
+                });
+            })
         } else {
             self.decide(&ask, age_ms, now, here).map(|spawn| {
                 self.in_flight.insert(key.clone(), keep_until);
@@ -1329,6 +1548,24 @@ impl Fleet {
             heard_at,
             said_at: h.wall.said_at,
         };
+        /* One statement by two paths, one of them through a wall from before
+           `can`: that wall re-serialised the facts without it, so its copy says
+           this wall can do nothing — and a relayed copy is usually the one with
+           the later `heard_at`, which wins the order below. `can` is the first
+           field whose *absence* refuses something, so for one version the
+           words either copy carried are kept, whichever copy is kept. A
+           correct wall never says two different things under one version, so
+           this cannot hide anything a wall actually said. */
+        let mut incoming = incoming;
+        if let Some(e) = self.roster.get_mut(&host) {
+            if e.version == incoming.version {
+                if incoming.facts.can.is_empty() {
+                    incoming.facts.can = e.facts.can.clone();
+                } else if e.facts.can.is_empty() {
+                    e.facts.can = incoming.facts.can.clone();
+                }
+            }
+        }
         match self.roster.get(&host) {
             Some(e) if e.order() >= incoming.order() => None,
             Some(e) if e.version == incoming.version => {
@@ -1361,6 +1598,9 @@ impl Fleet {
             .answers
             .values()
             .filter(|h| age(now, h.origin_at) <= ANSWER_KEPT_MS as u64)
+            /* Not a recall's words: see `Outcome::Said`. Its push is the
+               delivery, and a recall that missed it is asked again. */
+            .filter(|h| !matches!(h.it.outcome, Outcome::Said { .. }))
             .map(|h| FleetMsg::Answer { answer: h.it.clone(), age_ms: age(now, h.origin_at) });
         asks.chain(answers).collect()
     }
@@ -1387,10 +1627,11 @@ fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
 
 /// An ask under the tag that says what it is — see `Ask::card`.
 fn tagged(ask: Ask, age_ms: u64) -> FleetMsg {
-    if ask.card.is_some() {
-        FleetMsg::Prompt { ask, age_ms }
-    } else {
-        FleetMsg::Ask { ask, age_ms }
+    match (ask.card.is_some(), ask.act) {
+        (false, _) => FleetMsg::Ask { ask, age_ms },
+        (true, Act::Prompt) => FleetMsg::Prompt { ask, age_ms },
+        (true, Act::Recall) => FleetMsg::Recall { ask, age_ms },
+        (true, Act::Close) => FleetMsg::Close { ask, age_ms },
     }
 }
 
@@ -1424,7 +1665,38 @@ fn clean_territory(t: Territory) -> Territory {
 
 fn clean_facts(mut f: Facts) -> Facts {
     f.territories = f.territories.into_iter().map(clean_territory).collect();
+    f.can = f.can.iter().map(|c| sc(c)).collect();
     f
+}
+
+/// A recall's words as they may reach an agent here: no more speeches than a
+/// recall on this wall would read, none longer than one would carry, each
+/// scrubbed. Cut on a character, never inside one, and marked where it was cut
+/// with a way to get the rest — `clip.rs`'s rule for a text altered on its way
+/// to an agent, which cannot tell a clipped account from a whole one.
+///
+/// The bound has room above `RECALL_CHARS` for the marker the far wall's own
+/// clip already put on a speech it cut (`relay::speeches_from`), so an honest
+/// wall's answer arrives exactly as it was sent; this only ever bites on one
+/// that sent more than it should have.
+fn clean_said(said: Vec<String>) -> Vec<String> {
+    const MARK_ROOM: usize = 1_000;
+    let skip = said.len().saturating_sub(RECALL_MOST);
+    said.into_iter()
+        .skip(skip)
+        .map(|s| {
+            let s = sc(&s);
+            match s.char_indices().nth(RECALL_CHARS + MARK_ROOM) {
+                Some((at, _)) => format!(
+                    "{}\n\n[…cut by this wall at {} characters, which is more than a recall \
+                     carries. If the tail matters, send to that card and ask.]",
+                    &s[..at],
+                    RECALL_CHARS + MARK_ROOM
+                ),
+                None => s,
+            }
+        })
+        .collect()
 }
 
 fn clean_ask(a: Ask) -> Ask {
@@ -1440,6 +1712,7 @@ fn clean_ask(a: Ask) -> Ask {
         effort: sc_opt(a.effort),
         card: sc_opt(a.card),
         answers: sc_opt(a.answers),
+        act: a.act,
     }
 }
 
@@ -1454,6 +1727,13 @@ fn clean_answer(a: Answer) -> Answer {
                 wanted: clean_territory(wanted),
                 offered: offered.into_iter().map(clean_territory).collect(),
             },
+        },
+        /* The title is a label in a sentence, and a broken wall's one must not
+           be a paragraph: capped as `walls` caps one off a snapshot. */
+        Outcome::Said { card, title, said } => Outcome::Said {
+            card: sc(&card).chars().take(64).collect(),
+            title: sc(&title).chars().take(120).collect(),
+            said: clean_said(said),
         },
         other => other,
     };
@@ -1576,6 +1856,7 @@ mod tests {
             effort: None,
             card: None,
             answers: None,
+            act: Act::Prompt,
         }
     }
 
@@ -2133,9 +2414,10 @@ mod tests {
                 Refusal::Expired { .. } => 4,
                 Refusal::ClocksDisagree { .. } => 5,
                 Refusal::CouldNotStart { .. } => 6,
+                Refusal::NotOpenedFor => 7,
             }
         }
-        const ALL: usize = 7;
+        const ALL: usize = 8;
 
         let now = 10_000_000;
         let ask_with = |id: &str, territory: Territory, asked_at: i64| Ask { territory, ..raw_ask(id, "lap", "desk", asked_at) };
@@ -2161,11 +2443,21 @@ mod tests {
             Some(FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal }, .. }, .. }) => got.push(refusal),
             other => panic!("{other:?}"),
         }
+        /* The close nobody but the origin may make, through the gate that
+           makes it, settled the way the wiring settles it. */
+        let close = Ask { card: Some("card-9".into()), ..raw_ask("h", "lap", "desk", now) };
+        let r = desk.on(FleetMsg::Close { ask: close, age_ms: 0 }, now, &open_facts());
+        let d = &r.deliver[0];
+        let no = may_reach(d.act, &d.asked_by, d.accepting, false, None, false).unwrap_err();
+        match desk.refuse("lap", "h", no, now) {
+            Some(FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal }, .. }, .. }) => got.push(refusal),
+            other => panic!("{other:?}"),
+        }
 
         let reached: BTreeSet<usize> = got.iter().map(which).collect();
         assert_eq!(reached.len(), ALL, "every refusal reached: {got:?}");
 
-        let actions = ["ask again", "ask another wall", "ask a wall", "switch that on", "close one", "set both", "raise its bound", "wait"];
+        let actions = ["ask again", "ask another wall", "ask a wall", "switch that on", "close one", "set both", "raise its bound", "wait", "tell the user"];
         for r in &got {
             let s = r.reason("desk");
             assert!(s.contains("desk"), "names the wall that refused: {s}");
@@ -2276,6 +2568,8 @@ mod tests {
             card: card.into(),
             text: "carry on".into(),
             answers: None,
+            title: None,
+            project: None,
         }
     }
 
@@ -2296,9 +2590,189 @@ mod tests {
         assert_eq!(r.deliver.len(), 1);
         assert_eq!(r.deliver[0].answers.as_deref(), Some("ask-1"));
         assert_eq!(r.deliver[0].text, "the second option");
+        /* Handed over with the switch as it stood, which is what the gate is
+           asked with — and the gate lets an answer through it. */
+        assert!(!r.deliver[0].accepting);
+        let from = Origin { host: "lap".into(), card: None };
+        assert_eq!(may_reach(Act::Prompt, &from, false, true, None, false), Ok(()));
         /* An ordinary prompt is still held to the switch. */
-        let prompt = Ask { card: Some("card-9".into()), ..raw_ask("q", "lap", "desk", 0) };
-        assert!(desk.on(FleetMsg::Prompt { ask: prompt, age_ms: 0 }, 0, &closed).deliver.is_empty());
+        assert_eq!(may_reach(Act::Prompt, &from, false, false, None, false), Err(Refusal::NotAccepting));
+    }
+
+    /// **The gate, whole.** The switch is a person saying this machine takes no
+    /// work from other walls, so it holds back what starts work and nothing
+    /// else — and the origin's two rights (to read what it asked for, and to
+    /// take it away again) are its alone: the same wall with another card, or a
+    /// person there, is not the origin.
+    #[test]
+    fn the_switch_holds_back_work_and_only_the_origin_may_close() {
+        let lap = |card: Option<&str>| Origin { host: "lap".into(), card: card.map(str::to_string) };
+        let origin = lap(Some("k"));
+        let born = Some(&origin);
+        let (a, b, c) = (Act::Prompt, Act::Recall, Act::Close);
+        for accepting in [false, true] {
+            /* The origin may read and close whatever the switch says, and may
+               prompt only when the switch is on — steering is work. */
+            assert_eq!(may_reach(b, &origin, accepting, false, born, false), Ok(()));
+            assert_eq!(may_reach(c, &origin, accepting, false, born, false), Ok(()));
+            assert_eq!(may_reach(a, &origin, accepting, false, born, false).is_ok(), accepting);
+            /* Anybody else is held to the switch for a read and refused a
+               close outright, switch or no switch. */
+            for other in [lap(Some("x")), lap(None), Origin { host: "box".into(), card: Some("k".into()) }] {
+                assert_eq!(may_reach(b, &other, accepting, false, born, false).is_ok(), accepting, "{other:?}");
+                assert_eq!(may_reach(c, &other, accepting, false, born, false), Err(Refusal::NotOpenedFor), "{other:?}");
+            }
+            /* A card nobody on another wall asked for has no origin at all. */
+            assert_eq!(may_reach(c, &origin, accepting, false, None, false), Err(Refusal::NotOpenedFor));
+            /* A child reporting to the card that opened it is never work. */
+            assert_eq!(may_reach(a, &lap(Some("child")), accepting, false, None, true), Ok(()));
+        }
+        /* A person's ask is never an origin, even one recorded as such. */
+        let person = lap(None);
+        assert_eq!(may_reach(c, &person, true, false, Some(&person), false), Err(Refusal::NotOpenedFor));
+        /* And the refusal says what to do instead, for an agent. */
+        let why = Refusal::NotOpenedFor.reason("desk");
+        assert!(why.contains("Nothing was closed") && why.contains("tell the user"), "{why}");
+    }
+
+    /// A recall and a close are a prompt's shape under tags of their own, and
+    /// the tag is kept wherever the request goes — through a relay, into the
+    /// gossip, and to the wall it was for, which is told which act it is.
+    #[test]
+    fn a_recall_and_a_close_keep_their_tags_across_every_hop() {
+        let can = Facts { can: CAN.iter().map(|s| s.to_string()).collect(), ..open_facts() };
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, can.clone(), None, 0), 0, &open_facts());
+        let mut server = Fleet::new("server", 0);
+        let mut desk = Fleet::new("desk", 0);
+        for (act, id) in [(Act::Recall, "r"), (Act::Close, "c"), (Act::Prompt, "p")] {
+            let req = PromptRequest { from_card: Some("k".into()), ..prompt_req(id, "desk", "card-9") };
+            let m = lap.reach(act, req, 10).unwrap();
+            let json = serde_json::to_value(&m).unwrap();
+            let word = match act {
+                Act::Prompt => "prompt",
+                Act::Recall => "recall",
+                Act::Close => "close",
+            };
+            assert_eq!(json["msg"], word);
+            assert!(json["ask"].get("act").is_none(), "the act is the tag, never a field");
+            let back: FleetMsg = serde_json::from_value(json).unwrap();
+            let relayed = server.on(back, 10, &open_facts()).say;
+            assert!(matches!(relayed.as_slice(), [m] if serde_json::to_value(m).unwrap()["msg"] == word));
+            assert!(server.open(20).iter().any(|m| serde_json::to_value(m).unwrap()["msg"] == word));
+            let r = desk.on(relayed[0].clone(), 20, &open_facts());
+            assert_eq!(r.deliver.len(), 1, "{word}");
+            assert_eq!(r.deliver[0].act, act);
+            assert!(r.open.is_empty());
+        }
+    }
+
+    /// Only a prompt answers a question. A recall or close that somehow carries
+    /// `answers` has it taken off, so nothing downstream can mistake a read for
+    /// the reply a parked call is waiting on.
+    #[test]
+    fn only_a_prompt_answers_a_question() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { card: Some("card-9".into()), answers: Some("a1".into()), ..raw_ask("r", "lap", "desk", 0) };
+        let r = desk.on(FleetMsg::Recall { ask, age_ms: 0 }, 0, &open_facts());
+        assert_eq!(r.deliver[0].answers, None);
+    }
+
+    /// A wall one release behind skips a tag it has no word for, so asking it
+    /// would mean waiting out `GIVE_UP_MS` for nothing — and it would hand an
+    /// agent's message over raw. Refused here instead, naming the cure. A
+    /// person's prompt needs no word: every wall that speaks the fleet takes it.
+    #[test]
+    fn a_wall_that_does_not_say_it_can_is_not_asked() {
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(announced("desk", 1, 0, 0), 0, &open_facts());
+        let agent = |id: &str| PromptRequest { from_card: Some("k".into()), ..prompt_req(id, "desk", "card-9") };
+        for (act, id) in [(Act::Recall, "r"), (Act::Close, "c"), (Act::Prompt, "p")] {
+            match lap.reach(act, agent(id), 10) {
+                Err(Unsendable::Older { host, .. }) => assert_eq!(host, "desk"),
+                other => panic!("{act:?} was not refused as older: {other:?}"),
+            }
+        }
+        let why = Unsendable::Older { host: "desk".into(), what: CAN[0] }.reason();
+        assert!(why.contains("could message its cards") && why.contains("update Volery on desk"), "{why}");
+        assert!(lap.prompt(prompt_req("person", "desk", "card-9"), 10).is_ok());
+        /* And once it says it can, it is asked. */
+        let can = Facts { can: CAN.iter().map(|s| s.to_string()).collect(), ..open_facts() };
+        lap.on(statement("desk", 2, can, None, 0), 20, &open_facts());
+        assert!(lap.reach(Act::Recall, agent("r2"), 30).is_ok());
+    }
+
+    /// A wall from before `can` relays a statement with the field gone, and its
+    /// copy arrives with the later `heard_at`, so it is the one kept. The words
+    /// the direct copy carried must survive that, in either order of arrival,
+    /// or one older wall in the middle makes a newer one look older for good.
+    #[test]
+    fn an_older_relay_cannot_strip_what_a_wall_said_it_can_do() {
+        let can = Facts { can: CAN.iter().map(|s| s.to_string()).collect(), ..open_facts() };
+        let direct = statement("desk", 5, can.clone(), Some(100), 900);
+        let stripped = statement("desk", 5, open_facts(), Some(100), 100);
+        for order in [[direct.clone(), stripped.clone()], [stripped, direct]] {
+            let mut lap = Fleet::new("lap", 0);
+            for m in order {
+                lap.on(m, 1_000, &open_facts());
+            }
+            assert_eq!(lap.entry("desk").unwrap().facts.can, can.can);
+            let req = PromptRequest { from_card: Some("k".into()), ..prompt_req("r", "desk", "c") };
+            assert!(lap.reach(Act::Recall, req, 1_000).is_ok());
+        }
+    }
+
+    /// The asking card's name and project ride the request, for the envelope
+    /// its message arrives in — and a person's prompt carries neither.
+    #[test]
+    fn a_message_from_a_card_says_who_wrote_it() {
+        let can = Facts { can: CAN.iter().map(|s| s.to_string()).collect(), ..open_facts() };
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, can, None, 0), 0, &open_facts());
+        let req = PromptRequest {
+            from_card: Some("k".into()),
+            title: Some("release \u{7}notes".into()),
+            project: Some("skein".into()),
+            ..prompt_req("p", "desk", "card-9")
+        };
+        let m = lap.reach(Act::Prompt, req, 10).unwrap();
+        let r = Fleet::new("desk", 0).on(m, 10, &open_facts());
+        assert_eq!(r.deliver[0].from_title.as_deref(), Some("release notes"));
+        assert_eq!(r.deliver[0].from_project.as_deref(), Some("skein"));
+        assert_eq!(r.deliver[0].asked_by.card.as_deref(), Some("k"));
+        let m = lap.prompt(prompt_req("q", "desk", "card-9"), 10).unwrap();
+        let r = Fleet::new("desk", 0).on(m, 10, &open_facts());
+        assert_eq!((r.deliver[0].from_title.as_deref(), r.deliver[0].from_project.as_deref()), (None, None));
+    }
+
+    /// A recall's answer is for one card: it reaches the asker with no more in
+    /// it than a recall here would read, cut where it says it was cut — and it
+    /// is never said again to every wall on the tick.
+    #[test]
+    fn a_recall_answers_one_card_within_its_bounds_and_is_not_gossiped() {
+        let can = Facts { can: CAN.iter().map(|s| s.to_string()).collect(), ..open_facts() };
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, can, None, 0), 0, &open_facts());
+        let req = PromptRequest { from_card: Some("k".into()), ..prompt_req("r", "desk", "card-9") };
+        let m = lap.reach(Act::Recall, req, 10).unwrap();
+        let mut desk = Fleet::new("desk", 0);
+        desk.on(m, 10, &open_facts());
+
+        let long = "x".repeat(RECALL_CHARS + 5_000);
+        let said: Vec<String> = (0..RECALL_MOST + 2).map(|i| if i == RECALL_MOST + 1 { long.clone() } else { format!("s{i}\u{0}") }).collect();
+        let answer = desk.said("lap", "r", "card-9-full", "builder", said, 20).unwrap();
+        assert!(!desk.open(30).iter().any(|m| matches!(m, FleetMsg::Answer { answer: Answer { outcome: Outcome::Said { .. }, .. }, .. })));
+
+        let back = lap.on(answer, 30, &open_facts());
+        let Outcome::Said { card, title, said } = &back.answered[0].outcome else { panic!("{:?}", back.answered) };
+        assert_eq!((card.as_str(), title.as_str()), ("card-9-full", "builder"));
+        assert_eq!(said.len(), RECALL_MOST, "the oldest are the ones dropped");
+        assert_eq!(said[0], "s2", "scrubbed on the way in");
+        assert!(said[RECALL_MOST - 1].ends_with("send to that card and ask.]"), "{}", &said[RECALL_MOST - 1][RECALL_CHARS..]);
+        assert_eq!(said[RECALL_MOST - 1].chars().filter(|c| *c == 'x').count(), RECALL_CHARS + 1_000);
+        /* A speech the far wall cut itself, marker and all, arrives untouched. */
+        let honest = format!("{}\n\n[…the far wall's own marker]", "y".repeat(RECALL_CHARS));
+        assert_eq!(clean_said(vec![honest.clone()]), vec![honest]);
     }
 
     /// A prompt crosses, is handed to the card, and its answer comes back as
@@ -2345,14 +2819,20 @@ mod tests {
         assert!(desk.asked("lap", "r").unwrap().card.is_none());
     }
 
+    /// A prompt to a wall that takes no work is refused once the gate has
+    /// been asked, and the refusal is the answer the asker hears — once, with
+    /// the switch's own reason.
     #[test]
     fn a_wall_that_takes_no_work_refuses_a_prompt_too() {
         let mut desk = Fleet::new("desk", 0);
         let ask = Ask { card: Some("card-9".into()), ..raw_ask("p", "lap", "desk", 0) };
         let closed = Facts { accepting: false, ..open_facts() };
         let r = desk.on(FleetMsg::Prompt { ask, age_ms: 0 }, 0, &closed);
-        assert!(r.deliver.is_empty());
-        assert_eq!(refusal_in(&r.say), Some(&Refusal::NotAccepting));
+        let d = &r.deliver[0];
+        let refusal = may_reach(d.act, &d.asked_by, d.accepting, d.answers.is_some(), None, false).unwrap_err();
+        let said = desk.refuse("lap", "p", refusal, 10).map(|m| vec![m]).unwrap_or_default();
+        assert_eq!(refusal_in(&said), Some(&Refusal::NotAccepting));
+        assert!(desk.refuse("lap", "p", Refusal::NotAccepting, 20).is_none(), "settled once");
     }
 
     /// A prompt in flight is not a card opened for another wall, and must not

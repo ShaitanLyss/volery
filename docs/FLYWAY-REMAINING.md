@@ -125,6 +125,69 @@ red-teamed for. **Demonstrated** across the same two walls: a card on one wall
 drawn on the other, prompted from the other's dock, `taken`, and its answer
 read back in the next snapshot.
 
+### 4. Reaching a card once it is open (2026-10-08, card da1713c9)
+
+The orchestrator half: a card that opened work on another machine can now
+steer it, read it and tidy it away, and the card it opened can report back.
+`send`, `recall` and `close` each grew one argument, `host`; without it, or
+naming this wall, each does what it always did. `walls` (deferred) is how an
+agent finds what to put there.
+
+- **Wire.** Two more tags, `recall` and `close`, each a prompt's shape (an
+  `Ask` with a `card`) — one path in `Fleet::reach` / `hear_ask` for all three,
+  so keyed, remembered, aged and never sent to a quiet wall. A recall answers
+  with a new `Outcome::Said` (the speeches, capped again on arrival), kept out
+  of the gossip; a close answers `Opened` like a prompt. A wall announces the
+  words it understands (`Facts::can`); an asker refuses at once to ask an older
+  wall rather than wait out `GIVE_UP_MS` for a tag it would skip.
+- **Who may — `fleet::may_reach`, decided on the wall the card is on.** The
+  switch gates work and nothing else. A prompt is work: held to the switch,
+  except an answer to a parked question and **a child's report to the card that
+  opened it** (Lyss's decision, the same as an answer's). A recall is a read:
+  the origin always, anyone else through the switch. A close stops work: the
+  origin only, switch or not, and anyone else is refused — never asked, since
+  the person who would be asked is at the other machine.
+- **The origin and the child are both recorded, not believed.** The far wall
+  has `flyway_birth`; the asking wall now writes `flyway_child` (**schema v48**)
+  when the answer says the card opened. So a reply is let through the switch
+  because the asking wall wrote the pair down, not because the far wall says
+  "I am its child".
+- **Addresses are resolved where the card is**, by `relay::resolve` against
+  that wall's roster: handle, id or exact title, an ambiguous title refused by
+  name. Nothing the asker writes is ever an id the far wall did not mint.
+- **An agent's message arrives as a relay**, in `relay::afar_envelope` (the
+  shape `relay.ts` already folds, with `on <host>` after the project and a
+  trailer saying to reply with `host`), delivered through the relay so a
+  dormant card wakes to read it — never through the front end's `Skein.send`,
+  which would draw it as typed here. A person's prompt from a dock is unchanged.
+- **A close** keeps the local refusals (mid-turn, set aside) and refuses a card
+  whose timeline is still in flight rather than asking across a network; it
+  closes with an agent's fade and a chronicle row naming the asking wall.
+- The calls park for up to 30s. A late refusal of a send, and a late close
+  either way, reach the card as a wall message; a late recall does not.
+- `Selfhood.born_for` now tells a card opened by another wall's card the exact
+  `send` that reaches its parent. The spawn receipt names all three tools.
+
+Not proven app-to-app yet — see "What to try" below. The protocol layer is run
+here by `bun tools/lift-fleet.ts` (all of `fleet.rs`'s tests, executed).
+
+#### What to try, across AU-LT-288 and QUEERISFREEDOM
+
+1. Both on this build. On QUEERISFREEDOM, switch **on** "take work from other
+   walls" (`space k`, then `a`).
+2. From a card on AU-LT-288: `spawn{host: "QUEERISFREEDOM", prompt: "…report
+   back to me when done"}`. The receipt names the handle.
+3. Wait for the child's report to arrive on AU-LT-288 as a relay line *from
+   "…" in … on QUEERISFREEDOM*. Then switch QUEERISFREEDOM **off** and have the
+   child `send` again — it should still arrive (a reply is not work).
+4. With the switch still off, from the parent: `recall{card, host}` should read
+   it; `send{to, host}` should be refused naming the switch; a *different* card
+   on AU-LT-288 should be refused a `recall`.
+5. `close{card, host}` from the parent closes it (with the fade, and a
+   chronicle row on QUEERISFREEDOM); from any other card it is refused.
+6. `walls` from the parent marks the child `yours`; from the child it marks the
+   parent `opened_you`.
+
 ## What is left
 
 ### What parks waiting for a person (sink 16864f3d)
@@ -156,9 +219,9 @@ wall answers v1 only, so against one, all that crosses is the sink.
 
 ### Smaller things
 
-- **A read of the roster for agents.** An agent learns host names only from a
-  refusal (`UnknownHost` lists them). A deferred `walls` tool would be the
-  honest answer; `accounts`' "a field only a mistake can teach" is the argument.
+- **Recall and close for a person.** The dock prompts a remote card; it cannot
+  yet read one's transcript or close one. The wire is there (`Act`) — it is a
+  front-end gesture away, and the gate already says who may.
 - **`Fleet::namesake()` is not drawn.** Another machine under this wall's name
   is two cards for one ask. Note that any copy of the app run on this machine
   without `VOLERY_FLYWAY_HOST` joins the flyway as `COMPUTERNAME` — the
@@ -205,6 +268,6 @@ iroh, and the frames are sealed before they reach it.
 - **Do not run `cargo` by hand while a dev build is live.** They contend for the
   target lock and each stalls the other; this looked like "the build is
   mysteriously slow" for an hour.
-- Schema is at **v46**. Take the next rung and say so on the board.
+- Schema is at **v48**. Take the next rung and say so on the board.
 - The wall suite (`test/wall.test.ts`) has ~19 standing failures and some are
   flaky — sink `64e5003c`. It is not yet trustworthy as a gate.
