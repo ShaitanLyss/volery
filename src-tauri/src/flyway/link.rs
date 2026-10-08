@@ -255,6 +255,9 @@ struct Waiter {
     /// Told "nobody answered" already — so a late answer is news, and says so.
     gave_up: bool,
     asked_at: i64,
+    /// For a spawn: a credential the card needs that the far wall could not
+    /// vouch for, said in the receipt (`fleet::unconfirmed`).
+    note: Option<String>,
 }
 
 struct Opening {
@@ -457,6 +460,9 @@ impl Link {
         f.cards_live = open.len() as u32;
         f.cards_working = open.iter().filter(|c| sup.liveness(c).1).count() as u32;
         f.allowance_used = crate::limits::headroom_used(&self.app);
+        /* Outside the store lock: two vault reads, and the wall's cards do not
+           wait on the credential manager. Names only — `creds::holdings`. */
+        (f.holds, f.lacks) = crate::creds::holdings();
         f
     }
 
@@ -830,7 +836,13 @@ impl Link {
     /// tool call waits on; the sentence arrives when the answer does.
     pub fn ask_spawn(self: &Arc<Self>, r: Request) -> Result<mpsc::Receiver<String>, String> {
         let now = self.now();
-        let msg = self.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?.ask(r.clone(), now);
+        let (msg, note) = {
+            let mut f = self.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?;
+            /* Read off the same entry the ask is about to be judged against, so
+               the receipt cannot disagree with the refusal it was not. */
+            let note = f.entry(&r.to).and_then(|e| fleet::unconfirmed(&r.to, &r.needs, &e.facts));
+            (f.ask(r.clone(), now), note)
+        };
         let msg = match msg {
             Ok(m) => m,
             Err(why) => return Err(why.reason()),
@@ -849,6 +861,7 @@ impl Link {
                     title: r.title.clone(),
                     gave_up: false,
                     asked_at: now,
+                    note,
                 },
             );
         }
@@ -884,6 +897,7 @@ impl Link {
                     title: None,
                     gave_up: false,
                     asked_at: now,
+                    note: None,
                 },
             );
         }
@@ -975,6 +989,7 @@ impl Link {
                 title: w.title.clone(),
                 gave_up: true,
                 asked_at: w.asked_at,
+                note: w.note.clone(),
             }
         };
         let text = format!(
@@ -1245,12 +1260,35 @@ impl Link {
             None => return refuse(self, format!("{} could not read its own wall just then — try again", self.me)),
         };
 
-        if let Err(refusal) = fleet::may_reach(d.act, &d.asked_by, d.accepting, d.answers.is_some(), born.as_ref(), replies) {
+        /* An answer starts no work here — unless it is a follow-up to a notice,
+           which is a message to the card and is held to the switch like any
+           prompt (`notice::answer_starts_nothing`). */
+        let answering = d.answers.as_deref().is_some_and(|a| crate::notice::answer_starts_nothing(a, &d.text));
+        if let Err(refusal) = fleet::may_reach(d.act, &d.asked_by, d.accepting, answering, born.as_ref(), replies) {
             let m = self.fleet.lock().ok().and_then(|mut f| f.refuse(&host, &request, refusal, now));
             return answer(self, m);
         }
 
         match d.act {
+            /* A notice taken down from another wall — acknowledged, or followed
+               up. The queue is the front end's to read and Rust's to hold, and
+               taking one down is `Skein.acknowledgeNotice`/`followUpNotice`, so
+               it goes the way a person's prompt does: to the front end, which
+               answers `flyway_prompt_answer`. Only a person's: an agent on
+               another wall has no business clearing this wall's queue. */
+            Act::Prompt if crate::notice::afar(d.answers.as_deref()).is_some() => {
+                if d.asked_by.card.is_some() {
+                    return refuse(self, "a notice is taken down by a person, not by another card".into());
+                }
+                let notice = crate::notice::afar(d.answers.as_deref()).map(str::to_string);
+                if let Ok(mut p) = self.prompts_in.lock() {
+                    p.insert((host.clone(), request.clone()), now);
+                }
+                let _ = self.app.emit(
+                    "flyway:prompt",
+                    PromptHere { id: request, from: PromptFrom { host, card: None }, card: row.id, text: d.text, notice },
+                );
+            }
             /* An answer to a parked question goes straight into the parked call
                — the channel a click in this wall's own dock uses — and is
                answered taken or refused on the spot, with no front end in
@@ -1285,7 +1323,7 @@ impl Link {
                 }
                 let _ = self.app.emit(
                     "flyway:prompt",
-                    PromptHere { id: request, from: PromptFrom { host, card: d.asked_by.card }, card: row.id, text: d.text },
+                    PromptHere { id: request, from: PromptFrom { host, card: d.asked_by.card }, card: row.id, text: d.text, notice: None },
                 );
             }
             /* A transcript read is a file read, up to eight megabytes of it, and
@@ -1578,6 +1616,8 @@ impl Link {
                 cards_live: e.facts.cards_live,
                 cards_working: e.facts.cards_working,
                 can: e.facts.can.clone(),
+                holds: e.facts.holds.clone(),
+                lacks: e.facts.lacks.clone(),
                 snapshot: snapshots.get(&e.host).cloned(),
             })
             .collect()
@@ -1610,10 +1650,13 @@ fn receipt(a: &Answer, w: &Waiter, me: &str) -> String {
     match &a.outcome {
         Outcome::Opened { card } => {
             let handle = crate::relay::handle_of(card);
-            let called = match &w.title {
+            let mut called = match &w.title {
                 Some(t) => format!(" It is called {t:?} until it names itself."),
                 None => String::new(),
             };
+            if let Some(n) = &w.note {
+                called.push_str(&format!("\n\n{n}"));
+            }
             format!(
                 "{by} opened a card in its {territory} territory — its handle there is {handle}. It \
                  runs on that machine, not this one, and it is not in this wall's \
@@ -1725,6 +1768,10 @@ struct PromptHere {
     from: PromptFrom,
     card: String,
     text: String,
+    /// The notice this takes down, when it is an acknowledgement or a
+    /// follow-up from another wall rather than a prompt (`notice::afar`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<String>,
 }
 
 #[derive(Serialize, Clone)]

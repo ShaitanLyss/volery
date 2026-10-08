@@ -243,6 +243,92 @@ pub struct Facts {
     /// What an agent on another wall may ask of this one's cards — see `CAN`.
     /// Absent on a wall from before it, which reads as none.
     pub can: Vec<String>,
+    /// The credentials this wall holds, as words out of `NEEDS` — and **that
+    /// is all that crosses**: a name, never a value, a length, an account, a
+    /// scope or a date. Lyss's rule for the wire is that it carries work and
+    /// never secrets, so a remote card that needs a token runs on a machine
+    /// that already has one or does not run; what travels is enough for the
+    /// asker to know which, before it asks.
+    pub holds: Vec<String>,
+    /// The ones it knows it does **not** hold. Kept apart from "not in
+    /// `holds`", because for some credentials a wall cannot tell — an Azure
+    /// DevOps build can be reached through git's or `az`'s sign-in, which this
+    /// wall cannot see without trying — and refusing on what a wall merely
+    /// failed to vouch for would turn away a card that would have worked. Only
+    /// a word here refuses (`missing`); a word in neither list is let through
+    /// and said to be unconfirmed (`unvouched`).
+    pub lacks: Vec<String>,
+}
+
+/// The credentials a card may say it needs (`Ask::needs`, `spawn`'s `needs`),
+/// as the wire names them. Each is something a machine holds, signed in once
+/// on it, and the reason a card has to run *there* rather than somewhere else
+/// — which is what the flyway is for.
+///
+/// - `asana` — the Asana token in that wall's tokens panel. The only Asana
+///   credential there is (`integrations.ts`'s `sole`), so a wall without one
+///   can say so outright.
+/// - `azdo` — an Azure DevOps token, stored or in the environment. A wall
+///   without one cannot say it lacks Azure DevOps: git's and `az`'s sign-ins
+///   are rungs of the same ladder (`azdo.rs`) that only a request finds out.
+/// - `github` — `gh` signed in, or a token in the environment.
+///
+/// Held against `creds::holdings` by a test, so a word here that no wall ever
+/// announces cannot ship.
+pub const NEEDS: [&str; 3] = ["asana", "azdo", "github"];
+
+/// What a credential is called in a sentence, and where a person fixes its
+/// absence on the machine that lacks it.
+pub fn credential_said(id: &str) -> (&'static str, &'static str) {
+    match id {
+        "asana" => ("an Asana token", "the tokens panel in its header"),
+        "azdo" => ("an Azure DevOps token", "the tokens panel in its header"),
+        "github" => ("a GitHub sign-in", "`gh auth login` in a terminal there"),
+        _ => ("that credential", "that machine"),
+    }
+}
+
+/// The needs that wall says it lacks — what an ask is refused for, on both
+/// ends (`Fleet::ask` against the roster, `decide` against the facts now).
+pub fn missing(needs: &[String], facts: &Facts) -> Vec<String> {
+    needs.iter().filter(|n| facts.lacks.iter().any(|l| l == *n)).cloned().collect()
+}
+
+/// The needs that wall neither holds nor says it lacks — a credential it
+/// cannot vouch for, or a wall from before walls said. Let through, and said.
+pub fn unvouched(needs: &[String], facts: &Facts) -> Vec<String> {
+    needs
+        .iter()
+        .filter(|n| !facts.holds.iter().any(|h| h == *n) && !facts.lacks.iter().any(|l| l == *n))
+        .cloned()
+        .collect()
+}
+
+/// The sentence a spawn's receipt carries when a credential went unconfirmed,
+/// or `None` when every need was vouched for. A card that then fails at its
+/// first call should be read as the machine and not the agent, and the asker
+/// is the one who can tell the user so.
+pub fn unconfirmed(host: &str, needs: &[String], facts: &Facts) -> Option<String> {
+    let open = unvouched(needs, facts);
+    if open.is_empty() {
+        return None;
+    }
+    let names: Vec<&str> = open.iter().map(|n| credential_said(n).0).collect();
+    let names = names.join(" or ");
+    Some(if facts.can.iter().any(|c| c == CAN_NEEDS) {
+        format!(
+            "{host} could not say whether it holds {names}: it has none it can see without \
+             trying, and one only a request finds out about (git's or `az`'s sign-in, for Azure \
+             DevOps) may still answer. If the card fails at its first call, that is the likeliest \
+             reason — say so to the user rather than retrying."
+        )
+    } else {
+        format!(
+            "{host} runs a Volery from before walls said which credentials they hold, so whether \
+             it has {names} was not checked. If the card fails at its first call, that is the \
+             likeliest reason — say so to the user rather than retrying."
+        )
+    })
 }
 
 /// One wall's statement about itself.
@@ -420,6 +506,13 @@ pub struct Ask {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// The credentials the card will need on the machine it opens on, as
+    /// words out of `NEEDS`. Weighed by the addressee against its own facts
+    /// at the moment it decides (`decide`), which is the second time: the
+    /// asker already refused against what the roster said. Empty on an ask
+    /// from a wall before it, which needs nothing — the old behaviour.
+    #[serde(default)]
+    pub needs: Vec<String>,
     /// The card on the addressee's wall that `brief` is for — set on a
     /// **prompt** and on nothing else. A prompt travels under its own tag
     /// (`FleetMsg::Prompt`), never under `Ask`: a wall from before prompts
@@ -481,9 +574,16 @@ pub const CAN: [&str; 3] = ["send", "recall", "close"];
 /// is only one a person cannot close cards on yet.
 pub const CAN_PERSON_CLOSE: &str = "close_by_person";
 
+/// The word that says a wall announces `Facts::holds` and `lacks` and weighs
+/// `Ask::needs` before it opens a card. Without it a wall's silence about a
+/// credential means "too old to say" rather than "cannot vouch", and the
+/// receipt says which — a card that fails at its first call on a machine
+/// nobody checked should not read as one that was checked and passed.
+pub const CAN_NEEDS: &str = "needs";
+
 /// Everything this wall announces in `Facts::can`.
 pub fn can_now() -> Vec<String> {
-    CAN.iter().copied().chain([CAN_PERSON_CLOSE]).map(str::to_string).collect()
+    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS]).map(str::to_string).collect()
 }
 
 /// The word a request needs the far wall to have announced, if any. A person's
@@ -604,6 +704,11 @@ pub enum Refusal {
     /// `may_reach`. No new outcome for a wall from before it to fail on that it
     /// would not fail on anyway: only a wall that announces `close` is sent one.
     NotOpenedFor,
+    /// The card needs credentials this wall does not hold. Only an ask
+    /// carrying `needs` can earn it, and only a build that has this variant
+    /// writes `needs` into an ask — so the wall that asked can always read the
+    /// answer, and a wall from before it is never sent one.
+    Lacks { needs: Vec<String> },
 }
 
 impl Refusal {
@@ -670,9 +775,36 @@ impl Refusal {
                  the question to from here. Nothing was closed; tell the user which card you \
                  would close on {host} and why, and let them do it there"
             ),
+            Refusal::Lacks { needs } => lacking(host, needs),
         };
         crate::clean::scrub(&s).into_owned()
     }
+}
+
+/// Why a wall cannot take a card that needs credentials it does not hold — one
+/// sentence for the asker's own refusal and the far wall's, since they are the
+/// same fact learned at two moments.
+///
+/// It says that credentials never travel, because the obvious next move for an
+/// agent told "that machine has no token" is to look for a way to send one —
+/// and the wire was built so that there is none (`flyway/mod.rs`).
+fn lacking(host: &str, needs: &[String]) -> String {
+    let names: Vec<&str> = needs.iter().map(|n| credential_said(n).0).collect();
+    let mut fixes: Vec<String> = Vec::new();
+    for n in needs {
+        let (name, fix) = credential_said(n);
+        let line = format!("{name} goes in through {fix}");
+        if !fixes.contains(&line) {
+            fixes.push(line);
+        }
+    }
+    format!(
+        "{host} does not hold {} — and credentials never travel between machines, so a card that \
+         needs one has to run where one is already signed in. Put it on {host} ({}), or ask a wall \
+         that holds it: `mcp__skein__walls` says which credentials each wall holds",
+        names.join(" or "),
+        fixes.join("; "),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -824,6 +956,12 @@ pub enum Unsendable {
     /// That wall does not announce the word this request needs (`CAN`) — it is
     /// a build from before it.
     Older { host: String, what: &'static str },
+    /// That wall said it lacks a credential the card needs. Refused here
+    /// rather than sent, because the far wall would refuse it for the same
+    /// fact — and a card asked for there that *did* start would fail at its
+    /// first call, which reads as the agent being broken rather than as the
+    /// machine being unequipped.
+    Lacks { host: String, needs: Vec<String> },
 }
 
 impl Unsendable {
@@ -868,6 +1006,7 @@ impl Unsendable {
                  to say an agent wrote it. Ask the user to update Volery on {host}",
                 if *what == CAN[0] { "message" } else { what },
             ),
+            Unsendable::Lacks { host, needs } => lacking(host, needs),
         };
         crate::clean::scrub(&s).into_owned()
     }
@@ -886,6 +1025,8 @@ pub struct Request {
     pub title: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// See `Ask::needs`.
+    pub needs: Vec<String>,
 }
 
 /// What a person or a card hands `Fleet::prompt`.
@@ -1126,6 +1267,15 @@ impl Fleet {
         if quiet > QUIET_AFTER_MS as u64 {
             return Err(Unsendable::Quiet { host: r.to, for_ms: quiet });
         }
+        /* Against what that wall last said, which can be half a minute old —
+           so the far wall weighs the same needs again against its facts now
+           (`decide`). This half is what makes the refusal *up front*: said
+           while the card that asked is still in the call, naming the
+           machine, rather than a card that starts there and fails. */
+        let lacking = missing(&r.needs, &there.facts);
+        if !lacking.is_empty() {
+            return Err(Unsendable::Lacks { host: r.to, needs: lacking });
+        }
         let ask = Ask {
             id: r.id.clone(),
             from: Origin { host: self.me.clone(), card: r.card },
@@ -1136,6 +1286,7 @@ impl Fleet {
             asked_at: now,
             model: r.model,
             effort: r.effort,
+            needs: r.needs,
             card: None,
             answers: None,
             act: Act::Prompt,
@@ -1206,6 +1357,7 @@ impl Fleet {
             asked_at: now,
             model: None,
             effort: None,
+            needs: Vec::new(),
             card: Some(r.card),
             answers: r.answers,
             act,
@@ -1528,6 +1680,15 @@ impl Fleet {
                 offered: here.territories.clone(),
             });
         };
+        /* After the territory, which is the thing that would have to change
+           first; before the bounds, which are "wait" where this is "fix the
+           machine". Against the facts now, not as announced: a token taken out
+           of the vault a minute ago is a card that would fail at its first
+           call, whatever the asker read on the roster. */
+        let lacking = missing(&ask.needs, here);
+        if !lacking.is_empty() {
+            return Err(Refusal::Lacks { needs: lacking });
+        }
         if let Some(r) = over_bound(here, self.in_flight.len() as u32) {
             return Err(r);
         }
@@ -1696,7 +1857,17 @@ fn clean_territory(t: Territory) -> Territory {
 fn clean_facts(mut f: Facts) -> Facts {
     f.territories = f.territories.into_iter().map(clean_territory).collect();
     f.can = f.can.iter().map(|c| sc(c)).collect();
+    f.holds = words(f.holds);
+    f.lacks = words(f.lacks);
     f
+}
+
+/// A list of vocabulary words off the wire — `needs`, `holds`, `lacks`. Each
+/// is one of a handful of short names, so a broken wall's thousand-entry list
+/// or paragraph-long word is cut to what an honest one could have sent, and
+/// scrubbed because it goes into a sentence an agent reads.
+fn words(w: Vec<String>) -> Vec<String> {
+    w.into_iter().take(16).map(|s| sc(&s).chars().take(32).collect()).collect()
 }
 
 /// A recall's words as they may reach an agent here: no more speeches than a
@@ -1740,6 +1911,7 @@ fn clean_ask(a: Ask) -> Ask {
         asked_at: a.asked_at,
         model: sc_opt(a.model),
         effort: sc_opt(a.effort),
+        needs: words(a.needs),
         card: sc_opt(a.card),
         answers: sc_opt(a.answers),
         act: a.act,
@@ -1758,6 +1930,9 @@ fn clean_answer(a: Answer) -> Answer {
                 offered: offered.into_iter().map(clean_territory).collect(),
             },
         },
+        Outcome::Refused { refusal: Refusal::Lacks { needs } } => {
+            Outcome::Refused { refusal: Refusal::Lacks { needs: words(needs) } }
+        }
         /* The title is a label in a sentence, and a broken wall's one must not
            be a paragraph: capped as `walls` caps one off a snapshot. */
         Outcome::Said { card, title, said } => Outcome::Said {
@@ -1870,6 +2045,7 @@ mod tests {
             title: None,
             model: None,
             effort: None,
+            needs: Vec::new(),
         }
     }
 
@@ -1884,6 +2060,7 @@ mod tests {
             asked_at,
             model: None,
             effort: None,
+            needs: Vec::new(),
             card: None,
             answers: None,
             act: Act::Prompt,
@@ -2445,9 +2622,10 @@ mod tests {
                 Refusal::ClocksDisagree { .. } => 5,
                 Refusal::CouldNotStart { .. } => 6,
                 Refusal::NotOpenedFor => 7,
+                Refusal::Lacks { .. } => 8,
             }
         }
-        const ALL: usize = 8;
+        const ALL: usize = 9;
 
         let now = 10_000_000;
         let ask_with = |id: &str, territory: Territory, asked_at: i64| Ask { territory, ..raw_ask(id, "lap", "desk", asked_at) };
@@ -2484,6 +2662,11 @@ mod tests {
             Some(FleetMsg::Answer { answer: Answer { outcome: Outcome::Refused { refusal }, .. }, .. }) => got.push(refusal),
             other => panic!("{other:?}"),
         }
+        got.push(refused(
+            Facts { lacks: vec!["asana".into()], ..open_facts() },
+            Ask { needs: vec!["asana".into()], ..ask_with("i", skein(), now) },
+            0,
+        ));
 
         let reached: BTreeSet<usize> = got.iter().map(which).collect();
         assert_eq!(reached.len(), ALL, "every refusal reached: {got:?}");
@@ -2959,6 +3142,113 @@ mod tests {
         let older: FleetMsg = serde_json::from_value(v).expect("an ask without the new fields still reads");
         let r = desk.on(older, 0, &open_facts());
         assert_eq!(r.open[0].model, None);
+    }
+
+    /// A wall that says it has no Asana token: an ask for a card that needs one
+    /// is refused here, at once, naming the machine and the credential — and
+    /// it says credentials do not travel, since sending one is the obvious
+    /// wrong next move. Nothing is waited for.
+    #[test]
+    fn a_card_needing_what_the_far_wall_lacks_is_refused_before_it_is_sent() {
+        let mut lap = Node::new("lap", open_facts());
+        let bare = Facts { lacks: vec!["asana".into()], holds: vec!["github".into()], ..open_facts() };
+        lap.hear(statement("desk", 1, bare, None, 0), 0);
+
+        let mut r = request("a", "desk", skein());
+        r.needs = vec!["github".into(), "asana".into()];
+        let why = match lap.f.ask(r, 0) {
+            Err(e @ Unsendable::Lacks { .. }) => e.reason(),
+            other => panic!("{other:?}"),
+        };
+        assert!(why.contains("desk") && why.contains("Asana"), "names the machine and the credential: {why}");
+        assert!(!why.contains("GitHub"), "and only what it lacks: {why}");
+        assert!(why.contains("never travel"), "{why}");
+        assert!(why.contains("tokens panel"), "says where it is fixed: {why}");
+        assert!(lap.f.waiting.is_empty(), "nothing refused here is waited for");
+
+        let mut fine = request("b", "desk", skein());
+        fine.needs = vec!["github".into()];
+        assert!(lap.f.ask(fine, 0).is_ok(), "what it holds is no reason to refuse");
+    }
+
+    /// The roster is half a minute old at best. The far wall weighs the same
+    /// needs against what it holds *now*, so a token removed since it last
+    /// announced is a refusal rather than a card that fails at its first call.
+    #[test]
+    fn the_far_wall_weighs_needs_against_what_it_holds_now() {
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { needs: vec!["asana".into()], ..raw_ask("r", "lap", "desk", 0) };
+        let now_lacks = Facts { lacks: vec!["asana".into()], ..open_facts() };
+        let r = desk.on(FleetMsg::Ask { ask: ask.clone(), age_ms: 0 }, 0, &now_lacks);
+        assert!(r.open.is_empty());
+        assert_eq!(refusal_in(&r.say), Some(&Refusal::Lacks { needs: vec!["asana".into()] }));
+
+        let mut desk = Fleet::new("desk", 0);
+        let now_holds = Facts { holds: vec!["asana".into()], ..open_facts() };
+        let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &now_holds);
+        assert_eq!(r.open.len(), 1, "held, so opened");
+
+        /* After the territory: a wall without the repository says that first,
+           since it is what would have to change first. */
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { needs: vec!["asana".into()], territory: t("tid-nova", "nova"), ..raw_ask("s", "lap", "desk", 0) };
+        let r = desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &now_lacks);
+        assert!(matches!(refusal_in(&r.say), Some(Refusal::NoSuchTerritory { .. })));
+    }
+
+    /// Only a credential a wall *says* it lacks refuses. One it can neither
+    /// vouch for nor rule out — Azure DevOps reached through `az`, or anything
+    /// at all on a wall from before walls said — is let through and reported
+    /// as unconfirmed, because refusing it would turn away a card that would
+    /// have worked.
+    #[test]
+    fn a_need_nobody_can_vouch_for_goes_and_is_said() {
+        let needs = vec!["azdo".to_string(), "asana".to_string()];
+        let says = Facts { holds: vec!["asana".into()], ..open_facts() };
+        assert!(missing(&needs, &says).is_empty());
+        assert_eq!(unvouched(&needs, &says), vec!["azdo".to_string()]);
+        let older = open_facts();
+        assert!(missing(&needs, &older).is_empty(), "silence is not a refusal");
+        assert_eq!(unvouched(&needs, &older), needs, "and nothing was confirmed");
+        assert!(can_now().iter().any(|c| c == CAN_NEEDS), "this build says it weighs them");
+
+        let current = Facts { can: can_now(), ..says };
+        let note = unconfirmed("desk", &needs, &current).expect("azdo went unconfirmed");
+        assert!(note.contains("desk") && note.contains("Azure DevOps") && !note.contains("Asana"), "{note}");
+        assert!(unconfirmed("old", &needs, &older).unwrap().contains("from before"), "an older wall is said to be older");
+        assert_eq!(unconfirmed("desk", &["asana".to_string()], &current), None, "nothing to say when all was vouched for");
+    }
+
+    /// Every word `needs` takes has a name and a remedy in a sentence — a
+    /// fourth word added to the list without one would be refused as "that
+    /// credential", which tells nobody what to go and fix.
+    #[test]
+    fn every_credential_a_card_can_need_says_what_it_is_and_where_it_is_fixed() {
+        for n in NEEDS {
+            let (name, fix) = credential_said(n);
+            assert_ne!(name, "that credential", "{n} has no name");
+            assert_ne!(fix, "that machine", "{n} has no remedy");
+        }
+    }
+
+    /// The new lists arrive capped and scrubbed: they go into a sentence an
+    /// agent reads, and a broken wall is a different build.
+    #[test]
+    fn credential_words_off_the_wire_are_short_and_clean() {
+        let mut desk = Fleet::new("desk", 0);
+        let mut needs: Vec<String> = (0..500).map(|i| format!("w{i}")).collect();
+        needs[0] = format!("asa\u{0}na{}", "x".repeat(400));
+        let ask = Ask { needs, ..raw_ask("r", "lap", "desk", 0) };
+        desk.on(FleetMsg::Ask { ask, age_ms: 0 }, 0, &open_facts());
+        let kept = &desk.asked("lap", "r").unwrap().needs;
+        assert_eq!(kept.len(), 16);
+        assert!(kept[0].chars().count() <= 32 && !kept[0].contains('\u{0}'), "{:?}", kept[0]);
+
+        let mut v = serde_json::to_value(FleetMsg::Ask { ask: raw_ask("r2", "lap", "desk", 0), age_ms: 0 }).unwrap();
+        v["ask"].as_object_mut().unwrap().remove("needs");
+        let older: FleetMsg = serde_json::from_value(v).expect("an ask from before `needs` still reads");
+        let r = Fleet::new("desk", 0).on(older, 0, &Facts { lacks: vec!["asana".into()], ..open_facts() });
+        assert_eq!(r.open.len(), 1, "and needs nothing, as it always did");
     }
 
     /// A corrupt frame — an age of `u64::MAX`, a stamp at either end of `i64`

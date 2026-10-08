@@ -482,6 +482,13 @@ fn from_env() -> Option<Cred> {
     .map(|(v, name)| Cred::basic(name, v))
 }
 
+/// Whether a PAT is set in the environment — for `creds::holdings`, which says
+/// whether this wall holds an Azure DevOps credential and must not hold one to
+/// say so.
+pub(crate) fn pat_in_env() -> bool {
+    from_env().is_some()
+}
+
 fn ladder(org: &str) -> Vec<Cred> {
     let mut out: Vec<Cred> = Vec::new();
     for got in [from_git(org), from_az(), from_vault(), from_env()] {

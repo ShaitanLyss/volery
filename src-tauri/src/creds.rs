@@ -133,6 +133,105 @@ pub fn token(id: &str) -> Option<String> {
     crate::vault::read_at(lookup(id).ok()?.target)
 }
 
+/* ── what this wall can say it holds, to another wall ──────────────────────
+ *
+ * A card asked for on another machine runs with that machine's credentials and
+ * none of this one's — **credentials never travel** (Lyss: "it should only
+ * handover the local token, we're not sending tokens across the wire"). So a
+ * card that needs an Asana token, opened on a wall that has none, used to start,
+ * run, and fail at its first call: which reads as the agent being broken rather
+ * than as the machine being unequipped. The fleet now refuses it up front
+ * (`fleet::missing`), and this is what each wall says to make that possible.
+ *
+ * **Names only.** A wall says *I hold an Asana token*; it never says whose, how
+ * long, what scope, when it was stored or anything derived from the value —
+ * those would be facts about the secret, and the wire is built to carry none.
+ *
+ * Three answers rather than two, because "not stored here" is not always "not
+ * here". A credential this wall can be sure of either way is in `holds` or
+ * `lacks`; one it can only ever confirm is in `holds` or neither, and the fleet
+ * lets a card through on silence and says it was unconfirmed. Refusing on a
+ * silence would be a check wrong in the alarming direction — a card turned away
+ * from a machine where `az` would have answered — which `integrations.md`
+ * argues is worse than no check. */
+
+/// One credential's reading: `Some(true)` held, `Some(false)` certainly not,
+/// `None` cannot say. Pure, so the three cases are a test rather than a
+/// belief.
+///
+/// `sole` is `integrations.ts`'s field of the same name, and the whole of the
+/// difference: where the stored token is the only credential the service has, a
+/// missing one is a fact; where it is one rung of a ladder, it is not.
+fn verdict(sole: bool, held: bool) -> Option<bool> {
+    match (held, sole) {
+        (true, _) => Some(true),
+        (false, true) => Some(false),
+        (false, false) => None,
+    }
+}
+
+/// How long a reading of `gh` is trusted. It spawns a process, so it is not
+/// asked on every announcement; ten minutes is the time it takes for "I signed
+/// in on the laptop" to reach the other walls, which is long next to a tick and
+/// short next to how often anybody signs in.
+const GH_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+static GH: std::sync::Mutex<Option<(bool, std::time::Instant)>> = std::sync::Mutex::new(None);
+static GH_ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `gh` is signed in here, **without waiting for the answer**.
+///
+/// The fleet reads this wall's facts on the tick and on every message it hears,
+/// on the runtime's worker threads — the pool that delivers every command's
+/// response — and `gh auth token` is a process spawn. So the reading is
+/// refreshed on a thread of its own and the last one is returned meanwhile:
+/// `None` until the first lands, which the fleet reads as "cannot say" and lets
+/// through — the direction that costs at most today's behaviour.
+fn github() -> Option<bool> {
+    use std::sync::atomic::Ordering;
+    let known = GH.lock().ok().and_then(|g| *g);
+    let stale = known.is_none_or(|(_, at)| at.elapsed() > GH_FOR);
+    if stale && !GH_ASKING.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            let signed_in = crate::github::signed_in();
+            if let Ok(mut g) = GH.lock() {
+                *g = Some((signed_in, std::time::Instant::now()));
+            }
+            GH_ASKING.store(false, Ordering::SeqCst);
+        });
+    }
+    known.map(|(v, _)| v)
+}
+
+/// What this wall holds and what it knows it lacks, as words out of
+/// `fleet::NEEDS` — for `Facts::holds` and `Facts::lacks`. Two vault reads, two
+/// environment reads and a remembered answer; cheap enough to ask on every
+/// announcement, which is what keeps a token removed a minute ago from being
+/// vouched for.
+pub fn holdings() -> (Vec<String>, Vec<String>) {
+    let mut holds = Vec::new();
+    let mut lacks = Vec::new();
+    for need in crate::flyway::fleet::NEEDS {
+        let reading = match need {
+            /* `sole`: nothing else on a machine holds an Asana credential. */
+            "asana" => verdict(true, crate::vault::held_at(ASANA_TARGET)),
+            /* A ladder (`azdo.rs`): the stored token and the environment are the
+               two rungs a wall can see without a request; git's and `az`'s
+               sign-ins are only found out by trying, so their absence is
+               silence rather than a lack. */
+            "azdo" => verdict(false, crate::vault::held_at(crate::vault::AZDO_TARGET) || crate::azdo::pat_in_env()),
+            "github" => github(),
+            _ => None,
+        };
+        match reading {
+            Some(true) => holds.push(need.to_string()),
+            Some(false) => lacks.push(need.to_string()),
+            None => {}
+        }
+    }
+    (holds, lacks)
+}
+
 /* ── the four commands ─────────────────────────────────────────────────────*/
 
 /// Whether a token is stored. Never the token.
@@ -397,6 +496,27 @@ mod tests {
             for b in SERVICES.iter().skip(i + 1) {
                 assert_ne!(a.target, b.target, "{} and {} share an entry", a.id, b.id);
             }
+        }
+    }
+
+    /// A sole credential that is missing is a lack; a ladder's missing rung is
+    /// silence; anything held is held.
+    #[test]
+    fn only_a_credential_with_no_other_way_in_can_be_said_to_be_lacking() {
+        assert_eq!(verdict(true, true), Some(true));
+        assert_eq!(verdict(false, true), Some(true));
+        assert_eq!(verdict(true, false), Some(false));
+        assert_eq!(verdict(false, false), None, "az or git may still answer");
+    }
+
+    /// Every word a card may need is one this wall can at least try to read —
+    /// a word `holdings` has no arm for would never be held or lacked, and every
+    /// card naming it would go out unconfirmed for ever.
+    #[test]
+    fn every_need_has_a_reading() {
+        let src = include_str!("creds.rs");
+        for need in crate::flyway::fleet::NEEDS {
+            assert!(src.contains(&format!("\"{need}\" =>")), "holdings() has no arm for {need}");
         }
     }
 

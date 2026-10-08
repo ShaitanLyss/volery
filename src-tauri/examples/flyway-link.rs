@@ -245,6 +245,7 @@ async fn main() {
                 title: None,
                 model: Some("sonnet".into()),
                 effort: None,
+                needs: Vec::new(),
             },
             now(),
         )

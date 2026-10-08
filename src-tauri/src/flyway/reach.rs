@@ -342,7 +342,9 @@ pub fn walls_schema() -> Value {
              Per wall: whether it has been heard from lately, whether it takes work from other \
              walls (a person's switch on that machine — without it a wall takes only answers, \
              reports from cards it opened, and reads and closes by the card that opened one), \
-             its territories (what `spawn` with `host` may name as `project`), and its cards \
+             its territories (what `spawn` with `host` may name as `project`), the credentials \
+             it holds and knows it lacks (`holds`, `lacks` — what `spawn`'s `needs` is checked \
+             against; names only, since no credential ever crosses between machines), and its cards \
              with their handles, as that wall last described them. Cards you opened there are \
              marked `yours`; the card that opened you, if another wall asked for you, is marked \
              `opened_you`.\n\n\
@@ -399,6 +401,10 @@ pub struct WallSeen {
     pub cards_live: u32,
     pub cards_working: u32,
     pub can: Vec<String>,
+    /// The credentials it says it holds and knows it lacks — names only
+    /// (`fleet::Facts::holds`).
+    pub holds: Vec<String>,
+    pub lacks: Vec<String>,
     /// That wall's latest cards snapshot, opaque — see `cards_in`.
     pub snapshot: Option<Value>,
 }
@@ -452,6 +458,13 @@ pub fn walls_answer(
                 "cards": cards,
             });
             if let Some(obj) = row.as_object_mut() {
+                /* Only from a wall that says it weighs them: an older wall's
+                   empty lists would read as "holds nothing, lacks nothing",
+                   which is a statement it never made. */
+                if w.can.iter().any(|c| c == super::fleet::CAN_NEEDS) {
+                    obj.insert("holds".into(), json!(w.holds));
+                    obj.insert("lacks".into(), json!(w.lacks));
+                }
                 if quiet {
                     obj.insert(
                         "note".into(),
@@ -545,8 +558,25 @@ mod tests {
             cards_live: 2,
             cards_working: 1,
             can: crate::flyway::fleet::CAN.iter().map(|c| c.to_string()).collect(),
+            holds: Vec::new(),
+            lacks: Vec::new(),
             snapshot: Some(snapshot),
         }
+    }
+
+    /// What a wall holds is shown only by a wall that says so — an older one's
+    /// silence is not "holds nothing".
+    #[test]
+    fn the_credentials_a_wall_holds_are_named_by_the_walls_that_say() {
+        let mut box_ = wall("box", "open", json!({ "cards": [] }));
+        box_.can = crate::flyway::fleet::can_now();
+        box_.holds = vec!["github".into()];
+        box_.lacks = vec!["asana".into()];
+        let old = wall("old", "open", json!({ "cards": [] }));
+        let v = walls_answer("me", &[box_, old], &[], None);
+        assert_eq!(v["walls"][0]["holds"], json!(["github"]));
+        assert_eq!(v["walls"][0]["lacks"], json!(["asana"]));
+        assert!(v["walls"][1].get("holds").is_none() && v["walls"][1].get("lacks").is_none());
     }
 
     /// The snapshot is read for four fields and nothing more is asked of it:

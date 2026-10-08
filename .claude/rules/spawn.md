@@ -318,6 +318,44 @@ exactly as a card from the `+` does (`accounts.md`). Added 2026-09-30.
   `#openIn` as for any card, and a wake re-runs the ladder sticking to it — which is the
   preference outliving birth in the only sense the waterfall has one.
 
+#### Which credentials it needs, on whichever machine it runs
+
+`needs` takes three words — `asana`, `azdo`, `github` (`fleet::NEEDS`) — naming the credentials
+the card's work will need on the machine it opens on. Added 2026-10-08, for a remote spawn first.
+
+**Credentials never travel** (Lyss: *"it should only handover the local token, we're not
+sending tokens across the wire"*). So a card opened on another wall has exactly what that
+wall holds, and one opened without the token it needs started, ran, and failed at its first
+call — which reads as the agent being broken rather than as the machine being unequipped.
+The fix is a check rather than a transport:
+
+- **Each wall announces what it holds, as names and nothing else** — `Facts::holds` and
+  `Facts::lacks`, filled by `creds::holdings` on every announcement. Never whose, how long,
+  what scope or when stored: those would be facts about the secret.
+- **Refused at both ends.** The asker refuses against the roster (`Fleet::ask` →
+  `Unsendable::Lacks`), at once and naming the machine and the credential, while the card
+  that asked is still in the call. The far wall weighs the same needs again in `decide`
+  against its facts *now* (`Refusal::Lacks`), after the territory and before the bounds —
+  a token removed from the vault a minute ago is not vouched for by a roster entry from
+  before it. A local spawn makes the same check of this wall (`lacked_here`), before the
+  store is touched.
+- **Three readings, not two, and only a lack refuses.** `verdict` takes `integrations.ts`'s
+  `sole`: an Asana token is the only Asana credential there is, so a missing one is a fact;
+  an Azure DevOps token is one rung of a ladder (`azdo.rs`), and git's or `az`'s sign-in is
+  only found out by trying — so a wall with no stored token says neither, and the card goes
+  ahead with the receipt saying it was unconfirmed (`fleet::unconfirmed`). Refusing on what a
+  wall merely could not vouch for would turn away a card that would have worked, which is
+  the check wrong in the alarming direction `integrations.md` argues against.
+- **`gh` is read off the clock-path.** `facts()` runs on the runtime's worker threads, and
+  `gh auth token` is a process spawn; `creds::github` refreshes a remembered answer on a
+  thread of its own every ten minutes and reads as *cannot say* until the first lands.
+- **A wall from before it** announces no `needs` word in `Facts::can` (`CAN_NEEDS`), and its
+  silence is reported as *too old to say* rather than as *cannot vouch* — a card that fails
+  at its first call on a machine nobody checked should not read as one that was checked.
+- **An unknown word refuses** (`asked_needs`), for `asked_model`'s reason: a dropped need is
+  a card believed checked. `mcp__skein__walls` shows each wall's `holds` and `lacks`, and only
+  for a wall that says so — an older one's empty lists would be a statement it never made.
+
 ### And why building fans out to cards rather than to subagents
 
 The tool has always said it is not a subagent. What it did not say, and what agents crossed by

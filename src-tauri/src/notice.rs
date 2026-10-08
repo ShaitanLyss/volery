@@ -52,6 +52,53 @@ const CARD_MAX: usize = 5;
 /// from an answer.
 pub const QUEUED_OPENING: &str = "Volery queued your notice.";
 
+/* ── a notice answered from another wall ──────────────────────────────────
+ *
+ * Sink `16864f3d`'s rule: anything that waits on a person must travel to
+ * where the person is. A notice rides the card's digest to every other wall
+ * (`shadow.ts`), and taking one down from there comes back the way an answer
+ * to a parked question does — over the prompt wire, naming what it answers in
+ * `Ask::answers` — so there is one mechanism for both rather than a second
+ * tag. A question's answer names its ask id; a notice's names `AFAR_PREFIX`
+ * and the notice's id, which no ask id can be mistaken for (`store::uuid_v4`
+ * has no colon). A notice holding its card's turn open is not one of these:
+ * it is parked like a question and is answered by its ask id, into the call.
+ *
+ * A wall from before this reads the prefixed id as an ask id, finds no such
+ * question and refuses — "no longer waiting" — which is the right answer from
+ * a wall that never published the notice in the first place. */
+
+/// What `Ask::answers` starts with when it names a notice rather than a
+/// parked question.
+pub const AFAR_PREFIX: &str = "notice:";
+
+/// The text of an answer that only takes the notice down — `acknowledge`,
+/// with nothing said. Anything else is a follow-up, sent to the card.
+pub const AFAR_ACK: &str = "acknowledged";
+
+/// The notice an answer from another wall names, if it names one.
+pub fn afar(answers: Option<&str>) -> Option<&str> {
+    answers
+        .and_then(|a| a.strip_prefix(AFAR_PREFIX))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+/// Whether an answer from another wall starts no work here — what lets it past
+/// this wall's "take work from other walls" switch (`fleet::may_reach`).
+///
+/// An answer to a parked question never does: it is the reply a card stopped
+/// and asked for. An acknowledgement never does: it takes a row down. A
+/// **follow-up** to a notice does — it is a message to the card, which wakes
+/// it to take a turn — so it is held to the switch exactly as a prompt is, and
+/// the person who turned the switch off meant it.
+pub fn answer_starts_nothing(answers: &str, text: &str) -> bool {
+    match afar(Some(answers)) {
+        Some(_) => text.trim() == AFAR_ACK,
+        None => !answers.starts_with(AFAR_PREFIX),
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 struct Changed {
     /// The card whose notices moved, or `None` for a change across the wall.
@@ -452,5 +499,24 @@ mod tests {
         assert_eq!(first_line("\n## Done\n\nmore"), "Done");
         assert_eq!(first_line("```\ncode\n```\n- item"), "code");
         assert_eq!(first_line("**Bold** news in `x.rs`"), "Bold news in x.rs");
+    }
+
+    /// A notice answered from another wall names itself on the prompt wire,
+    /// and only taking it down gets past the far wall's switch — a follow-up
+    /// is a message to the card, which is work.
+    #[test]
+    fn a_notice_from_afar_is_named_and_only_its_acknowledgement_is_free() {
+        assert_eq!(afar(Some("notice:ab12")), Some("ab12"));
+        assert_eq!(afar(Some("notice:  ")), None);
+        assert_eq!(afar(Some("2f1c-ask-id")), None);
+        assert_eq!(afar(None), None);
+
+        assert!(answer_starts_nothing("notice:ab12", AFAR_ACK));
+        assert!(answer_starts_nothing("notice:ab12", " acknowledged \n"));
+        assert!(!answer_starts_nothing("notice:ab12", "carry on with the tests"));
+        /* A parked question's answer is never work, whatever it says. */
+        assert!(answer_starts_nothing("2f1c-ask-id", "carry on with the tests"));
+        /* Nor is a prefix with no id a free pass. */
+        assert!(!answer_starts_nothing("notice:", AFAR_ACK));
     }
 }

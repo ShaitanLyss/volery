@@ -412,6 +412,92 @@ pub(crate) fn asked_effort(args: &Value, model: Option<&str>) -> Result<Option<S
     Ok(Some(level))
 }
 
+/// Which credentials the caller says the card will need, or why nothing was
+/// opened — words out of `fleet::NEEDS`, deduplicated, in the order given.
+///
+/// **An unknown word refuses rather than being dropped**, for `asked_model`'s
+/// reason: a need the wall silently ignored is a card the agent believes was
+/// checked for a credential and was not, with a receipt agreeing — and the way
+/// it then fails is the one this argument exists to prevent, a card that starts
+/// on a machine without the token and dies at its first call.
+///
+/// A single word is taken as a list of one. A model reading "needs asana"
+/// writes a string as readily as an array, and the intention is not in doubt.
+pub(crate) fn asked_needs(args: &Value) -> Result<Vec<String>, String> {
+    let raw: Vec<&str> = match args.get("needs") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(a)) => {
+            let mut words = Vec::new();
+            for v in a {
+                match v.as_str() {
+                    Some(s) => words.push(s),
+                    None => {
+                        return Err(format!(
+                            "`needs` is a list of words, and {v} is not one — so no card was \
+                             opened. It takes {}.",
+                            crate::flyway::fleet::NEEDS.join(", ")
+                        ))
+                    }
+                }
+            }
+            words
+        }
+        Some(other) => {
+            return Err(format!(
+                "`needs` is a list of words, not {other} — so no card was opened. It takes {}.",
+                crate::flyway::fleet::NEEDS.join(", ")
+            ))
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    for w in raw {
+        let need = w.trim().to_ascii_lowercase();
+        if need.is_empty() {
+            continue;
+        }
+        if !crate::flyway::fleet::NEEDS.contains(&need.as_str()) {
+            return Err(format!(
+                "{w:?} is not a credential this wall knows how to check for, so no card was \
+                 opened. `needs` takes {}. A card that needs something else entirely is one to \
+                 describe in the brief and let the user judge where it can run.",
+                crate::flyway::fleet::NEEDS.join(", ")
+            ));
+        }
+        if !out.contains(&need) {
+            out.push(need);
+        }
+    }
+    Ok(out)
+}
+
+/// The needs this machine says it lacks, as the refusal a local spawn makes —
+/// or `None` when it can open the card. The same check the fleet makes of
+/// another wall (`fleet::missing`), against this wall's own `holdings`.
+fn lacked_here(needs: &[String]) -> Option<String> {
+    if needs.is_empty() {
+        return None;
+    }
+    let (holds, lacks) = crate::creds::holdings();
+    let here = crate::flyway::fleet::Facts { holds, lacks, ..Default::default() };
+    let missing = crate::flyway::fleet::missing(needs, &here);
+    if missing.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for n in &missing {
+        let (name, fix) = crate::flyway::fleet::credential_said(n);
+        parts.push(format!("{name} (it goes in through {fix})"));
+    }
+    Some(format!(
+        "this machine does not hold {}, so no card was opened — it would have started and failed at \
+         its first call. Ask the user to put it here, or open the card on another wall that holds \
+         it: `mcp__skein__spawn` with `host`, and `mcp__skein__walls` says which credentials \
+         each wall holds.",
+        parts.join(" or ")
+    ))
+}
+
 /// Which account the caller asked the card to start on, or why nothing was
 /// opened. `seats` is the registry in waterfall order, as `(label, enabled,
 /// signed_in)` — tuples rather than `accounts::Seat` so this stays liftable.
@@ -700,6 +786,28 @@ pub fn spawn_schema() -> Value {
                          the list of what is here — so a guess costs one call, not a card. \
                          `accounts` lists the labels, their tiers and their last readings."
                 },
+                "needs": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": crate::flyway::fleet::NEEDS },
+                    "description":
+                        "Optional. The credentials the card's work will need on the machine \
+                         it runs on:\n\n\
+                         - `asana` — an Asana token: the `tasks` and `task` tools, or \
+                           `ASANA_ACCESS_TOKEN` in a script.\n\
+                         - `azdo` — an Azure DevOps token: `pipelines`, `reviews`, \
+                           `pull_request`.\n\
+                         - `github` — `gh` signed in, or `GH_TOKEN`.\n\n\
+                         **Name them whenever the work needs one, and above all with \
+                         `host`.** No credential ever crosses between machines, so a card on \
+                         another wall has exactly what that wall holds — and one opened \
+                         without a token it needs starts, runs, and fails at its first call, \
+                         which reads as the agent being broken. Named, the wall is checked \
+                         first and a card it cannot equip is refused, naming the credential \
+                         and the machine, before anything opens. Some cannot be ruled out \
+                         without trying — an Azure DevOps sign-in through git or `az` — and \
+                         those go ahead with the receipt saying they were not confirmed. \
+                         `walls` lists what each wall holds."
+                },
                 "host": {
                     "type": "string",
                     "description":
@@ -713,7 +821,8 @@ pub fn spawn_schema() -> Value {
                          announces them; leave it out and the card stands in the territory \
                          there with your own project's name. `account` cannot go with it — \
                          accounts belong to a machine, and that wall's own ladder picks. \
-                         `model` and `effort` travel as they do here.\n\n\
+                         `model` and `effort` travel as they do here, and `needs` is checked \
+                         against what that wall holds.\n\n\
                          The call waits for that wall to answer, which is usually a few \
                          seconds, and returns the card's handle there or the reason it \
                          refused. That wall must have been switched to take work from other \
@@ -1500,6 +1609,16 @@ fn do_spawn(app: &AppHandle, caller: &str, args: &Value) -> String {
         Ok(e) => e,
         Err(why) => return why,
     };
+    /* The same check a remote spawn makes of the wall it asks, made of this
+       one — and before the store, so a card this machine cannot equip costs
+       nothing and writes nothing down. */
+    let needs = match asked_needs(args) {
+        Ok(n) => n,
+        Err(why) => return why,
+    };
+    if let Some(why) = lacked_here(&needs) {
+        return why;
+    }
 
     let Some(store) = app.try_state::<Store>() else {
         return "the store is unavailable".into();
@@ -1900,6 +2019,12 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         Ok(e) => e,
         Err(why) => return Elsewhere::Now(why),
     };
+    /* Validated here; weighed against that wall by `Fleet::ask`, which refuses
+       on what it said it lacks, and again by that wall when it decides. */
+    let needs = match asked_needs(args) {
+        Ok(n) => n,
+        Err(why) => return Elsewhere::Now(why),
+    };
     let me = {
         let Some(store) = app.try_state::<Store>() else {
             return Elsewhere::Now("the store is unavailable".into());
@@ -1975,6 +2100,7 @@ pub fn elsewhere(app: &AppHandle, caller: &str, args: &Value) -> Elsewhere {
         title,
         model,
         effort,
+        needs,
     };
     match link.ask_spawn(request) {
         Ok(rx) => Elsewhere::Wait(rx, host),
@@ -2559,6 +2685,40 @@ mod tests {
     /// pairing was the dear one. The fix is the argument; this is the sentence
     /// that makes an agent reach for it on a mechanical lane, which is where
     /// the saving actually is.
+    /// `needs` takes the fleet's words and nothing else: a list or a single
+    /// word, folded and deduplicated, and an unknown word refused with the
+    /// list — never dropped, since a dropped need is a card believed checked.
+    #[test]
+    fn a_need_is_one_of_the_words_a_wall_can_check_or_it_is_refused() {
+        assert_eq!(asked_needs(&json!({})).unwrap(), Vec::<String>::new());
+        assert_eq!(asked_needs(&json!({ "needs": "Asana" })).unwrap(), vec!["asana".to_string()]);
+        assert_eq!(
+            asked_needs(&json!({ "needs": ["github", " asana ", "GITHUB", ""] })).unwrap(),
+            vec!["github".to_string(), "asana".to_string()]
+        );
+        let why = asked_needs(&json!({ "needs": ["asana", "jira"] })).unwrap_err();
+        assert!(why.contains("\"jira\"") && why.contains("no card was opened"), "{why}");
+        for n in crate::flyway::fleet::NEEDS {
+            assert!(why.contains(n), "lists {n}: {why}");
+        }
+        assert!(asked_needs(&json!({ "needs": [3] })).is_err());
+        assert!(asked_needs(&json!({ "needs": { "asana": true } })).is_err());
+    }
+
+    /// The schema's words are the fleet's words, and it says the two things an
+    /// agent must know to use it: credentials do not travel, and a card without
+    /// one fails at its first call.
+    #[test]
+    fn the_needs_field_says_credentials_stay_where_they_are() {
+        let p = &spawn_schema()["inputSchema"]["properties"]["needs"];
+        let e: Vec<String> = serde_json::from_value(p["items"]["enum"].clone()).unwrap();
+        assert_eq!(e, crate::flyway::fleet::NEEDS.map(String::from).to_vec());
+        let d = p["description"].as_str().unwrap();
+        assert!(d.contains("No credential ever crosses between machines"), "{d}");
+        assert!(d.contains("fails at its first call"), "{d}");
+        assert!(d.contains("`walls`"), "says where to look: {d}");
+    }
+
     #[test]
     fn the_effort_field_says_when_to_leave_it_alone() {
         let d = spawn_schema()["inputSchema"]["properties"]["effort"]["description"]

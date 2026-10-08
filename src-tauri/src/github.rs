@@ -202,6 +202,13 @@ fn token_now() -> Option<String> {
     None
 }
 
+/// Whether this machine has a GitHub credential `gh` would use — the
+/// environment or a signed-in `gh` — for `creds::holdings`. Spawns a process,
+/// so it is called off every thread that answers anybody.
+pub(crate) fn signed_in() -> bool {
+    token_now().is_some()
+}
+
 fn token(cache: &mut Cache) -> Option<String> {
     let now = Instant::now();
     if let Some((held, at)) = &cache.token {

@@ -218,9 +218,15 @@ here by `bun tools/lift-fleet.ts` (all of `fleet.rs`'s tests, executed).
   it should travel (sink 7207a6d9) with the machine named, the path as that
   machine resolves it and what is actually there carried with the question;
   until that is built, refusing is the honest stand-in.
-- **Credentials never travel** — decided, not pending. A remote spawn needing a
-  credential the far machine lacks should be refused naming which one; today
-  nothing checks for that, so the card would start and fail at its first call.
+- **Credentials never travel** — decided, and now checked (card 6fa1e4b6). A
+  spawn names what the card needs (`needs`: `asana`, `azdo`, `github`), every
+  wall announces which it holds and which it knows it lacks — names only — and
+  a card the far machine cannot equip is refused naming the credential and the
+  machine: by the asker against the roster, and again by the far wall against
+  its facts at the moment it decides. A credential a wall cannot rule out
+  (Azure DevOps through git's or `az`'s sign-in, or anything on an older wall)
+  goes ahead, and the receipt says it was unconfirmed. `spawn.md`, *Which
+  credentials it needs*, has the reasoning.
 
 ### Two builds side by side
 
