@@ -1533,6 +1533,34 @@ export function nudgeSkipFor(
  *  the sentence, not the only sentence. */
 export const HOLD_LINE = "holding — every account is at its limit";
 
+/** What the hold's one slot does with a prompt that wants it.
+ *
+ *  `take` — the slot is empty. `same` — it already holds exactly these words,
+ *  which is `releaseHeld` putting a prompt back after a door turned out to be
+ *  shut, and must stay a no-op rather than a refusal. `refuse` — it holds
+ *  *different* words, and those are the ones you typed: a nudge or a heal must
+ *  not overwrite them (sink `4ac63054`).
+ *
+ *  A refusal is not a silent one. The caller has already drawn the refused
+ *  prompt's line (`echo` counts it into `awaiting`), and nothing will ever send
+ *  it, so it owes that line the same correction every other abandoned prompt
+ *  does — see `HOLD_REFUSED_LINE`. Pure and here because the third arm is the
+ *  one that was missing for a month, and inline in `#hold` it could not be
+ *  asserted at all. */
+export function holdSlotFor(
+  held: { text: string } | null,
+  text: string,
+): "take" | "same" | "refuse" {
+  if (!held) return "take";
+  return held.text === text ? "same" : "refuse";
+}
+
+/** The reason on a line the hold refused: the card is already keeping earlier
+ *  words for an account, and these were not kept beside them. Says what
+ *  happened and what to do — the earlier prompt is the one that will go, so
+ *  sending this one again after it has is the way back. */
+export const HOLD_REFUSED_LINE = "not kept — already holding an earlier prompt, send this one again after it goes";
+
 /** What the face says about a card at rest owing you a turn. Appended to
  *  whatever the card was already saying, the way `stalled` appends to it.
  *

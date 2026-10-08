@@ -608,7 +608,17 @@ notification the CLI delivered that nothing acted on, which a turn genuinely can
   refusal where the write is: a check at the callers is one `if` somebody has to remember, and
   the cost of forgetting it is a prompt of yours that no longer exists anywhere. The same text
   is let through, since that is `releaseHeld` putting a prompt back after a door turned out to
-  be shut and needing its timer re-armed. `#nudge` and `#heal` refuse a held card as well, both
+  be shut and needing its timer re-armed.
+
+  **A refusal has to be told, or it is the same leak from the other side** (sink `f20aa3b2`).
+  The guard kept your words safe and said nothing to the prompt it turned away: `echo` had
+  already drawn that line pending and counted it into `awaiting`, nothing would ever send it,
+  and so a second, different prompt typed into a held card stood at "awaited" for the life of
+  the process — the card read `sent, not picked up` the moment the hold released. `#hold` now
+  answers whether it kept the text, and `#settleAccount` marks a refused line `echoFailed`
+  (`HOLD_REFUSED_LINE`), which is the one place that marks a line and brings `awaiting` down
+  together. The decision is `holdSlotFor` — `take` / `same` / `refuse` — pure in `classify.ts`;
+  `same` stays a no-op so the prompt the slot is holding is never the one made to look failed. `#nudge` and `#heal` refuse a held card as well, both
   because a send that can only join the queue is not worth arming and because belt and braces
   is cheap here. This is the third time this file has recorded the hold and the nudge meeting
   each other; the bullet above has the 08:06-to-13:03 case, which is the other order of the

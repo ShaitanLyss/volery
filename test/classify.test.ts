@@ -20,6 +20,8 @@ import {
   compactNote,
   NUDGE_BUDGET,
   HOLD_LINE,
+  HOLD_REFUSED_LINE,
+  holdSlotFor,
   NUDGE_PROMPT_TEXT,
   NUDGE_TEXT,
   nudgeGaveUpNote,
@@ -1809,6 +1811,22 @@ describe("a prompt the card never picked up", () => {
        Nothing you do moves the first; the second is asking for a gesture. */
     expect(HOLD_LINE).toBe(HOLD_LINE.toLowerCase());
     expect(HOLD_LINE).not.toBe(UNACKNOWLEDGED_LINE);
+  });
+
+  test("the hold's slot refuses different words, and only different words", () => {
+    /* Sink f20aa3b2. The third arm is the one that was missing: a refusal the
+       caller is told about, so the refused line can be marked failed. */
+    expect(holdSlotFor(null, "go")).toBe("take");
+    expect(holdSlotFor({ text: "go" }, "stop")).toBe("refuse");
+    /* A nudge, a heal or `releaseHeld` putting the same prompt back must stay
+       a no-op rather than failing the first prompt's own line. */
+    expect(holdSlotFor({ text: "go" }, "go")).toBe("same");
+  });
+
+  test("a refused prompt says it was not kept, in the house register", () => {
+    expect(HOLD_REFUSED_LINE).toBe(HOLD_REFUSED_LINE.toLowerCase());
+    expect(HOLD_REFUSED_LINE).toContain("not kept");
+    expect(HOLD_REFUSED_LINE).not.toBe(HOLD_LINE);
   });
 
   test("the face says sent rather than delivered, which is all skein knows", () => {

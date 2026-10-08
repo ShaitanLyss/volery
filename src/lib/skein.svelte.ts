@@ -40,6 +40,8 @@ import {
   carryNote,
   isCarryOn,
   HOLD_LINE,
+  HOLD_REFUSED_LINE,
+  holdSlotFor,
   NUDGE_BUDGET,
   ghostNote,
   nudgeSkipFor,
@@ -2796,8 +2798,15 @@ export class Skein {
     }
 
     if (choice.kind === "hold") {
-      if (text !== null) this.#hold(conv, text, choice);
-      else conv.activity = HOLD_LINE;
+      const kept = text === null ? null : this.#hold(conv, text, choice);
+      if (text === null) conv.activity = HOLD_LINE;
+      /* A prompt the slot refused is a prompt nothing will ever send, so its
+         line cannot stay pending and awaited as `echoHeld` would leave it —
+         `awaiting` would stand at one for the life of the process and the card
+         read "sent, not picked up" once the hold released. `echoFailed` is the
+         one place that marks the line and brings the count down together.
+         The first prompt is untouched: it is the one `held` still names. */
+      if (text !== null && kept === false) conv.echoFailed(text, HOLD_REFUSED_LINE);
       /* The turn `echo` opened is given back. A prompt that never left is not a
          turn beginning, and a card left `working` through a hold read celadon
          for as long as the window took to turn over — up to five hours of the
@@ -2971,8 +2980,11 @@ export class Skein {
    *  at the first door to open, and the allowance poll, which sweeps every held
    *  card whenever it learns anything. A blocker that named no reset makes
    *  `until` null and leaves the poll as the only way out, which is right:
-   *  there is nothing to aim a timer at. */
-  #hold(conv: Conversation, text: string, choice: Extract<Choice, { kind: "hold" }>) {
+   *  there is nothing to aim a timer at.
+   *
+   *  False means the slot refused: it already holds different words, and the
+   *  caller owes the refused prompt's line a failure (`#settleAccount`). */
+  #hold(conv: Conversation, text: string, choice: Extract<Choice, { kind: "hold" }>): boolean {
     /* One slot, and everything that reaches here wants to write it — so the
        refusal belongs here rather than at each caller, where it is one `if`
        somebody has to remember and the cost of forgetting is a prompt of yours
@@ -2989,7 +3001,7 @@ export class Skein {
        The same text is allowed through, since that is `releaseHeld` putting a
        prompt back after a door turned out to be shut, and it needs the timer
        re-armed. */
-    if (conv.held && conv.held.text !== text) return;
+    if (holdSlotFor(conv.held, text) === "refuse") return false;
     /* **This card's own account first, and that is the whole of the fix.** It
        was `standings.find(st => st.state === "blocked")` — the first blocked
        account in `ordered`, i.e. priority then rank then label — which is a
@@ -3032,9 +3044,10 @@ export class Skein {
       const existing = this.#holds.get(conv.id);
       if (existing !== undefined) clearTimeout(existing);
       this.#holds.delete(conv.id);
-      return;
+      return true;
     }
     this.#rearmHold(conv, choice.until);
+    return true;
   }
 
   /** Point a card's release timer at an instant, replacing whatever it had.
