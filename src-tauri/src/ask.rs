@@ -1625,6 +1625,13 @@ fn always(mut schema: Value) -> Value {
 /// user's attention — which is precisely what a planning card is *for*.** A card
 /// that cannot ask what it is planning for is not a gear, it is a broken card,
 /// and the roster is the only copy of the instruction telling it to ask.
+///
+/// **`walls`, and `recall` with `host`, reach another machine and still pass.**
+/// `walls` reads this wall's own copy of the roster and snapshots and asks
+/// nothing of anybody. A remote `recall` is a request on the wire, and what it
+/// causes over there is a transcript read and an answer — nothing a card on
+/// either wall can trip over, which is the test above applied one machine out.
+/// `send` and `close` with `host` are the writes, and stay refused.
 fn reads_only(mut schema: Value) -> Value {
     schema["annotations"]["readOnlyHint"] = json!(true);
     schema
@@ -3913,7 +3920,7 @@ mod tests {
            `sink` do sweep expired rows on the read path, and `ask_user` spends
            the user's attention; both are argued at `reads_only`, and the rule
            for the next one is stated there. */
-        const READS: [&str; 19] = [
+        const READS: [&str; 20] = [
             "ask_user",
             "board",
             "sink",
@@ -3933,6 +3940,7 @@ mod tests {
             "tasks",
             "records",
             "timeline",
+            "walls",
         ];
 
         let mut seen: Vec<String> = vec![];
