@@ -53,7 +53,8 @@
   import { untrack as untracked } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { ANSI_PALETTE, parseAnsi } from "./ansi";
-  import { clock, type Conversation, type Job } from "./conversation.svelte";
+  import { clock, type Job } from "./conversation.svelte";
+  import type { Readable } from "./transcript";
   import { stickToTail } from "./follow";
   import {
     NOTHING_HELD,
@@ -74,7 +75,7 @@
     conv,
     watching = true,
   }: {
-    conv: Conversation;
+    conv: Readable;
     /** Whether this panel can actually be being read — window focus, passed
      *  down from the panel for the reason the panel takes it rather than
      *  subscribing: `attention.svelte.ts` already owns it and a second

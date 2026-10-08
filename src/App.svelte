@@ -4735,7 +4735,7 @@
               read={reading}
               rails={railsOn}
               watching={attention.focused}
-              onhistory={(c) => void skein.loadHistory(c)}
+              onhistory={() => void skein.loadHistory(focused)}
               onfile={(path, line) =>
                 void finder.lookAt(focused.kind === "project" ? focused.cwd : "", path, line)}
               onread={setRead}

@@ -16,7 +16,9 @@
  */
 
 import { RESEND_CAP, clip, isResendMark, splitResendMark } from "./classify";
-import type { Line } from "./conversation.svelte";
+import type { Effort } from "./commands";
+import type { ConvKind, Job, Line } from "./conversation.svelte";
+import type { Gear } from "./gears";
 import { isWakePrompt } from "./relay";
 import {
   JOBS_CAP,
@@ -25,6 +27,55 @@ import {
   isJobsPrompt,
   isResumePrompt,
 } from "./rousing";
+
+/** Everything `Transcript.svelte` reads, and nothing else.
+ *
+ *  The panel used to take a `Conversation` — the class, with its process, its
+ *  event fold and its forty methods — and it reads **twenty-three plain fields
+ *  off it and calls nothing**. That gap is the whole of why a card on another
+ *  wall could not have a transcript: a shadow has no process and never will
+ *  (`shadow.ts`), so it can never *be* a `Conversation`, and the panel's
+ *  requirement was a class where its need was a shape.
+ *
+ *  So the dependency is stated as the shape. `Conversation` satisfies it
+ *  structurally and no call site changed; a shadow builds one out of what the
+ *  owning wall sent. The alternative was a second transcript component for
+ *  remote cards, which is the thing not to do — two renderers for one column
+ *  drift, and the one that drifts is the one on the machine you are not
+ *  looking at. It is the same argument `history.ts` makes for folding a file
+ *  into the *same* `Line`s the live stream produces: a seam in the middle of
+ *  one column of speech is worse than either side of it.
+ *
+ *  **Add a field here and a shadow must answer it**, which is the point: the
+ *  compiler asks the question rather than a remote card quietly rendering
+ *  without something. Where a shadow has no honest answer it says so with the
+ *  empty value — no jobs, no cost — rather than being given a plausible one.
+ *  See `.claude/rules/elsewhere.md`. */
+export type Readable = {
+  id: string;
+  cwd: string;
+  kind: ConvKind;
+  lines: Line[];
+  history: Line[];
+  historyState: "unread" | "loading" | "ready" | "none" | "error";
+  historyPartial: boolean;
+  streaming: string;
+  working: boolean;
+  dormant: boolean;
+  everSpoke: boolean;
+  activity: string;
+  doing: string;
+  turns: number;
+  dropped: number;
+  costUsd: number;
+  ctx: number;
+  ctxTokens: number;
+  compactFrac: number | null;
+  model: string | undefined;
+  effort: Effort | undefined;
+  gear: Gear;
+  jobs: Job[];
+};
 
 /** How many consecutive calls it takes to be worth folding.
  *

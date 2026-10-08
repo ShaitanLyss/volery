@@ -4,7 +4,7 @@
      and this is the same parser reading them. */
   import { ANSI_PALETTE, parseAnsi } from "./ansi";
   import { untrack } from "svelte";
-  import type { Conversation, Line } from "./conversation.svelte";
+  import type { Line } from "./conversation.svelte";
   import Markdown from "./Markdown.svelte";
   import Jobs from "./Jobs.svelte";
   import Rail from "./Rail.svelte";
@@ -30,6 +30,7 @@
     runFoldCap,
     longFold,
     type Block,
+    type Readable,
   } from "./transcript";
   import { MIN_QUERY, huntBlocks, huntCap, matchAt, stepTo, tally } from "./hunt";
   import { selectionMarkdown } from "./copy";
@@ -49,7 +50,7 @@
     onfile,
     onread,
   }: {
-    conv: Conversation;
+    conv: Readable;
     /** Which side the outline rails hang off, which is the side the wall is on
      *  — see the note by `.rails`. The panel's berth decides it
      *  (`berth.md`); the panel does not know, and should not. */
@@ -66,7 +67,7 @@
     /** Ask for the scrollback that predates this card's process. Routed out
      *  rather than invoked here: `skein.svelte.ts` is the only thing that talks
      *  to Rust. */
-    onhistory?: (c: Conversation) => void;
+    onhistory?: () => void;
     /** Look at a file a tool call named, in the finder's viewer. Routed out for
      *  the same reason as `onlink`: which panel is on screen is not this one's
      *  business. The path arrives project-relative, already reduced against
@@ -890,7 +891,7 @@
   $effect(() => {
     const c = conv;
     void c.id;
-    untrack(() => onhistory?.(c));
+    untrack(() => onhistory?.());
   });
 
   /* A panel nobody is looking at used to let go of the place it was holding,
