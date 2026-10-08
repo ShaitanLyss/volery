@@ -478,8 +478,22 @@ deliberately not in `classify.ts`, which is about an agent rather than about a r
   process that started, drew nothing and exited silently — "skein doesn't start any more",
   with the whole of the cause in a string nobody could read. `complain` in `lib.rs` puts it in
   a native `MessageBoxW` and names the file first. Not `tauri_plugin_dialog`, which the rest
-  of the app uses: its `blocking_show` needs an event loop to pump, and nothing in `setup` has
-  one yet. Anything else added to `setup` that can fail before the window shows owes the same.
+  of the app uses: its `blocking_show` needs an event loop to pump, and `setup` runs on the
+  loop's own thread. `setup` is now `open_wall`, which words every failure for a person and
+  returns it, and the setup closure is the one place that complains. So anything added to
+  `open_wall` owes nothing beyond returning `Err`. A panic that ends a launch gets the same box
+  from the panic hook (`speak_for_panics`), since the app has no console to print it to.
+- **No window exists until everything a command reads exists.** Tauri makes the
+  `tauri.conf.json` windows *before* the setup hook runs, and making a WebView2 pumps this
+  thread's messages. So `main`'s page could already be calling commands against a wall with no
+  store managed. `load_studio` came back `state not managed` and the wall opened empty under a
+  red bar; `read_board` panicked inside a WebView2 callback and the process aborted unseen. That
+  was "Volery needs several launches to start". Windows logged one such launch on 2026-10-03:
+  0xc0000409, under a second after start. A `MessageBoxW` is a message loop too, so a launch
+  refused by `claim_wall` ran the page's commands under its own box. On a pre-fix lab build that
+  aborted every time and took the box with it. Both windows are now `"create": false`, and
+  `open_windows` makes them as the **last** step of `open_wall`; `launch_tests` holds both
+  halves.
 - **And a migration is the installed build's to run, so `bun run lab` is where one gets
   developed.** `bun run tauri dev` opens the *real* wall — that is the first line of the
   Commands block above and it is not a mistake — which means a tree carrying a new
@@ -699,7 +713,8 @@ notification surface — `main.ts` picks the root component off the query string
 deliberately a Skein-designed window rather than an OS toast. `attention.svelte.ts` escalates
 taskbar flash → peek → optional chime.
 
-**`main` is created hidden** (`"visible": false`) and `window::settle` is the only thing that
+**`main` is created hidden** (`"visible": false`, and only by `open_windows` — see the bullet
+on windows existing before the store) and `window::settle` is the only thing that
 shows it, which anything added to `setup` has to keep true — an early return that skips the
 show is an app with no window and no gesture that asks for one. It is hidden because the size
 in `tauri.conf.json` is *logical* pixels and therefore a wish: at 150% scaling a 1920×1080

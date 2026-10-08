@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "Volery",
         "width": 1280,
         "height": 820,
@@ -27,6 +28,7 @@
       },
       {
         "label": "peek",
+        "create": false,
         "title": "Volery — waiting",
         "url": "index.html?peek=1",
         "width": 420,

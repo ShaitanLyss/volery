@@ -198,6 +198,76 @@ mod base64_tests {
     }
 }
 
+#[cfg(test)]
+mod launch_tests {
+    use serde_json::Value;
+
+    /// A window Tauri makes from the config is made before the setup hook runs,
+    /// and making it pumps messages — so its page can call commands against a
+    /// wall with no store. That was the empty wall under a red bar and the
+    /// launch that aborted unseen; see `open_windows`. The lab merges its own
+    /// file over this one, so a `windows` key there would bring the bug back
+    /// in exactly the place it gets tested, and is held to the same rule.
+    #[test]
+    fn no_window_is_made_before_setup() {
+        for (name, text) in [
+            ("tauri.conf.json", include_str!("../tauri.conf.json")),
+            ("tauri.lab.conf.json", include_str!("../tauri.lab.conf.json")),
+        ] {
+            let config: Value = serde_json::from_str(text).expect(name);
+            let Some(windows) = config["app"]["windows"].as_array() else {
+                assert_ne!(name, "tauri.conf.json", "the studio declares its windows");
+                continue;
+            };
+            assert!(
+                windows.iter().any(|w| w["label"] == "main"),
+                "{name} has no main window for `settle` to show"
+            );
+            for w in windows {
+                assert_eq!(
+                    w["create"],
+                    Value::Bool(false),
+                    "{name}: window {} would be built before setup has managed the \
+                     store — `open_windows` builds it, after everything a command reads",
+                    w["label"]
+                );
+            }
+        }
+    }
+
+    /// The other half: once the windows exist, a command can run, so nothing it
+    /// reads may be set up after them. Read off the source because the property
+    /// is an order of statements in one function, and the only failure worth
+    /// catching is somebody appending a line to the end of `open_wall` — the
+    /// natural place to put the next thing a launch does.
+    #[test]
+    fn the_windows_are_the_last_thing_a_launch_makes() {
+        /* Line endings are whatever the checkout made them. */
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        /* With the newline, so the needle in this test is not what it finds. */
+        let start = source.find("\nfn open_wall(").expect("open_wall exists");
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").expect("open_wall ends")];
+        let after = &body[body.find("open_windows(app)?;").expect("open_wall opens the windows")..];
+
+        /* Comments out, then whatever code is left. */
+        let mut code = String::new();
+        let mut rest = after;
+        while let Some(open) = rest.find("/*") {
+            code.push_str(&rest[..open]);
+            rest = &rest[open + rest[open..].find("*/").expect("comment closes") + 2..];
+        }
+        code.push_str(rest);
+        let statements: Vec<&str> = code.split_whitespace().collect();
+        assert_eq!(
+            statements,
+            ["open_windows(app)?;", "window::settle(app.handle(),", "frame);", "Ok(())"],
+            "open_wall does something after making the windows; anything a command \
+             reads belongs above `open_windows`"
+        );
+    }
+}
+
 pub(crate) async fn off_main<F, R>(work: F) -> Result<R, String>
 where
     F: FnOnce() -> R + Send + 'static,
@@ -213,13 +283,20 @@ where
 ///
 /// A native message box rather than `tauri_plugin_dialog`, which is what the
 /// rest of the app uses: the plugin's `blocking_show` wants an event loop to
-/// pump, and everything that calls this is a failure *before* `run()` — there is
-/// no loop yet, and a dialog that never paints is the silence it was added to
-/// break. `MessageBoxW` is synchronous and needs nothing but a thread.
+/// pump, and everything that calls this is a failure inside `setup` — which
+/// runs *on* the loop's thread, so the loop cannot turn until it returns, and a
+/// dialog that never paints is the silence it was added to break. `MessageBoxW`
+/// is synchronous and needs nothing but a thread.
+///
+/// **It is also a message loop of its own**, and that is why no webview may
+/// exist while one is up. The box pumps every message for this thread until it
+/// is dismissed, and a webview's requests arrive as messages — so a box over a
+/// live webview runs that page's commands, right then, against whatever `setup`
+/// had got round to. See `open_windows`.
 ///
 /// The console line goes out either way, so `bun run tauri dev` shows it too.
 fn complain(message: &str) {
-    eprintln!("skein: {message}");
+    eprintln!("volery: {message}");
     #[cfg(windows)]
     {
         use windows::core::HSTRING;
@@ -227,7 +304,7 @@ fn complain(message: &str) {
             MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
         };
         let text = HSTRING::from(message);
-        let title = HSTRING::from("Skein");
+        let title = HSTRING::from("Volery");
         // SAFETY: two null-terminated wide strings that outlive the call, and a
         // null owner window — there is no window yet, which is the point.
         unsafe {
@@ -315,8 +392,224 @@ fn claim_wall(_identifier: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// True while a launch that fails would fail silently: from the top of `run`
+/// until `setup` has either finished or already said why it could not.
+///
+/// It exists so that exactly one thing speaks for a failed launch. `setup`'s
+/// own errors are worded where they happen and complained about there; a panic
+/// is worded by the panic hook; and an `Err` out of `setup` becomes a *second*
+/// panic inside Tauri (`app.rs`: `panic!("Failed to setup app: {e}")`), which
+/// must not put a second box over the first. Whoever swaps this to `false`
+/// first is the one who speaks.
+static LAUNCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Every panic goes in the app's log, and one that ends a launch says so.
+///
+/// The app is `windows_subsystem = "windows"`, so the default hook's line goes
+/// to a stderr nobody has. That is how a launch could die with the whole of its
+/// cause — `state() called before manage() for skein_lib::store::Store`, the
+/// first time — printed into nothing: Lyss double-clicked again until one
+/// survived, and the only record was a card that happened to be running a
+/// second wall from a terminal.
+///
+/// **Only the main thread's panic is a failed launch.** That thread is the event
+/// loop, so its panic takes the process with it; a panic on a pool thread is
+/// one command's failure, and a box saying the wall could not start would be
+/// wrong about a wall that then starts. Those go in the log, where the log
+/// widget will draw them.
+fn speak_for_panics() {
+    let main = std::thread::current().id();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        log::error!(target: "panic", "{info}");
+        if std::thread::current().id() == main
+            && LAUNCHING.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            complain(&format!("Volery could not start.\n\n{info}"));
+        }
+    }));
+}
+
+/// Build the windows `tauri.conf.json` declares — main and peek — now that
+/// everything a command can reach exists.
+///
+/// **They are `"create": false` in the config so that this is the only place
+/// they are made.** Left to Tauri, config windows are built *before* the setup
+/// hook runs (`tauri` `app.rs`, `fn setup`: the window loop, then
+/// `(setup)(app)`), and building a WebView2 pumps this thread's messages while
+/// it waits on the runtime (`wry`'s `create_environment`/`create_controller`,
+/// both `wait_with_pump`). So by the time `peek` had finished being made,
+/// `main`'s page could already be up and calling commands — against a wall
+/// with no store managed yet, because `setup` had not started. What that
+/// looked like depended on the command:
+///
+/// - `load_studio` takes `State<Store>`, so Tauri answered it with `state not
+///   managed for field "store"… call .manage()`, which the front end puts in
+///   `fault` and never retries: **the wall opened empty under a red bar about
+///   the database.**
+/// - `read_board` and `read_chronicle` reach for `app.state::<Store>()`, which
+///   panics, on the main thread, inside a WebView2 callback that cannot unwind:
+///   **the process aborted before its window was ever shown**, and the next
+///   double-click usually won the race.
+/// - `flyway_births` does the same off the main thread, which is the
+///   "runtime thread, then main thread" pair a card saw once from a terminal.
+///
+/// `complain`'s box made the same gap from the other side: it is a message
+/// loop, so a launch refused by `claim_wall` ran the hidden page's commands
+/// against no store and aborted out from under its own explanation.
+///
+/// **Nothing a command reads may be set up after this is called**, which is
+/// what `open_wall` is ordered around: making `peek` pumps again, so `main`'s
+/// first commands can run in here, before this returns.
+/// `launch_tests::no_window_is_made_before_setup` holds the config's half.
+fn open_windows(app: &tauri::App) -> Result<(), String> {
+    for config in app.config().app.windows.clone() {
+        tauri::WebviewWindowBuilder::from_config(app.handle(), &config)
+            .and_then(|builder| builder.build())
+            .map_err(|e| format!("Volery could not open its {} window.\n\n{e}", config.label))?;
+    }
+    Ok(())
+}
+
+/// Everything `setup` does, with every failure worded for a person.
+///
+/// The order is the design. A wall is built in three bands — the guard and the
+/// store, then every piece of state a command can read, then the windows — and
+/// the bands may not mix: a window made before the state it calls into is the
+/// bug `open_windows` describes, and it does not need `setup` to be slow to
+/// bite, only for anything in it to pump messages.
+fn open_wall(app: &mut tauri::App) -> Result<(), String> {
+    /* First, and before anything that can fail: a failure in `setup` is
+       exactly the failure nobody can reproduce on demand, and until this line
+       runs every `log!` in the process goes nowhere. It cannot itself fail in
+       a way worth stopping for — see `applog::install`. */
+    applog::install(app.handle().clone());
+
+    /* Before the store, before the browser's session file, and before anything
+       can spawn: everything below this line assumes it is the only process
+       holding this wall. Second, rather than first, only so that the refusal
+       reaches the app log. See `claim_wall`. */
+    claim_wall(&app.config().identifier)?;
+
+    /* Before any card can spawn, because a card's seeded browser is pointed at
+       this file by a static argument and a path that does not exist is a
+       browser that will not start. Cannot fail the launch — see
+       `browser::ensure_session_file`. */
+    browser::ensure_session_file(app.handle());
+
+    /* `VOLERY_WALL_DIR` puts the store somewhere else, and exists for one
+       test: two walls of *this* build on one machine, which the flyway cannot
+       be proved without. The lab is one wall; a second process of the same
+       binary with `VOLERY_SECOND=1` and this set is the other, with a database
+       of its own. Test plumbing in the family of `SKEIN_CONTROL` — nothing a
+       person sets, and the identifier-keyed folder is untouched when it is
+       absent. */
+    let dir = match std::env::var("VOLERY_WALL_DIR") {
+        Ok(d) if !d.trim().is_empty() => {
+            let d = std::path::PathBuf::from(d.trim());
+            std::fs::create_dir_all(&d)
+                .map_err(|e| format!("Volery could not make {}.\n\n{e}", d.display()))?;
+            /* The asset scope in tauri.conf.json is everything under
+               `$APPDATA/references`, which is the identifier's folder — so a
+               wall with its store moved writes pasted images where the webview
+               may not read them, and every one drew as the fallback box (found
+               by 34a24070's wall suite). The moved folder is allowed beside
+               it. */
+            let _ = app.asset_protocol_scope().allow_directory(d.join("references"), true);
+            d
+        }
+        _ => app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Volery could not find its data folder.\n\n{e}"))?,
+    };
+    /* Nothing after this line can run without the database, so this is the one
+       failure that stops the app rather than degrading it — and `main` is
+       created hidden, so failing without a word is a process that starts,
+       shows nothing, and exits. That is what a wedged migration looked like
+       from the outside: "skein doesn't start any more", with the whole of the
+       cause sitting in a string nobody could read. The message names the file,
+       since recovering by hand means knowing which one. See `store::migrate`. */
+    let store = Store::open(dir.clone()).map_err(|e| {
+        format!(
+            "Volery could not open its studio database.\n\n{e}\n\n{}",
+            dir.join("skein.db").display()
+        )
+    })?;
+    /* Read now, used by `settle` once there is a window to place. */
+    let frame = store.0.lock().ok().and_then(|c| store::read_window_frame(&c));
+    app.manage(store);
+
+    /* The ask endpoint, before any conversation can be spawned, so every one
+       of them gets a working --mcp-config. A card spawned against port 0 is
+       not refused — it is spawned with no ask_user, relay, board or browser
+       tools for its whole life, which is why this is above the windows rather
+       than merely early. */
+    let port = ask::start(app.handle().clone()).map_err(|e| {
+        format!("Volery could not start the server its cards ask questions through.\n\n{e}")
+    })?;
+    app.state::<Asks>().set_port(port);
+    /* Off unless SKEIN_CONTROL says otherwise. When it is on, the title bar
+       says so — see src/lib/control.svelte.ts, which asks for the endpoint
+       once at mount and does not ask again, so it has to be here by then. */
+    if let Some(ep) = control::start(app.handle().clone(), &dir)
+        .map_err(|e| format!("Volery could not open its control surface.\n\n{e}"))?
+    {
+        app.state::<Control>().set_endpoint(ep);
+    }
+    /* Before anything can ask a question: a wall that went down while away has
+       to come back away, or the first card to reach `ask_user` parks on a
+       deadline nobody is going to meet. See `presence::load`. */
+    presence::load(app.handle());
+    /* Reads how the browser stood last time and does the launch itself in the
+       background, so it costs the window a row read. Above the windows because
+       the mode it loads is what `browser_status` answers with. A wall closed
+       with a browser up comes back with one. See `browser::resume_at_launch`. */
+    browser::resume_at_launch(app.handle());
+    /* Join the flyway, if this wall has a key. In the background and
+       unawaited, because binding an endpoint reaches a lookup service and
+       nothing about a window should wait on somebody else's DNS. A wall with no
+       key does nothing here and says nothing, which is every wall until
+       somebody enters one. */
+    {
+        let linking = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            match flyway::link::arrive(linking).await {
+                Ok(true) => log::info!("flyway: this wall is on it"),
+                Ok(false) => {}
+                Err(e) => log::warn!("flyway: could not take a place: {e}"),
+            }
+        });
+    }
+    /* Sweeps each card's job for processes whose parent has gone away.
+       Started here rather than with the performance meter on purpose: the
+       meter exists only while a widget is on the wall, and a guarantee that
+       holds while you are looking at it is not one. Sleeps before its first
+       sweep, so nothing it says can beat the windows. */
+    perf::spawn_reaper(app.handle().clone());
+    /* Hands out wakes that have come due. Started here for exactly the reason
+       above: a card that asked to be woken at ten past has to be woken at ten
+       past whether or not anybody is looking at the wall. */
+    later::spawn_waker(app.handle().clone());
+
+    /* Last: the windows, and nothing that a command reads may move below
+       this. See `open_windows`. */
+    open_windows(app)?;
+    /* Place and show the studio window before it has painted a frame. `main`
+       is `"visible": false` in tauri.conf.json and this is the only thing that
+       shows it — a window sized after it is on screen jumps, on exactly the
+       machines the sizing exists for. See window.rs. */
+    window::settle(app.handle(), frame);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    /* Before the builder, so that nothing this process does can die in a way
+       that says nothing — and here rather than in `main`, so the hook
+       invocations `main` answers first never install it. */
+    speak_for_panics();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Supervisor::default())
@@ -393,123 +686,17 @@ pub fn run() {
            announce itself on the network as a speaker nobody asked for. */
         .manage(spotify::Spotify::default())
         .setup(|app| {
-            /* First, and before anything that can fail: a failure in `setup` is
-               exactly the failure nobody can reproduce on demand, and until
-               this line runs every `log!` in the process goes nowhere. It
-               cannot itself fail in a way worth stopping for — see
-               `applog::install`. */
-            applog::install(app.handle().clone());
-
-            /* Before the store, before the browser's session file, and before
-               anything can spawn: everything below this line assumes it is the
-               only process holding this wall. Second, rather than first, only so
-               that the refusal reaches the app log. See `claim_wall`. */
-            claim_wall(&app.config().identifier).map_err(|e| {
-                complain(&e);
-                e
-            })?;
-
-            /* Before any card can spawn, because a card's seeded browser is
-               pointed at this file by a static argument and a path that does
-               not exist is a browser that will not start. Cannot fail the
-               launch — see `browser::ensure_session_file`. */
-            browser::ensure_session_file(app.handle());
-
-            /* `VOLERY_WALL_DIR` puts the store somewhere else, and exists for
-               one test: two walls of *this* build on one machine, which the
-               flyway cannot be proved without. The lab is one wall; a second
-               process of the same binary with `VOLERY_SECOND=1` and this set
-               is the other, with a database of its own. Test plumbing in the
-               family of `SKEIN_CONTROL` — nothing a person sets, and the
-               identifier-keyed folder is untouched when it is absent. */
-            let dir = match std::env::var("VOLERY_WALL_DIR") {
-                Ok(d) if !d.trim().is_empty() => {
-                    let d = std::path::PathBuf::from(d.trim());
-                    std::fs::create_dir_all(&d).map_err(|e| format!("could not make {}: {e}", d.display()))?;
-                    /* The asset scope in tauri.conf.json is everything
-                       under `$APPDATA/references`, which is the identifier's
-                       folder — so a wall with its store moved writes pasted
-                       images where the webview may not read them, and every
-                       one drew as the fallback box (found by 34a24070's wall
-                       suite). The moved folder is allowed beside it. */
-                    let _ = app.asset_protocol_scope().allow_directory(d.join("references"), true);
-                    d
+            let opened = open_wall(app);
+            /* Whichever way it went, the launch has spoken for itself now: a
+               wall that opened needs no box, and one that did not gets exactly
+               one — this one, worded where the failure happened, rather than
+               the panic Tauri makes of an `Err` from here. See `LAUNCHING`. */
+            if LAUNCHING.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                if let Err(e) = &opened {
+                    complain(e);
                 }
-                _ => app
-                    .path()
-                    .app_data_dir()
-                    .map_err(|e| format!("no app data dir: {e}"))?,
-            };
-            /* Nothing after this line can run without the database, so this is
-               the one failure that stops the app rather than degrading it — and
-               `main` is created hidden, so returning the error alone is a
-               process that starts, shows nothing, and exits without saying
-               anything. That is what a wedged migration looked like from the
-               outside: "skein doesn't start any more", with the whole of the
-               cause sitting in a string nobody could read. It says so out loud
-               before it goes, and names the file, since recovering by hand
-               means knowing which one. See `store::migrate`. */
-            let store = Store::open(dir.clone()).map_err(|e| {
-                complain(&format!(
-                    "Skein could not open its studio database.\n\n{e}\n\n{}",
-                    dir.join("skein.db").display()
-                ));
-                e
-            })?;
-            /* Place and show the studio window before anything slower than the
-               database runs, and before the wall has painted a frame. `main` is
-               `"visible": false` in tauri.conf.json and this is the only thing
-               that shows it — a window sized after it is on screen jumps, on
-               exactly the machines the sizing exists for. See window.rs. */
-            let frame = store.0.lock().ok().and_then(|c| store::read_window_frame(&c));
-            app.manage(store);
-            window::settle(app.handle(), frame);
-            /* After the store, because it reads how the browser stood last
-               time, and after `settle`, because it must not delay the window:
-               it loads the mode synchronously and does the launch itself in the
-               background. A wall closed with a browser up comes back with one.
-               See `browser::resume_at_launch`. */
-            browser::resume_at_launch(app.handle());
-            /* Join the flyway, if this wall has a key. After the store, because
-               the outbox and the watermark it syncs are rows; in the background
-               and unawaited, because binding an endpoint reaches a lookup
-               service and nothing about a window should wait on somebody else's
-               DNS. A wall with no key does nothing here and says nothing, which
-               is every wall until somebody enters one. */
-            {
-                let linking = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    match flyway::link::arrive(linking).await {
-                        Ok(true) => log::info!("flyway: this wall is on it"),
-                        Ok(false) => {}
-                        Err(e) => log::warn!("flyway: could not take a place: {e}"),
-                    }
-                });
             }
-            /* Bind the ask endpoint before any conversation can be spawned,
-               so every one of them gets a working --mcp-config. */
-            let port = ask::start(app.handle().clone())?;
-            app.state::<Asks>().set_port(port);
-            /* Off unless SKEIN_CONTROL says otherwise. When it is on, the title
-               bar says so — see src/lib/control.svelte.ts. */
-            if let Some(ep) = control::start(app.handle().clone(), &dir)? {
-                app.state::<Control>().set_endpoint(ep);
-            }
-            /* Sweeps each card's job for processes whose parent has gone away.
-               Started here rather than with the performance meter on purpose:
-               the meter exists only while a widget is on the wall, and a
-               guarantee that holds while you are looking at it is not one. */
-            perf::spawn_reaper(app.handle().clone());
-            /* Hands out wakes that have come due. Started here for exactly the
-               reason above: a card that asked to be woken at ten past has to be
-               woken at ten past whether or not anybody is looking at the wall. */
-            later::spawn_waker(app.handle().clone());
-            /* After the store is managed, and before anything can ask a
-               question: a wall that went down while away has to come back away,
-               or the first card to reach `ask_user` parks on a deadline nobody
-               is going to meet. See `presence::load`. */
-            presence::load(app.handle());
-            Ok(())
+            Ok(opened?)
         })
         /* Closing the studio closes the app.
          *
