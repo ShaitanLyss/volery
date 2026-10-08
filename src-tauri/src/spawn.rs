@@ -719,8 +719,8 @@ pub fn spawn_schema() -> Value {
                          refused. That wall must have been switched to take work from other \
                          walls, by a person sitting at it. The card it opens runs on that \
                          machine with its whole shell. `send`, `recall` and `close` reach it \
-                         with the same `host` and the handle this returns, and it is told who \
-                         opened it so it can `send` back to you. Further prompts to it need \
+                         by the handle this returns, as they would a card here, and it is \
+                         told who opened it so it can `send` back to you. Further prompts to it need \
                          that wall still taking work, so write the brief to finish without \
                          asking you anything."
                 }
@@ -791,12 +791,12 @@ pub fn close_schema() -> Value {
                 "host": {
                     "type": "string",
                     "description":
-                        "Optional: the wall the card is on, when you opened it on another \
-                         of the user's machines with `spawn` — `card` is then the handle \
-                         that call returned. Only a card you opened there closes this way, \
-                         and nobody is asked: the person at that machine is not the one \
-                         watching. Mid-turn, set aside, or a plan still on its timeline are \
-                         refused there as they are here."
+                        "Optional, and rarely needed: a card on another of the user's \
+                         machines is found by its handle alone. Only a card you opened there \
+                         with `spawn` closes from here, and nobody is asked: the person at \
+                         that machine is not the one watching. Mid-turn, set aside, or a plan \
+                         still on its timeline are refused there as they are here. Name its \
+                         wall only if a handle is on two walls and the reply says so."
                 }
             },
             "required": ["card"]

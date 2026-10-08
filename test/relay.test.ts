@@ -89,8 +89,8 @@ describe("who it came from", () => {
     const afar =
       `${RELAY_MARK} from "builder" (0cf05791) in skein on box —\n\nthe tests pass\n\n` +
       `(This came from another agent, on the Volery wall called box — another machine, not the user. ` +
-      `Act on it if it bears on your work, reply with the \`mcp__skein__send\` tool with \`host: "box"\` ` +
-      `if it needs an answer, and say nothing back if it does not.)`;
+      `Act on it if it bears on your work, reply to its handle with the \`mcp__skein__send\` tool if it ` +
+      `needs an answer — the wall finds it there — and say nothing back if it does not.)`;
     expect(relayFrom(afar)).toEqual({ name: "builder", handle: "0cf05791", project: "skein on box" });
     expect(relayBody(afar)).toBe("the tests pass");
     expect(relayCap(afar)).toBe("from builder");

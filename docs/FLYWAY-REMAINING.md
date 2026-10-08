@@ -129,9 +129,18 @@ read back in the next snapshot.
 
 The orchestrator half: a card that opened work on another machine can now
 steer it, read it and tidy it away, and the card it opened can report back.
-`send`, `recall` and `close` each grew one argument, `host`; without it, or
-naming this wall, each does what it always did. `walls` (deferred) is how an
-agent finds what to put there.
+**A card on another wall is addressed by its handle, exactly as one here is**
+— `send`, `recall` and `close` take the same arguments they always did, and
+the wall works out which machine the card is on (`reach::place`): this wall,
+then what the other walls' snapshots show, then its own records of the cards it
+opened elsewhere and the card that opened it. A handle on two walls is refused
+naming both; `host` survives only as that tie-break. So a card opened by
+another wall's card answers it with `send{to: "<handle>"}` without knowing
+where it runs — Lyss's point, and the one that keeps an address valid once
+cards move between machines: a record's host is where a card *was*, so a
+snapshot showing it elsewhere wins, and the gate (`may_reach`, `is_child_of`)
+matches a card by its id alone, never by the host it is believed to be on.
+`walls` (deferred) lists the other walls and their cards.
 
 - **Wire.** Two more tags, `recall` and `close`, each a prompt's shape (an
   `Ask` with a `card`) — one path in `Fleet::reach` / `hear_ask` for all three,
@@ -180,11 +189,11 @@ here by `bun tools/lift-fleet.ts` (all of `fleet.rs`'s tests, executed).
 3. Wait for the child's report to arrive on AU-LT-288 as a relay line *from
    "…" in … on QUEERISFREEDOM*. Then switch QUEERISFREEDOM **off** and have the
    child `send` again — it should still arrive (a reply is not work).
-4. With the switch still off, from the parent: `recall{card, host}` should read
-   it; `send{to, host}` should be refused naming the switch; a *different* card
-   on AU-LT-288 should be refused a `recall`.
-5. `close{card, host}` from the parent closes it (with the fade, and a
-   chronicle row on QUEERISFREEDOM); from any other card it is refused.
+4. With the switch still off, from the parent, by handle alone (no `host`):
+   `recall{card}` should read it; `send{to}` should be refused naming the
+   switch; a *different* card on AU-LT-288 should be refused a `recall`.
+5. `close{card}` from the parent closes it (with the fade, and a chronicle row
+   on QUEERISFREEDOM); from any other card it is refused.
 6. `walls` from the parent marks the child `yours`; from the child it marks the
    parent `opened_you`.
 

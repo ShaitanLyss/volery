@@ -844,11 +844,12 @@ fn append_prompt(chat: bool, shared_browser: bool, me: Option<&Selfhood>) -> Str
                              is a brief written by card `{handle}` on the wall called `{host}`, which \
                              asked for you over the flyway — you run on this machine, in this \
                              repository, and it does not. Report back to it when you have finished \
-                             or are stuck with `{MCP_PREFIX}send` and `to: \"{handle}\"`, \
-                             `host: \"{host}\"` — that wall lets a report to the card that opened \
-                             you through even while it takes no other work, and that card cannot \
-                             see your transcript. `{MCP_PREFIX}list` covers this machine only. Say what you did plainly in your own reply too — that is \
-                             where the user will read it.",
+                             or are stuck with `{MCP_PREFIX}send` and `to: \"{handle}\"` — the \
+                             wall finds it on whichever machine it is on, and lets a report to the \
+                             card that opened you through even while that wall takes no other \
+                             work. It cannot see your transcript. `{MCP_PREFIX}list` covers this \
+                             machine only. Say what you did plainly in your own reply too — that \
+                             is where the user will read it.",
                             host = b.host,
                         ));
                     }
@@ -3298,7 +3299,8 @@ mod tests {
         let p = append_prompt(false, false, Some(&born));
         assert!(p.contains("another machine's request"), "{p}");
         assert!(p.contains("`the-build-box`") && p.contains("`0cf05791`"), "{p}");
-        assert!(p.contains("`to: \"0cf05791\"`, `host: \"the-build-box\"`"), "{p}");
+        assert!(p.contains("`to: \"0cf05791\"` — the wall finds it"), "{p}");
+        assert!(!p.contains("host:"), "a card is not made to carry where its parent runs: {p}");
         let person = Selfhood {
             born_for: Some(crate::flyway::here::Birth {
                 card: "4bd5340b-0000".into(),

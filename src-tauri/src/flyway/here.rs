@@ -184,13 +184,15 @@ pub fn record_child(conn: &Connection, host: &str, card: &str, parent: &str, req
     .map_err(|e| e.to_string())
 }
 
-/// Whether that card on that wall is one `parent` asked for — the whole of
-/// what makes its message a reply rather than work (`fleet::may_reach`).
-/// Exact on all three: an id from the far wall's answer, never a prefix.
-pub fn is_child_of(conn: &Connection, host: &str, card: &str, parent: &str) -> bool {
+/// Whether that card is one `parent` asked for — the whole of what makes its
+/// message a reply rather than work (`fleet::may_reach`). Exact on both: an id
+/// from the far wall's answer, never a prefix. **Not on the host**, which is
+/// where the card was when it opened: the id is the card, and it may since
+/// have moved to another machine and still be the one this card asked for.
+pub fn is_child_of(conn: &Connection, card: &str, parent: &str) -> bool {
     conn.query_row(
-        "SELECT 1 FROM flyway_child WHERE host = ?1 AND card = ?2 AND parent_id = ?3",
-        params![host, card, parent],
+        "SELECT 1 FROM flyway_child WHERE card = ?1 AND parent_id = ?2",
+        params![card, parent],
         |_| Ok(()),
     )
     .optional()
@@ -354,18 +356,17 @@ mod tests {
         assert_eq!(births_since(&conn, 0), 0);
     }
 
-    /// A child is known by the wall it is on, its full id there, and the card
-    /// here that asked for it — all three, so a namesake card on another wall,
-    /// a prefix of the id, or another parent here reads as no child at all.
+    /// A child is known by its full id and the card here that asked for it —
+    /// so a prefix of the id, or another parent here, reads as no child at all,
+    /// while the same card running on another machine now is still the child.
     #[test]
     fn a_child_elsewhere_is_known_by_all_three_or_not_at_all() {
         let conn = db();
         record_child(&conn, "box", "c-full-id", "parent-1", "r1", 5).unwrap();
         record_child(&conn, "box", "c-full-id", "parent-1", "r1", 5).unwrap();
-        assert!(is_child_of(&conn, "box", "c-full-id", "parent-1"));
-        assert!(!is_child_of(&conn, "lap", "c-full-id", "parent-1"));
-        assert!(!is_child_of(&conn, "box", "c-full", "parent-1"));
-        assert!(!is_child_of(&conn, "box", "c-full-id", "parent-2"));
+        assert!(is_child_of(&conn, "c-full-id", "parent-1"));
+        assert!(!is_child_of(&conn, "c-full", "parent-1"));
+        assert!(!is_child_of(&conn, "c-full-id", "parent-2"));
         assert_eq!(children_of(&conn, "parent-1").len(), 1, "a repeated answer is one row");
         assert!(children_of(&conn, "parent-2").is_empty());
     }

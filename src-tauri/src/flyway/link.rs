@@ -1173,7 +1173,7 @@ impl Link {
                 .asked_by
                 .card
                 .as_deref()
-                .is_some_and(|c| here::is_child_of(&conn, &d.asked_by.host, c, &row.id));
+                .is_some_and(|c| here::is_child_of(&conn, c, &row.id));
             Some(Ok((row, born, replies)))
         });
         let (row, born, replies) = match found {
@@ -1449,7 +1449,7 @@ fn receipt(a: &Answer, w: &Waiter, me: &str) -> String {
             format!(
                 "{by} opened a card in its {territory} territory — its handle there is {handle}. It \
                  runs on that machine, not this one, and it is not in this wall's \
-                 `mcp__skein__list`. Reach it with `host: \"{by}\"` and `{handle}`: \
+                 `mcp__skein__list`, but its handle reaches it from here as a card's on this wall does: \
                  `mcp__skein__recall` to read what it has said and `mcp__skein__close` when it is \
                  done, both yours whatever {by} is set to; `mcp__skein__send` to tell it more, \
                  which needs {by} still taking work from other walls. It has the brief you wrote \

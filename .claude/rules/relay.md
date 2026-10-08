@@ -198,8 +198,12 @@ read.
 
 ## Across machines
 
-`send` and `recall` take `host` (`flyway/reach.rs`), and so does `close`. Without it nothing
-here changes. With it the request rides the flyway and **the wall the card is on decides**:
+`send`, `recall` and `close` reach a card on another wall **by its handle, with nothing
+added** (`flyway/reach.rs`): an id-shaped address that is not on this wall is looked for in
+the other walls' snapshots and this wall's records of the cards it opened elsewhere and the
+one that opened it, and a handle on two walls is refused naming both — `host` is only that
+tie-break. Titles never cross. The request then rides the flyway and **the wall the card is
+on decides**:
 the address is resolved there by `resolve`, and `fleet::may_reach` says who may — the far
 wall's switch gates a prompt (work) but not an answer, nor a child's report to the card that
 opened it; a recall is the origin's always and anyone else's through the switch.
@@ -207,7 +211,7 @@ opened it; a recall is the origin's always and anyone else's through the switch.
 
 - **An agent's message from another wall is a relay**, in `afar_envelope` — `envelope`'s shape
   with `on <host>` after the project, which `relay.ts`'s `HEADED` already reads, and a trailer
-  that says to answer with `host`, since a bare `send` would look for the sender here. It is
+  that says to answer to its handle, which the wall finds wherever the sender runs. It is
   delivered by `deliver_from_afar` as a **self-row**, already enveloped, so `drain_inbox`
   hands it over as written; the card is armed one hop in, so it cannot broadcast on the back of
   a message from another machine either.

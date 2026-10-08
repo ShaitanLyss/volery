@@ -5,11 +5,13 @@
 //! did not cross. An orchestrator that can open work it cannot steer, read or
 //! tidy away is a spawn button, and this is what makes it the other thing.
 //!
-//! **The three tools keep their names and grow one argument.** `host` says
-//! which wall; without it, or naming this one, each does exactly what it always
-//! did — so nothing a card already knows changes, and the extra word is the
-//! whole of what it has to learn. A fourth tool, `walls`, is how it finds out
-//! what to put there.
+//! **The three tools keep their names and their arguments.** A card on another
+//! wall is addressed by its handle exactly as one here is, and the wall finds
+//! which machine it is on (`afar`, `place`) — so an agent carries one fact, a
+//! card it was opened by can be answered without knowing where that card runs,
+//! and a card that later moves between machines keeps its address. `host`
+//! survives as an optional tie-break for a handle on two walls. A fourth tool,
+//! `walls`, lists the other walls and their cards.
 //!
 //! What each guards is said where it is decided, and only the parts that are
 //! about *asking* are here:
@@ -63,8 +65,18 @@ fn elsewhere(args: &Value) -> Option<String> {
         .then(|| args.get("host").and_then(Value::as_str).unwrap_or("").trim().to_string())
 }
 
-/// `send`, `recall` or `close` naming another wall, or `None` for anything
-/// this file does not answer — which goes on down the chain exactly as it did.
+/// `send`, `recall` or `close` reaching a card on another wall, or `None` for
+/// anything this file does not answer — which goes on down the chain exactly as
+/// it did.
+///
+/// **`host` is optional, and nearly always left out.** A card on another wall is
+/// found by its handle the way one here is (`place`): this wall already knows
+/// every other wall's cards from their snapshots, the cards this one opened
+/// over there (`flyway_child`) and the one that opened it (`flyway_birth`). So
+/// an agent carries one fact — the handle — and `host` is only the tie-break for
+/// a handle that names cards on two walls, which eight hex characters make
+/// about a one-in-four-billion event per pair; it is refused by name rather
+/// than guessed, for `relay::resolve`'s reason about titles.
 pub fn afar(app: &AppHandle, caller: &str, tool: &str, args: &Value) -> Option<Afar> {
     let act = match tool {
         crate::relay::SEND_TOOL => Act::Prompt,
@@ -72,8 +84,128 @@ pub fn afar(app: &AppHandle, caller: &str, tool: &str, args: &Value) -> Option<A
         crate::spawn::CLOSE_TOOL => Act::Close,
         _ => return None,
     };
-    let host = elsewhere(args)?;
-    Some(reach(app, caller, act, &host, args))
+    if let Some(host) = elsewhere(args) {
+        return Some(reach(app, caller, act, &host, args));
+    }
+    /* `host` naming this wall is a decision, and the answer is this wall. */
+    if args.get("host").and_then(Value::as_str).is_some_and(|h| !h.trim().is_empty()) {
+        return None;
+    }
+    let key = if act == Act::Prompt { "to" } else { "card" };
+    /* One address, shaped like an id or a handle. A title never resolves on
+       another wall — generated titles collide across machines all the time —
+       and a list or a broadcast word is this wall's business. */
+    let want = args.get(key).and_then(Value::as_str).map(str::trim).filter(|w| id_shaped(w))?;
+    let link = crate::flyway::link::link(app)?;
+    let (here, recorded) = {
+        let store = app.try_state::<Store>()?;
+        let conn = store.0.lock().ok()?;
+        let here: Vec<String> = crate::store::roster(&conn, None).ok()?.into_iter().map(|r| r.id).collect();
+        let mut recorded: Vec<(String, String)> = super::here::children_of(&conn, caller)
+            .into_iter()
+            .map(|c| (c.host, c.card))
+            .collect();
+        if let Some(b) = super::here::birth_of(&conn, caller) {
+            if let Some(card) = b.asker_card {
+                recorded.push((b.host, card));
+            }
+        }
+        (here, recorded)
+    };
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for w in link.walls_seen() {
+        if w.host == link.me() {
+            continue;
+        }
+        if let Some(snap) = &w.snapshot {
+            seen.extend(cards_in(snap).into_iter().map(|c| (w.host.clone(), c.id)));
+        }
+    }
+    match place(want, &here, &seen, &recorded) {
+        Place::Here | Place::Nowhere => None,
+        Place::There { host, card } => {
+            let mut args = args.clone();
+            args[key] = Value::String(card);
+            Some(reach(app, caller, act, &host, &args))
+        }
+        Place::Several(walls) => Some(Afar::Now(format!(
+            "{want:?} names a card on more than one wall ({}), so nothing was done — add `host` \
+             to say which, or use the card's full id",
+            walls.join(", ")
+        ))),
+    }
+}
+
+/// Whether an address could be a card id or its eight-character handle — the
+/// only two shapes that are looked for on another wall.
+fn id_shaped(s: &str) -> bool {
+    let hexish = |s: &str| s.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    (s.len() == 8 || s.len() == 36) && hexish(s)
+}
+
+/// Where an id-shaped address lives.
+#[derive(Debug, PartialEq)]
+pub enum Place {
+    Here,
+    There { host: String, card: String },
+    /// It matches on more than one wall — the walls, this one named first.
+    Several(Vec<String>),
+    Nowhere,
+}
+
+/// Find a card by id or handle across this wall and the others. Pure, so the
+/// one rule that decides which machine a message goes to is a thing a test
+/// holds: a match in exactly one place goes there, a match in two goes
+/// nowhere and says where it could have gone. Matching is `relay::resolve`'s
+/// own — the whole id, or its handle — so an address means here what it means
+/// on this wall.
+///
+/// **A card is its id, and where it runs is a fact that can change.** `seen` is
+/// what the other walls' snapshots show now; `recorded` is what this wall wrote
+/// down when a card was opened (`flyway_child`, `flyway_birth`), and the host
+/// in it is where the card was *then*. So a record is only consulted for an id
+/// no wall is showing — a wall that has not published yet, or a quiet one —
+/// and an id a snapshot shows goes where the snapshot says. Without that, a
+/// card moved to another machine would read as being on two walls at once, its
+/// old record against its new home, and every message to it would be refused
+/// as ambiguous. The same id in two *snapshots* is a move caught halfway, and is
+/// refused, since one of the two is no longer true.
+pub fn place(want: &str, here: &[String], seen: &[(String, String)], recorded: &[(String, String)]) -> Place {
+    let want = want.trim().to_lowercase();
+    let hits = |id: &str| id.eq_ignore_ascii_case(&want) || crate::relay::handle_of(id) == want;
+    let here_hit = here.iter().any(|id| hits(id.as_str()));
+    let mut far: Vec<(String, String)> = Vec::new();
+    for (host, id) in seen {
+        if hits(id.as_str()) && !far.iter().any(|(h, i)| h == host && i == id) {
+            far.push((host.clone(), id.clone()));
+        }
+    }
+    for (host, id) in recorded {
+        /* Only for an id no snapshot shows, and never one on this wall. */
+        if hits(id.as_str()) && !far.iter().any(|(_, i)| i == id) && !here.iter().any(|h| h == id) {
+            far.push((host.clone(), id.clone()));
+        }
+    }
+    match (here_hit, far.len()) {
+        (false, 0) => Place::Nowhere,
+        (true, 0) => Place::Here,
+        (false, 1) => {
+            let (host, card) = far.remove(0);
+            Place::There { host, card }
+        }
+        _ => {
+            let mut walls: Vec<String> = Vec::new();
+            if here_hit {
+                walls.push("this wall".into());
+            }
+            for (h, _) in far {
+                if !walls.contains(&h) {
+                    walls.push(h);
+                }
+            }
+            Place::Several(walls)
+        }
+    }
 }
 
 fn reach(app: &AppHandle, caller: &str, act: Act, host: &str, args: &Value) -> Afar {
@@ -183,8 +315,8 @@ fn unanswered(act: Act, host: &str, card: &str) -> String {
             "{host} has not said whether {card} has your message. It may still arrive. If {host} \
              refuses it, you will be told by a message from the wall; if nothing comes, nobody \
              knows whether it arrived. **Do not send it again** without checking first — \
-             `mcp__skein__recall` it with the same `host` — because if the first one landed, a \
-             second is a second turn on that card."
+             `mcp__skein__recall` it — because if the first one landed, a second is a second \
+             turn on that card."
         ),
         Act::Recall => format!(
             "{host} did not answer the recall of {card} in time — it may be asleep, off the \
@@ -205,8 +337,8 @@ pub fn walls_schema() -> Value {
         "name": WALLS_TOOL,
         "description":
             "The other walls on this flyway — the user's other machines running Volery — and \
-             the cards each one shows: what `host` can name, and what `send`, `recall` and \
-             `close` can reach there with it.\n\n\
+             the cards each one shows, by the handles `send`, `recall` and `close` reach them \
+             with — from here, exactly as a card on this wall.\n\n\
              Per wall: whether it has been heard from lately, whether it takes work from other \
              walls (a person's switch on that machine — without it a wall takes only answers, \
              reports from cards it opened, and reads and closes by the card that opened one), \
@@ -476,12 +608,64 @@ mod tests {
         assert!(v["walls"][0]["note"].as_str().unwrap().contains("older Volery"));
     }
 
+    fn pair(host: &str, id: &str) -> (String, String) {
+        (host.into(), id.into())
+    }
+
+    /// The rule that decides which machine a message goes to.
+    #[test]
+    fn a_handle_finds_its_wall_and_a_handle_on_two_walls_finds_none() {
+        let here = vec!["aaaaaaaa-0000-0000-0000-000000000001".to_string()];
+        let seen = vec![pair("box", "bbbbbbbb-0000-0000-0000-000000000002"), pair("lap", "cccccccc-0000-0000-0000-000000000003")];
+        assert_eq!(place("aaaaaaaa", &here, &seen, &[]), Place::Here);
+        assert_eq!(
+            place("BBBBBBBB", &here, &seen, &[]),
+            Place::There { host: "box".into(), card: "bbbbbbbb-0000-0000-0000-000000000002".into() },
+            "a handle is case-folded, as on this wall"
+        );
+        assert_eq!(
+            place("cccccccc-0000-0000-0000-000000000003", &here, &seen, &[]),
+            Place::There { host: "lap".into(), card: "cccccccc-0000-0000-0000-000000000003".into() },
+        );
+        assert_eq!(place("dddddddd", &here, &seen, &[]), Place::Nowhere);
+        /* The same handle here and there: neither, and both named. */
+        let clash = vec![pair("box", "aaaaaaaa-9999-0000-0000-000000000009")];
+        assert_eq!(place("aaaaaaaa", &here, &clash, &[]), Place::Several(vec!["this wall".into(), "box".into()]));
+        /* The full id is never ambiguous: it is one card. */
+        assert_eq!(place("aaaaaaaa-0000-0000-0000-000000000001", &here, &clash, &[]), Place::Here);
+    }
+
+    /// A card is its id; where it runs can change. The card that opened you,
+    /// recorded on `box` and now running on `lap`, goes to `lap` and not to two
+    /// walls at once, and a record answers only where no wall shows the card.
+    #[test]
+    fn a_card_that_moved_is_found_where_it_is_now() {
+        let parent = "eeeeeeee-0000-0000-0000-00000000000e";
+        let recorded = vec![pair("box", parent)];
+        let moved = vec![pair("lap", parent)];
+        assert_eq!(place("eeeeeeee", &[], &moved, &recorded), Place::There { host: "lap".into(), card: parent.into() });
+        assert_eq!(place("eeeeeeee", &[], &[], &recorded), Place::There { host: "box".into(), card: parent.into() });
+        /* Caught halfway, on two walls' snapshots, is refused. */
+        let halfway = vec![pair("lap", parent), pair("box", parent)];
+        assert!(matches!(place("eeeeeeee", &[], &halfway, &recorded), Place::Several(_)));
+        /* And a card that has come to this wall is this wall's. */
+        assert_eq!(place("eeeeeeee", &[parent.to_string()], &[], &recorded), Place::Here);
+    }
+
+    #[test]
+    fn only_an_id_or_a_handle_is_looked_for_elsewhere() {
+        assert!(id_shaped("0cf05791") && id_shaped("0cf05791-aaaa-bbbb-cccc-0123456789ab"));
+        for not in ["release notes", "project", "0cf0579", "0cf05791x", ""] {
+            assert!(!id_shaped(not), "{not:?}");
+        }
+    }
+
     #[test]
     fn walls_names_what_host_reaches_and_what_quiet_means() {
         let d = walls_schema()["description"].as_str().unwrap().to_string();
         /* Words rather than the backticked names, which the result guards in
            `supervisor.rs` would read as a bare tool name in a tool result. */
-        assert!(d.contains("`host` can name") && d.contains("reach there with it"), "{d}");
+        assert!(d.contains("by the handles") && d.contains("exactly as a card on this wall"), "{d}");
         assert!(d.contains("quiet") && d.contains("`yours`") && d.contains("`opened_you`"), "{d}");
     }
 }

@@ -496,10 +496,17 @@ pub fn needs(act: Act, from_card: bool) -> Option<&'static str> {
 /// age — and hands the rest over with the switch as it stood.
 ///
 /// - `born_for` is where the target card came from, if another wall asked for
-///   it (`flyway_birth`). `from` matching it — the same wall *and* the same
-///   card, a person's ask never counting — is its **origin**.
-/// - `replies` is that `from` is a card the target itself opened on that wall
+///   it (`flyway_birth`). `from` being the same **card** — a person's ask never
+///   counting — is its **origin**.
+/// - `replies` is that `from` is a card the target itself opened elsewhere
 ///   (`flyway_child`), so this is the child answering its parent.
+///
+/// **A card is matched by its id, not by the wall it is on.** The host in a
+/// request is a label the asking wall states and this one believes — it adds
+/// nothing a uuid does not already carry — and where a card runs is a fact that
+/// will change once cards move between machines. Matching on the pair would
+/// have quietly revoked an origin's right to read and close what it opened the
+/// moment either of them moved.
 ///
 /// **The switch is a person saying this machine takes no work from other
 /// walls**, so it gates what starts work and nothing else:
@@ -531,7 +538,7 @@ pub fn may_reach(
     born_for: Option<&Origin>,
     replies: bool,
 ) -> Result<(), Refusal> {
-    let origin = from.card.is_some() && born_for == Some(from);
+    let origin = from.card.is_some() && born_for.is_some_and(|b| b.card == from.card);
     match act {
         Act::Prompt if accepting || answering || replies => Ok(()),
         Act::Recall if accepting || origin => Ok(()),
@@ -2618,7 +2625,7 @@ mod tests {
             assert_eq!(may_reach(a, &origin, accepting, false, born, false).is_ok(), accepting);
             /* Anybody else is held to the switch for a read and refused a
                close outright, switch or no switch. */
-            for other in [lap(Some("x")), lap(None), Origin { host: "box".into(), card: Some("k".into()) }] {
+            for other in [lap(Some("x")), lap(None)] {
                 assert_eq!(may_reach(b, &other, accepting, false, born, false).is_ok(), accepting, "{other:?}");
                 assert_eq!(may_reach(c, &other, accepting, false, born, false), Err(Refusal::NotOpenedFor), "{other:?}");
             }
@@ -2627,6 +2634,10 @@ mod tests {
             /* A child reporting to the card that opened it is never work. */
             assert_eq!(may_reach(a, &lap(Some("child")), accepting, false, None, true), Ok(()));
         }
+        /* The origin on another wall than it was recorded on is still the
+           origin: a card is its id, and it may have moved. */
+        let moved = Origin { host: "box".into(), card: Some("k".into()) };
+        assert_eq!(may_reach(c, &moved, false, false, born, false), Ok(()));
         /* A person's ask is never an origin, even one recorded as such. */
         let person = lap(None);
         assert_eq!(may_reach(c, &person, true, false, Some(&person), false), Err(Refusal::NotOpenedFor));

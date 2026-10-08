@@ -438,10 +438,9 @@ pub fn send_schema() -> Value {
                 "host": {
                     "type": "string",
                     "description":
-                        "Optional: the wall the card is on, when it is on another of the \
-                         user's machines — a card `spawn` opened there, or the one that \
-                         opened you. `to` is then that card's handle there, one card only. \
-                         `walls` lists the walls and their cards."
+                        "Optional, and rarely needed: a card on another of the user's \
+                         machines is found by its handle alone. Name its wall only if a \
+                         handle is on two walls and the reply says so. `walls` lists them."
                 }
             },
             "required": ["to", "message"]
@@ -1049,12 +1048,12 @@ pub fn recall_schema() -> Value {
                 "host": {
                     "type": "string",
                     "description":
-                        "Optional: the wall the card is on, when it is on another of the \
-                         user's machines — `card` is then its handle there, as `spawn` or \
-                         `walls` gave it. That wall reads the card's transcript and sends \
-                         back the same few speeches a recall here would. A card you opened \
-                         there may always be read; any other only if that wall takes work \
-                         from other walls."
+                        "Optional, and rarely needed: a card on another of the user's \
+                         machines is found by its handle alone, and that wall reads its \
+                         transcript and sends back what a recall here would. A card you \
+                         opened there may always be read; any other only if that wall takes \
+                         work from other walls. Name its wall only if a handle is on two \
+                         walls and the reply says so."
                 }
             },
             "required": ["card"]
@@ -1287,17 +1286,15 @@ pub(crate) fn said_by(app: &AppHandle, row: &RosterRow) -> Result<Vec<String>, S
 
 /// A recall's answer as the asking agent reads it. `host` names the wall the
 /// card is on when that is not this one, because "what it believes it has
-/// done" is then about a repository on another machine.
+/// done" is then about a repository on another machine. Not to be carried
+/// into the next call — the handle finds it (`flyway::reach::place`).
 pub(crate) fn recalled(title: &str, id: &str, host: Option<&str>, said: &[String]) -> String {
     let who = {
         let t = title.trim();
         if t.is_empty() { handle_of(id) } else { t.to_string() }
     };
     let there = host.map(|h| format!(" on {h}")).unwrap_or_default();
-    let ask = match host {
-        Some(h) => format!("`mcp__skein__send` with `host: \"{h}\"`"),
-        None => "`mcp__skein__send`".to_string(),
-    };
+    let ask = "`mcp__skein__send`";
     format!(
         "The last {} thing{} {who} ({}){there} said, oldest first:\n\n{}\n\nThat is its own \
          account of what it has been doing, not a check on whether it did it. If you need \
@@ -1314,7 +1311,7 @@ pub(crate) fn recalled(title: &str, id: &str, host: Option<&str>, said: &[String
 /// What a message from a card on another machine reads like to the card it
 /// reaches. `envelope`'s shape, which `relay.ts` already folds — the sender's
 /// title, its handle, its project — with the wall named after the project, and
-/// a trailer that says how to answer, since `send` with no `host` would look
+/// a trailer that says how to answer: to its handle, which the wall resolves to
 /// for the sender on this wall and not find it.
 ///
 /// The title and project are the far wall's labels, believed: the far wall is a
@@ -1339,9 +1336,9 @@ pub(crate) fn afar_envelope(host: &str, from_card: &str, title: Option<&str>, pr
     format!(
         "{RELAY_MARK} from \"{name}\" ({}) in {place} —\n\n{body}\n\n\
          (This came from another agent, on the Volery wall called {host} — another machine, \
-         not the user. Act on it if it bears on your work, reply with the `mcp__skein__send` \
-         tool with `host: \"{host}\"` if it needs an answer, and say nothing back if it does \
-         not.)",
+         not the user. Act on it if it bears on your work, reply to its handle with the \
+         `mcp__skein__send` tool if it needs an answer — the wall finds it there — and say \
+         nothing back if it does not.)",
         handle_of(from_card),
     )
 }
@@ -1594,8 +1591,8 @@ fn speeches_from(
             text,
             MAX_RECALL_CHARS,
             "This is the card's own account, cut to fit. If the tail matters, \
-             `mcp__skein__send` and ask it (with the same `host`, if it is on another \
-             wall) — do not report a conclusion drawn from a clipped report.",
+             `mcp__skein__send` and ask it — do not report a conclusion drawn from a \
+             clipped report.",
         ));
         while ring.len() > n {
             ring.pop_front();
@@ -1724,7 +1721,7 @@ mod tests {
         let head = text.lines().next().unwrap();
         assert_eq!(head, "[skein relay] from \"say 'hi'\" (0cf05791) in skein on box —");
         assert!(text.contains("do it") && !text.contains('\u{0}'));
-        assert!(text.contains("`host: \"box\"`") && text.contains("not the user"), "{text}");
+        assert!(text.contains("reply to its handle") && text.contains("not the user"), "{text}");
         let bare = afar_envelope("box", "0cf05791", None, None, "x");
         assert!(bare.starts_with("[skein relay] from \"a card\" (0cf05791) in box —"), "{bare}");
         let broken = afar_envelope("box", "0cf05791", Some("two\nlines"), Some(" sk\r\nein "), "x");
