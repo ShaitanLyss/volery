@@ -736,3 +736,228 @@ export function remoteQuestions(
     ];
   });
 }
+
+/* ── the conversation itself ──────────────────────────────────────────────── */
+
+/* A digest is the tier, not the conversation — that is this file's first
+ * sentence, and it was the right place to stop while the question was whether
+ * two walls could see each other at all. It is the wrong place to stay. Lyss,
+ * reading a card on her home wall from the office: "I can only see a fraction
+ * of what was last said at the top, and then only my messages sent from this
+ * machine." Which is precisely what a card face is, opened as a panel.
+ *
+ * So the conversation travels too. Four decisions shape what follows.
+ *
+ * **It is pulled, not gossiped.** A digest goes to every peer on every tick
+ * because it is small and the wall draws it whether or not anybody is looking.
+ * A transcript is none of those things: it is large, it is wanted one card at a
+ * time, and it is wanted the moment a panel opens. Putting it in the snapshot
+ * would multiply every tick by the *size of the conversations* rather than by
+ * the number of cards, to carry something nobody has asked to see. `link.rs`
+ * already has the shape — anything somebody is waiting on goes at once, as a
+ * one-shot exchange.
+ *
+ * **It is the same `Line`s, capped.** Not a second vocabulary. The owning wall
+ * already holds `Line[]`, this wall already has a component that draws them,
+ * and anything in between would be a third fold to keep in step with the other
+ * two. `history.ts` made this argument first, and it is why a restored card has
+ * no seam in the middle of its column.
+ *
+ * **What is cut is said.** Every cap marks what it took (`capText`), for the
+ * reason the panel's own result cap does: a transcript that truncates quietly
+ * has to be distrusted for everything it did show.
+ *
+ * **A tool result crosses, capped hard.** The tempting economy is to drop it —
+ * it is far and away the bulk — and it is the wrong one. Opening a call is the
+ * one gesture whose entire purpose is seeing what came back, so a fold that
+ * opens onto nothing is worse than a fold that cannot be opened at all.
+ */
+
+/** How many lines of a conversation cross. Enough to read the round you are in
+ *  and the one before it, which is what somebody opening a remote card wants;
+ *  not a scrollback, which is what the owning wall is for. */
+export const TAIL_LINES = 120;
+
+/** How much of one line's text crosses. Generous, because what it is really
+ *  bounding is a *summary* or a *skill* — 16k–25k characters apiece — and an
+ *  ordinary message is nowhere near it. */
+export const TAIL_TEXT_CAP = 6_000;
+
+/** How much of a tool result crosses. Much tighter than the panel's own cap,
+ *  since this is paid per line over a network rather than once into memory. */
+export const TAIL_RESULT_CAP = 2_000;
+
+/** The ceiling on one whole tail, in code points. `MAX_FRAME` is 8 MB and this
+ *  is far under it on purpose: the bound that matters is the one on somebody's
+ *  patience while a panel fills, not the one the wire would refuse. */
+export const TAIL_BUDGET = 400_000;
+
+/** One line of a conversation, as it crosses.
+ *
+ *  Deliberately a subset of `Line` rather than a restatement of it: the fields a
+ *  remote reader can do something with. What is left behind is bookkeeping that
+ *  only means anything beside a live process — `awaited`, and the echo's claim —
+ *  which a shadow has no wire to settle and must not pretend to. */
+export type WireLine = {
+  kind: string;
+  text: string;
+  note?: string;
+  state?: "pending" | "failed";
+  narration?: true;
+  /** The call, flattened. `input` arrives as a *string*: it is an unknown JSON
+   *  value on the far side, and a string is the only shape both ends can assert
+   *  anything about. */
+  call?: { name: string; input?: string; result?: string; failed?: true };
+};
+
+/** What a tail is made from — `Line`, structurally, so this file imports no
+ *  runes and a test can hand it plain objects. */
+export type TailSource = {
+  kind: string;
+  text: string;
+  note?: string;
+  state?: "pending" | "failed";
+  narration?: true;
+  call?: {
+    name?: string;
+    input?: unknown;
+    result?: { text?: string; failed?: boolean } | null;
+  } | null;
+};
+
+/** The tail of a conversation, ready to cross.
+ *
+ *  Taken from the end, because the end is what a conversation is about. The
+ *  budget is spent walking **backwards** for the same reason: one enormous
+ *  compaction summary near the start must not eat the room the last twenty
+ *  exchanges needed. */
+export function tailOf(lines: readonly TailSource[]): WireLine[] {
+  const out: WireLine[] = [];
+  let spent = 0;
+  for (let i = lines.length - 1; i >= 0 && out.length < TAIL_LINES; i--) {
+    const l = lines[i];
+    if (!l || typeof l.kind !== "string") continue;
+    const w: WireLine = { kind: l.kind, text: capText(l.text ?? "", TAIL_TEXT_CAP) };
+    if (l.note) w.note = capText(l.note, TITLE_CAP);
+    if (l.state) w.state = l.state;
+    if (l.narration) w.narration = true;
+    if (l.call && typeof l.call.name === "string") {
+      const c: NonNullable<WireLine["call"]> = { name: capText(l.call.name, TITLE_CAP) };
+      if (l.call.input !== undefined) {
+        /* `JSON.stringify` answers undefined for a few values, so the absence
+           is handled rather than becoming the string "undefined" in a fold. */
+        let text: string | undefined;
+        try {
+          text = JSON.stringify(l.call.input);
+        } catch {
+          text = undefined;
+        }
+        if (text !== undefined) c.input = capText(text, TAIL_RESULT_CAP);
+      }
+      if (l.call.result?.text) c.result = capText(l.call.result.text, TAIL_RESULT_CAP);
+      if (l.call.result?.failed) c.failed = true;
+      w.call = c;
+    }
+    const cost = w.text.length + (w.call?.result?.length ?? 0) + (w.call?.input?.length ?? 0);
+    /* The budget **stops the walk** rather than skipping a line. Everything
+       past it is older, so stopping keeps the tail contiguous; skipping would
+       leave a hole, and a hole reads as a conversation that missed a round. */
+    if (spent + cost > TAIL_BUDGET && out.length) break;
+    spent += cost;
+    out.push(w);
+  }
+  return out.reverse();
+}
+
+/** Read a tail back, degrading to something drawable.
+ *
+ *  The bargain `readSnapshot` strikes, for its reason: two walls are never
+ *  upgraded at the same moment, so a field a newer build adds must cost neither
+ *  a Rust change nor a lockstep between machines. Anything unreadable is
+ *  **dropped rather than guessed at** — a line invented here is a line of a
+ *  conversation that never happened. */
+export function readTail(raw: unknown): WireLine[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: WireLine[] = [];
+  for (const r of raw.slice(0, TAIL_LINES)) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    if (typeof o.kind !== "string" || typeof o.text !== "string") continue;
+    const w: WireLine = { kind: o.kind, text: capText(o.text, TAIL_TEXT_CAP) };
+    if (typeof o.note === "string") w.note = capText(o.note, TITLE_CAP);
+    if (o.state === "pending" || o.state === "failed") w.state = o.state;
+    if (o.narration === true) w.narration = true;
+    const c = o.call;
+    if (c && typeof c === "object") {
+      const co = c as Record<string, unknown>;
+      if (typeof co.name === "string") {
+        const call: NonNullable<WireLine["call"]> = { name: capText(co.name, TITLE_CAP) };
+        if (typeof co.input === "string") call.input = capText(co.input, TAIL_RESULT_CAP);
+        if (typeof co.result === "string") call.result = capText(co.result, TAIL_RESULT_CAP);
+        if (co.failed === true) call.failed = true;
+        w.call = call;
+      }
+    }
+    out.push(w);
+  }
+  return out;
+}
+
+/** A line of the drawn column: the far wall's, or one of ours still in flight.
+ *
+ *  `sent` on a `there` line is the send that line turned out to *be* — which is
+ *  what lets the receipt stay under your own words once they have arrived. */
+export type Woven =
+  | { at: "there"; line: WireLine; sent?: Sent }
+  | { at: "here"; sent: Sent };
+
+/** Put the far wall's conversation and this wall's sends into one column.
+ *
+ *  **This is the one piece with no counterpart in a local card**, and it exists
+ *  because a prompt to a remote card is drawn here the instant you send it,
+ *  travels, and then comes back inside the far wall's own transcript. Left
+ *  alone that is your message twice: once as this wall's copy with its receipt,
+ *  once as theirs.
+ *
+ *  Which is `trimOverlap`'s problem exactly — the session file's copy of a
+ *  prompt against the live one — and `#claimEcho`'s before it. So it is solved
+ *  the way those are, by **matching on trimmed text**, and it inherits their
+ *  hard-won rule: a match is *consumed*. Two identical prompts sent twice are
+ *  two lines, and letting both claim one far-side line is how a card drew a
+ *  prompt once and swallowed the other.
+ *
+ *  The receipt is kept rather than dropped on a match, and that is the point of
+ *  weaving at all instead of simply trimming: `${host} has it` under your own
+ *  words is the only thing distinguishing *the other wall has this* from *this
+ *  wall is still holding it*, and a transcript that quietly dropped it would
+ *  make a failed send look delivered. Lyss asked for it by name.
+ *
+ *  Sends with no line to claim are still travelling, or were refused, and go
+ *  below in the order they were made — which is where they already were. */
+export function weave(tail: readonly WireLine[], sent: readonly Sent[]): Woven[] {
+  const mine = [...sent].sort((a, b) => a.at - b.at);
+  const claimed = new Set<number>();
+  const taken = new Map<number, Sent>();
+  for (const s of mine) {
+    const want = s.text.trim();
+    if (!want) continue;
+    /* From the end, like `#claimEcho`: the newest unclaimed match is the one a
+       send just made is likeliest to be. */
+    for (let i = tail.length - 1; i >= 0; i--) {
+      if (claimed.has(i)) continue;
+      const l = tail[i];
+      if (l.kind !== "you" && l.kind !== "answer") continue;
+      if (l.text.trim() !== want) continue;
+      claimed.add(i);
+      taken.set(i, s);
+      break;
+    }
+  }
+  const out: Woven[] = tail.map((line, i) => {
+    const s = taken.get(i);
+    return s ? { at: "there" as const, line, sent: s } : { at: "there" as const, line };
+  });
+  const landed = new Set(taken.values());
+  for (const s of mine) if (!landed.has(s)) out.push({ at: "here", sent: s });
+  return out;
+}

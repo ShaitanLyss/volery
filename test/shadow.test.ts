@@ -462,3 +462,177 @@ describe("a remote question reaching you when you are not looking", () => {
     expect(remoteQuestions([shadow()], 0)[0]!.waitedSeconds).toBe(0);
   });
 });
+
+import {
+  TAIL_BUDGET,
+  TAIL_LINES,
+  TAIL_RESULT_CAP,
+  TAIL_TEXT_CAP,
+  readTail,
+  tailOf,
+  weave,
+  type Sent,
+  type TailSource,
+  type WireLine,
+} from "../src/lib/shadow";
+
+const said = (kind: string, text: string, extra: Partial<TailSource> = {}): TailSource => ({
+  kind,
+  text,
+  ...extra,
+});
+
+const sent = (text: string, at: number, state: Sent["state"] = "taken"): Sent => ({
+  id: `s${at}`,
+  text,
+  at,
+  state,
+});
+
+describe("a conversation crossing to another wall", () => {
+  test("the tail is the end of it, in order", () => {
+    const lines = Array.from({ length: 200 }, (_, i) => said("text", `line ${i}`));
+    const out = tailOf(lines);
+    expect(out.length).toBe(TAIL_LINES);
+    /* The END, not the beginning — a conversation is about where it got to. */
+    expect(out[out.length - 1].text).toBe("line 199");
+    expect(out[0].text).toBe(`line ${200 - TAIL_LINES}`);
+  });
+
+  test("a short conversation crosses whole", () => {
+    const out = tailOf([said("you", "hello"), said("text", "hi")]);
+    expect(out.map((l) => l.text)).toEqual(["hello", "hi"]);
+  });
+
+  test("what is cut says so", () => {
+    const out = tailOf([said("text", "x".repeat(TAIL_TEXT_CAP + 500))]);
+    expect(out[0].text.length).toBe(TAIL_TEXT_CAP);
+    expect(out[0].text.endsWith("…")).toBe(true);
+  });
+
+  test("a tool result crosses, capped, rather than being dropped", () => {
+    const out = tailOf([
+      said("tool", "reading a file", {
+        call: { name: "Read", input: { path: "a.ts" }, result: { text: "y".repeat(9_999) } },
+      }),
+    ]);
+    /* Opening a call is the one gesture whose whole purpose is seeing what came
+       back, so a fold that opens onto nothing is worse than no fold. */
+    expect(out[0].call?.result?.length).toBe(TAIL_RESULT_CAP);
+    expect(out[0].call?.name).toBe("Read");
+    expect(out[0].call?.input).toBe(JSON.stringify({ path: "a.ts" }));
+  });
+
+  test("the budget stops the walk rather than leaving a hole", () => {
+    const big = "z".repeat(TAIL_TEXT_CAP);
+    const lines = Array.from({ length: 100 }, () => said("text", big));
+    const out = tailOf(lines);
+    /* Contiguous: everything dropped is older than everything kept. A hole
+       would read as a conversation that skipped a round. */
+    expect(out.length).toBeLessThan(100);
+    expect(out.length).toBeGreaterThan(0);
+    const spent = out.reduce((n, l) => n + l.text.length, 0);
+    expect(spent).toBeLessThanOrEqual(TAIL_BUDGET + TAIL_TEXT_CAP);
+  });
+
+  test("one line past the budget still crosses, or a panel opens empty", () => {
+    const out = tailOf([said("text", "q".repeat(TAIL_TEXT_CAP))]);
+    expect(out.length).toBe(1);
+  });
+
+  test("a circular input costs the line its arguments, not its place", () => {
+    const loop: Record<string, unknown> = {};
+    loop.self = loop;
+    const out = tailOf([said("tool", "doing a thing", { call: { name: "X", input: loop } })]);
+    expect(out[0].call?.name).toBe("X");
+    expect(out[0].call?.input).toBeUndefined();
+  });
+});
+
+describe("reading a tail back from a wall you did not write", () => {
+  test("a newer wall's extra fields cost nothing", () => {
+    const out = readTail([{ kind: "text", text: "hi", futureThing: 9 }]);
+    expect(out).toEqual([{ kind: "text", text: "hi" }]);
+  });
+
+  test("rubbish is dropped, never guessed at", () => {
+    expect(readTail("nope")).toBeNull();
+    expect(readTail([null, 7, { kind: "text" }, { text: "no kind" }])).toEqual([]);
+  });
+
+  test("a line survives the round trip", () => {
+    const there = tailOf([
+      said("you", "do the thing"),
+      said("tool", "running", {
+        call: { name: "Bash", input: { cmd: "ls" }, result: { text: "a\nb", failed: true } },
+      }),
+      said("text", "done", { narration: true }),
+    ]);
+    expect(readTail(JSON.parse(JSON.stringify(there)))).toEqual(there);
+  });
+
+  test("a state nobody recognises is not kept", () => {
+    const out = readTail([{ kind: "you", text: "x", state: "exploded" }]);
+    expect(out?.[0].state).toBeUndefined();
+  });
+});
+
+describe("weaving your own sends into their conversation", () => {
+  const tail: WireLine[] = [
+    { kind: "you", text: "first thing" },
+    { kind: "text", text: "answered" },
+  ];
+
+  test("a send that arrived keeps its receipt under their copy", () => {
+    const w = weave(tail, [sent("first thing", 10)]);
+    /* Not trimmed away: `<host> has it` is the only thing that distinguishes
+       delivered from still-in-hand, and Lyss asked for it by name. */
+    expect(w.length).toBe(2);
+    expect(w[0]).toMatchObject({ at: "there", sent: { id: "s10" } });
+    expect(w.filter((x) => x.at === "here").length).toBe(0);
+  });
+
+  test("a send still in flight goes below, once", () => {
+    const w = weave(tail, [sent("first thing", 10), sent("not there yet", 20, "left")]);
+    const here = w.filter((x) => x.at === "here");
+    expect(here.length).toBe(1);
+    expect(here[0]).toMatchObject({ sent: { text: "not there yet" } });
+  });
+
+  test("two identical sends are two lines, not one claimed twice", () => {
+    /* `#claimEcho`'s lesson, one wall over: a match must be consumed, or a
+       prompt sent twice is drawn once and the other is swallowed. */
+    const both: WireLine[] = [
+      { kind: "you", text: "again" },
+      { kind: "you", text: "again" },
+    ];
+    const w = weave(both, [sent("again", 1), sent("again", 2)]);
+    expect(w.filter((x) => x.at === "here").length).toBe(0);
+    const claimed = w.filter((x) => x.at === "there" && x.sent);
+    expect(claimed.length).toBe(2);
+    expect(new Set(claimed.map((x) => (x as { sent: Sent }).sent.id)).size).toBe(2);
+  });
+
+  test("one send cannot claim a line a different send already has", () => {
+    const one: WireLine[] = [{ kind: "you", text: "again" }];
+    const w = weave(one, [sent("again", 1), sent("again", 2)]);
+    expect(w.filter((x) => x.at === "here").length).toBe(1);
+  });
+
+  test("only your own registers are matched", () => {
+    /* The agent saying your words back is not your prompt arriving. */
+    const echoed: WireLine[] = [{ kind: "text", text: "do the thing" }];
+    const w = weave(echoed, [sent("do the thing", 1)]);
+    expect(w.filter((x) => x.at === "here").length).toBe(1);
+  });
+
+  test("whitespace does not stop a send being recognised", () => {
+    const w = weave([{ kind: "you", text: "  padded " }], [sent("padded", 1)]);
+    expect(w.filter((x) => x.at === "here").length).toBe(0);
+  });
+
+  test("an empty tail is every send, in the order they were made", () => {
+    const w = weave([], [sent("b", 20, "left"), sent("a", 10, "queued")]);
+    expect(w.map((x) => (x.at === "here" ? x.sent.text : "?"))).toEqual(["a", "b"]);
+  });
+});
