@@ -42,6 +42,23 @@
     it has it.
   </p>
 
+  <!-- Whether it is stopped on you. Answered in the dock, where a question on
+       this wall is, so the two are never answered in two different places. A
+       wall gone quiet takes the offer away and says why: the question may
+       have been answered there, or run out of time, and an unconfirmed
+       question must not look like one still waiting. -->
+  {#if shadow.open.length}
+    <p class="asking">
+      parked on {shadow.open.length === 1 ? "a question" : `${shadow.open.length} questions`} for you
+      — answer {shadow.open.length === 1 ? "it" : "them"} in the dock, and it goes back to {shadow.host}
+    </p>
+  {:else if shadow.sheets.length && shadow.face.unheard}
+    <p class="note">
+      it was asking you something when {shadow.host} went quiet — it may have been answered there,
+      or have run out of time, so it cannot be answered from here until {shadow.host} is heard again
+    </p>
+  {/if}
+
   <div class="lines" data-scroll>
     {#if shadow.digest.said}
       <div class="said">
@@ -53,6 +70,7 @@
     {#each shadow.sent as p (p.id)}
       {@const r = sentReading(p, shadow.host, clock.t)}
       <div class="you {r.look}">
+        {#if p.askId}<span class="cap">answer to {p.about}</span>{/if}
         {p.text}
         <span class="mark">{r.words}</span>
       </div>
@@ -132,6 +150,15 @@
     font-size: 0.75rem;
     line-height: 1.5;
     color: var(--paper-faint);
+  }
+
+  /* Amber, because it is the asking status and nothing else here is: the same
+     hue the card face wears for the same fact. */
+  .asking {
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--st-ask);
   }
 
   .lines {

@@ -898,6 +898,15 @@
    *  different object and a different type, so nothing that acts on `focused`
    *  can be handed it. See `shadow.ts`. */
   const focusedShadow = $derived(focused ? null : elsewhere.find(focusedId));
+  /** A question on another wall this one may answer: the focused card's first,
+   *  else the first any card elsewhere is parked on. The dock decides where it
+   *  stands against this wall's own questions. */
+  const remoteAsk = $derived.by(() => {
+    const mine = focusedShadow?.open[0];
+    if (focusedShadow && mine) return { shadow: focusedShadow, sheet: mine, focused: true };
+    const any = elsewhere.firstAsking();
+    return any ? { ...any, focused: false } : null;
+  });
   /* A card you are looking at finishing is something you watched, so it raises
      no notice — the user's choice. All three facts live here, so this is where
      the question is answered for `Skein`. */
@@ -2980,11 +2989,14 @@
       return;
     }
     const at = all.findIndex((s) => s.id === focusedId);
-    const next = all[(at + 1) % all.length]!;
+    focusShadow(all[(at + 1) % all.length]!);
+  }
+
+  function focusShadow(s: Shadow) {
     studio.clearSelection();
-    focusedId = next.id;
+    focusedId = s.id;
     showDetail = true;
-    canvas?.reveal(next.id);
+    canvas?.reveal(s.id);
   }
 
   /** Let go of the card: no ring, no gathering, no panel.
@@ -4754,6 +4766,9 @@
     {bang}
     {focused}
     remote={focusedShadow}
+    {remoteAsk}
+    onremoteanswer={(s, sheet) => void elsewhere.answer(s, sheet)}
+    onremoteselect={(s) => focusShadow(s)}
     {targets}
     {waiting}
     {clashing}

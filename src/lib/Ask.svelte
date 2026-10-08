@@ -50,6 +50,7 @@
     title,
     scripts = true,
     parked = true,
+    stirs = true,
     elsewhere = false,
     onanswer,
     onstir,
@@ -68,6 +69,13 @@
      *  count down to and counting one down would be an instrument reporting a
      *  pressure that does not exist. */
     parked?: boolean;
+    /** Whether touching the panel can hold the deadline open. False for a
+     *  question parked on another wall (`shadows.svelte.ts`): no touch travels
+     *  there, so a countdown that a touch extended here would show *more* time
+     *  than the far call has — the unsafe direction, for an instrument whose job
+     *  is to say whether to hurry. Held still, it counts down the question's
+     *  base window, which a touch on its own wall can only lengthen. */
+    stirs?: boolean;
     /** Whether the card being asked is not the card in the ring — see the
      *  button in the head. */
     elsewhere?: boolean;
@@ -166,7 +174,7 @@
    *  and nothing to extend. */
   let told = -STIR_EVERY;
   function stir() {
-    if (!parked) return;
+    if (!parked || !stirs) return;
     stirredAt = Math.max(0, Math.floor((Date.now() - ask.since) / 1000));
     if (stirredAt - told < STIR_EVERY) return;
     told = stirredAt;

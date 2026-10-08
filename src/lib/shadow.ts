@@ -43,6 +43,7 @@
 
 import { spanOf, UNACKNOWLEDGED_LINE, type Ending, type Tier } from "./classify";
 import { layout, REGION_GAP, regionWidth, type Box, type Laid, type Region } from "./layout";
+import type { AskQuestion } from "./asking";
 
 /** The digest's shape version — this file's, not the wire's. Read leniently: a
  *  newer wall's digest is drawn from whatever fields this build understands. */
@@ -99,7 +100,45 @@ export type CardDigest = {
   said: string;
   /** Background jobs still running. */
   jobs: number;
+  /** Questions the card is parked on, oldest first — what lets a card asking
+   *  on one machine be answered from another. See `DigestAsk`. */
+  asks: DigestAsk[];
 };
+
+/** A parked `ask_user` question, as it travels.
+ *
+ *  **A card stopped on a question on a machine nobody is sitting at is stuck
+ *  for good** — it waits out the whole window and then proceeds without you.
+ *  "Control them from my work laptop" is not true while a question strands a
+ *  card, so the question rides the snapshot and the answer rides the prompt
+ *  wire back into the parked call (sink `16864f3d`). Rust carries this as part
+ *  of the opaque snapshot and reads only `askId`, when an answer names it.
+ *
+ *  What travels is the words: each question, its header and its options. Not
+ *  a preview's markup, which can be large and is code another wall would run,
+ *  and not a file, whose path means nothing on the other machine — `shows`
+ *  says one was there, so the far side can say what it cannot draw rather than
+ *  presenting an approval of a design you cannot see as if it were complete. */
+export type DigestAsk = {
+  askId: string;
+  /** When it was asked, on the owning wall's clock — subtracted only from the
+   *  snapshot's own `at`, as `restingSince` is. */
+  since: number;
+  questions: {
+    header: string;
+    question: string;
+    options: { label: string; detail: string | null }[];
+    shows: boolean;
+  }[];
+};
+
+/* Generous for what a question is, and there so one wall cannot make another
+   hold an unbounded sheet: a question is read in a dock panel. */
+export const QUESTION_CAP = 2_000;
+export const OPTION_CAP = 300;
+export const OPTIONS_CAP = 24;
+export const QUESTIONS_CAP = 12;
+export const ASKS_CAP = 6;
 
 /** Everything one wall says about its cards, replaced wholesale on every
  *  publish. A card missing from the next one has been closed — there are no
@@ -165,6 +204,10 @@ export type DigestSource = {
   ctx: number;
   lines: readonly { kind: string; text: string }[];
   jobs: readonly unknown[];
+  /** `Conversation.asks`. Volery's own questions (`ours`) never travel: a
+   *  close, an unpost or a delete is answered on the machine it would act on,
+   *  and the link refuses an answer to one regardless. */
+  asks: readonly { askId: string; since: number; ours: boolean; questions: readonly AskQuestion[] }[];
 };
 
 /** `Conversation.doing` without the parts that count.
@@ -211,6 +254,22 @@ export function digestOf(c: DigestSource): CardDigest {
     ctx: Math.round(clamp01(c.ctx) * 1000) / 1000,
     said: capText(lastSaid(c.lines), SAID_CAP),
     jobs: c.jobs.length,
+    asks: c.asks
+      .filter((a) => !a.ours)
+      .slice(0, ASKS_CAP)
+      .map((a) => ({
+        askId: a.askId,
+        since: a.since,
+        questions: a.questions.slice(0, QUESTIONS_CAP).map((q) => ({
+          header: capText(q.header, TITLE_CAP),
+          question: capText(q.question, QUESTION_CAP),
+          options: q.options.slice(0, OPTIONS_CAP).map((o) => ({
+            label: capText(o.label, OPTION_CAP),
+            detail: o.detail ? capText(o.detail, OPTION_CAP) : null,
+          })),
+          shows: !!(q.preview || q.file || q.options.some((o) => o.preview || o.file)),
+        })),
+      })),
   };
 }
 
@@ -272,7 +331,66 @@ export function readDigest(raw: unknown): CardDigest | null {
     ctx: clamp01(typeof r.ctx === "number" ? r.ctx : 0),
     said: str(r.said, SAID_CAP),
     jobs: Math.min(99, Math.max(0, Math.floor(jobs))),
+    asks: readAsks(r.asks),
   };
+}
+
+/** The parked questions off the wire. A question with no words and an ask with
+ *  no id or no questions are dropped — there is nothing to answer — and an
+ *  older wall that sends no `asks` at all is a card asking nothing. */
+function readAsks(raw: unknown): DigestAsk[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DigestAsk[] = [];
+  for (const a of raw.slice(0, ASKS_CAP)) {
+    if (!a || typeof a !== "object") continue;
+    const r = a as Record<string, unknown>;
+    const askId = typeof r.askId === "string" ? scrub(r.askId).trim().slice(0, 80) : "";
+    const since = stamp(r.since);
+    if (!askId || since === null || !Array.isArray(r.questions)) continue;
+    const questions: DigestAsk["questions"] = [];
+    for (const q of r.questions.slice(0, QUESTIONS_CAP)) {
+      if (!q || typeof q !== "object") continue;
+      const x = q as Record<string, unknown>;
+      const question = str(x.question, QUESTION_CAP).trim();
+      if (!question) continue;
+      const options = Array.isArray(x.options)
+        ? x.options.slice(0, OPTIONS_CAP).flatMap((o) => {
+            if (!o || typeof o !== "object") return [];
+            const y = o as Record<string, unknown>;
+            const label = str(y.label, OPTION_CAP).trim();
+            if (!label) return [];
+            const detail = str(y.detail, OPTION_CAP).trim();
+            return [{ label, detail: detail || null }];
+          })
+        : [];
+      questions.push({ header: str(x.header, TITLE_CAP), question, options, shows: x.shows === true });
+    }
+    if (questions.length) out.push({ askId, since, questions });
+  }
+  return out;
+}
+
+/** A travelled question as the ask panel draws one.
+ *
+ *  `shows` becomes a sentence on the question rather than a flag the panel
+ *  must remember to read: a question asked over a design is an approval, and
+ *  answering it without the design is answering something else. Saying so in
+ *  the words is the one form no surface can omit. */
+export function askHere(a: DigestAsk, host: string): AskQuestion[] {
+  return a.questions.map((q) => ({
+    header: q.header || q.question.slice(0, 48),
+    question: q.shows
+      ? `${q.question}\n\n*(a design or a file goes with this question — only ${host} can show it)*`
+      : q.question,
+    options: q.options.map((o) => ({ label: o.label, detail: o.detail })),
+  }));
+}
+
+/** When a question was asked, on this wall's clock — by the same arithmetic as
+ *  `idleOf`, so no term compares two machines' clocks. Without the owner's
+ *  `at`, the snapshot's arrival is the best this wall knows. */
+export function askedAt(a: DigestAsk, at: number | null, madeAt: number): number {
+  return at === null ? madeAt : madeAt - Math.max(0, at - a.since);
 }
 
 /** A whole snapshot off the wire. Null only when there is no list of cards in
@@ -432,6 +550,10 @@ export type Sent = {
   at: number;
   state: SentState;
   why?: string;
+  /** When this is an answer to a question the card is parked on: which ask,
+   *  and the question's header, so the line can say what it answered. */
+  askId?: string;
+  about?: string;
 };
 
 export type SentEvent =

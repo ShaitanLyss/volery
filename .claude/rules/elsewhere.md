@@ -182,13 +182,57 @@ the reason `elsewhere` is a field of the face: every surface that draws a card r
 none can forget it. The link's record of births and the card can arrive in either order; an
 effect stamps whichever comes second.
 
+### A question asked over there is answered from here
+
+The general rule (sink `16864f3d`): **anything that parks waiting for a person must travel to
+where the person is, or fail fast.** A card on the home laptop stopped on `ask_user` while Lyss
+sits at the work laptop waits out the whole window and then proceeds without her — "control
+them from my work laptop" is simply not true while a question can strand a card.
+
+- **The question rides the snapshot.** `CardDigest.asks` carries each parked question's words —
+  header, question, options — and `since` on the owner's clock, read against the snapshot's `at`
+  the way `restingSince` is (`askedAt`). Volery's own questions (`ours`: close, unpost, remove)
+  never travel; they are answered on the machine they would act on, and the link refuses an
+  answer to one anyway.
+- **Words only.** A preview's markup is code another wall would run and can be large; a file's
+  path means nothing on another machine. Both are left behind, and `shows` puts a sentence on
+  the question saying a design went with it that only the other wall can show — an approval
+  answered without the thing being approved is an answer to something else, and a sentence in
+  the question is the one form no panel can forget to draw.
+- **The answer rides the prompt wire**, `flyway_prompt` with an `askId`, carrying exactly what
+  this wall's dock would have sent (`composeAnswer`). The owning wall hands it straight into
+  the parked call (`ask::answer_from_afar`, c86101fa's); its own panel comes down through
+  `ask:closed`. It goes through the four readings a prompt does and is drawn among what was
+  said to the card, marked *answer to …*.
+- **The same panel draws it.** `Dock.svelte` renders `Ask.svelte` over a sheet the shadow keeps
+  per ask — the same object across snapshots, so half an answered sheet survives the next one
+  arriving. It stands ahead of a local question only when its card is the one in the ring
+  (you went to it), and otherwise behind every local question and ahead of every notice: still
+  an agent stopped on a clock, just on another machine.
+- **Held still** (`stirs={false}`). Locally a touch extends the countdown at once and tells
+  Rust within a minute, always erring towards *less* time shown. No touch travels, so here the
+  same gesture would show *more* time than the far call has — the unsafe direction. Held
+  still, it counts the question's base window from when it was asked, which a touch on its
+  own wall can only lengthen.
+- **Hidden while its answer is on the way**, given back if the answer is refused (the sheet
+  still filled in), and **not answerable at all once its wall is unheard** — the question may
+  have been answered there or run out of time, and a question not confirmed as still waiting
+  must not look like one waiting for an answer. `Yonder.svelte` says which.
+
+Demonstrated 2026-10-08 between two walls of one build: a card on lab2 parked on a real
+`ask_user`, the question was on lab's dock within ~3s, "square" clicked there was `taken` in
+0.6s and the card resumed and said "square" at 2.7s. Then a question left up while lab2 was
+killed: past 90s it was no longer offered and the panel said why.
+
 ### What is not here
 
 - **The transcript.** A digest is the tier; streaming a conversation is a much larger tier and
   `FLYWAY-REMAINING.md` says what it costs. `Yonder.svelte` says in words that the conversation
   stays on the other machine, because a panel shaped like a transcript with most of it missing
   reads as one that failed to load.
-- **Answering a remote card's `ask_user`.** A shadow can be *asking* — the owner's tier says so
-  — and the only reply from here is a prompt.
+- **Notices travelling** (sink `16864f3d` item 2). A card that finished or ended on a question
+  shows its tier on the shadow, but the notice queue is this wall's.
+- **The peek, the taskbar flash and the chime** for a remote question. The card goes amber on
+  the wall and the question takes the dock, but `attention.svelte.ts` folds local cards only.
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.

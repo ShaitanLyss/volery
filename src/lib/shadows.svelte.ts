@@ -31,12 +31,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { clock } from "./conversation.svelte";
-import type { Conversation } from "./conversation.svelte";
+import type { Conversation, PendingAsk } from "./conversation.svelte";
+import { blankAnswers, composeAnswer } from "./asking";
 import type { Skein } from "./skein.svelte";
 import { spanOf, type Tier } from "./classify";
 import { Listeners } from "./listeners";
 import {
   advance,
+  askedAt,
+  askHere,
   DIGEST_V,
   digestOf,
   faceOf,
@@ -96,6 +99,15 @@ export class Shadow {
    *  `!` line: nothing about it is in any session file, and a prompt is only
    *  worth tracking while somebody is waiting on it. */
   sent = $state<Sent[]>([]);
+  /** The questions it is parked on, as sheets this wall's ask panel can fill
+   *  in. Kept as the same objects across snapshots, keyed on the ask, so what
+   *  has been answered of a sheet survives the next snapshot arriving — the
+   *  local panel keeps `answers` on the ask for the same reason. */
+  sheets = $state<PendingAsk[]>([]);
+  /** Questions answered from here whose answer has not been refused. Hidden
+   *  from the panel while the answer is on its way: drawn as still waiting, a
+   *  question you have just answered would invite a second answer. */
+  answering = $state<string[]>([]);
 
   #walls: Elsewhere;
 
@@ -118,6 +130,15 @@ export class Shadow {
     const w = this.#walls.walls[this.host];
     return w ? idleOf(this.digest, w.at, w.madeAt, clock.t) : 0;
   });
+
+  /** The questions this wall may answer now. **None while its wall is
+   *  unheard**: the question may have been answered there, or its time run out,
+   *  and a question that has not been confirmed as still waiting must not look
+   *  like one waiting for an answer — the same honesty the face keeps. */
+  open = $derived(this.#open());
+  #open(): PendingAsk[] {
+    return this.face.unheard ? [] : this.sheets.filter((a) => !this.answering.includes(a.askId));
+  }
 
   face = $derived(this.#face());
   #face() {
@@ -319,6 +340,7 @@ export class Elsewhere {
       ctx: c.ctx,
       lines: c.lines,
       jobs: c.jobs,
+      asks: c.asks,
     };
   }
 
@@ -407,6 +429,7 @@ export class Elsewhere {
           s = new Shadow(this, host, d);
           this.#byId.set(id, s);
         }
+        this.#sheets(s, this.walls[host]!);
         next.push(s);
       }
     }
@@ -414,7 +437,59 @@ export class Elsewhere {
     this.shadows = next;
   }
 
+  /** Bring a shadow's sheets in line with the questions its digest carries:
+   *  the same sheet for the same ask, a fresh one for a new ask, and none for
+   *  an ask that has gone — answered on its own wall, or out of time. */
+  #sheets(s: Shadow, w: Wall) {
+    const was = new Map(s.sheets.map((a) => [a.askId, a]));
+    const now = s.digest.asks.map(
+      (a) =>
+        was.get(a.askId) ?? {
+          askId: a.askId,
+          questions: askHere(a, s.host),
+          answers: blankAnswers(askHere(a, s.host)),
+          ours: false,
+          since: askedAt(a, w.at, w.madeAt),
+        },
+    );
+    if (now.length !== s.sheets.length || now.some((a, i) => a !== s.sheets[i])) s.sheets = now;
+    const live = new Set(now.map((a) => a.askId));
+    if (s.answering.some((id) => !live.has(id))) s.answering = s.answering.filter((id) => live.has(id));
+  }
+
+  /** The first question on another wall this one may answer — what the dock
+   *  shows when nothing on this wall is asking. */
+  firstAsking(): { shadow: Shadow; sheet: PendingAsk } | null {
+    for (const shadow of this.shadows) {
+      const sheet = shadow.open[0];
+      if (sheet) return { shadow, sheet };
+    }
+    return null;
+  }
+
   /* ── speaking to one ──────────────────────────────────────────────── */
+
+  /** Answer a question a card on another wall is parked on.
+   *
+   *  The answer is the text the dock here would have sent — `composeAnswer`,
+   *  numbered list and asides included — and it rides the prompt wire with the
+   *  ask's id, which the owning wall hands straight into the parked call. It is
+   *  drawn among what was said to the card from here and goes through the same
+   *  four readings a prompt does: a question answered into a link that is down
+   *  must not look answered. */
+  async answer(s: Shadow, sheet: PendingAsk) {
+    const text = composeAnswer(sheet.questions, sheet.answers);
+    const id = crypto.randomUUID();
+    const about = sheet.questions[0]?.header ?? "a question";
+    s.sent.push({ id, text, at: Date.now(), state: "queued", askId: sheet.askId, about });
+    this.#byPrompt.set(id, s);
+    s.answering = [...s.answering, sheet.askId];
+    try {
+      await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, askId: sheet.askId });
+    } catch (e) {
+      this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
+    }
+  }
 
   /** Send a prompt to a card on another wall. Drawn at once, as a local send
    *  is, and marked for what it is until the other wall answers. */
@@ -444,6 +519,13 @@ export class Elsewhere {
     if (i < 0) return;
     const next = advance(s.sent[i]!, ev);
     s.sent[i] = next;
+    /* A refused answer gives its question back, with the sheet still filled
+       in: refused because the link was down, it can be sent again; refused
+       because the question is gone, the next snapshot takes it away. */
+    if (next.state === "refused" && next.askId) {
+      const ask = next.askId;
+      s.answering = s.answering.filter((a) => a !== ask);
+    }
     /* An answer is final (`advance`), so nothing further can be owed to it and
        the route can go — which is what keeps this map from growing for the life
        of the window. */

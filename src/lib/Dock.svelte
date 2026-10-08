@@ -20,7 +20,7 @@
   import Notice from "./Notice.svelte";
   import { noticeShown } from "./notice";
   import type { Skein } from "../lib/skein.svelte";
-  import type { Conversation } from "../lib/conversation.svelte";
+  import type { Conversation, PendingAsk } from "../lib/conversation.svelte";
   import type { Shadow } from "./shadows.svelte";
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
@@ -39,6 +39,9 @@
     bang,
     focused,
     remote = null,
+    remoteAsk = null,
+    onremoteanswer,
+    onremoteselect,
     targets,
     waiting,
     clashing,
@@ -69,6 +72,13 @@
      *  acts on a card can be aimed at one by accident; all the dock does with it
      *  is say where a prompt would go and let one be typed. */
     remote?: Shadow | null;
+    /** A question a card on another wall is parked on, which this wall may
+     *  answer: the focused shadow's, or else the first any shadow has. Drawn
+     *  the way a local question is, by the same panel — see the markup for
+     *  where it stands in the queue. */
+    remoteAsk?: { shadow: Shadow; sheet: PendingAsk; focused: boolean } | null;
+    onremoteanswer?: (shadow: Shadow, sheet: PendingAsk) => void;
+    onremoteselect?: (shadow: Shadow) => void;
     /** Everything a send would reach: the gathering, or the focused card, or
      *  nothing at all. */
     targets: Conversation[];
@@ -163,10 +173,15 @@
      this falls back to otherwise is the focused one: the same file name in two
      projects would have opened the wrong one, silently. See `scopeFiles`. */
   const asking = $derived(askShown(focused, skein.blocked, heldAsk));
+  /* A question from another wall. Ahead of a local one only when its card is
+     the one in the ring — you went to it, so that is the question you meant —
+     and otherwise behind every local question and ahead of every notice: it is
+     still an agent stopped on a clock, just one on another machine. */
+  const remoteShown = $derived(remoteAsk && (remoteAsk.focused || !asking) ? remoteAsk : null);
   /* Behind every ask: a notice is a card that already stopped, where an ask is
      an agent stopped mid-turn on a clock. So one only shows with no ask up. */
   const notice = $derived(
-    asking ? null : noticeShown(focused?.id, skein.noticeQueue, heldNotice),
+    asking || remoteShown ? null : noticeShown(focused?.id, skein.noticeQueue, heldNotice),
   );
   const noticeCard = $derived(
     notice ? (skein.convs.find((c) => c.id === notice.conversationId) ?? null) : null,
@@ -327,6 +342,26 @@
   });
 </script>
 
+<!-- A question parked on another wall, in the panel a local one uses.
+     Held still (`stirs={false}`): no touch travels to that wall, so its
+     countdown runs on the question's base window, which only a touch over
+     there can lengthen. No scripts, since what travels is the words alone.
+     Answering goes back down the prompt wire into the parked call, and the
+     line in the card's panel says how far it got — the same four readings a
+     prompt to that wall has. -->
+{#snippet elsewhereAsk(r: { shadow: Shadow; sheet: PendingAsk; focused: boolean })}
+  <Ask
+    ask={r.sheet}
+    project="{r.shadow.project} · on {r.shadow.host}"
+    title={r.shadow.title}
+    scripts={false}
+    stirs={false}
+    elsewhere={!r.focused}
+    onanswer={() => onremoteanswer?.(r.shadow, r.sheet)}
+    onselect={() => onremoteselect?.(r.shadow)}
+  />
+{/snippet}
+
 <footer
   bind:clientHeight={height}
   class="dock"
@@ -354,7 +389,9 @@
   ></div>
   <!-- A blocked card jumps the queue: it is the only state where an agent is
        genuinely stopped, so answering it comes before anything else. -->
-  {#if asking}
+  {#if remoteShown?.focused}
+    {@render elsewhereAsk(remoteShown)}
+  {:else if asking}
     {@const target = asking}
     <Ask
       ask={target.pendingAsk!}
@@ -367,6 +404,8 @@
       onheld={() => skein.holdAsk(target)}
       onselect={() => onselect(target)}
     />
+  {:else if remoteShown}
+    {@render elsewhereAsk(remoteShown)}
   {:else if notice && noticeCard}
     {@const n = notice}
     {@const card = noticeCard}

@@ -15,6 +15,8 @@ import {
   sameCards,
   scrub,
   sentReading,
+  askHere,
+  askedAt,
   standElsewhere,
   steadyDoing,
   ELSEWHERE_COLS,
@@ -49,6 +51,7 @@ function source(over: Partial<DigestSource> = {}): DigestSource {
       { kind: "text", text: "done — the ring no longer pegs" },
     ],
     jobs: [],
+    asks: [],
     ...over,
   };
 }
@@ -73,6 +76,7 @@ describe("making a digest", () => {
       ctx: 0.412,
       said: "done — the ring no longer pegs",
       jobs: 0,
+      asks: [],
     });
   });
 
@@ -323,5 +327,91 @@ describe("where other walls stand", () => {
       expect(n.y).toBeLessThan(r.y + r.h);
     }
     expect(laid.map((n) => n.conv)).toEqual(expect.arrayContaining(shadows));
+  });
+});
+
+describe("a question that travels", () => {
+  const q = (over: object = {}) => ({
+    header: "widget shape",
+    question: "round or square?",
+    options: [
+      { label: "round", detail: "softer" },
+      { label: "square", detail: null },
+    ],
+    ...over,
+  });
+  const asking = (over: object = {}) =>
+    source({ asks: [{ askId: "a1", since: 5_000, ours: false, questions: [q()] }], ...over });
+
+  test("carries the words of a parked question", () => {
+    expect(digestOf(asking()).asks).toEqual([
+      {
+        askId: "a1",
+        since: 5_000,
+        questions: [
+          {
+            header: "widget shape",
+            question: "round or square?",
+            options: [
+              { label: "round", detail: "softer" },
+              { label: "square", detail: null },
+            ],
+            shows: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  /* A close, an unpost or a delete is answered where it would act. */
+  test("never carries the wall's own questions", () => {
+    const d = digestOf(source({ asks: [{ askId: "x", since: 1, ours: true, questions: [q()] }] }));
+    expect(d.asks).toEqual([]);
+  });
+
+  /* A preview is code and a file is a path; neither means anything over there. */
+  test("leaves a design behind, and says that one was there", () => {
+    const withPreview = q({ options: [{ label: "this", detail: null, preview: { html: "<b>x</b>", css: null, js: "alert(1)" } }] });
+    const d = digestOf(source({ asks: [{ askId: "a", since: 1, ours: false, questions: [withPreview] }] }));
+    expect(JSON.stringify(d.asks)).not.toContain("alert");
+    expect(d.asks[0]!.questions[0]!.shows).toBe(true);
+    const here = askHere(d.asks[0]!, "lab");
+    expect(here[0]!.question).toContain("only lab can show it");
+    expect(here[0]!.options).toEqual([{ label: "this", detail: null }]);
+  });
+
+  test("round-trips through the reader", () => {
+    const d = digestOf(asking());
+    expect(readDigest(JSON.parse(JSON.stringify(d)))!.asks).toEqual(d.asks);
+  });
+
+  test("an older wall that sends no questions is a card asking nothing", () => {
+    expect(readDigest({ id: "c" })!.asks).toEqual([]);
+  });
+
+  test("drops what cannot be answered, keeps what can", () => {
+    const asks = readDigest({
+      id: "c",
+      asks: [
+        { since: 1, questions: [q()] }, // no id
+        { askId: "b", questions: [q()] }, // no clock
+        { askId: "c", since: 1, questions: [{ question: "   " }] }, // no words
+        { askId: "d", since: 1, questions: [{ question: "go?", options: [{ label: "" }, { label: "yes" }] }] },
+      ],
+    })!.asks;
+    expect(asks.map((a) => a.askId)).toEqual(["d"]);
+    expect(asks[0]!.questions[0]!.options).toEqual([{ label: "yes", detail: null }]);
+  });
+
+  test("a question with no header is named from its words", () => {
+    const here = askHere({ askId: "a", since: 0, questions: [{ header: "", question: "go?", options: [], shows: false }] }, "lab");
+    expect(here[0]!.header).toBe("go?");
+  });
+
+  /* Owner clock at 70s, asked at 10s: a minute old when made. */
+  test("when it was asked, without comparing two clocks", () => {
+    const a = { askId: "a", since: 10_000, questions: [] };
+    expect(askedAt(a, 70_000, 3_600_000)).toBe(3_600_000 - 60_000);
+    expect(askedAt(a, null, 500)).toBe(500);
   });
 });

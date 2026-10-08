@@ -820,7 +820,16 @@ export class Control {
           doing: s.doing,
           idleSeconds: s.idleSeconds,
           said: s.digest.said,
-          sent: s.sent.map((p) => ({ text: p.text, state: p.state, why: p.why ?? null })),
+          sent: s.sent.map((p) => ({ text: p.text, state: p.state, why: p.why ?? null, askId: p.askId ?? null })),
+          /* Every question it is parked on, and whether this wall may answer it
+             now — not while one is on its way, and none while its wall is
+             unheard. `open` is the reading the dock draws from. */
+          asks: s.sheets.map((a) => ({
+            askId: a.askId,
+            open: s.open.includes(a),
+            headers: a.questions.map((q) => q.header),
+            answers: [...a.answers],
+          })),
         })),
         births: { ...h.elsewhere.births },
       },
