@@ -11,10 +11,27 @@
      that failed to load. */
   import { clock } from "./conversation.svelte";
   import { cardName } from "./naming";
-  import { sentReading } from "./shadow";
+  import Transcript from "./Transcript.svelte";
   import type { Shadow } from "./shadows.svelte";
 
-  let { shadow }: { shadow: Shadow } = $props();
+  let {
+    shadow,
+    read = 1,
+    rails = "left",
+    watching = true,
+    onread,
+  }: {
+    shadow: Shadow;
+    /** The same four the transcript takes on this wall, passed straight
+     *  through. Not re-derived here: how the window is set up to be read from
+     *  belongs to `App.svelte` whichever kind of card is in the panel, and a
+     *  shadow whose reading size was its own would be the one panel that did
+     *  not answer ctrl+0. */
+    read?: number;
+    rails?: "left" | "right";
+    watching?: boolean;
+    onread?: (next: number) => void;
+  } = $props();
 
   const name = $derived(cardName(shadow.title, ""));
 
@@ -37,9 +54,15 @@
   </header>
 
   <p class="note">
-    only what this card is doing travels between walls — its conversation stays on
-    {shadow.host}. what you send it from here is below, marked until {shadow.host} says
-    it has it.
+    <!-- What the panel still owes saying, now that the conversation itself
+         crosses. Two things, and both are about the *edges* of what is here:
+         how far back it goes, and that a prompt of yours is marked until the
+         far wall says it has it. The old sentence — "its conversation stays on
+         {host}" — was the honest reading of a panel that had one line of it,
+         and keeping it now would be the panel describing a limitation it no
+         longer has. -->
+    the last of this card's conversation, read from {shadow.host} — older rounds stay there.
+    what you send it is marked until {shadow.host} says it has it.
   </p>
 
   <!-- Whether it is stopped on you. Answered in the dock, where a question on
@@ -59,24 +82,21 @@
     </p>
   {/if}
 
-  <div class="lines" data-scroll>
-    {#if shadow.digest.said}
-      <div class="said">
-        <span class="cap">last said</span>
-        {shadow.digest.said}
-      </div>
-    {/if}
+  <!-- The conversation, drawn by the same component a card on this wall uses.
+       Not a second transcript: `Transcript.svelte` takes `Readable` rather than
+       a `Conversation`, and a shadow answers it — so folding, markdown, the
+       rails, the find bar, opening a tool call and following the tail all work
+       here because they are the same code, not because they were built twice.
 
-    {#each shadow.sent as p (p.id)}
-      {@const r = sentReading(p, shadow.host, clock.t)}
-      <div class="you {r.look}">
-        {#if p.askId}<span class="cap">answer to {p.about}</span>{/if}
-        {p.text}
-        <span class="mark">{r.words}</span>
-      </div>
-    {:else}
-      <p class="none">nothing sent from here yet — type in the dock to speak to it</p>
-    {/each}
+       Where this wall is, is said once in the header and nowhere in the column.
+       Lyss asked for the host marker kept and she is right that it belongs on
+       the furniture: a card on another machine is a fact about the card, and
+       repeating it beside every line would make the conversation harder to
+       read in exchange for saying nothing new. The receipts under your own
+       prompts are the exception, and they say something the header cannot —
+       whether the far wall has these particular words. -->
+  <div class="column">
+    <Transcript conv={shadow} {read} {rails} {watching} {onread} />
   </div>
 </section>
 
@@ -161,67 +181,15 @@
     color: var(--st-ask);
   }
 
-  .lines {
+  /* The transcript takes the rest of the panel and scrolls itself. It brings
+     its own rails, find bar and follow-the-tail; nothing here may give it a
+     height it has to fight. `min-height: 0` is what lets it shrink below its
+     content inside this flex column — without it the column is sized by the
+     conversation and the panel grows off the bottom of the window. */
+  .column {
     flex: 1 1 auto;
     min-height: 0;
-    overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
-  }
-  .said,
-  .you {
-    font-size: calc(var(--tx-size, 0.86rem) * var(--read, 1));
-    line-height: var(--tx-leading, 1.55);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .said {
-    color: var(--paper-dim);
-  }
-  .cap {
-    display: block;
-    font-family: var(--util);
-    font-size: 0.66rem;
-    letter-spacing: 0.08em;
-    color: var(--paper-faint);
-  }
-
-  /* A prompt, in the transcript's own register: a rule down the left, and the
-     rule's stitch saying how far it got. Solid once the other wall has it;
-     dashed while it is still here, which is what a local prompt on its way
-     wears; dotted once it has left — the stitch the other wall's region is
-     drawn in, because that is where it now is. Achromatic until it fails,
-     since a prompt in flight is not a status. */
-  .you {
-    color: var(--tx-you, var(--paper));
-    border-left: 2px solid var(--paper-faint);
-    padding-left: 0.6rem;
-  }
-  .you.pending {
-    color: color-mix(in srgb, var(--tx-you, var(--paper)) 68%, var(--well));
-    border-left-style: dashed;
-  }
-  .you.transit {
-    color: color-mix(in srgb, var(--tx-you, var(--paper)) 68%, var(--well));
-    border-left-style: dotted;
-  }
-  .you.failed {
-    border-left-color: var(--st-fail);
-  }
-  .mark {
-    display: block;
-    margin-top: 0.15rem;
-    font-family: var(--util);
-    font-size: 0.7rem;
-    color: var(--paper-faint);
-  }
-  .you.failed .mark {
-    color: var(--st-fail);
-  }
-  .none {
-    margin: 0;
-    font-size: 0.75rem;
-    color: var(--paper-faint);
   }
 </style>

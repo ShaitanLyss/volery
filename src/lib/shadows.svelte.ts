@@ -31,13 +31,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { clock } from "./conversation.svelte";
-import type { Conversation, PendingAsk } from "./conversation.svelte";
+import type { Conversation, Job, Line, PendingAsk } from "./conversation.svelte";
 import { blankAnswers, composeAnswer } from "./asking";
 import type { Skein } from "./skein.svelte";
 import { spanOf, type Tier } from "./classify";
 import { Listeners } from "./listeners";
 import {
   advance,
+  asLines,
   askedAt,
   askHere,
   DIGEST_V,
@@ -47,6 +48,8 @@ import {
   promptRefusal,
   readSnapshot,
   sameCards,
+  weave,
+  type WireLine,
   type CardDigest,
   type Sent,
   type SentEvent,
@@ -184,12 +187,74 @@ export class Shadow {
   }
   /** The face draws a count and a tooltip of labels; a digest carries only the
    *  count, so the labels say where the work is rather than inventing what. */
-  get jobs() {
-    return Array.from({ length: this.busy ? this.digest.jobs : 0 }, () => ({
+  get jobs(): Job[] {
+    return Array.from({ length: this.busy ? this.digest.jobs : 0 }, (_, i) => ({
+      toolId: `${this.id}:job${i}`,
+      taskId: null,
+      kind: "command" as const,
       label: `background work on ${this.host}`,
+      /* **Null, and it has to be.** A job's output file is a path on the other
+         machine, so there is nothing here to open and nothing honest to point
+         the drawer at. `Jobs.svelte` draws a row with no log rather than a log
+         that is not there, which is the right half of the two to keep: that
+         work is running over there is worth knowing, and reading it is the
+         owning wall's to offer. */
+      outputPath: null,
+      journalDir: null,
+      state: "running" as const,
+      since: this.digest.restingSince ?? 0,
     }));
   }
-  lines = $derived(this.digest.said ? [{ kind: "text", text: this.digest.said }] : []);
+  /** The far wall's own conversation, once somebody has opened the panel and
+   *  asked for it. Null until then, and that is the *reading* as well as the
+   *  state: a tail nobody has fetched is not an empty conversation, so `lines`
+   *  falls back to the one line a digest carries rather than drawing a card
+   *  that has never said anything. */
+  tail = $state.raw<WireLine[] | null>(null);
+  /** Where the fetch has got to, so the panel can say "reading…" rather than
+   *  showing a conversation with a hole in it. `none` is the far wall having
+   *  answered that it has nothing — a cleared card, or one that never spoke. */
+  tailState = $state<"unread" | "loading" | "ready" | "none" | "error">("unread");
+
+  /** The column, as the transcript draws it.
+   *
+   *  Their conversation and our sends, woven (`shadow.ts::weave`) so a prompt
+   *  that has arrived appears once — in their copy, wearing this wall's receipt
+   *  — and one still travelling appears below it. The fallback is the digest's
+   *  single line, which is what this used to be in its entirety and is still
+   *  the honest answer before anybody has asked for more. */
+  lines = $derived.by((): Line[] => {
+    const t = this.tail;
+    if (t) return asLines(weave(t, this.sent), this.host, clock.t);
+    return this.digest.said ? [{ kind: "text", text: this.digest.said }] : [];
+  });
+
+  /* The rest of what `Transcript.svelte` reads. A shadow answers each with the
+     empty value rather than a plausible one, which is the bargain `Readable`
+     names: the compiler asks the question, and where there is no honest answer
+     the panel is told nothing rather than told something made up. Occupancy is
+     the exception — `ctx` is a real reading the digest carries, and the token
+     count behind it is not, so the ring is right and the number beside it is
+     absent rather than invented. */
+  readonly cwd = "";
+  readonly kind = "project" as const;
+  readonly history: Line[] = [];
+  get historyState() {
+    return this.tailState;
+  }
+  readonly historyPartial = false;
+  get everSpoke() {
+    return this.lines.length > 0;
+  }
+  get activity() {
+    return this.digest.doing;
+  }
+  readonly turns = 0;
+  readonly dropped = 0;
+  readonly costUsd = 0;
+  readonly ctxTokens = 0;
+  readonly model = undefined;
+  readonly effort = undefined;
   readonly streaming = "";
   readonly accountLabel = null;
   readonly bypassCaps = false;

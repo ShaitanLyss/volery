@@ -1188,6 +1188,15 @@
       class:failed={line.state === "failed"}
       data-nav={line.kind === "you" ? "you" : null}
     >{line.text}</div>
+    <!-- What became of it on another machine. Only a shadow card sets this, and
+         it is under the words rather than beside them for the reason the `you`
+         register itself is drawn plainly: the receipt is about the sending, not
+         part of what was said. A line this wall still holds and a line the far
+         wall has are the two cases somebody is actually watching for, so the
+         second is drawn quietly and the first and third are not. -->
+    {#if line.receipt}
+      <div class="receipt" class:late={line.state === "failed"}>{line.receipt}</div>
+    {/if}
     <!-- The pictures that went with the prompt, under the words that refer to
          them by name. Thumbnails rather than the bytes that were sent — a card
          talking all week would otherwise hold every screenshot at full size for
@@ -1964,6 +1973,24 @@
     content: " · not sent";
     font-family: var(--util);
     font-size: calc(0.7rem * var(--read, 1));
+    color: var(--st-fail);
+  }
+  /* What the far wall did with a prompt. Sits under the words in the utility
+     face at the same size `· not sent` uses, indented to the prompt's own rule
+     so the two read as one thing. Achromatic while it is ordinary — a message
+     crossing a network is not a status — and rust only where it stopped being
+     ordinary, which is the house rule for colour rather than an exception to
+     it. Not copied: `copy.ts` takes what is drawn, and a receipt is Volery's
+     sentence about the sending rather than anything anybody said. */
+  .receipt {
+    font-family: var(--util);
+    font-size: calc(0.7rem * var(--read, 1));
+    color: var(--paper-faint);
+    padding-left: 0.75em;
+    margin-top: calc(-0.15rem * var(--read, 1));
+    user-select: none;
+  }
+  .receipt.late {
     color: var(--st-fail);
   }
   .line.tool {

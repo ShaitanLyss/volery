@@ -4741,7 +4741,13 @@
               onread={setRead}
             />
           {:else if focusedShadow}
-            <Yonder shadow={focusedShadow} />
+            <Yonder
+              shadow={focusedShadow}
+              read={reading}
+              rails={railsOn}
+              watching={attention.focused}
+              onread={setRead}
+            />
           {/if}
         </aside>
       {/if}

@@ -190,6 +190,19 @@ export type Line = {
    *  cap says so in words rather than the line wearing a fault. Same
    *  distinction `wasStopped` draws for a turn. */
   state?: "pending" | "failed";
+  /** What became of this line on **another machine**, in words — "queeris has
+   *  it", "left this wall · queeris has not said it has it". Only ever set on a
+   *  card that lives on another wall (`shadow.ts::weave`); a local card's own
+   *  `state` above is the whole story, because the process is right here.
+   *
+   *  It is a line of its own rather than a second reading of `state` because
+   *  the two say different things and both are needed at once: `state` is
+   *  whether *this* wall still holds your words, and this is whether the far
+   *  one has them. A send that left here and was never acknowledged is neither
+   *  pending nor failed, and that is exactly the case worth drawing — without
+   *  it, a prompt that fell down a hole between two machines reads as
+   *  delivered. See `.claude/rules/elsewhere.md`. */
+  receipt?: string;
   /** On a `text` line, that it is **narration**: the server's summary of what
    *  the agent wrote between tool calls, which reaches us as a thinking block
    *  rather than as text (`classify.ts::narrationOf`). It is the agent's

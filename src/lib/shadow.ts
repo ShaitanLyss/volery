@@ -41,6 +41,7 @@
  * Pure, and tested directly in `test/shadow.test.ts`.
  */
 
+import type { Line } from "./conversation.svelte";
 import { spanOf, UNACKNOWLEDGED_LINE, type Ending, type Tier } from "./classify";
 import { layout, REGION_GAP, regionWidth, type Box, type Laid, type Region } from "./layout";
 import { askHeadline, type AskQuestion } from "./asking";
@@ -959,5 +960,72 @@ export function weave(tail: readonly WireLine[], sent: readonly Sent[]): Woven[]
   });
   const landed = new Set(taken.values());
   for (const s of mine) if (!landed.has(s)) out.push({ at: "here", sent: s });
+  return out;
+}
+
+/** A woven column as lines the transcript can draw.
+ *
+ *  The last step of the reuse, and the whole of what makes a shadow's panel the
+ *  *same* panel: `Transcript.svelte` takes `Line`s, so this produces `Line`s and
+ *  nothing downstream learns that this card is on another machine. The host
+ *  marker belongs on the card's face and the panel's header — where Lyss asked
+ *  for it, and where it says something — not sprinkled through the conversation.
+ *
+ *  A send still in flight becomes a `you` line with `state`, which is exactly
+ *  what a local card's unacknowledged prompt is, so the dashed rule and the
+ *  dimming come for free. What it gains over a local one is `receipt`: the far
+ *  wall's word, in words. `refused` is the one that must not read as pending —
+ *  it is `failed`, because it is. */
+export function asLines(woven: readonly Woven[], host: string, now: number): Line[] {
+  const out: Line[] = [];
+  for (const w of woven) {
+    if (w.at === "there") {
+      const l = w.line;
+      const line: Line = { kind: l.kind as Line["kind"], text: l.text };
+      if (l.note) line.note = l.note;
+      if (l.state) line.state = l.state;
+      if (l.narration) line.narration = true;
+      if (l.call) {
+        /* `input` crossed as a string and `ToolCall.input` is `unknown`, so the
+           JSON is put back where it parses and left as the string where it does
+           not. A fold showing the raw text beats a fold showing nothing, and
+           `toolcall.ts` draws an unknown shape rather than refusing it. */
+        let input: unknown = l.call.input;
+        if (typeof l.call.input === "string") {
+          try {
+            input = JSON.parse(l.call.input);
+          } catch {
+            input = l.call.input;
+          }
+        }
+        line.call = {
+          name: l.call.name,
+          input,
+          ...(l.call.result === undefined
+            ? {}
+            : { result: { text: l.call.result, failed: l.call.failed === true } }),
+        } as Line["call"];
+      }
+      /* The receipt rides the far wall's own copy of your words — which is the
+         point of weaving rather than trimming. See `weave`. */
+      if (w.sent) {
+        const r = sentReading(w.sent, host, now);
+        line.receipt = r.words;
+        if (r.look === "failed") line.state = "failed";
+      }
+      out.push(line);
+      continue;
+    }
+    const r = sentReading(w.sent, host, now);
+    out.push({
+      kind: w.sent.askId ? "answer" : "you",
+      text: w.sent.text,
+      receipt: r.words,
+      /* `transit` is neither: it left this wall and may yet land, so drawing it
+         failed would be this wall claiming to know something it does not. It
+         stays pending, and the receipt is what says where it actually is. */
+      state: r.look === "failed" ? "failed" : "pending",
+    });
+  }
   return out;
 }
