@@ -932,10 +932,25 @@
      keeps the `.` fallback out of the session list: that fallback belongs to
      Alt+I on an empty wall — a shell somewhere rather than no shell at all —
      and is not a project this should file a record under before `load` has
-     said what the projects are. */
+     said what the projects are.
+
+     The call is untracked, and that is the whole of what makes `close` a
+     close. `select` asks the session whether it is `live` before its first
+     await, so tracked it subscribed this effect to the very flag `close`
+     clears: closing the shell with the panel up re-ran the effect, found a
+     shell that was not live, and started another one on the spot — "the
+     panel can stay open over nothing" was a panel that could not.
+
+     And it follows the project, not the panel opening. It used to read
+     `shell.open` as well, so that opening would start a shell — but every
+     way the panel opens is `show(key)`, which already selects and starts, so
+     the only thing the second run added was to overrule `key` with the
+     wall's own project a beat later. Opening the panel onto a project you
+     named landed you in a different one, and what you typed went there. */
   $effect(() => {
-    void shell.open;
-    if (skein.projects.length) void shell.select(shellCwd());
+    if (!skein.projects.length) return;
+    const key = shellCwd();
+    untrack(() => void shell.select(key));
   });
 
   /* Paint the wall from disk, then start the servers. Deliberately no agent. */

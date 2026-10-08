@@ -67,6 +67,14 @@ now, and the panel is one window onto whichever of them is active.
   is chrome; `working` stays celadon and stays about the shell you are looking at.
 - **`stop`, `clear` and `close` are the shell on screen, and only it.** A button that took down
   four shells is one nobody could press knowing what it did.
+- **`App.svelte`'s effect follows the project and nothing else, and calls `select` untracked.**
+  Both halves were once wrong, and each looked like the panel misbehaving rather than an
+  effect. Tracked, `select`'s synchronous read of `session.live` subscribed the effect to the
+  flag `close` clears, so closing with the panel up started a new shell on the spot. Reading
+  `shell.open` as well re-ran it on every open and overruled the project `show(key)` had just
+  been given, so the panel landed on the wall's own project and what you typed went there.
+  `show` already selects and starts, so opening needs nothing from the effect.
+  `wall.test.ts`'s close and one-per-project tests are what fail if either comes back.
 - **Alt+I fires while you are typing**, which no other binding on this wall does. It can
   afford to: Alt+letter is not a text gesture Chromium binds in a field, and there is no menu
   bar to collide with (`decorations: false`). Everything else in `onGlobalKey` is skipped
