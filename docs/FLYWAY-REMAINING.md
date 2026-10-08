@@ -127,6 +127,33 @@ read back in the next snapshot.
 
 ## What is left
 
+### What parks waiting for a person (sink 16864f3d)
+
+- **`ask_user` travels** (749d8ea). The question rides its card's digest —
+  words only, never a preview or a file, never a question Volery composed — and
+  the answer comes back as a prompt naming the question (`Ask::answers`,
+  `flyway_prompt`'s `askId`), handed straight into the parked call by
+  `ask::answer_from_afar`. Not held to the far wall's switch: an answer starts
+  no work. Proved between two walls with the owning wall's switch off.
+- **`notice` does not travel yet.** Same shape as `ask_user`, not built.
+- **Removal confirmation does not travel yet**, and a remote answer to any
+  question with an act behind it is refused on the owning machine. Lyss decided
+  it should travel (sink 7207a6d9) with the machine named, the path as that
+  machine resolves it and what is actually there carried with the question;
+  until that is built, refusing is the honest stand-in.
+- **Credentials never travel** — decided, not pending. A remote spawn needing a
+  credential the far machine lacks should be refused naming which one; today
+  nothing checks for that, so the card would start and fail at its first call.
+
+### Two builds side by side
+
+The normal case, not the edge one: the machine you sit at updates and the other
+waits. A frame under a word this build does not know is skipped, and so is a
+frame under a word it knows in a shape it cannot read (one more `Outcome`
+variant), logged rather than failing the exchange — `frame::take` holds that
+with a test. **But the fleet itself needs this release at both ends**: a 0.42
+wall answers v1 only, so against one, all that crosses is the sink.
+
 ### Smaller things
 
 - **A read of the roster for agents.** An agent learns host names only from a
