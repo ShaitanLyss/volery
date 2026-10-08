@@ -38,6 +38,7 @@ pub mod find;
 mod guidance;
 pub mod hooks;
 mod joblog;
+mod lab;
 mod later;
 mod nvim;
 mod limits;
@@ -1039,7 +1040,8 @@ pub fn run() {
             update::fetch_update,
             update::arm_update,
         ])
-        .build(tauri::generate_context!())
+        /* A debug build may be told it is a lab wall of its own; see `lab.rs`. */
+        .build(lab::assume(tauri::generate_context!()))
         .expect("error while building skein")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {

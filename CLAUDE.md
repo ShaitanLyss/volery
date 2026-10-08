@@ -77,6 +77,17 @@ bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
 bun run test:wall        # drives a RUNNING app over the control surface
+bun run lab              # the lab wall: `tauri dev` on dev.skein.lab, :1421, hot reload
+bun run lab <name>       # a lab wall of your own, up to three at once: identifier, port,
+                         # store, webview profile and flyway host all derived from the
+                         # name, on a frozen copy of the debug binary. `--frozen` serves a
+                         # vite build so another card's edit cannot remount it mid-test;
+                         # `--no-build` skips cargo; `--peer <name>` dials another lab.
+                         # Run it as a foreground command (from a card, a background
+                         # shell call), never behind `&` — the installed wall reaps
+                         # orphans. `bun run lab down <name>` stops it and deletes both
+                         # of its folders; `bun run lab list` says what is up. The five
+                         # traps it closes are in `.claude/rules/control.md`
 
 cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.rs, sink.rs,
                               # chronicle.rs,

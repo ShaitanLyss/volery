@@ -26,10 +26,11 @@ import { healthPid, judge, parseEndpoint, pidAlive, type Endpoint } from "./endp
  *  reaches — one variable, not two. Defaults to the real studio, so every
  *  existing invocation is unchanged.
  *
- *  The one other value that means anything today is `dev.skein.lab`, which is
+ *  The other value worth knowing is `dev.skein.lab`, which is
  *  what `bun run lab` starts: a second instance with its own store, its own
  *  `control.json` and an empty wall, so driving it cannot reach real work. See
- *  `.claude/rules/control.md`. */
+ *  `.claude/rules/control.md`. `bun run lab <name>` makes `dev.skein.lab.<name>`,
+ *  and prints the line that sets this for it. */
 const IDENTIFIER = process.env.SKEIN_ID?.trim() || "dev.skein.studio";
 
 const CONTROL_FILE = join(process.env.APPDATA ?? "", IDENTIFIER, "control.json");
@@ -48,7 +49,10 @@ async function endpoint(): Promise<Endpoint> {
         `  $env:SKEIN_CONTROL="1"; bun run tauri dev\n` +
         `or, for the isolated lab wall:\n` +
         `  $env:SKEIN_CONTROL="1"; bun run lab\n` +
-        `  $env:SKEIN_ID="dev.skein.lab"; bun tools/ctl.ts health`,
+        `  $env:SKEIN_ID="dev.skein.lab"; bun tools/ctl.ts health\n` +
+        `or a named lab, which has its control surface on already:\n` +
+        `  bun run lab <name>\n` +
+        `  $env:SKEIN_ID="dev.skein.lab.<name>"; bun tools/ctl.ts health`,
     );
     process.exit(2);
   }

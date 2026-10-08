@@ -164,6 +164,8 @@ your own.
 
 Three traps, each of which turned a run into noise that read as product failures. All three
 were hit together on 2026-10-08, and nothing in the output points at any of them.
+**`bun run lab <name> --frozen` now does everything below in one command** — see "Several labs
+at once" further down. What follows is why each step is there.
 
 - **The wall's reaper kills a lab you launched in the background.** `perf.rs::sweep`, once a
   minute, `taskkill /T`s any process in a card's job whose parent has gone and that is over a
@@ -317,6 +319,79 @@ Never raise it to capture — that is the interruption this section exists to pr
 each into a fresh card is a controlled experiment rather than two anecdotes.
 
 
+### Several labs at once: `bun run lab <name>` (`tools/lab.ts`, `src-tauri/src/lab.rs`)
+
+```powershell
+bun run lab a                      # a wall called a: dev.skein.lab.a, its own port, store,
+                                   # webview profile and flyway host, control surface on
+bun run lab b --frozen --peer a    # a second, serving a vite build, dialling a's flyway host
+$env:SKEIN_ID="dev.skein.lab.a"; bun tools/ctl.ts health
+bun run lab list                   # what is up, on which port, under which host
+bun run lab down a                 # stop it and delete both of its folders
+bun run lab down --all             # every named lab of yours, and leftovers of dead ones
+```
+
+Bare `bun run lab` is the lab exactly as above — `tauri dev`, `dev.skein.lab`, :1421, hot
+reload on both sides — with one change: it no longer joins the flyway as this machine.
+
+**The name decides everything, and in Rust it is one variable.** `identifier` is compiled into
+the binary by `generate_context!`, which is why `tauri dev --config` costs a rebuild per lab
+and why two `tauri dev`s on one target directory cannot both run (the second link overwrites an
+`.exe` the first is executing). So a named lab is a *frozen copy* of the debug binary, and
+`VOLERY_LAB=<name>` makes that copy `dev.skein.lab.<name>` at startup
+(`lab.rs::assume`, through `Context::config_mut`, debug builds only). The `%APPDATA%` store,
+`control.json`, the browser profile, the webview folder and `claim_wall`'s mutex all follow, so
+two processes under one name are refused by the guard that already existed — the launcher never
+sets `VOLERY_SECOND`, and a name that does not parse exits rather than falling back to the
+compiled-in identifier, which for a copy built by `bun run tauri dev` is the real wall.
+
+The five traps four cards met on 2026-10-08, and what the launcher does about each:
+
+1. **Ports.** Vite is `--strictPort`, and cards negotiated :1421/:1425/:1429 over relay. A name
+   hashes into 1430–1499, probes onward past anything answering on either loopback, and the
+   chosen port goes in the lab's record.
+2. **`WEBVIEW2_USER_DATA_FOLDER`.** Two processes on one webview profile never attach, and say
+   nothing. Each identifier has its own `%LOCALAPPDATA%` folder, and the variable names it too.
+3. **The flyway host.** Every wall on this machine reads one vault key, so a lab without
+   `VOLERY_FLYWAY_HOST` joins the *real* flyway as `COMPUTERNAME` — a duplicate of the
+   installed wall on every roster. A named lab is `lab-<name>.<machine>`, the bare one
+   `lab.<machine>`. It is still on the real flyway, deliberately: the app-level proof of the
+   flyway was a lab against the installed wall. A lab host stays on the roster once seen
+   (`Fleet::forget` has no gesture), so reuse names rather than inventing new ones per run.
+4. **The DLLs.** `skein.exe` copied without `onnxruntime`, `sherpa-onnx-*` and `skein_lib.dll`
+   exits **53**, which is `0xC0000135 STATUS_DLL_NOT_FOUND` cut to a byte. The copy takes every
+   DLL in `target\debug`, and an exit of 53 is translated rather than reported as a number.
+5. **The orphan sweep.** `perf.rs::sweep` reaps a process in a card's job whose parent has
+   gone. The launcher stays up as the parent of the wall and its vite for the wall's whole
+   life, so run it as a *foreground* command — from a card, a background shell call — and never
+   behind `&`, `exec` or `Start-Process` from a shell that then exits.
+
+**Where a lab lives, and why not in scratch.** Everything is in the identifier's two folders,
+`%APPDATA%\dev.skein.lab.<name>` and `%LOCALAPPDATA%\dev.skein.lab.<name>` (the launcher's own
+`lab\` — the binary copy, a frozen `dist`, `vite.log`, `lab.json` — sits inside the second).
+Scratch would have put it under `mcp__skein__remove`'s no-click rule, but the identifier's
+folder is the one `ctl.ts` and `wall.test.ts` already find through `SKEIN_ID`, and the one the
+asset scope `$APPDATA/references/**` covers, so a pasted image loads — under
+`VOLERY_WALL_DIR` it did not. `down` is the teardown instead: it deletes those two folders and
+refuses any path that is not one of them.
+
+**A live lab is its launcher's.** The record carries the launching card's `SKEIN_CARD` (or
+nothing, for a person at a terminal), and `down` refuses a live lab that is somebody else's —
+`--all` passes over it, a name asked for refuses, `--force` overrides. Written after the first
+cut's `down --all`, run as a harmless check, took another card's lab down mid-demo: every lab
+on the machine is in one folder family, so "all" meant everybody's. The record is written
+before `cargo build`, not after, so a lab mid-build already counts against the cap and is not a
+record-less folder for `--all` to clear. And `down` can take up to half a minute: a dead
+wall's `skein.db` stays locked for several seconds after its process is gone.
+
+**At most three at once, the bare lab included** (`MAX_LABS`), and the refusal names the ones
+up. Each is a webview and a process tree on a machine that also hosts the cards doing the work.
+`cargo build` runs first unless `--no-build`, and refuses while another cargo is running or
+with less than 8 GB free; both happened on 2026-10-08.
+
+**What a named lab gives up** is Rust hot reload: the binary is a copy, so a Rust change needs
+the lab restarting. That is the point of the copy, not a cost of it.
+
 ### Testing in-memory state wants a frozen front end, because other cards keep remounting yours
 
 Found 2026-10-08 by `f8fb825e`, testing a shadow's glass spot — which is session-only and
@@ -341,7 +416,7 @@ Two things make it worth a section rather than a footnote:
 **The fix is to freeze the front end**: `vite build` into your own scratch directory and serve
 it with `vite preview` on a port of your own, then point the lab at that. The bytes then stop
 moving for the length of the test, whoever else is editing. It costs one build and removes a
-whole class of false reading.
+whole class of false reading. `bun run lab <name> --frozen` is all of that in one step.
 
 This belongs here rather than in the subsystem's own rule because it is about how anything
 holding state in memory is tested on a wall several agents share — the glass is simply the
