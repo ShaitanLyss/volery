@@ -84,14 +84,18 @@ const SERVED_WINDOW_MS: i64 = 60 * 60 * 1_000;
 /// failure a wake exists to prevent, since the whole point is that the card has
 /// moved on and this note is all it has.
 ///
-/// 4,000 rather than a new number of its own, because it is the figure the wall
-/// already reached for the two nearest things: `store::MAX_SINK_BODY` and
-/// `relay::MAX_BODY`. A note to yourself is the *cheapest* of those three — it
-/// costs no other card a turn, it is one row, and it is read exactly once — so
-/// there is no case for it being the tightest. What bounds abuse here is not
-/// length but `MAX_ARMED` and `MAX_SERVED`, which are the two that can see a
-/// loop.
-const MAX_NOTE: usize = 4_000;
+/// The sink body's own figure rather than a number of its own, because it is the
+/// nearest thing the wall has already argued for: `store::MAX_SINK_BODY`. A note
+/// to yourself is the *cheapest* text there is — it costs no other card a turn,
+/// it is one row, and it is read exactly once — so there is no case for it being
+/// the tightest. What bounds abuse here is not length but `MAX_ARMED` and
+/// `MAX_SERVED`, which are the two that can see a loop.
+///
+/// **Named, not copied**, and that is the lesson of the copy. This read `4_000`
+/// beside a test holding it equal to the sink's cap; fe34ce1 raised the sink to
+/// 6,000 for a design note it had cut, and the copy stayed behind and turned the
+/// suite red. One name cannot drift from itself.
+const MAX_NOTE: usize = crate::store::MAX_SINK_BODY;
 
 /// How often the table is looked at.
 ///
