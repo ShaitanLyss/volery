@@ -448,7 +448,7 @@ impl Link {
                    the fleet's in-flight count; taken out here so the bound does
                    not count it twice. */
                 remote_last_hour: here::births_since(&conn, self.now() - 60 * 60_000).saturating_sub(in_flight),
-                can: fleet::CAN.iter().chain(std::iter::once(&tail::WORD)).map(|c| c.to_string()).collect(),
+                can: fleet::can_now().into_iter().chain(std::iter::once(tail::WORD.to_string())).collect(),
                 ..Facts::default()
             };
             (f, here::open_cards(&conn))
@@ -1135,12 +1135,18 @@ impl Link {
     /// a2a4468e's rule that an unreachable wall is refused now and never queued:
     /// an unknown host, a quiet one, or this wall.
     fn send_prompt(self: &Arc<Self>, r: PromptRequest) -> Result<(), String> {
+        self.send_person(Act::Prompt, r)
+    }
+
+    /// A person's prompt or close, one path: both are answered through
+    /// `flyway:prompt-answer`, keyed on the request id the front end minted.
+    fn send_person(self: &Arc<Self>, act: Act, r: PromptRequest) -> Result<(), String> {
         let now = self.now();
         let msg = self
             .fleet
             .lock()
             .map_err(|_| "the fleet is wedged".to_string())?
-            .prompt(r.clone(), now)
+            .reach(act, r.clone(), now)
             .map_err(|u| u.reason())?;
         if let Ok(mut o) = self.prompts_out.lock() {
             o.entry(r.id.clone()).or_insert(PromptOut { to: r.to.clone(), left: false, asked_at: now });
@@ -1300,7 +1306,7 @@ impl Link {
                 });
             }
             Act::Close => {
-                let m = match crate::spawn::close_from_afar(&self.app, &row, &host) {
+                let m = match crate::spawn::close_from_afar(&self.app, &row, &host, d.asked_by.card.is_none()) {
                     Ok(()) => self.fleet.lock().ok().and_then(|mut f| f.taken(&host, &request, &row.id, now)),
                     Err(why) => self.fleet.lock().ok().and_then(|mut f| f.refused(&host, &request, &why, now)),
                 };
@@ -1954,6 +1960,25 @@ pub async fn flyway_prompt(
     }
     crate::off_main(move || {
         l.send_prompt(PromptRequest { id, from_card: None, to, card, text, answers: ask_id, title: None, project: None })
+    })
+    .await?
+}
+
+/// Close a card on another wall, for a person here. `Ok` means it is on its way;
+/// `flyway:prompt-answer` says what became of it, and the card leaves this wall
+/// when its owner's next snapshot no longer carries it — never before. Refused
+/// at once, in words for a person, when that wall is quiet or too old to take it
+/// (`fleet::CAN_PERSON_CLOSE`).
+#[tauri::command]
+pub async fn flyway_close(app: AppHandle, id: String, to: String, card: String) -> Result<(), String> {
+    let Some(l) = current(&app) else {
+        return Err("this wall is not on a flyway, so it cannot reach another wall's card".into());
+    };
+    crate::off_main(move || {
+        l.send_person(
+            Act::Close,
+            PromptRequest { id, from_card: None, to, card, text: String::new(), answers: None, title: None, project: None },
+        )
     })
     .await?
 }

@@ -55,7 +55,8 @@ export type Verb =
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" }
   | { kind: "sink"; act: "open" | "drop" }
-  | { kind: "elsewhere"; act: "next" };
+  | { kind: "elsewhere"; act: "next" }
+  | { kind: "card"; act: "close" };
 
 /** One sequence the leader opens onto.
  *
@@ -169,6 +170,12 @@ export const CHORDS: readonly Chord[] = [
      those walk this wall's cards and hand each to gestures a card elsewhere
      cannot take. */
   { keys: "ee", label: "a card on another wall", verb: { kind: "elsewhere", act: "next" } },
+  /* `c` is the focused card. A family of one for now, on `t`'s argument, and
+     `cc` is the one you came for: close it — the card on this wall or on
+     another, whichever has the focus. Until this the only keyboard path to a
+     close was none: the ✕ and the right-click menu were all there was. It asks
+     first when the card is doing something (`closing.ts`). */
+  { keys: "cc", label: "close this card", verb: { kind: "card", act: "close" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];

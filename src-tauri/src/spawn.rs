@@ -1327,10 +1327,20 @@ pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
 ///   watching it close — so it is the user here who closes it, and the refusal
 ///   says so.
 ///
+/// **A person's close** (`person`) is none of those refusals: the person at the
+/// asking wall chose it, and was asked about mid-turn there, off the digest, before
+/// it was sent (`fleet::may_reach`). It closes whatever is on this wall the way
+/// its own ✕ would, the timeline archived as left unfinished by the close itself.
+///
 /// Then it goes as an agent's close here goes: `close:asked`, so the wall
 /// takes it off with the fade an agent's close gets, and a chronicle row naming
 /// the wall that asked, since nobody in this room did.
-pub(crate) fn close_from_afar(app: &AppHandle, row: &crate::store::RosterRow, host: &str) -> Result<(), String> {
+pub(crate) fn close_from_afar(
+    app: &AppHandle,
+    row: &crate::store::RosterRow,
+    host: &str,
+    person: bool,
+) -> Result<(), String> {
     let (aside, timeline) = {
         let store = app.try_state::<Store>().ok_or("the store is unavailable")?;
         let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;
@@ -1338,13 +1348,13 @@ pub(crate) fn close_from_afar(app: &AppHandle, row: &crate::store::RosterRow, ho
     };
     let (_, mid_turn) = app.state::<crate::supervisor::Supervisor>().liveness(&row.id);
     let title = if row.title.trim().is_empty() { crate::relay::handle_of(&row.id) } else { row.title.clone() };
-    if aside {
+    if aside && !person {
         return Err(NotYours::Aside.say(&title));
     }
-    if mid_turn {
+    if mid_turn && !person {
         return Err(NotYours::Working.say(&title));
     }
-    if let Some(tl) = timeline {
+    if let (Some(tl), false) = (timeline, person) {
         return Err(format!(
             "{title:?} has a timeline still in flight ({tl}), and closing it would end a plan the \
              user on this machine is watching — that is theirs to decide, and nobody here can be \
@@ -1358,7 +1368,11 @@ pub(crate) fn close_from_afar(app: &AppHandle, row: &crate::store::RosterRow, ho
         "volery",
         "note",
         &format!("{host} closed a card here — {title}"),
-        "the card that asked for it over the flyway is done with it",
+        if person {
+            "somebody at that wall closed it from there, over the flyway"
+        } else {
+            "the card that asked for it over the flyway is done with it"
+        },
     );
     Ok(())
 }

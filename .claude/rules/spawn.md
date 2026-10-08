@@ -833,3 +833,12 @@ two remaining refusals are chosen by — and the test that eventually took a thi
   - **A family closed together retreats as one shape.** The union fill is grouped by weight and
     a shared departure time is a shared alpha, so the trunk they still have on the way home
     does not darken where it overlaps.
+
+## A person's close asks first when the card is doing something
+
+The ✕, the menu's close and `<space>cc` all go through `App.closeConv`, which asks (the
+`Unfinished` plate — one dialog for mid-turn, background jobs and a timeline in flight) when
+`closing.ts::closeWarnings` finds anything to lose. An idle card with nothing in the background
+closes at once. Focus lands on *keep it open*; Escape means the same. An agent's `close` is
+unchanged: it has its own refusals above. The same plate asks about a card on another wall,
+off its digest — see `elsewhere.md`.

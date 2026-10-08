@@ -119,6 +119,7 @@
     onfocus,
     ondeselect,
     onclose,
+    onclosewall,
     onplan,
     onpin,
     onplace,
@@ -266,6 +267,9 @@
      *  beside the panel it opens, so the canvas can only report the gesture. */
     ondeselect?: () => void;
     onclose: (conv: Conversation) => void;
+    /** Close a card on another wall — asked of its own wall, which takes it off
+     *  and drops it from its next snapshot. */
+    onclosewall?: (shadow: Shadow) => void;
     /** Open a plan a card has written, in the file viewer. */
     onplan: (conv: Conversation, path: string) => void;
     onpin?: (id: string, x: number, y: number) => void;
@@ -2560,6 +2564,12 @@
               if (e.shiftKey || e.ctrlKey || e.metaKey) return;
               onfocus(n.conv.id);
             }}
+            onclose={onclosewall
+              ? () => {
+                  const s = shadows.find((s) => s.id === n.conv.id);
+                  if (s) onclosewall(s);
+                }
+              : undefined}
           />
         </div>
       {/each}

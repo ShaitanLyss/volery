@@ -113,6 +113,11 @@ export class Shadow {
    *  from the panel while the answer is on its way: drawn as still waiting, a
    *  question you have just answered would invite a second answer. */
   answering = $state<string[]>([]);
+  /** A close asked of its wall from here. `asked` until the wall answers, then
+   *  `taken` — the wall is closing it — or `refused` with the reason. There is
+   *  no *done*: the card leaves when its wall's next snapshot no longer carries
+   *  it, and nothing here removes it sooner. Asking again replaces it. */
+  closing = $state<{ state: "asked" | "taken" | "refused"; why?: string } | null>(null);
 
   #walls: Elsewhere;
 
@@ -335,6 +340,8 @@ export class Elsewhere {
   /** Where a prompt's events go: its shadow, even after the card has left the
    *  wall, so an answer arriving late lands on the object that asked. */
   #byPrompt = new Map<string, Shadow>();
+  /** The same for a close, which is answered on the same event. */
+  #byClose = new Map<string, Shadow>();
   #listeners = new Listeners();
   /** Prompts from other walls this wall has taken, by id, with the answer each
    *  got — or null while it is being delivered. See `#take`. */
@@ -373,9 +380,10 @@ export class Elsewhere {
     l.keep(listen<RosterRow[]>("flyway:roster", (e) => this.#heard(e.payload)));
     l.keep(listen<{ id: string }>("flyway:prompt-left", (e) => this.#fold(e.payload.id, { kind: "left" })));
     l.keep(
-      listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string }>("flyway:prompt-answer", (e) =>
-        this.#fold(e.payload.id, { kind: "answer", outcome: e.payload.outcome, why: e.payload.why }),
-      ),
+      listen<{ id: string; by: string; outcome: "taken" | "refused"; why?: string }>("flyway:prompt-answer", (e) => {
+        if (this.#closed(e.payload.id, e.payload.outcome, e.payload.why)) return;
+        this.#fold(e.payload.id, { kind: "answer", outcome: e.payload.outcome, why: e.payload.why });
+      }),
     );
     l.keep(
       listen<{ id: string; from: { host: string; card: string | null }; card: string; text: string }>(
@@ -618,6 +626,31 @@ export class Elsewhere {
     } catch (e) {
       this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
     }
+  }
+
+  /** Ask the card's own wall to close it, as a person — which that wall
+   *  allows whatever its switch says (`fleet::may_reach`). The card stays drawn
+   *  until the wall's next snapshot drops it; a refusal or a link that would not
+   *  take it lands on `closing`, on the shadow. */
+  async close(s: Shadow) {
+    if (s.closing?.state === "asked") return;
+    const id = crypto.randomUUID();
+    this.#byClose.set(id, s);
+    s.closing = { state: "asked" };
+    try {
+      await invoke("flyway_close", { id, to: s.host, card: s.card });
+    } catch (e) {
+      this.#closed(id, "refused", String(e) || "the link would not take it");
+    }
+  }
+
+  #closed(id: string, outcome: "taken" | "refused", why?: string) {
+    const s = this.#byClose.get(id);
+    if (!s) return false;
+    this.#byClose.delete(id);
+    s.closing = outcome === "taken" ? { state: "taken" } : { state: "refused", why: why || "refused" };
+    if (outcome === "refused") this.#skein.fault = `${s.host} did not close ${s.title || "that card"}: ${s.closing.why}`;
+    return true;
   }
 
   #fold(id: string, ev: SentEvent) {

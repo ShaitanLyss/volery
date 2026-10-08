@@ -154,8 +154,13 @@ matches a card by its id alone, never by the host it is believed to be on.
   except an answer to a parked question and **a child's report to the card that
   opened it** (Lyss's decision, the same as an answer's). A recall is a read:
   the origin always, anyone else through the switch. A close stops work: the
-  origin only, switch or not, and anyone else is refused — never asked, since
-  the person who would be asked is at the other machine.
+  an agent's is the
+  origin's only, switch or not, and any other agent is refused — never asked,
+  since the person who would be asked is at the other machine. **A person's
+  close (`from.card` none) is always allowed**, any card, switch or no switch,
+  mid-turn or aside or timeline included (0.45.0, Lyss: closing cannot hurt the
+  other machine). The asking wall confirms mid-turn off the digest first; the
+  word `close_by_person` in `Facts::can` keeps a 0.44 wall from being sent one.
 - **The origin and the child are both recorded, not believed.** The far wall
   has `flyway_birth`; the asking wall now writes `flyway_child` (**schema v48**)
   when the answer says the card opened. So a reply is let through the switch

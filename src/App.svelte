@@ -133,7 +133,8 @@
   } from "./lib/presets";
   import { spotOf } from "./lib/glass";
   import { selectionMarkdown } from "./lib/copy";
-  import { displayName, nameBesideProject } from "./lib/naming";
+  import { cardName, displayName, nameBesideProject } from "./lib/naming";
+  import { closeWarnings } from "./lib/closing";
   import { noticeLine, noticeWords } from "./lib/notice";
   import {
     Drafts,
@@ -457,6 +458,7 @@
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.kind === "grouping") groupingChord(verb.act);
     else if (verb.kind === "elsewhere") focusElsewhere();
+    else if (verb.kind === "card") closeFocused();
     else if (verb.kind === "sink") {
       if (verb.act === "drop") showDrop = true;
       else showSink = true;
@@ -1207,7 +1209,14 @@
   let showAnnals = $state(false);
   /* A close held back because the card has a timeline in flight — see
      `closeConv`. The card and the timeline, so the question can name both. */
-  let unfinished = $state<{ conv: Conversation; t: Timeline } | null>(null);
+  let unfinished = $state<{
+    conv: Conversation;
+    t: Timeline | null;
+    warnings: string[];
+  } | null>(null);
+  /* The same question about a card on another wall, which its own wall closes
+     the way its ✕ would. See `closeElsewhere`. */
+  let unfinishedAway = $state<{ shadow: Shadow; warnings: string[] } | null>(null);
   /* The run whose insides are on screen, if any. The *row* rather than its id,
      because the panel draws the run's own heading — pipeline, branch, who, how
      long — out of the row it was opened from, and re-fetching a row we were
@@ -3685,8 +3694,13 @@
        timeline is archived as left unfinished by the close itself
        (`timeline::leave_for`), so saying yes needs nothing more from here. */
     const t = skein.timelines.liveFor(conv.id);
-    if (t && !sure) {
-      unfinished = { conv, t };
+    /* And a card doing something asks too — mid-turn, or with work running in
+       the background — since the ✕ sits on every card and a stray click on one
+       that was working cost its work. An idle card still closes at once.
+       `closing.ts` decides; this only asks. */
+    const warnings = closeWarnings({ working: conv.working, jobs: conv.jobs.length });
+    if ((t || warnings.length) && !sure) {
+      unfinished = { conv, t: t ?? null, warnings };
       return;
     }
     /* Closing is not undoable — it takes an agent down, and see the boundary at
@@ -3713,6 +3727,26 @@
        it, so a card lingering half-gone is the wall taking a moment to agree
        with you. See `LEAVE_MS` in `layout.ts`. */
     await skein.close(conv, "you");
+  }
+
+  /** Close a card on another wall, as a person: that wall allows it whatever
+   *  its switch says (`fleet::may_reach`). A card that is doing something asks
+   *  first, off its digest. Nothing is removed here — the card goes when its
+   *  wall's next snapshot drops it, and a refusal comes back on the shadow. */
+  function closeElsewhere(s: Shadow, sure = false) {
+    const warnings = closeWarnings({ working: s.digest.working, jobs: s.digest.jobs });
+    if (warnings.length && !sure) {
+      unfinishedAway = { shadow: s, warnings };
+      return;
+    }
+    void elsewhere.close(s);
+  }
+
+  /** `<space>cc`: close whichever card has the focus, on this wall or another. */
+  function closeFocused() {
+    if (focused) void closeConv(focused);
+    else if (focusedShadow) closeElsewhere(focusedShadow);
+    else skein.fault = "no card has the focus to close";
   }
 
   /* The handles a pair of hands would have. Named rather than inlined into
@@ -4536,10 +4570,25 @@
     <Unfinished
       card={held.conv.title}
       t={held.t}
+      warnings={held.warnings}
       onkeep={() => (unfinished = null)}
       onclose={() => {
         unfinished = null;
         void closeConv(held.conv, true);
+      }}
+    />
+  {/if}
+
+  {#if unfinishedAway}
+    {@const held = unfinishedAway}
+    <Unfinished
+      card={cardName(held.shadow.title, "").text}
+      where={held.shadow.host}
+      warnings={held.warnings}
+      onkeep={() => (unfinishedAway = null)}
+      onclose={() => {
+        unfinishedAway = null;
+        closeElsewhere(held.shadow, true);
       }}
     />
   {/if}
@@ -4656,6 +4705,7 @@
         onfocus={(id) => (focusedId = id)}
         {ondeselect}
         onclose={(c) => void closeConv(c)}
+        onclosewall={(s) => closeElsewhere(s)}
         timelines={skein.timelines.shown}
         ontimelinepick={(id) => {
           const c = skein.convs.find((c) => c.id === id);

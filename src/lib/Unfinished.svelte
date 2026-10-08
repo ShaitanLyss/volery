@@ -1,10 +1,13 @@
 <script lang="ts">
-  /* Asking before closing a card that has a timeline in flight.
+  /* Asking before closing a card that is doing something: mid-turn, with
+   * background work running (`closing.ts`), or with a timeline in flight.
    *
-   * Closing a card is not undoable, and this one has a plan on the glass that
-   * somebody has been watching. The close still happens if you say so — the
-   * timeline goes to the archive as left unfinished and can be picked back up
-   * from there — so this is a sentence, not a gate, in `Quit.svelte`'s sense.
+   * Closing a card is not undoable. A card with a timeline has a plan on the
+   * glass that somebody has been watching; the close still happens if you say so
+   * — the timeline goes to the archive as left unfinished and can be picked back
+   * up from there — so this is a sentence, not a gate, in `Quit.svelte`'s sense.
+   * The same plate asks about a card on another wall (`where`), whose own wall
+   * then closes it the way its ✕ would.
    *
    * `keep it` takes the focus, so a reflexive Enter is the harmless answer, and
    * Escape means the same thing. */
@@ -13,22 +16,29 @@
 
   let {
     card,
-    t,
+    t = null,
+    warnings = [],
+    where: wall = null,
     onkeep,
     onclose,
   }: {
     card: string;
-    t: Timeline;
+    t?: Timeline | null;
+    /** What a close would cut off, from `closeWarnings`. */
+    warnings?: string[];
+    /** The wall the card is on, when it is not this one. */
+    where?: string | null;
     onkeep: () => void;
     onclose: () => void;
   } = $props();
 
-  const at = $derived(current(t.plan));
-  const where = $derived(
-    at === -1
+  const where = $derived.by(() => {
+    if (!t) return "";
+    const at = current(t.plan);
+    return at === -1
       ? "with every step done but not completed"
-      : `at step ${roman(at + 1)} of ${roman(t.plan.steps.length)}, ${Math.round(fraction(t.plan) * 100)}% of the way`,
-  );
+      : `at step ${roman(at + 1)} of ${roman(t.plan.steps.length)}, ${Math.round(fraction(t.plan) * 100)}% of the way`;
+  });
 
   let keepBtn = $state<HTMLButtonElement | null>(null);
   $effect(() => {
@@ -48,12 +58,17 @@
 
 <div class="scrim" role="dialog" aria-modal="true" aria-label="close {card}">
   <div class="plate">
-    <h1>close {card}?</h1>
-    <p>
-      Its timeline <em>{t.title}</em> is still in flight, {where}. Closing the card moves it to
-      the archive as left unfinished — you can pick it back up from there, which adopts this
-      conversation again.
-    </p>
+    <h1>close {card}{wall ? ` on ${wall}` : ""}?</h1>
+    {#each warnings as w}
+      <p>{w}</p>
+    {/each}
+    {#if t}
+      <p>
+        Its timeline <em>{t.title}</em> is still in flight, {where}. Closing the card moves it to
+        the archive as left unfinished — you can pick it back up from there, which adopts this
+        conversation again.
+      </p>
+    {/if}
     <div class="acts">
       <button class="act" bind:this={keepBtn} onclick={onkeep}>keep it open</button>
       <button class="act danger" onclick={onclose}>close it</button>

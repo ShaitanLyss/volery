@@ -475,6 +475,17 @@ pub enum Act {
 /// that would hand it over raw, with nothing to say it came from an agent.
 pub const CAN: [&str; 3] = ["send", "recall", "close"];
 
+/// The word that says a wall takes a close from a *person* on another wall
+/// (`may_reach`). Kept out of `CAN`, which is what an agent's tools check
+/// whole: a wall with `close` and not this one is not "older" for an agent, it
+/// is only one a person cannot close cards on yet.
+pub const CAN_PERSON_CLOSE: &str = "close_by_person";
+
+/// Everything this wall announces in `Facts::can`.
+pub fn can_now() -> Vec<String> {
+    CAN.iter().copied().chain([CAN_PERSON_CLOSE]).map(str::to_string).collect()
+}
+
 /// The word a request needs the far wall to have announced, if any. A person's
 /// prompt needs none: every wall that speaks the fleet takes those.
 pub fn needs(act: Act, from_card: bool) -> Option<&'static str> {
@@ -482,6 +493,7 @@ pub fn needs(act: Act, from_card: bool) -> Option<&'static str> {
         Act::Prompt if !from_card => None,
         Act::Prompt => Some(CAN[0]),
         Act::Recall => Some(CAN[1]),
+        Act::Close if !from_card => Some(CAN_PERSON_CLOSE),
         Act::Close => Some(CAN[2]),
     }
 }
@@ -526,10 +538,18 @@ pub fn needs(act: Act, from_card: bool) -> Option<&'static str> {
 ///   `said`), and the switch is the one consent a person here has given to
 ///   other walls reaching in at all.
 /// - **A close** stops work rather than starting it, so the switch does not
-///   enter into it — but only the origin may, which is `spawn.rs`'s "a card you
-///   opened closes on your say-so" carried across. Any other close is refused
-///   rather than asked about: the person who would be asked is at the *other*
-///   machine, and the one in front of this wall is not the one watching.
+///   enter into it. An agent's close is the origin's only, which is
+///   `spawn.rs`'s "a card you opened closes on your say-so" carried across;
+///   any other agent's close is refused rather than asked about, since the
+///   person who would be asked is at the *other* machine.
+/// - **A person's close** (`from.card` is `None`) is always allowed, for any
+///   card on this wall, whatever the switch says and whoever opened the card —
+///   Lyss's decision. Closing only stops work and cannot damage this machine,
+///   so being able to do it from anywhere is the safer default, and the person
+///   asking is the one who would be asked. Mid-turn, set-aside and a timeline in
+///   flight are not refusals either: the asking wall confirms mid-turn off the
+///   digest before it sends, and this wall then closes the card the way its own
+///   ✕ would (`spawn::close_from_afar`). Agent closes keep every rule above.
 pub fn may_reach(
     act: Act,
     from: &Origin,
@@ -542,7 +562,7 @@ pub fn may_reach(
     match act {
         Act::Prompt if accepting || answering || replies => Ok(()),
         Act::Recall if accepting || origin => Ok(()),
-        Act::Close if origin => Ok(()),
+        Act::Close if from.card.is_none() || origin => Ok(()),
         Act::Close => Err(Refusal::NotOpenedFor),
         Act::Prompt | Act::Recall => Err(Refusal::NotAccepting),
     }
@@ -839,6 +859,9 @@ impl Unsendable {
                 }
                 Outcome::Said { .. } => format!("already answered by {}", answer.by),
             },
+            Unsendable::Older { host, what } if *what == CAN_PERSON_CLOSE => {
+                format!("{host} needs updating to close cards from here")
+            }
             Unsendable::Older { host, what } => format!(
                 "{host} runs a Volery from before a card on another wall could {} its cards, \
                  so nothing was sent — it would be skipped there, or handed over with nothing \
@@ -2452,7 +2475,8 @@ mod tests {
         }
         /* The close nobody but the origin may make, through the gate that
            makes it, settled the way the wiring settles it. */
-        let close = Ask { card: Some("card-9".into()), ..raw_ask("h", "lap", "desk", now) };
+        let mut close = Ask { card: Some("card-9".into()), ..raw_ask("h", "lap", "desk", now) };
+        close.from.card = Some("stranger".into());
         let r = desk.on(FleetMsg::Close { ask: close, age_ms: 0 }, now, &open_facts());
         let d = &r.deliver[0];
         let no = may_reach(d.act, &d.asked_by, d.accepting, false, None, false).unwrap_err();
@@ -2625,10 +2649,10 @@ mod tests {
             assert_eq!(may_reach(a, &origin, accepting, false, born, false).is_ok(), accepting);
             /* Anybody else is held to the switch for a read and refused a
                close outright, switch or no switch. */
-            for other in [lap(Some("x")), lap(None)] {
-                assert_eq!(may_reach(b, &other, accepting, false, born, false).is_ok(), accepting, "{other:?}");
-                assert_eq!(may_reach(c, &other, accepting, false, born, false), Err(Refusal::NotOpenedFor), "{other:?}");
-            }
+            let other = lap(Some("x"));
+            assert_eq!(may_reach(b, &other, accepting, false, born, false).is_ok(), accepting, "{other:?}");
+            assert_eq!(may_reach(c, &other, accepting, false, born, false), Err(Refusal::NotOpenedFor), "{other:?}");
+            assert_eq!(may_reach(b, &lap(None), accepting, false, born, false).is_ok(), accepting);
             /* A card nobody on another wall asked for has no origin at all. */
             assert_eq!(may_reach(c, &origin, accepting, false, None, false), Err(Refusal::NotOpenedFor));
             /* A child reporting to the card that opened it is never work. */
@@ -2638,12 +2662,52 @@ mod tests {
            origin: a card is its id, and it may have moved. */
         let moved = Origin { host: "box".into(), card: Some("k".into()) };
         assert_eq!(may_reach(c, &moved, false, false, born, false), Ok(()));
-        /* A person's ask is never an origin, even one recorded as such. */
+        /* A person's close is nobody's origin and is let through anyway. */
         let person = lap(None);
-        assert_eq!(may_reach(c, &person, true, false, Some(&person), false), Err(Refusal::NotOpenedFor));
+        assert_eq!(may_reach(c, &person, true, false, Some(&person), false), Ok(()));
         /* And the refusal says what to do instead, for an agent. */
         let why = Refusal::NotOpenedFor.reason("desk");
         assert!(why.contains("Nothing was closed") && why.contains("tell the user"), "{why}");
+    }
+
+    /// A person closing a card on another wall is always let in — switch off,
+    /// someone else's card, a card nobody on another wall asked for — and the
+    /// same close from an agent is not, which is what `from.card` is for. A
+    /// person's close also needs a word an agent's does not, so a wall one
+    /// release behind says so instead of refusing in words meant for an agent.
+    #[test]
+    fn a_person_may_always_close_and_an_agent_still_may_not() {
+        let from = |card: Option<&str>| Origin { host: "lap".into(), card: card.map(str::to_string) };
+        let other = from(Some("someone-else"));
+        let mine = from(Some("k"));
+        for accepting in [false, true] {
+            for born in [None, Some(&mine), Some(&other)] {
+                assert_eq!(may_reach(Act::Close, &from(None), accepting, false, born, false), Ok(()));
+            }
+            assert_eq!(may_reach(Act::Close, &other, accepting, false, Some(&mine), false), Err(Refusal::NotOpenedFor));
+            assert_eq!(may_reach(Act::Close, &other, accepting, false, None, false), Err(Refusal::NotOpenedFor));
+        }
+        /* The word: a person's close needs it, an agent's does not. */
+        assert_eq!(needs(Act::Close, false), Some(CAN_PERSON_CLOSE));
+        assert_eq!(needs(Act::Close, true), Some("close"));
+        assert!(can_now().iter().any(|c| c == CAN_PERSON_CLOSE));
+        assert!(CAN.iter().all(|c| can_now().iter().any(|a| a == c)));
+        let mut lap = Fleet::new("lap", 0);
+        let wall_044 = Facts { can: CAN.iter().map(|s| s.to_string()).collect(), ..open_facts() };
+        lap.on(statement("desk", 1, wall_044, None, 0), 10, &open_facts());
+        let req = |id: &str, from_card: Option<&str>| PromptRequest {
+            id: id.into(),
+            from_card: from_card.map(str::to_string),
+            ..prompt_req(id, "desk", "card-9")
+        };
+        match lap.reach(Act::Close, req("p", None), 20) {
+            Err(u @ Unsendable::Older { .. }) => assert_eq!(u.reason(), "desk needs updating to close cards from here"),
+            other => panic!("a 0.44 wall was sent a person's close: {other:?}"),
+        }
+        assert!(lap.reach(Act::Close, req("a", Some("k")), 20).is_ok(), "an agent's close needs only `close`");
+        let new = Facts { can: can_now(), ..open_facts() };
+        lap.on(statement("desk", 2, new, None, 0), 30, &open_facts());
+        assert!(lap.reach(Act::Close, req("p2", None), 40).is_ok());
     }
 
     /// A recall and a close are a prompt's shape under tags of their own, and

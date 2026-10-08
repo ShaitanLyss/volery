@@ -693,6 +693,7 @@ pub fn run() {
             flyway::link::flyway_failed,
             flyway::link::flyway_births,
             flyway::link::flyway_prompt,
+            flyway::link::flyway_close,
             flyway::link::flyway_prompt_answer,
             flyway::link::flyway_tail,
             flyway::link::flyway_tail_answer,

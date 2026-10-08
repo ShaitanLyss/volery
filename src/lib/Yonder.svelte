@@ -92,6 +92,20 @@
     <p class="note">could not read its conversation — {shadow.tailWhy}</p>
   {/if}
 
+  <!-- A close asked of its wall from here. It stays drawn until {shadow.host}'s
+       next snapshot drops it, so what has become of the ask is said where it is. -->
+  {#if shadow.closing}
+    <p class="closing" class:refused={shadow.closing.state === "refused"}>
+      {#if shadow.closing.state === "asked"}
+        asking {shadow.host} to close it…
+      {:else if shadow.closing.state === "taken"}
+        {shadow.host} is closing it — it goes when {shadow.host} next reports
+      {:else}
+        {shadow.host} did not close it — {shadow.closing.why}
+      {/if}
+    </p>
+  {/if}
+
   <!-- Whether it is stopped on you. Answered in the dock, where a question on
        this wall is, so the two are never answered in two different places. A
        wall gone quiet takes the offer away and says why: the question may
@@ -128,6 +142,14 @@
 </section>
 
 <style>
+  .closing {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--paper-mute);
+  }
+  .closing.refused {
+    color: var(--st-fail);
+  }
   .yonder {
     display: flex;
     flex-direction: column;

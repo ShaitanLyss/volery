@@ -52,8 +52,15 @@ the wall is precisely what was built for it:
 
 And nothing else. The node carries `data-shadow`, never `data-conv`, so `nodeOf` reads a press
 on one as bare ground — no pick, no drag, no pin (which would write a placement row keyed on an
-id this store has never seen), no card menu. No close control: only the wall it is on can end
-it. No strand box, no Tab order, no perf meter. Each of those is a thing that would have
+id this store has never seen), no card menu. Its one control is a ✕ (and `<space>cc` on the
+focused one) that **asks its own wall to close it** — a person's close, which that wall allows
+whatever its switch says and whoever opened the card (Lyss: closing only stops work and cannot
+hurt the other machine). It asks first when the digest says working or jobs (`closing.ts`, the
+same plate as a local close), is refused by *this* wall for a peer without `close_by_person` in
+its `can` ("X needs updating to close cards from here"), and **never removes the shadow
+itself** — the wall's next snapshot drops it, and a refusal lands on `Shadow.closing`, drawn in
+the panel and as a fault. The wall that closes it writes a chronicle row naming who asked. No
+strand box, no Tab order, no perf meter. Each of those is a thing that would have
 needed a guard; here it needed nothing, which is the point.
 
 **A shadow is also not a dormant card.** A dormant card has a row and no process *yet*, and

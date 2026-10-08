@@ -71,8 +71,9 @@
      *  Empty for every other card, and for a draft the palette has claimed. */
     draft?: string;
     onfocus: (e: MouseEvent) => void;
-    /** Close it. Absent where there is nothing here to close — a card on
-     *  another wall, which only the wall it is on can end. */
+    /** Close it. Absent where there is nothing to close — the peek window. A
+     *  card on another wall is closed by asking its own wall to, which takes it
+     *  off and drops it from its next snapshot. */
     onclose?: () => void;
     /** Open the plan this card has written. Absent where there is nowhere to
      *  open it — the peek window draws cards too and has no file viewer. */
@@ -386,7 +387,12 @@
   {/if}
 
   {#if onclose}
-    <button class="shut" onclick={onclose} aria-label="Close conversation">
+    <button
+      class="shut"
+      onclick={onclose}
+      aria-label="Close conversation"
+      title="close (space then c c)"
+    >
       <svg viewBox="0 0 10 10" aria-hidden="true"
         ><path d="M2 2l6 6M8 2L2 8" /></svg
       >
