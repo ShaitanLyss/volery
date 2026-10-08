@@ -486,6 +486,50 @@ pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Resu
         .map_err(|_| "the asking turn has gone".to_string())
 }
 
+/// Answer a parked question from another wall, over the flyway.
+///
+/// `answer_ask`'s channel, so the card cannot tell a click in this wall's dock
+/// from one made on the other machine — the panel here comes down the same way,
+/// off the parking thread's own `ask:closed`. With two refusals in front of it:
+///
+/// - **the card must be the one the question is parked on.** The ask id is a
+///   uuid and cannot collide, so this is not a guard against chance; it is the
+///   far wall's own claim about which card it was looking at, checked rather
+///   than believed.
+/// - **only `ask_user` travels.** A question Volery composed — closing a card,
+///   taking a notice down, removing a path — has an act behind it (`ours`,
+///   `act`), and an answer to it *does* the thing. Whether those travel, and
+///   with what in front of the person answering, is decided (sink `7207a6d9`:
+///   the machine named, the path as that machine resolves it, what is there)
+///   and not built; until it is, the answer is refused here, on the machine
+///   the act would happen on, rather than trusted to the far wall's drawing.
+pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer: &str) -> Result<(), String> {
+    let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
+    let parked = {
+        let mut pending = asks.pending.lock().unwrap();
+        match pending.get(ask_id) {
+            None => {
+                return Err("that question is no longer waiting — it was answered on its own wall, or \
+                            its time ran out"
+                    .into())
+            }
+            Some(p) if p.conversation_id != card => {
+                return Err("that question belongs to another card on this wall".into())
+            }
+            Some(p) if p.ours || p.act.is_some() => {
+                return Err("that question is this wall's own — about closing or removing something \
+                            here — and is answered on the machine it is about"
+                    .into())
+            }
+            Some(_) => pending.remove(ask_id).ok_or("that question is no longer waiting")?,
+        }
+    };
+    parked
+        .tx
+        .send(crate::clean::scrub(answer).into_owned())
+        .map_err(|_| "the asking turn has gone".to_string())
+}
+
 /// A design the user can look at instead of imagine.
 ///
 /// Skein draws this in an isolated frame — see `asking.ts::previewDoc` for what

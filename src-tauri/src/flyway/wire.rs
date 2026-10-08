@@ -57,7 +57,7 @@ use iroh::endpoint::{presets, Connection, Incoming};
 use iroh::tls::CaTlsConfig;
 use iroh::{Endpoint, EndpointId, SecretKey};
 
-use super::frame::{self, Frame, Read};
+use super::frame::{self, Frame};
 use super::seal::WallKey;
 
 /// What this protocol is called on the wire. Versioned, so a wall running an
@@ -282,14 +282,9 @@ impl Wire {
                 .await
                 .map_err(|e| format!("a frame was cut short: {e}"))?;
             let plain = self.key.open(&self.room, &buf)?;
-            match frame::read(&plain)? {
-                Read::Frame(f) => out.push(*f),
-                /* A newer build's word. See `frame.rs` on why this is not the
-                   end of the exchange. */
-                Read::Unknown(tag) => {
-                    log::debug!("flyway: passed over a `{tag}` frame this build has no word for")
-                }
-            }
+            /* A newer build's word, or a word in a newer shape, is passed over
+               rather than ending the exchange — see `frame.rs`. */
+            frame::take(&plain, &mut out)?;
         }
     }
 }

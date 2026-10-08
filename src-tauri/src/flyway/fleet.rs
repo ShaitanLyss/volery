@@ -412,6 +412,18 @@ pub struct Ask {
     /// with this set has it taken off.
     #[serde(default)]
     pub card: Option<String>,
+    /// On a prompt only: the id of a question that card has parked on
+    /// `ask_user`, which this text **answers** rather than being a new prompt.
+    ///
+    /// This is the half of "control them from my work laptop" that a question
+    /// would otherwise break: a card on the home machine that stops to ask
+    /// parks until somebody answers *there*, and nobody is there. The question
+    /// travels in its card's snapshot (`cards.rs`); the answer travels back as
+    /// this, and the owning wall hands it to the parked call directly
+    /// (`ask::answer_from_afar`), the same channel a click in its own dock
+    /// would use.
+    #[serde(default)]
+    pub answers: Option<String>,
 }
 
 /// Why a wall would not open a card, in terms somebody can act on.
@@ -586,6 +598,8 @@ pub struct Deliver {
     pub card: String,
     pub text: String,
     pub asked_by: Origin,
+    /// The parked question this answers, if it is an answer — see `Ask::answers`.
+    pub answers: Option<String>,
 }
 
 /// Everything one message caused.
@@ -685,6 +699,8 @@ pub struct PromptRequest {
     /// The card on that wall.
     pub card: String,
     pub text: String,
+    /// The question this answers, or `None` for an ordinary prompt.
+    pub answers: Option<String>,
 }
 
 /// An ask or answer's identity: the asking host and the request id. The id
@@ -916,6 +932,7 @@ impl Fleet {
             model: r.model,
             effort: r.effort,
             card: None,
+            answers: None,
         };
         self.asks.insert(
             key,
@@ -964,6 +981,7 @@ impl Fleet {
             model: None,
             effort: None,
             card: Some(r.card),
+            answers: r.answers,
         };
         self.asks.insert(
             key,
@@ -1075,7 +1093,7 @@ impl Fleet {
 
             FleetMsg::Ask { ask, age_ms } => {
                 /* Never a prompt under this tag — see `Ask::card`. */
-                let ask = Ask { card: None, ..clean_ask(ask) };
+                let ask = Ask { card: None, answers: None, ..clean_ask(ask) };
                 self.hear_ask(ask, age_ms, now, here, &mut reply);
             }
 
@@ -1179,9 +1197,16 @@ impl Fleet {
         let decided = if prompt {
             /* A prompt has no territory and counts against no bound; what it
                shares with an ask is the trust and the switch. Whether the card
-               exists, and will take it, is the wiring's to answer. */
+               exists, and will take it, is the wiring's to answer.
+
+               **An answer is not held to the switch.** The switch is a person
+               deciding this machine takes no *work* from other walls; an
+               answer starts nothing — it is the reply a card on this machine
+               stopped and asked for, and refusing it would strand that card on
+               a question nobody here is going to answer. */
+            let answering = ask.answers.is_some();
             self.trust(&ask, age_ms, now)
-                .and_then(|()| if here.accepting { Ok(()) } else { Err(Refusal::NotAccepting) })
+                .and_then(|()| if here.accepting || answering { Ok(()) } else { Err(Refusal::NotAccepting) })
                 .map(|()| {
                     self.delivering.insert(key.clone(), keep_until);
                     reply.deliver.push(Deliver {
@@ -1189,6 +1214,7 @@ impl Fleet {
                         card: ask.card.clone().unwrap_or_default(),
                         text: ask.brief.clone(),
                         asked_by: ask.from.clone(),
+                        answers: ask.answers.clone(),
                     });
                 })
         } else {
@@ -1413,6 +1439,7 @@ fn clean_ask(a: Ask) -> Ask {
         model: sc_opt(a.model),
         effort: sc_opt(a.effort),
         card: sc_opt(a.card),
+        answers: sc_opt(a.answers),
     }
 }
 
@@ -1548,6 +1575,7 @@ mod tests {
             model: None,
             effort: None,
             card: None,
+            answers: None,
         }
     }
 
@@ -2241,7 +2269,36 @@ mod tests {
     }
 
     fn prompt_req(id: &str, to: &str, card: &str) -> PromptRequest {
-        PromptRequest { id: id.into(), from_card: None, to: to.into(), card: card.into(), text: "carry on".into() }
+        PromptRequest {
+            id: id.into(),
+            from_card: None,
+            to: to.into(),
+            card: card.into(),
+            text: "carry on".into(),
+            answers: None,
+        }
+    }
+
+    /// An answer to a question a card parked is not work from another wall,
+    /// and a wall switched off must still let it through — or the card that
+    /// asked is stranded on a question nobody at its own machine will answer.
+    #[test]
+    fn an_answer_reaches_a_wall_that_takes_no_work() {
+        let mut desk = Fleet::new("desk", 0);
+        let closed = Facts { accepting: false, ..open_facts() };
+        let answer = Ask {
+            card: Some("card-9".into()),
+            answers: Some("ask-1".into()),
+            brief: "the second option".into(),
+            ..raw_ask("p", "lap", "desk", 0)
+        };
+        let r = desk.on(FleetMsg::Prompt { ask: answer, age_ms: 0 }, 0, &closed);
+        assert_eq!(r.deliver.len(), 1);
+        assert_eq!(r.deliver[0].answers.as_deref(), Some("ask-1"));
+        assert_eq!(r.deliver[0].text, "the second option");
+        /* An ordinary prompt is still held to the switch. */
+        let prompt = Ask { card: Some("card-9".into()), ..raw_ask("q", "lap", "desk", 0) };
+        assert!(desk.on(FleetMsg::Prompt { ask: prompt, age_ms: 0 }, 0, &closed).deliver.is_empty());
     }
 
     /// A prompt crosses, is handed to the card, and its answer comes back as

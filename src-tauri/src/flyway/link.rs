@@ -1013,6 +1013,21 @@ impl Link {
     /// card through its own send path — waking it if it is dormant, echoing it
     /// into the transcript — and answers with `flyway_prompt_answer`.
     fn deliver_here(self: &Arc<Self>, d: Deliver) {
+        /* An answer to a parked question goes straight into the parked call —
+           the channel a click in this wall's own dock uses — and is answered
+           taken or refused on the spot, with no front end in between. */
+        if let Some(ask_id) = d.answers.clone() {
+            let outcome = crate::ask::answer_from_afar(&self.app, &d.card, &ask_id, &d.text);
+            let now = self.now();
+            let m = self.fleet.lock().ok().and_then(|mut f| match &outcome {
+                Ok(()) => f.taken(&d.asked_by.host, &d.request, &d.card, now),
+                Err(why) => f.refused(&d.asked_by.host, &d.request, why, now),
+            });
+            if let Some(m) = m {
+                self.route(&[m], None);
+            }
+            return;
+        }
         let open = self
             .store()
             .and_then(|s| s.0.lock().ok().map(|c| here::open_cards(&c).iter().any(|id| *id == d.card)));
@@ -1466,8 +1481,19 @@ pub async fn flyway_births(app: AppHandle) -> Result<Vec<here::Birth>, String> {
 /// Send a prompt to a card on another wall. `Ok` means it is on its way —
 /// `flyway:prompt-left` says when it has actually left, and
 /// `flyway:prompt-answer` what became of it.
+///
+/// With `ask_id`, the text **answers** that card's parked `ask_user` question
+/// rather than being a new prompt — composed exactly as the owning wall's own
+/// dock would compose it — and is not held to the far wall's switch.
 #[tauri::command]
-pub async fn flyway_prompt(app: AppHandle, id: String, to: String, card: String, text: String) -> Result<(), String> {
+pub async fn flyway_prompt(
+    app: AppHandle,
+    id: String,
+    to: String,
+    card: String,
+    text: String,
+    ask_id: Option<String>,
+) -> Result<(), String> {
     let Some(l) = current(&app) else {
         return Err("this wall is not on a flyway, so it cannot reach another wall's card".into());
     };
@@ -1475,7 +1501,7 @@ pub async fn flyway_prompt(app: AppHandle, id: String, to: String, card: String,
         return Err("an empty prompt is nothing to send".into());
     }
     crate::off_main(move || {
-        l.send_prompt(PromptRequest { id, from_card: None, to, card, text })
+        l.send_prompt(PromptRequest { id, from_card: None, to, card, text, answers: ask_id })
     })
     .await?
 }

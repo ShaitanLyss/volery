@@ -18,6 +18,24 @@
 //! word for is counted and passed over. A frame that does not open, or opens to
 //! something with no `msg` at all, is still refused: that is a different wall or
 //! a broken one, and saying so is the point.
+//!
+//! ### And so is a word we know that will not read
+//!
+//! The first cut refused a frame whose `msg` this build knows but whose body
+//! does not parse, on the argument that it "should have parsed, so it is seen".
+//! Two walls on different builds is the **normal** case, not the edge one — a
+//! person updates the machine they are sitting at and the other stays where it
+//! was — and the way a newer build makes a known word unreadable to an older
+//! one is ordinary: one more variant in `Outcome` or `Refusal`, one more required
+//! field. An `answer` frame is gossiped to every peer, so that one variant would
+//! fail every exchange with every older wall, and the sink frames beside it with
+//! them. So it is passed over too, logged where an older wall's owner can read
+//! it (`Read::Malformed`), and the exchange carries everything else.
+//!
+//! **What may still be refused is the whole read, never one frame of it.** A
+//! frame that does not open, or is not JSON, or names no message, is not one of
+//! ours at all, and that does end the exchange — `take` is the loop's rule, so
+//! it is what the tests hold.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,6 +58,9 @@ pub enum Read {
     Frame(Box<Frame>),
     /// One of ours, from a build that knows a word this one does not.
     Unknown(String),
+    /// A word this build knows, in a shape it cannot read — most often a
+    /// newer build's. See the module note on why it is passed over.
+    Malformed(String),
 }
 
 /// Read one opened payload. See the module note for which failures are
@@ -50,13 +71,29 @@ pub fn read(plain: &[u8]) -> Result<Read, String> {
     match serde_json::from_value::<Frame>(v) {
         Ok(f) => Ok(Read::Frame(Box::new(f))),
         Err(e) => match tag {
-            /* A word we know, malformed — not a newer build's vocabulary but a
-               frame that should have parsed. Refused, so it is seen. */
-            Some(t) if KNOWN.contains(&t.as_str()) => Err(format!("a {t} frame did not read: {e}")),
+            /* A word we know, in a shape we do not — passed over and said, see
+               the module note. */
+            Some(t) if KNOWN.contains(&t.as_str()) => Ok(Read::Malformed(format!("a {t} frame did not read: {e}"))),
             Some(t) => Ok(Read::Unknown(t)),
             None => Err("a frame was not one of ours: it names no message".to_string()),
         },
     }
+}
+
+/// One opened payload, folded into what a read has gathered so far — the read
+/// loop's whole rule, here so it can be held by a test rather than only by the
+/// stream it runs over. Frames this build has no use for are passed over and
+/// logged; a payload that is not one of ours ends the read.
+pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
+    match read(plain)? {
+        Read::Frame(f) => into.push(*f),
+        Read::Unknown(tag) => log::debug!("flyway: passed over a `{tag}` frame this build has no word for"),
+        Read::Malformed(why) => log::warn!(
+            "flyway: passed over a frame this build could not read ({why}) — the other wall is probably \
+             a newer build; everything else in the exchange still arrived"
+        ),
+    }
+    Ok(())
 }
 
 /// Every `msg` this build reads. Held against the three enums by a test, so a
@@ -114,10 +151,36 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_frame_we_know_is_refused() {
-        assert!(read(br#"{"msg":"hello","host":7}"#).is_err());
+    fn a_word_we_know_that_will_not_read_is_passed_over_and_said() {
+        assert!(matches!(read(br#"{"msg":"hello","host":7}"#).unwrap(), Read::Malformed(_)));
+        /* Not one of ours at all, which does end the read. */
         assert!(read(br#"{"no":"tag"}"#).is_err());
         assert!(read(b"not json").is_err());
+    }
+
+    /// **The rule two builds side by side depend on, held at the loop rather
+    /// than at one frame.** A newer wall's exchange carries a word this build
+    /// has never heard of and an `answer` with an outcome it cannot read, in
+    /// among the sink's events; everything this build *can* read must still
+    /// arrive, in order, or the sink stops between two machines one release
+    /// apart.
+    #[test]
+    fn a_newer_walls_exchange_still_delivers_everything_this_build_can_read() {
+        let hello = serde_json::to_vec(&Frame::Sink(Msg::Hello { host: "lap".into(), watermark: BTreeMap::new() })).unwrap();
+        let events = serde_json::to_vec(&Frame::Sink(Msg::Events { events: vec![] })).unwrap();
+        let unknown = br#"{"msg":"carry","card":"x","to":"desk"}"#.to_vec();
+        let future_answer =
+            br#"{"msg":"answer","answer":{"request":"r","by":"desk","asked_by":"lap","outcome":{"outcome":"moved","to":"box"}},"age_ms":0}"#
+                .to_vec();
+        let mut got = Vec::new();
+        for p in [hello.clone(), unknown, future_answer, events.clone()] {
+            take(&p, &mut got).expect("nothing here may end the read");
+        }
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(matches!(got[0], Frame::Sink(Msg::Hello { .. })));
+        assert!(matches!(got[1], Frame::Sink(Msg::Events { .. })));
+        /* And a payload that is not one of ours still ends it. */
+        assert!(take(b"garbage", &mut got).is_err());
     }
 
     /// `KNOWN` is the list a malformed frame is told apart from a newer one

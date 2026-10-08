@@ -696,6 +696,7 @@ pub fn run() {
             flyway::link::flyway_prompt_answer,
             flyway::key::flyway_start,
             flyway::key::flyway_join,
+            flyway::key::flyway_invite,
             flyway::key::flyway_leave,
             flyway::key::flyway_host,
             store::make_territory,
