@@ -77,7 +77,7 @@ pub const SINK_READ_TOOL: &str = "sink_read";
 const INDEX_BUDGET: usize = 60_000;
 
 /// How much `sink_read` prints in one call. A body is capped at
-/// `store::MAX_SINK_BODY` (4,000), so this is twenty full items at the worst;
+/// `store::MAX_SINK_BODY` (6,000), so this is thirteen full items at the worst;
 /// past it the rest are named rather than dropped, for the reason
 /// `ask_user`'s question cap went (sink `4b076830`): a cap the reader cannot
 /// see is data loss.
@@ -188,7 +188,9 @@ const MAX_NOTE: usize = 400;
    that wrote it, which makes it the worst place on the wall to lose a tail.
 
    `store::MAX_SINK_BODY` is the one cap, enforced where the write happens,
-   through `crate::clip`.
+   through `crate::clip`. It is **6,000** now; the 4,000 above is the number it
+   held during the two-cap era this note is about, kept because the ratio is
+   what made the bug.
 
    The `paths` list had one too — eight, silently kept from the front — and it
    went for the same reason one layer along. A path list is what lets somebody

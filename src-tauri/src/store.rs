@@ -349,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 46;
+const SCHEMA_VERSION: i64 = 47;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -401,6 +401,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (44, migrate_v44),
     (45, migrate_v45),
     (46, migrate_v46),
+    (47, migrate_v47),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2741,6 +2742,44 @@ fn migrate_v46(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("migrate v46: {e}"))
+}
+
+/// The fleet's half of the flyway: what it must remember across a restart, and
+/// which cards on this wall another wall asked for. See `flyway/here.rs`, which
+/// is the only reader of either.
+///
+/// **Two CREATEs and no backfill**, because nothing before this rung was ever
+/// opened for another wall and no setting was ever chosen.
+///
+/// `flyway_setting` is a key and a value rather than a column per knob: four
+/// small things a person or the link sets one at a time, and the next knob is a
+/// row rather than a rung. The one that cannot be lost is `fleet_version` —
+/// `Fleet::announce` explains the restart that freezes a wall on every peer's
+/// roster without it.
+///
+/// `flyway_birth` is written *before* the card is opened, for the reason
+/// `spawned` is a table rather than a column: the bound on arriving work has to
+/// be true of the card from the moment it was agreed to, and the conversation
+/// row is the front end's to write, later. No foreign key to `conversation` for
+/// the same reason — the row it would point at does not exist yet.
+fn migrate_v47(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS flyway_setting (
+            key    TEXT PRIMARY KEY,
+            value  TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS flyway_birth (
+            conversation_id  TEXT PRIMARY KEY,
+            request          TEXT NOT NULL,
+            asked_by_host    TEXT NOT NULL,
+            asked_by_card    TEXT,
+            at               INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS flyway_birth_at ON flyway_birth(at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v47: {e}"))
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -7161,7 +7200,7 @@ pub struct SinkPut {
 /// It applied to *merges only* until 2026-09-03, which was the other half of the
 /// muddle: a fresh drop of fifty thousand characters was stored whole, and only
 /// a second voice on it was guillotined.
-pub const MAX_SINK_BODY: usize = 4_000;
+pub const MAX_SINK_BODY: usize = 6_000;
 
 /// What a reader of a clipped sink body is told to do about it.
 ///

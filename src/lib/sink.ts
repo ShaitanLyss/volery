@@ -203,6 +203,20 @@ export function nothing(kind: Kind | "all", settled: boolean): string {
 
 /** The caps, mirroring `sink.rs`'s `MAX_TITLE` / `MAX_BODY` / `MAX_GLOBS`.
  *
+ *  `MAX_BODY` read 4,000 until 2026-10-08, when an item recording a design
+ *  decision lost 2,203 characters to it. That is the failure a cap is supposed
+ *  to prevent being worth it, not cause: the ladder in CLAUDE.md says a budget
+ *  is a reason to say a thing once and never a reason to say less of it, and
+ *  that when a cap trips on prose that is genuinely one thing said once, the
+ *  answer is to raise the number and have the person who pays agree. Lyss did.
+ *
+ *  What it costs is bounded and is not paid per spawn: a body is read only by
+ *  `sink_read`, whose own `READ_BUDGET` is what actually protects a tool
+ *  result, and raising this moves the worst case there from twenty full items
+ *  to thirteen — past which they are *named* rather than dropped, so the reader
+ *  can still see what it did not get. The listing pays nothing at all; it draws
+ *  titles.
+ *
  *  Here so the field you are typing in stops where the write will clip, rather
  *  than letting you write two hundred characters of title and find out
  *  afterwards that eighty of them were dropped. Rust clips regardless — this is
@@ -214,7 +228,7 @@ export function nothing(kind: Kind | "all", settled: boolean): string {
  *  `7b26058e`), so this number had to move with it or the field would stop a
  *  third of the way into what the write would accept. */
 export const MAX_TITLE = 120;
-export const MAX_BODY = 4_000;
+export const MAX_BODY = 6_000;
 export const MAX_PATHS = 8;
 
 /** What is in the fields while you are typing. `paths` is one line, because that
