@@ -4,9 +4,12 @@ import {
   ANSWER_MAX,
   NO_ANSWER_NOTE,
   NO_PREFERENCE,
+  NOT_REACHED,
+  NOT_REACHED_ASIDE,
   PREVIEW_VIEWPORT,
   QUEUED_NOTE,
   SKIPPED,
+  UNSENT_ASIDE,
   answerNote,
   answerWindow,
   answeredCount,
@@ -15,6 +18,7 @@ import {
   blankAnswers,
   composeAnswer,
   galleryHint,
+  heldAnswer,
   heldWindow,
   isComplete,
   isScriptBuilt,
@@ -319,6 +323,105 @@ describe("composeAnswer", () => {
    without a field on `ask:opened`; see the note above `answerWindow`. If one of
    these two suites goes red on its own, that is the mirror telling you it has
    drifted, which is what it is for. */
+/* Sink `fdc6954b`: a call that closes before the send — its deadline, or the
+   wall going away — used to take every answer already given with it. */
+describe("heldAnswer", () => {
+  const qs = [
+    q("shape", "one or two?"),
+    q("attention", "ring?"),
+    q("name", "called?"),
+    q("colour", "which?"),
+  ];
+
+  test("an untouched sheet holds nothing, so it closes as it always did", () => {
+    /* "nobody got to it" and "they got to some of it" must stay apart: the
+       first is the whole question queued, exactly as before. */
+    expect(heldAnswer(qs, blankAnswers(qs))).toBeNull();
+  });
+
+  test("what was answered goes out numbered, and what was not is named", () => {
+    const h = heldAnswer(qs, ["two widgets", null, "timer", null])!;
+    expect(
+      h.said.startsWith(
+        "Answering each in turn:\n1. shape: two widgets\n2. attention: not reached\n" +
+          "3. name: timer\n4. colour: not reached",
+      ),
+    ).toBe(true);
+    expect(h.said).toContain(NOT_REACHED_ASIDE);
+  });
+
+  test("a question not reached reads as neither a skip nor a delegation", () => {
+    /* The design question the sink item named: `no preference` hands the
+       decision over and `skipped` withholds it, and a question nobody read
+       did neither. */
+    expect(NOT_REACHED).not.toBe(SKIPPED);
+    expect(NOT_REACHED).not.toBe(NO_PREFERENCE);
+    const h = heldAnswer(qs, [SKIPPED, null, NO_PREFERENCE, null])!;
+    expect(h.said).toContain("1. shape: skipped");
+    expect(h.said).toContain("2. attention: not reached");
+    expect(h.said).toContain("3. name: no preference — your call");
+    /* Both directives, under one marker — `answerNote` cuts at the last. */
+    expect(h.said.split("\n\n— skein: ").length).toBe(2);
+    expect(h.said).toContain("passed over, not decided");
+  });
+
+  test("the rest is the questions not reached, as the pile reads them back", () => {
+    /* Drawn the way the panel draws them — through `normalizeAsk`, with the
+       fields a real call carries — since that is what the hold is built from. */
+    const drawn = normalizeAsk({
+      questions: [
+        { header: "shape", question: "one or two?", options: [{ label: "two", detail: "less to read" }] },
+        {
+          header: "attention",
+          question: "ring?",
+          options: [{ label: "yes", detail: "joins the ladder", preview: { html: "<b>bell</b>" } }],
+          file: { root: "C:/atelier/skein", path: "shot.png" },
+        },
+      ],
+    });
+    const h = heldAnswer(drawn, ["two", null])!;
+    expect(h.rest!.questions.map((x) => x.header)).toEqual(["attention"]);
+    /* A normalized question is a fixpoint of `normalizeAsk`, so the pile
+       draws exactly what the panel drew — details, designs and files too. */
+    expect(normalizeAsk(h.rest!)).toEqual(h.rest!.questions);
+    expect(h.rest!.questions[0].file).toEqual({ root: "C:/atelier/skein", path: "shot.png" });
+  });
+
+  test("an answer that happens to read `not reached` is still an answer", () => {
+    const h = heldAnswer(qs, ["not reached", null, "timer", "red"])!;
+    expect(h.rest!.questions.map((x) => x.header)).toEqual(["attention"]);
+  });
+
+  test("a sheet answered in full but never sent queues nothing", () => {
+    const h = heldAnswer(qs, ["two", "yes", "timer", "red"])!;
+    expect(h.rest).toBeNull();
+    expect(h.said).toContain(UNSENT_ASIDE);
+    expect(h.said).not.toContain(NOT_REACHED_ASIDE);
+    /* And it cannot be mistaken for the sheet sent: the hold always names
+       what it is short of, which is how `ask.rs::carried` tells the two
+       apart by prefix. */
+    expect(composeAnswer(qs, ["two", "yes", "timer", "red"]).startsWith(h.said)).toBe(false);
+  });
+
+  test("a sent sheet never opens with what was held before it was finished", () => {
+    const held = heldAnswer(qs, ["two", null, "timer", null])!;
+    const sent = composeAnswer(qs, ["two", "yes", "timer", "red"]);
+    expect(sent.startsWith(held.said)).toBe(false);
+  });
+
+  test("the transcript draws the answers as yours and keeps Skein's words out", () => {
+    /* Rust appends its note on the rest after the aside, with no marker of
+       its own (`presence::rest_reply`), so the fold cuts it off with the
+       aside. Live and off disk read the same. */
+    const h = heldAnswer(qs, ["two widgets", null, "timer", null])!;
+    const reply = `${h.said}\n\nThe user stopped partway through answering… Volery queued…`;
+    expect(answerNote(reply)).toEqual({
+      kind: "answer",
+      text: "1. shape: two widgets\n2. attention: not reached\n3. name: timer\n4. colour: not reached",
+    });
+  });
+});
+
 describe("answerWindow", () => {
   test("one bare question is exactly what every call used to get", () => {
     expect(answerWindow([q("ship", "ship it?")])).toBe(600);

@@ -712,22 +712,104 @@ export function previewAside(questions: AskQuestion[]): string | null {
 
 export function composeAnswer(questions: AskQuestion[], answers: Answers): string {
   const slots = questions.map((_, i) => (answers[i] ?? SKIPPED).trim() || SKIPPED);
-  const said =
-    questions.length === 1
-      ? slots[0]
-      : `${PREAMBLE}\n${questions
-          .map((q, i) => `${i + 1}. ${q.header}: ${slots[i]}`)
-          .join("\n")}`;
-  /* Gathered rather than appended one at a time, because `answerNote` cuts at
-     the *last* `ASIDE` — two markers in one reply would leave the first one
-     drawn in the transcript as a sentence the user typed, which is the whole
-     thing the marker exists to prevent. One marker, however many things Skein
-     has to say about the call. */
-  const asides = [
+  const said = questions.length === 1 ? slots[0] : numbered(questions, slots);
+  return withAsides(said, [
     slots.some((a) => a === SKIPPED) ? SKIPPED_ASIDE : null,
     previewAside(questions),
-  ].filter((a): a is string => a !== null);
-  return asides.length ? `${said}${ASIDE}${asides.join(" ")}` : said;
+  ]);
+}
+
+/** The sheet as the agent reads it: each answer under its own question's
+ *  header, in the order asked. */
+function numbered(questions: AskQuestion[], slots: string[]): string {
+  return `${PREAMBLE}\n${questions
+    .map((q, i) => `${i + 1}. ${q.header}: ${slots[i]}`)
+    .join("\n")}`;
+}
+
+/** Gathered rather than appended one at a time, because `answerNote` cuts at
+ *  the *last* `ASIDE` — two markers in one reply would leave the first one
+ *  drawn in the transcript as a sentence the user typed, which is the whole
+ *  thing the marker exists to prevent. One marker, however many things Skein
+ *  has to say about the call. */
+function withAsides(said: string, asides: (string | null)[]): string {
+  const kept = asides.filter((a): a is string => a !== null);
+  return kept.length ? `${said}${ASIDE}${kept.join(" ")}` : said;
+}
+
+/* -- a sheet that closes before it is sent --------------------------------
+ *
+ * Sink `fdc6954b`. A call's deadline, or the wall going away, used to take
+ * every answer already given with it: four of five decided, and the question
+ * went to the pile as five, to be read and decided again. So the panel pushes
+ * what it has to Rust on every answer it records (`Skein.holdAsk`), and the
+ * two ways a call closes without a send hand the agent what was decided and
+ * queue only what was not. `ask.rs::Held` is the other half. */
+
+/** What an unanswered slot says when the sheet goes out unfinished.
+ *
+ *  **Not `SKIPPED` and not `NO_PREFERENCE`**, and the difference is the whole
+ *  design question this answers. A skip is a gesture — *not now* — and a
+ *  delegation is a gesture — *you pick*. A question nobody reached carries
+ *  neither: the user never read it. An agent that cannot tell "said no
+ *  preference" from "never got to it" will act on the difference and get it
+ *  wrong, and the wrong way round authorises something. */
+export const NOT_REACHED = "not reached";
+
+/** What `not reached` is to be read as, said once beside the slots carrying
+ *  it. Rust follows it with what became of those questions — queued, or not —
+ *  since only Rust knows that (`presence::rest_note`). */
+export const NOT_REACHED_ASIDE =
+  "this call closed before the user had answered every question, so the " +
+  "answers above are what they had decided by then. A question answered " +
+  "`not reached` was never answered at all — it is not a skip and not a " +
+  "delegation, so do nothing it gates.";
+
+/** What a sheet answered in full but never sent is to be read as.
+ *
+ *  It is not quite an answer: a sheet of several ends at a review, and the
+ *  send is its own act precisely because reading the last question changes
+ *  minds about the first. So the agent is told the one thing that is
+ *  uncertain about it, and what that uncertainty should cost. */
+export const UNSENT_ASIDE =
+  "this call closed while the user had answered every question but not yet " +
+  "sent the sheet — they may still have been revising it. Take these as their " +
+  "answers, and if one gates something hard to undo, confirm it before you act.";
+
+/** What `ask.rs::hold_ask` keeps for a sheet that has not been sent. */
+export type Held = {
+  /** The reply as far as it goes. */
+  said: string;
+  /** The questions not reached, as an ask the pile can hold — normalized
+   *  questions are a fixpoint of `normalizeAsk`, so this is drawn from the
+   *  pile exactly as it was drawn here. `null` when every question was
+   *  answered and only the send was missing. */
+  rest: { questions: AskQuestion[] } | null;
+};
+
+/** What to keep of a sheet partway through, or `null` for one nothing has
+ *  been answered on — which closes exactly as an untouched call always did,
+ *  so "nobody got to it" and "they got to some of it" stay distinguishable.
+ *
+ *  Always the numbered form, even for one question: a single question has no
+ *  partway (it sends on the click), and the numbering is what lets a
+ *  `not reached` slot be named rather than left out — a gap invites the model
+ *  to re-align the rest onto the wrong questions. */
+export function heldAnswer(questions: AskQuestion[], answers: Answers): Held | null {
+  if (!answeredCount(answers)) return null;
+  const slots = questions.map((_, i) => {
+    const a = answers[i];
+    return a === null || a === undefined ? NOT_REACHED : a.trim() || SKIPPED;
+  });
+  /* Off the sheet, not the slots — an answer somebody typed as "not reached"
+     is still an answer. */
+  const rest = questions.filter((_, i) => answers[i] === null || answers[i] === undefined);
+  const said = withAsides(numbered(questions, slots), [
+    rest.length ? NOT_REACHED_ASIDE : UNSENT_ASIDE,
+    slots.some((a) => a === SKIPPED) ? SKIPPED_ASIDE : null,
+    previewAside(questions),
+  ]);
+  return { said, rest: rest.length ? { questions: rest } : null };
 }
 
 /* What `ask.rs` sends the agent when the question is never answered: the

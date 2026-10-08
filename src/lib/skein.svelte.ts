@@ -30,6 +30,7 @@ import {
   NO_ANSWER_NOTE,
   blankAnswers,
   composeAnswer,
+  heldAnswer,
   normalizeAsk,
 } from "./asking";
 import {
@@ -752,7 +753,7 @@ export class Skein {
       }),
     );
     keep(
-      listen<{ ask_id: string; answered: boolean; deferred?: boolean }>(
+      listen<{ ask_id: string; answered: boolean; deferred?: boolean; said?: string | null }>(
         "ask:closed",
         (e) => {
           /* A parked notice coming down — answered, queued because the wall went
@@ -784,7 +785,15 @@ export class Skein {
                better words, in a place a restart can reproduce. Optional in the
                payload so the control surface's synthetic `ask:closed` keeps
                meaning what it always meant. */
-            if (!e.payload.answered && !e.payload.deferred && !ours) {
+            /* `said` is a sheet the call closed on partway through: what you
+               had answered went to the agent without the send (`Held`), so it
+               is drawn as your answer, because it is — `answerAsk` never ran
+               to draw it, and off disk the same text folds into the same line.
+               Whatever was not reached went to the pile, which is the note
+               the tool result carries. */
+            if (e.payload.said && !ours) {
+              c.answered(e.payload.said);
+            } else if (!e.payload.answered && !e.payload.deferred && !ours) {
               c.note(NO_ANSWER_NOTE);
             }
           }
@@ -3532,6 +3541,28 @@ export class Skein {
       } catch {
         /* No longer waiting. Nothing to hold open. */
       }
+    }
+  }
+
+  /** Keep what has been answered of the sheet in front of you, in case the
+   *  call closes before you send it.
+   *
+   *  Called on every answer recorded, with the whole sheet as it stands rather
+   *  than the change — so one that is lost costs nothing but being one answer
+   *  behind, and the last to land is the truth. Silent on failure for
+   *  `stirAsk`'s reason: the one way it fails is the question no longer being
+   *  parked. See `heldAnswer` for what is kept and `ask.rs::Held` for what
+   *  becomes of it. */
+  async holdAsk(conv: Conversation) {
+    const ask = conv.pendingAsk;
+    if (!ask || ask.ours) return;
+    try {
+      await invoke("hold_ask", {
+        askId: ask.askId,
+        held: heldAnswer(ask.questions, ask.answers),
+      });
+    } catch {
+      /* No longer waiting. Nothing to keep. */
     }
   }
 

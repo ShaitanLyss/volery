@@ -364,6 +364,7 @@
       elsewhere={target !== focused}
       onanswer={() => skein.answerAsk(target)}
       onstir={() => skein.stirAsk(target)}
+      onheld={() => skein.holdAsk(target)}
       onselect={() => onselect(target)}
     />
   {:else if notice && noticeCard}

@@ -99,6 +99,16 @@ impl Queued {
                                    for them to answer later",
         }
     }
+
+    /// Why a sheet stopped partway, as the sentence that opens what the agent
+    /// is told about the questions left on it. See `rest_note`.
+    fn partway(self) -> &'static str {
+        match self {
+            Queued::Away => "The user left the wall partway through answering.",
+            Queued::Unattended => "The user stopped partway through answering, and the \
+                                   call's time ran out.",
+        }
+    }
 }
 
 /// Is this reply one of Volery's own queueing notes rather than an answer?
@@ -140,6 +150,53 @@ fn deferred_note(queued: usize, why: Queued) -> String {
          asking. Do not ask it again: a second call queues a second copy of the \
          same question, and the user reads the pile by hand. If everything you \
          have left depends on this answer, stop here and say so."
+    )
+}
+
+/// What the asking card is told about the questions it did **not** get answers
+/// to, when it did get some (`defer_rest`).
+///
+/// It follows the answers, inside the same reply, so it is written as the
+/// second half of something rather than as an opening: the `not reached` slots
+/// above it are what "the questions marked `not reached`" points at. The four
+/// things `deferred_note` has to say are still the four things — not lost,
+/// nothing decided, the answer comes as a message, do not ask again — narrowed
+/// to the questions they are true of, plus the one thing that is new: **the
+/// answers above stand.** An agent told "nothing has been decided" in the same
+/// reply as four decisions has to work out which of the two to believe, and the
+/// cautious reading throws the four away, which is the loss this exists to
+/// prevent arriving by a politer route.
+fn rest_note(queued: usize, why: Queued) -> String {
+    let partway = why.partway();
+    format!(
+        "{partway} Volery queued the questions marked `not reached` for them to \
+         answer later — nothing about those was lost, and nothing about them has \
+         been decided. There are now {queued} of your questions waiting.\n\n\
+         The answers above are the user's own and they stand: act on them now. \
+         Answers to the ones not reached will arrive in this conversation as a \
+         new message naming them. Until then, carry on with whatever they do not \
+         gate, and say in your closing line what you are holding back and why. \
+         Do not decide them unilaterally, and do not ask them again: a second \
+         call queues a second copy, and the user reads the pile by hand."
+    )
+}
+
+/// `pile_full`, for the questions left on a sheet that was partly answered.
+///
+/// The answers given still stand — they are in the reply above this — so the
+/// one case where an agent must decide for itself is narrowed to the questions
+/// it got nothing for.
+fn rest_full(why: Queued) -> String {
+    let partway = why.partway();
+    format!(
+        "{partway} The questions marked `not reached` could **not** be queued: you \
+         already have {MAX_PER_CARD} questions waiting, which is as many as one \
+         card may leave for one person to read.\n\n\
+         The answers above are the user's own and they stand: act on them. For the \
+         ones not reached there is nowhere left to put them, so decide them \
+         yourself on the best reasoning you have, writing down what you decided \
+         and why, and saying so plainly in your closing line so it can be \
+         revisited. If you are genuinely blocked, stop and say what on."
     )
 }
 
@@ -290,26 +347,64 @@ fn flip(
 /// count including this one — which is what a card reading "there are now 3 of
 /// your questions waiting" means by it.
 pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value, why: Queued) -> String {
-    let Some(store) = app.try_state::<Store>() else {
-        /* No store is no queue, and a note promising the question was kept
-           would be a lie told to the one party that cannot check. */
-        return pile_full(why);
+    match file(app, conversation_id, args) {
+        Some(queued) => deferred_note(queued, why),
+        None => pile_full(why),
+    }
+}
+
+/// Hand an agent the answers already given on a sheet that closed partway,
+/// and queue what is left of it.
+///
+/// `said` is the reply as far as it goes, composed by the panel
+/// (`asking.ts::heldAnswer`), and `rest` the questions not reached, as an ask
+/// the pile can hold. What is added here is the only part the panel cannot
+/// know: whether there was room for the rest, and why it came to be left.
+/// `rest` absent is a sheet answered in full and never sent, which `said`
+/// already says, so there is nothing to queue and nothing to add. See
+/// `ask::Held`, and sink `fdc6954b` for what this used to cost.
+pub fn defer_rest(
+    app: &AppHandle,
+    conversation_id: &str,
+    said: &str,
+    rest: Option<&Value>,
+    why: Queued,
+) -> String {
+    let Some(rest) = rest else { return said.to_string() };
+    let note = match file(app, conversation_id, rest) {
+        Some(queued) => rest_note(queued, why),
+        None => rest_full(why),
     };
+    rest_reply(said, &note)
+}
+
+/// The two halves joined. After `said`'s own aside and with no marker of its
+/// own, so the transcript's fold (`answerNote`, which cuts at the *last*
+/// marker) keeps this with Skein's other words to the agent rather than
+/// drawing it as a line the user wrote.
+fn rest_reply(said: &str, note: &str) -> String {
+    format!("{said}\n\n{note}")
+}
+
+/// Write one question into the pile, and say how many this card now has
+/// there — or `None` when it could not be kept, for whatever reason.
+fn file(app: &AppHandle, conversation_id: &str, args: &Value) -> Option<usize> {
+    /* No store is no queue, and a note promising the question was kept would
+       be a lie told to the one party that cannot check. */
+    let store = app.try_state::<Store>()?;
     let id = crate::store::uuid_v4();
     let at = crate::store::now();
 
     let queued = {
-        let Ok(conn) = store.0.lock() else { return pile_full(why) };
+        let conn = store.0.lock().ok()?;
         let mine = crate::store::deferred_asks(&conn)
             .iter()
             .filter(|d| d.conversation_id == conversation_id)
             .count();
         if mine >= MAX_PER_CARD {
-            return pile_full(why);
+            return None;
         }
-        if crate::store::defer_ask(&conn, &id, conversation_id, &args.to_string(), at).is_err() {
-            return pile_full(why);
-        }
+        crate::store::defer_ask(&conn, &id, conversation_id, &args.to_string(), at).ok()?;
         mine + 1
     };
 
@@ -321,7 +416,7 @@ pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value, why: Queued) 
             asked_at: at,
         },
     );
-    deferred_note(queued, why)
+    Some(queued)
 }
 
 /// Turn every question *already* on the wall into a deferred one.
@@ -348,7 +443,7 @@ pub fn defer(app: &AppHandle, conversation_id: &str, args: &Value, why: Queued) 
 fn defer_parked(app: &AppHandle) {
     let Some(asks) = app.try_state::<crate::ask::Asks>() else { return };
     for taken in crate::ask::take_parked_questions(&asks) {
-        let crate::ask::Taken { conversation_id, question, act, tx } = taken;
+        let crate::ask::Taken { conversation_id, question, act, held, tx } = taken;
         /* A question Volery composed goes to the *act* pile, which is what the
            request stored beside it is for: its answer is a decision rather than
            a message, and replaying a decision twelve hours later is the thing
@@ -365,7 +460,14 @@ fn defer_parked(app: &AppHandle) {
                 let text = question["notice"]["text"].as_str().unwrap_or_default();
                 crate::notice::queue(app, &conversation_id, text, crate::notice::Queued::Away)
             }
-            None => defer(app, &conversation_id, &question, Queued::Away),
+            /* A sheet the user had started: what they answered goes to the
+               card now, and only what they did not reach is queued. */
+            None => match held {
+                Some(h) => {
+                    defer_rest(app, &conversation_id, &h.said, h.rest.as_ref(), Queued::Away)
+                }
+                None => defer(app, &conversation_id, &question, Queued::Away),
+            },
         };
         /* The park is listening on this channel and recognises the opening, so
            what the agent reads is the note and what the wall draws is a
@@ -876,5 +978,50 @@ mod tests {
         assert_eq!(props.len(), 1, "only `note`");
         assert!(props.contains_key("note"));
         assert_eq!(s["inputSchema"]["additionalProperties"], json!(false));
+    }
+
+    /* ── a sheet partway through (sink `fdc6954b`) ─────────────────────── */
+
+    #[test]
+    fn the_rest_of_a_sheet_says_the_answers_stand_and_the_rest_waits() {
+        for why in [Queued::Unattended, Queued::Away] {
+            let note = rest_note(2, why);
+            assert!(note.starts_with(why.partway()), "says why it stopped");
+            assert!(note.contains("`not reached`"), "points at the slots it is about");
+            assert!(note.contains("they stand"), "the answers above are decisions");
+            assert!(note.contains("nothing about them has been decided"), "the rest are not");
+            assert!(note.contains("new message"), "how the rest will arrive");
+            assert!(note.contains("do not ask them again"));
+            assert!(note.contains("2 of your questions waiting"));
+            /* Not the generic sentence: "nothing has been decided", unqualified,
+               beside four decisions is the contradiction this note exists to
+               avoid. */
+            assert!(!note.contains("Nothing has been decided"));
+        }
+        assert!(rest_note(1, Queued::Away).contains("left the wall"));
+        assert!(rest_note(1, Queued::Unattended).contains("time ran out"));
+    }
+
+    #[test]
+    fn a_full_pile_narrows_deciding_alone_to_the_questions_not_reached() {
+        let note = rest_full(Queued::Unattended);
+        assert!(note.contains("could **not** be queued"));
+        assert!(note.contains("they stand"));
+        assert!(note.contains("decide them yourself"));
+        assert!(note.contains(&MAX_PER_CARD.to_string()));
+    }
+
+    /// The reply opens with the answers, not with a queueing opening — the
+    /// parking thread must not read a partial as a whole question deferred,
+    /// and the transcript fold must draw the answers as the user's.
+    #[test]
+    fn a_partial_reply_opens_with_the_answers_and_is_not_a_deferral() {
+        let said = "Answering each in turn:\n1. A: yes\n2. B: not reached\n\n— skein: …";
+        let reply = rest_reply(said, &rest_note(1, Queued::Unattended));
+        assert!(reply.starts_with(said));
+        assert!(!is_deferral(&reply));
+        /* No marker of its own: `answerNote` cuts at the last one, and that has
+           to stay the panel's, or Rust's note would be drawn as your words. */
+        assert_eq!(reply.matches("\n\n— skein: ").count(), 1);
     }
 }

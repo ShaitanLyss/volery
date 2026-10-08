@@ -1864,6 +1864,12 @@ export class Control {
         const alone = ask.questions.length === 1;
         const ready = isComplete(ask.answers);
         if (!ready || (!alone && op.send !== true)) {
+          /* What the panel does on every answer it records: keep the sheet
+             in Rust, so a call that closes before the send still hands the
+             agent what was decided (`Skein.holdAsk`). Awaited, so a test
+             that answers part of a sheet and then lets the call close is
+             testing the hold rather than a race with it. */
+          await h.skein.holdAsk(c);
           return {
             id: c.id,
             sent: false,

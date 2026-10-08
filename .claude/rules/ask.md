@@ -149,16 +149,9 @@ process reading our answer is a Bun runtime with opinions of its own.
   counting rules, and `test/asking.test.ts` and `ask.rs`'s two window tests assert the same
   payloads. One suite going red alone is the mirror saying it has drifted.
 
-  **What is still lost is the tail rather than the whole call, and it is not fixed here.**
-  A deadline that expires takes every answer already given with it. Two things have since
-  taken most of the weight off that — the deadline no longer runs down while you are typing,
-  and expiring now *queues* the question rather than telling the agent to decide for itself
-  (both below) — so what is left is narrower than it was: the question comes back whole, and
-  the three answers already given have to be given again. Preserving the partial still needs
-  the panel to push each answer to Rust as it is given — a new command, a call site in
-  `skein.svelte.ts`, and a decision about what "three of five" reads as to an agent — which
-  is a second piece of work rather than the other half of this one. Filed as its own sink
-  item.
+  **And a deadline that expires no longer takes the answers already given with it** — see
+  "A sheet that closes before it is sent", below. For a while it did: the question went to
+  the pile whole, and the three answers given had to be given again.
 - **Ten minutes is also the floor when nobody is there**, and that is the answer
   rather than a bug. Reported 2026-08-20 by a card driven non-interactively: `ask_user` timed
   out on it twice, with no human anywhere near the wall. Both fired correctly. A tool whose
@@ -770,10 +763,58 @@ same event — the panel moves its own countdown immediately and tells Rust thro
   `recv_timeout(window)`, which is this bug on a second surface — exactly the "written three
   times to three standards" failure `follow.ts` was cut out of.
 
-The one thing still lost is the tail: a sheet three answers into five, when the clock runs
-out, goes to the pile as the whole question again. Better than before, where it went nowhere
-at all — but the partial answers are still not preserved, and that remains its own piece of
-work.
+A sheet three answers into five, when the clock runs out, used to go to the pile as the whole
+question again. It no longer does — the next section.
+
+#### A sheet that closes before it is sent
+
+Sink `fdc6954b`. The answers live in the front end until the send, so a call that closed
+any other way — its deadline, or the wall going away (`presence::defer_parked`) — took every
+answer already given with it. In the reported case four of five were answered and the user
+was on the last; the pile handed back five.
+
+- **The panel pushes the sheet to Rust on every answer it records** (`Ask.svelte`'s `onheld`
+  → `Skein.holdAsk` → `ask::hold_ask`), the whole sheet as it stands rather than the change,
+  so a lost push costs one answer of staleness and the last to land is the truth. It is kept
+  on `Parked` as `Held`, behind an `Arc` the parking thread shares, the way `stirred` is.
+  The control surface's `answer` op does the same, so a driven test is testing the hold
+  rather than racing it.
+- **Composed in TS, like every other reply to `ask_user`** (`asking.ts::heldAnswer`), because
+  Rust reads nothing out of the arguments. `said` is the numbered sheet with every
+  unanswered slot written `not reached`; `rest` is the unanswered questions as an ask the
+  pile can hold — a normalized question is a fixpoint of `normalizeAsk`, which a test holds.
+  What Rust adds is the only part the panel cannot know: whether there was room in the pile,
+  and why the sheet stopped (`presence::defer_rest`, `rest_note`, `rest_full`).
+- **`not reached` is its own word, and that was the design question.** `no preference` hands
+  the decision over and `skipped` withholds it; a question nobody read did neither, and an
+  agent that cannot tell "said no preference" from "never got to it" will act on the
+  difference. `NOT_REACHED_ASIDE` says so once, under the one marker.
+- **The note on the rest says the answers above stand.** `deferred_note`'s "nothing has been
+  decided", unqualified beside four decisions, makes the agent choose which to believe, and
+  the cautious reading throws the four away — the loss arriving by a politer route. So
+  `rest_note` narrows each of the four things to the questions they are true of.
+- **Nothing answered holds nothing**, so an untouched call closes exactly as it always did:
+  the whole question queued under `UNATTENDED_OPENING`. "Nobody got to it" and "they got to
+  some of it" are distinguishable from the reply's first word.
+- **A sheet answered in full and never sent queues nothing** and goes out with
+  `UNSENT_ASIDE`: the review exists because reading the last question changes minds about the
+  first, so the agent is told the sheet was not confirmed and to confirm anything hard to undo.
+- **The thread recognises the hold going out by prefix** (`ask::carried`) — the reply opens
+  with exactly the `said` it holds, the same string rather than a second wording. A sheet the
+  user *sent* cannot match, because a hold always names what it is short of. That is how
+  `AskClosed` learns to carry `said`, which the panel draws as your answer: `answerAsk` never
+  ran to draw it, and off disk the same tool result folds into the same line. Rust's note is
+  appended after the aside with no marker of its own, so `answerNote` keeps it off the page.
+- **The expiry claims the call before reading the hold.** If the `pending` entry is already
+  gone, the answer or the away flip took it that instant, and what it sent is on the channel —
+  so that goes out rather than a timeout racing it. That race existed before and was lost
+  silently in the timeout's favour.
+- **Only for `ask_user`.** A question carrying a settle or an act ignores any hold, in both
+  closing paths, for the reasons `expired` and `defer_parked` already give.
+
+Still not done: the pile's envelope (`presence.ts::answerEnvelope`) says "while I was away" for
+a question queued by a deadline as well, which was true of the pile before this and is
+unchanged by it.
 
 #### Nor does the question itself change while you are answering it
 

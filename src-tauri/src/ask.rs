@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 
@@ -319,6 +319,60 @@ struct Parked {
     /// is what lets `held_window` need no arm for the never-touched case — a
     /// stir at t=0 buys `ANSWER_HOLD`, and the floor is longer than that.
     stirred: Arc<Mutex<Instant>>,
+    /// What the user has answered so far of a sheet they have not sent. See
+    /// `Held`. Shared with the parking thread for the reason `stirred` is: the
+    /// thread is what has to know, at the moment the call closes some other
+    /// way, whether a reply it is handed carried those answers.
+    held: Arc<Mutex<Option<Held>>>,
+}
+
+/// The answers already given on a sheet that has not been sent, kept so that a
+/// call which closes before the send does not take them with it.
+///
+/// **A deadline used to cost the whole sheet**, not just the questions nobody
+/// reached. The answers live in the front end until the send, so a call with
+/// five questions that expired with four answered went to the pile as five,
+/// and the user re-read and re-decided four things they had already decided
+/// (sink `fdc6954b`). So the panel pushes this on every answer it records
+/// (`hold_ask`), and both of the ways a call closes without a send — its
+/// deadline here, and the wall going away (`presence::defer_parked`) — hand
+/// the agent what was decided and queue only what was not.
+///
+/// **Composed in TS, the way every reply to `ask_user` is**, and for the same
+/// reason: `asking.ts` owns what a question *is* and Rust reads nothing out of
+/// the arguments. `said` is the reply as far as it goes — numbered, headed,
+/// with every unanswered slot named `not reached` rather than left out — and
+/// `rest` is the unanswered questions as an ask the pile can hold, in the
+/// shape `normalizeAsk` reads back. What Rust adds is the one part only it
+/// knows: whether the rest was queued, and why. See `presence::defer_rest`.
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct Held {
+    pub said: String,
+    /// `None` when every question was answered and only the send was missing.
+    pub rest: Option<Value>,
+}
+
+/// Whether this reply is the hold going out — and if so, whether it left
+/// anything for the pile. `None` for every reply that is not.
+///
+/// See `park_and_stream` for why a prefix is the right test: it is this
+/// thread's own string, not a second wording of it.
+fn carried(held: Option<&Held>, answer: &str) -> Option<bool> {
+    held.filter(|h| answer.starts_with(h.said.as_str())).map(|h| h.rest.is_some())
+}
+
+impl Held {
+    /// Typed by a person, and read by an agent — the same scrub every other
+    /// text bound for a card passes through (`crate::clean`).
+    fn scrubbed(mut self) -> Self {
+        if let std::borrow::Cow::Owned(clean) = crate::clean::scrub(&self.said) {
+            self.said = clean;
+        }
+        if let Some(rest) = self.rest.as_mut() {
+            scrub_json(rest);
+        }
+        self
+    }
 }
 
 /// How much time touching the panel buys, from the moment it is touched.
@@ -398,6 +452,14 @@ struct AskClosed {
     /// unlike a note it says them in the transcript a restart can reproduce.
     /// That is the same bargain `ours` strikes one field up.
     deferred: bool,
+    /// The reply, when it carried answers the user gave without sending them
+    /// — the call closed on a sheet partway through (`Held`).
+    ///
+    /// The panel draws it as your answer, because it is: nothing else will,
+    /// since `answerAsk` never ran, and off disk the same text is the tool
+    /// result `answerNote` folds into the same line. `None` for everything
+    /// else, including an answer that *was* sent, which the panel drew itself.
+    said: Option<String>,
 }
 
 impl Asks {
@@ -427,6 +489,8 @@ pub(crate) struct Taken {
     pub question: Value,
     /// The request behind it, for one Volery composed. See `Parked::act`.
     pub act: Option<(String, Value)>,
+    /// What the user had already answered of it, if anything. See `Held`.
+    pub held: Option<Held>,
     pub tx: Sender<String>,
 }
 
@@ -447,6 +511,7 @@ pub(crate) fn take_parked_questions(asks: &Asks) -> Vec<Taken> {
             conversation_id: p.conversation_id,
             question: p.args,
             act: p.act,
+            held: p.held.lock().unwrap().clone(),
             tx: p.tx,
         })
         .collect()
@@ -468,6 +533,22 @@ pub fn stir_ask(asks: State<'_, Asks>, ask_id: String) -> Result<(), String> {
     let pending = asks.pending.lock().unwrap();
     let parked = pending.get(&ask_id).ok_or("that question is no longer waiting")?;
     *parked.stirred.lock().unwrap() = Instant::now();
+    Ok(())
+}
+
+/// The user has answered some of this sheet: keep it, in case the call closes
+/// before the send.
+///
+/// Called on every answer the panel records, with the whole of what has been
+/// said so far rather than a delta — so a lost call costs nothing but being one
+/// answer behind, and the last one to land is the truth. `None` clears it.
+/// Takes no decision and blocks on nothing, like `stir_ask` beside it; what a
+/// held sheet *means* is decided when the call closes. See `Held`.
+#[tauri::command]
+pub fn hold_ask(asks: State<'_, Asks>, ask_id: String, held: Option<Held>) -> Result<(), String> {
+    let pending = asks.pending.lock().unwrap();
+    let parked = pending.get(&ask_id).ok_or("that question is no longer waiting")?;
+    *parked.held.lock().unwrap() = held.map(Held::scrubbed);
     Ok(())
 }
 
@@ -1023,10 +1104,11 @@ fn open_ask(
     args: &Value,
     ours: bool,
     act: Option<(String, Value)>,
-) -> (String, Receiver<String>, Arc<Mutex<Instant>>) {
+) -> (String, Receiver<String>, Arc<Mutex<Instant>>, Arc<Mutex<Option<Held>>>) {
     let ask_id = crate::store::uuid_v4();
     let (tx, rx) = mpsc::channel::<String>();
     let stirred = Arc::new(Mutex::new(Instant::now()));
+    let held = Arc::new(Mutex::new(None));
     asks.pending.lock().unwrap().insert(
         ask_id.clone(),
         Parked {
@@ -1036,6 +1118,7 @@ fn open_ask(
             ours,
             act,
             stirred: Arc::clone(&stirred),
+            held: Arc::clone(&held),
         },
     );
 
@@ -1049,7 +1132,7 @@ fn open_ask(
         },
     );
 
-    (ask_id, rx, stirred)
+    (ask_id, rx, stirred, held)
 }
 
 /// One SSE event carrying one JSON-RPC message.
@@ -1206,9 +1289,42 @@ fn expired(
     settle: &Option<Settle>,
     act: &Option<(String, Value)>,
     window: Duration,
+    held: Option<Held>,
 ) -> String {
     if settle.is_some() || act.is_some() {
         return timed_out(window);
+    }
+    /* A sheet the user was partway through. What they decided goes to the
+       agent now and only what they did not reach goes to the pile — the whole
+       of sink `fdc6954b`. The noise below is the same argument with a
+       different sentence, since "a question was queued" would undersell that
+       answers were sent. */
+    if let Some(held) = held {
+        let queued = held.rest.is_some();
+        let reply = crate::presence::defer_rest(
+            app,
+            conversation_id,
+            &held.said,
+            held.rest.as_ref(),
+            crate::presence::Queued::Unattended,
+        );
+        if !crate::presence::away(app) {
+            let (mark, detail) = if queued {
+                (
+                    "a question timed out partway through and the rest was queued for you",
+                    "the answers you had given were sent; nothing else was decided — \
+                     read the rest from the pile (space then q)",
+                )
+            } else {
+                (
+                    "a question timed out with every answer given but not sent",
+                    "your answers were sent as they stood, and the agent was told you \
+                     had not sent them yourself",
+                )
+            };
+            crate::chronicle::note(app, None, "volery", "note", mark, detail);
+        }
+        return reply;
     }
     /* A card's notice that asked to be waited on. Same move as a question —
        queued rather than expired — into the queue a notice belongs in, which
@@ -1271,18 +1387,19 @@ fn park_and_stream(
     settle: Option<Settle>,
     act: Option<(String, Value)>,
 ) {
-    let (ask_id, rx, stirred) =
+    let (ask_id, rx, stirred, held) =
         open_ask(app, asks, conversation_id, args, settle.is_some(), act.clone());
     let forget = || {
         asks.pending.lock().unwrap().remove(&ask_id);
     };
-    let closed = |answered: bool, deferred: bool| {
+    let closed = |answered: bool, deferred: bool, said: Option<String>| {
         let _ = app.emit(
             "ask:closed",
             AskClosed {
                 ask_id: ask_id.clone(),
                 answered,
                 deferred,
+                said,
             },
         );
     };
@@ -1302,7 +1419,7 @@ fn park_and_stream(
         .is_err()
     {
         forget();
-        closed(false, false);
+        closed(false, false, None);
         return;
     }
 
@@ -1315,6 +1432,9 @@ fn park_and_stream(
        earlier note here was drawing and is worth keeping sharp. */
     let base = answer_window(args);
     let mut fed: u64 = 0;
+    /* Set when the reply carries a sheet the user was partway through: the
+       answers they gave, and whether anything was left over for the pile. */
+    let mut partial: Option<bool> = None;
     let answer = loop {
         match rx.recv_timeout(FEED_EVERY) {
             Ok(a) => break a,
@@ -1325,8 +1445,16 @@ fn park_and_stream(
                 let since = stirred.lock().unwrap().saturating_duration_since(started);
                 let window = held_window(base, since);
                 if started.elapsed() >= window {
-                    forget();
-                    break expired(app, conversation_id, args, &settle, &act, window);
+                    /* Taken off the wall here. If it is already gone, something
+                       else claimed it this instant — the answer, or the wall
+                       going away — and what it sent is on the channel or about
+                       to be, so that goes out rather than a timeout racing it. */
+                    if asks.pending.lock().unwrap().remove(&ask_id).is_none() {
+                        break rx.recv().unwrap_or_else(|_| DISMISSED.to_string());
+                    }
+                    let kept = held.lock().unwrap().take();
+                    partial = kept.as_ref().map(|h| h.rest.is_some());
+                    break expired(app, conversation_id, args, &settle, &act, window, kept);
                 }
                 fed += 1;
                 /* With a progress token this is a real notification, which
@@ -1355,7 +1483,7 @@ fn park_and_stream(
                        blocking park did for its whole life, being unable to tell
                        a listener from a dropped connection. */
                     forget();
-                    closed(false, false);
+                    closed(false, false, None);
                     return;
                 }
             }
@@ -1368,8 +1496,24 @@ fn park_and_stream(
        loop already uses for the timeout — the string the agent reads and the
        string this thread recognises are one thing, so there is no second
        vocabulary to keep in step. */
-    let deferred = crate::presence::is_deferral(&answer);
-    let real = !deferred && !answer.starts_with(TIMED_OUT_OPENING) && answer != DISMISSED;
+    /* The other way a sheet partway through gets closed: the wall going away,
+       which composed the reply in `presence::defer_parked` from the same hold.
+       Recognised by the reply opening with exactly what this thread holds —
+       the same string rather than a second wording of it, so there is nothing
+       to keep in step, and a reply the user *sent* cannot match, because a
+       hold always names what it is short of (`not reached`, or the unsent
+       sheet) and a sent sheet never does. Only for `ask_user`: a question
+       carrying a settle or an act is never converted with its hold. */
+    if partial.is_none() && settle.is_none() && act.is_none() {
+        partial = carried(held.lock().unwrap().as_ref(), &answer);
+    }
+    /* Neither is an answer the user sent, and the rest went to the pile if
+       there was any. */
+    let deferred = crate::presence::is_deferral(&answer) || partial == Some(true);
+    let real = partial.is_none()
+        && !deferred
+        && !answer.starts_with(TIMED_OUT_OPENING)
+        && answer != DISMISSED;
     /* The settle runs *here*, on the parking thread, after the answer is in and
        before the reply goes out — which is what makes a `close` genuinely
        deferred rather than merely delayed. It is also the last moment at which
@@ -1401,7 +1545,11 @@ fn park_and_stream(
     /* Answered, but only if it arrived: a click whose reply never left is not
        something the agent can act on, and the note the transcript keeps for a
        question that closed without one is true of both. */
-    closed(real && delivered, deferred);
+    closed(
+        real && delivered,
+        deferred,
+        partial.filter(|_| delivered).map(|_| answer.clone()),
+    );
 }
 
 /// Mark a tool as wanted on every turn, whatever tool search would otherwise do.
@@ -2425,7 +2573,7 @@ fn park_and_wait(
     settle: Settle,
     act: Option<(String, Value)>,
 ) -> String {
-    let (ask_id, rx, stirred) = open_ask(app, asks, conversation_id, question, true, act);
+    let (ask_id, rx, stirred, _) = open_ask(app, asks, conversation_id, question, true, act);
     let base = answer_window(question);
     /* A tick loop rather than one flat `recv_timeout(window)`, for the one
        reason `park_and_stream` grew the same shape: the deadline moves while
@@ -2457,6 +2605,7 @@ fn park_and_wait(
             /* `park_and_wait` only ever carries a settle, and a question
                carrying one is never converted. */
             deferred: false,
+            said: None,
         },
     );
     reply
@@ -4338,5 +4487,98 @@ mod tests {
         assert_eq!(conversation_of("/mcp/abc-123"), "abc-123");
         assert_eq!(conversation_of("/mcp/abc-123/"), "abc-123");
         assert_eq!(conversation_of("/mcp/abc-123?x=1"), "abc-123");
+    }
+
+    /* ── a sheet partway through (sink `fdc6954b`) ─────────────────────── */
+
+    /// What `asking.ts::heldAnswer` pushes for a call of three with one not
+    /// reached, in the shape the panel sends it — so a field renamed on
+    /// either side is a red test here rather than a hold that silently never
+    /// arrives, which is what a misspelled Tauri key does (CLAUDE.md).
+    fn a_hold() -> Value {
+        json!({
+            "said": "Answering each in turn:\n1. Scope: two widgets\n2. Chime: skipped\n\
+                     3. Colour: not reached\n\n— skein: a question answered `not reached` …",
+            "rest": { "questions": [{ "header": "Colour", "question": "Which colour?", "options": [] }] }
+        })
+    }
+
+    #[test]
+    fn a_hold_arrives_in_the_shape_the_panel_sends_it() {
+        let h: Held = serde_json::from_value(a_hold()).expect("the panel's shape");
+        assert!(h.said.starts_with("Answering each in turn:"));
+        assert_eq!(h.rest.unwrap()["questions"][0]["header"], "Colour");
+
+        /* Every question answered and the send not made: nothing for the pile. */
+        let all: Held =
+            serde_json::from_value(json!({ "said": "Answering each in turn:\n…", "rest": null }))
+                .expect("a full sheet");
+        assert!(all.rest.is_none());
+    }
+
+    #[test]
+    fn a_hold_is_scrubbed_before_an_agent_can_read_it() {
+        let h: Held = serde_json::from_value(json!({
+            "said": "1. Scope: two\u{0}widgets",
+            "rest": { "questions": [{ "question": "Which\u{3} colour?" }] }
+        }))
+        .unwrap();
+        let h = h.scrubbed();
+        assert_eq!(h.said, "1. Scope: twowidgets");
+        assert_eq!(h.rest.unwrap()["questions"][0]["question"], "Which colour?");
+    }
+
+    #[test]
+    fn the_hold_going_out_is_recognised_and_a_sent_sheet_is_not() {
+        let h: Held = serde_json::from_value(a_hold()).unwrap();
+        let note = "The user stopped partway through answering…";
+
+        /* The expiry or the away flip: the hold, then Rust's note on the rest. */
+        let reply = format!("{}\n\n{note}", h.said);
+        assert_eq!(carried(Some(&h), &reply), Some(true), "rest went to the pile");
+
+        /* The user going back and sending the sheet after all. A hold always
+           names what it is short of, so the full sheet cannot open with it. */
+        let sent = "Answering each in turn:\n1. Scope: two widgets\n2. Chime: skipped\n3. Colour: red";
+        assert_eq!(carried(Some(&h), sent), None);
+
+        /* Nothing held, nothing carried — the ordinary timeout and the plain
+           answer are untouched. */
+        assert_eq!(carried(None, &reply), None);
+
+        /* A full sheet never sent: carried, with nothing queued. */
+        let full = Held { said: "Answering each in turn:\n1. Scope: two widgets".into(), rest: None };
+        assert_eq!(carried(Some(&full), &full.said), Some(false));
+    }
+
+    /// Going away converts what is parked, and a half-answered sheet has to
+    /// travel with its answers — `defer_parked` is the second of the two ways
+    /// a call closes without a send, and the one this bug would have survived
+    /// in if only the deadline had been fixed.
+    #[test]
+    fn going_away_takes_the_answers_with_the_question() {
+        let asks = Asks::default();
+        let (tx, _rx) = mpsc::channel::<String>();
+        let held = Arc::new(Mutex::new(Some(serde_json::from_value::<Held>(a_hold()).unwrap())));
+        asks.pending.lock().unwrap().insert(
+            "q1".into(),
+            Parked {
+                tx,
+                conversation_id: "card".into(),
+                args: json!({ "questions": [] }),
+                ours: false,
+                act: None,
+                stirred: Arc::new(Mutex::new(Instant::now())),
+                held: Arc::clone(&held),
+            },
+        );
+        let taken = take_parked_questions(&asks);
+        assert_eq!(taken.len(), 1);
+        let h = taken[0].held.as_ref().expect("the hold travels");
+        assert!(h.said.contains("not reached"));
+        assert!(h.rest.is_some());
+        /* Left in the slot, because the parking thread reads it to recognise
+           the reply the flip composes. */
+        assert!(held.lock().unwrap().is_some());
     }
 }

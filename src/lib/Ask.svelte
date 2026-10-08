@@ -53,6 +53,7 @@
     elsewhere = false,
     onanswer,
     onstir,
+    onheld,
     onselect,
   }: {
     ask: PendingAsk;
@@ -76,6 +77,11 @@
      *  pile, which has no deadline at all, so this is only ever wired by the
      *  dock. */
     onstir?: () => void;
+    /** An answer was recorded on a sheet not yet sent, so Rust should keep it
+     *  in case the call closes first (`Skein.holdAsk`, sink `fdc6954b`). Only
+     *  the dock wires it, for `onstir`'s reason: a question out of the pile is
+     *  parked on nothing, so there is no call to close under it. */
+    onheld?: () => void;
     /** Put the asking card in the ring. Only reachable while `elsewhere`. */
     onselect?: () => void;
   } = $props();
@@ -207,6 +213,7 @@
     free = "";
     at = null;
     if (!many && isComplete(ask.answers)) onanswer();
+    else if (parked) onheld?.();
   }
 
   /** Not this one, not now.
