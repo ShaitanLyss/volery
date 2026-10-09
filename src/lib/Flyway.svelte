@@ -20,6 +20,7 @@
     acceptingReading,
     flywayError,
     flywayReading,
+    forgettable,
     nothingHeard,
     otherWalls,
     wallLine,
@@ -134,6 +135,14 @@
     act(async () => {
       phrase = await invoke<string>("flyway_invite");
       copied = false;
+    });
+
+  /* Take a wall off the roster. Only ever reached for a quiet one — `link.rs`
+     refuses a live one in words, and `forgettable` keeps the control off it, so
+     the two cannot disagree about which walls this is for. */
+  const forget = (host: string) =>
+    act(async () => {
+      await invoke("flyway_forget", { host });
     });
 
   const leave = () =>
@@ -270,7 +279,26 @@
           <ul class="walls">
             {#each otherWalls(walls) as w (w.host)}
               <li title={w.reason ?? ""}>
-                <code>{w.host}</code>
+                <div class="who">
+                  <code>{w.host}</code>
+                  <!-- Only a wall that has gone quiet may be forgotten, and the
+                       control is absent rather than disabled on the others. A
+                       live wall puts itself back on the roster the moment it
+                       announces, so the button would appear to work and undo
+                       itself within thirty seconds — and a greyed control
+                       invites the question "why not", which the answer "it
+                       would not stick" does not satisfy. What this is for is
+                       the machine that is *gone*. -->
+                  {#if forgettable(w)}
+                    <button
+                      class="forget"
+                      disabled={busy}
+                      onclick={() => forget(w.host)}
+                      title="take {w.host} off the roster — it is learned again if it ever comes back"
+                      aria-label="forget {w.host}">forget</button
+                    >
+                  {/if}
+                </div>
                 <span class="aside">{wallLine(w)}</span>
               </li>
             {/each}
@@ -450,6 +478,32 @@
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
+  }
+
+  /* The host and its control on one line, the reading under them. */
+  .who {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  /* Achromatic and quiet: forgetting a wall is tidying, not a status, and
+     colour on this wall is reserved for status. It earns its weight only on
+     hover, like every other verb in this panel. */
+  .forget {
+    font-family: var(--util);
+    font-size: 0.62rem;
+    letter-spacing: 0.06em;
+    color: var(--paper-faint);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+  .forget:hover:not(:disabled) {
+    color: var(--paper);
+  }
+  .forget:disabled {
+    cursor: default;
   }
   .oops {
     text-align: left;

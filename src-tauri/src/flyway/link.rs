@@ -1880,6 +1880,64 @@ pub fn flyway_roster(app: AppHandle) -> Vec<RosterRow> {
     current(&app).map(|l| l.roster()).unwrap_or_default()
 }
 
+/// Take a wall off the roster.
+///
+/// **Only a wall that has gone quiet**, and the bound is the whole of what
+/// makes this honest rather than a hiding place. `Fleet::forget` holds against
+/// *gossip* — a peer's stale copy of a forgotten wall does not bring it back —
+/// but it cannot hold against the wall itself, which re-announces on its own
+/// tick. So offering it for a live wall would be a button that appears to work
+/// and silently undoes itself within thirty seconds, which is worse than no
+/// button: the roster's whole value is that every row on it means something,
+/// and a row you removed that came back means less than one you never touched.
+///
+/// What it is actually for is the machine that is *gone* — a laptop retired, a
+/// lab torn down. Lyss's roster had accumulated `lab`, `lab2`, `lab-a` and
+/// `lab-b` from a day's testing, none of which will ever speak again, and until
+/// now there was no way to clear one: `Fleet::forget` existed, was tested, and
+/// had no caller.
+///
+/// A forgotten wall that *does* come back is simply learned again, which is
+/// right. Nothing here is a ban.
+#[tauri::command]
+pub async fn flyway_forget(app: AppHandle, host: String) -> Result<(), String> {
+    let Some(link) = current(&app) else {
+        return Err("this wall is not on a flyway".to_string());
+    };
+    let host = crate::clip::keep(host.trim(), 40).kept;
+    if host.is_empty() {
+        return Err("no wall was named".to_string());
+    }
+    let now = link.now();
+    {
+        let mut f = link.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?;
+        let Some(e) = f.entry(&host) else {
+            return Err(format!("{host} is not on this wall's roster"));
+        };
+        /* The quiet bound, read off the same `Standing` the panel draws from,
+           so the button and the refusal can never disagree about which walls
+           it is offered for. */
+        if !matches!(e.standing(now), Standing::Quiet { .. }) {
+            return Err(format!(
+                "{host} is still being heard from — a wall takes itself back onto the roster \
+                 the moment it announces, so forgetting one that is up would undo itself. \
+                 Close volery there first, or wait until it has gone quiet."
+            ));
+        }
+        f.forget(&host);
+    }
+    crate::chronicle::note(
+        &app,
+        None,
+        "volery",
+        "note",
+        &format!("{host} was taken off the roster"),
+        "the flyway",
+    );
+    let _ = app.emit("flyway:roster", link.roster());
+    Ok(())
+}
+
 /// Whether this wall takes work from other walls, and its bounds.
 #[tauri::command]
 pub async fn flyway_setup(app: AppHandle) -> Result<Setup, String> {

@@ -46,7 +46,7 @@ describe("the flyway panel's voice", () => {
   });
 });
 
-import { acceptingReading, otherWalls, wallLine, type Wall } from "../src/lib/flyway";
+import { acceptingReading, forgettable, otherWalls, wallLine, type Wall } from "../src/lib/flyway";
 
 function wall(over: Partial<Wall>): Wall {
   return {
@@ -93,5 +93,46 @@ describe("the roster, as somebody choosing a machine reads it", () => {
     expect(acceptingReading(null)).toBe("asking…");
     expect(acceptingReading(false)).toBe("other walls may not open cards here");
     expect(acceptingReading(true)).toContain("this machine's shell");
+  });
+});
+
+describe("forgetting a wall that has gone", () => {
+  const wall = (over: Partial<Wall> = {}): Wall => ({
+    host: "lab-a",
+    me: false,
+    quietMs: 5 * 60_000,
+    standing: "quiet",
+    reason: null,
+    cardsLive: 0,
+    cardsWorking: 0,
+    allowanceUsed: null,
+    territories: [],
+    older: false,
+    ...over,
+  });
+
+  test("a quiet wall may be forgotten", () => {
+    expect(forgettable(wall())).toBe(true);
+  });
+
+  /* A live wall re-announces on its own tick, so `Fleet::forget` cannot hold
+     against it — the control would appear to work and undo itself within
+     thirty seconds. `link.rs::flyway_forget` refuses the same three in words;
+     this is the half that keeps the button off them. */
+  test("a wall still being heard from may not", () => {
+    expect(forgettable(wall({ standing: "open" }))).toBe(false);
+    expect(forgettable(wall({ standing: "full" }))).toBe(false);
+    expect(forgettable(wall({ standing: "closed" }))).toBe(false);
+  });
+
+  test("this wall is never offered", () => {
+    /* `otherWalls` already drops it, so this is belt and braces — and the
+       belt is what a future caller that forgets to filter will meet. */
+    expect(forgettable(wall({ me: true }))).toBe(false);
+  });
+
+  test("an older build is no different — quiet is quiet", () => {
+    expect(forgettable(wall({ older: true }))).toBe(true);
+    expect(forgettable(wall({ older: true, standing: "open" }))).toBe(false);
   });
 });

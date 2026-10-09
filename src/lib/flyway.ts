@@ -121,3 +121,25 @@ export function acceptingReading(on: boolean | null): string {
     ? "other walls may open cards here — each one is drawn as theirs, and runs with this machine's shell"
     : "other walls may not open cards here";
 }
+
+/** Whether this wall may be taken off the roster.
+ *
+ *  **Quiet only**, and the bound is what keeps the gesture honest. `Fleet::forget`
+ *  holds against *gossip* — a peer's stale copy of a forgotten wall does not
+ *  bring it back — but it cannot hold against the wall itself, which
+ *  re-announces on its own thirty-second tick. So a control offered for a live
+ *  wall would appear to work and silently undo itself within half a minute,
+ *  which is worse than no control: the roster's whole value is that every row
+ *  on it means something, and a row you removed that came back means less than
+ *  one you never touched.
+ *
+ *  It is drawn absent rather than disabled on the others. A greyed button
+ *  invites "why not", and the honest answer — *it would not stick* — is not a
+ *  reason a person can act on; there is nothing to fix, the wall is simply
+ *  there. An older wall is no different: quiet is quiet whatever it is running.
+ *
+ *  Pure and shared with `Flyway.svelte` so the drawing and `link.rs`'s refusal
+ *  are one rule read twice rather than two that have to agree. */
+export function forgettable(w: Wall): boolean {
+  return !w.me && w.standing === "quiet";
+}
