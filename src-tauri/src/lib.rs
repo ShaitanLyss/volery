@@ -76,6 +76,8 @@ pub mod sinksync;
 pub mod slash;
 mod smith;
 mod spawn;
+/* What answers a double-click while WebView2 starts — see its header. */
+mod splash;
 mod spotify;
 mod status;
 /* The rung under voice's grammar: a small model, spawned per escalated
@@ -250,7 +252,7 @@ mod launch_tests {
         let start = source.find("\nfn open_wall(").expect("open_wall exists");
         let body = &source[start..];
         let body = &body[..body.find("\n}\n").expect("open_wall ends")];
-        let after = &body[body.find("open_windows(app)?;").expect("open_wall opens the windows")..];
+        let after = &body[body.find("open_windows(app, frame)?;").expect("open_wall opens the windows")..];
 
         /* Comments out, then whatever code is left. */
         let mut code = String::new();
@@ -263,7 +265,7 @@ mod launch_tests {
         let statements: Vec<&str> = code.split_whitespace().collect();
         assert_eq!(
             statements,
-            ["open_windows(app)?;", "window::settle(app.handle(),", "frame);", "Ok(())"],
+            ["open_windows(app,", "frame)?;", "Ok(())"],
             "open_wall does something after making the windows; anything a command \
              reads belongs above `open_windows`"
         );
@@ -298,6 +300,9 @@ where
 ///
 /// The console line goes out either way, so `bun run tauri dev` shows it too.
 fn complain(message: &str) {
+    /* Before the box, so no failure is ever explained underneath the splash
+       that was standing in for a wall about to open. */
+    splash::lower();
     eprintln!("volery: {message}");
     #[cfg(windows)]
     {
@@ -465,12 +470,34 @@ fn speak_for_panics() {
 /// what `open_wall` is ordered around: making `peek` pumps again, so `main`'s
 /// first commands can run in here, before this returns.
 /// `launch_tests::no_window_is_made_before_setup` holds the config's half.
-fn open_windows(app: &tauri::App) -> Result<(), String> {
+///
+/// **Both are built before `main` is shown, and that order is measured, not
+/// habit.** Showing `main` first and building `peek` after it looks like free
+/// time: the second webview costs ~0.2-0.5s that the studio need not wait for.
+/// Tried on 2026-10-09 against a real wall, ten interleaved release launches
+/// each: the window did appear ~130ms sooner, and its **first paint came
+/// ~265ms later**, the wall ~190ms later. The page's own documents are served
+/// by Tauri's protocol handler on *this* thread, so `index.html` waited behind
+/// `settle` (~250ms of placing, showing and focusing) and then behind `peek`'s
+/// build — 380ms from navigation to the response, against 97ms when both
+/// webviews are built first and `main`'s page loads while `peek` is being made.
+/// An earlier empty window is worth nothing with the splash standing in for it.
+///
+/// The splash comes down here, after the show, so there is no instant with
+/// neither on screen — and the studio window, which is the thing that replaces
+/// it, is shown here and nowhere else. See window.rs.
+fn open_windows(app: &tauri::App, frame: Option<window::Frame>) -> Result<(), String> {
     for config in app.config().app.windows.clone() {
         tauri::WebviewWindowBuilder::from_config(app.handle(), &config)
             .and_then(|builder| builder.build())
             .map_err(|e| format!("Volery could not open its {} window.\n\n{e}", config.label))?;
     }
+    /* Place and show the studio window before it has painted a frame. `main`
+       is `"visible": false` in tauri.conf.json and this is the only thing that
+       shows it — a window sized after it is on screen jumps, on exactly the
+       machines the sizing exists for. */
+    window::settle(app.handle(), frame);
+    splash::lower();
     Ok(())
 }
 
@@ -551,6 +578,16 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
     })?;
     /* Read now, used by `settle` once there is a window to place. */
     let frame = store.0.lock().ok().and_then(|c| store::read_window_frame(&c));
+    /* Something on screen 0.9-2.2s before the studio can be: everything above
+       took ~30ms, and the webviews below take the rest. Here rather than earlier
+       because the saved frame is where the studio will stand, and after
+       `claim_wall`, so a launch that is refused or autostarted into a wall
+       already up never shows one. See splash.rs. */
+    if !window::opens_quietly() {
+        if let Some((at, scale)) = window::foreseen(app.handle(), frame) {
+            splash::raise(at, scale);
+        }
+    }
     app.manage(store);
 
     /* The ask endpoint, before any conversation can be spawned, so every one
@@ -610,13 +647,8 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
     machine::arrive(app.handle());
 
     /* Last: the windows, and nothing that a command reads may move below
-       this. See `open_windows`. */
-    open_windows(app)?;
-    /* Place and show the studio window before it has painted a frame. `main`
-       is `"visible": false` in tauri.conf.json and this is the only thing that
-       shows it — a window sized after it is on screen jumps, on exactly the
-       machines the sizing exists for. See window.rs. */
-    window::settle(app.handle(), frame);
+       this. `open_windows` also shows the studio — see there. */
+    open_windows(app, frame)?;
     Ok(())
 }
 

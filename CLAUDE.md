@@ -511,7 +511,10 @@ deliberately not in `classify.ts`, which is about an agent rather than about a r
   refused by `claim_wall` ran the page's commands under its own box. On a pre-fix lab build that
   aborted every time and took the box with it. Both windows are now `"create": false`, and
   `open_windows` makes them as the **last** step of `open_wall`; `launch_tests` holds both
-  halves.
+  halves. Measured on a real wall, the order costs nothing visible: store, migration and the
+  rest of setup take ~30ms, and the 0.9-2.2s before the window is WebView2 starting. What
+  covers that wait is `splash.rs`, a plain Win32 window rather than a webview, because a
+  webview splash pays the same start-up, and a window with no page cannot call a command.
 - **And a migration is the installed build's to run, so `bun run lab` is where one gets
   developed.** `bun run tauri dev` opens the *real* wall — that is the first line of the
   Commands block above and it is not a mistake — which means a tree carrying a new

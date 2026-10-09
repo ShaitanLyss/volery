@@ -99,6 +99,51 @@ pub(crate) fn centre(frame: Frame, area: Area) -> Frame {
     }
 }
 
+/// Where `place` will put the studio, worked out before there is a studio to
+/// ask — for the splash, which stands in that rectangle so the window replacing
+/// it arrives where the eye already is. With the scale factor of the monitor it
+/// lands on, since the splash draws its own text.
+///
+/// Asked of the app rather than a window, which is the one difference from
+/// `place`: a first launch is centred on the primary monitor rather than on
+/// whichever one the window happened to be created on. On a desk where those
+/// differ the splash and the studio land on different screens once, and the
+/// next launch has a saved frame.
+pub fn foreseen<R: Runtime>(app: &AppHandle<R>, saved: Option<Frame>) -> Option<(Frame, f64)> {
+    let monitor = saved
+        .and_then(|f| {
+            app.monitor_from_point(f.x as f64 + f.w as f64 / 2.0, f.y as f64 + f.h as f64 / 2.0)
+                .ok()
+                .flatten()
+        })
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    let wa = monitor.work_area();
+    let area = Area { x: wa.position.x, y: wa.position.y, w: wa.size.width, h: wa.size.height };
+    let scale = monitor.scale_factor();
+    let main = app.config().app.windows.iter().find(|w| w.label == "main")?;
+    Some((foresee(saved, (main.width, main.height), scale, area), scale))
+}
+
+/// `place`'s arithmetic, for a window that does not exist yet. `logical` is the
+/// configured size, which `place` reads off the window already scaled.
+pub(crate) fn foresee(saved: Option<Frame>, logical: (f64, f64), scale: f64, area: Area) -> Frame {
+    match saved {
+        /* `place` fits it and then maximizes, which covers the work area. */
+        Some(f) if f.maximized => Frame { x: area.x, y: area.y, w: area.w, h: area.h, maximized: true },
+        Some(f) => fit(f, area),
+        None => centre(
+            Frame {
+                x: 0,
+                y: 0,
+                w: (logical.0 * scale).round() as u32,
+                h: (logical.1 * scale).round() as u32,
+                maximized: false,
+            },
+            area,
+        ),
+    }
+}
+
 /// Place the studio window and show it. Call once, from `setup`.
 ///
 /// `saved` is the frame from the last run, if there is one and it parsed.
@@ -183,7 +228,7 @@ fn tuck<R: Runtime>(_win: &WebviewWindow<R>) {}
 /// in the title bar, and a *driven* wall taking the keyboard is unwanted in every
 /// case rather than in some. The real studio, started by hand, is asking to be
 /// looked at and still comes to the front.
-fn opens_quietly() -> bool {
+pub(crate) fn opens_quietly() -> bool {
     crate::control::asked_for()
 }
 
@@ -805,6 +850,27 @@ mod tests {
 
     fn frame(x: i32, y: i32, w: u32, h: u32) -> Frame {
         Frame { x, y, w, h, maximized: false }
+    }
+
+    /// The splash has to stand where `place` will put the studio, or the
+    /// window that replaces it arrives somewhere the eye is not.
+    #[test]
+    fn the_splash_foresees_where_the_studio_will_stand() {
+        /* First launch: the configured size through the scale, centred. */
+        let first = foresee(None, (1280.0, 820.0), 1.0, ROOMY);
+        assert_eq!(first, centre(frame(0, 0, 1280, 820), ROOMY));
+        /* The same at 150%, which does not fit and is cut to the screen. */
+        let scaled = foresee(None, (1280.0, 820.0), 1.5, ROOMY);
+        assert_eq!((scaled.w, scaled.h), (1920, 1032));
+        /* A remembered frame is honoured where it is, through `fit`. */
+        let kept = frame(100, 80, 1000, 700);
+        assert_eq!(foresee(Some(kept), (1280.0, 820.0), 1.0, ROOMY), kept);
+        /* A maximized one covers the work area, whatever the frame under it. */
+        let max = Frame { maximized: true, ..kept };
+        assert_eq!(
+            foresee(Some(max), (1280.0, 820.0), 1.0, BELOW),
+            Frame { x: 0, y: 1200, w: 1920, h: 1200, maximized: true }
+        );
     }
 
     #[test]

@@ -229,6 +229,11 @@ windows = { version = "0.61", features = [
     # Reading the signed-in user's SID, which is what Windows keys her
     # automatic-sign-in switch on — see `machine.rs`.
     "Win32_Security_Authorization",
+    # The launch splash: a plain window painted with GDI, because a webview
+    # would pay the very start-up it stands in for. `LibraryLoader` is only for
+    # the module handle its window class is registered against. See `splash.rs`.
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
     # Showing a territory's folder in Explorer goes through the shell's own
     # SHOpenFolderAndSelectItems rather than `explorer.exe`, because that is the
     # only one of the three that reuses a window instead of stacking a new one
