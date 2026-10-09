@@ -69,6 +69,21 @@ nothing about the glass. So v42 seeds `territory.glass_x` and touches no spot, a
 the rows in the same change that makes `stick_territory` the caller. The general shape:
 **a reconcile that clears is a reconcile you cannot half-switch.**
 
+**The back end switched whole and the front end did not**, and that shipped in 0.38 and stood
+through 0.47. Every write moved to the territory id; four readers stayed on the folder.
+The region menu read its glass and width off the *project* row — whose columns v43 left behind as
+a fossil, written by nothing since — and handed `toggleGlass` the folder, which `stick_territory`
+matched against no id: a region stuck before the move said "put it back on the wall" for ever
+and the item did nothing. The haul's `World` and the marquee's `standing()` named regions by
+folder while a press on the name picked by id, so a territory grabbed by its name carried
+nothing. And both `{#each}` over the regions were keyed on the folder, which two groupings of
+one checkout duplicate. None of it errored: an `UPDATE … WHERE id = <path>` matches zero rows,
+a `Set` lookup misses, and the UI simply did nothing. The control surface's `glass` op resolved
+the folder for itself, so the one wall test of the territory glass went green through a path no
+person uses — `wall.test.ts` now drives the menu item and the `<space>gg` chord instead. **A
+re-key is every reader of the old key, not every writer**; `Laid.home` is what a card now says
+about which region it stands in, so nothing has to recover that from a `cwd`.
+
 Forgetting a grouping **moves its cards** to whatever is left of its project rather than
 closing them — rearranging furniture must never be able to end a conversation — and a
 project's last one is refused, naming `forget this project` as the gesture that does mean

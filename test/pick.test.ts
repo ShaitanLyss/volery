@@ -279,9 +279,9 @@ describe("what a rectangle covers", () => {
 describe("carrying a selection", () => {
   const world: World = {
     cards: [
-      { id: "c1", cwd: "/p", x: 18, y: 30, pinned: false },
-      { id: "c2", cwd: "/p", x: 400, y: 500, pinned: true },
-      { id: "c3", cwd: "/q", x: 900, y: 30, pinned: false },
+      { id: "c1", home: "/p", x: 18, y: 30, pinned: false },
+      { id: "c2", home: "/p", x: 400, y: 500, pinned: true },
+      { id: "c3", home: "/q", x: 900, y: 30, pinned: false },
     ],
     images: [{ id: "i1", x: 10, y: 10 }],
     widgets: [{ id: "w1", x: 20, y: 20 }],
@@ -337,11 +337,31 @@ describe("carrying a selection", () => {
   test("a territory counts as one thing however many cards it carries", () => {
     expect(haulSize(haulOf([region("/p")], world))).toBe(1);
   });
+
+  /* Since v43 a region is a territory, and one checkout can carry several. The
+     haul was asked in folders while the press picked by territory id, so a
+     territory grabbed by its name carried nothing at all. */
+  test("two territories over one folder are carried apart", () => {
+    const twin: World = {
+      cards: [
+        { id: "l", home: "left", x: 10, y: 10, pinned: true },
+        { id: "r", home: "right", x: 610, y: 10, pinned: true },
+      ],
+      images: [],
+      widgets: [],
+      regions: [
+        { id: "left", x: 0, y: 0 },
+        { id: "right", x: 600, y: 0 },
+      ],
+    };
+    const h = haulOf([region("right")], twin);
+    expect(h.regions).toEqual([{ id: "right", x: 600, y: 0, pins: [{ id: "r", x: 610, y: 10 }] }]);
+  });
 });
 
 describe("what the undo menu says about a drag", () => {
   const world: World = {
-    cards: [{ id: "c1", cwd: "/p", x: 0, y: 0, pinned: true }],
+    cards: [{ id: "c1", home: "/p", x: 0, y: 0, pinned: true }],
     images: [{ id: "i1", x: 0, y: 0 }],
     widgets: [],
     regions: [{ id: "/p", x: 0, y: 0 }],

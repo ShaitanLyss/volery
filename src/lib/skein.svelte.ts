@@ -4208,8 +4208,8 @@ export class Skein {
 
   /** Move every territory to where it stands in the arrangement just adopted.
    *
-   *  No write: Rust has already written `project.glass_x`, and the caller is
-   *  the thing that asked it to. Answers the roots it moved, so the undo stack
+   *  No write: Rust has already written `territory.glass_x`, and the caller is
+   *  the thing that asked it to. Answers the ids it moved, so the undo stack
    *  can forget what it knows about them — see `Studio.adoptGlass`. */
   adoptTerritoryGlass(spots: Record<string, [number, number]>): string[] {
     const moved: string[] = [];

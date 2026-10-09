@@ -2913,6 +2913,47 @@ t("a card stuck to the glass keeps its place on the wall", async () => {
   expect((await ctl("dom", { selector: `.glass [data-conv="${id}"]` })).count).toBe(0);
 }, 30_000);
 
+/* Through the territory's own menu, and through its chord — not the `glass` op,
+   which resolves the territory for itself and so could not see the bug this
+   is: the menu item handed `Canvas.toggleGlass` the folder, the write went to a
+   territory id nothing had, and "put it back on the wall" did nothing at all. */
+t("a territory goes onto the glass and back off it, by its menu and by its chord", async () => {
+  const dir = `${SUITE}\\glassed`;
+  mkdirSync(dir, { recursive: true });
+  const here = (await ctl("open", { dir })).id as string;
+  opened.push(here);
+  const glass = async () =>
+    (await snapshot()).projects.find((p: Reply) => p.root === dir)?.glass ?? null;
+  const sel = '.region[data-cwd$="glassed"]';
+  const viaMenu = async (want: string) => {
+    const offered = (await ctl("menu", { selector: sel })).items as string[];
+    expect(offered).toContain("glass");
+    await ctl("click", { selector: '[data-menu="glass"]' });
+    return until(`the territory to be ${want}`, glass, (g) =>
+      want === "on the glass" ? g !== null : g === null,
+    );
+  };
+
+  expect(await glass()).toBeNull();
+  expect(await viaMenu("on the glass")).not.toBeNull();
+  expect((await ctl("dom", { selector: `.glass ${sel}` })).count).toBe(1);
+  /* The half that was broken: the same item, now reading "put it back". */
+  expect(await viaMenu("on the wall")).toBeNull();
+  expect((await ctl("dom", { selector: `.glass ${sel}` })).count).toBe(0);
+
+  /* And by the keyboard, against the focused card's grouping. */
+  await ctl("focus", { id: here });
+  const chord = async () => {
+    await ctl("key", { selector: "body", key: " " });
+    await ctl("key", { selector: "body", key: "g" });
+    await ctl("key", { selector: "body", key: "g" });
+  };
+  await chord();
+  await until("the chord to stick it", glass, (g) => g !== null);
+  await chord();
+  await until("the chord to put it back", glass, (g) => g === null);
+}, 30_000);
+
 /* The whole of "over the transcript, never over the dock or the header" is that
    the pane is a box inside `main.wall`. It is worth asserting rather than
    trusting, because a z-index added anywhere else could not break it and a

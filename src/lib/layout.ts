@@ -418,6 +418,11 @@ export type Region = {
 
 export type Laid<T> = {
   conv: T;
+  /** The id of the region it is drawn in — a territory's id, or the folder for
+   *  a card with no territory to stand in. What a drag asks to know whether a
+   *  card comes along with a territory, which its `cwd` cannot answer once one
+   *  checkout carries several. */
+  home: string;
   x: number;
   y: number;
   pinned: boolean;
@@ -706,6 +711,7 @@ export function layout<T extends Placeable>(
       if (p?.pinned) {
         laid.push({
           conv,
+          home: id,
           x: p.x,
           y: p.y,
           pinned: true,
@@ -718,7 +724,7 @@ export function layout<T extends Placeable>(
       const at = slotAt(x, y, next, cols);
       deepest = Math.max(deepest, Math.floor(next / cols) + 1);
       next += 1;
-      laid.push({ conv, x: at.x, y: at.y, pinned: false, glass: drawnAt(p, at) });
+      laid.push({ conv, home: id, x: at.x, y: at.y, pinned: false, glass: drawnAt(p, at) });
     }
     /* The territory has to reach whatever it holds, including a card pinned
        further down its own columns than anything flowing. */

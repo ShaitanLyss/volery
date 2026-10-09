@@ -1154,6 +1154,32 @@ describe("several regions over one checkout", () => {
     expect(laid.map((l) => l.conv.id).sort()).toEqual(["gone", "old"]);
   });
 
+  /* What a drag asks to know whether a card comes along with a territory. It
+     read the card's folder until this was here, which answers the same for
+     both regions over one checkout — so the drag matched neither. */
+  test("a laid card says which region it stands in, by the territory's id", () => {
+    const { laid } = layout(
+      [
+        card("a", "C:/nova", "left"),
+        card("b", "C:/nova", "right"),
+        card("old", "C:/nova", null),
+        card("loose", "C:/elsewhere", null),
+      ],
+      {},
+      [
+        terr("left", "nova", "left", "C:/nova"),
+        terr("right", "nova", "right", "C:/nova"),
+      ],
+    );
+    const home = (id: string) => laid.find((l) => l.conv.id === id)!.home;
+    expect(home("a")).toBe("left");
+    expect(home("b")).toBe("right");
+    expect(home("old")).toBe("left");
+    /* A folder with no territory at all is drawn in a region keyed on itself,
+       and the card says so — the one case where a home is a path. */
+    expect(home("loose")).toBe("C:/elsewhere");
+  });
+
   test("the handle says both names, and only one when they are the same word", () => {
     expect(regionLabel("nova", "left")).toBe("nova · left");
     /* Every backfilled territory is named after its project, which is every

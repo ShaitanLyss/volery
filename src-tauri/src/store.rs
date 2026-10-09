@@ -10364,6 +10364,37 @@ mod tests {
         );
     }
 
+    /// The round trip against the real schema rather than `arrange.rs`'s
+    /// hand-built fixture: put on the glass, through another room and back, and
+    /// taken off — and then *staying* off when the screens change again, which
+    /// is the half `adopt`'s clear-as-well-as-set reconcile would break.
+    #[test]
+    fn a_territory_put_back_on_the_wall_stays_there_when_the_screens_change() {
+        use crate::arrange::adopt_in;
+        let conn = db();
+        let p = ensure_project_row(&conn, "C:/x".to_string()).unwrap();
+        let t = first_territory(&conn, &p.id).unwrap();
+        let glass = || -> (Option<f64>, Option<f64>) {
+            conn.query_row(
+                "SELECT glass_x, glass_y FROM territory WHERE id = ?1",
+                params![t],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None).unwrap();
+        stick_row(&conn, &t, Some(40.0), Some(90.0)).unwrap();
+        adopt_in(&conn, "laptop", "[]", [0.0, 0.0], Some("desk")).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None).unwrap();
+        assert_eq!(glass(), (Some(40.0), Some(90.0)), "a stuck territory survives a room change");
+
+        stick_row(&conn, &t, None, None).unwrap();
+        adopt_in(&conn, "laptop", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None).unwrap();
+        assert_eq!(glass(), (None, None), "and one taken off is not put back by coming home");
+    }
+
     /// v9 adds the same pair to four tables, and the one that would go unnoticed
     /// is `placement` — a card's glass spot is the only one whose absence looks
     /// exactly like a card nobody ever stuck.

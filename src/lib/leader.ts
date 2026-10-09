@@ -53,7 +53,7 @@ export type Verb =
   | { kind: "open"; what: "timelines" | "pile" | "flyway" }
   | { kind: "window"; act: "span" | "panel" | "dock" }
   | { kind: "presence"; act: "toggle" }
-  | { kind: "grouping"; act: "new" | "rename" }
+  | { kind: "grouping"; act: "new" | "rename" | "glass" }
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" }
   | { kind: "card"; act: "close" | "glass" }
@@ -151,6 +151,12 @@ export const CHORDS: readonly Chord[] = [
      without having to remember which way it goes. See `berth.ts`. */
   { keys: "gn", label: "another grouping here", verb: { kind: "grouping", act: "new" } },
   { keys: "gr", label: "rename this grouping", verb: { kind: "grouping", act: "rename" } },
+  /* `gg`: the focused card's grouping on the glass, or back. `cg` refuses a
+     card that is on the pane only because its grouping is, and said "move the
+     grouping instead" with no key to do it with — the right-click was the
+     whole of the way back. Doubled, as `ff`/`ss`/`ee` are, because it is the
+     grouping verb you reach for most once one is up there. */
+  { keys: "gg", label: "this grouping on the glass / back", verb: { kind: "grouping", act: "glass" } },
   { keys: "wp", label: "panel: right / left / floating", verb: { kind: "window", act: "panel" } },
   { keys: "wd", label: "dock: bottom / top / floating", verb: { kind: "window", act: "dock" } },
   /* Away mode, and it has two chords on purpose. `z` is the one you reach for

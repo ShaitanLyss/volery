@@ -2487,6 +2487,12 @@ export class Control {
             ? this.#card(op).id
             : String(op.id ?? op.cwd ?? op.root ?? "");
         if (!id) throw new Error("glass needs an id");
+        /* The op names a territory by its folder, as every territory op here
+           does; everything it reaches keys on the territory's own id. Resolved
+           once, up here, because the toggle below took the folder straight
+           through to `Canvas.toggleGlass` — the same slip as the menu item's,
+           which is why a test driving this op could not have caught that one. */
+        const terr = kind === "region" ? (h.skein.firstTerritoryAt(id) ?? id) : id;
 
         const at =
           op.x === undefined || op.y === undefined
@@ -2505,14 +2511,13 @@ export class Control {
               { at: "placement", id, was, now: { ...h.studio.placements[id] } },
             ]);
           } else if (kind === "region") {
-            const terr = h.skein.firstTerritoryAt(id) ?? id;
             const p = h.skein.territories.find((q) => q.id === terr);
             h.skein.stickTerritory(terr, at);
             if (p) {
               h.undo.did("moving a territory on the glass", [
                 {
                   at: "territory",
-                  id,
+                  id: terr,
                   was: {
                     x: p.x ?? null,
                     y: p.y ?? null,
@@ -2531,7 +2536,7 @@ export class Control {
           } else if (kind === "image") h.board.update(id, { glassX: at.x, glassY: at.y });
           else h.widgets.update(id, { glassX: at.x, glassY: at.y });
         } else {
-          h.canvas()?.toggleGlass(kind, id);
+          h.canvas()?.toggleGlass(kind, terr);
         }
         await settle();
 
@@ -2540,12 +2545,16 @@ export class Control {
           return { kind, id, glass: spotOf(p), placement: p };
         }
         if (kind === "region") {
-          const p = h.skein.projects.find((p) => p.root_path === id) ?? null;
+          /* The territory's row, not the project's: v43 left the project's
+             glass columns behind as a fossil, so reading them reported a glass
+             nothing writes any more. */
+          const t = h.skein.territories.find((q) => q.id === terr) ?? null;
           return {
             kind,
             id,
-            glass: spotOf(p),
-            at: p ? { x: p.x, y: p.y } : null,
+            territory: terr,
+            glass: spotOf(t),
+            at: t ? { x: t.x, y: t.y } : null,
           };
         }
         const it =

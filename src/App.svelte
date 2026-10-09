@@ -18,6 +18,7 @@
   import type { ToyId as PuzzleId } from "./lib/gate";
   import { Sketchbook } from "./lib/sketch.svelte";
   import type { Tier } from "./lib/classify";
+  import type { Territory } from "./lib/layout";
   import {
     DRAG_SLOP,
     READ_REST,
@@ -422,7 +423,7 @@
   /* One leader for the wall, and the only place a chord becomes an action. A
      verb rather than a mode is what lets this reach two unrelated subsystems
      without either of them knowing the other exists. */
-  /** `<space>gn` and `<space>gr`, both against the focused card's grouping.
+  /** `<space>gn`, `<space>gr` and `<space>gg`, all against the focused card's grouping.
    *
    *  The focused card is the target because it is the one thing the wall always
    *  knows you mean — the same target `/rename` takes, and the reason neither
@@ -430,18 +431,18 @@
    *  grouping to act on and the chord says so rather than guessing at one: a
    *  key that silently picks a region for you is worse than a key that does
    *  nothing, because you find out where it went afterwards. */
-  function groupingChord(act: "new" | "rename") {
-    const conv = focused;
-    const t = conv
-      ? (skein.territories.find((q) => q.id === conv.territoryId) ??
-        skein.territories.find((q) => q.projectId === conv.projectId))
-      : null;
+  function groupingChord(act: "new" | "rename" | "glass") {
+    const t = focused ? territoryOf(focused) : null;
     if (!t) {
       skein.fault = "focus a card first — a grouping is a grouping of its project";
       return;
     }
     if (act === "rename") {
       canvas?.nameTerritory(t.id, t.name);
+      return;
+    }
+    if (act === "glass") {
+      canvas?.toggleGlass("region", t.id);
       return;
     }
     void skein.makeTerritory(t.projectId, "new grouping").then((made) => {
@@ -1850,7 +1851,7 @@
              to say about it: "put it back on the wall" would be a promise it
              cannot keep, since the territory would still be carrying it. So it
              is not offered, which is a real answer here — see menu.ts. */
-          held: heldByGlassTerritory(conv.cwd, conv.id),
+          held: heldByGlassTerritory(conv),
           /* Something to clear means a turn taken or one under way — not a
              line on screen, which a *cleared* card still has (its own "cleared"
              note), and which would leave the item offered forever on a card
@@ -2056,9 +2057,16 @@
         /* Offered when it would *do* something, which is stricter than "has a
            width stored": an imported layout can carry a count that happens to
            equal the default, and so can a future change of default. Both would
-           be a menu item that visibly does nothing. */
-        sized: colsOf(skein.projects.find((p) => p.root_path === cwd)) !== REGION_COLS,
-        glass: !!spotOf(skein.projects.find((p) => p.root_path === cwd)),
+           be a menu item that visibly does nothing.
+
+           Both read the *territory*, which is where v43 moved its width and its
+           glass spot. They used to read the project row, whose columns v43 left
+           behind as a fossil — kept for an older build, never written again —
+           so a region stuck before the move offered "back on the wall" for
+           ever, and the item went to a toggle keyed on the folder that no
+           territory id could match. */
+        sized: colsOf(skein.territories.find((t) => t.id === terr)) !== REGION_COLS,
+        glass: !!spotOf(skein.territories.find((t) => t.id === terr)),
         chat: skein.isChatHome(cwd),
         nowhere: adrift.has(cwd),
         offers: offersOf(),
@@ -2070,7 +2078,7 @@
         presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
       };
       act = (id) => {
-        if (id === "glass") canvas?.toggleGlass("region", cwd);
+        if (id === "glass") canvas?.toggleGlass("region", terr);
         else if (id === "explorer") void skein.showInExplorer(cwd);
         else if (id === "chat") void openChat();
         else if (id === "new") void openIn(cwd);
@@ -2230,9 +2238,20 @@
    *  is there without ever having been stuck — and the menu item, which is one
    *  state with two sides, has no side to be on. It is left off rather than
    *  offered as a no-op; see the note where it is passed. */
-  function heldByGlassTerritory(cwd: string, id: string): boolean {
-    if (spotOf(studio.placements[id])) return false;
-    return !!spotOf(skein.territories.find((t) => t.cwd === cwd));
+  function heldByGlassTerritory(conv: Conversation): boolean {
+    if (spotOf(studio.placements[conv.id])) return false;
+    return !!spotOf(territoryOf(conv));
+  }
+
+  /** The grouping a card stands in, resolved the way `layout()` draws it: its
+   *  own, else its project's first. Not the first territory over its *folder*,
+   *  which is what this asked until a checkout could carry several — a card in
+   *  the second grouping of a repo was then "held" by the first one's glass. */
+  function territoryOf(conv: Conversation): Territory | undefined {
+    return (
+      skein.territories.find((q) => q.id === conv.territoryId) ??
+      skein.territories.find((q) => q.projectId === conv.projectId)
+    );
   }
 
   /** Write a card's placement down, whole.
@@ -3836,8 +3855,9 @@
    *  would go on carrying it. */
   function glassFocused() {
     if (focused) {
-      if (heldByGlassTerritory(focused.cwd, focused.id)) {
-        skein.fault = "this card is on the glass with its grouping — move the grouping instead";
+      if (heldByGlassTerritory(focused)) {
+        skein.fault =
+          "this card is on the glass with its grouping — move the grouping instead (space then g g)";
       } else canvas?.toggleGlass("card", focused.id);
     } else if (focusedShadow) canvas?.toggleGlass("shadow", focusedShadow.id);
     else skein.fault = "no card has the focus to put on the glass";

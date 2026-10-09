@@ -172,6 +172,7 @@ describe("the which-key hint", () => {
       { keys: "ee", label: "a card on another wall" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
+      { keys: "gg", label: "this grouping on the glass / back" },
       { keys: "gn", label: "another grouping here" },
       { keys: "gr", label: "rename this grouping" },
       { keys: "ia", label: "I'm away / back" },

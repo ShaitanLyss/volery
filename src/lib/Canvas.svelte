@@ -284,8 +284,9 @@
      *  for put back on the wall. Its wall placement is untouched either way, so
      *  this is a write of its own rather than another `onpin`. */
     onstick?: (id: string, at: Spot | null) => void;
-    /** The same, one level up: a whole territory and everything standing in it. */
-    onstickproject?: (cwd: string, at: Spot | null) => void;
+    /** The same, one level up: a whole territory and everything standing in it.
+     *  By the territory's id, as `onplace` and `onsize` are — never its folder. */
+    onstickproject?: (id: string, at: Spot | null) => void;
     onserver?: (groupId: string) => void;
     /** Every dev server group, flat, for a log widget hung on the wall. Plain
      *  data rather than the `GroupRuntime`s: flattened in `App.svelte` beside
@@ -895,7 +896,12 @@
         [{ at: "placement", id, was, now: placementOf(id) }],
       );
     } else if (kind === "region") {
-      const r = model.regions.find((r) => r.cwd === id);
+      /* By the territory's id, which is what every write below is keyed on.
+         This looked a region up by its folder until v43 and was missed when
+         the writes moved: the lookup still found the first region over that
+         folder, the write then went to `stickTerritory(<folder>)`, matched no
+         territory, and the menu item did nothing at all. */
+      const r = model.regions.find((r) => r.id === id);
       if (!r) return;
       const to = r.glass ? null : stickTo(r, view, { w: r.w, h: r.h }, paneBox);
       const was = standOf(id);
@@ -1454,7 +1460,7 @@
     return [
       ...wallRegions.map((r) => ({
         kind: "region" as const,
-        id: r.cwd,
+        id: r.id,
         box: { x: r.x, y: r.y, w: r.w, h: r.h },
         area: true,
       })),
@@ -1551,7 +1557,7 @@
       return {
         cards: glassCards.map((n) => ({
           id: n.conv.id,
-          cwd: n.conv.cwd,
+          home: n.home,
           x: n.x - ox,
           y: n.y - oy,
           /* Nothing is carried by hand on the pane: a territory's members are
@@ -1562,20 +1568,20 @@
         })),
         images: glassImages.map((i) => ({ id: i.id, x: i.x - ox, y: i.y - oy })),
         widgets: glassWidgets.map((w) => ({ id: w.id, x: w.x - ox, y: w.y - oy })),
-        regions: glassRegions.map((r) => ({ id: r.cwd, x: r.x - ox, y: r.y - oy })),
+        regions: glassRegions.map((r) => ({ id: r.id, x: r.x - ox, y: r.y - oy })),
       };
     }
     return {
       cards: wallCards.map((n) => ({
         id: n.conv.id,
-        cwd: n.conv.cwd,
+        home: n.home,
         x: n.x,
         y: n.y,
         pinned: n.pinned,
       })),
       images: wallImages.map((i) => ({ id: i.id, x: i.x, y: i.y })),
       widgets: wallWidgets.map((w) => ({ id: w.id, x: w.x, y: w.y })),
-      regions: wallRegions.map((r) => ({ id: r.cwd, x: r.x, y: r.y })),
+      regions: wallRegions.map((r) => ({ id: r.id, x: r.x, y: r.y })),
     };
   }
 
@@ -2182,7 +2188,7 @@
       class="region"
       class:torn={!!torn}
       class:nowhere
-      class:picked={studio.isPicked("region", r.cwd)}
+      class:picked={studio.isPicked("region", r.id)}
       data-name={r.label}
       data-cwd={r.cwd}
       data-territory={r.id}
@@ -2625,7 +2631,7 @@
        the text on this wall is sharp. See the note over `.pan` in the styles. -->
   <div class="pan" class:moving style:transform="translate({panX}px, {panY}px)">
     <div class="layer" style:zoom={studio.scale}>
-      {#each wallRegions as r (r.cwd)}
+      {#each wallRegions as r (r.id)}
         {@render territory(r, false)}
       {/each}
 
@@ -2746,7 +2752,7 @@
   onpointerdowncapture={groundDown}
   role="presentation"
 >
-  {#each glassRegions as r (r.cwd)}
+  {#each glassRegions as r (r.id)}
     {@render territory(r, true)}
   {/each}
 

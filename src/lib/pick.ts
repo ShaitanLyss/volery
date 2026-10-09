@@ -222,10 +222,12 @@ export type Haul = {
 };
 
 /** The wall as `haulOf` needs to see it: where everything stands right now.
- *  A region's `id` is its `cwd`, and a card's `x`/`y` are where the layout has
- *  it — its slot if it flows, its placement if it is pinned. */
+ *  A region's `id` is its territory's, and a card's `home` is the region it is
+ *  drawn in (`Laid.home`) — never a `cwd`, which stopped naming one region
+ *  when a checkout could carry three. A card's `x`/`y` are where the layout
+ *  has it — its slot if it flows, its placement if it is pinned. */
 export type World = {
-  cards: { id: string; cwd: string; x: number; y: number; pinned: boolean }[];
+  cards: { id: string; home: string; x: number; y: number; pinned: boolean }[];
   images: readonly Origin[];
   widgets: readonly Origin[];
   regions: readonly Origin[];
@@ -256,11 +258,11 @@ export function haulOf(sel: readonly Pick[], world: World): Haul {
     .map((r) => ({
       ...r,
       pins: world.cards
-        .filter((c) => c.cwd === r.id && c.pinned)
+        .filter((c) => c.home === r.id && c.pinned)
         .map((c) => ({ id: c.id, x: c.x, y: c.y })),
     }));
   const cards = world.cards
-    .filter((c) => !carried.has(c.cwd) && has(sel, { kind: "card", id: c.id }))
+    .filter((c) => !carried.has(c.home) && has(sel, { kind: "card", id: c.id }))
     .map((c) => ({ id: c.id, x: c.x, y: c.y }));
   return {
     cards,
