@@ -479,3 +479,42 @@ does not run on this machine — everything the first section of this file says 
 Sink `113d6b0e` has a working recipe for MSVC-without-Visual-Studio if that is ever wanted on
 its own merits, and the splat it describes is at `%LOCALAPPDATA%/volery/xwin`. It is simply
 no longer *forced* by wanting local speech, which is the only reason it came up.
+
+## Never wrap `cargo test` in Git Bash's `timeout` — it exits 0 having run nothing
+
+Seen four times in one session on 2026-10-09 (sink `bc8c6fe9`). The command was
+
+```bash
+timeout 1700 cargo test --lib -- <filters> > log 2>&1; echo rc=$?
+```
+
+from the Bash tool, in `src-tauri`. It printed `rc=0` and the log held only
+`Compiling skein v0.46.0`, or `Blocking waiting for file lock on build directory`, and
+**nothing else** — no `Running`, no test lines, no `test result:`. The same command without
+`timeout` gave all 1194 tests every time. Foreground and background both, and `cargo` is the
+real one rather than a wrapper. The cause is unconfirmed; the likeliest story is the coreutils
+`timeout` shim and Windows process trees (`cargo` → `rustc` → the test binary) interacting
+badly.
+
+**What makes it worth a section is the shape of the failure, not the cause.** A grep for
+`FAILED|panicked` over that log finds nothing, and the exit code is 0 — so it reads exactly
+like a green run, and anything gated on it is gated on nothing. The card only caught it
+because it also grepped for `^test result`.
+
+So, two rules, and the second is the general one:
+
+- **Do not put `timeout` in front of `cargo`.** If a run needs bounding, use the Bash tool's
+  own `timeout` parameter or `run_in_background`, which bound the call without inserting a
+  process between cargo and its children.
+- **A clean exit is not a pass. Require the count.** Anything gating on a test run — a lift,
+  `bun run lifts`, or an agent's own habit before committing — must see `test result: ok. N
+  passed` with **N greater than zero**. This is the same lesson `bun run lifts` learned from
+  the other end: it asserts a pass count per lift precisely because *a lift that finds nothing
+  to assert exits 0*, and four of them rotted red unnoticed before anybody checked (sink
+  `ce72b16b`). On 2026-10-09 the runner itself turned out to have been unable to run for some
+  time, which disabled that guard without disabling the appearance of it.
+
+**The general form, worth carrying anywhere near a gate: a test harness that can report
+success without having tested anything is worse than one that fails, because the failure mode
+is silence that looks like virtue.** Ask of any gate not "did it exit 0" but "what did it say
+it checked, and was that a number".
