@@ -14,7 +14,8 @@
     "test:wall": "bun test test/wall.test.ts",
     "lifts": "bun tools/lifts.ts",
     "tauri": "tauri",
-    "lab": "bun tools/lab.ts"
+    "lab": "bun tools/lab.ts",
+    "gate": "bun tools/gate.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

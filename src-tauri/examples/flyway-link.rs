@@ -161,7 +161,7 @@ async fn main() {
                                         }
                                     }
                                 }
-                                Frame::Cards(_) | Frame::Tail(_) => {}
+                                Frame::Cards(_) | Frame::Tail(_) | Frame::Move(_) => {}
                             }
                         }
                         out
@@ -208,7 +208,7 @@ async fn main() {
                 Frame::Fleet(m) => {
                     lap_fleet.on(m, now(), &facts());
                 }
-                Frame::Cards(_) | Frame::Tail(_) => {}
+                Frame::Cards(_) | Frame::Tail(_) | Frame::Move(_) => {}
             }
         }
     }
