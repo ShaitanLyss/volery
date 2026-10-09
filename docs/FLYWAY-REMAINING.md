@@ -253,11 +253,26 @@ wall answers v1 only, so against one, all that crosses is the sink.
   for Store"* on a runtime thread and then on the main thread. `arrive` now
   uses `try_state`; if it recurs, the backtrace (copy `skein.pdb` beside the
   exe) will name the caller.
-- **Testing two walls on one machine** wants a binary copied out of
-  `target\debug` (with its DLLs) so another card's edit does not rebuild it
-  out from under you, its own `WEBVIEW2_USER_DATA_FOLDER` (two processes on one
-  identifier's webview folder never attach), and launching from PowerShell —
-  a parentless process is reaped by the installed wall's orphan sweep.
+- **Testing two walls on one machine** is `bun run lab <name>` now
+  (`.claude/rules/control.md`, *Several labs at once*): a frozen binary copy
+  with its DLLs, its own webview folder, port, store and flyway host. Run it as
+  a background PowerShell call that stays up, never behind `&`, because a
+  parentless process is reaped by the installed wall's orphan sweep. What the
+  move demo (2026-10-09) also needed:
+  - `bun run lab mva --frozen` and then `bun run lab mvb --frozen --peer mva`, so
+    another card's edit cannot hot-reload a wall holding state in memory;
+  - the receiving wall's "take work from other walls" switch, which has no control
+    op yet. It was set by writing `accepting = 1` into that lab's
+    `flyway_setting` table (sink `4b634e26`);
+  - for anything about transcripts, **two clones of one repository at paths that
+    fold to different slugs** (a bare origin and two clones under `%TEMP%`, not
+    inside this checkout, or every turn loads this repo's `CLAUDE.md`). Otherwise
+    both walls share one transcript file, and a transplant proves nothing;
+  - a territory on each wall: open a card in the clone, then close it, since a
+    territory outlives its last card.
+  
+  Labs currently join the real flyway and show up on the real wall's roster.
+  bbadc88b is moving the flyway key per identifier so they no longer do.
 
 ### 4. Moving a card between hosts — built (card 6fa1e4b6, 2026-10-09)
 
