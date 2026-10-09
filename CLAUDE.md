@@ -83,6 +83,8 @@ bun run lab <name>       # a lab wall of your own, up to three at once: identifi
                          # name, on a frozen copy of the debug binary. `--frozen` serves a
                          # vite build so another card's edit cannot remount it mid-test;
                          # `--no-build` skips cargo; `--peer <name>` dials another lab.
+                         # Each lab flies on a key of its own, never Lyss's real flyway;
+                         # `--join-installed-wall-flyway` is the one deliberate exception.
                          # Run it as a foreground command (from a card, a background
                          # shell call), never behind `&` — the installed wall reaps
                          # orphans. `bun run lab down <name>` stops it and deletes both

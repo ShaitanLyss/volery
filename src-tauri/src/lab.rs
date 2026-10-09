@@ -22,9 +22,19 @@
 //! a suffix on a different prefix, and a name that does not parse is a refusal
 //! rather than a fallback — the fallback would be the binary's compiled-in
 //! identifier, which for a copy built by `bun run tauri dev` is the real wall.
+//!
+//! **A lab also flies on a key of its own**, under its own identifier, whichever
+//! way it was launched — `bun run lab` as much as `bun run lab <name>`. See
+//! `flyway::key::OWN_TARGET` for what sharing the studio's key cost. A named lab
+//! comes up holding one: its `--peer`'s (`VOLERY_LAB_PEER`), or a fresh one.
+//! `VOLERY_LAB_ON_INSTALLED_FLYWAY=1` is the one way onto the installed wall's
+//! flyway — and onto Lyss's roster, her shadows and her sink — and is named so
+//! that nobody sets it by accident; a lab on it may use that key, never change it.
 
 /// Take on the lab identity `VOLERY_LAB` names, if it names one.
 pub fn assume<R: tauri::Runtime>(mut context: tauri::Context<R>) -> tauri::Context<R> {
+    #[allow(unused_mut)]
+    let mut named = false;
     #[cfg(debug_assertions)]
     {
         let name = std::env::var("VOLERY_LAB").ok();
@@ -32,6 +42,7 @@ pub fn assume<R: tauri::Runtime>(mut context: tauri::Context<R>) -> tauri::Conte
         match identity(name.as_deref(), port.as_deref()) {
             Ok(None) => {}
             Ok(Some(lab)) => {
+                named = true;
                 let config = context.config_mut();
                 config.identifier = lab.identifier;
                 config.product_name = Some(lab.product);
@@ -49,7 +60,47 @@ pub fn assume<R: tauri::Runtime>(mut context: tauri::Context<R>) -> tauri::Conte
             }
         }
     }
+    let identifier = context.config().identifier.clone();
+    let installed = std::env::var("VOLERY_LAB_ON_INSTALLED_FLYWAY").ok();
+    match flyway_for(&identifier, installed.as_deref()) {
+        Flyway::Studio => {}
+        Flyway::Borrowed => crate::flyway::key::borrow_the_installed_key(),
+        Flyway::Own => {
+            crate::flyway::key::keep_to(&identifier);
+            if named {
+                let peer = std::env::var("VOLERY_LAB_PEER").ok();
+                /* A lab without a flyway is still a lab, so this says why and
+                   goes on — the launcher has already checked the peer is up. */
+                if let Err(why) = crate::flyway::key::settle_lab(peer.as_deref()) {
+                    eprintln!("volery: no flyway for this lab: {why}");
+                }
+            }
+        }
+    }
     context
+}
+
+#[derive(Debug, PartialEq)]
+enum Flyway {
+    /// The installed wall: the real key, as always.
+    Studio,
+    /// A lab on a key under its own identifier — the default for every lab.
+    Own,
+    /// A lab on the installed wall's key, asked for in so many words.
+    Borrowed,
+}
+
+/// Which key a wall flies on. Keyed on the identifier rather than on
+/// `VOLERY_LAB`, so the bare lab — whose identifier is compiled in by
+/// `tauri dev --config` — keeps to its own key too.
+fn flyway_for(identifier: &str, installed: Option<&str>) -> Flyway {
+    if identifier == "dev.skein.studio" {
+        Flyway::Studio
+    } else if installed.map(str::trim) == Some("1") {
+        Flyway::Borrowed
+    } else {
+        Flyway::Own
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -124,6 +175,19 @@ mod tests {
         }
         assert!(identity(Some("ok"), Some("80")).is_err());
         assert!(identity(Some("ok"), Some("nope")).is_err());
+    }
+
+    /// The studio keeps the real key; every lab keeps to its own unless it
+    /// asked for the real one in so many words.
+    #[test]
+    fn only_the_studio_flies_on_the_real_key_unless_a_lab_asks() {
+        assert_eq!(flyway_for("dev.skein.studio", None), Flyway::Studio);
+        assert_eq!(flyway_for("dev.skein.studio", Some("1")), Flyway::Studio);
+        assert_eq!(flyway_for("dev.skein.lab", None), Flyway::Own);
+        assert_eq!(flyway_for("dev.skein.lab.a", None), Flyway::Own);
+        assert_eq!(flyway_for("dev.skein.lab.a", Some("yes")), Flyway::Own);
+        assert_eq!(flyway_for("dev.skein.lab.a", Some("1")), Flyway::Borrowed);
+        assert_eq!(flyway_for("dev.skein.lab", Some(" 1 ")), Flyway::Borrowed);
     }
 
     /// Whatever the name, the studio is not reachable from here.

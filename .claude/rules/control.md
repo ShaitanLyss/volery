@@ -324,7 +324,8 @@ each into a fresh card is a controlled experiment rather than two anecdotes.
 ```powershell
 bun run lab a                      # a wall called a: dev.skein.lab.a, its own port, store,
                                    # webview profile and flyway host, control surface on
-bun run lab b --frozen --peer a    # a second, serving a vite build, dialling a's flyway host
+bun run lab b --frozen --peer a    # a second, serving a vite build, on a's private flyway
+bun run lab c --join-installed-wall-flyway   # onto LYSS'S REAL flyway — read trap 3 first
 $env:SKEIN_ID="dev.skein.lab.a"; bun tools/ctl.ts health
 bun run lab list                   # what is up, on which port, under which host
 bun run lab down a                 # stop it and delete both of its folders
@@ -332,7 +333,7 @@ bun run lab down --all             # every named lab of yours, and leftovers of 
 ```
 
 Bare `bun run lab` is the lab exactly as above — `tauri dev`, `dev.skein.lab`, :1421, hot
-reload on both sides — with one change: it no longer joins the flyway as this machine.
+reload on both sides — with one change: it flies on a key of its own rather than the installed wall's (trap 3 below).
 
 **The name decides everything, and in Rust it is one variable.** `identifier` is compiled into
 the binary by `generate_context!`, which is why `tauri dev --config` costs a rebuild per lab
@@ -352,12 +353,27 @@ The five traps four cards met on 2026-10-08, and what the launcher does about ea
    chosen port goes in the lab's record.
 2. **`WEBVIEW2_USER_DATA_FOLDER`.** Two processes on one webview profile never attach, and say
    nothing. Each identifier has its own `%LOCALAPPDATA%` folder, and the variable names it too.
-3. **The flyway host.** Every wall on this machine reads one vault key, so a lab without
-   `VOLERY_FLYWAY_HOST` joins the *real* flyway as `COMPUTERNAME` — a duplicate of the
-   installed wall on every roster. A named lab is `lab-<name>.<machine>`, the bare one
-   `lab.<machine>`. It is still on the real flyway, deliberately: the app-level proof of the
-   flyway was a lab against the installed wall. A lab host stays on the roster once seen
-   (`Fleet::forget` has no gesture), so reuse names rather than inventing new ones per run.
+3. **The flyway.** Every wall on this machine reads one vault, so a lab used to join the
+   *installed wall's* flyway on its key — as `COMPUTERNAME` when nobody set
+   `VOLERY_FLYWAY_HOST`, a duplicate of the installed wall, and otherwise under whatever lab
+   name a card chose. Each became a row on every roster in the flyway for good and its cards
+   shadows on Lyss's wall: by 2026-10-09 she had `lab`, `lab2`, `lab-a`, `lab-b`, `mva` and
+   `mvb` beside her two real machines. **A lab now flies on a key under its own identifier**,
+   `dev.skein.lab.<name>/flyway-key` (the bare lab `dev.skein.lab/flyway-key`), the way its
+   store, browser profile and mutex already are — decided in `lab.rs::flyway_for` before the
+   builder, held in `flyway::key::OWN_TARGET`. The key *is* the membership boundary
+   (`seal.rs`), so that is the whole fix: nothing filters what is drawn, which would leave a lab
+   really on her flyway while merely hidden. It also means a lab cannot clear her key, since
+   `leave` wipes the lab's own entry. A named lab comes up holding a key: `--peer a` copies
+   lab `a`'s (only ever another lab's — `settle_lab` refuses anything not `dev.skein.lab.*`)
+   and dials it, otherwise it mints its own. So `bun run lab a; bun run lab b --peer a` is two
+   walls on one private flyway with nobody pasting an invite, and `down` deletes the key with
+   the folders. It is called `lab-<name>.<machine>` there, the bare lab `lab.<machine>`.
+   **`--join-installed-wall-flyway`** (`VOLERY_LAB_ON_INSTALLED_FLYWAY=1`) is the one way onto
+   Lyss's real flyway — her roster, her shadows, her sink — for the one test that needs it,
+   proving a lab against the installed wall. It is spelled so nobody types it by accident, the
+   launcher says so in capitals, and a lab on it may use that key but never start, join or
+   leave on it (`key::may_write`). Reuse a name when you do, because the row stays.
 4. **The DLLs.** `skein.exe` copied without `onnxruntime`, `sherpa-onnx-*` and `skein_lib.dll`
    exits **53**, which is `0xC0000135 STATUS_DLL_NOT_FOUND` cut to a byte. The copy takes every
    DLL in `target\debug`, and an exit of 53 is translated rather than reported as a number.
@@ -383,6 +399,18 @@ on the machine is in one folder family, so "all" meant everybody's. The record i
 before `cargo build`, not after, so a lab mid-build already counts against the cap and is not a
 record-less folder for `--all` to clear. And `down` can take up to half a minute: a dead
 wall's `skein.db` stays locked for several seconds after its process is gone.
+
+**The general rule, for any destructive verb on this wall: its default scope is *yours*.**
+Several cards share every tree and every per-machine folder, and `--all` reads as "all of
+mine" to whoever types it — nobody running it means everybody's. So a verb that can reach
+another card's work defaults to the caller's own, passes over the rest with a line saying so,
+and makes reaching further an explicit flag. `down` is that shape; anything new that stops,
+deletes or resets across a shared resource owes the same.
+
+**The delete itself is `deletable`**, an exact match against the two paths the lab would
+have made — never a prefix, because `dev.skein.lab.a` is a prefix of `dev.skein.lab.ab` and
+`dev.skein.lab` and `dev.skein.studio` live beside them. `test/lab.test.ts` holds it, and was
+checked to fail with a prefix match put in its place.
 
 **At most three at once, the bare lab included** (`MAX_LABS`), and the refusal names the ones
 up. Each is a webview and a process tree on a machine that also hosts the cards doing the work.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { badName, dllMissing, flywayHost, identifierOf, MAX_LABS, mayTakeDown, plan, portsFor } from "../tools/lab.ts";
+import { badName, deletable, dllMissing, FLAG_INSTALLED, flywayHost, identifierOf, MAX_LABS, mayTakeDown, plan, portsFor } from "../tools/lab.ts";
 
 describe("a lab name", () => {
   test("is narrow, because it becomes two folders and a mutex", () => {
@@ -50,18 +50,22 @@ describe("a lab's flyway host", () => {
 
 describe("the command line", () => {
   test("bare is today's lab, flags passed through", () => {
-    expect(plan([])).toEqual({ kind: "bare", passthrough: [] });
-    expect(plan(["--release"])).toEqual({ kind: "bare", passthrough: ["--release"] });
+    expect(plan([])).toEqual({ kind: "bare", passthrough: [], real: false });
+    expect(plan(["--release"])).toEqual({ kind: "bare", passthrough: ["--release"], real: false });
+    expect(plan([FLAG_INSTALLED, "--release"])).toEqual({ kind: "bare", passthrough: ["--release"], real: true });
   });
 
   test("a name is a named lab, with its flags", () => {
-    expect(plan(["a"])).toEqual({ kind: "up", name: "a", frozen: false, build: true, peer: null });
+    expect(plan(["a"])).toEqual({ kind: "up", name: "a", frozen: false, build: true, peer: null, real: false });
+    expect(plan(["a", FLAG_INSTALLED])).toMatchObject({ kind: "up", name: "a", real: true });
+    expect(plan(["a", FLAG_INSTALLED, "--peer", "b"]).kind).toBe("refused");
     expect(plan(["up", "a", "--frozen", "--no-build", "--peer", "b"])).toEqual({
       kind: "up",
       name: "a",
       frozen: true,
       build: false,
       peer: "b",
+      real: false,
     });
   });
 
@@ -70,6 +74,12 @@ describe("the command line", () => {
     expect(plan(["down", "--all"])).toEqual({ kind: "down", names: "all", force: false });
     expect(plan(["down", "a", "--force"])).toEqual({ kind: "down", names: ["a"], force: true });
     expect(plan(["down"]).kind).toBe("refused");
+  });
+
+  test("the way onto the installed wall's flyway cannot be typed by accident", () => {
+    expect(FLAG_INSTALLED).toContain("installed");
+    expect(plan(["a", "--real-flyway"]).kind).toBe("refused");
+    expect(plan(["a", "--real"]).kind).toBe("refused");
   });
 
   test("anything it does not understand is refused rather than guessed at", () => {
@@ -100,5 +110,40 @@ describe("taking a lab down", () => {
     expect(mayTakeDown("a", undefined, true, null, false)).toBeNull();
     expect(mayTakeDown("a", "6fa1e4b6", false, "bbadc88b", false)).toBeNull();
     expect(mayTakeDown("a", "6fa1e4b6", true, "bbadc88b", true)).toBeNull();
+  });
+});
+
+describe("what down may delete", () => {
+  const R = "C:\\Users\\x\\AppData\\Roaming";
+  const L = "C:\\Users\\x\\AppData\\Local";
+
+  test("exactly the lab's two folders", () => {
+    expect(deletable(`${R}\\dev.skein.lab.a`, "a", R, L)).toBe(true);
+    expect(deletable(`${L}\\dev.skein.lab.a`, "a", R, L)).toBe(true);
+    expect(deletable(`${L}\\DEV.SKEIN.LAB.A`, "a", R, L)).toBe(true);
+  });
+
+  test("never a neighbour, a prefix, a parent or a child", () => {
+    for (const path of [
+      `${R}\\dev.skein.studio`,
+      `${R}\\dev.skein.lab`,
+      `${L}\\dev.skein.lab`,
+      `${R}\\dev.skein.lab.ab`,
+      `${R}\\dev.skein.lab.b`,
+      `${R}\\dev.skein.lab.a\\skein.db`,
+      `${R}\\dev.skein.lab.a\\..\\dev.skein.studio`,
+      R,
+      L,
+      `C:\\elsewhere\\dev.skein.lab.a`,
+      "",
+    ]) {
+      expect(deletable(path, "a", R, L)).toBe(false);
+    }
+  });
+
+  test("nothing at all without a valid name or both roots", () => {
+    expect(deletable(`${R}\\dev.skein.lab.`, "", R, L)).toBe(false);
+    expect(deletable(`${R}\\dev.skein.lab...`, "..", R, L)).toBe(false);
+    expect(deletable("\\dev.skein.lab.a", "a", "", L)).toBe(false);
   });
 });
