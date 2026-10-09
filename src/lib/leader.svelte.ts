@@ -18,6 +18,12 @@ export class Leader {
    *  affordance at all, so the wall offers what it is waiting for. */
   pending = $state<string | null>(null);
 
+  /** What a chord just did, when what it did cannot be seen — a setting on
+   *  the machine rather than anything on the wall. Drawn where the hint was,
+   *  for a few seconds, so a toggle answers the keyboard that flipped it. */
+  said = $state<string | null>(null);
+  #saying: ReturnType<typeof setTimeout> | null = null;
+
   #pressedAt = 0;
   #lapse: ReturnType<typeof setTimeout> | null = null;
   #gone = false;
@@ -65,6 +71,17 @@ export class Leader {
     return step.swallow;
   }
 
+  /** Say what a chord did, in the hint's place, for `SAY_MS`. */
+  say(text: string) {
+    if (this.#gone) return;
+    if (this.#saying !== null) clearTimeout(this.#saying);
+    this.said = text;
+    this.#saying = setTimeout(() => {
+      this.#saying = null;
+      this.said = null;
+    }, SAY_MS);
+  }
+
   /** Drop the timer. Vite rebuilds this object on every front-end edit, and a
    *  superseded generation's timeout would write `pending` on an instance
    *  nothing is drawing. */
@@ -73,5 +90,11 @@ export class Leader {
     if (this.#lapse !== null) clearTimeout(this.#lapse);
     this.#lapse = null;
     this.pending = null;
+    if (this.#saying !== null) clearTimeout(this.#saying);
+    this.#saying = null;
+    this.said = null;
   }
 }
+
+/** Long enough to read a sentence, short enough not to be furniture. */
+const SAY_MS = 4000;

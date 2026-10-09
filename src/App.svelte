@@ -76,6 +76,8 @@
   import { MOTIONS } from "./lib/motion";
   import { RESTS } from "./lib/reaping";
   import { Motion } from "./lib/motion.svelte";
+  import { Machine } from "./lib/machine.svelte";
+  import { awakeLine, awakeSaid, reopenLine, reopenSaid } from "./lib/machine";
   import { Actions, conflictBadge, conflictPrompt, NO_STATUS } from "./lib/actions.svelte";
   import { Control, type ControlHost } from "./lib/control.svelte";
   import { Voicing } from "./lib/voicing.svelte";
@@ -385,6 +387,9 @@
   /* Holds no subscription, so unlike `Skein`/`Attention`/`Control` it wants no
      place in `Listeners` — same as `Ink`, which it is shaped after. */
   const motion = new Motion();
+  /* The machine the wall runs on: held awake on mains, and reopened after a
+     restart. Holds one subscription, released below. See `machine.rs`. */
+  const machine = new Machine();
   /* The shell behind Alt+I. Holds subscriptions and a batch timer, so it is
      released on destroy with the rest of them — and it holds a *process*, which
      the panel being toggled shut deliberately does not end. */
@@ -457,6 +462,7 @@
       else berths.cycleDock();
     }
     else if (verb.kind === "presence") void togglePresence();
+    else if (verb.kind === "machine") void flipMachine(verb.act);
     else if (verb.kind === "grouping") groupingChord(verb.act);
     else if (verb.kind === "elsewhere") focusElsewhere();
     else if (verb.kind === "card") {
@@ -668,6 +674,7 @@
        would go on enumerating every process on the machine every two seconds
        for a wall nobody can see. */
     meter.stop();
+    machine.detach();
     ledger.stop();
     devops.stop();
     /* Same hazard one service over: a superseded generation left ticking by a
@@ -759,6 +766,25 @@
   $effect(() => {
     releases.watch(attention.focused);
   });
+
+  /* What the lid does and whether Windows will sign her back in are settings
+     she changes in Windows, not here — so they are asked again when she comes
+     back to the window, off the same event, rather than on a clock. The power
+     source needs none of this: Rust emits when it changes. */
+  $effect(() => {
+    if (attention.focused) void machine.refresh();
+  });
+
+  /** A machine toggle from the keyboard says what is now true, since nothing
+   *  on the wall moves when it flips. */
+  async function flipMachine(knob: "awake" | "reopen") {
+    try {
+      const now = await machine.toggle(knob);
+      leader.say(knob === "awake" ? awakeSaid(now) : reopenSaid(now));
+    } catch (e) {
+      skein.fault = String(e);
+    }
+  }
 
   /* And whether Claude itself is up, off the same event and for the same reason
      — with one difference that is the whole of why this is not a second copy of
@@ -1804,6 +1830,17 @@
           groupings: skein.territories
             .filter((t) => t.projectId === conv.projectId && t.id !== conv.territoryId)
             .map((t) => ({ id: t.id, name: t.name })),
+          /* Walls this card could move to: heard from, taking work, and
+             holding a territory of this card's project's name — the three
+             things the move itself checks first, so the row is only offered
+             where it would get as far as the card. The rest (a dirty tree,
+             work in flight) is said when it is asked for. */
+          walls: conv.kind === "project"
+            ? elsewhere.roster
+                .filter((r) => !r.me && r.standing === "open" && !r.older)
+                .filter((r) => (r.territories ?? []).includes(skein.projects.find((p) => p.id === conv.projectId)?.name ?? ""))
+                .map((r) => r.host)
+            : [],
           dormant: conv.dormant,
           pinned: !!studio.placements[conv.id]?.pinned,
           /* Its *own* spot, not whether it happens to be drawn on the pane. */
@@ -1846,6 +1883,10 @@
             void skein.handOff(conv, presetById(id.slice(5)) ?? null);
           else if (id.startsWith("regroup:"))
             void skein.setCardTerritory(conv.id, id.slice(8));
+          else if (id.startsWith("move:"))
+            void skein.moveCard(conv, id.slice(5)).then((why) => {
+              if (why) skein.fault = why;
+            });
           else if (id === "wake") void skein.wake(conv);
           else if (id === "aside") skein.setAside(conv, !conv.aside);
           else if (id === "bypass") skein.setBypass(conv, !conv.bypassCaps);
@@ -2106,6 +2147,15 @@
             label: r.label,
             on: skein.resting === r.id,
           })),
+          /* And what the wall asks of the machine under it. Each line says
+             what is true now — including a closed lid or a policy that defeats
+             it — rather than naming the knob; see `machine.ts`. */
+          machine.status.supported
+            ? [
+                { id: "machine:awake", label: awakeLine(machine.status), on: machine.status.awake },
+                { id: "machine:reopen", label: reopenLine(machine.status), on: machine.status.reopen },
+              ]
+            : [],
         ],
         undoing: undo.goingBack,
         redoing: undo.goingForward,
@@ -2132,6 +2182,8 @@
         else if (id === "ambience") showEffects = true;
         else if (id.startsWith("motion:")) motion.set(id.slice(7));
         else if (id.startsWith("rest:")) skein.setResting(id.slice(5));
+        else if (id === "machine:awake" || id === "machine:reopen")
+          void machine.toggle(id.slice(8) as "awake" | "reopen").catch((e) => (skein.fault = String(e)));
         /* And what the wall tells every card standing on it, one scope out from
            the territory menu's own. */
         else if (id === "guidance") guiding = { focus: null };
@@ -4654,8 +4706,8 @@
     <Spyglass {finder} {editor} />
   {/if}
 
-  {#if leader.pending !== null && !finder.open}
-    <Which open={leader.pending} />
+  {#if (leader.pending !== null || leader.said) && !finder.open}
+    <Which open={leader.pending} said={leader.said} />
   {/if}
 
   <!-- Last of the overlays and above all of them, because it covers the wall

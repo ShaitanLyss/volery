@@ -14,7 +14,9 @@
    */
   import { offers } from "./leader";
 
-  let { open }: { open: string } = $props();
+  /* `said` is the other thing this line is for: what a chord just did when
+     the effect is nothing you could see — see `Leader.say`. */
+  let { open, said = null }: { open: string | null; said?: string | null } = $props();
 </script>
 
 <!-- Above where the dock sits, so it appears in the corner of your eye rather
@@ -24,10 +26,14 @@
      next thing you do is press a key, and a rectangle that swallowed a click on
      the wall behind it would be a hint that cost you a gesture. -->
 <div class="hint" aria-live="polite">
-  <span class="lead">space{open}</span>
-  {#each offers(open) as o (o.keys)}
-    <span class="offer"><kbd>{o.keys}</kbd>{o.label}</span>
-  {/each}
+  {#if open !== null}
+    <span class="lead">space{open}</span>
+    {#each offers(open) as o (o.keys)}
+      <span class="offer"><kbd>{o.keys}</kbd>{o.label}</span>
+    {/each}
+  {:else if said}
+    <span class="offer">{said}</span>
+  {/if}
 </div>
 
 <style>

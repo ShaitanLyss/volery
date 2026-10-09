@@ -200,6 +200,15 @@ pub fn intercept() -> bool {
         return true;
     }
 
+    /* The one argument the studio itself takes: the `Run` entry launches the
+       wall with it after a restart, so a launch that finds a wall already up
+       can leave without a box at sign-in. Exactly this argv and nothing
+       longer — the refusal below exists because a lenient reading opened ~18
+       walls once. See `machine.rs`. */
+    if args.len() == 1 && args[0] == crate::machine::FLAG_AUTOSTART {
+        return false;
+    }
+
     if !args.iter().any(|a| a == FLAG) {
         /* **A studio takes no arguments, so argv naming neither mode is not a
            launch — it is a mistake, and opening a wall is the one answer it must
@@ -227,9 +236,10 @@ pub fn intercept() -> bool {
         if let Some(unknown) = args.first() {
             eprintln!(
                 "skein: `{unknown}` is not a flag this binary answers to.\n\
-                 the studio takes no arguments; the hook is `{FLAG}` and the \
-                 credential server is `{FLAG_SECRET}`.\n\
-                 refusing rather than opening a second studio on the live wall."
+                 the studio takes no arguments but `{}`; the hook is `{FLAG}` \
+                 and the credential server is `{FLAG_SECRET}`.\n\
+                 refusing rather than opening a second studio on the live wall.",
+                crate::machine::FLAG_AUTOSTART
             );
             std::process::exit(2);
         }

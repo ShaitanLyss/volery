@@ -56,7 +56,8 @@ export type Verb =
   | { kind: "grouping"; act: "new" | "rename" }
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" }
-  | { kind: "card"; act: "close" | "glass" };
+  | { kind: "card"; act: "close" | "glass" }
+  | { kind: "machine"; act: "awake" | "reopen" };
 
 /** One sequence the leader opens onto.
  *
@@ -182,6 +183,12 @@ export const CHORDS: readonly Chord[] = [
      you work elsewhere, is reached by keyboard (`ee`) and so wants its glass
      the same way. */
   { keys: "cg", label: "this card on the glass / back", verb: { kind: "card", act: "glass" } },
+  /* `m` is the machine the wall runs on, rather than anything on the wall or
+     the window: whether it is held awake on mains and whether a wall Windows
+     took down comes back. Both are toggles nobody can see happen, so the chord
+     says what is now true rather than only flipping it — see `Leader.say`. */
+  { keys: "mw", label: "keep awake on mains: on / off", verb: { kind: "machine", act: "awake" } },
+  { keys: "mr", label: "reopen after a restart: on / off", verb: { kind: "machine", act: "reopen" } },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];

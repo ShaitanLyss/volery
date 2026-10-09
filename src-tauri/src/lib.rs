@@ -42,6 +42,7 @@ mod lab;
 mod later;
 mod nvim;
 mod limits;
+mod machine;
 mod open;
 mod perf;
 mod pin;
@@ -491,7 +492,17 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        can spawn: everything below this line assumes it is the only process
        holding this wall. Second, rather than first, only so that the refusal
        reaches the app log. See `claim_wall`. */
-    claim_wall(&app.config().identifier)?;
+    if let Err(refused) = claim_wall(&app.config().identifier) {
+        /* A wall the `Run` entry opened at sign-in, finding one already up, is
+           not a mistake worth a box — it is two launchers agreeing. Say nothing
+           on her screen at login; say it in the log. Nothing has been started
+           yet, so leaving here costs nothing. See `machine.rs`. */
+        if machine::autostarted() {
+            log::info!("autostart: a wall already holds {}, leaving it be", app.config().identifier);
+            std::process::exit(0);
+        }
+        return Err(refused);
+    }
 
     /* Before any card can spawn, because a card's seeded browser is pointed at
        this file by a static argument and a path that does not exist is a
@@ -593,6 +604,10 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        above: a card that asked to be woken at ten past has to be woken at ten
        past whether or not anybody is looking at the wall. */
     later::spawn_waker(app.handle().clone());
+    /* Hold the machine awake on mains, and write the `Run` entry that says
+       this wall is open. Above the windows because `machine_status` reads
+       what it sets up. See `machine.rs`. */
+    machine::arrive(app.handle());
 
     /* Last: the windows, and nothing that a command reads may move below
        this. See `open_windows`. */
@@ -757,6 +772,21 @@ pub fn run() {
                         let _ = window.app_handle().emit("app:quit-blocked", count);
                         return;
                     }
+                    /* She closed it, so it was not open when Windows went
+                       down: take the `Run` entry away so it does not come back
+                       at the next sign-in.
+
+                       **Here and not in the `Exit` handler below, and that is
+                       the whole of whether reopening works.** tao answers
+                       `WM_ENDSESSION` — Windows shutting down or restarting
+                       under us — with `loop_destroyed()` and then
+                       `process::exit` (tao 0.35 `event_loop.rs`), and the
+                       first of those is what Tauri turns into `RunEvent::Exit`.
+                       So the exit handler runs on a Windows restart too, and
+                       clearing the entry there would erase it in exactly the
+                       case it exists for. A crash, a forced restart and a
+                       shutdown all skip this line; that is the design. */
+                    machine::leave();
                     window.app_handle().exit(0);
                 }
             }
@@ -872,6 +902,7 @@ pub fn run() {
             flyway::link::flyway_pull,
             flyway::link::flyway_linked,
             flyway::link::flyway_roster,
+            flyway::link::flyway_forget,
             flyway::link::flyway_setup,
             flyway::link::flyway_set_accepting,
             flyway::link::flyway_set_bound,
@@ -882,6 +913,8 @@ pub fn run() {
             flyway::link::flyway_births,
             flyway::link::flyway_prompt,
             flyway::link::flyway_close,
+            flyway::link::flyway_move,
+            flyway::link::flyway_move_failed,
             flyway::link::flyway_prompt_answer,
             flyway::link::flyway_tail,
             flyway::link::flyway_tail_answer,
@@ -1039,6 +1072,8 @@ pub fn run() {
             update::latest_tag,
             update::fetch_update,
             update::arm_update,
+            machine::machine_status,
+            machine::machine_set,
         ])
         /* A debug build may be told it is a lab wall of its own; see `lab.rs`. */
         .build(lab::assume(tauri::generate_context!()))
@@ -1069,6 +1104,10 @@ pub fn run() {
                 /* Take the published control token away with us, so a dead port
                    never reads as a live one. */
                 app.state::<Control>().cleanup();
+                /* The wake request goes back. Not the `Run` entry — see the
+                   main window's close above for why this handler must never
+                   touch it. */
+                machine::release();
                 if let Some(store) = app.try_state::<Store>() {
                     if let Ok(conn) = store.0.lock() {
                         store::mark_interrupted(&conn, &running);
