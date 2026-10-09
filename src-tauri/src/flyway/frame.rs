@@ -43,6 +43,7 @@ use serde_json::Value;
 
 use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
+use super::moving::MoveMsg;
 use super::session::Msg;
 use super::tail::TailMsg;
 
@@ -53,6 +54,9 @@ pub enum Frame {
     Fleet(FleetMsg),
     Cards(CardsMsg),
     Tail(TailMsg),
+    /// A card moving between walls (`moving.rs`): said to one wall, answered
+    /// on the same stream, never gossiped.
+    Move(MoveMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -102,7 +106,10 @@ pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
 /// Every `msg` this build reads. Held against the four enums by a test, so a
 /// variant added to one of them without this list is caught rather than
 /// silently skipped as "from a newer build".
-const KNOWN: &[&str] = &["hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards", "tail", "tailed"];
+const KNOWN: &[&str] = &[
+    "hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards", "tail", "tailed",
+    "move_offer", "move_part", "move_answer", "move_settled", "move_released",
+];
 
 #[cfg(test)]
 mod tests {
@@ -225,6 +232,7 @@ mod tests {
         /* `ask` and `answer` want whole structs to build; their tags are the
            variant names under `rename_all = "snake_case"`. */
         written.extend(["ask", "answer", "prompt", "recall", "close"].map(str::to_string));
+        written.extend(crate::flyway::moving::TAGS.map(str::to_string));
         written.sort();
         let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
         known.sort();

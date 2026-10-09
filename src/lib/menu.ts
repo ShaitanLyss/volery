@@ -91,6 +91,12 @@ export type MenuTarget = {
      every project until somebody makes a second — so the items below it simply
      do not appear, rather than appearing and doing nothing. */
   groupings?: { id: string; name: string }[];
+  /* card: the other walls this card could move to — ones heard from lately,
+     taking work, and holding its territory. Empty on a wall with no flyway, so
+     the row is simply not there; a wall it could not go to is not offered,
+     since a row that is always refused reads as broken, and the reason it
+     cannot go is said when somebody asks for one that turns out not to work. */
+  walls?: string[];
   /* widget: what it can be switched between, and what it is on. Handed in
      rather than looked up, because the catalogue is the widgets' business and
      this file's only business is what a right-click offers.
@@ -343,6 +349,20 @@ export function menuFor(t: MenuTarget): MenuItem[] {
             )
           : null,
         (t.groupings ?? []).length ? sep : null,
+        /* The same verb across a machine boundary — the card, its whole
+           conversation, picked up on another wall. A submenu for `regroup`'s
+           reason, and absent where there is nowhere to go. The code moves by
+           git and the move refuses a dirty tree, so this is not a row that can
+           lose work; the card is not let go here until it has answered with
+           its history there (`flyway/moving.rs`). */
+        (t.walls ?? []).length
+          ? more(
+              "move",
+              "move it to another machine",
+              (t.walls ?? []).map((h) => item(`move:${h}`, h)),
+            )
+          : null,
+        (t.walls ?? []).length ? sep : null,
         t.dormant ? item("wake", "wake it") : null,
         /* The thing that was missing when a card and a terminal wanted the same
            conversation: the session id is what `--resume` takes, and until now

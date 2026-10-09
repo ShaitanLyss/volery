@@ -967,6 +967,43 @@ export class Skein {
     );
 
     keep(
+      /* A card moving here from another wall — see `openMoved`. */
+      listen<Parameters<Skein["openMoved"]>[0]>("flyway:move-in", (e) => {
+        void this.openMoved(e.payload);
+      }),
+    );
+
+    keep(
+      /* How a move out is going. The card stays on this wall, frozen, until
+         the other wall says it answered with its history there; then it goes
+         the way a card an agent closed goes — faded, since it leaves while you
+         may be looking at something else — and its row is already closed and
+         marked moved in Rust. Kept, it is simply here again, and says why. */
+      listen<{ id: string; to: string; stage: string; why: string | null }>("flyway:move", (e) => {
+        const conv = this.#byId.get(e.payload.id);
+        if (!conv) return;
+        const { to, stage, why } = e.payload;
+        if (stage === "shipping") conv.activity = `moving to ${to} — sending its conversation`;
+        else if (stage === "confirming") conv.activity = `moving to ${to} — checking it has its history there`;
+        else if (stage === "moved") void this.close(conv, "agent");
+        else if (stage === "kept") {
+          conv.activity = "";
+          conv.note(`not moved to ${to} — ${why ?? "the move did not finish"}. It is still here, as it was.`);
+        }
+      }),
+    );
+
+    keep(
+      /* A card that moved here and is being taken off again — its check
+         failed, or the wall it came from kept its own copy. Closed in Rust
+         already; this takes it off the wall the way an agent's close does. */
+      listen<{ id: string; why: string }>("flyway:move-withdraw", (e) => {
+        const conv = this.#byId.get(e.payload.id);
+        if (conv) void this.close(conv, "agent");
+      }),
+    );
+
+    keep(
       /* And the other end of the same gesture: a card taking one of its own
          children off the wall. Through `close` like any other closing, which is
          `openSpawned`'s argument in reverse — the ordering that gesture depends
@@ -1514,6 +1551,59 @@ export class Skein {
     await this.send(conv, prompt);
   }
 
+  /** A card that moved here from another wall: born through `#openIn` like
+   *  every card, on the session it brought with it, and handed its check as
+   *  its first prompt — `openSpawned`'s shape, for `openSpawned`'s reason.
+   *  Rust wrote the row (`store::arrive_row`) and planted the conversation
+   *  before this was called, so the spawn resumes and the panel reads the
+   *  whole history off disk. */
+  async openMoved(m: {
+    id: string;
+    request: string;
+    cwd: string;
+    worktree: string | null;
+    session: string;
+    title: string | null;
+    model: string | null;
+    effort: string | null;
+    prompt: string;
+    fromHost: string;
+  }): Promise<void> {
+    const before = this.fault;
+    const conv = await this.#openIn(
+      m.cwd,
+      m.worktree,
+      "project",
+      m.id,
+      m.model ? { model: m.model, effort: (m.effort ?? undefined) as Preset["effort"] } : undefined,
+      null,
+      m.session,
+    );
+    if (!conv) {
+      const reason = this.fault && this.fault !== before ? this.fault : "the wall could not open it";
+      await invoke("flyway_move_failed", { request: m.request, reason }).catch(() => {});
+      return;
+    }
+    /* Its own name, or one saying where it came from — never the check's
+       words, which is what `#deliver` would otherwise name an untitled card
+       after. */
+    conv.title = m.title && m.title !== "untitled" ? m.title : `moved from ${m.fromHost}`;
+    await this.send(conv, m.prompt);
+  }
+
+  /** Move a card to another wall. `null` when the move is under way — how it
+   *  ends arrives as `flyway:move` — and the reason when it cannot start,
+   *  which is everything that can be refused before anything leaves. */
+  async moveCard(conv: Conversation, host: string): Promise<string | null> {
+    try {
+      await invoke<string>("flyway_move", { id: conv.id, host });
+      conv.activity = `moving to ${host}…`;
+      return null;
+    } catch (err) {
+      return String(err);
+    }
+  }
+
   /** Ask Rust where chat cards go, remembering the answer. Rust creates the
    *  directory, so this is also what makes it exist. */
   async #chatHome(): Promise<string> {
@@ -1535,12 +1625,18 @@ export class Skein {
      *  be. */
     given: string | null = null,
     /** What the card is set up as, where something chose. See `presets.ts`. */
-    preset?: Preset,
+    preset?: Pick<Preset, "model" | "effort">,
     /** The account to start on if it has room, where something chose — only
      *  `spawn.rs` does. Handed to the waterfall as `stickTo`, so it is exactly
      *  the preference every send already expresses for the account a card is
      *  on: taken if ready, the ladder otherwise. */
     prefer: string | null = null,
+    /** The session it resumes, where it already has one — a card that moved
+     *  here from another wall (`flyway/moving.rs`), whose row Rust has already
+     *  written with it. Absent, the session is the id, as for every card born
+     *  here; passed to the spawn rather than left to it, because a card cleared
+     *  before it moved has a session that is not its id. */
+    session: string | null = null,
   ): Promise<Conversation | null> {
     try {
       const { project, territories } = await invoke<Ensured>("ensure_project", { rootPath: cwd });
@@ -1604,8 +1700,9 @@ export class Skein {
          thing still travelling as an argument, `wake` was the call site that
          never passed it, and a card that came back in the main tree is what
          that cost. See `store::worktree_of`. */
-      await invoke("spawn_conversation", { id, cwd, accountLabel: account });
+      await invoke("spawn_conversation", { id, sessionId: session, cwd, accountLabel: account });
       const conv = new Conversation(id, cwd, project.id, wt, kind);
+      if (session) conv.sessionId = session;
       if (preset) {
         /* Drawn from the first frame rather than from the first turn. The alias
            is what was asked for — `system/init` answers with the resolved id

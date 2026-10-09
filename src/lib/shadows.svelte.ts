@@ -93,6 +93,10 @@ export type RosterRow = {
   quietMs: number;
   standing?: string;
   reason?: string;
+  /** Its territories by name, and whether it answers only in the older
+   *  language — what the card menu reads to offer a move there. */
+  territories?: string[];
+  older?: boolean;
 };
 
 /** A card on another wall, drawn on this one.

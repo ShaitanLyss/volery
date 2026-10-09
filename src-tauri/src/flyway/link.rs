@@ -108,6 +108,8 @@ use super::tail::{self, TailMsg};
 use super::wire::{Dialler, Fault, Wire};
 use crate::store::Store;
 
+mod moves;
+
 /// How often a wall asks the others what it has missed — and says what it is.
 /// See the module note on why this is the roster's period.
 const EVERY: Duration = Duration::from_millis(fleet::ANNOUNCE_EVERY_MS as u64);
@@ -446,12 +448,19 @@ impl Link {
                 territories: here::territories(&conn, &own),
                 accepting: here::accepting(&conn),
                 bound: here::bound(&conn),
-                remote_live: here::births_live(&conn),
+                /* Cards opened for other walls and cards that moved here are
+                   both arriving work, and the bounds are on arriving work. */
+                remote_live: here::births_live(&conn) + here::arrivals_live(&conn),
                 /* A card agreed to and not yet open is in both the table and
                    the fleet's in-flight count; taken out here so the bound does
                    not count it twice. */
-                remote_last_hour: here::births_since(&conn, self.now() - 60 * 60_000).saturating_sub(in_flight),
-                can: fleet::can_now().into_iter().chain(std::iter::once(tail::WORD.to_string())).collect(),
+                remote_last_hour: (here::births_since(&conn, self.now() - 60 * 60_000)
+                    + here::arrivals_since(&conn, self.now() - 60 * 60_000))
+                .saturating_sub(in_flight),
+                can: fleet::can_now()
+                    .into_iter()
+                    .chain([tail::WORD.to_string(), super::moving::WORD.to_string()])
+                    .collect(),
                 ..Facts::default()
             };
             (f, here::open_cards(&conn))
@@ -515,6 +524,7 @@ impl Link {
             .lock()
             .map(|mut w| w.retain(|_, v| now - v.asked_at <= fleet::ANSWER_KEPT_MS))
             .ok();
+        self.sweep_moves();
         self.prompts_out
             .lock()
             .map(|mut o| o.retain(|_, v| now - v.asked_at <= fleet::ANSWER_KEPT_MS))
@@ -693,6 +703,9 @@ impl Link {
                 /* A tail is only ever read by the exchange that asked for it
                    (`read_tail`), which takes it out before this sees the rest. */
                 Frame::Tail(_) => {}
+                /* So is a move's answer (`moves.rs`); one arriving loose is from
+                   an exchange that already gave up on it. */
+                Frame::Move(_) => {}
             }
         }
         if fleet_spoke {
@@ -746,6 +759,13 @@ impl Link {
                     let got = self.cards.lock().ok().and_then(|mut c| c.on(m, now));
                     if let Some(a) = got {
                         self.emit_cards(a);
+                    }
+                }
+                /* A card moving between walls, answered on the same stream —
+                   `moves.rs`. */
+                Frame::Move(m) if who.current => {
+                    if let Some(r) = self.on_move(m, from.as_deref()) {
+                        out.push(Frame::Move(r));
                     }
                 }
                 _ => {}
@@ -2117,4 +2137,40 @@ fn card_for(l: &Link, asked_by: &str, request: &str) -> String {
 /// The running link, for `spawn.rs`'s remote arm.
 pub fn link(app: &AppHandle) -> Option<Arc<Link>> {
     current(app)
+}
+
+/// Whether a card may be given a process, for `supervisor::spawn_now` — a
+/// card moving between walls is frozen on one and held on the other
+/// (`moves.rs`). Asked whether or not this wall is on a flyway: a move's rows
+/// outlive the link, and a wall that came up without its key must not wake a
+/// card it half gave away.
+pub fn move_blocks(app: &AppHandle, card: &str) -> Option<String> {
+    moves::blocks(app, card)
+}
+
+/// A turn has ended on a card, for `supervisor::persist_turn`.
+pub fn move_turn_closed(app: &AppHandle, card: &str) {
+    moves::turn_closed(app, card)
+}
+
+/// Move a card on this wall to another one. Answers at once with the move's
+/// id or the reason it cannot go; how it ends arrives as `flyway:move`.
+#[tauri::command]
+pub async fn flyway_move(app: AppHandle, id: String, host: String) -> Result<String, String> {
+    crate::off_main(move || {
+        let link = current(&app).ok_or("this wall is not on a flyway, so there is no other wall to move a card to")?;
+        link.move_out(&id, &host)
+    })
+    .await?
+}
+
+/// This wall's front end could not open a card that moved here.
+#[tauri::command]
+pub async fn flyway_move_failed(app: AppHandle, request: String, reason: String) -> Result<(), String> {
+    crate::off_main(move || {
+        if let Some(link) = current(&app) {
+            link.move_open_failed(&request, &reason);
+        }
+    })
+    .await
 }

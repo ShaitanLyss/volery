@@ -16,6 +16,9 @@
 //! - `cards` — what each wall's cards look like, carried and never read. Pure.
 //! - `tail` — one card's conversation, pulled by a wall with a panel open on
 //!   it and answered in the same exchange. Pure.
+//! - `moving` — a card changing wall: the vocabulary, the check that it
+//!   still has its history, and the rule that it never ends up on neither.
+//!   Pure; `link/moves.rs` is the wiring.
 //! - `frame` — how those vocabularies share one frame.
 //! - `wire` — iroh: QUIC, dial by public key, relay fallback. The only file
 //!   that knows about the transport, so the transport stays replaceable.
@@ -40,6 +43,7 @@ pub mod frame;
 pub mod here;
 pub mod key;
 pub mod link;
+pub mod moving;
 pub mod reach;
 pub mod seal;
 pub mod session;

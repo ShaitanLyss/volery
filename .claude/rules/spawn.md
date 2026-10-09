@@ -395,6 +395,16 @@ is looking at.
 So `spawn.rs` checks the guards, mints the id, records the parentage and emits; `#openIn`
 gained one optional argument and `Skein.openSpawned` is the door.
 
+**A card that moves here from another wall is born the same way, and is not an exception to
+it** (`flyway/moving.rs`, `elsewhere.md`). Rust decides and writes down — the row through
+`store::arrive_row` (an upsert, since a card coming back has a closed row here that `record_row`'s
+`OR IGNORE` would leave closed), the transcript planted where this machine's CLI looks, the
+lineage — and emits `flyway:move-in`; `Skein.openMoved` opens it through `#openIn` and hands it
+its first prompt, exactly as `openSpawned` does with a brief. The one thing `#openIn` gained is
+`session`: a moved card keeps its id *and* its session, and a card cleared before it moved has a
+session that is not its id. Its first prompt is a check rather than a brief — it finishes a line
+of its own from memory before the wall it left lets its copy go.
+
 **And that is why a card in another project cost the front end nothing.** `spawn:asked`
 already carries a `cwd` and `#openIn` already calls `ensure_project` on it — which finds the
 existing territory rather than making a second one, since `root_path` is what a project is

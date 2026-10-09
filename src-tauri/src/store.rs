@@ -349,7 +349,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 48;
+const SCHEMA_VERSION: i64 = 49;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -403,6 +403,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (46, migrate_v46),
     (47, migrate_v47),
     (48, migrate_v48),
+    (49, migrate_v49),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2815,6 +2816,49 @@ fn migrate_v48(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v48: {e}"))
 }
 
+/// A card moving between walls, on both of them: `direction` is `out` on the
+/// wall it left and `in` on the wall it went to. `flyway/moving.rs` has the
+/// design; what this table is for is that **a move's state outlives the
+/// process on both ends**, because the one outcome that must be impossible —
+/// a card on neither wall — is exactly what an in-memory move would leave
+/// behind a crash.
+///
+/// - **Out**, `outcome` NULL while in flight: the card is frozen here
+///   (`supervisor::spawn_now` refuses to wake it). `released` once the other
+///   wall has said the card answered with its history — the row is then closed
+///   and marked moved, never deleted. `kept` when the other wall said it failed
+///   or never said in time. A decision once written is the answer to every
+///   later question about the move (`moving::settle_out`).
+/// - **In**, `outcome` NULL while the card is proving it has its history:
+///   `challenge` and `token` are the check. `confirmed` or `failed` once
+///   settled, `withdrawn` when the sending wall kept its own copy and this one
+///   was taken away; `told_at` once the sending wall has answered the
+///   settlement, which is when this wall stops saying it.
+///
+/// Keyed on the request, which both walls know the move by. No foreign key, for
+/// `flyway_birth`'s reason: on the receiving wall the row comes before the card.
+fn migrate_v49(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS flyway_move (
+            request          TEXT PRIMARY KEY,
+            conversation_id  TEXT NOT NULL,
+            direction        TEXT NOT NULL,
+            host             TEXT NOT NULL,
+            at               INTEGER NOT NULL,
+            outcome          TEXT,
+            why              TEXT,
+            challenge        TEXT,
+            token            TEXT,
+            settled_at       INTEGER,
+            told_at          INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS flyway_move_card ON flyway_move(conversation_id, at);
+        "#,
+    )
+    .map_err(|e| format!("migrate v49: {e}"))
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -3750,6 +3794,65 @@ fn record_row(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// What an arriving card is, as the wall it moved from said — `arrive_row`'s
+/// argument, so the eleven columns cannot be passed in the wrong order.
+pub(crate) struct Arrived<'a> {
+    pub id: &'a str,
+    pub session: &'a str,
+    /// This wall's root for the territory — found here, never sent.
+    pub root: &'a str,
+    pub worktree: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub named: bool,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    pub gear: Option<&'a str>,
+}
+
+/// The row for a card that moved here from another wall, written **before** the
+/// card is opened — `#openIn`'s order, and for its reason: `spawn_conversation`
+/// asks the store what the card is, and a moved card is a project card on its
+/// own session with its own preset, which `record_row`'s defaults are not.
+///
+/// An upsert, because the id may already be here: a card that moved away and
+/// is coming back has a closed row on this wall, and `record_row`'s `OR IGNORE`
+/// would leave it closed — a card on the wall today and gone at the next launch.
+/// `last_ending = 'ok'` for `import_row`'s reason: the card has spoken, and the
+/// restore must not read it as one that never did.
+pub(crate) fn arrive_row(conn: &Connection, a: &Arrived) -> Result<String, String> {
+    let project = ensure_project_row(conn, a.root.to_string())?;
+    let territory = first_territory(conn, &project.id)?;
+    conn.execute(
+        "INSERT INTO conversation
+           (id, agent_session_id, project_id, territory_id, cwd, worktree, born_at, kind, model, effort,
+            title, named_by_hand, permission_mode, last_ending)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'project', ?8, ?9, COALESCE(?10, 'untitled'), ?11, ?12, 'ok')
+         ON CONFLICT(id) DO UPDATE SET
+           closed_at = NULL, agent_session_id = excluded.agent_session_id, project_id = excluded.project_id,
+           territory_id = excluded.territory_id, cwd = excluded.cwd, worktree = excluded.worktree,
+           kind = 'project', model = excluded.model, effort = excluded.effort,
+           title = COALESCE(?10, title), named_by_hand = excluded.named_by_hand,
+           permission_mode = excluded.permission_mode, last_ending = COALESCE(last_ending, 'ok'),
+           interrupted = 0",
+        params![
+            a.id,
+            a.session,
+            project.id,
+            territory,
+            project.root_path,
+            a.worktree,
+            now(),
+            a.model,
+            a.effort,
+            a.title,
+            a.named as i64,
+            a.gear,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(project.root_path)
 }
 
 /// What kind of card this id is, asked of the store.

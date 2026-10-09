@@ -5,6 +5,8 @@ paths:
   - "src/lib/Yonder.svelte"
   - "test/shadow.test.ts"
   - "src-tauri/src/flyway/tail.rs"
+  - "src-tauri/src/flyway/moving.rs"
+  - "src-tauri/src/flyway/link/moves.rs"
 ---
 
 # Cards on other walls
@@ -606,6 +608,103 @@ shadow of its child on lab61, and a stitched root from lab61's shadow into the l
 lab61". On lab61 it drew the mirror, plus a solid root between two lab62 shadows. Two
 stitched roots along one row of cards overlap into something like a ladder. That is the row,
 not the drawing, and it is the same thing a local root does passing under a neighbour.
+
+### A card moving to another wall
+
+The other direction of the flyway: not opening work over there, but a card that is already
+running here — with hours of conversation behind it — picking up on another machine. The card
+menu's `move it to another machine ▸`, offered only for a wall heard from lately, taking work,
+and holding this card's territory. `flyway/moving.rs` is the design and the pure half;
+`flyway/link/moves.rs` is the wiring, a child of `link.rs` so it can use the wire and the
+fleet without either growing a public face for one subsystem.
+
+**It rests on `tools/probe-migrate.ts`**: a session transplants verbatim. The transcript put
+where the other machine's CLI looks — that machine's home, the slug of the directory the child
+will run in, the session id as the name — resumes with no record rewritten. Accounts do not
+change where that is (`CLAUDE_SECURESTORAGE_CONFIG_DIR` picks the credential store and only
+that), so the arriving wall plants once, whatever account its ladder then picks.
+
+The shape: **quiesce on A → ship the transcript and the rows → resume on B → confirm the model
+has its history → release A.** And one sentence the whole of it answers to: **a card that
+exists nowhere is the one outcome that must be impossible.**
+
+- **Confirmed means the card finished its own sentence, from memory.** Reading the planted file
+  back proves the bytes arrived and nothing about the model — a CLI that resumed a session and
+  answered from nothing would pass a byte check perfectly. So the card's first turn on B is a
+  cloze test: `challenge_of` takes a line of the card's own prose from the end of the
+  transcript as shipped (never a table, a fence or a subagent's), the prompt shows its first
+  four words, and the card is asked for the rest with no tool calls. `held` wants one unbroken
+  run of at least six-tenths of the hidden half, never under 28 characters, so a dropped comma
+  passes and a guess on the same subject does not. The answer is read off **the transcript the
+  CLI wrote on B** (`answer_after`), after the turn closes (`persist_turn`'s hook), never off
+  the front end. It costs one real turn — the whole context, read once — and that read is the
+  one the card's next prompt there would pay anyway, since the first turn after a transplant
+  writes the prompt cache from cold. The same prompt says what moved and what did not: other
+  paths, nothing it started came with it, where the code is.
+- **A's copy is closed and marked, never deleted.** `flyway_move` (schema v49) holds the move
+  on both walls, `direction` out and in. Released, A's row is `closed_at` with an outcome of
+  `released`, its transcript stays on disk, and three things keep it from being reached: a
+  closed row is not loaded; `sessions.rs` does not offer a moved-away session for adoption
+  (`here::moved_away_sessions`), since a second card on it would fork the conversation the
+  moment either was spoken to; and `reach::place` finds the handle in B's snapshot, so
+  `send`/`recall`/`close` follow the card. It does not read as a card that finished: the
+  chronicle says *moved a card to B*, and the card's shadow is drawn in B's region.
+- **The id and the session are kept.** A card is matched by its id wherever a wall asks who it
+  is (`may_reach`, `is_child_of`) — which was written that way for this — so an orchestrator
+  goes on reaching it by the same handle. The lineage is re-pointed on both walls: a parent on
+  A gets `flyway_child` for it on B, its children on A get `flyway_birth` naming it on B, and
+  B writes the mirror. Every arrival writes a birth row, so it counts against B's bounds on
+  arriving work (`MAX_LIVE`'s cousins, `Facts::bound`), and a card born for a third wall keeps
+  that origin.
+- **The territory has to exist on B**, by name, and nothing about a move widens that.
+  `here::root_for` is the only place a path comes from; a wall without the repository is
+  refused before anything leaves, with what it does have. The checkout is the other machine's
+  own and the code moves by git: A refuses a tree with uncommitted work, untracked included,
+  and a commit no remote branch contains (`tree_refusal`), and B tells the card whether its
+  checkout already has that commit. A card on a branch of its own gets that branch on B —
+  `origin/<name>` if pushed, else the very commit — before `worktree::ensure` runs, since
+  `ensure` alone would branch afresh off the base and put the card on the wrong code.
+- **Refused rather than lost.** Mid-turn, a background job, an unread relay, a pending wake or
+  a timeline in flight are all things a stopped process would drop, so each is a refusal with
+  its own remedy, before anything is written (`in_flight_here`). A chat card has no repository.
+  A wall that is quiet, too old (`Facts::can` lacks `move`) or not taking work is refused at
+  once — never queued for a lid to lift.
+- **Born through the one birth path.** Rust writes the row first (`store::arrive_row` — an
+  upsert, because a card coming *back* has a closed row here that `record_row`'s `OR IGNORE`
+  would leave closed), plants the file, records the lineage, then emits `flyway:move-in`;
+  `Skein.openMoved` opens it through `#openIn` with the session it brought (`#openIn` took a
+  `session` for this, since a card cleared before it moved has one that is not its id) and
+  hands it the check as its first prompt, under the wall's own envelope.
+
+**What a crash leaves is the card on A, and that is not "it depends".** Each wall's decision is
+one persisted word, written once (`here::settle_move` updates only an open row):
+
+- A is **frozen** from the moment the row is written — `supervisor::spawn_now` asks
+  `link::move_blocks` on every wake — and unfrozen by `kept` or closed by `released`. It gives
+  up after twelve minutes (`SETTLE_WITHIN_MS`) and keeps its card; a crash before then comes
+  back to a frozen card that the next tick past the deadline releases back to work.
+- B holds an arriving card only while **this process** sent its check (an in-memory map, on
+  purpose): after a restart the card is refused a spawn — no rouse prompt lands where the
+  check should have been — and the sweep fails it and takes it off. B fails a check not given
+  in eight minutes, which is inside A's twelve, so B normally decides first.
+- B says how it ended until A answers (`told_at`), for up to a day. A answers from its own word
+  (`moving::settle_out`): in flight and confirmed is `released`; anything else — failed, or a
+  confirmation arriving after A gave up — is `kept`, and **`kept` is B's only licence to take
+  its copy away**. So the two walls never both let the card go; the test walks every state.
+- The one corner left is the safe one: B confirmed, A did not hear in time and kept its copy,
+  and somebody had already spoken to the copy on B. B then keeps it too (`untouched_since`),
+  and both walls put a chronicle row up saying the card is on both — two copies a person can
+  tell apart, rather than one quietly discarded with somebody's words in it.
+
+**The wire** is `tail.rs`'s shape pushed the other way: `move_offer` (the rows and the size,
+so a refusal costs nothing shipped), then the transcript as `move_part`s of at most three
+megabytes — inside the wire's 8 MB frame however quote-dense the JSON-in-JSON is — each its own
+exchange answered on the same stream, never gossiped and never relayed. `move_settled` is
+pushed by B and answered `move_released` on the same stream. Every string off the wire is
+scrubbed, the session and card ids are held to letters, digits and dashes (the session becomes
+a file name under the CLI's projects directory), a branch is refused if it could be read as a
+git option, the commit must be hex, and the model and effort travel as the row's own words held
+to a shape — the row stores what a preset resolved to (`opus[1m]`), not `spawn`'s family names.
 
 ### What is not here
 

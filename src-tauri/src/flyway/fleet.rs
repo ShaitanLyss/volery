@@ -1800,7 +1800,7 @@ impl Fleet {
 /// The bound refusal a wall would make with this many asks already agreed to.
 /// One function for `decide` and `Entry::standing`, so the reason drawn beside
 /// a full wall is word for word the one an ask to it would get.
-fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
+pub(crate) fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
     if let Some(limit) = f.bound.live {
         let live = f.remote_live.saturating_add(in_flight);
         if live >= limit {

@@ -259,18 +259,50 @@ wall answers v1 only, so against one, all that crosses is the sink.
   identifier's webview folder never attach), and launching from PowerShell —
   a parentless process is reaped by the installed wall's orphan sweep.
 
-### 4. Moving a card between hosts
+### 4. Moving a card between hosts — built (card 6fa1e4b6, 2026-10-09)
 
-`tools/probe-migrate.ts` already answered the hard question: **a session
-transplants verbatim.** Put the transcript in the other machine's
-`~/.claude/projects/` tree and `--resume` works; no record rewriting needed.
-Tested at 33 records on one OS against one CLI version.
+The card menu's **move it to another machine ▸**, and the control surface's
+`move`. `flyway/moving.rs` is the design and the pure half, `flyway/link/moves.rs`
+the wiring; `.claude/rules/elsewhere.md`, *A card moving to another wall*, has the
+reasoning. In one paragraph: quiesce on A (the card is frozen from the moment
+the move is written down) → offer the rows, then ship the transcript in parts
+of ≤3 MB, each its own exchange, never gossiped → B plants it where its CLI
+looks, writes the row and the lineage, and births the card through `#openIn`
+on its own session → **the card's first turn is a cloze test on its own last
+words**, read back off the transcript the CLI wrote → B tells A until A answers
+→ A closes and marks its copy, never deleting it. Each wall's decision is one
+persisted word (`flyway_move`, schema **v49**), and the rule that makes "nowhere"
+impossible is that B only ever takes its copy away when A has said it kept its
+own (`moving::settle_out`, walked over every state by a test).
 
-So `move` is: quiesce on A → ship the transcript and the rows → resume on B →
-**confirm the model still has its history** → release A. Never delete before
-confirming; a card that exists nowhere is the one outcome that must be
-impossible. The *code* moves by git, not over the flyway — refuse to move a card
-whose worktree is dirty rather than inventing a patch transport.
+**Demonstrated** between two labs on one machine (`mva`, `mvb`), with two clones
+of one repository at paths that fold to different transcript directories:
+
+- A card on mva took a real turn — read a file, answered in a paragraph ending
+  on albatrosses and "slate-grey swells". Moved to mvb in ~20s. Its first turn
+  there was the check: shown the first four words of that paragraph, it gave
+  the whole of it back verbatim, from memory, with no tool calls. mvb wrote
+  `confirmed`, mva `released`; mva's transcript was untouched (28 records,
+  byte for byte), mvb's planted copy grew 28 → 35 — so mvb's CLI resumed the
+  copy at its own slug, not mva's file.
+- Asked on mvb, with no tools, which file it had read on the other machine,
+  what the first message asked, and what colour the water was: it named
+  `notes.md` at mva's path, the request, and "slate-grey".
+- Refused, in words, before anything left: an untracked file in A's tree; a
+  wall whose switch was off.
+- The failure path, end to end: moving it back to mva, which still held its
+  own released copy, was refused there ("already holds a different copy …
+  nothing was overwritten"), told to mvb, and mvb kept the card, unfrozen.
+  That refusal was then narrowed (`moving::plant_over`): a copy that is a
+  byte-for-byte prefix of what arrives is the conversation's own earlier
+  self, and is replaced. **The round trip with that change has not been run
+  between two walls yet** — unit-tested only.
+
+Not built: an agent's `move` tool (the person's gesture and the control op are
+the doors so far), carrying a pending `wake_me`, an unread relay or a timeline
+(each is refused with its remedy instead), and a crash test across two real
+processes (the rules are unit-tested; the in-memory confirming map is what
+makes a restarted B take an unconfirmed card away rather than rouse it).
 
 ---
 
@@ -288,6 +320,6 @@ iroh, and the frames are sealed before they reach it.
 - **Do not run `cargo` by hand while a dev build is live.** They contend for the
   target lock and each stalls the other; this looked like "the build is
   mysteriously slow" for an hour.
-- Schema is at **v48**. Take the next rung and say so on the board.
+- Schema is at **v49**. Take the next rung and say so on the board.
 - The wall suite (`test/wall.test.ts`) has ~19 standing failures and some are
   flaky — sink `64e5003c`. It is not yet trustworthy as a gate.

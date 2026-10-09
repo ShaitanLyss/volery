@@ -63,7 +63,7 @@ fn git(dir: &str) -> Command {
 }
 
 /// `(ok, stdout, stderr)`, all trimmed.
-fn run(dir: &str, args: &[&str]) -> (bool, String, String) {
+pub(crate) fn run(dir: &str, args: &[&str]) -> (bool, String, String) {
     match git(dir).args(args).output() {
         Ok(out) => (
             out.status.success(),

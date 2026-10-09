@@ -1105,6 +1105,14 @@ fn spawn_now(
     let _claim = sup
         .claim(&id)
         .ok_or_else(|| format!("conversation {id} is already open"))?;
+    /* A card moving between walls is frozen on the one it is leaving, and held
+       on the one it is arriving at until it has shown it has its history —
+       asked here because every wake reaches this line, and a card the move
+       forgot about is a second process on a session now living elsewhere
+       (`flyway/moving.rs`). */
+    if let Some(why) = crate::flyway::link::move_blocks(app, &id) {
+        return Err(why);
+    }
     let session = session_id.as_deref().filter(|s| !s.is_empty()).unwrap_or(&id);
 
     /* Asked of the store, never of the caller — see `store::kind_of`. `wake`
@@ -1880,6 +1888,10 @@ fn persist_turn(app: &AppHandle, id: &str, open: bool) {
            it is folded here rather than watched for anywhere. `spawn.rs` has why
            a stop is not the same fact as a rest. */
         crate::spawn::settling(app, id);
+        /* And a card that has just moved here answers its check in a turn
+           like any other, so whether it held its history is read off the end
+           of that turn — `flyway/moving.rs`. */
+        crate::flyway::link::move_turn_closed(app, id);
     } else {
         crate::spawn::stirring(id);
         /* And a notice about the rest that just ended comes down — the user
@@ -2827,22 +2839,27 @@ pub async fn close_conversation(app: AppHandle, id: String) -> Result<bool, Stri
 /// them*, which is a different act from a housekeeping pass standing down.
 #[tauri::command]
 pub async fn rest_conversation(app: AppHandle, id: String) -> Result<bool, String> {
-    crate::off_main(move || {
-        let sup = app.state::<Supervisor>();
-        let mut map = sup.0.lock().unwrap();
-        match map.get(&id) {
-            None => false,
-            Some(conv) if conv.turn.load(Ordering::Relaxed) => false,
-            Some(_) => {
-                let mut conv = map.remove(&id).expect("just matched");
-                drop(conv.job.take());
-                let _ = conv.child.kill();
-                let _ = conv.child.wait();
-                true
-            }
+    crate::off_main(move || stop_unless_turning(&app, &id).unwrap_or(false)).await
+}
+
+/// Stop a card's process unless it is mid-turn — `rest_conversation`'s rule,
+/// for a caller in Rust that has to tell "had none" from "refused". `Ok(true)`
+/// it had one and it is gone, `Ok(false)` it had none, `Err` it is mid-turn and
+/// was left alone.
+pub(crate) fn stop_unless_turning(app: &AppHandle, id: &str) -> Result<bool, ()> {
+    let sup = app.state::<Supervisor>();
+    let mut map = sup.0.lock().map_err(|_| ())?;
+    match map.get(id) {
+        None => Ok(false),
+        Some(conv) if conv.turn.load(Ordering::Relaxed) => Err(()),
+        Some(_) => {
+            let mut conv = map.remove(id).expect("just matched");
+            drop(conv.job.take());
+            let _ = conv.child.kill();
+            let _ = conv.child.wait();
+            Ok(true)
         }
-    })
-    .await
+    }
 }
 
 /// Should the wall skip rousing its restored cards on load?

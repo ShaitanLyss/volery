@@ -275,6 +275,11 @@ pub async fn list_sessions(app: AppHandle) -> Result<Vec<Session>, String> {
     crate::off_main(move || {
         let mut out = sessions_of(&app)?;
         let wall = wall_facts(&app);
+        /* A conversation this wall gave to another one is running over there,
+           and a second card on it here would fork it the moment either was
+           spoken to (`flyway/moving.rs`). The file stays on disk — a move
+           never deletes — and is simply not offered. */
+        out.retain(|s| !wall.gone.contains(&s.id));
         settle_titles(&mut out, &wall.titles);
         Ok(out)
     })
@@ -285,6 +290,8 @@ pub async fn list_sessions(app: AppHandle) -> Result<Vec<Session>, String> {
 struct Wall {
     /// What the wall calls each session it knows, keyed by session id.
     titles: HashMap<String, String>,
+    /// Sessions of cards this wall no longer holds because of a move.
+    gone: std::collections::HashSet<String>,
 }
 
 /// What the wall itself knows about these sessions: what it calls the ones it
@@ -294,7 +301,7 @@ struct Wall {
 /// taken on the main thread. An empty answer — no store yet, a wedged mutex —
 /// leaves every session titled only by its own transcript.
 fn wall_facts(app: &AppHandle) -> Wall {
-    let empty = Wall { titles: HashMap::new() };
+    let empty = Wall { titles: HashMap::new(), gone: Default::default() };
     let Some(store) = app.try_state::<crate::store::Store>() else {
         return empty;
     };
@@ -303,6 +310,7 @@ fn wall_facts(app: &AppHandle) -> Wall {
     };
     Wall {
         titles: crate::store::session_titles(&conn).unwrap_or_default(),
+        gone: crate::flyway::here::moved_away_sessions(&conn).into_iter().collect(),
     }
 }
 

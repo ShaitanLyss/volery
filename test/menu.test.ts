@@ -29,6 +29,19 @@ describe("a menu offers only what the target can actually do", () => {
     expect(ids(menuFor({ kind: "card", dormant: false }))).not.toContain("wake");
   });
 
+  /* A card moves only to a wall that would take it, so a wall with no flyway,
+     or none heard from with this territory, grows no row at all. */
+  test("a card offers the machines it could move to, and no row where there are none", () => {
+    const moveOf = (m: MenuItem[]) => m.find((i) => i.kind === "more" && i.id === "move");
+    expect(moveOf(menuFor({ kind: "card" }))).toBeUndefined();
+    expect(moveOf(menuFor({ kind: "card", walls: [] }))).toBeUndefined();
+    const row = moveOf(menuFor({ kind: "card", walls: ["desk", "lap"] }));
+    expect(row?.kind === "more" ? row.items.map((i) => (i.kind === "item" ? i.id : "")) : []).toEqual([
+      "move:desk",
+      "move:lap",
+    ]);
+  });
+
   /* The handoff is the only item on a card that does something with what the
      card *produced* rather than with the card, and it is gated on there being
      something to hand on — offered with no plan behind it, it would open a

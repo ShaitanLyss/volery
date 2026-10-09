@@ -1788,6 +1788,16 @@ export class Control {
         return { id: c.id, aside: c.aside, tier: c.tier, fault: h.skein.fault };
       },
 
+      /** Move a card to another wall — the card menu's `move it to another
+       *  machine`. Answers at once with the refusal, or `null` and the card's
+       *  activity while the move runs; how it ends is read off the snapshot
+       *  (the card leaves `cards` on this wall and arrives on the other). */
+      move: async (op) => {
+        const c = this.#card(op);
+        const why = await h.skein.moveCard(c, String(op.host ?? ""));
+        return { id: c.id, why, activity: c.activity };
+      },
+
       /** Call a card something else, the way `/rename` does.
        *
        *  `namedByHand` comes back beside the title because the title alone
