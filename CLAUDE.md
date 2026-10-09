@@ -820,6 +820,17 @@ already said to keep it.
   pass — a commit is a claim the tree builds. If something is genuinely half-done, that is not
   a completed unit; keep working or say plainly what is unfinished. Never commit around a
   known-red test to satisfy this rule.
+- **Before a push, `bun run gate`** — which is what CI runs, in CI's order, read off
+  `release.yml`. The two are not the same thing and the difference has broken a release twice:
+  the habit here is `cargo test --lib`, **`--lib` does not build `examples/`**, and CI runs
+  `cargo test` over the whole manifest. Both times it was one `match` over `Frame` in
+  `examples/flyway-link.rs` missing a variant somebody had added hours earlier, with every
+  card's own gates green (`bac46df`, then `v0.47.0`'s failed build). Do not reconstruct the
+  list by hand; that is the thing that keeps being got wrong.
+  **No step there is green on an exit code alone** — each must show what it checked
+  (`0 ERRORS`, `N pass`, `test result: ok. N passed`), and one that exits 0 without saying so
+  is reported red. See `.claude/rules/build.md` for the three false greens that bought that
+  rule on one day.
 - **One piece of work per commit**, in the house style: `skein: ` and then lowercase prose
   saying what changed and why, the body carrying the reasoning the way the log already does.
   `git add -A` is wrong when the tree holds something you did not write — stage what the work
