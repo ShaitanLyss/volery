@@ -1027,12 +1027,34 @@
     drafts.prune(new Set(skein.convs.map((c) => c.id)));
   });
 
+  /* The wall is read off SQLite once, at launch, and `untrack` is the whole of
+     what makes that true.
+     **In a reactive effect, a read is a subscription.** Each of these five
+     touches state on its way — `skein.load` alone paints every card, every
+     grouping and every placement — so a bare `$effect` around them subscribes
+     to all of it, and anything they themselves wrote re-runs the effect. It
+     ran `load` **two or three times on every launch**: the whole studio
+     fetched from the store, and rebuilt, two or three times over. `load` has
+     no re-entry guard, so that is not merely wasted work but a second and
+     third rebuild racing the first.
+
+     Nothing here is reactive by intention. They are five one-shots, and
+     `untrack` leaves the effect with no tracked dependency, so it runs once.
+
+     The same trap is recorded twice in `panel.md` — the follow effect's
+     `watching` gate, which read the flag it claimed not to depend on and so
+     fired on the blur it was written to ignore. **An effect whose body asks a
+     question is an effect that wakes on the answer.** Found 2026-10-09 while
+     measuring launch latency (sink `7014b866`); it cost nothing visible, which
+     is why it lasted — only time nobody could attribute. */
   $effect(() => {
-    void skein.load();
-    void board.load();
-    void widgets.load();
-    void ambience.load();
-    void pomodoro.load();
+    untrack(() => {
+      void skein.load();
+      void board.load();
+      void widgets.load();
+      void ambience.load();
+      void pomodoro.load();
+    });
   });
 
   /* The instruments run off the same one-second tick everything else does: the
