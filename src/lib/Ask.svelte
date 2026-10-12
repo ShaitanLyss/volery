@@ -34,6 +34,8 @@
     lookLabel,
     panelsOf,
     stepAt,
+    typedYes,
+    typedYesWarning,
   } from "./asking";
 
   /* It takes the *ask* rather than the card that is asking, and the second
@@ -53,6 +55,7 @@
     stirs = true,
     elsewhere = false,
     onanswer,
+    ondefer,
     onstir,
     onheld,
     onselect,
@@ -80,6 +83,10 @@
      *  button in the head. */
     elsewhere?: boolean;
     onanswer: () => void;
+    /** Put the question off: it goes to the pile and the card is told nothing
+     *  was decided (sink `7805fa20`). Absent where there is nowhere to put it
+     *  — a question already out of the pile. */
+    ondefer?: () => void | Promise<void>;
     /** The panel was touched, so the deadline should move. Throttled here, not
      *  by the caller — see `stir`. Nothing to do for a question out of the
      *  pile, which has no deadline at all, so this is only ever wired by the
@@ -95,6 +102,25 @@
   } = $props();
 
   let free = $state("");
+
+  /* A typed yes on one of Volery's own confirmations, which only the button
+     answers. Set by `give`, cleared the moment the field changes or the
+     question does — it is a note about the last thing typed, not a state. */
+  let warned = $state<string | null>(null);
+
+  /* A defer in flight. A second press (or alt+D again) finds the question
+     already gone and would draw "no longer waiting" as a fault, for something
+     that worked. */
+  let deferring = $state(false);
+  async function defer() {
+    if (!ondefer || deferring) return;
+    deferring = true;
+    try {
+      await ondefer();
+    } finally {
+      deferring = false;
+    }
+  }
 
   /* The separator goes with the name: a card nothing has named yet would
      otherwise read "skein · " with the dot left hanging. */
@@ -124,6 +150,7 @@
   $effect(() => {
     ask.askId;
     at = null;
+    warned = null;
     stirredAt = 0;
     told = -STIR_EVERY;
   });
@@ -217,6 +244,14 @@
   function give(text: string) {
     const t = text.trim();
     if (!t) return;
+    /* Nothing is recorded and nothing is sent: the question stays up and the
+       field keeps what was typed, so the warning is about something still
+       there to be corrected. See `typedYes`. */
+    if (ask.ours && typedYes(t, current.options.map((o) => o.label))) {
+      warned = typedYesWarning(t, current.options[0]?.label);
+      return;
+    }
+    warned = null;
     ask.answers[step] = t;
     free = "";
     at = null;
@@ -308,6 +343,14 @@
   data-ask={ask.askId}
   onkeydowncapture={stir}
   onpointerdowncapture={stir}
+  onkeydown={(e) => {
+    /* The keyboard path for `defer`, from anywhere in the panel including the
+       field: alt+D, which nothing else on the wall binds. */
+    if (ondefer && e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "d") {
+      e.preventDefault();
+      void defer();
+    }
+  }}
 >
   <div class="head">
     <span class="mark">{parked ? "Waiting on you" : "Asked while you were away"}</span>
@@ -440,6 +483,7 @@
       {/if}
       <input
         bind:value={free}
+        oninput={() => (warned = null)}
         onkeydown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -466,10 +510,23 @@
           >you decide</button
         >
       {/if}
+      {#if ondefer}
+        <button
+          class="nav"
+          onclick={() => void defer()}
+          disabled={deferring}
+          title="Answer this later — it goes to the pile of queued questions and the agent is told nothing was decided (alt+D · read the pile with space then p)"
+          >defer</button
+        >
+      {/if}
       <button class="send" onclick={() => give(free)} disabled={!free.trim()}
         >↵</button
       >
     </div>
+
+    {#if warned}
+      <div class="warn" role="status">{warned}</div>
+    {/if}
 
     {#if many}
       <div class="foot">
@@ -816,6 +873,11 @@
     border-color: var(--st-ask);
   }
 
+  .warn {
+    font-family: var(--util);
+    font-size: 0.7rem;
+    color: var(--st-ask);
+  }
   .foot {
     font-family: var(--util);
     font-size: 0.66rem;

@@ -157,6 +157,16 @@ const KEEP_IT: &str = "keep it";
 ///
 /// `docket::approved`'s rule, and it is the whole of the gate: reading a yes out
 /// of prose works right up until *"yes, but not the node_modules one"*.
+///
+/// **Lyss's decision, 2026-10-12, and it kept this strict.** She typed "yes, do
+/// it" on a delete and nothing was deleted, which was correct and which she
+/// could not have known. The first reading of her answer was that a clear typed
+/// yes should delete; she corrected it to *a typed yes should warn*: the gate
+/// does not move, and a deletion is permanent, so the panel now says before
+/// sending that a typed yes is not taken (`asking.ts::typedYes`, drawn in
+/// `Ask.svelte`, on this wall and on a shadow) while the question stays up.
+/// What is here is the other half, for a typed reply that gets through anyway —
+/// a voice or control-surface answer, or prose that merely contains a yes.
 pub(crate) fn approved(answer: &str) -> bool {
     answer.trim().eq_ignore_ascii_case(DELETE_IT)
 }
@@ -180,7 +190,10 @@ pub(crate) fn declined(answer: &str) -> String {
     }
     format!(
         "the user was asked and pressed neither button. They said: {said:?}. Nothing was \
-         deleted. Act on what they actually said."
+         deleted. Only the \"{DELETE_IT}\" button confirms a delete — a typed yes does not \
+         count, however clear, because a deletion is permanent. If what they said was meant \
+         as a yes, they have not changed their mind: call `mcp__skein__remove` again and \
+         tell them to press the button. Otherwise act on what they actually said."
     )
 }
 
@@ -1776,6 +1789,23 @@ mod tests {
         let said = declined("only the .next one");
         assert!(said.contains("only the .next one"), "{said}");
         assert!(said.contains("neither button"), "{said}");
+    }
+
+    /// A typed yes does not delete — it is declined, and the card is told what
+    /// would have counted so that it asks again rather than reading the silence
+    /// as a no. The gate itself is `only_the_button_is_an_approval`.
+    #[test]
+    fn a_typed_yes_is_declined_and_says_what_would_have_counted() {
+        for typed in ["yes", "y", "yes, do it", "go ahead", "ok", "delete", "sure"] {
+            assert!(!approved(typed), "{typed:?} must not delete");
+            let said = declined(typed);
+            assert!(said.contains("Nothing was deleted"), "{said}");
+            assert!(said.contains(DELETE_IT), "{said}");
+            assert!(said.contains("typed yes does not count"), "{said}");
+            assert!(said.contains("call `mcp__skein__remove` again"), "{said}");
+        }
+        /* The button itself is still the only yes. */
+        assert!(approved("delete it"));
     }
 
     #[test]

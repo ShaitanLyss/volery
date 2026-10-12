@@ -41,6 +41,7 @@
     remote = null,
     remoteAsk = null,
     onremoteanswer,
+    onremotedefer,
     remoteNotice = null,
     onremotenotice,
     onremoteselect,
@@ -80,6 +81,7 @@
      *  where it stands in the queue. */
     remoteAsk?: { shadow: Shadow; sheet: PendingAsk; focused: boolean } | null;
     onremoteanswer?: (shadow: Shadow, sheet: PendingAsk) => void;
+    onremotedefer?: (shadow: Shadow, sheet: PendingAsk) => void | Promise<void>;
     /** A notice standing in another wall's queue — the focused shadow's, or
      *  else the first any shadow has. Drawn by the panel a local notice uses;
      *  where it stands is in the markup. */
@@ -373,6 +375,7 @@
     stirs={false}
     elsewhere={!r.focused}
     onanswer={() => onremoteanswer?.(r.shadow, r.sheet)}
+    ondefer={() => onremotedefer?.(r.shadow, r.sheet)}
     onselect={() => onremoteselect?.(r.shadow)}
   />
 {/snippet}
@@ -430,6 +433,7 @@
       scripts={target.kind !== "chat"}
       elsewhere={target !== focused}
       onanswer={() => skein.answerAsk(target)}
+      ondefer={() => skein.deferAsk(target)}
       onstir={() => skein.stirAsk(target)}
       onheld={() => skein.holdAsk(target)}
       onselect={() => onselect(target)}

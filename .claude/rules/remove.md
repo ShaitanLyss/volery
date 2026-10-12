@@ -445,6 +445,32 @@ moment of deleting, and that last re-check is what makes a confirmation from ano
 decision about the tree as it is. `elsewhere.md`, *A removal confirmed from another wall*, has
 the far half.
 
+## A typed yes warns; it does not delete (2026-10-12)
+
+Lyss typed "yes, do it" on a delete confirmation. `approved` read it as neither button, the card
+was told she had pressed neither, and nothing was deleted — correct, and she could not have
+known. **Her decision, in two steps because the first reading was wrong:** a typed yes does
+**not** count as a delete — the gate above is unchanged and stays the exact label — it
+*triggers a warning* that says so and points at the button.
+
+- **The warning is in the panel, before anything is sent** (`asking.ts::typedYes`, drawn by
+  `Ask.svelte`, on this wall and on a shadow). Chosen over a message back to the card because it
+  keeps the question *answerable*: nothing is sent, the question stays up, the field keeps what she
+  typed, and the one press that works is named — `“delete it”`. A refusal that went to the card
+  instead would have closed the question and cost a re-ask round trip to a person who had already said yes.
+- **A closed list of bare affirmatives, not a sentiment reader.** `yes`, `y`, `yes, do it`,
+  `go ahead`, `ok`, `delete`… — a phrase made *only* of those words. Anything with another word
+  in it (*"yes, but keep the manifest"*, *"don't delete"*, *"do it later"*) is prose and goes to
+  the card verbatim as it always did, so the warning never swallows a real instruction. Typing the
+  label itself (`delete it`) is the button and is not flagged.
+- **It applies to every question Volery composed** (`ask.ours`), not only deletes: a close and an
+  unpost read their yes with the same exact-label rule, so the same typed "yes" has the same
+  silent outcome there.
+- **`declined` is the other half**, for a reply that reaches Rust anyway (a voice or control-surface
+  answer, or prose that merely contains a yes): it says nothing was deleted, that a typed yes does
+  not count however clear because a deletion is permanent, and that if it was meant as a yes the
+  card should call `remove` again and tell her to press the button.
+
 ## What is not covered, and is somebody else's decision
 
 **The bang shell is not hooked and deliberately so.** Alt+I's console and the `!` line in the

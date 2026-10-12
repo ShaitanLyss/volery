@@ -79,13 +79,19 @@ pub enum Queued {
     /// layer up — running out of time is not a decision, and the cost of
     /// reading it as one is asymmetric in the direction that pushes code.
     Unattended,
+    /// The user pressed *defer* on a question standing in front of them (sink
+    /// `7805fa20`: *"defer a question to put it in the deferred queue and answer
+    /// it later, it should be the same as not"*). The same pile and the same
+    /// contract as a timeout — only the clause saying why is true of what
+    /// happened, since "did not get to it in time" is not.
+    Deferred,
 }
 
 impl Queued {
     fn opening(self) -> &'static str {
         match self {
             Queued::Away => DEFERRED_OPENING,
-            Queued::Unattended => UNATTENDED_OPENING,
+            Queued::Unattended | Queued::Deferred => UNATTENDED_OPENING,
         }
     }
 
@@ -97,6 +103,8 @@ impl Queued {
             Queued::Unattended => "It stood on the wall and the user did not get to it \
                                    in time, so rather than expiring it was **queued** \
                                    for them to answer later",
+            Queued::Deferred => "The user read it and chose to answer it later, so rather \
+                                 than being decided now it was **queued** for them",
         }
     }
 
@@ -107,6 +115,8 @@ impl Queued {
             Queued::Away => "The user left the wall partway through answering.",
             Queued::Unattended => "The user stopped partway through answering, and the \
                                    call's time ran out.",
+            Queued::Deferred => "The user answered part of the sheet and chose to leave the \
+                                 rest for later.",
         }
     }
 }
@@ -443,6 +453,20 @@ fn file(app: &AppHandle, conversation_id: &str, args: &Value) -> Option<usize> {
 fn defer_parked(app: &AppHandle) {
     let Some(asks) = app.try_state::<crate::ask::Asks>() else { return };
     for taken in crate::ask::take_parked_questions(&asks) {
+        convert(app, taken, Queued::Away);
+    }
+}
+
+/// Put one question that has been taken off the wall into the pile, and tell
+/// the card that was waiting on it.
+///
+/// **The one path a parked question takes into the pile**, and it is the body
+/// `defer_parked` always had, lifted out so that deferring *one* question on
+/// purpose (`defer_one`) is the same code and not a second copy of it — the
+/// sink item asked for exactly that: *it should be the same as not*. `why` only
+/// changes the sentence the card reads.
+fn convert(app: &AppHandle, taken: crate::ask::Taken, why: Queued) {
+    {
         let crate::ask::Taken { conversation_id, question, act, held, tx } = taken;
         /* A question Volery composed goes to the *act* pile, which is what the
            request stored beside it is for: its answer is a decision rather than
@@ -450,7 +474,7 @@ fn defer_parked(app: &AppHandle) {
            away mode refuses to do. See `defer_act`. */
         let note = match act {
             Some((tool, args)) => {
-                defer_act(app, &conversation_id, &tool, &args, &question, "it")
+                defer_act_why(app, &conversation_id, &tool, &args, &question, "it", why)
             }
             /* A card's notice that was waiting is not a question: it goes into
                the notice queue, marked as one that waited, so a follow-up from
@@ -458,15 +482,18 @@ fn defer_parked(app: &AppHandle) {
                the questions would draw it as a question with no question in it. */
             None if crate::notice::is_notice(&question) => {
                 let text = question["notice"]["text"].as_str().unwrap_or_default();
-                crate::notice::queue(app, &conversation_id, text, crate::notice::Queued::Away)
+                let kind = if why == Queued::Away {
+                    crate::notice::Queued::Away
+                } else {
+                    crate::notice::Queued::Unattended
+                };
+                crate::notice::queue(app, &conversation_id, text, kind)
             }
             /* A sheet the user had started: what they answered goes to the
                card now, and only what they did not reach is queued. */
             None => match held {
-                Some(h) => {
-                    defer_rest(app, &conversation_id, &h.said, h.rest.as_ref(), Queued::Away)
-                }
-                None => defer(app, &conversation_id, &question, Queued::Away),
+                Some(h) => defer_rest(app, &conversation_id, &h.said, h.rest.as_ref(), why),
+                None => defer(app, &conversation_id, &question, why),
             },
         };
         /* The park is listening on this channel and recognises the opening, so
@@ -716,9 +743,13 @@ fn reenter(app: &AppHandle, tool: &str, caller: &str, args: &Value) -> Reentry {
 /// message. So the note's job is to stop it doing the thing by hand — a card
 /// told "not now" about deleting its own scratch directory will reach for a
 /// shell next, which is the one outcome worse than waiting.
-fn act_note(what: &str) -> String {
+fn act_note(what: &str, why: Queued) -> String {
+    let (opening, because) = match why {
+        Queued::Away => (DEFERRED_OPENING, "The user is not at the wall"),
+        _ => (why.opening(), "The user chose to deal with it later"),
+    };
     format!(
-        "{DEFERRED_OPENING} The user is not at the wall, so {what} was **queued** for them \
+        "{opening} {because}, so {what} was **queued** for them \
          rather than refused — nothing has happened yet, and nothing is waiting on your \
          turn.\n\n\
          When they are back they will be shown it and decide. Volery asks itself the same \
@@ -749,6 +780,19 @@ pub(crate) fn defer_act(
     question: &Value,
     what: &str,
 ) -> String {
+    defer_act_why(app, conversation_id, tool, args, question, what, Queued::Away)
+}
+
+/// `defer_act`, for a reason other than the wall being away.
+pub(crate) fn defer_act_why(
+    app: &AppHandle,
+    conversation_id: &str,
+    tool: &str,
+    args: &Value,
+    question: &Value,
+    what: &str,
+    why: Queued,
+) -> String {
     /* A tool `reenter` does not know would queue an act that can never be
        performed, and the user would read "the wall has moved on" about
        something that had simply never been wired up. Refused at the door
@@ -771,7 +815,7 @@ pub(crate) fn defer_act(
     let at = crate::store::now();
     {
         let Ok(conn) = store.0.lock() else {
-            return act_note(what);
+            return act_note(what, why);
         };
         let mine = crate::store::deferred_acts(&conn)
             .iter()
@@ -781,7 +825,7 @@ pub(crate) fn defer_act(
            pile of a hundred queued deletes is one nobody can read, and a pile
            nobody reads is a pile approved in bulk. */
         if mine >= MAX_PER_CARD {
-            return pile_full(Queued::Away);
+            return pile_full(why);
         }
         if crate::store::defer_act(
             &conn,
@@ -794,7 +838,7 @@ pub(crate) fn defer_act(
         )
         .is_err()
         {
-            return pile_full(Queued::Away);
+            return pile_full(why);
         }
     }
     let _ = app.emit(
@@ -806,7 +850,48 @@ pub(crate) fn defer_act(
             asked_at: at,
         },
     );
-    act_note(what)
+    act_note(what, why)
+}
+
+/// How many of a card's questions (or, for an act, requests) are already in the
+/// pile — the count `file` and `defer_act_why` bound.
+fn queued_for(app: &AppHandle, card: &str, act: bool) -> usize {
+    let Some(store) = app.try_state::<Store>() else { return 0 };
+    let Ok(conn) = store.0.lock() else { return 0 };
+    if act {
+        crate::store::deferred_acts(&conn).iter().filter(|d| d.conversation_id == card).count()
+    } else {
+        crate::store::deferred_asks(&conn).iter().filter(|d| d.conversation_id == card).count()
+    }
+}
+
+/// The user pressed *defer* on one parked question: take it off the wall and
+/// file it exactly as a timeout would (`convert`), telling the card the same
+/// thing. Sink `7805fa20`.
+///
+/// Refused — with a sentence the panel shows — for a question that cannot be
+/// moved: one gone already (answered, timed out or its card closed), or one
+/// Volery composed with no request behind it (`docket`, `smith`), where re-entry
+/// after a wait could check nothing about the service it writes to.
+pub(crate) fn defer_one(app: &AppHandle, ask_id: &str) -> Result<(), String> {
+    let asks = app.try_state::<crate::ask::Asks>().ok_or("this wall's questions are not up yet")?;
+    /* **Looked at before it is taken**, because a defer is something somebody
+       pressed: past `MAX_PER_CARD` the pile says "decide it yourself", which is
+       the right answer to a card that will not stop asking and the wrong one to a
+       person who chose to wait — and for a delete it points the card at a shell.
+       So a full pile leaves the question standing and says why, where a timeout
+       or away mode (nobody present to press anything) go on telling the card. */
+    if let Some((card, act, notice)) = crate::ask::parked_facts(&asks, ask_id) {
+        if !notice && queued_for(app, &card, act) >= MAX_PER_CARD {
+            return Err(format!(
+                "that card already has {MAX_PER_CARD} questions waiting in the pile, which is as \
+                 many as one card may leave — answer one of them first, or answer this"
+            ));
+        }
+    }
+    let taken = crate::ask::take_parked_question(&asks, ask_id)?;
+    convert(app, taken, Queued::Deferred);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1009,6 +1094,38 @@ mod tests {
         assert!(note.contains("they stand"));
         assert!(note.contains("decide them yourself"));
         assert!(note.contains(&MAX_PER_CARD.to_string()));
+    }
+
+    /// Pressing *defer* (sink `7805fa20`) tells the card exactly what a timeout
+    /// does — same pile, same four things, same opening the parking thread
+    /// recognises — with only the clause saying why true of what happened: the
+    /// user read it and put it off, which is not "did not get to it in time".
+    #[test]
+    fn a_defer_is_told_as_a_timeout_is_with_its_own_reason() {
+        let note = deferred_note(2, Queued::Deferred);
+        assert!(is_deferral(&note), "the park must read it as a deferral, not an answer");
+        assert!(note.starts_with(UNATTENDED_OPENING), "{note}");
+        assert!(note.contains("chose to answer it later"), "{note}");
+        assert!(!note.contains("in time"), "a defer is not a timeout: {note}");
+        /* The four things, shared with every other queueing. */
+        assert!(note.contains("nothing was lost"));
+        assert!(note.contains("Nothing has been decided"));
+        assert!(note.contains("new message"));
+        assert!(note.contains("Do not ask it again"));
+        let timeout = deferred_note(2, Queued::Unattended);
+        assert_eq!(
+            note.replace(Queued::Deferred.because(), ""),
+            timeout.replace(Queued::Unattended.because(), ""),
+            "everything but the reason is one text"
+        );
+        /* A sheet partly answered, and an act, and a full pile, all say so. */
+        assert!(rest_note(1, Queued::Deferred).contains("chose to leave the rest for later"));
+        assert!(pile_full(Queued::Deferred).starts_with(UNATTENDED_OPENING));
+        let act = act_note("closing that card", Queued::Deferred);
+        assert!(is_deferral(&act), "{act}");
+        assert!(act.contains("chose to deal with it later"), "{act}");
+        assert!(!act.contains("not at the wall"), "{act}");
+        assert!(act_note("closing that card", Queued::Away).contains("not at the wall"));
     }
 
     /// The reply opens with the answers, not with a queueing opening — the

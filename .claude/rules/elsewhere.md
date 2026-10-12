@@ -314,9 +314,9 @@ them from my work laptop" is simply not true while a question can strand a card.
 - **The question rides the snapshot.** `CardDigest.asks` carries each parked question's words —
   header, question, options — and `since` on the owner's clock, read against the snapshot's `at`
   the way `restingSince` is (`askedAt`). Volery's own questions (`ours`) do not ride `asks`:
-  close and unpost never travel, and a removal travels in a field of its own, with evidence —
-  see *A removal confirmed from another wall* below, because this sentence used to say none of
-  the three ever would.
+  unpost never travels, and a removal or a close travels in a field of its own, with evidence —
+  see *A removal confirmed from another wall* and *A close confirmed from another wall* below,
+  because this sentence used to say none of the three ever would.
 - **Words only.** A preview's markup is code another wall would run and can be large; a file's
   path means nothing on another machine. Both are left behind, and `shows` puts a sentence on
   the question saying a design went with it that only the other wall can show — an approval
@@ -525,6 +525,39 @@ disk one second later with the file beside it untouched, and the card on lab2 re
 delete and then raised a "finished" notice of its own, which lab drew in turn. Stopping lab2
 took its standing notice off lab once the wall went unheard.
 
+### A close confirmed from another wall
+
+A removal was the first of Volery's own questions to cross; a **close** is the second, on the
+same arrangement and for a bill that was paid in minutes. On 2026-10-12 a card on QUEERISFREEDOM
+(opened from AU-LT-288) made nine `close` calls on cards it had not opened. Each became a Volery
+confirmation on QUEERISFREEDOM, none left that wall, Lyss was at the other laptop, and the card
+stood blocked ~98 minutes — each park running ten minutes after the last (sink `2770489d`).
+
+`spawn::close_evidence` is written beside the prose question, as `remove::evidence` is: the
+machine, the card being closed by title **and** handle, the card asking by title and handle, and the
+reason it gave (`null` when it gave none — drawn as *gave no reason*, never skipped). The far wall
+composes its question from those fields alone (`afar.ts::closingHere`, header `close on <host>`),
+refuses to draw one whose evidence names a different machine, and the digest carries it in a field of
+its own (`CardDigest.closings`) for the same reason `removals` is: a wall from before this reads
+`asks` alone and must not meet a bare question with no machine on it. `spawn::travels` is the second
+lock, on the machine the close happens on, and `ask::afar_may_answer` accepts it under the `close` act
+only. The answer is the label (`close it`, read verbatim by `spawn::approved`), and the settle still
+re-reads the wall at the moment of closing — a card that has started a turn since is refused.
+
+Not built, by decision: batching several closes into one question (sink `c79df2f8`), and a
+"waiting on you" field in `walls`/`recall`. **Needs both walls on the new version to work** — an
+older owning wall publishes no `closings`, so nothing is drawn and the old behaviour (the question
+stands on its own wall) is unchanged.
+
+### Deferring a question from the other wall
+
+*Defer* (sink `7805fa20`) has no field on the prompt wire and a wall from before it would read a new
+field as absent, which is an **answer**. So it travels as text — `afar.ts::DEFER_ANSWER`, a sentence
+that is safe to hand an agent as an answer if the owning wall is too old to recognise it (*nothing has
+been decided — do not decide it yourself*) — and a wall that does recognise it files the question as a
+local defer does (`ask::answer_from_afar` → `presence::defer_one`), after the same gates an answer
+passes. `test/afar.test.ts` reads the string out of `ask.rs` so the two cannot drift.
+
 ### Roots run between walls
 
 Lyss: *"tentacles should draw always between parent and children, regardless of where they
@@ -713,6 +746,8 @@ to a shape — the row stores what a preset resolved to (`opus[1m]`), not `spawn
   almost always hears the wall it asked. A stray is drawn on the child's side only.
 - **The whole scrollback.** 120 lines from the end, which is the round you are in and the one
   before; older rounds stay on the owning wall, and the panel says so.
-- **A close or an unpost confirmed from afar**, deliberately — see above.
+- **An unpost confirmed from afar**, deliberately — a board notice is one wall's coordination with
+  its own cards. (A close *is* confirmed from afar since 2026-10-12 — see *A close confirmed from
+  another wall*.)
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.

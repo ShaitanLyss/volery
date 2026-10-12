@@ -1172,6 +1172,71 @@ fn with_timeline(question: &mut Value, timeline: &str, opened_by_caller: bool) {
     question["questions"][0]["question"] = Value::String(text);
 }
 
+/// What a close confirmation carries when it may be answered from another
+/// machine, as structured fields beside the prose.
+///
+/// **Lyss's decision, 2026-10-12** (sink `2770489d`): a card on one laptop
+/// asking to close a card it did not open was a question she could not see from
+/// the other, because close confirmations were the one of Volery's own that
+/// never crossed — and nine of them stood, one after another, for 98 minutes
+/// with a card blocked behind each. `remove::evidence` is the template and the
+/// argument is the same: what she gives up by not being at that machine is the
+/// glance, so what crosses owes what the glance would have said —
+///
+/// - **the machine**, by the name the flyway knows it by, which the far wall
+///   checks against the wall it heard the question from before it draws it;
+/// - **the card being closed**, by the title she knows it by *and* its handle,
+///   since two cards can share a title and the handle is what `close` resolved;
+/// - **who is asking**, the same two, because "a card wants to close a card" is
+///   the question this whole error was about;
+/// - **the reason it gave**, or its absence — `None` travels as `null` and is
+///   drawn as "gave no reason", never skipped.
+///
+/// `by` equal to `card` is the card asking to be closed itself, which the far
+/// wall words differently for the reason `close_question` does.
+fn close_evidence(
+    machine: &str,
+    card: (&str, &str),
+    by: (&str, &str),
+    why: Option<&str>,
+    timeline: Option<&str>,
+) -> Value {
+    /* A card nothing has named yet has an empty title, and `travels` refuses a
+       blank one — which would have kept exactly the unnamed cards off the other
+       wall. Said by handle instead, as `close_from_afar` does. */
+    let named = |(title, handle): (&str, &str)| {
+        let title = if title.trim().is_empty() { format!("card {handle}") } else { title.to_string() };
+        json!({ "title": title, "handle": handle })
+    };
+    json!({
+        "machine": machine,
+        "card": named(card),
+        "by": named(by),
+        "why": why,
+        /* What the local question appends with `with_timeline`: closing ends a
+           plan somebody has been watching, and the person deciding from the
+           other machine is owed the same sentence. */
+        "timeline": timeline,
+    })
+}
+
+/// Whether a parked question is a close carrying everything a person on another
+/// machine would need to decide it — `ask::afar_may_answer`'s gate, on the
+/// machine the close would happen on. `remove::travels`' rule: strict in the
+/// direction that refuses, so a field missing or the wrong shape is a question
+/// that does not travel and its answer is refused. A reason may be absent, but
+/// not malformed: `null` is a card that gave none.
+pub(crate) fn travels(question: &Value) -> bool {
+    let Some(e) = question.get("close") else { return false };
+    let named = |v: &Value| v.as_str().is_some_and(|s| !s.trim().is_empty());
+    let who = |v: &Value| named(&v["title"]) && named(&v["handle"]);
+    named(&e["machine"])
+        && who(&e["card"])
+        && who(&e["by"])
+        && (e["why"].is_null() || named(&e["why"]))
+        && (e["timeline"].is_null() || named(&e["timeline"]))
+}
+
 /// What the caller is told when the user says no, or says something else.
 ///
 /// The old refusal — "it is not yours to close, so say so and let the user do
@@ -1196,7 +1261,9 @@ fn declined(title: &str, answer: &str) -> String {
     format!(
         "{title:?} was not closed. The user picked neither option; what they said was: \
          {said:?}. Act on that rather than on the closing — they are talking to you about \
-         the card, and it is still on the wall."
+         the card, and it is still on the wall. Only the \"{CLOSE_IT}\" button closes a card \
+         — a typed yes does not count — so if they meant yes, call `close` again and tell \
+         them to press it."
     )
 }
 
@@ -1375,6 +1442,16 @@ pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
                 &crate::relay::handle_of(&f.id),
                 &by,
                 why.as_deref(),
+            );
+            /* Beside the prose, never instead of it: this wall's panel draws the
+               question as it always has, and the fields are what let another
+               wall draw one about the right machine — see `close_evidence`. */
+            question["close"] = close_evidence(
+                &crate::flyway::key::host_name(),
+                (&f.title, &crate::relay::handle_of(&f.id)),
+                (&by, &crate::relay::handle_of(caller)),
+                why.as_deref(),
+                f.timeline.as_deref(),
             );
             if let Some(tl) = &f.timeline {
                 with_timeline(&mut question, tl, f.spawner.as_deref() == Some(caller));
@@ -2939,6 +3016,55 @@ mod tests {
                 Reach::No(NotYours::Working)
             );
         }
+    }
+
+    /// What another wall needs to decide a close it cannot see (sink `2770489d`):
+    /// the machine, the card by title and handle, who is asking, and why — and
+    /// `travels` is the gate on this machine, refusing a field missing or the
+    /// wrong shape. No reason is a real answer (`null`); a blank one is not.
+    #[test]
+    fn a_close_travels_only_with_what_a_glance_would_have_said() {
+        let whole = |why: Option<&str>| {
+            json!({ "close": close_evidence(
+                "home",
+                ("release notes", "ab12cd34"),
+                ("the gate watcher", "ef56ab78"),
+                why,
+                None,
+            ) })
+        };
+        let e = &whole(Some("its work is done"))["close"];
+        assert_eq!(e["machine"], "home");
+        assert_eq!(e["card"]["handle"], "ab12cd34");
+        assert_eq!(e["by"]["title"], "the gate watcher");
+        assert!(travels(&whole(Some("its work is done"))));
+        assert!(travels(&whole(None)), "a card that gave no reason still travels");
+
+        for (field, blank) in [("machine", json!("")), ("card", json!({})), ("by", json!(null))] {
+            let mut q = whole(Some("why"));
+            q["close"][field] = blank;
+            assert!(!travels(&q), "{field} missing must not travel");
+        }
+        let mut q = whole(Some("why"));
+        q["close"]["why"] = json!("   ");
+        assert!(!travels(&q), "a blank reason is a malformed one");
+        let mut q = whole(Some("why"));
+        q["close"]["card"]["handle"] = json!("");
+        assert!(!travels(&q));
+        assert!(!travels(&json!({ "questions": [] })));
+        /* And the real question carries it, so a close that is asked is a close
+           that can travel. */
+        let mut q = close_question("release notes", "ab12cd34", "the gate watcher", None);
+        assert!(!travels(&q), "the prose alone never travels");
+        q["close"] = close_evidence("home", ("release notes", "ab12cd34"), ("the gate watcher", "ef56ab78"), None, None);
+        assert!(travels(&q));
+        /* A card with no name yet is said by its handle, and still travels. */
+        let e = close_evidence("home", ("", "ab12cd34"), ("  ", "ef56ab78"), None, Some("rewrite — 3 of 5 done"));
+        assert_eq!(e["card"]["title"], "card ab12cd34");
+        assert_eq!(e["by"]["title"], "card ef56ab78");
+        assert!(travels(&json!({ "close": e })));
+        let bad = close_evidence("home", ("a", "b"), ("c", "d"), None, Some(" "));
+        assert!(!travels(&json!({ "close": bad })), "a blank timeline is malformed");
     }
 
     /// The question names the card twice or it names it once, and which one

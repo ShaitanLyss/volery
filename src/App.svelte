@@ -4976,6 +4976,7 @@
     remote={focusedShadow}
     {remoteAsk}
     onremoteanswer={(s, sheet) => void elsewhere.answer(s, sheet)}
+    onremotedefer={(s, sheet) => elsewhere.defer(s, sheet)}
     {remoteNotice}
     onremotenotice={(s, n, reply) => void elsewhere.answerNotice(s, n, reply)}
     onremoteselect={(s) => focusShadow(s)}

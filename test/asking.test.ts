@@ -28,6 +28,8 @@ import {
   previewAside,
   previewDoc,
   stepAt,
+  typedYes,
+  typedYesWarning,
   type Answers,
   type AskFile,
   type AskPreview,
@@ -1066,5 +1068,49 @@ describe("askShown", () => {
     /* `Dock.svelte` passes null for `held` on the flush where `focused`
        changed, which is what lets the two rules below decide again. */
     expect(askShown(b, [a, b], null)).toBe(b);
+  });
+});
+
+/* Lyss, 2026-10-12: a typed yes on a delete does not delete, it warns — and the
+   gate in remove.rs stays the exact label. This is the panel's half. */
+describe("a typed yes on a question only a button answers", () => {
+  const labels = ["delete it", "keep it"];
+
+  test("a bare affirmative is flagged", () => {
+    for (const t of [
+      "yes", "Yes", "y", "yep", "yeah!", "ok", "okay", "sure", "yes, do it", "yes do it please",
+      "go ahead", "do it", "delete", "yes delete it", "Yes, go ahead.", "confirm", "proceed",
+    ]) {
+      expect(typedYes(t, labels)).toBe(true);
+    }
+  });
+
+  /* Ambiguous or negative is prose, and goes to the card verbatim as before. */
+  test("anything else is left to the card", () => {
+    for (const t of [
+      "", "   ", "no", "nope", "yes, but not the node_modules one", "delete it, but keep the manifest",
+      "don't delete it", "do not delete", "not yet", "yes and no", "ok later", "it", "please",
+      "what is in there?", "yes the .next one", "go ahead and delete everything under dist",
+    ]) {
+      expect(typedYes(t, labels)).toBe(false);
+    }
+  });
+
+  /* Typing the label is the button: remove::approved reads it, so it is not
+     flagged — the warning is for what would otherwise be refused. */
+  test("the option's own words are not flagged", () => {
+    expect(typedYes("delete it", labels)).toBe(false);
+    expect(typedYes("  Delete It ", labels)).toBe(false);
+    expect(typedYes("close it", ["close it", "leave it open"])).toBe(false);
+    /* ...but without that label offered, the same words are a yes. */
+    expect(typedYes("delete it", ["keep it"])).toBe(true);
+  });
+
+  test("the warning names what was typed and the button to press", () => {
+    const w = typedYesWarning("yes, do it", "delete it");
+    expect(w).toContain("yes, do it");
+    expect(w).toContain("“delete it”");
+    expect(w).toContain("nothing was sent");
+    expect(typedYesWarning("y", undefined)).toContain("the button");
   });
 });

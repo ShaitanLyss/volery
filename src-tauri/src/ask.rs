@@ -517,6 +517,71 @@ pub(crate) fn take_parked_questions(asks: &Asks) -> Vec<Taken> {
         .collect()
 }
 
+/// Take **one** parked question off the wall, so it can be filed in the pile —
+/// `take_parked_questions`' rule, for the one the user chose to defer.
+///
+/// The same boundary and for the same reason: a question Volery composed with
+/// no request behind it (`docket`, `smith`) is not movable, since what would be
+/// filed is a write to somebody else's service that re-entry could check
+/// nothing about. It is refused rather than left to wait for a click that
+/// cannot work, and the sentence is what the panel shows.
+pub(crate) fn take_parked_question(asks: &Asks, ask_id: &str) -> Result<Taken, String> {
+    let mut pending = asks.pending.lock().unwrap();
+    match pending.get(ask_id) {
+        None => {
+            return Err("that question is no longer waiting — it was answered, or its time ran out".into())
+        }
+        Some(p) if p.ours && p.act.is_none() => {
+            return Err("that confirmation writes to another service and cannot be put off — \
+                        answer it, or leave it to expire"
+                .into())
+        }
+        Some(_) => {}
+    }
+    let p = pending.remove(ask_id).ok_or("that question is no longer waiting")?;
+    /* Read into a local first: a lock guard in the tail expression would outlive
+       `p`, which the struct below moves out of. */
+    let held = p.held.lock().unwrap().clone();
+    Ok(Taken {
+        conversation_id: p.conversation_id,
+        question: p.args,
+        act: p.act,
+        held,
+        tx: p.tx,
+    })
+}
+
+/// What a parked question is, for the one deciding whether it can be put off
+/// without taking it off the wall: which card, whether a request stands behind
+/// it (an act), and whether it is a card's notice. `None` when it is gone.
+pub(crate) fn parked_facts(asks: &Asks, ask_id: &str) -> Option<(String, bool, bool)> {
+    let pending = asks.pending.lock().unwrap();
+    pending.get(ask_id).map(|p| {
+        (p.conversation_id.clone(), p.act.is_some(), crate::notice::is_notice(&p.args))
+    })
+}
+
+/// What a *defer* from another wall sends as its text, because a defer has no
+/// field of its own on the prompt wire and a wall from before it would read a
+/// new field as absent — which is an answer. So it is a sentence an agent can
+/// safely be handed *as* an answer if the owning wall is too old to recognise
+/// it: it says nothing was decided and not to decide. A wall that does
+/// recognise it files the question exactly as a local *defer* does
+/// (`presence::defer_one`). `asking.ts::DEFER_ANSWER` is the same string, held
+/// by a test.
+pub(crate) const DEFER_ANSWER: &str = "Defer this question: I will answer it later. Nothing has been decided — do not decide it yourself.";
+
+/// The user pressed *defer* on a question parked here (sink `7805fa20`): file it
+/// in the deferred pile as a timeout would, and tell the card the same thing.
+///
+/// Async through `off_main` for the rule in `CLAUDE.md`: filing writes a row,
+/// and a command that waits on the store lock must not do it on the thread that
+/// paints every card.
+#[tauri::command]
+pub async fn defer_ask(app: AppHandle, ask_id: String) -> Result<(), String> {
+    crate::off_main(move || crate::presence::defer_one(&app, &ask_id)).await?
+}
+
 /// The user is working on this question, so move its deadline out.
 ///
 /// The whole of the Rust half of sink `7264177f`. It writes one `Instant` and
@@ -577,13 +642,14 @@ pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Resu
 ///   uuid and cannot collide, so this is not a guard against chance; it is the
 ///   far wall's own claim about which card it was looking at, checked rather
 ///   than believed.
-/// - **`ask_user` travels, and of Volery's own questions only a removal
-///   does.** A question Volery composed has an act behind it (`ours`, `act`),
+/// - **`ask_user` travels, and of Volery's own questions only a removal or a
+///   close does.** A question Volery composed has an act behind it (`ours`, `act`),
 ///   and an answer to it *does* the thing — see `afar_may_answer`, which is
 ///   checked here, on the machine the act would happen on, rather than trusted
 ///   to the far wall's drawing.
 pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer: &str) -> Result<(), String> {
     let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
+    let deferring = answer.trim() == DEFER_ANSWER;
     let parked = {
         let mut pending = asks.pending.lock().unwrap();
         match pending.get(ask_id) {
@@ -596,9 +662,18 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
                 return Err("that question belongs to another card on this wall".into())
             }
             Some(p) if !afar_may_answer(p.ours, p.act.as_ref().map(|(t, _)| t.as_str()), &p.args) => {
-                return Err("that question is this wall's own — about closing or removing something \
-                            here — and is answered on the machine it is about"
+                return Err("that question is this wall's own — about something here that carries \
+                            no evidence a person elsewhere could decide it on — and is \
+                            answered on the machine it is about"
                     .into())
+            }
+            /* A defer from the other wall: checked by every gate above, since
+               putting a question off is no less *this wall's* act than
+               answering it, and then filed by the one path a local defer takes
+               rather than sent into the channel as text. */
+            Some(_) if deferring => {
+                drop(pending);
+                return crate::presence::defer_one(app, ask_id);
             }
             Some(_) => pending.remove(ask_id).ok_or("that question is no longer waiting")?,
         }
@@ -614,7 +689,7 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
 /// An agent's `ask_user` always may: the answer is information flowing back to
 /// the agent, and what it does with it is the agent's. A question Volery
 /// composed (`ours`, or with an `act` behind it) is different — the answer
-/// *does* the thing — and of those exactly one crosses:
+/// *does* the thing — and of those exactly two cross:
 ///
 /// - **a removal carrying its evidence** (`remove::travels`). Lyss's decision,
 ///   sink `7207a6d9`: whether to go through with a delete is her judgement, not
@@ -622,11 +697,13 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
 ///   by not being at this machine is the glance, so it crosses only with the
 ///   machine, the path as this machine resolved it and what is there. One that
 ///   cannot carry those is refused, never asked as a bare path.
-/// - **not a close, and not an unpost.** A card on another wall has its own
-///   close already (`spawn::close_from_afar`, asked as a person from the
-///   shadow's ✕), and a board notice is this wall's coordination with its own
-///   cards; neither is a question somebody at another machine is better placed
-///   to answer than the one it is about.
+/// - **a close carrying its evidence** (`spawn::travels`). Lyss's decision,
+///   2026-10-12, sink `2770489d`: nine closes asked by a card on one laptop
+///   stood unseen for 98 minutes because she was at the other, and nothing
+///   about them needed her to be at the machine they were about. It crosses
+///   with the machine, the card named and handled, who is asking and why.
+/// - **not an unpost.** A board notice is this wall's coordination with its
+///   own cards, and nothing on a shadow shows one.
 /// - **not `smith`'s or `docket`'s writes**: an answer re-enters a write to
 ///   somebody else's service, and nothing about that confirmation was built to
 ///   be read from elsewhere.
@@ -636,7 +713,11 @@ pub(crate) fn afar_may_answer(ours: bool, act: Option<&str>, question: &Value) -
     if !ours && act.is_none() {
         return true;
     }
-    ours && act == Some(crate::presence::REMOVE_ACT) && crate::remove::travels(question)
+    ours && match act {
+        Some(crate::presence::REMOVE_ACT) => crate::remove::travels(question),
+        Some(crate::spawn::CLOSE_TOOL) => crate::spawn::travels(question),
+        _ => false,
+    }
 }
 
 /// A design the user can look at instead of imagine.
@@ -4627,6 +4708,53 @@ mod tests {
         assert_eq!(carried(Some(&full), &full.said), Some(false));
     }
 
+    /// *Defer* takes one parked question and no other, with its hold, and
+    /// refuses one that cannot be moved (sink `7805fa20`). What it leaves on the
+    /// channel is the parking thread's to read, so a refusal must leave the
+    /// question where it was.
+    #[test]
+    fn deferring_one_takes_that_one_and_refuses_what_cannot_move() {
+        let park = |asks: &Asks, id: &str, ours: bool, act: Option<(String, Value)>| {
+            let (tx, rx) = mpsc::channel::<String>();
+            asks.pending.lock().unwrap().insert(
+                id.into(),
+                Parked {
+                    tx,
+                    conversation_id: "card".into(),
+                    args: json!({ "question": id }),
+                    ours,
+                    act,
+                    stirred: Arc::new(Mutex::new(Instant::now())),
+                    held: Arc::new(Mutex::new(None)),
+                },
+            );
+            rx
+        };
+        let asks = Asks::default();
+        let _a = park(&asks, "a", false, None);
+        let _b = park(&asks, "b", false, None);
+        let _close = park(&asks, "close", true, Some(("close".into(), json!({ "card": "x" }))));
+        let _docket = park(&asks, "docket", true, None);
+
+        let taken = take_parked_question(&asks, "a").expect("an agent's question moves");
+        assert_eq!(taken.question["question"], "a");
+        assert!(asks.pending.lock().unwrap().get("b").is_some(), "the others stay parked");
+        assert!(asks.pending.lock().unwrap().get("a").is_none());
+
+        /* A confirmation with a request behind it moves, and keeps its act. */
+        let taken = take_parked_question(&asks, "close").expect("a close is re-entered later");
+        assert_eq!(taken.act.as_ref().map(|(t, _)| t.as_str()), Some("close"));
+
+        /* One that writes to another service does not, and stays where it was. */
+        let err = take_parked_question(&asks, "docket").err().expect("refused");
+        assert!(err.contains("cannot be put off"), "{err}");
+        assert!(asks.pending.lock().unwrap().get("docket").is_some());
+
+        /* Gone already is said as such, and a second defer finds nothing. */
+        let err = take_parked_question(&asks, "a").err().expect("already taken");
+        assert!(err.contains("no longer waiting"), "{err}");
+    }
+
     /// Going away converts what is parked, and a half-answered sheet has to
     /// travel with its answers — `defer_parked` is the second of the two ways
     /// a call closes without a send, and the one this bug would have survived
@@ -4659,11 +4787,11 @@ mod tests {
     }
 
     /// What may be answered from another wall: an agent's question always; of
-    /// Volery's own, only a removal carrying the evidence a person at the other
-    /// machine needs (sink `7207a6d9`). A close, an unpost and a write to
-    /// somebody else's service are answered where they would act.
+    /// Volery's own, only a removal or a close carrying the evidence a person at
+    /// the other machine needs (sinks `7207a6d9`, `2770489d`). An unpost and a
+    /// write to somebody else's service are answered where they would act.
     #[test]
-    fn of_volerys_own_questions_only_a_removal_with_its_evidence_crosses() {
+    fn of_volerys_own_questions_only_a_removal_or_a_close_with_its_evidence_crosses() {
         let plain = json!({ "question": "teal or amber?" });
         assert!(afar_may_answer(false, None, &plain));
 
@@ -4688,5 +4816,25 @@ mod tests {
         /* And an agent's own ask_user dressed up with a `remove` block is
            still just an ask_user — it is `ours` that makes the evidence ours. */
         assert!(!afar_may_answer(false, Some(crate::presence::REMOVE_ACT), &removal));
+
+        /* A close crosses the same way: with its evidence, as Volery's own, and
+           under its own act — not as a removal's, and not bare. */
+        let close = json!({
+            "questions": [],
+            "close": {
+                "machine": "home",
+                "card": { "title": "release notes", "handle": "ab12cd34" },
+                "by": { "title": "the gate watcher", "handle": "ef56ab78" },
+                "why": "its work is done"
+            }
+        });
+        assert!(afar_may_answer(true, Some(crate::spawn::CLOSE_TOOL), &close));
+        assert!(!afar_may_answer(true, Some(crate::spawn::CLOSE_TOOL), &plain));
+        assert!(!afar_may_answer(true, Some(crate::spawn::CLOSE_TOOL), &removal));
+        assert!(!afar_may_answer(true, Some(crate::presence::REMOVE_ACT), &close));
+        assert!(!afar_may_answer(true, None, &close));
+        assert!(!afar_may_answer(false, Some(crate::spawn::CLOSE_TOOL), &close));
+        /* An unpost has no evidence to carry and is still local. */
+        assert!(!afar_may_answer(true, Some(crate::board::UNPOST_TOOL), &close));
     }
 }

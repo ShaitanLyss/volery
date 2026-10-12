@@ -50,10 +50,14 @@ import type { Notice } from "./notice";
 import {
   noticesOf,
   readNotices,
+  readClosings,
+  closingsOf,
   readRemovals,
   removalsOf,
   type DigestNotice,
+  type DigestClosing,
   type DigestRemoval,
+  type Closing,
   type Removal,
 } from "./afar";
 import type { Spot } from "./glass";
@@ -117,10 +121,12 @@ export type CardDigest = {
    *  on one machine be answered from another. See `DigestAsk`. */
   asks: DigestAsk[];
   /** Volery's own removal confirmations the card is parked on, each with the
-   *  evidence a person at another machine needs — the one of Volery's own
-   *  questions that travels (`afar.ts`). A field of its own rather than part of
+   *  evidence a person at another machine needs (`afar.ts`). A field of its own rather than part of
    *  `asks`, so a wall from before it sees nothing rather than a bare path. */
   removals: DigestRemoval[];
+  /** Volery's own close confirmations the card is parked on — the same
+   *  arrangement, for the same reason (`afar.ts`). */
+  closings: DigestClosing[];
   /** The card's notices standing in its wall's queue, oldest first. */
   notices: DigestNotice[];
   /** The card that opened this one, or null if a person did. `host` is the
@@ -233,9 +239,10 @@ export type DigestSource = {
   ctx: number;
   lines: readonly { kind: string; text: string }[];
   jobs: readonly unknown[];
-  /** `Conversation.asks`. Volery's own questions (`ours`) never travel: a
-   *  close, an unpost or a delete is answered on the machine it would act on,
-   *  and the link refuses an answer to one regardless. */
+  /** `Conversation.asks`. Volery's own questions (`ours`) never travel as
+   *  asks: an unpost is answered on the machine it would act on, and a close or
+   *  a delete crosses only in a field of its own carrying its evidence
+   *  (`removals`, `closings`). The link refuses an answer to anything else. */
   asks: readonly {
     askId: string;
     since: number;
@@ -243,6 +250,8 @@ export type DigestSource = {
     questions: readonly AskQuestion[];
     /** A removal's evidence (`remove::evidence`), on Volery's own. */
     remove?: Removal | null;
+    /** A close's evidence (`spawn::close_evidence`), on Volery's own. */
+    close?: Closing | null;
   }[];
   /** The wall's notice queue — this card's are picked out of it. */
   notices?: readonly Notice[];
@@ -312,6 +321,7 @@ export function digestOf(c: DigestSource): CardDigest {
         })),
       })),
     removals: removalsOf(c.asks).slice(0, ASKS_CAP),
+    closings: closingsOf(c.asks).slice(0, ASKS_CAP),
     notices: noticesOf(c.notices ?? [], c.id),
     parent: c.parent?.card
       ? { host: c.parent.host ? capText(c.parent.host, TITLE_CAP) : null, card: capText(c.parent.card, ID_CAP) }
@@ -399,6 +409,7 @@ export function readDigest(raw: unknown): CardDigest | null {
     jobs: Math.min(99, Math.max(0, Math.floor(jobs))),
     asks: readAsks(r.asks),
     removals: readRemovals(r.removals),
+    closings: readClosings(r.closings),
     notices: readNotices(r.notices),
     parent: readParent(r.parent),
   };

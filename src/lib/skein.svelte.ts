@@ -63,7 +63,7 @@ import {
   restNotice,
   type Notice,
 } from "./notice";
-import { readRemoval } from "./afar";
+import { readClosing, readRemoval } from "./afar";
 import {
   repairWorthTrying,
   sayNothingToRepair,
@@ -728,6 +728,7 @@ export class Skein {
              another wall (`afar.ts`). Only on Volery's own: an agent's
              question carrying the same block is still an agent's question. */
           remove: e.payload.ours === true ? readRemoval((raw as { remove?: unknown }).remove) : null,
+          close: e.payload.ours === true ? readClosing((raw as { close?: unknown }).close) : null,
         });
         c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
       }),
@@ -3665,6 +3666,24 @@ export class Skein {
       });
     } catch {
       /* No longer waiting. Nothing to keep. */
+    }
+  }
+
+  /** Put the question in front of you off until later: it goes into the pile
+   *  of deferred questions as one that timed out would (`presence::defer_one`),
+   *  and the asking card is told the same thing. Sink `7805fa20`.
+   *
+   *  Nothing is drawn here. The question comes down off the `ask:closed` Rust
+   *  emits once the card has been told, which is the one path every close takes —
+   *  so a defer that failed leaves the question standing, with the reason on the
+   *  fault line, rather than a panel that vanished and a card still waiting. */
+  async deferAsk(conv: Conversation) {
+    const ask = conv.pendingAsk;
+    if (!ask) return;
+    try {
+      await invoke("defer_ask", { askId: ask.askId });
+    } catch (err) {
+      this.fault = String(err);
     }
   }
 

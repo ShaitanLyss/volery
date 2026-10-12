@@ -12,8 +12,10 @@
  *    wall's; the digest carries its rows, and taking one down from here is an
  *    answer that names the notice (`noticeAnswer`).
  *  - **removal confirmations** — Volery's own question, put up by `remove.rs`
- *    before a permanent delete. The one of Volery's three own questions that
- *    crosses (close and unpost stay where they are), and only with evidence.
+ *    before a permanent delete. Crosses only with evidence.
+ *  - **close confirmations** — Volery's own question, put up by `spawn.rs` when
+ *    a card names one it did not open. Crosses the same way (sink `2770489d`);
+ *    unpost stays where it is.
  *
  * ### The removal is the whole of the care
  *
@@ -247,6 +249,148 @@ export function removalHere(r: Removal, host: string): AskQuestion[] | null {
       options: [
         { label: DELETE_IT, detail: `Gone for good, from ${host}. The card is told what was removed.` },
         { label: KEEP_IT, detail: "Nothing is touched. The card is told you said so." },
+      ],
+    },
+  ];
+}
+
+/* ── deferring one from here ──────────────────────────────────────────── */
+
+/** What a *defer* sent to another wall says. `ask::DEFER_ANSWER` is the same
+ *  string, held by a test: a defer has no field of its own on the prompt wire
+ *  and a wall from before it would read a new field as absent, which is an
+ *  answer. So it is a sentence an older wall can hand an agent *as* an answer
+ *  without harm — nothing decided, do not decide it — and a wall that knows it
+ *  files the question in its pile exactly as a local defer does. */
+export const DEFER_ANSWER =
+  "Defer this question: I will answer it later. Nothing has been decided — do not decide it yourself.";
+
+/* ── closes ───────────────────────────────────────────────────────────── */
+
+/** The labels `spawn.rs` reads a yes and a no from (`CLOSE_IT`, `LEAVE_IT`);
+ *  `test/afar.test.ts` reads them out of the Rust so the two cannot drift. */
+export const CLOSE_IT = "close it";
+export const LEAVE_IT = "leave it open";
+
+const HANDLE_CAP = 64;
+
+/** A card as a close names it: the title she knows it by and its handle, since
+ *  two cards can share a title and the handle is what `close` resolved. */
+export type ClosingCard = { title: string; handle: string };
+
+/** `spawn::close_evidence`, as the question carries it. */
+export type Closing = {
+  /** The flyway name of the machine the close would happen on. */
+  machine: string;
+  card: ClosingCard;
+  by: ClosingCard;
+  /** What the asking card said, or null — it gave none, and that is drawn. */
+  why: string | null;
+  /** The plan still in flight on the card being closed (`with_timeline`), or
+   *  null. Closing archives it as unfinished, which the local question says and
+   *  so must this one. */
+  timeline: string | null;
+};
+
+/** A close a card is parked on, as it travels. */
+export type DigestClosing = { askId: string; since: number; closing: Closing };
+
+function readCard(raw: unknown): ClosingCard | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const title = typeof r.title === "string" ? scrub(r.title).trim() : "";
+  const handle = typeof r.handle === "string" ? scrub(r.handle).trim() : "";
+  if (!title || !handle) return null;
+  return { title: capText(title, NAME_CAP), handle: handle.slice(0, HANDLE_CAP) };
+}
+
+/** The evidence off the wire, or null when anything a person would need is
+ *  missing — `spawn::travels` is the same reading in Rust, on the machine the
+ *  close would happen on. Strict in the direction that refuses, like
+ *  `readRemoval`: `why` may be absent (null) and is never half-there. */
+export function readClosing(raw: unknown): Closing | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const machine = typeof r.machine === "string" ? scrub(r.machine).trim() : "";
+  const card = readCard(r.card);
+  const by = readCard(r.by);
+  if (!machine || !card || !by) return null;
+  let why: string | null = null;
+  if (r.why !== null && r.why !== undefined) {
+    why = typeof r.why === "string" ? scrub(r.why).trim() : "";
+    if (!why) return null;
+    why = capText(why, REASON_CAP);
+  }
+  let timeline: string | null = null;
+  if (r.timeline !== null && r.timeline !== undefined) {
+    const t = typeof r.timeline === "string" ? scrub(r.timeline).trim() : "";
+    if (!t) return null;
+    timeline = capText(t, REASON_CAP);
+  }
+  return { machine: capText(machine, NAME_CAP), card, by, why, timeline };
+}
+
+/** The closes a card is parked on, for its digest: Volery's own questions
+ *  (`ours`) carrying readable evidence, and nothing else. */
+export function closingsOf(
+  asks: readonly { askId: string; since: number; ours: boolean; close?: Closing | null }[],
+): DigestClosing[] {
+  return asks.flatMap((a) =>
+    a.ours && a.close ? [{ askId: a.askId, since: a.since, closing: a.close }] : [],
+  );
+}
+
+/** Closes off the wire. One whose evidence cannot be read is dropped — it is
+ *  not drawn at all rather than drawn as less. */
+export function readClosings(raw: unknown): DigestClosing[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DigestClosing[] = [];
+  for (const a of raw.slice(0, 4)) {
+    if (!a || typeof a !== "object") continue;
+    const r = a as Record<string, unknown>;
+    const askId = typeof r.askId === "string" ? scrub(r.askId).trim().slice(0, 80) : "";
+    const since = typeof r.since === "number" && Number.isFinite(r.since) ? r.since : null;
+    const closing = readClosing(r.closing);
+    if (askId && since !== null && closing) out.push({ askId, since, closing });
+  }
+  return out;
+}
+
+/** The question this wall draws for a close parked on `host` — or null, and it
+ *  is not drawn, when the evidence names a different machine.
+ *
+ *  Composed from the fields alone, as `removalHere` is. The machine leads, in
+ *  the header and the first line: the thing a local confirmation cannot get
+ *  wrong is which wall the card is on, and this one can. */
+export function closingHere(c: Closing, host: string): AskQuestion[] | null {
+  if (!host || c.machine.toLowerCase() !== host.toLowerCase()) return null;
+  const itself = c.by.handle === c.card.handle;
+  const target = `**${c.card.title}** (${c.card.handle})`;
+  const why = c.why ? ` It says: *${c.why}*` : " It gave no reason.";
+  const lead = itself
+    ? `${target}, a card on **${host}**, is asking to be closed — it says its work is done.${why}`
+    : `**${c.by.title}** (${c.by.handle}), a card on **${host}**, wants to close ${target}, ` +
+      `which is also on ${host} and is not a card it opened.${why}`;
+  const body = [
+    lead,
+    ...(c.timeline
+      ? [
+          `It has a timeline still in flight: ${c.timeline}. Closing the card moves it to the archive ` +
+            `as left unfinished, where it can be picked back up.`,
+        ]
+      : []),
+    `Closing takes the card off ${host}'s wall and ends its process. It does not delete ` +
+      `anything — the transcript stays where Claude Code wrote it and the session can be ` +
+      `adopted back at any time. ${host} checks again at the moment of closing and refuses ` +
+      `if the card has started work since.`,
+  ].join("\n\n");
+  return [
+    {
+      header: `close on ${host}`,
+      question: body,
+      options: [
+        { label: CLOSE_IT, detail: `Take it off ${host}'s wall. The transcript is kept.` },
+        { label: LEAVE_IT, detail: "It stays. The agent is told you said so." },
       ],
     },
   ];

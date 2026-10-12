@@ -147,6 +147,60 @@ export const SKIPPED_ASIDE =
   "doesn't block, say plainly what you are holding and why, and ask again if " +
   "you need it.";
 
+/* -- a typed yes on a question that only a button can answer ----------------
+ *
+ * Volery's own confirmations — a delete, a close, an unpost — read a yes from
+ * the exact label of the button and from nothing else (`remove::approved`,
+ * `spawn::approved`, and the rule's reason is that the panel has a free-text
+ * field beside the buttons, so what comes back is prose, and prose works as a
+ * yes right up until "yes, but not the node_modules one"). Lyss typed "yes, do
+ * it" on a delete on 2026-10-12, the card was told she had pressed neither
+ * button, and nothing was deleted — correctly, and with her none the wiser.
+ *
+ * Her decision, the same day: **the typed yes does not delete, it warns.** The
+ * gate stays exactly as strict; what changes is that the panel says so *before*
+ * sending, rather than the card saying so afterwards, and the question stays up
+ * and answerable. So this is deliberately a closed list of bare affirmatives,
+ * not a sentiment reader: a phrase with any other word in it — "yes, but keep
+ * the manifest", "do it later", "don't delete" — is prose and goes to the card
+ * verbatim as it always did. */
+const YES_WORDS = new Set([
+  "yes", "y", "ye", "yea", "yeah", "yep", "yup", "ok", "okay", "k", "sure", "fine",
+  "go", "ahead", "do", "it", "that", "delete", "remove", "close", "confirm",
+  "confirmed", "approve", "approved", "proceed", "please", "now", "definitely",
+  "absolutely", "correct", "right", "affirmative", "thanks", "thx",
+]);
+
+/** Words that make a phrase an affirmative *on their own*. "it" and "please"
+ *  are in the vocabulary so "yes, do it please" reads, but a lone "it" is not a
+ *  yes. */
+const YES_ANCHORS = new Set([
+  "yes", "y", "ye", "yea", "yeah", "yep", "yup", "ok", "okay", "k", "sure", "fine",
+  "ahead", "do", "delete", "remove", "close", "confirm", "confirmed", "approve",
+  "approved", "proceed", "affirmative",
+]);
+
+/** Is `text` a bare yes typed where a button was wanted?
+ *
+ *  `labels` are the question's own options: typing one verbatim is the button
+ *  (`approved` reads exactly that), so it is never flagged. Everything else
+ *  that is made only of affirmative words is. */
+export function typedYes(text: string, labels: readonly string[]): boolean {
+  const said = text.trim().toLowerCase();
+  if (!said) return false;
+  if (labels.some((l) => l.trim().toLowerCase() === said)) return false;
+  const words = said.replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 6) return false;
+  return words.every((w) => YES_WORDS.has(w)) && words.some((w) => YES_ANCHORS.has(w));
+}
+
+/** What the panel says when a typed yes is not taken, and which button it
+ *  points at. Lowercase and quiet, as the rest of the prose here is. */
+export function typedYesWarning(said: string, button: string | undefined): string {
+  const point = button ? `press “${button}” to go ahead` : "press the button to go ahead";
+  return `“${said.trim()}” typed here isn't taken as a yes — ${point}. nothing was sent.`;
+}
+
 /** Is this slot one of Skein's own stand-ins rather than something the user
  *  said? Both are, and the panel draws them alike — the review sheet greys a
  *  row that nobody actually filled in, whichever way it got that way. */

@@ -816,6 +816,27 @@ Still not done: the pile's envelope (`presence.ts::answerEnvelope`) says "while 
 a question queued by a deadline as well, which was true of the pile before this and is
 unchanged by it.
 
+#### Defer: putting a question off on purpose
+
+Sink `7805fa20`, Lyss: *"ability to defer a question to put it in the deferred queue and answer it
+later, it should be the same as not"*. A **defer** button (and `alt+D` anywhere in the panel) takes
+the question in front of you into the same pile a timeout does, and tells the asking card the same
+four things. There is no second path: `presence::convert` is the body `defer_parked` always had, lifted
+out, and `defer_parked` (away mode), `expired` (a deadline) and `defer_one` (the button) all go through
+it — a sheet partly answered sends what was answered and queues the rest, a close or a delete is filed as
+a request that re-enters the decision, and a notice goes to the notice queue.
+
+- **`Queued::Deferred` is a third reason, not a third meaning.** Same opening as a timeout
+  (`UNATTENDED_OPENING`, so the parking thread recognises it) and the same text after it; only the
+  clause saying why differs, because *"did not get to it in time"* is false of a question she read and
+  put off.
+- **Not for `docket`/`smith`**: a Volery-composed question with no request behind it cannot be moved
+  into a pile (`take_parked_question` refuses, with a sentence the fault line shows) — the boundary
+  `defer_parked` already draws. The button is absent on a question already *out of* the pile.
+- **From another wall** it travels as text; see `elsewhere.md`, *Deferring a question from the other wall*.
+- **Unlike a timeout it writes no chronicle row** — she did it, so there is nothing to tell her she
+  missed. The attention-ladder question in sink `2c499e0d` (the pile as an inbox) is untouched.
+
 #### Nor does the question itself change while you are answering it
 
 The countdown was the first half of *"it's stressful and work losing for no reason"*; this is

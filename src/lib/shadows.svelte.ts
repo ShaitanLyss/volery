@@ -65,7 +65,7 @@ import {
 } from "./shadow";
 import type { Spot } from "./glass";
 import { kinAcross, type Asked } from "./lineage";
-import { noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
+import { DEFER_ANSWER, closingHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
 
 /** The least time between two snapshots offered to the link. */
@@ -695,6 +695,24 @@ export class Elsewhere {
         since: askedAt(r, w.at, w.madeAt),
       });
     }
+    /* A close is the same arrangement, for the same reason — and answers with a
+       label (`close it`) that `spawn::approved` reads verbatim. */
+    for (const c of s.digest.closings) {
+      const kept = was.get(c.askId);
+      if (kept) {
+        now.push(kept);
+        continue;
+      }
+      const questions = closingHere(c.closing, s.host);
+      if (!questions) continue;
+      now.push({
+        askId: c.askId,
+        questions,
+        answers: blankAnswers(questions),
+        ours: true,
+        since: askedAt(c, w.at, w.madeAt),
+      });
+    }
     if (now.length !== s.sheets.length || now.some((a, i) => a !== s.sheets[i])) s.sheets = now;
     const live = new Set(now.map((a) => a.askId));
     if (s.answering.some((id) => !live.has(id))) s.answering = s.answering.filter((id) => live.has(id));
@@ -732,8 +750,8 @@ export class Elsewhere {
    *  drawn among what was said to the card from here and goes through the same
    *  four readings a prompt does: a question answered into a link that is down
    *  must not look answered. */
-  async answer(s: Shadow, sheet: PendingAsk) {
-    const text = composeAnswer(sheet.questions, sheet.answers);
+  async answer(s: Shadow, sheet: PendingAsk, said?: string) {
+    const text = said ?? composeAnswer(sheet.questions, sheet.answers);
     const id = crypto.randomUUID();
     const about = sheet.questions[0]?.header ?? "a question";
     s.sent.push({ id, text, at: Date.now(), state: "queued", askId: sheet.askId, about });
@@ -753,6 +771,15 @@ export class Elsewhere {
     } catch (e) {
       this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
     }
+  }
+
+  /** Put a question parked on another wall off until later: the owning wall
+   *  files it in its own pile as a defer pressed there would (`DEFER_ANSWER`,
+   *  recognised in `ask::answer_from_afar`). It rides the same four readings an
+   *  answer does, and the question comes down when that wall's digest stops
+   *  carrying it. */
+  async defer(s: Shadow, sheet: PendingAsk) {
+    await this.answer(s, sheet, DEFER_ANSWER);
   }
 
   /** Take down a notice standing in another wall's queue — acknowledged with

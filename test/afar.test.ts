@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  DEFER_ANSWER,
+  CLOSE_IT,
+  LEAVE_IT,
+  closingHere,
+  closingsOf,
+  readClosing,
+  readClosings,
   DELETE_IT,
   KEEP_IT,
   humanSize,
@@ -188,6 +195,147 @@ describe("the question drawn on the other wall", () => {
     expect(humanSize(512)).toBe("512 B");
     expect(humanSize(5_690_000_000)).toBe("5.3 GB");
     expect(humanSize(150 * 1024 * 1024)).toBe("150 MB");
+  });
+});
+
+/* What `spawn::close_evidence` writes, in full. */
+function closing(over: Record<string, unknown> = {}) {
+  return {
+    machine: "home",
+    card: { title: "release notes", handle: "ab12cd34" },
+    by: { title: "RISE salvage", handle: "901d7bf3" },
+    why: "its work is done",
+    timeline: null,
+    ...over,
+  };
+}
+
+describe("a close carries what the glance would have said (sink 2770489d)", () => {
+  test("the whole of the evidence reads back", () => {
+    const c = readClosing(closing())!;
+    expect(c.machine).toBe("home");
+    expect(c.card).toEqual({ title: "release notes", handle: "ab12cd34" });
+    expect(c.by.handle).toBe("901d7bf3");
+    expect(c.why).toBe("its work is done");
+  });
+
+  /* Mirrors `spawn::travels`: a field missing is a question this wall cannot
+     compose, and it refuses rather than asks. */
+  test("anything missing refuses the whole close, but no reason is a reason", () => {
+    for (const over of [
+      { machine: "" },
+      { card: null },
+      { card: { title: "x" } },
+      { card: { title: "", handle: "ab12cd34" } },
+      { by: { handle: "901d7bf3" } },
+      { by: undefined },
+      { why: "   " },
+      { why: 5 },
+      { timeline: "  " },
+      { timeline: 3 },
+    ]) {
+      expect(readClosing(closing(over))).toBeNull();
+    }
+    expect(readClosing(null)).toBeNull();
+    expect(readClosing(closing({ why: null }))!.why).toBeNull();
+  });
+
+  test("only Volery's own question publishes its evidence", () => {
+    const close = readClosing(closing());
+    const asks = [
+      { askId: "a", since: 5, ours: true, close },
+      /* An agent's ask_user carrying a `close` block is still an agent's. */
+      { askId: "b", since: 6, ours: false, close },
+      { askId: "c", since: 7, ours: true, close: null },
+    ];
+    expect(closingsOf(asks).map((r) => r.askId)).toEqual(["a"]);
+  });
+
+  test("it travels in a field of its own, never among the questions", () => {
+    const close = readClosing(closing());
+    const d = digestOf(
+      source({ asks: [{ askId: "cl-1", since: 900, ours: true, questions: [], close }] }),
+    );
+    expect(d.asks).toEqual([]);
+    expect(d.removals).toEqual([]);
+    expect(d.closings).toHaveLength(1);
+    const back = readDigest(JSON.parse(JSON.stringify(d)))!;
+    expect(back.closings[0]!.askId).toBe("cl-1");
+    expect(back.closings[0]!.closing.card.handle).toBe("ab12cd34");
+    /* A wall from before this sends no `closings`: nothing to draw. */
+    const old = JSON.parse(JSON.stringify(d));
+    delete old.closings;
+    expect(readDigest(old)!.closings).toEqual([]);
+    /* And one that does not read back is dropped, not drawn as less. */
+    const broken = JSON.parse(JSON.stringify(d));
+    delete broken.closings[0].closing.by;
+    expect(readClosings(broken.closings)).toEqual([]);
+  });
+
+  test("the question names the machine, the card, who asked and why", () => {
+    const q = closingHere(readClosing(closing())!, "home")!;
+    expect(q).toHaveLength(1);
+    expect(q[0]!.header).toBe("close on home");
+    const body = q[0]!.question;
+    expect(body).toContain("**home**");
+    expect(body).toContain("**RISE salvage** (901d7bf3)");
+    expect(body).toContain("**release notes** (ab12cd34)");
+    expect(body).toContain("not a card it opened");
+    expect(body).toContain("its work is done");
+    expect(body).toContain("does not delete");
+    const none = closingHere(readClosing(closing({ why: null }))!, "home")![0]!.question;
+    expect(none).toContain("It gave no reason.");
+    expect(none).not.toContain("timeline");
+    const planned = closingHere(readClosing(closing({ timeline: "rewrite — 3 of 5 done" }))!, "home")![0]!
+      .question;
+    expect(planned).toContain("timeline still in flight: rewrite — 3 of 5 done");
+    expect(planned).toContain("left unfinished");
+    const itself = closingHere(
+      readClosing(closing({ by: { title: "release notes", handle: "ab12cd34" } }))!,
+      "home",
+    )![0]!.question;
+    expect(itself).toContain("is asking to be closed");
+    expect(itself).not.toContain("not a card it opened");
+  });
+
+  /* The whole risk is confirming a close on the wrong wall. */
+  test("is not drawn at all when the evidence names another machine", () => {
+    const c = readClosing(closing())!;
+    expect(closingHere(c, "office")).toBeNull();
+    expect(closingHere(c, "")).toBeNull();
+    expect(closingHere(c, "HOME")).not.toBeNull();
+  });
+
+  test("a click answers with exactly the label the owning wall reads as a yes", () => {
+    const q = closingHere(readClosing(closing())!, "home")!;
+    expect(q[0]!.options.map((o) => o.label)).toEqual([CLOSE_IT, LEAVE_IT]);
+    const answers = blankAnswers(q);
+    answers[0] = CLOSE_IT;
+    expect(composeAnswer(q, answers)).toBe(CLOSE_IT);
+  });
+
+  test("the labels are spawn.rs's own", async () => {
+    const rs = await Bun.file(new URL("../src-tauri/src/spawn.rs", import.meta.url)).text();
+    expect(rs).toContain(`const CLOSE_IT: &str = "${CLOSE_IT}";`);
+    expect(rs).toContain(`const LEAVE_IT: &str = "${LEAVE_IT}";`);
+  });
+});
+
+/* A defer pressed on another wall's question travels as a sentence, because the
+   prompt wire has no field for it and a wall from before it would read a new
+   field as an answer. The owning wall recognises this exact text. */
+describe("a defer sent to another wall (sink 7805fa20)", () => {
+  test("is the string ask.rs recognises", async () => {
+    const rs = await Bun.file(new URL("../src-tauri/src/ask.rs", import.meta.url)).text();
+    expect(rs).toContain(`pub(crate) const DEFER_ANSWER: &str = "${DEFER_ANSWER}";`);
+  });
+
+  /* What an older wall would do with it is hand it to the agent as the
+     answer, so it has to be safe to read as one. */
+  test("reads as a non-answer to an agent that receives it as one", () => {
+    expect(DEFER_ANSWER).toContain("later");
+    expect(DEFER_ANSWER).toContain("Nothing has been decided");
+    expect(DEFER_ANSWER).toContain("do not decide it yourself");
   });
 });
 
