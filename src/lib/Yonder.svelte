@@ -113,6 +113,20 @@
     </p>
   {/if}
 
+  <!-- A verb asked of its wall from here (`Shadow.acting`): said where the ask
+       is, in the closing's own place and wording, so a refusal is not only a
+       fault that comes and goes. A taken one is simply not drawn — the face
+       changes when its wall next reports, which is the confirmation. -->
+  {#if shadow.acting && shadow.acting.state !== "taken"}
+    <p class="closing" class:refused={shadow.acting.state === "refused"}>
+      {#if shadow.acting.state === "asked"}
+        asking {shadow.host} to {shadow.acting.verb.replace("-", " ")}…
+      {:else}
+        {shadow.host} did not {shadow.acting.verb.replace("-", " ")} — {shadow.acting.why}
+      {/if}
+    </p>
+  {/if}
+
   <!-- Whether it is stopped on you. Answered in the dock, where a question on
        this wall is, so the two are never answered in two different places. A
        wall gone quiet takes the offer away and says why: the question may

@@ -47,6 +47,10 @@ export const LAPSE_MS = 1000;
  *  *shelf* — so the shelf is where it is stated. */
 export type ShelfId = ToyId | PuzzleId;
 
+/** What a `c` chord does to the focused card. The ids are `handle.ts` verbs, so
+ *  the chord, the right-click and a card on another wall are one vocabulary. */
+export type CardChord = "close" | "glass" | "aside" | "bypass" | "wake" | "clear" | "copy-resume" | "copy-cwd";
+
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
@@ -56,7 +60,7 @@ export type Verb =
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" }
-  | { kind: "card"; act: "close" | "glass" }
+  | { kind: "card"; act: CardChord }
   | { kind: "machine"; act: "awake" | "reopen" };
 
 /** One sequence the leader opens onto.
@@ -189,6 +193,16 @@ export const CHORDS: readonly Chord[] = [
      you work elsewhere, is reached by keyboard (`ee`) and so wants its glass
      the same way. */
   { keys: "cg", label: "this card on the glass / back", verb: { kind: "card", act: "glass" } },
+  /* The rest of what the card's right-click offers that needs no choice, on
+     the focused card here or on another wall alike (`App.verbFocused`). The
+     account is a pick from a list and stays in the menu. Each is `c` and then
+     the verb's own letter where that is free. */
+  { keys: "ca", label: "set it aside / pick it back up", verb: { kind: "card", act: "aside" } },
+  { keys: "cb", label: "ignore the account caps / respect them", verb: { kind: "card", act: "bypass" } },
+  { keys: "cw", label: "wake it", verb: { kind: "card", act: "wake" } },
+  { keys: "cx", label: "clear it — start fresh", verb: { kind: "card", act: "clear" } },
+  { keys: "cy", label: "copy its resume command", verb: { kind: "card", act: "copy-resume" } },
+  { keys: "cd", label: "copy its working directory", verb: { kind: "card", act: "copy-cwd" } },
   /* `m` is the machine the wall runs on, rather than anything on the wall or
      the window: whether it is held awake on mains and whether a wall Windows
      took down comes back. Both are toggles nobody can see happen, so the chord

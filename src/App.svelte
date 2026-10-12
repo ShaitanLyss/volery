@@ -128,7 +128,7 @@
   } from "./lib/commands";
   import { isGear, planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
-  import { actFor, verbsFor } from "./lib/handle";
+  import { actFor, refusal, verbsFor } from "./lib/handle";
   import {
     FALLBACK_DEFAULT_PRESET,
     presetById,
@@ -469,7 +469,8 @@
     else if (verb.kind === "elsewhere") focusElsewhere();
     else if (verb.kind === "card") {
       if (verb.act === "glass") glassFocused();
-      else closeFocused();
+      else if (verb.act === "close") closeFocused();
+      else verbFocused(verb.act);
     }
     else if (verb.kind === "sink") {
       if (verb.act === "drop") showDrop = true;
@@ -1968,16 +1969,7 @@
         act = (id) => {
           if (id === "glass") canvas?.toggleGlass("shadow", s.id);
           else if (id === "close") closeElsewhere(s);
-          else {
-            /* Everything else is asked of its wall (`flyway/act.rs`). A
-               refusal is said by `Elsewhere.act` itself; what a reading verb
-               answered is this wall's to copy. */
-            const asked = actFor(id, { aside: s.aside, bypassCaps: s.bypassCaps, working: s.working });
-            if (asked)
-              void elsewhere.act(s, asked.verb, asked.args).then((r) => {
-                if (r.outcome === "taken" && r.text) void copyText(r.text);
-              });
-          }
+          else askShadow(s, id);
         };
       }
     } else if (imageEl?.dataset.image) {
@@ -3908,6 +3900,47 @@
       } else canvas?.toggleGlass("card", focused.id);
     } else if (focusedShadow) canvas?.toggleGlass("shadow", focusedShadow.id);
     else skein.fault = "no card has the focus to put on the glass";
+  }
+
+  /** Everything a card elsewhere is asked besides the glass and the close is
+   *  asked of its wall (`flyway/act.rs`). A refusal is said by `Elsewhere.act`
+   *  itself; what a reading verb answered is this wall's to copy. One function
+   *  for the right-click and the chords, so they cannot disagree. */
+  function askShadow(s: Shadow, id: string) {
+    const asked = actFor(id, { aside: s.aside, bypassCaps: s.bypassCaps, working: s.working });
+    if (asked)
+      void elsewhere.act(s, asked.verb, asked.args).then((r) => {
+        if (r.outcome === "taken" && r.text) void copyText(r.text);
+      });
+  }
+
+  /** `<space>c` and a letter: the right-click's choiceless verbs on whichever
+   *  card has the focus, on this wall or another. A card elsewhere that cannot
+   *  be asked says why — its wall needs updating, or has not been heard — rather
+   *  than the key doing nothing. */
+  function verbFocused(id: "aside" | "bypass" | "wake" | "clear" | "copy-resume" | "copy-cwd") {
+    const c = focused;
+    if (c) {
+      if (id === "aside") skein.setAside(c, !c.aside);
+      else if (id === "bypass") skein.setBypass(c, !c.bypassCaps);
+      else if (id === "wake") {
+        if (c.dormant) void skein.wake(c);
+        else skein.fault = "it is not dormant";
+      } else if (id === "clear") {
+        if (c.everSpoke || c.working) void skein.clear(c);
+        else skein.fault = "nothing to clear yet";
+      } else if (id === "copy-resume") void copyText(`claude --resume ${c.sessionId}`);
+      else void copyText(c.cwd);
+      return;
+    }
+    const s = focusedShadow;
+    if (!s) {
+      skein.fault = "no card has the focus";
+      return;
+    }
+    const why = refusal(s.remote, id);
+    if (why) skein.fault = why;
+    else askShadow(s, id);
   }
 
   /** `<space>cc`: close whichever card has the focus, on this wall or another. */

@@ -167,8 +167,14 @@ describe("the which-key hint", () => {
   test("the leader alone offers every chord, by its whole letters", () => {
     expect(offers("")).toEqual([
       { keys: "a", label: "archived timelines" },
+      { keys: "ca", label: "set it aside / pick it back up" },
+      { keys: "cb", label: "ignore the account caps / respect them" },
       { keys: "cc", label: "close this card" },
+      { keys: "cd", label: "copy its working directory" },
       { keys: "cg", label: "this card on the glass / back" },
+      { keys: "cw", label: "wake it" },
+      { keys: "cx", label: "clear it — start fresh" },
+      { keys: "cy", label: "copy its resume command" },
       { keys: "ee", label: "a card on another wall" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
