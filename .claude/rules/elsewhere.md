@@ -805,3 +805,87 @@ to a shape — the row stores what a preset resolved to (`opus[1m]`), not `spawn
   another wall*.)
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.
+
+### Design, unbuilt: one card handle (sinks `865e555f`, `735f3234`)
+
+Lyss, 2026-10-12: *"shadow vs local stop drifting and naturally offers the same features without
+crazy amount of code duplication and special casing … only pieces of code that need to know that
+some code is remote should deal with it."* Agreed as **option B** below. Nothing here is built
+beyond the two prerequisites that already landed: a persisted glass spot and the model, effort and
+account on the digest.
+
+**The drift has one cause.** A shadow is its own type for the right reason (above: a `Conversation`
+reaches rousing, reaping and `#persistConv`), but every *gesture* then took a `Conversation`, so
+each grew a `focusedShadow` branch (18 in `App.svelte`, 11 in `Dock.svelte`) and a menu of its own
+with two rows. The guard belongs on `Skein.convs`. It never needed to reach the menu.
+
+**B: a handle above both, for gestures only.**
+
+```ts
+interface CardHandle {
+  readonly id: string;
+  readonly face: CardFace;           // what Card.svelte already takes
+  readonly readable: Readable;       // what Transcript.svelte already takes
+  can(verb: Verb): Can;              // "yes" | { no: reason } — drives menu, keys, dock
+  do(verb: Verb, args?): Promise<Outcome>;   // outcome has the shadow's four readings
+}
+```
+
+`LocalCard` wraps a `Conversation` and calls `Skein`; `RemoteCard` wraps a `Shadow` and sends one
+`act` frame. `Skein.convs`, rousing, the reap pass and persistence never see a handle. The menu,
+the dock's send, the keyboard chords and `Yonder`'s header are built from `handle.can`, so a verb
+added once appears on both kinds, and a verb a kind cannot do says why instead of vanishing.
+
+**What it must not do: touch the hot paths.** Rendering stays on `CardFace` and `Conversation`'s
+own event fold; a handle is made once per card, `LocalCard`'s verbs are one-line delegates, and no
+local path gains an `isRemote` test. Lyss's worry was *"would it make local cards slower or
+worse"*; the constraint is that nothing a local card does per event or per frame goes through it.
+
+**The verbs, by what the owner must do.** Most of today's menu is already a string id dispatched in
+`App.svelte` (`wake`, `aside`, `bypass`, `account:<id>`, `clear`, `copy-resume`, `copy-cwd`,
+`processes`, `regroup:`, `hand:`, `move:`, `close`). These become verbs:
+
+| verb | remote means | cost class |
+|---|---|---|
+| send, answer, close | exist today (`prompt`, `close_by_person`) | starts work / person's |
+| model, effort | **already work**: `/model` and `/effort` are the CLI's, and a prompt starting with one goes through `sendElsewhere` and is carried out as if typed there | starts work |
+| wake | the owner's `Skein.wake`; today implicit in `send` | starts work |
+| clear | owner's `Skein.clear` | starts work, destructive-ish |
+| aside, bypass, account, regroup | owner's setter | cosmetic / money (account, bypass spend) |
+| copy-resume, copy-cwd | the owner **answers with text** (session id, its cwd) and this wall copies it; labelled *on <host>* since the path is that machine's | read |
+| processes | owner's list, drawn here later | read |
+| hand, move | out of scope for now (`move` is already its own exchange) | — |
+| show in explorer, open in editor | `can` says *no: that is on <host>* | local by nature |
+
+**Transport: one generic `act`, not a frame per verb.** `act { card, verb, args }` answered on the
+same stream (`tail.rs`'s shape), the owner's front end running it against its own `Skein` as
+`Elsewhere.#take` already does for a prompt. A wall announces the verbs it understands in
+`Facts::can` (`act:aside`, `act:account` …), so an older owner is told *needs updating*, exactly as
+`close_by_person` is. Adding the next verb is one entry on each side and no new frame.
+
+**Gating is the safety design, and it is per cost class, not per verb:**
+
+- *starts work or spends money* (send, wake, clear, account, bypass, model): held to the "take work
+  from other walls" switch like a prompt, refused to a quiet wall **at once and never queued** — a
+  card runs `--dangerously-skip-permissions`, and a lid lifting hours later must not deliver
+  something you have changed your mind about.
+- *a person's* (close): passes whatever the switch says, as today.
+- *cosmetic and reads* (aside, regroup, copy-*): not gated by the switch, still refused when quiet.
+- **Agents never reach `act`.** It is a person's gesture from the dock/menu, as `deliver_here`
+  already refuses a notice answer from an agent. `walls`/`send` stay the agents' road.
+- The owner **re-checks** at the moment of acting (as `settle_delete` does): a card that has started
+  a turn since is refused for `clear`.
+
+**Outcome states** are the four a prompt already has (`queued`, `left`, `taken`, `refused`),
+generalised: `Shadow.closing` becomes one `pending` map keyed by verb.
+
+**Build order.** (1) `CardHandle` + `LocalCard` beside the existing code, menu only, behind no
+flag — the menu is read-only plumbing and the local verbs must behave identically (existing
+`menu`/`actions` tests are the guard). (2) `RemoteCard` + `act` for the read and cosmetic verbs
+(`copy-*`, `aside`). (3) The gated verbs. (4) Dock and keyboard onto the handle, deleting the
+`focusedShadow` branches. Rust (`act` frame, `Facts::can`, owner-side dispatch) goes to a card on a
+machine that can compile it; the front end can be done anywhere.
+
+**Open for Lyss:** whether `account`/`bypass` should be remotely settable at all (they spend the
+*owner's* money from a machine that may be a work laptop); and whether `clear` is worth the remote
+risk of destroying a session you cannot see. Both are `can: no` until decided.
