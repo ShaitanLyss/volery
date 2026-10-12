@@ -149,11 +149,12 @@ export type DigestParent = { host: string | null; card: string };
  *  wire back into the parked call (sink `16864f3d`). Rust carries this as part
  *  of the opaque snapshot and reads only `askId`, when an answer names it.
  *
- *  What travels is the words: each question, its header and its options. Not
- *  a preview's markup, which can be large and is code another wall would run,
- *  and not a file, whose path means nothing on the other machine — `shows`
- *  says one was there, so the far side can say what it cannot draw rather than
- *  presenting an approval of a design you cannot see as if it were complete. */
+ *  What rides the snapshot is the words: each question, its header and its
+ *  options — a snapshot is re-sent on every change, so a mockup or a
+ *  screenshot in it would be sent dozens of times an hour. `shows` says a
+ *  design or a file is on the question, and a wall that reads it pulls the
+ *  whole call once (`flyway/look.rs`) and draws it as a local question is
+ *  drawn. Until then, and if the pull fails, the words say what is missing. */
 export type DigestAsk = {
   askId: string;
   /** When it was asked, on the owning wall's clock — subtracted only from the
@@ -450,20 +451,60 @@ function readAsks(raw: unknown): DigestAsk[] {
   return out;
 }
 
-/** A travelled question as the ask panel draws one.
+/** A travelled question as the ask panel draws one **from its words alone** —
+ *  which is how every question arrives, and for one that shows nothing, how it
+ *  stays. One that does show something is pulled whole the moment it arrives
+ *  (`shows`, `flyway/look.rs`) and redrawn from the call's own arguments by
+ *  `normalizeAsk`, the function a question asked here goes through; this is
+ *  what stands until it lands, and what stands if it cannot.
  *
  *  `shows` becomes a sentence on the question rather than a flag the panel
  *  must remember to read: a question asked over a design is an approval, and
  *  answering it without the design is answering something else. Saying so in
- *  the words is the one form no surface can omit. */
-export function askHere(a: DigestAsk, host: string): AskQuestion[] {
+ *  the words is the one form no surface can omit. `failed` is why the pull
+ *  did not land, said in the same place. */
+export function askHere(a: DigestAsk, host: string, failed?: string): AskQuestion[] {
+  const note = failed
+    ? `*(a design or a file goes with this question, and it could not be brought over from ${host}: ${failed})*`
+    : `*(a design or a file goes with this question — bringing it over from ${host}…)*`;
   return a.questions.map((q) => ({
     header: q.header || q.question.slice(0, 48),
-    question: q.shows
-      ? `${q.question}\n\n*(a design or a file goes with this question — only ${host} can show it)*`
-      : q.question,
+    question: q.shows ? `${q.question}\n\n${note}` : q.question,
     options: q.options.map((o) => ({ label: o.label, detail: o.detail })),
   }));
+}
+
+/** Whether a travelled question has anything to pull — a design or a file
+ *  somewhere on it. A wall from before `shows` sends none, so its questions
+ *  are words, as they always were. */
+export function shows(a: DigestAsk): boolean {
+  return a.questions.some((q) => q.shows);
+}
+
+/** A sheet's answers carried onto the same call redrawn whole from its own
+ *  arguments.
+ *
+ *  By position: the digest's questions are the call's first `QUESTIONS_CAP`,
+ *  in order, so the first answers line up and any past the cap are new and
+ *  unanswered. An answer that was an option is moved to the option at the same
+ *  place, because the digest cut long labels at `OPTION_CAP` and a cut label
+ *  would otherwise read as free text the user typed. **The same array comes
+ *  back when nothing changed**, so a redraw that moves no answer writes none —
+ *  the panel's draft is keyed on what was answered, and an equal sheet must
+ *  not look like a new one. */
+export function carryAnswers(
+  was: readonly AskQuestion[],
+  answers: readonly (string | null)[],
+  now: readonly AskQuestion[],
+): (string | null)[] {
+  const next = now.map((q, i) => {
+    const said = answers[i] ?? null;
+    if (said === null || i >= was.length) return null;
+    const j = was[i]!.options.findIndex((o) => o.label === said);
+    return j >= 0 && q.options[j] ? q.options[j]!.label : said;
+  });
+  const same = next.length === answers.length && next.every((a, i) => a === answers[i]);
+  return same ? (answers as (string | null)[]) : next;
 }
 
 /** When a question was asked, on this wall's clock — by the same arithmetic as

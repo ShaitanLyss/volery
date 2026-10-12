@@ -16,6 +16,8 @@
 //! - `cards` — what each wall's cards look like, carried and never read. Pure.
 //! - `tail` — one card's conversation, pulled by a wall with a panel open on
 //!   it and answered in the same exchange. Pure.
+//! - `look` — what a question asked on another wall shows: its arguments and
+//!   its files' bytes, pulled in parts by the wall a person is at. Pure.
 //! - `moving` — a card changing wall: the vocabulary, the check that it
 //!   still has its history, and the rule that it never ends up on neither.
 //!   Pure; `link/moves.rs` is the wiring.
@@ -43,6 +45,7 @@ pub mod frame;
 pub mod here;
 pub mod key;
 pub mod link;
+pub mod look;
 pub mod moving;
 pub mod reach;
 pub mod seal;

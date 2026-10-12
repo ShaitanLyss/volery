@@ -66,6 +66,11 @@ export type AskFile = {
    *  panel, since an option's label is about the decision and a question's own
    *  attachment has no label at all. */
   path: string;
+  /** Why the file is not here to read, drawn on the panel it would have
+   *  filled. Only `flyway/look.rs` writes it — a question asked on another
+   *  wall whose file could not be carried over — and with it `root` is empty,
+   *  so nothing is read. */
+  fault?: string;
 };
 
 export type AskOption = {
@@ -354,12 +359,19 @@ function previewFrom(raw: unknown): AskPreview | null {
  *  `safe_join` as a read that fails for a reason no panel could explain. The
  *  only thing that writes this shape is `ask.rs::attach_at`, which has already
  *  established the file is there — so a half-formed one here is a payload that
- *  did not come through it, and dropping it is right. */
+ *  did not come through it, and dropping it is right.
+ *
+ *  The one exception is a fault: a question pulled from another wall whose
+ *  file did not cross has `{ path, fault }` in its slot, and that is kept with
+ *  no root — dropped, the picture would vanish without a word, which is the
+ *  failure the fault exists to replace. */
 function fileFrom(raw: unknown): AskFile | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const f = raw as { root?: unknown; path?: unknown };
-  const root = typeof f.root === "string" ? f.root.trim() : "";
+  const f = raw as { root?: unknown; path?: unknown; fault?: unknown };
   const path = typeof f.path === "string" ? f.path.trim() : "";
+  const fault = typeof f.fault === "string" ? f.fault.trim() : "";
+  if (fault) return { root: "", path: path || "attachment", fault };
+  const root = typeof f.root === "string" ? f.root.trim() : "";
   if (!root || !path) return null;
   return { root, path };
 }

@@ -807,6 +807,20 @@ describe("files", () => {
       expect(out[0].options[0].file).toBe(null);
     }
   });
+
+  test("a file that did not cross from another wall is kept, with why and no root", () => {
+    /* `flyway/look.rs` writes `{ path, fault }` into a slot whose file could
+       not be carried; dropped, the picture would vanish without a word. The
+       gallery draws the fault on the panel it would have filled. */
+    const out = normalizeAsk({
+      question: "?",
+      file: { path: "shot.png", fault: "shot.png was not carried from lab — it is 30 MB" },
+      options: [{ label: "a", file: { root: "C:/elsewhere", path: "a.png", fault: "  " } }],
+    });
+    expect(out[0].file).toEqual({ root: "", path: "shot.png", fault: "shot.png was not carried from lab — it is 30 MB" });
+    expect(out[0].options[0].file).toEqual({ root: "C:/elsewhere", path: "a.png" });
+    expect(panelsOf(out[0]).length).toBe(2);
+  });
 });
 
 describe("a top-level attachment with no top-level question", () => {

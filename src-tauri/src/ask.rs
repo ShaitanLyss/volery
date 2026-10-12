@@ -1018,7 +1018,7 @@ const FEED_EVERY: Duration = Duration::from_secs(25);
 /// `find::read_file_doc`, which carries up to 24 MB base64 apiece. Twenty-four
 /// is past anything a person reads in a sitting and well under anything that
 /// matters.
-const MAX_FILES: usize = 24;
+pub(crate) const MAX_FILES: usize = 24;
 
 /// Resolve every file a call attached and rewrite it as the pair the viewer
 /// reads: a root and a path inside it.
@@ -1072,15 +1072,61 @@ fn attach_files(app: &AppHandle, caller: &str, mut args: Value) -> Result<Value,
     }
 
     let mut n = 0usize;
-    attach_at(app, caller, &mut args, &mut n)?;
-    attach_each(app, caller, args.get_mut("options"), &mut n)?;
+    each_site(&mut args, &mut |site: &mut Value| attach_at(app, caller, site, &mut n))?;
+    Ok(args)
+}
+
+/// Every place in a call's arguments that may carry a `file` or a `preview` —
+/// the call itself, each of its options, each question in `questions[]` and
+/// each of *its* options — in one fixed order.
+///
+/// **The one walk, and there are three callers that must agree on it.**
+/// `attach_files` resolves what an agent named; the flyway's `look` reads the
+/// resolved files off a parked question on the wall that owns it, and the wall
+/// that pulled them rewrites the same sites to where it put the bytes. A file
+/// is matched across the two machines by its position in this order, so a
+/// second spelling of the walk would be a screenshot drawn under the wrong
+/// option on the other laptop. `normalizeAsk` reads the same four sites, and
+/// those are the only places a question's attachment can be drawn from.
+pub(crate) fn each_site<E>(args: &mut Value, f: &mut dyn FnMut(&mut Value) -> Result<(), E>) -> Result<(), E> {
+    fn options<E>(slot: Option<&mut Value>, f: &mut dyn FnMut(&mut Value) -> Result<(), E>) -> Result<(), E> {
+        if let Some(list) = slot.and_then(Value::as_array_mut) {
+            for option in list {
+                f(option)?;
+            }
+        }
+        Ok(())
+    }
+    f(args)?;
+    options(args.get_mut("options"), f)?;
     if let Some(questions) = args.get_mut("questions").and_then(Value::as_array_mut) {
         for q in questions {
-            attach_at(app, caller, q, &mut n)?;
-            attach_each(app, caller, q.get_mut("options"), &mut n)?;
+            f(q)?;
+            options(q.get_mut("options"), f)?;
         }
     }
-    Ok(args)
+    Ok(())
+}
+
+/// A parked `ask_user`'s arguments — files already resolved to the
+/// `(root, path)` pairs `attach_files` wrote — for the wall a person is at, so
+/// it can draw the question through the same `normalizeAsk` a question asked
+/// here goes through (`flyway/look.rs`).
+///
+/// Only an agent's question: Volery's own carry their evidence in a field of
+/// their own and are drawn from that alone (`afar.ts`), and the gate is the one
+/// an answer passes — `afar_may_answer` with nothing composed behind it.
+pub(crate) fn args_for_afar(app: &AppHandle, card: &str, ask_id: &str) -> Result<Value, String> {
+    let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
+    let pending = asks.pending.lock().map_err(|_| "this wall's questions are wedged".to_string())?;
+    match pending.get(ask_id) {
+        None => Err("that question is no longer waiting — it was answered on its own wall, or its time ran out".into()),
+        Some(p) if p.conversation_id != card => Err("that question belongs to another card on this wall".into()),
+        Some(p) if p.ours || p.act.is_some() => {
+            Err("that question is this wall's own, and travels by its evidence rather than its arguments".into())
+        }
+        Some(p) => Ok(p.args.clone()),
+    }
 }
 
 /// Whether a call attaches anything at all, for the one gate that is about the
@@ -1099,21 +1145,6 @@ fn has_file(args: &Value) -> bool {
     args.get("questions")
         .and_then(Value::as_array)
         .is_some_and(|qs| qs.iter().any(|q| at(q) || any(q.get("options"))))
-}
-
-fn attach_each(
-    app: &AppHandle,
-    caller: &str,
-    slot: Option<&mut Value>,
-    n: &mut usize,
-) -> Result<(), String> {
-    let Some(list) = slot.and_then(Value::as_array_mut) else {
-        return Ok(());
-    };
-    for option in list {
-        attach_at(app, caller, option, n)?;
-    }
-    Ok(())
 }
 
 /// One site that may carry a `file`: the call itself, a question, an option.
@@ -2507,7 +2538,7 @@ pub(crate) fn undescribed_note(n: usize) -> String {
 /// therefore already inert; on the way out every key in this file is a literal
 /// written here. Rebuilding the map to clean something that cannot be dirty
 /// would cost an allocation on every response for nothing.
-fn scrub_json(v: &mut Value) {
+pub(crate) fn scrub_json(v: &mut Value) {
     match v {
         Value::String(s) => {
             if let std::borrow::Cow::Owned(clean) = crate::clean::scrub(s) {

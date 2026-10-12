@@ -1433,29 +1433,6 @@ fn tail_of_transcript(path: &std::path::Path, n: usize) -> Result<Vec<String>, S
     }
 }
 
-/// Standard base64 (padding optional), or `None` on any foreign character.
-fn b64_decode(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for c in s.trim_end_matches('=').bytes() {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
-}
 
 /// A protobuf varint at `at`: `(value, next)`.
 fn varint(buf: &[u8], at: usize) -> Option<(u64, usize)> {
@@ -1508,7 +1485,7 @@ fn proto_bytes(buf: &[u8], field: u64) -> Option<&[u8]> {
 /// Port of `classify.ts::isNarrationSignature` (read that for the measurement):
 /// base64 → field 2 → field 1 → field 8 == "narration", fail-closed.
 fn is_narration_signature(sig: &str) -> bool {
-    let Some(bytes) = b64_decode(sig) else { return false };
+    let Some(bytes) = crate::unbase64(sig) else { return false };
     proto_bytes(&bytes, 2)
         .and_then(|o| proto_bytes(o, 1))
         .and_then(|i| proto_bytes(i, 8))

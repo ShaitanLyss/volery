@@ -103,6 +103,7 @@ use super::fleet::{self, Act, Answer, Deliver, Facts, Fleet, FleetMsg, Origin, O
 use super::frame::Frame;
 use super::here;
 use super::key;
+use super::look::{self, LookMsg};
 use super::session::Msg;
 use super::tail::{self, TailMsg};
 use super::wire::{Dialler, Fault, Wire};
@@ -296,6 +297,13 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
         (here::version(&conn, here::FLEET_VERSION), here::version(&conn, here::CARDS_VERSION))
     };
+    /* What questions from other walls left here last time: no sheet survives a
+       restart, so none of it is pointed at any more (`sweep_looks`). Before the
+       link exists, so no pull can be writing while it goes. */
+    {
+        let a = app.clone();
+        let _ = crate::off_main(move || sweep_looks(&a, true)).await;
+    }
     let wire = Wire::start(k, &me).await?;
     let link = Arc::new(Link {
         app: app.clone(),
@@ -459,7 +467,7 @@ impl Link {
                 .saturating_sub(in_flight),
                 can: fleet::can_now()
                     .into_iter()
-                    .chain([tail::WORD.to_string(), super::moving::WORD.to_string()])
+                    .chain([tail::WORD.to_string(), super::moving::WORD.to_string(), look::WORD.to_string()])
                     .collect(),
                 ..Facts::default()
             };
@@ -706,6 +714,8 @@ impl Link {
                 /* So is a move's answer (`moves.rs`); one arriving loose is from
                    an exchange that already gave up on it. */
                 Frame::Move(_) => {}
+                /* And a look's (`read_look`). */
+                Frame::Look(_) => {}
             }
         }
         if fleet_spoke {
@@ -767,6 +777,13 @@ impl Link {
                     if let Some(r) = self.on_move(m, from.as_deref()) {
                         out.push(Frame::Move(r));
                     }
+                }
+                /* What a parked question shows, read off this wall for the
+                   wall a person is at — `look.rs`. Not gated by "take work
+                   from other walls", for `tail_here`'s reason: it starts
+                   nothing, and the answer to the question already passes. */
+                Frame::Look(LookMsg::Look { id, card, ask, want }) if who.current => {
+                    out.push(Frame::Look(self.look_here(&id, &card, &ask, &want)));
                 }
                 _ => {}
             }
@@ -1459,6 +1476,17 @@ impl Link {
     /// is told so now and never waited on. Unknown, quiet and too old are the
     /// three the roster can already see.
     fn tail_reachable(&self, host: &str) -> Result<(), String> {
+        self.reachable(
+            host,
+            tail::WORD,
+            "cannot show its cards' conversations to another wall — update it, or read the card there",
+        )
+    }
+
+    /// Whether `host` can be asked a reading it announces `word` for — said at
+    /// once, never waited on. `older` finishes "{host} runs an older Volery,
+    /// which …".
+    fn reachable(&self, host: &str, word: &str, older: &str) -> Result<(), String> {
         if host.eq_ignore_ascii_case(&self.me) {
             return Err("that card is on this wall".into());
         }
@@ -1472,13 +1500,10 @@ impl Link {
         if quiet > fleet::QUIET_AFTER_MS as u64 {
             return Err(fleet::Unsendable::Quiet { host: host.into(), for_ms: quiet }.reason());
         }
-        let can = e.facts.can.iter().any(|c| c == tail::WORD);
+        let can = e.facts.can.iter().any(|c| c == word);
         drop(f);
         if !can || self.speaks_older(host) {
-            return Err(format!(
-                "{host} runs an older Volery, which cannot show its cards' conversations to another \
-                 wall — update it, or read the card there"
-            ));
+            return Err(format!("{host} runs an older Volery, which {older}"));
         }
         Ok(())
     }
@@ -1509,6 +1534,74 @@ impl Link {
         }
         self.take(rest, Some(host));
         Ok((id, tails))
+    }
+
+    /* ── what a question asked here shows, for another wall ─────────────────── */
+
+    /// One answer to a `look`: the parked call's arguments as `ask.rs` holds
+    /// them, and its files' bytes off this disk. Synchronous, like a move's
+    /// part — an answer reads at most `look::BUDGET` of file, which is a disk
+    /// read rather than a wait on anything.
+    fn look_here(&self, id: &str, card: &str, ask: &str, want: &[look::Want]) -> LookMsg {
+        match crate::ask::args_for_afar(&self.app, card.trim(), ask.trim()) {
+            Ok(args) => look::answer(id, &self.me, &args, want, &mut Disk),
+            Err(why) => LookMsg::Looked { id: id.to_string(), args: None, files: vec![], parts: vec![], why: Some(why) },
+        }
+    }
+
+    /// Pull one parked question from `host`, every file whole — or as far as
+    /// it got, each file that did not finish saying why. As many exchanges as
+    /// the files need (`look.rs`), none of them touching the tick's backoff,
+    /// for `read_tail`'s reason.
+    async fn read_look(self: &Arc<Self>, host: &str, card: &str, ask: &str) -> Result<look::Gathering, String> {
+        let peer = self.wire.peer(host)?;
+        let mut g = look::Gathering::default();
+        let mut want = Vec::new();
+        let mut idle = 0;
+        for round in 0..look::ROUNDS_MOST {
+            let id = crate::store::uuid_v4();
+            let m = LookMsg::Look { id: id.clone(), card: card.to_string(), ask: ask.to_string(), want: want.clone() };
+            let back = match self.wire.exchange(peer, vec![Frame::Look(m)], true).await {
+                Ok(b) => b,
+                /* The first is the question failing; a later one is a file
+                   that stopped arriving, and what arrived is still worth
+                   drawing. */
+                Err(e) if round == 0 => return Err(format!("could not reach {host}: {e}")),
+                Err(e) => {
+                    g.give_up(&format!("{host} stopped answering while it was being carried ({e})"));
+                    return Ok(g);
+                }
+            };
+            let mut looks = Vec::new();
+            let mut rest = Vec::new();
+            for f in back {
+                match f {
+                    Frame::Look(m) => looks.push(m),
+                    other => rest.push(other),
+                }
+            }
+            self.take(rest, Some(host));
+            let Some(answer) = look::answer_in(looks, &id) else {
+                if round == 0 {
+                    return Err(format!("{host} did not answer for what that question shows"));
+                }
+                g.give_up(&format!("{host} stopped answering while it was being carried"));
+                return Ok(g);
+            };
+            /* A reason mid-way is the question answered or run out over there
+               while its files were crossing: nothing is left to draw it for. */
+            idle = if g.take(answer, host)? { 0 } else { idle + 1 };
+            want = g.wants();
+            if want.is_empty() {
+                return Ok(g);
+            }
+            if idle >= 2 {
+                g.give_up(&format!("{host} stopped sending it"));
+                return Ok(g);
+            }
+        }
+        g.give_up("it took more exchanges than any file should");
+        Ok(g)
     }
 
     /* ── the cards ─────────────────────────────────────────────────────────── */
@@ -1748,6 +1841,73 @@ fn prompt_why(r: &Refusal, by: &str) -> String {
     match r {
         Refusal::CouldNotStart { reason } => reason.clone(),
         other => other.reason(by),
+    }
+}
+
+/// This machine's disk, as a `look` answer reads it: one named file in a
+/// directory, from an offset, never more than asked.
+struct Disk;
+
+impl look::Disk for Disk {
+    fn size(&mut self, root: &str, name: &str) -> Result<(u64, Option<u64>), String> {
+        let m = std::fs::metadata(std::path::Path::new(root).join(name)).map_err(|e| e.to_string())?;
+        if !m.is_file() {
+            return Err("it is not a file any more".into());
+        }
+        let stamp = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+        Ok((m.len(), stamp))
+    }
+
+    fn read(&mut self, root: &str, name: &str, from: u64, most: usize) -> Result<Vec<u8>, String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(std::path::Path::new(root).join(name)).map_err(|e| e.to_string())?;
+        f.seek(SeekFrom::Start(from)).map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(most);
+        f.take(most as u64).read_to_end(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+}
+
+/// Where a question pulled from another wall keeps its files: under this
+/// wall's own data folder, a folder per wall and per question, so taking one
+/// away is one `remove_dir_all` and two walls' questions cannot meet.
+fn look_dir(app: &AppHandle, host: &str, ask: &str) -> Result<std::path::PathBuf, String> {
+    let plain = |s: &str| -> String {
+        let p: String = s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect();
+        if p.is_empty() { "_".into() } else { p }
+    };
+    Ok(looks_root(app)?.join(plain(host)).join(plain(ask)))
+}
+
+fn looks_root(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("afar-asks"))
+}
+
+/// Take away what questions from other walls left behind. A question's own
+/// folder goes when its sheet does (`flyway_look_forget`); this is for the ones
+/// nothing got to. At launch (`all`) everything goes, since a sheet lives in
+/// memory and none survives a restart — a question still standing is pulled
+/// afresh. During a pull, only what is more than a day old.
+fn sweep_looks(app: &AppHandle, all: bool) {
+    let Ok(root) = looks_root(app) else { return };
+    if all {
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    let Ok(hosts) = std::fs::read_dir(&root) else { return };
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    for host in hosts.flatten() {
+        let Ok(asks) = std::fs::read_dir(host.path()) else { continue };
+        for ask in asks.flatten() {
+            let old = ask.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > day);
+            if old {
+                let _ = std::fs::remove_dir_all(ask.path());
+            }
+        }
     }
 }
 
@@ -2181,6 +2341,76 @@ pub async fn flyway_tail_answer(app: AppHandle, id: String, lines: Option<Value>
         None => Ok(lines.unwrap_or_else(|| Value::Array(Vec::new()))),
     };
     crate::off_main(move || l.tail_answered(&id, answer)).await?
+}
+
+/// Pull what a question parked on another wall shows — its arguments and its
+/// files — so this wall can draw it through the same `normalizeAsk` as a
+/// question asked here (`look.rs`). Asked by the front end the moment a
+/// question with something to show arrives.
+///
+/// `Ok` is the call's arguments with every file slot pointing into this wall's
+/// own folder, or at a fault naming the file. `Err` is the sentence the
+/// question carries instead — the wall is quiet or too old, or the question
+/// has gone.
+#[tauri::command]
+pub async fn flyway_look(app: AppHandle, host: String, card: String, ask: String) -> Result<Value, String> {
+    /* Two pulls at a time. Each gathers up to `look::ASK_MOST` in memory before
+       it is written, and a wall whose cards all asked over screenshots at once
+       would otherwise hold every one of them together (found in review). */
+    static PULLS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    let _turn = PULLS
+        .get_or_init(|| tokio::sync::Semaphore::new(2))
+        .acquire()
+        .await
+        .map_err(|_| "this wall has stopped pulling questions".to_string())?;
+    let Some(l) = current(&app) else {
+        return Err("this wall is not on a flyway".into());
+    };
+    let (host, card, ask) = (host.trim().to_string(), card.trim().to_string(), ask.trim().to_string());
+    if host.is_empty() || card.is_empty() || ask.is_empty() {
+        return Err("no question was named".into());
+    }
+    let check = l.clone();
+    let h = host.clone();
+    crate::off_main(move || {
+        check.reachable(&h, look::WORD, "cannot send what its questions show — update it to see them here")
+    })
+    .await??;
+    let gathered = l.read_look(&host, &card, &ask).await?;
+    let whole = gathered.whole();
+    /* Writing up to `ASK_MOST` of files is blocking work, and so is the sweep. */
+    let args = crate::off_main(move || {
+        sweep_looks(&app, false);
+        let dir = look_dir(&app, &host, &ask)?;
+        let _ = std::fs::remove_dir_all(&dir);
+        gathered
+            .settle(&host, &mut |n, name, bytes| {
+                let at = dir.join(n.to_string());
+                std::fs::create_dir_all(&at).map_err(|e| e.to_string())?;
+                std::fs::write(at.join(name), bytes).map_err(|e| e.to_string())?;
+                Ok((at.to_string_lossy().into_owned(), name.to_string()))
+            })
+            .ok_or_else(|| format!("{host} sent no question"))
+    })
+    .await??;
+    /* `whole: false` is a file that stopped for a reason a later pull could get
+       past; the front end draws what came and asks again on the wall's next
+       snapshot. */
+    Ok(serde_json::json!({ "args": args, "whole": whole }))
+}
+
+/// A question pulled from another wall has gone — answered, or run out — so
+/// what it brought here goes too.
+#[tauri::command]
+pub async fn flyway_look_forget(app: AppHandle, host: String, ask: String) -> Result<(), String> {
+    crate::off_main(move || {
+        let dir = look_dir(&app, host.trim(), ask.trim())?;
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        }
+    })
+    .await?
 }
 
 /// The card a prompt in hand was addressed to, for the answer to name.

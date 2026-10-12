@@ -32,7 +32,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { clock } from "./conversation.svelte";
 import type { Conversation, Job, Line, PendingAsk } from "./conversation.svelte";
-import { blankAnswers, composeAnswer } from "./asking";
+import { blankAnswers, composeAnswer, normalizeAsk, type AskQuestion } from "./asking";
 import type { Skein } from "./skein.svelte";
 import { spanOf, type Tier } from "./classify";
 import { Listeners } from "./listeners";
@@ -41,6 +41,7 @@ import {
   asLines,
   askedAt,
   askHere,
+  carryAnswers,
   DIGEST_V,
   digestOf,
   enterRoom,
@@ -53,11 +54,13 @@ import {
   readTail,
   sameCards,
   shadowKey,
+  shows,
   stickShadow,
   tailOf,
   weave,
   type WireLine,
   type CardDigest,
+  type DigestAsk,
   type Sent,
   type SentEvent,
   type Room,
@@ -67,6 +70,10 @@ import type { Spot } from "./glass";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
+
+/** How many times a question's design or files are asked for before the
+ *  sentence saying why they could not be is left standing. */
+const LOOK_TRIES = 3;
 
 /** The least time between two snapshots offered to the link. */
 const PUBLISH_EVERY_MS = 1_000;
@@ -619,12 +626,12 @@ export class Elsewhere {
     /* A snapshot is sent only by the wall it describes — the link does not
        relay them — so one arriving is that wall being heard. */
     if (live) this.#hear(p.host, 0);
-    this.#reconcile();
+    this.#reconcile(live ? p.host : null);
   }
 
   /** Keep each shadow as the same object across snapshots, so the prompts said
    *  to it and the focus on it survive the wall it is on changing. */
-  #reconcile() {
+  #reconcile(heard: string | null = null) {
     const keep = new Set<string>();
     const next: Shadow[] = [];
     for (const host of Object.keys(this.walls).sort()) {
@@ -637,11 +644,15 @@ export class Elsewhere {
           s = new Shadow(this, host, d);
           this.#byId.set(id, s);
         }
-        this.#sheets(s, this.walls[host]!);
+        this.#sheets(s, this.walls[host]!, host === heard);
         next.push(s);
       }
     }
-    for (const id of [...this.#byId.keys()]) if (!keep.has(id)) this.#byId.delete(id);
+    for (const id of [...this.#byId.keys()]) {
+      if (keep.has(id)) continue;
+      this.#byId.delete(id);
+      this.#forgetLooks(id, new Set());
+    }
     this.shadows = next;
     this.glass = keepOnly(this.glass, keep);
   }
@@ -664,18 +675,24 @@ export class Elsewhere {
   /** Bring a shadow's sheets in line with the questions its digest carries:
    *  the same sheet for the same ask, a fresh one for a new ask, and none for
    *  an ask that has gone — answered on its own wall, or out of time. */
-  #sheets(s: Shadow, w: Wall) {
+  #sheets(s: Shadow, w: Wall, heard = false) {
     const was = new Map(s.sheets.map((a) => [a.askId, a]));
-    const now = s.digest.asks.map(
-      (a) =>
-        was.get(a.askId) ?? {
-          askId: a.askId,
-          questions: askHere(a, s.host),
-          answers: blankAnswers(askHere(a, s.host)),
-          ours: false,
-          since: askedAt(a, w.at, w.madeAt),
-        },
-    );
+    const now = s.digest.asks.map((a) => {
+      /* Only off a snapshot that wall itself just sent: that is the wall
+         talking, and the one moment a pull — or a second try at one — can go
+         somewhere. Another wall's snapshot, or the stored copy read at launch,
+         says nothing about this one. */
+      if (heard && shows(a) && !s.face.unheard) this.#look(s, a);
+      const kept = was.get(a.askId);
+      if (kept) return kept;
+      return {
+        askId: a.askId,
+        questions: askHere(a, s.host),
+        answers: blankAnswers(askHere(a, s.host)),
+        ours: false,
+        since: askedAt(a, w.at, w.madeAt),
+      };
+    });
     /* A removal is drawn from its evidence alone, and only when the evidence
        names the wall it was heard from — `removalHere` refuses otherwise, and a
        removal it refuses is not drawn at all rather than drawn as a path. */
@@ -715,9 +732,76 @@ export class Elsewhere {
     }
     if (now.length !== s.sheets.length || now.some((a, i) => a !== s.sheets[i])) s.sheets = now;
     const live = new Set(now.map((a) => a.askId));
+    this.#forgetLooks(s.id, live);
     if (s.answering.some((id) => !live.has(id))) s.answering = s.answering.filter((id) => live.has(id));
     const standing = new Set(s.digest.notices.map((n) => n.id));
     if (s.acking.some((id) => !standing.has(id))) s.acking = s.acking.filter((id) => standing.has(id));
+  }
+
+  /** Questions whose design or files have been asked for, by shadow and ask,
+   *  so a snapshot arriving while one is on its way does not ask again. `busy`
+   *  while a pull is out; `tries` bounds asking again after one failed. */
+  #looks = new Map<string, { host: string; askId: string; shadow: string; tries: number; busy: boolean }>();
+
+  /** Pull what a question shows from the wall it was asked on, and redraw its
+   *  sheet from the call's own arguments — through `normalizeAsk`, the one
+   *  reading a question asked here gets, so the dock, the gallery and the
+   *  viewer draw it as they draw a local card's (`flyway/look.rs`). A pull that
+   *  fails says why in the question, where the words already said something
+   *  was coming — and is asked again on the next snapshot from that wall, up
+   *  to `LOOK_TRIES`, since a wall that is talking again is the one moment a
+   *  second try can go differently. Not on a clock: CLAUDE.md's three places
+   *  that go and look are three. */
+  #look(s: Shadow, a: DigestAsk) {
+    const key = `${s.id}\n${a.askId}`;
+    const was = this.#looks.get(key);
+    /* Answered from here and on its way: nothing to draw it for, and a try
+       spent now would be a try the question has not got if the answer is
+       refused and the sheet comes back. */
+    if (s.answering.includes(a.askId)) return;
+    if (was && (was.busy || was.tries === 0)) return;
+    const l = was ?? { host: s.host, askId: a.askId, shadow: s.id, tries: LOOK_TRIES, busy: false };
+    l.busy = true;
+    l.tries -= 1;
+    this.#looks.set(key, l);
+    /* Whether it was drawn: false when the sheet has gone or is being answered,
+       so the pull is not counted as having landed. */
+    const redraw = (questions: AskQuestion[]): boolean => {
+      const sheet = s.sheets.find((x) => x.askId === a.askId);
+      if (!sheet || s.answering.includes(a.askId)) return false;
+      const answers = carryAnswers(sheet.questions, sheet.answers, questions);
+      if (answers !== sheet.answers) sheet.answers = answers;
+      sheet.questions = questions;
+      return true;
+    };
+    invoke<{ args: unknown; whole: boolean }>("flyway_look", { host: s.host, card: s.card, ask: a.askId })
+      .then(({ args, whole }) => {
+        /* The question went while its files were crossing, and `#forgetLooks`
+           ran before they were written: take them away now. */
+        if (this.#looks.get(key) !== l) {
+          void invoke("flyway_look_forget", { host: l.host, ask: l.askId }).catch(() => {});
+          return;
+        }
+        const drawn = redraw(normalizeAsk((args ?? {}) as Parameters<typeof normalizeAsk>[0]));
+        /* A file that stopped arriving is drawn as a fault for now and asked
+           for again on the next snapshot, while tries remain. */
+        if (drawn && whole) l.tries = 0;
+      })
+      .catch((err) => {
+        if (this.#looks.get(key) === l) redraw(askHere(a, s.host, String(err)));
+      })
+      .finally(() => (l.busy = false));
+  }
+
+  /** Let go of what questions that have gone brought here — answered, run out,
+   *  or their card closed. `keep` is the asks still standing on `shadow`, or
+   *  none for a shadow that has gone. */
+  #forgetLooks(shadow: string, keep: ReadonlySet<string>) {
+    for (const [key, l] of this.#looks) {
+      if (l.shadow !== shadow || keep.has(l.askId)) continue;
+      this.#looks.delete(key);
+      void invoke("flyway_look_forget", { host: l.host, ask: l.askId }).catch(() => {});
+    }
   }
 
   /** The first notice on another wall this one may take down — what the dock

@@ -183,9 +183,43 @@ pub(crate) fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Standard base64 back to bytes (padding optional), or `None` on any foreign
+/// character. Written for `relay.rs`'s narration signatures and moved here the
+/// day the flyway's `look` needed it too, for `base64`'s own reason.
+pub(crate) fn unbase64(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.trim_end_matches('=').bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod base64_tests {
-    use super::base64;
+    use super::{base64, unbase64};
+
+    #[test]
+    fn unbase64_undoes_base64() {
+        for s in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar", &[0u8, 255, 128, 7][..]] {
+            assert_eq!(unbase64(&base64(s)).as_deref(), Some(s));
+        }
+        assert_eq!(unbase64("Zm9v!"), None);
+    }
 
     /// Came here with the function it tests. The padding is the part that
     /// matters: a `Basic` header short by an `=` is a 401 that reads as a wrong
@@ -950,6 +984,8 @@ pub fn run() {
             flyway::link::flyway_prompt_answer,
             flyway::link::flyway_tail,
             flyway::link::flyway_tail_answer,
+            flyway::link::flyway_look,
+            flyway::link::flyway_look_forget,
             flyway::key::flyway_start,
             flyway::key::flyway_join,
             flyway::key::flyway_invite,

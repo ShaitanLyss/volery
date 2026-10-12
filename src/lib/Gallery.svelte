@@ -202,6 +202,12 @@
   onMount(() => {
     panels.forEach((p, i) => {
       if (!p.file) return;
+      /* A file that never reached this machine says why, on the plate a read
+         that failed here would use. */
+      if (p.file.fault) {
+        faults[i] = p.file.fault;
+        return;
+      }
       const { root, path } = p.file;
       void readSheet(root, path)
         .then((sheet) => (sheets[i] = sheet))

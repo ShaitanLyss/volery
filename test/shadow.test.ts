@@ -16,6 +16,8 @@ import {
   scrub,
   sentReading,
   askHere,
+  carryAnswers,
+  shows,
   askedAt,
   remoteQuestions,
   standElsewhere,
@@ -538,15 +540,56 @@ describe("a question that travels", () => {
     expect(d.asks).toEqual([]);
   });
 
-  /* A preview is code and a file is a path; neither means anything over there. */
-  test("leaves a design behind, and says that one was there", () => {
+  /* The snapshot is re-sent on every change, so a design rides it as a flag;
+     the call itself is pulled once (`flyway/look.rs`). */
+  test("leaves a design out of the snapshot, and says that one is coming", () => {
     const withPreview = q({ options: [{ label: "this", detail: null, preview: { html: "<b>x</b>", css: null, js: "alert(1)" } }] });
     const d = digestOf(source({ asks: [{ askId: "a", since: 1, ours: false, questions: [withPreview] }] }));
     expect(JSON.stringify(d.asks)).not.toContain("alert");
     expect(d.asks[0]!.questions[0]!.shows).toBe(true);
+    expect(shows(d.asks[0]!)).toBe(true);
     const here = askHere(d.asks[0]!, "lab");
-    expect(here[0]!.question).toContain("only lab can show it");
+    expect(here[0]!.question).toContain("bringing it over from lab");
     expect(here[0]!.options).toEqual([{ label: "this", detail: null }]);
+  });
+
+  /* A pull that fails says why where the words said something was coming —
+     never a question that silently lost its picture. */
+  test("a design that could not be brought over says why", () => {
+    const withFile = q({ file: { root: "C:/out", path: "shot.png" } });
+    const d = digestOf(source({ asks: [{ askId: "a", since: 1, ours: false, questions: [withFile] }] }));
+    const here = askHere(d.asks[0]!, "lab", "lab runs an older Volery");
+    expect(here[0]!.question).toContain("could not be brought over from lab: lab runs an older Volery");
+    expect(here[0]!.question).not.toContain("bringing it over");
+  });
+
+  test("a question with nothing to show pulls nothing and says nothing", () => {
+    const d = digestOf(source({ asks: [{ askId: "a", since: 1, ours: false, questions: [q()] }] }));
+    expect(shows(d.asks[0]!)).toBe(false);
+    expect(askHere(d.asks[0]!, "lab")[0]!.question).toBe(q().question);
+  });
+
+  /* Redrawn whole, a sheet keeps what was already answered — by position, and
+     only while the questions still line up. */
+  test("answers survive the question being redrawn whole", () => {
+    const words = [
+      { header: "a", question: "shape?", options: [{ label: "round" }, { label: "a very long lab…" }] },
+      { header: "b", question: "why?", options: [] },
+    ];
+    const whole = [
+      { header: "a", question: "shape?", options: [{ label: "round" }, { label: "a very long label indeed" }] },
+      { header: "b", question: "why?", options: [] },
+      { header: "c", question: "past the cap?", options: [] },
+    ];
+    /* An equal sheet is the same array — nothing for the panel to react to. */
+    const same: (string | null)[] = ["round", "because"];
+    expect(carryAnswers(words, same, whole.slice(0, 2))).toBe(same);
+    /* A cut label becomes the whole one; free text stays; past the cap is open. */
+    expect(carryAnswers(words, ["a very long lab…", "because"], whole)).toEqual([
+      "a very long label indeed",
+      "because",
+      null,
+    ]);
   });
 
   test("round-trips through the reader", () => {

@@ -16,6 +16,7 @@
    * HTTP request and gets one reply. So nothing is sent until the last question
    * is answered, and `composeAnswer` puts the sheet back together. */
 
+  import { untrack } from "svelte";
   import type { PendingAsk } from "./conversation.svelte";
   import { clock } from "./conversation.svelte";
   import { nameBesideProject } from "./naming";
@@ -157,11 +158,21 @@
 
   /* The draft belongs to the question it was typed at, not to the panel — and
      revisiting an answered question shows what was said, so it can be
-     corrected rather than retyped. */
+     corrected rather than retyped.
+
+     Keyed on the *value* answered at this step (a derived, which only wakes
+     its readers when the value differs) and never on the sheet's arrays as
+     such. A question pulled from another wall is redrawn whole when its
+     designs and files land (`Elsewhere.#look`), which replaces `questions` and
+     `answers` with equal content; read directly, that re-ran this and cleared
+     whatever was half-typed — ask.md's "losing what I was typing", arriving by
+     a road only a remote question has. Found in review. */
+  const chosen = $derived(ask.answers[step]);
   $effect(() => {
-    const chosen = ask.answers[step];
-    const preset = current?.options.some((o) => o.label === chosen);
-    free = chosen && !preset ? chosen : "";
+    const said = chosen;
+    step;
+    const preset = untrack(() => current?.options.some((o) => o.label === said));
+    free = said && !preset ? said : "";
   });
 
   /* The agent gives up waiting and proceeds on its own judgement, so the

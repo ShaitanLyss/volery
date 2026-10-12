@@ -5,6 +5,7 @@ paths:
   - "src/lib/Yonder.svelte"
   - "test/shadow.test.ts"
   - "src-tauri/src/flyway/tail.rs"
+  - "src-tauri/src/flyway/look.rs"
   - "src-tauri/src/flyway/moving.rs"
   - "src-tauri/src/flyway/link/moves.rs"
 ---
@@ -317,11 +318,8 @@ them from my work laptop" is simply not true while a question can strand a card.
   unpost never travels, and a removal or a close travels in a field of its own, with evidence —
   see *A removal confirmed from another wall* and *A close confirmed from another wall* below,
   because this sentence used to say none of the three ever would.
-- **Words only.** A preview's markup is code another wall would run and can be large; a file's
-  path means nothing on another machine. Both are left behind, and `shows` puts a sentence on
-  the question saying a design went with it that only the other wall can show — an approval
-  answered without the thing being approved is an answer to something else, and a sentence in
-  the question is the one form no panel can forget to draw.
+- **Words in the snapshot; the call itself pulled.** See *What a question shows* below — this
+  bullet used to say a design or a file never crossed, and that was the bug.
 - **The answer rides the prompt wire**, `flyway_prompt` with an `askId`, carrying exactly what
   this wall's dock would have sent (`composeAnswer`). The owning wall hands it straight into
   the parked call (`ask::answer_from_afar`, c86101fa's); its own panel comes down through
@@ -346,6 +344,68 @@ Demonstrated 2026-10-08 between two walls of one build: a card on lab2 parked on
 `ask_user`, the question was on lab's dock within ~3s, "square" clicked there was `taken` in
 0.6s and the card resumed and said "square" at 2.7s. Then a question left up while lab2 was
 killed: past 90s it was no longer offered and the panel said why.
+
+### What a question shows crosses too, and is drawn by the same code
+
+For its first week a remote question was words only: a preview was left behind as code another
+wall would run, a file as a path that means nothing on another machine, and `shows` put a
+sentence on the question saying so. Lyss answered RISE questions over three screenshots she could
+not see (sink `77c043c6`, `be3196fa`, `154a1637`) and set the design for the fix: *"the remote
+specific code should be as small as possible, the shared unique components should be as much as
+possible … I shouldn't discover shadow card specific bugs that don't exist on normal cards."*
+
+So nothing crosses as a *rendering*. **The call crosses** — `ask.rs` still holds the parked
+`ask_user`'s arguments, every file already resolved to the `(root, path)` pair the viewer reads —
+and the far wall draws it through **the same `normalizeAsk`, `Ask.svelte`, `Gallery.svelte` and
+`Leaf.svelte`** a local question goes through. What is remote-specific is the transport
+(`flyway/look.rs`, two arms in `link.rs`) and twenty lines in `Elsewhere.#look`; nothing in the
+drawing knows the question came from elsewhere, so there is no second path for a shadow-only bug
+to live on.
+
+- **Pulled the moment a question that `shows` arrives**, not when the dock draws it (Lyss's call,
+  2026-10-12): the pictures are there before anybody looks, at the cost of a pull per question
+  whether or not it is opened. Never gossiped — a snapshot is re-sent on every change, and a
+  screenshot in it would be one sent dozens of times an hour. `tail.rs`'s shape: one wall asks,
+  the other answers on the same stream from `Parked::args` and its own disk, nothing kept there.
+- **In parts, so no limit is lower than here.** A local question's file is read up to 24 MB
+  (`find::DOC_CAP`) and a frame is 8 MB, so a file crosses over as many exchanges as it takes,
+  each answer spending at most `look::BUDGET` on arguments and base64 together — 2 MB, sized to
+  the exchange's twenty seconds over a slow relay rather than to the frame. 24 MB a file, the same
+  ceiling; 96 MB a question, which a local question has no need of because it reads lazily. The
+  arguments themselves cross in one answer and stop at 2 MB (`ARGS_MOST`) — the one limit a local
+  question does not have, met only by a preview with images inlined into its markup. Two pulls
+  run at a time, since each gathers its files in memory before writing them.
+- **Matched by position, on one walk.** Both walls number the files by `ask::each_site` — the call,
+  its options, each question, each of its options — which is also the walk `attach_files`
+  resolves them on. A second spelling of it would be a screenshot under the wrong option.
+- **Written to a folder of this wall's own** (`<app data>/afar-asks/<host>/<ask>/<n>/<name>`) and
+  pointed at there. Taken away when the question goes (`flyway_look_forget`, off `#sheets`, and
+  again by a pull that lands after its question went); the whole folder is wiped when the link
+  comes up, since no sheet survives a restart, and a pull sweeps anything over a day old.
+- **Every file slot is overwritten on arrival.** With the pair this wall wrote, or with
+  `{ path, fault }` — never left as the other machine wrote it, because a `root` from there is a
+  path on *this* disk the viewer would happily read. The fault is drawn on the gallery panel the
+  file would have filled (`fileFrom` keeps it; `Gallery` puts it on the plate a failed read uses):
+  too large, unreadable over there, changed while crossing, stopped arriving — each names the
+  file and the wall. A pull that fails outright (an older wall, a quiet one, the question gone)
+  says why in the question's words, where they already said something was coming. A file that
+  stopped partway is drawn as its fault and the reply says `whole: false`. Either way it is asked
+  again on the next snapshot **that wall itself sends**, three times in all, never on a clock and
+  never off another wall's snapshot or a quiet wall's. A question being answered from here is
+  not pulled for.
+- **Redrawn without disturbing the sheet.** The redraw keeps answers by position, moves an answer
+  that was an option onto the full label (the digest cuts labels at 300), and writes nothing when
+  nothing moved. `Ask.svelte`'s draft is keyed on the *value* answered at the step rather than
+  on the arrays, because the first cut cleared a half-typed answer the moment the pictures
+  landed — ask.md's "losing what I was typing", on a road only a remote question had. Both were
+  found by the review before this shipped.
+- **Scripts follow the card's kind**, as they do locally — `scripts={kind !== "chat"}` — where the
+  remote panel used to pass `false` because nothing it drew had a script.
+- **Both walls need the build.** An owning wall from before this announces no `look` in
+  `Facts::can`, and the question says it runs an older Volery.
+
+What still differs, by design: the countdown is held still (`stirs={false}`, above), because no
+touch travels.
 
 ### And it reaches you when you are not looking
 

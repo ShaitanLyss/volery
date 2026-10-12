@@ -362,8 +362,11 @@
 <!-- A question parked on another wall, in the panel a local one uses.
      Held still (`stirs={false}`): no touch travels to that wall, so its
      countdown runs on the question's base window, which only a touch over
-     there can lengthen. No scripts, since what travels is the words alone.
-     Answering goes back down the prompt wire into the parked call, and the
+     there can lengthen. A question that shows something arrives as words and
+     is redrawn from the call's own arguments once they are pulled over
+     (`flyway/look.rs`), so its designs and files are drawn exactly as a local
+     card's are — scripts included, gated as they are here by what kind of card
+     asked. Answering goes back down the prompt wire into the parked call, and the
      line in the card's panel says how far it got — the same four readings a
      prompt to that wall has. -->
 {#snippet elsewhereAsk(r: { shadow: Shadow; sheet: PendingAsk; focused: boolean })}
@@ -371,7 +374,7 @@
     ask={r.sheet}
     project="{r.shadow.project} · on {r.shadow.host}"
     title={r.shadow.title}
-    scripts={false}
+    scripts={r.shadow.digest.kind !== "chat"}
     stirs={false}
     elsewhere={!r.focused}
     onanswer={() => onremoteanswer?.(r.shadow, r.sheet)}

@@ -43,6 +43,7 @@ use serde_json::Value;
 
 use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
+use super::look::LookMsg;
 use super::moving::MoveMsg;
 use super::session::Msg;
 use super::tail::TailMsg;
@@ -57,6 +58,9 @@ pub enum Frame {
     /// A card moving between walls (`moving.rs`): said to one wall, answered
     /// on the same stream, never gossiped.
     Move(MoveMsg),
+    /// What a parked question shows (`look.rs`): asked by the wall a person
+    /// is at, answered on the same stream, never gossiped.
+    Look(LookMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -108,7 +112,7 @@ pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
 /// silently skipped as "from a newer build".
 const KNOWN: &[&str] = &[
     "hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards", "tail", "tailed",
-    "move_offer", "move_part", "move_answer", "move_settled", "move_released",
+    "move_offer", "move_part", "move_answer", "move_settled", "move_released", "look", "looked",
 ];
 
 #[cfg(test)]
@@ -233,6 +237,12 @@ mod tests {
            variant names under `rename_all = "snake_case"`. */
         written.extend(["ask", "answer", "prompt", "recall", "close"].map(str::to_string));
         written.extend(crate::flyway::moving::TAGS.map(str::to_string));
+        for m in [
+            LookMsg::Look { id: String::new(), card: String::new(), ask: String::new(), want: vec![] },
+            LookMsg::Looked { id: String::new(), args: None, files: vec![], parts: vec![], why: None },
+        ] {
+            written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
+        }
         written.sort();
         let mut known: Vec<String> = KNOWN.iter().map(|s| s.to_string()).collect();
         known.sort();
