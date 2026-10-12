@@ -44,11 +44,11 @@ import {
   carryAnswers,
   DIGEST_V,
   digestOf,
-  enterRoom,
   faceOf,
   idleOf,
-  keepOnly,
-  NO_SHADOW_GLASS,
+  keepHost,
+  spotsOf,
+  NO_SPOTS,
   promptRefusal,
   readSnapshot,
   readTail,
@@ -63,8 +63,7 @@ import {
   type DigestAsk,
   type Sent,
   type SentEvent,
-  type Room,
-  type ShadowGlass,
+  type Spots,
 } from "./shadow";
 import type { Spot } from "./glass";
 import { kinAcross, type Asked } from "./lineage";
@@ -195,7 +194,7 @@ export class Shadow {
    *  held here, because that memory is per room and outlives this object — see
    *  `ShadowGlass`. */
   get glass(): Spot | null {
-    return this.#walls.glass.spots[this.id] ?? null;
+    return this.#walls.glass[this.id] ?? null;
   }
 
   /** Stick it to the glass, move it there, or take it off with `null`. */
@@ -394,9 +393,10 @@ export class Elsewhere {
    *  birth heard live, so a root grows for a card opened now and a restored one
    *  is simply there, as `Skein.kin`'s are. */
   askedBy = $state<Record<string, Asked>>({});
-  /** Which shadows are stuck to the glass, per room — session-only, see
-   *  `ShadowGlass` in `shadow.ts` for why there is no row behind it. */
-  glass = $state.raw<ShadowGlass>(NO_SHADOW_GLASS);
+  /** Which shadows are stuck to the glass in the room in front of you. The
+   *  store holds every room's (`arrange.rs`, kind `shadow`); this is the one
+   *  `adopt_arrangement` last answered, written through on every change. */
+  glass = $state.raw<Spots>(NO_SPOTS);
 
   #skein: Skein;
   #byId = new Map<string, Shadow>();
@@ -654,22 +654,36 @@ export class Elsewhere {
       this.#forgetLooks(id, new Set());
     }
     this.shadows = next;
-    this.glass = keepOnly(this.glass, keep);
+    if (heard) {
+      /* Only the wall just heard, and only for its own cards: one that is
+         silent says nothing about what it holds. A card it closed will not
+         come back, so its spot — in every room — is let go. */
+      const alive = new Set([...keep].filter((id) => id.startsWith(`elsewhere:${heard}:`)));
+      const kept = keepHost(this.glass, heard, alive);
+      if (kept !== this.glass) this.glass = kept;
+      void invoke("keep_shadow_glass", { host: heard, alive: [...alive] }).catch(() => {});
+    }
   }
 
   /* ── the glass ─────────────────────────────────────────────────────── */
 
   /** Stick a shadow to the glass at a point in glass pixels, or take it off
-   *  with `null`. Nothing is written anywhere — see `ShadowGlass`. */
+   *  with `null`. Written through to the store for the room in front of you,
+   *  as every other glass writer is (`arrange::remember`). */
   stick(id: string, at: Spot | null) {
-    if (!at && !this.glass.spots[id]) return;
+    if (!at && !this.glass[id]) return;
     this.glass = stickShadow(this.glass, id, at);
+    void invoke("stick_shadow", { id, x: at?.x ?? null, y: at?.y ?? null }).catch(() => {
+      /* The spot is already where it was put, so the wall is right and only
+         this room's memory of it is behind — not worth failing a drag for. */
+    });
   }
 
-  /** The screens changed: put the glass in the room now in front of you.
-   *  Called beside `arrange::adopt`'s own answer, with the same key and origin. */
-  adoptRoom(room: Room) {
-    this.glass = enterRoom(this.glass, room);
+  /** The screens changed: put the glass in the room now in front of you, as
+   *  `adopt_arrangement` answered it. The store does the room-keeping and the
+   *  shifted copy for a room never seen, so this only replaces. */
+  adoptRoom(raw: unknown) {
+    this.glass = spotsOf(raw);
   }
 
   /** Bring a shadow's sheets in line with the questions its digest carries:

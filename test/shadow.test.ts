@@ -27,11 +27,10 @@ import {
   NO_PROJECT,
   sectionId,
   sectionOrder,
-  enterRoom,
   stickShadow,
-  keepOnly,
-  NO_SHADOW_GLASS,
-  type Room,
+  keepHost,
+  spotsOf,
+  NO_SPOTS,
   type CardDigest,
   type DigestSource,
   type Sent,
@@ -432,72 +431,37 @@ describe("where other walls stand", () => {
 describe("a shadow on the glass", () => {
   const A = "elsewhere:lab:1";
   const B = "elsewhere:lab:2";
-  const one: Room = { key: "one", origin: [0, 0] };
-  const spread: Room = { key: "spread", origin: [1920, 40] };
+  const C = "elsewhere:lab_x:9";
 
-  test("stuck and taken off again, in the room in front of you", () => {
-    let g = enterRoom(NO_SHADOW_GLASS, one);
-    g = stickShadow(g, A, { x: 10, y: 20 });
-    expect(g.spots).toEqual({ [A]: { x: 10, y: 20 } });
+  test("stuck and taken off again", () => {
+    let g = stickShadow(NO_SPOTS, A, { x: 10, y: 20 });
+    expect(g).toEqual({ [A]: { x: 10, y: 20 } });
     g = stickShadow(g, A, null);
-    expect(g.spots).toEqual({});
+    expect(g).toEqual({});
   });
 
-  /* At launch nothing is known until the monitors answer, and anything stuck
-     in that moment was stuck in the room they are about to name. */
-  test("the first room keeps what was stuck before it was known", () => {
-    const g = enterRoom(stickShadow(NO_SHADOW_GLASS, A, { x: 5, y: 5 }), one);
-    expect(g.room).toEqual(one);
-    expect(g.spots[A]).toEqual({ x: 5, y: 5 });
-  });
-
-  /* `arrange::adopt`'s copy, by the same rule: the same place on the home
-     screen, not the same numbers in a bigger room. */
-  test("a room never seen copies the one just left, shifted by the panes' origins", () => {
-    let g = enterRoom(NO_SHADOW_GLASS, one);
-    g = stickShadow(g, A, { x: 100, y: 100 });
-    g = enterRoom(g, spread);
-    expect(g.spots[A]).toEqual({ x: 2020, y: 140 });
-  });
-
-  test("a room seen before gets back what it had", () => {
-    let g = enterRoom(NO_SHADOW_GLASS, one);
-    g = stickShadow(g, A, { x: 100, y: 100 });
-    g = enterRoom(g, spread);
-    g = stickShadow(g, A, { x: 3000, y: 500 });
-    g = stickShadow(g, B, { x: 2500, y: 300 });
-    g = enterRoom(g, one);
-    expect(g.spots).toEqual({ [A]: { x: 100, y: 100 } });
-    g = enterRoom(g, spread);
-    expect(g.spots).toEqual({ [A]: { x: 3000, y: 500 }, [B]: { x: 2500, y: 300 } });
-  });
-
-  test("entering the room you are in changes nothing", () => {
-    let g = enterRoom(NO_SHADOW_GLASS, one);
-    g = stickShadow(g, A, { x: 1, y: 2 });
-    expect(enterRoom(g, one).spots).toEqual(g.spots);
-    expect(enterRoom(g, one).rooms).toEqual({});
+  /* The store answers per room, and a newer or older build's row is not this
+     build's to trust. */
+  test("what the store answers is read as points, and nothing else", () => {
+    expect(spotsOf({ [A]: [1, 2], [B]: "x", [C]: [1, NaN] })).toEqual({ [A]: { x: 1, y: 2 } });
+    expect(spotsOf(undefined)).toEqual({});
+    expect(spotsOf(null)).toEqual({});
   });
 
   /* A card its own wall closed will not come back, so its spot is let go —
-     in every room, not just this one. */
-  test("a spot whose card is gone is forgotten everywhere", () => {
-    let g = enterRoom(NO_SHADOW_GLASS, one);
-    g = stickShadow(g, A, { x: 1, y: 1 });
+     but only that wall's, and only because that wall was just heard. */
+  test("a wall just heard lets go of its closed cards' spots and nobody else's", () => {
+    let g = stickShadow(NO_SPOTS, A, { x: 1, y: 1 });
     g = stickShadow(g, B, { x: 2, y: 2 });
-    g = enterRoom(g, spread);
-    g = keepOnly(g, new Set([B]));
-    expect(Object.keys(g.spots)).toEqual([B]);
-    expect(Object.keys(g.rooms.one!.spots)).toEqual([B]);
+    g = stickShadow(g, C, { x: 3, y: 3 });
+    g = keepHost(g, "lab", new Set([B]));
+    expect(Object.keys(g).sort()).toEqual([B, C]);
   });
 
-  /* A quiet wall's cards are still in its last snapshot, so they are still
-     alive here: a laptop that shut its lid and opened it again finds its cards
-     where you stuck them. */
-  test("a wall that went quiet keeps its spots, and nothing changed writes nothing", () => {
-    let g = enterRoom(NO_SHADOW_GLASS, one);
-    g = stickShadow(g, A, { x: 1, y: 1 });
-    expect(keepOnly(g, new Set([A, B]))).toBe(g);
+  test("nothing changed writes nothing", () => {
+    const g = stickShadow(NO_SPOTS, A, { x: 1, y: 1 });
+    expect(keepHost(g, "lab", new Set([A, B]))).toBe(g);
+    expect(keepHost(g, "elsewhere", new Set())).toBe(g);
   });
 });
 

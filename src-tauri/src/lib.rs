@@ -960,6 +960,8 @@ pub fn run() {
             store::save_placement,
             arrange::known_arrangements,
             arrange::adopt_arrangement,
+            arrange::stick_shadow,
+            arrange::keep_shadow_glass,
             store::place_territory,
             store::stick_territory,
             store::size_territory,

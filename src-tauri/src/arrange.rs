@@ -48,6 +48,12 @@ pub(crate) const PROJECT: &str = "project";
 pub(crate) const IMAGE: &str = "image";
 pub(crate) const WIDGET: &str = "widget";
 pub(crate) const TIMELINE: &str = "timeline";
+/// A card on another wall. **Not in `KINDS`**: it has no row and no columns here,
+/// so `glass_spot` is its only record and `reconcile` must never touch it — a
+/// kind listed there with nothing written clears that table's `glass_x`. The ref
+/// is the shadow's id (`elsewhere:<host>:<card>`), which `adopt_in`'s clone
+/// already carries and shifts with every other kind.
+pub(crate) const SHADOW: &str = "shadow";
 /// A grouping of cards inside a project — what the wall draws as a region.
 ///
 /// Keyed by the territory's own id, where `PROJECT` above is keyed by a
@@ -90,6 +96,7 @@ pub struct GlassSpots {
     pub images: HashMap<String, [f64; 2]>,
     pub widgets: HashMap<String, [f64; 2]>,
     pub timelines: HashMap<String, [f64; 2]>,
+    pub shadows: HashMap<String, [f64; 2]>,
 }
 
 impl GlassSpots {
@@ -99,6 +106,7 @@ impl GlassSpots {
             TERRITORY => &mut self.territories,
             IMAGE => &mut self.images,
             WIDGET => &mut self.widgets,
+            SHADOW => &mut self.shadows,
             _ => &mut self.timelines,
         }
     }
@@ -181,6 +189,64 @@ pub(crate) fn forget(conn: &Connection, kind: &str, id: &str) {
     ) {
         eprintln!("skein: could not forget a glass spot ({kind} {id}): {e}");
     }
+}
+
+/// Remember where a card on another wall is stuck to the glass, in the room in
+/// front of you. `None` takes it off. Written through, like every other glass
+/// writer, so a crash loses nothing.
+#[tauri::command]
+pub async fn stick_shadow(
+    app: tauri::AppHandle,
+    id: String,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().unwrap();
+        remember(&conn, SHADOW, &id, x, y)
+    })
+    .await
+}
+
+/// Let go of the spots of one wall's cards that its latest snapshot no longer
+/// carries, in **every** room — a card its own wall closed will not come back,
+/// so its spot would otherwise point at nothing for ever. Scoped to one host and
+/// asked only when that wall has just been heard: a wall not heard from (a lid
+/// shut, a launch before the link is up) says nothing about its cards, and
+/// pruning on its silence would forget every spot you had made.
+#[tauri::command]
+pub async fn keep_shadow_glass(
+    app: tauri::AppHandle,
+    host: String,
+    alive: Vec<String>,
+) -> Result<usize, String> {
+    crate::off_main(move || {
+        let store = app.state::<Store>();
+        let conn = store.0.lock().unwrap();
+        keep_shadows(&conn, &host, &alive)
+    })
+    .await
+}
+
+/// `substr` rather than `LIKE`: a host name is free text and `_`/`%` in it
+/// would be wildcards.
+pub(crate) fn keep_shadows(conn: &Connection, host: &str, alive: &[String]) -> Result<usize, String> {
+    let prefix = format!("elsewhere:{host}:");
+    let mut q = conn
+        .prepare("SELECT DISTINCT ref FROM glass_spot WHERE kind = ?1 AND substr(ref, 1, ?2) = ?3")
+        .map_err(|e| e.to_string())?;
+    let refs: Vec<String> = q
+        .query_map(params![SHADOW, prefix.chars().count() as i64, prefix], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut gone = 0;
+    for r in refs.iter().filter(|r| !alive.contains(r)) {
+        forget(conn, SHADOW, r);
+        gone += 1;
+    }
+    Ok(gone)
 }
 
 /// `remember`, with the failure logged instead of returned.
@@ -628,6 +694,41 @@ mod tests {
         // And back: the same place on the home screen again.
         adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((100.0, 50.0)));
+    }
+
+    #[test]
+    fn a_card_on_another_wall_is_remembered_per_room_and_copied_shifted() {
+        let conn = db();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        remember(&conn, SHADOW, "elsewhere:lab:1", Some(100.0), Some(100.0)).unwrap();
+        // A room never seen copies the one just left, shifted by the origins.
+        adopt_in(&conn, "spread", "[]", [1920.0, 40.0], Some("one")).unwrap();
+        let s = spots_in(&conn, "spread").unwrap();
+        assert_eq!(s.shadows.get("elsewhere:lab:1"), Some(&[2020.0, 140.0]));
+        // It is its own kind: it never lands among the timelines.
+        assert!(s.timelines.is_empty());
+        // And it is the room's own from here on.
+        remember(&conn, SHADOW, "elsewhere:lab:1", Some(3000.0), Some(500.0)).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        assert_eq!(spots_in(&conn, "one").unwrap().shadows.get("elsewhere:lab:1"), Some(&[100.0, 100.0]));
+    }
+
+    #[test]
+    fn a_wall_prunes_only_its_own_closed_cards_in_every_room() {
+        let conn = db();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        remember(&conn, SHADOW, "elsewhere:lab:1", Some(1.0), Some(1.0)).unwrap();
+        remember(&conn, SHADOW, "elsewhere:lab:2", Some(2.0), Some(2.0)).unwrap();
+        remember(&conn, SHADOW, "elsewhere:lab_x:9", Some(3.0), Some(3.0)).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        // lab says card 2 is all it has. `_` in a host is not a wildcard.
+        assert_eq!(keep_shadows(&conn, "lab", &["elsewhere:lab:2".to_string()]).unwrap(), 1);
+        for room in ["one", "two"] {
+            let s = spots_in(&conn, room).unwrap().shadows;
+            assert!(!s.contains_key("elsewhere:lab:1"), "{room}");
+            assert!(s.contains_key("elsewhere:lab:2"), "{room}");
+            assert!(s.contains_key("elsewhere:lab_x:9"), "{room}");
+        }
     }
 
     #[test]

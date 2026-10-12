@@ -23,6 +23,9 @@ export type GlassSpots = {
   images: Record<string, [number, number]>;
   widgets: Record<string, [number, number]>;
   timelines: Record<string, [number, number]>;
+  /** Cards on other walls, by shadow id. Optional: an older build's answer
+   *  has none, which reads as nothing stuck. */
+  shadows?: Record<string, [number, number]>;
 };
 
 type Row = { key: string; screens: string; seenAt: number };

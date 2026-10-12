@@ -1427,9 +1427,9 @@
        from the outside, which is exactly the one that has to be reported. */
     if (arrangements.fault) skein.fault = arrangements.fault;
     if (!spots) return;
-    /* Shadows first, and with no undo to tell: their glass is in memory, per
-       room, under the same key and origin the store was just given. */
-    elsewhere.adoptRoom({ key: arrangements.key, origin });
+    /* Shadows first, and with no undo to tell: a shadow has no row to put a
+       record back on. The store did their room-keeping like every other kind's. */
+    elsewhere.adoptRoom(spots.shadows);
     /* Each holder answers what it actually moved, and the stack is told to
        forget those records. Not `undo.clear()`: the stack also holds renames
        and deletions that have nothing to do with screens, and losing the

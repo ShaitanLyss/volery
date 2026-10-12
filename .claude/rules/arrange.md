@@ -119,11 +119,11 @@ so the residue of a focus is one `currentMonitor` call.
 A card on another wall (`elsewhere.md`) can be stuck to the glass and has **no row here** to
 carry a spot, so it is not in `arrange::KINDS` and must never be added to it without rows
 behind it: `adopt` clears as well as sets, and a kind listed with nothing written for it
-empties that table's `glass_x` on the next arrangement change. Its spots are session-only and
-kept per room *in memory* by the same rules this file states — a room seen before gets its own
-back, a room never seen copies the one just left shifted by the panes' origins — in
-`shadow.ts::enterRoom`, called from `settleArrangement` beside `adopt` with the same key and
-origin. `elsewhere.md` argues why it is not persisted.
+empties that table's `glass_x` on the next arrangement change. Its spot is a `glass_spot` row
+of kind `shadow` and nothing else — `remember` writes it (`stick_shadow`), `adopt_in`'s shifted
+copy carries it with every other kind, `spots_in` answers it as `GlassSpots.shadows`, and
+`keep_shadows` lets go of a closed card's. `GlassSpots::slot`'s fallback is the timelines, so a
+new kind needs its own arm there or its rows land among them.
 
 ### What the undo stack is told
 

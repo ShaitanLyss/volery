@@ -60,7 +60,7 @@ the wall is precisely what was built for it:
 And nothing else. The node carries `data-shadow`, never `data-conv`, so `nodeOf` reads a press
 on one as bare ground — no pick, no carry on the wall, no pin (which would write a placement
 row keyed on an id this store has never seen), no card menu: its right-click is a menu of its
-own (`menu.ts`'s `shadow` kind), the glass and the close and nothing else, since everything a
+own (`menu.ts`'s `shadow` kind), the glass and the close and nothing else (for now — `865e555f` is about changing that), since everything a
 card's menu offers besides reaches for a process or a session on the other machine. Before it
 had one, a right-click on a shadow fell through to the *ground's* menu and offered to open a
 project underneath it. Its one control is a ✕ (and `<space>cc` on the focused one) that
@@ -114,48 +114,42 @@ digest already carried `project`, so nothing new crosses the link.
 - **The id is `sectionId`**, a JSON pair, because both halves are free text and a separator
   either could contain is not a separator.
 
-### On the glass, for this session
+### On the glass, persisted like a card's
 
 Sink `dbf55968`: Lyss tried to put a shadow on the glass from her work laptop and could not. The
 glass is where you put what you want to keep an eye on while working elsewhere, and a card on
-another machine is *the* thing you want to keep an eye on while working elsewhere — so of all
-the gestures a shadow lacked, this was the one it was made for.
+another machine is *the* thing you want to keep an eye on while working elsewhere.
 
-**The decision was where its spot lives, and it lives in memory.** Everything else on the glass
-is a pair of columns on a row, reconciled per screen arrangement by `arrange::adopt` — and a
-shadow has no row on this wall and never will. Two ways to give it one were open: persist it
-(a table keyed on host and remote id), or keep the spot only for as long as this window is up.
-It is the second, for three reasons:
+**It was session-only for its first two weeks, and Lyss overruled that** (sink `735f3234`: put
+back on the glass after every restart, *"they should work exactly the same as normal cards"*).
+The three arguments for memory were each answerable once the store's record turned out to need
+no new table:
 
-1. **A persisted spot outlives what it points at.** A card closed over there while this wall
-   was shut, a laptop rebuilt, a wall renamed: each leaves a spot for a card that will never
-   arrive again, with nothing on screen to say so and nothing that would ever clean it up.
-2. **`arrange::KINDS` clears as well as sets.** Listing a kind there with no rows behind it
-   empties that table's `glass_x` on the next arrangement change, and the obvious careless rung
-   could reach the real glass's tables. The safe version is a migration, a table and a new
-   reconcile arm for a spot that is only worth anything while its wall is talking.
-3. **The panel already made this choice.** What was said to a shadow from here is in memory
-   only, on the argument that it is only worth tracking while somebody is here. A spot on the
-   glass is the same kind of thing: a person's arrangement for the session they are in.
+1. **A persisted spot outlives what it points at.** Answered by pruning, below.
+2. **`arrange::KINDS` clears as well as sets.** It still must not list this kind, and does not.
+   But `glass_spot` — the record every other kind's columns are a *cache* of — is generic
+   (`arrangement, kind, ref, x, y`), and `adopt_in`'s shifted copy for a room never seen already
+   selects every kind. So a shadow is a `glass_spot` row of kind `shadow` and **nothing else**:
+   no table, no columns, no migration, and so safe to run on the installed wall.
+3. **The panel already made this choice.** True of what was *said* to a shadow, which is still
+   in memory. A spot is an arrangement, which is what the glass persists.
 
-The memory is `ShadowGlass` (`shadow.ts`, pure and tested) held by `Elsewhere.glass`:
-
-- **Keyed on the shadow id**, which is `shadowKey(host, card)` — two walls' cards cannot share
-  a spot.
-- **Per room**, because `arrange.md`'s one-glass-per-room is about screens, not about rows:
-  a spot made unspread read back spread is a pile in the corner. `enterRoom` keeps a room's
-  spots apart from the others, gives a room seen before its own back, and copies the room just
-  left into one never seen, **shifted by the panes' origins** — `arrange::adopt`'s copy by the
-  same rule. App calls `adoptRoom` beside `arrange::adopt`'s answer with the same key and
-  origin. A spot stuck before the monitors first answered belongs to the first room named.
-- **A quiet wall keeps its spots.** `Elsewhere.walls` is never pruned, so a wall that goes
-  quiet still carries its cards (drawn as not heard from), and a lid that opens again finds its
-  cards where you stuck them.
-- **A card its wall closed lets go of its spot**, in every room (`keepOnly`, run by
-  `#reconcile` with the ids the snapshots still carry) — its id will not come back, so the spot
-  would otherwise point at nothing for the rest of the session. A wall that is gone for good
-  stays drawn muted for the session, spots included, which is the truth: it is the last thing
-  that wall said. A restart clears it, which is the session-only half.
+- **Keyed on the shadow id**, `shadowKey(host, card)`, so two walls' cards cannot share a spot.
+- **Written through** by `stick_shadow` → `arrange::remember` on every stick, move and unstick,
+  beside the in-memory write (`Elsewhere.stick`). A failure is swallowed: the wall is right and
+  only this room's memory is behind.
+- **Read back by `adopt_arrangement`**, which now answers `shadows` beside the five others;
+  `Elsewhere.adoptRoom` replaces the current room's spots with it. The per-room bookkeeping that
+  used to live in `shadow.ts` (`enterRoom`, `ShadowGlass`) is gone: the store does it, with the
+  same shifted copy.
+- **Pruned, per wall, only when that wall was just heard** (`keep_shadow_glass`, off
+  `#reconcile`'s `heard`). A card its own wall closed will not come back, so its spots go from
+  every room. A silent wall says nothing about its cards — a lid shut, or launch before the link
+  is up — and pruning on that would forget everything you stuck. A stored snapshot read at
+  launch does not prune either, only a live one. The match is `substr`, not `LIKE`: a host name
+  is free text and `_` in it is a wildcard.
+- **A spot stuck before the monitors first answered** is kept in memory but not written (no
+  current arrangement yet) and replaced when the first room is adopted: a few seconds at launch.
 
 **What it gets on the pane and what it does not.** Drawn at `wall` density by the same
 `glassAt` clamp a stuck card gets; its section keeps the slot, because `standElsewhere` lays

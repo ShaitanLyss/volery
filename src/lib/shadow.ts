@@ -874,96 +874,60 @@ export function standElsewhere<T extends { id: string; host: string; project: st
   return { regions, heads, laid };
 }
 
-/* ── on the glass, for as long as this window is up ─────────────────── */
+/* ── on the glass ───────────────────────────────────────────────────── */
 
 /** Where each shadow stuck to the glass sits, by shadow id (`shadowKey` — the
  *  host and the card's id on it, so two walls' cards can never share a spot).
  *
- *  **Session-only, on purpose.** Everything else on the glass is a column on a
- *  row, reconciled per screen arrangement by `arrange.rs`. A shadow has no row
- *  here and never will: it is held in memory off the link, and a spot written
- *  down for one would outlive the thing it points at — a card on a laptop that
- *  has since been rebuilt, a wall renamed, a card closed over there while this
- *  wall was shut. A spot that survives a restart pointing at nothing is a
- *  promise the wall cannot keep, and adding the kind to `arrange::KINDS` with no
- *  rows behind it would clear that table's `glass_x` on the next arrangement
- *  change. So the glass remembers a shadow the way the panel remembers what was
- *  said to one: in memory, and only while somebody is here to have put it
- *  there. See `.claude/rules/elsewhere.md`. */
+ *  **Persisted, per screen arrangement, like a card's** — but without a row:
+ *  `arrange.rs` keeps it in `glass_spot` under its own kind and nowhere else,
+ *  and the room switching, the shifted copy for a room never seen and the
+ *  write-through are the very ones every other kind gets. This module holds
+ *  only the current room's spots, as `adopt_arrangement` last answered them.
+ *
+ *  It used to be session-only, on the argument that a spot outlives what it
+ *  points at. That is answered by `keepHost`: a wall that has just been heard
+ *  lets go of the spots of the cards it no longer carries. See
+ *  `.claude/rules/elsewhere.md`. */
 export type Spots = Record<string, Spot>;
 
-/** The room the glass is in: `arrangements.key` and where the pane's origin
- *  sat in it — the two things `arrange::adopt` is told. */
-export type Room = { key: string; origin: [number, number] };
+export const NO_SPOTS: Spots = {};
 
-/** The glass's memory of shadows, per screen arrangement — `arrange.md`'s
- *  "one glass per room" kept in memory for the one kind that has no columns. */
-export type ShadowGlass = {
-  room: Room | null;
-  spots: Spots;
-  rooms: Record<string, { origin: [number, number]; spots: Spots }>;
-};
-
-export const NO_SHADOW_GLASS: ShadowGlass = { room: null, spots: {}, rooms: {} };
-
-/** Walk into another room.
- *
- *  The first room this window identifies keeps whatever was stuck before it was
- *  known — at launch there is nothing, and anything stuck in the moment before
- *  the monitors answered was stuck *in* that room. A room already seen this
- *  session gets back what it had. One never seen gets the room just left,
- *  shifted by the difference between the two panes' origins, which is
- *  `arrange::adopt`'s copy made by the same rule — so spreading over every
- *  screen finds a shadow where it was, not piled onto whichever monitor the
- *  union starts at. */
-export function enterRoom(g: ShadowGlass, room: Room): ShadowGlass {
-  if (!g.room) return { ...g, room };
-  if (g.room.key === room.key) return { ...g, room };
-  const rooms = { ...g.rooms, [g.room.key]: { origin: g.room.origin, spots: g.spots } };
-  const seen = rooms[room.key];
-  if (seen) return { room: { key: room.key, origin: seen.origin }, spots: seen.spots, rooms };
-  const dx = room.origin[0] - g.room.origin[0];
-  const dy = room.origin[1] - g.room.origin[1];
-  const spots: Spots = {};
-  for (const [id, at] of Object.entries(g.spots)) spots[id] = { x: at.x + dx, y: at.y + dy };
-  return { room, spots, rooms };
+/** What `adopt_arrangement` answered for shadows, as `Spots`. Anything not
+ *  shaped like a point is dropped — a newer build's row is not this build's
+ *  problem. */
+export function spotsOf(raw: unknown): Spots {
+  const out: Spots = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [id, at] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(at)) continue;
+    const [x, y] = at;
+    if (Number.isFinite(x) && Number.isFinite(y)) out[id] = { x, y };
+  }
+  return out;
 }
 
 /** Stick one shadow to the glass in the room in front of you, or take it off. */
-export function stickShadow(g: ShadowGlass, id: string, at: Spot | null): ShadowGlass {
-  const spots = { ...g.spots };
-  if (at) spots[id] = { x: at.x, y: at.y };
-  else delete spots[id];
-  return { ...g, spots };
+export function stickShadow(spots: Spots, id: string, at: Spot | null): Spots {
+  const next = { ...spots };
+  if (at) next[id] = { x: at.x, y: at.y };
+  else delete next[id];
+  return next;
 }
 
-/** Forget every spot whose shadow is no longer on the wall, in every room.
- *
- *  Asked with the ids the snapshots still carry — and a wall that has gone
- *  quiet still carries its cards, drawn as not heard from, so a laptop that
- *  shuts its lid and opens it again finds its cards where you stuck them. What
- *  this lets go of is a card its own wall has *closed*: its id will not come
- *  back, so its spot would point at nothing for the rest of the session.
- *  Answers the same object when nothing went, so a snapshot that changed only a
- *  card's activity writes nothing. */
-export function keepOnly(g: ShadowGlass, alive: ReadonlySet<string>): ShadowGlass {
-  const trim = (s: Spots): Spots | null => {
-    const gone = Object.keys(s).filter((id) => !alive.has(id));
-    if (!gone.length) return null;
-    const next = { ...s };
-    for (const id of gone) delete next[id];
-    return next;
-  };
-  let changed = false;
-  const spots = trim(g.spots);
-  if (spots) changed = true;
-  const rooms: ShadowGlass["rooms"] = {};
-  for (const [k, r] of Object.entries(g.rooms)) {
-    const t = trim(r.spots);
-    if (t) changed = true;
-    rooms[k] = t ? { origin: r.origin, spots: t } : r;
-  }
-  return changed ? { room: g.room, spots: spots ?? g.spots, rooms } : g;
+/** Let go of the spots of one wall's cards that its latest snapshot no longer
+ *  carries. Scoped to the host and asked only when that wall has just been
+ *  heard: a wall that is silent says nothing about its cards, and a laptop that
+ *  shut its lid finds them where you stuck them. Answers the same object when
+ *  nothing went, so a snapshot that moved only a card's activity writes
+ *  nothing. */
+export function keepHost(spots: Spots, host: string, alive: ReadonlySet<string>): Spots {
+  const prefix = `elsewhere:${host}:`;
+  const gone = Object.keys(spots).filter((id) => id.startsWith(prefix) && !alive.has(id));
+  if (!gone.length) return spots;
+  const next = { ...spots };
+  for (const id of gone) delete next[id];
+  return next;
 }
 
 /* ── getting your attention ─────────────────────────────────────────── */
