@@ -66,6 +66,7 @@ import {
   type Spots,
 } from "./shadow";
 import type { Spot } from "./glass";
+import type { Effort } from "./commands";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
@@ -352,11 +353,19 @@ export class Shadow {
   readonly dropped = 0;
   readonly costUsd = 0;
   readonly ctxTokens = 0;
-  readonly model = undefined;
-  readonly effort = undefined;
+  get model() {
+    return this.digest.model ?? undefined;
+  }
+  get effort() {
+    return (this.digest.effort ?? undefined) as Effort | undefined;
+  }
   readonly streaming = "";
-  readonly accountLabel = null;
-  readonly bypassCaps = false;
+  get accountLabel() {
+    return this.digest.account;
+  }
+  get bypassCaps() {
+    return this.digest.bypassCaps;
+  }
   readonly compactFrac = null;
   readonly holding = null;
   readonly planDoc = null;
@@ -533,6 +542,10 @@ export class Elsewhere {
       working: c.working,
       aside: c.aside,
       gear: c.gear,
+      model: c.model,
+      effort: c.effort,
+      accountLabel: c.accountLabel,
+      bypassCaps: c.bypassCaps,
       activity: c.activity,
       held: c.held,
       stalled: c.stalled,

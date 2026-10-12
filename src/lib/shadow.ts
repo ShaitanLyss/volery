@@ -95,6 +95,15 @@ export type CardDigest = {
   working: boolean;
   aside: boolean;
   planning: boolean;
+  /** Which model, how hard it is asked to think, which account pays for it and
+   *  whether it is ignoring that account's caps — as the owning wall has them.
+   *  Words and a flag, read by nothing in Rust: a newer build's value costs no
+   *  migration, and an older wall sends none of them, which reads as unknown.
+   *  Published so a shadow's panel can state them the way a local card's does. */
+  model: string | null;
+  effort: string | null;
+  account: string | null;
+  bypassCaps: boolean;
   /** The activity line, without the idle suffix — that is added on the far
    *  side, off its own clock. */
   doing: string;
@@ -230,6 +239,11 @@ export type DigestSource = {
   working: boolean;
   aside: boolean;
   gear: string;
+  /** Optional, so a caller with none to hand says nothing. */
+  model?: string | null;
+  effort?: string | null;
+  accountLabel?: string | null;
+  bypassCaps?: boolean;
   /** The card's word for what it is doing, and the three states that qualify
    *  it — see `steadyDoing` for why these rather than `Conversation.doing`. */
   activity: string;
@@ -300,6 +314,10 @@ export function digestOf(c: DigestSource): CardDigest {
     working: c.working,
     aside: c.aside,
     planning: c.gear === "planning",
+    model: c.model ? capText(c.model, MODEL_CAP) : null,
+    effort: c.effort ? capText(c.effort, MODEL_CAP) : null,
+    account: c.accountLabel ? capText(c.accountLabel, TITLE_CAP) : null,
+    bypassCaps: c.bypassCaps === true,
     doing: capText(steadyDoing(c), DOING_CAP),
     restingSince: c.working ? null : c.restingSince,
     ctx: Math.round(clamp01(c.ctx) * 1000) / 1000,
@@ -329,6 +347,9 @@ export function digestOf(c: DigestSource): CardDigest {
       : null,
   };
 }
+
+/** A model id or an effort word as it travels: a bound, not a format. */
+const MODEL_CAP = 64;
 
 /** A card id as it travels. Ids are uuids; this is a bound, not a format. */
 const ID_CAP = 64;
@@ -403,6 +424,10 @@ export function readDigest(raw: unknown): CardDigest | null {
     working: r.working === true,
     aside: r.aside === true,
     planning: r.planning === true,
+    model: str(r.model, MODEL_CAP) || null,
+    effort: str(r.effort, MODEL_CAP) || null,
+    account: str(r.account, TITLE_CAP) || null,
+    bypassCaps: r.bypassCaps === true,
     doing: str(r.doing, DOING_CAP),
     restingSince: stamp(r.restingSince),
     ctx: clamp01(typeof r.ctx === "number" ? r.ctx : 0),

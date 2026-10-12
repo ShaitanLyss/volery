@@ -82,6 +82,10 @@ describe("making a digest", () => {
       working: false,
       aside: false,
       planning: false,
+      model: null,
+      effort: null,
+      account: null,
+      bypassCaps: false,
       doing: "at rest",
       restingSince: 1_000,
       ctx: 0.412,
@@ -93,6 +97,24 @@ describe("making a digest", () => {
       notices: [],
       parent: null,
     });
+  });
+
+  /* What a shadow's panel states in its footer the way a local card's does. An
+     older wall sends none of them, which reads as unknown rather than as a
+     model called "". */
+  test("carries which model, effort and account, and an older wall's absence reads as unknown", () => {
+    const d = digestOf(source({ model: "claude-opus-5[1m]", effort: "high", accountLabel: "work", bypassCaps: true }));
+    expect(d).toMatchObject({ model: "claude-opus-5[1m]", effort: "high", account: "work", bypassCaps: true });
+    expect(readDigest(JSON.parse(JSON.stringify(d)))).toMatchObject({
+      model: "claude-opus-5[1m]",
+      effort: "high",
+      account: "work",
+      bypassCaps: true,
+    });
+    const old = JSON.parse(JSON.stringify(digestOf(source())));
+    delete old.model;
+    delete old.account;
+    expect(readDigest(old)).toMatchObject({ model: null, account: null, bypassCaps: false });
   });
 
   /* What lets another wall draw the root to a card's parent (`lineage.ts`,
