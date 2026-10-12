@@ -1262,7 +1262,7 @@ fn declined(title: &str, answer: &str) -> String {
         "{title:?} was not closed. The user picked neither option; what they said was: \
          {said:?}. Act on that rather than on the closing — they are talking to you about \
          the card, and it is still on the wall. Only the \"{CLOSE_IT}\" button closes a card \
-         — a typed yes does not count — so if they meant yes, call `close` again and tell \
+         — a typed yes does not count — so if they meant yes, call `mcp__skein__close` again and tell \
          them to press it."
     )
 }
