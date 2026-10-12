@@ -206,7 +206,7 @@ pub async fn stick_shadow(
         let conn = store.0.lock().unwrap();
         remember(&conn, SHADOW, &id, x, y)
     })
-    .await
+    .await?
 }
 
 /// Let go of the spots of one wall's cards that its latest snapshot no longer
@@ -226,7 +226,7 @@ pub async fn keep_shadow_glass(
         let conn = store.0.lock().unwrap();
         keep_shadows(&conn, &host, &alive)
     })
-    .await
+    .await?
 }
 
 /// `substr` rather than `LIKE`: a host name is free text and `_`/`%` in it
