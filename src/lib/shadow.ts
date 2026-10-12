@@ -1178,7 +1178,7 @@ export type Woven =
  *
  *  Sends with no line to claim are still travelling, or were refused, and go
  *  below in the order they were made — which is where they already were. */
-export function weave(tail: readonly WireLine[], sent: readonly Sent[]): Woven[] {
+export function weave(tail: readonly WireLine[], sent: readonly Sent[], now?: number): Woven[] {
   const mine = [...sent].sort((a, b) => a.at - b.at);
   const claimed = new Set<number>();
   const taken = new Map<number, Sent>();
@@ -1202,9 +1202,26 @@ export function weave(tail: readonly WireLine[], sent: readonly Sent[]): Woven[]
     return s ? { at: "there" as const, line, sent: s } : { at: "there" as const, line };
   });
   const landed = new Set(taken.values());
-  for (const s of mine) if (!landed.has(s)) out.push({ at: "here", sent: s });
+  for (const s of mine) {
+    if (landed.has(s)) continue;
+    /* A send the far wall has taken and that no line of the tail claims is not
+       travelling — it is either older than the tail's window or worded
+       differently there, and in both cases the far copy (if the tail holds it)
+       is already drawn in its place. Left here it would be drawn *below the
+       newest thing the card said* for the rest of the session, which reads as
+       the conversation arriving out of order. A fresh one stays: the tail may
+       simply not have been refreshed since. */
+    if (now !== undefined && s.state === "taken" && now - s.at > TAKEN_SETTLES_MS) continue;
+    out.push({ at: "here", sent: s });
+  }
   return out;
 }
+
+/** How long a taken send may wait for its line to turn up in the tail before it
+ *  is taken to have scrolled out of it (`weave`). The tail is re-read whenever
+ *  the card moves, so a send that has been taken for this long and is still not
+ *  in it is not coming. */
+export const TAKEN_SETTLES_MS = 60_000;
 
 /** A woven column as lines the transcript can draw.
  *

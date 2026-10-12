@@ -799,6 +799,18 @@ describe("weaving your own sends into their conversation", () => {
     expect(w.filter((x) => x.at === "here").length).toBe(0);
   });
 
+  test("a taken send the tail no longer holds is not drawn below everything", () => {
+    /* It scrolled out of the window, or is worded differently over there. Left
+       in, it sat under the newest thing the card said for the rest of the
+       session. A fresh one stays: the tail may just not have been re-read. */
+    const w = weave(tail, [sent("long gone", 10), sent("just now", 1_000_000 - 1_000)], 1_000_000);
+    const here = w.filter((x) => x.at === "here");
+    expect(here.map((x) => (x as { sent: Sent }).sent.text)).toEqual(["just now"]);
+    /* A send still in doubt is never dropped, however old. */
+    const w2 = weave(tail, [sent("stuck", 10, "left")], 1_000_000);
+    expect(w2.filter((x) => x.at === "here").length).toBe(1);
+  });
+
   test("an empty tail is every send, in the order they were made", () => {
     const w = weave([], [sent("b", 20, "left"), sent("a", 10, "queued")]);
     expect(w.map((x) => (x.at === "here" ? x.sent.text : "?"))).toEqual(["a", "b"]);

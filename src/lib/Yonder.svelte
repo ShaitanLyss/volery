@@ -90,6 +90,13 @@
   </p>
   {#if shadow.tailState === "error" && shadow.tailWhy}
     <p class="note">could not read its conversation — {shadow.tailWhy}</p>
+  {:else if shadow.tailWhy}
+    <!-- A refresh that fails keeps what was read, which is right — and was
+         silent, so a column that had stopped gaining lines looked exactly like a
+         card that had stopped saying anything. -->
+    <p class="note">
+      this is the conversation as it stood at the last read that worked — the latest read failed: {shadow.tailWhy}
+    </p>
   {/if}
 
   <!-- A close asked of its wall from here. It stays drawn until {shadow.host}'s

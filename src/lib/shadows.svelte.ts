@@ -318,7 +318,7 @@ export class Shadow {
    *  the honest answer before anybody has asked for more. */
   lines = $derived.by((): Line[] => {
     const t = this.tail;
-    if (t) return asLines(weave(t, this.sent), this.host, clock.t);
+    if (t) return asLines(weave(t, this.sent, clock.t), this.host, clock.t);
     return this.digest.said ? [{ kind: "text", text: this.digest.said }] : [];
   });
 
