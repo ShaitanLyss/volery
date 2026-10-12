@@ -986,6 +986,8 @@ pub fn run() {
             flyway::link::flyway_prompt_answer,
             flyway::link::flyway_tail,
             flyway::link::flyway_tail_answer,
+            flyway::link::flyway_act,
+            flyway::link::flyway_act_answer,
             flyway::link::flyway_look,
             flyway::link::flyway_look_forget,
             flyway::key::flyway_start,

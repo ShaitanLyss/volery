@@ -41,6 +41,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::act::ActMsg;
 use super::cards::CardsMsg;
 use super::fleet::FleetMsg;
 use super::look::LookMsg;
@@ -61,6 +62,9 @@ pub enum Frame {
     /// What a parked question shows (`look.rs`): asked by the wall a person
     /// is at, answered on the same stream, never gossiped.
     Look(LookMsg),
+    /// A person's gesture on another wall's card (`act.rs`): said to the wall
+    /// the card runs on, answered on the same stream, never gossiped.
+    Act(ActMsg),
 }
 
 /// What one opened payload turned out to be.
@@ -113,6 +117,7 @@ pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
 const KNOWN: &[&str] = &[
     "hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards", "tail", "tailed",
     "move_offer", "move_part", "move_answer", "move_settled", "move_released", "look", "looked",
+    "act", "acted",
 ];
 
 #[cfg(test)]
@@ -240,6 +245,12 @@ mod tests {
         for m in [
             LookMsg::Look { id: String::new(), card: String::new(), ask: String::new(), want: vec![] },
             LookMsg::Looked { id: String::new(), args: None, files: vec![], parts: vec![], why: None },
+        ] {
+            written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
+        }
+        for m in [
+            ActMsg::Act { id: String::new(), card: String::new(), verb: String::new(), args: Value::Null, from_card: None },
+            crate::flyway::act::acted("", Ok(None)),
         ] {
             written.push(serde_json::to_value(m).unwrap()["msg"].as_str().unwrap().to_string());
         }

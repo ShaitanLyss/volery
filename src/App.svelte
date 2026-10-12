@@ -128,7 +128,7 @@
   } from "./lib/commands";
   import { isGear, planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
-import { verbsFor } from "./lib/handle";
+  import { actFor, verbsFor } from "./lib/handle";
   import {
     FALLBACK_DEFAULT_PRESET,
     presetById,
@@ -1950,10 +1950,34 @@ import { verbsFor } from "./lib/handle";
            a menu is a question about the thing, not a visit to it. */
         studio.clearSelection();
         focusedId = s.id;
-        target = { kind: "shadow", glass: !!s.glass, host: s.host, verbs: verbsFor(s.remote) };
+        /* The card's own rows (`menu.ts::cardRows`), behind the verbs its wall
+           announced, and filled from what its digest says — the same fields a
+           local card's target reads off the `Conversation`. */
+        target = {
+          kind: "shadow",
+          glass: !!s.glass,
+          host: s.host,
+          verbs: verbsFor(s.remote),
+          dormant: s.dormant,
+          spoken: s.everSpoke || s.working,
+          aside: s.aside,
+          bypassing: s.bypassCaps,
+          accounts: s.accounts.length > 0,
+          accountPicks: s.accounts.map((a) => ({ id: a, label: a, on: a === s.accountLabel })),
+        };
         act = (id) => {
           if (id === "glass") canvas?.toggleGlass("shadow", s.id);
           else if (id === "close") closeElsewhere(s);
+          else {
+            /* Everything else is asked of its wall (`flyway/act.rs`). A
+               refusal is said by `Elsewhere.act` itself; what a reading verb
+               answered is this wall's to copy. */
+            const asked = actFor(id, { aside: s.aside, bypassCaps: s.bypassCaps, working: s.working });
+            if (asked)
+              void elsewhere.act(s, asked.verb, asked.args).then((r) => {
+                if (r.outcome === "taken" && r.text) void copyText(r.text);
+              });
+          }
         };
       }
     } else if (imageEl?.dataset.image) {

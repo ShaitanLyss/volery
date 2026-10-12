@@ -378,8 +378,10 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
         /* The thing that was missing when a card and a terminal wanted the same
            conversation: the session id is what `--resume` takes, and until now
            it appeared nowhere in the UI at all. */
-        has("copy-resume") ? item("copy-resume", "copy resume command") : null,
-        has("copy-cwd") ? item("copy-cwd", "copy working directory") : null,
+        /* On a card elsewhere both are the other machine's — a path there and
+           a session that resumes only there — so the row says whose. */
+        has("copy-resume") ? item("copy-resume", t.host ? `copy resume command on ${t.host}` : "copy resume command") : null,
+        has("copy-cwd") ? item("copy-cwd", t.host ? `copy working directory on ${t.host}` : "copy working directory") : null,
         /* Only where there is something to look at. A dormant card owns no
            process, so this would open on an empty list — and an item that
            reliably answers "nothing" is one you stop reading after the second
@@ -440,11 +442,11 @@ export function menuFor(t: MenuTarget): MenuItem[] {
     case "card":
       return tidy(cardRows(t).filter(Boolean) as MenuItem[]);
 
-    /* A card on another wall. Two things, because two are all this wall can
-       do with one: the glass, whose spot for it lives in memory here and
-       nowhere else, and asking its own wall to close it. Everything a card's
-       menu offers besides — wake, resume, processes, set aside, the accounts —
-       is about a process and a session that are on the other machine. */
+    /* A card on another wall. The glass is this wall's; everything else is
+       asked of the wall the card runs on — the close as a person's, the rest
+       as an `act` (`flyway/act.rs`) for the verbs that wall announced. What is
+       only meaningful on that machine (processes, pinning, a move) is never
+       offered. */
     case "shadow":
       /* The same rows, from the same function: what differs is which verbs
          the wall can be asked, which `handle.ts` decides. With none given, the

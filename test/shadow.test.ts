@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { REGION_GAP, regionWidth, SLOT_H } from "../src/lib/layout";
 import {
+  ACCOUNTS_CAP,
   advance,
   capText,
   digestOf,
@@ -204,9 +205,20 @@ describe("reading a snapshot", () => {
   test("round-trips what was made", () => {
     const d = digestOf(source());
     const s = readSnapshot(JSON.parse(JSON.stringify({ v: 1, at: 5_000, cards: [d] })));
-    expect(s).toEqual({ v: 1, at: 5_000, cards: [d] });
+    expect(s).toEqual({ v: 1, at: 5_000, cards: [d], accounts: [] });
   });
 
+
+  /* What a shadow's `put it on…` offers: the owner's labels, strings only,
+     scrubbed, once each and bounded. An older wall sends none. */
+  test("the owner's account labels are read as words and nothing else", () => {
+    const s = readSnapshot({ at: 1, cards: [], accounts: ["work", "work", "", 7, "home\u0000", { x: 1 }] });
+    expect(s!.accounts).toEqual(["work", "home"]);
+    expect(readSnapshot({ at: 1, cards: [] })!.accounts).toEqual([]);
+    expect(readSnapshot({ at: 1, cards: [], accounts: Array.from({ length: 99 }, (_, i) => `a${i}`) })!.accounts.length).toBe(
+      ACCOUNTS_CAP,
+    );
+  });
   test("a wall saying nothing is not a wall with no cards", () => {
     expect(readSnapshot(null)).toBeNull();
     expect(readSnapshot({ v: 1 })).toBeNull();

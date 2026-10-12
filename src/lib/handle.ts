@@ -102,6 +102,59 @@ export function verbsFor(remote: Remote | null): ReadonlySet<Verb> | null {
   return out;
 }
 
+/** The verbs that cross as an `act` (`flyway/act.rs`): every one whose cost
+ *  reaches the other machine and is not a person's close, which has its own
+ *  road. `test/handle.test.ts` holds this against `act.rs`'s `VERBS`. */
+export const ACTS: readonly Verb[] = VERBS.filter((v) => ["work", "cosmetic", "read"].includes(COST[v]));
+
+/** What a shadow's face says, as far as an act's arguments need it. */
+export type ActFace = { aside: boolean; bypassCaps: boolean; working: boolean };
+
+/** A menu row on a card elsewhere, as the verb and arguments its wall is
+ *  asked — or null for a row that is not an act. A setting crosses as the
+ *  state wanted, never as a toggle, so a gesture made against a face one
+ *  snapshot old cannot flip it the wrong way; a clear says whether the card
+ *  was working when it was chosen, so the owner can refuse one that has
+ *  *started* a turn since. */
+export function actFor(id: string, face: ActFace): { verb: Verb; args: Record<string, unknown> } | null {
+  if (id.startsWith("account:")) return { verb: "account", args: { account: id.slice(8) } };
+  switch (id) {
+    case "aside":
+      return { verb: "aside", args: { on: !face.aside } };
+    case "bypass":
+      return { verb: "bypass", args: { on: !face.bypassCaps } };
+    case "clear":
+      return { verb: "clear", args: { sawWorking: face.working } };
+    case "wake":
+    case "copy-resume":
+    case "copy-cwd":
+      return { verb: id, args: {} };
+    default:
+      return null;
+  }
+}
+
+/** What the owning wall checks again at the moment of acting, as
+ *  `settle_delete` re-runs its refusals: the card as it is now, not as the
+ *  asker drew it. Null if it may go ahead. `accounts` is the labels this wall
+ *  can put a card on. */
+export function actRefusal(
+  verb: string,
+  args: Record<string, unknown>,
+  card: { working: boolean },
+  accounts: readonly string[],
+  me: string,
+): string | null {
+  if (!(ACTS as readonly string[]).includes(verb)) return `${me} does not know how to ${verb} a card from another wall`;
+  if (verb === "clear" && card.working && args.sawWorking !== true)
+    return `it has started a turn on ${me} since you chose that — look at it before clearing it`;
+  if (verb === "account") {
+    const label = typeof args.account === "string" ? args.account : "";
+    if (!accounts.includes(label)) return `there is no account called ${label || "that"} on ${me} that can take work`;
+  }
+  return null;
+}
+
 /** Why a verb is not available on a card on another wall, in words, or null
  *  if it is. For a surface that wants to say so — a key with nothing behind
  *  it — rather than do nothing. */

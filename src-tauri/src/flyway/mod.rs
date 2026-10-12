@@ -18,6 +18,8 @@
 //!   it and answered in the same exchange. Pure.
 //! - `look` — what a question asked on another wall shows: its arguments and
 //!   its files' bytes, pulled in parts by the wall a person is at. Pure.
+//! - `act` — a person's gesture on another wall's card, every verb in one
+//!   frame, answered in the same exchange and gated by what it costs. Pure.
 //! - `moving` — a card changing wall: the vocabulary, the check that it
 //!   still has its history, and the rule that it never ends up on neither.
 //!   Pure; `link/moves.rs` is the wiring.
@@ -39,6 +41,7 @@
    non-test build does not call is `pub` and therefore not dead to a library
    crate in any case. */
 
+pub mod act;
 pub mod cards;
 pub mod fleet;
 pub mod frame;

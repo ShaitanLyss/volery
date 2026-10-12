@@ -195,7 +195,14 @@ export type Snapshot = {
    *  none, which costs the idle suffix and nothing else. */
   at: number | null;
   cards: CardDigest[];
+  /** The accounts the owning wall can put a card on, by label — what a
+   *  shadow's `put it on…` offers, since the choice is spent there. Labels
+   *  only. An older wall sends none, which offers no choice. */
+  accounts: string[];
 };
+
+/** The most account labels a snapshot carries. A wall has a handful. */
+export const ACCOUNTS_CAP = 16;
 
 /* ── text that crosses a machine ─────────────────────────────────────── */
 
@@ -556,7 +563,21 @@ export function readSnapshot(raw: unknown): Snapshot | null {
     seen.add(d.id);
     cards.push(d);
   }
-  return { v: typeof r.v === "number" ? r.v : DIGEST_V, at: stamp(r.at), cards };
+  return { v: typeof r.v === "number" ? r.v : DIGEST_V, at: stamp(r.at), cards, accounts: readAccounts(r.accounts) };
+}
+
+/** Account labels off the wire: strings, scrubbed and capped, non-empty, once
+ *  each. Anything else reads as none, which offers no choice. */
+export function readAccounts(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const a of raw) {
+    if (out.length >= ACCOUNTS_CAP) break;
+    if (typeof a !== "string") continue;
+    const l = capText(a, TITLE_CAP).trim();
+    if (l && !out.includes(l)) out.push(l);
+  }
+  return out;
 }
 
 /* ── drawing one ─────────────────────────────────────────────────────── */

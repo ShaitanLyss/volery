@@ -98,6 +98,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
+use super::act::{self, ActMsg};
 use super::cards::{Arrived, Cards};
 use super::fleet::{self, Act, Answer, Deliver, Facts, Fleet, FleetMsg, Origin, Outcome, PromptRequest, Refusal, Request, Spawn, Standing};
 use super::frame::Frame;
@@ -147,6 +148,16 @@ const TAIL_WITHIN: Duration = Duration::from_secs(12);
 /// twenty seconds had run out — anything asking for more is not this app.
 const TAILS_PER_EXCHANGE: usize = 1;
 
+/// How long a wall asked to do something to one of its cards waits for its own
+/// front end to do it — `TAIL_WITHIN`'s bound and for its reason: well inside
+/// the asker's twenty-second exchange. A wake is a spawn, which is seconds; a
+/// clear closes a process first. Past it the asker is told it may or may not
+/// have happened, which is the truth.
+const ACT_WITHIN: Duration = Duration::from_secs(12);
+
+/// The most acts one exchange may carry, for `TAILS_PER_EXCHANGE`'s reason.
+const ACTS_PER_EXCHANGE: usize = 1;
+
 /// The running link, if this wall has a key.
 #[derive(Default)]
 pub struct Flyway {
@@ -190,6 +201,9 @@ pub struct Link {
     /// the front end answers by. Keyed on an id minted here rather than the
     /// asker's, so two walls asking at once cannot answer each other.
     tails: StdMutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Value, String>>>>,
+    /// Gestures a person at another wall asked of cards here, parked the same
+    /// way until this wall's front end has done them (`act_here`).
+    acts: StdMutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Option<String>, String>>>>,
     cards_due: AtomicBool,
 }
 
@@ -319,6 +333,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         prompts_out: StdMutex::new(HashMap::new()),
         prompts_in: StdMutex::new(HashMap::new()),
         tails: StdMutex::new(HashMap::new()),
+        acts: StdMutex::new(HashMap::new()),
         cards_due: AtomicBool::new(false),
     });
     *state.link.lock().map_err(|_| "the flyway is wedged".to_string())? = Some(link.clone());
@@ -468,6 +483,7 @@ impl Link {
                 can: fleet::can_now()
                     .into_iter()
                     .chain([tail::WORD.to_string(), super::moving::WORD.to_string(), look::WORD.to_string()])
+                    .chain(act::words())
                     .collect(),
                 ..Facts::default()
             };
@@ -714,8 +730,8 @@ impl Link {
                 /* So is a move's answer (`moves.rs`); one arriving loose is from
                    an exchange that already gave up on it. */
                 Frame::Move(_) => {}
-                /* And a look's (`read_look`). */
-                Frame::Look(_) => {}
+                /* And a look's (`read_look`), and an act's (`read_act`). */
+                Frame::Look(_) | Frame::Act(_) => {}
             }
         }
         if fleet_spoke {
@@ -734,11 +750,23 @@ impl Link {
     async fn answer_all(self: Arc<Self>, heard: Vec<Frame>, who: Dialler) -> Vec<Frame> {
         let (asks, rest): (Vec<Frame>, Vec<Frame>) =
             heard.into_iter().partition(|f| matches!(f, Frame::Tail(TailMsg::Tail { .. })));
+        let (acts, rest): (Vec<Frame>, Vec<Frame>) =
+            rest.into_iter().partition(|f| matches!(f, Frame::Act(ActMsg::Act { .. })));
+        /* Which wall asked, before `answer` consumes the frames: an act is
+           done for a named wall or not at all. */
+        let from = if acts.is_empty() { None } else { self.who_is(&rest, who) };
         let mut out = self.answer(rest, who);
         if who.current {
             for f in asks.into_iter().take(TAILS_PER_EXCHANGE) {
                 if let Frame::Tail(TailMsg::Tail { id, card }) = f {
                     out.push(Frame::Tail(self.tail_here(id, card).await));
+                }
+            }
+            for f in acts.into_iter().take(ACTS_PER_EXCHANGE) {
+                if let Frame::Act(ActMsg::Act { id, card, verb, args, from_card }) = f {
+                    if let Some(m) = self.act_here(id, card, verb, args, from_card, from.as_deref()).await {
+                        out.push(Frame::Act(m));
+                    }
                 }
             }
         }
@@ -1536,6 +1564,128 @@ impl Link {
         Ok((id, tails))
     }
 
+    /* ── a person's gesture on a card here, from another wall ───────────────── */
+
+    /// Do `verb` to one of this wall's cards for a person at another wall, by
+    /// asking this wall's front end — which runs the same `Skein` calls its own
+    /// menu does — parked as `tail_here` is. Gated first, here, on this wall's
+    /// switch read fresh (`act::gate`), so a refusal costs the front end
+    /// nothing. `None` for an id that is not one this app minted: there is no
+    /// question to answer.
+    async fn act_here(
+        self: &Arc<Self>,
+        id: String,
+        card: String,
+        verb: String,
+        args: Value,
+        from_card: Option<String>,
+        from: Option<&str>,
+    ) -> Option<ActMsg> {
+        if !act::is_id(&id) {
+            return None;
+        }
+        let said = |r: Result<Option<String>, String>| Some(act::acted(&id, r));
+        if !act::is_id(&card) {
+            return said(Err("no card was named".into()));
+        }
+        let Some(host) = from else {
+            return said(Err(format!("{} could not tell which wall asked", self.me)));
+        };
+        let accepting = self.store().and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c))).unwrap_or(false);
+        if let Err(why) = act::gate(&verb, from_card.as_deref(), accepting, &self.me) {
+            return said(Err(why));
+        }
+        let args = match act::read_args(&verb, &args) {
+            Ok(a) => a,
+            Err(why) => return said(Err(why)),
+        };
+        let local = crate::store::uuid_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Ok(mut t) = self.acts.lock() {
+            t.insert(local.clone(), tx);
+        }
+        let _ = self.app.emit(
+            "flyway:act",
+            ActHere { id: local.clone(), host: act::fit_text(host, 120), card, verb, args },
+        );
+        let got = tokio::time::timeout(ACT_WITHIN, rx).await;
+        /* The slot is this call's to clear, for `tail_here`'s reason. */
+        if let Ok(mut t) = self.acts.lock() {
+            t.remove(&local);
+        }
+        said(match got {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) | Err(_) => Err(format!(
+                "{} did not say in time whether it did that — look at the card before asking again",
+                self.me
+            )),
+        })
+    }
+
+    /// The front end's answer to a `flyway:act`.
+    fn act_answered(&self, id: &str, answer: Result<Option<String>, String>) -> Result<(), String> {
+        let tx = self
+            .acts
+            .lock()
+            .map_err(|_| "the flyway is wedged".to_string())?
+            .remove(id)
+            .ok_or("nobody is waiting for that any more")?;
+        tx.send(answer).map_err(|_| "the wall that asked has stopped waiting".to_string())
+    }
+
+    /// Whether `verb` could be asked of `host` at all — unknown, quiet, too old
+    /// to know the verb, and for a work verb a wall that last said it takes no
+    /// work. Said at once; never waited on and never queued.
+    fn act_reachable(&self, host: &str, verb: &str) -> Result<(), String> {
+        let Some(c) = act::cost(verb) else {
+            return Err(format!("that cannot be asked of a card on {host}"));
+        };
+        self.reachable(
+            host,
+            &format!("{}{verb}", act::PREFIX),
+            "cannot do that to its cards from another wall — update it, or do it there",
+        )?;
+        /* The owner decides again on its own switch read fresh; this is the
+           same answer given before anything leaves, off what it last said. */
+        if c == act::Cost::Work {
+            let accepting =
+                self.fleet.lock().ok().and_then(|f| f.entry(host).map(|e| e.facts.accepting)).unwrap_or(false);
+            if !accepting {
+                return Err(fleet::Refusal::NotAccepting.reason(host));
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask `host` to do `verb` to one card, and read the answer out of the same
+    /// exchange. Never touches `failing`, for `read_tail`'s reason.
+    async fn read_act(self: &Arc<Self>, host: &str, card: &str, verb: &str, args: Value) -> Result<Option<String>, String> {
+        let peer = self.wire.peer(host)?;
+        let id = crate::store::uuid_v4();
+        let ask = Frame::Act(ActMsg::Act {
+            id: id.clone(),
+            card: card.to_string(),
+            verb: verb.to_string(),
+            args,
+            from_card: None,
+        });
+        let back = self
+            .wire
+            .exchange(peer, vec![ask], true)
+            .await
+            .map_err(|e| format!("could not reach {host}: {e} — nothing was done"))?;
+        let mut acts = Vec::new();
+        let mut rest = Vec::new();
+        for f in back {
+            match f {
+                Frame::Act(m) => acts.push(m),
+                other => rest.push(other),
+            }
+        }
+        self.take(rest, Some(host));
+        act::answer_in(&acts, &id, host)
+    }
+
     /* ── what a question asked here shows, for another wall ─────────────────── */
 
     /// One answer to a `look`: the parked call's arguments as `ask.rs` holds
@@ -1698,6 +1848,8 @@ impl Link {
                     allowance_used: e.facts.allowance_used,
                     territories: e.facts.territories.iter().map(|t| t.name.clone()).collect(),
                     older: older.get(&e.host).is_some_and(|until| now < *until),
+                    acts: act::offered(&e.facts.can),
+                    closes: e.facts.can.iter().any(|c| c == fleet::CAN_PERSON_CLOSE),
                 }
             })
             .collect()
@@ -1921,6 +2073,18 @@ struct TailHere {
     card: String,
 }
 
+/// A person's gesture from another wall, as this wall's front end is handed
+/// it: already gated, its arguments already read into the verb's own shape
+/// (`act::read_args`). `id` is minted here; see `Link::acts`.
+#[derive(Serialize, Clone)]
+struct ActHere {
+    id: String,
+    host: String,
+    card: String,
+    verb: String,
+    args: Value,
+}
+
 #[derive(Serialize, Clone)]
 struct PromptLeft {
     id: String,
@@ -2001,6 +2165,11 @@ pub struct RosterRow {
     /// Answered a dial only in the old language — syncing the sink, and
     /// nothing else, until it updates.
     older: bool,
+    /// The verbs a person here may ask of its cards (`act::offered`) — what
+    /// `handle.ts::verbsFor` reads as `Remote.acts`.
+    acts: Vec<String>,
+    /// It announced `close_by_person` — `Remote.closes`.
+    closes: bool,
 }
 
 #[derive(Serialize)]
@@ -2341,6 +2510,51 @@ pub async fn flyway_tail_answer(app: AppHandle, id: String, lines: Option<Value>
         None => Ok(lines.unwrap_or_else(|| Value::Array(Vec::new()))),
     };
     crate::off_main(move || l.tail_answered(&id, answer)).await?
+}
+
+/// Ask the wall a card runs on to do `verb` to it, for a person here — the
+/// shadow's menu (`Elsewhere.act`). One exchange, answered on the same stream
+/// (`act.rs`). `Ok(Some(text))` is what a reading verb answered with,
+/// `Ok(None)` a gesture done; `Err` is the sentence to show, said at once for a
+/// wall that is unknown, quiet, too old for the verb, or — for a verb that
+/// starts work — not taking work. Never queued: a gesture that does not land
+/// now is refused.
+///
+/// No MCP tool reaches this. An agent's road to another wall's cards is
+/// `walls`/`send`/`recall`/`close`, and this is a person's.
+#[tauri::command]
+pub async fn flyway_act(app: AppHandle, host: String, card: String, verb: String, args: Option<Value>) -> Result<Option<String>, String> {
+    let Some(l) = current(&app) else {
+        return Err("this wall is not on a flyway, so it cannot reach another wall's card".into());
+    };
+    if !act::is_id(&card) {
+        return Err("that is not a card another wall would know".into());
+    }
+    let check = l.clone();
+    let (h, v) = (host.clone(), verb.clone());
+    crate::off_main(move || check.act_reachable(&h, &v)).await??;
+    let args = act::read_args(&verb, &args.unwrap_or(Value::Null))?;
+    l.read_act(&host, &card, &verb, args).await
+}
+
+/// This wall's front end's answer to a `flyway:act`: `taken` with what a
+/// reading verb returns, or anything else with the reason.
+#[tauri::command]
+pub async fn flyway_act_answer(
+    app: AppHandle,
+    id: String,
+    outcome: String,
+    why: Option<String>,
+    text: Option<String>,
+) -> Result<(), String> {
+    let Some(l) = current(&app) else { return Ok(()) };
+    let answer = if outcome == "taken" {
+        Ok(text)
+    } else {
+        let w = why.map(|w| act::fit_text(&w, 400)).filter(|w| !w.is_empty());
+        Err(w.unwrap_or_else(|| "the card could not do that".into()))
+    };
+    crate::off_main(move || l.act_answered(&id, answer)).await?
 }
 
 /// Pull what a question parked on another wall shows — its arguments and its

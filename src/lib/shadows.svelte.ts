@@ -67,7 +67,9 @@ import {
 } from "./shadow";
 import type { Spot } from "./glass";
 import type { Effort } from "./commands";
-import type { Remote } from "./handle";
+import { actRefusal, type Remote, type Verb } from "./handle";
+import { usable } from "./accounts";
+import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
@@ -90,7 +92,12 @@ type Wall = {
   /** This wall's estimate of the same moment: arrival less the link's age. */
   madeAt: number;
   cards: CardDigest[];
+  /** The accounts it can put a card on, by label (`Snapshot.accounts`). */
+  accounts: string[];
 };
+
+/** What became of a gesture asked of another wall (`Elsewhere.act`). */
+export type ActOutcome = { outcome: "taken" | "refused"; why?: string; text?: string };
 
 /** What the link says about a wall's roster entry. Only `quietMs` is read here;
  *  the rest is carried for the panel. */
@@ -105,6 +112,11 @@ export type RosterRow = {
    *  language — what the card menu reads to offer a move there. */
   territories?: string[];
   older?: boolean;
+  /** The verbs a person here may ask of its cards (`flyway/act.rs`), as
+   *  `handle.ts::Remote.acts` reads them. Absent from an older build. */
+  acts?: string[];
+  /** It takes a close from a person here (`close_by_person`). */
+  closes?: boolean;
 };
 
 /** A card on another wall, drawn on this one.
@@ -141,6 +153,12 @@ export class Shadow {
    *  no *done*: the card leaves when its wall's next snapshot no longer carries
    *  it, and nothing here removes it sooner. Asking again replaces it. */
   closing = $state<{ state: "asked" | "taken" | "refused"; why?: string } | null>(null);
+  /** A gesture asked of its wall from here (`Elsewhere.act`): `asked` until the
+   *  one exchange it is comes back, then `taken` or `refused` with the reason.
+   *  Beside `closing` rather than replacing it, since a close is answered on
+   *  the prompt wire and this is not. One at a time; asking again replaces it.
+   *  What a setting did is drawn by the wall's next snapshot, not here. */
+  acting = $state<{ verb: Verb; state: "asked" | "taken" | "refused"; why?: string } | null>(null);
 
   #walls: Elsewhere;
 
@@ -373,13 +391,24 @@ export class Shadow {
   get elsewhere() {
     return { host: this.host, unheard: this.face.unheard };
   }
-  /** What `handle.ts` needs to say which verbs this card can be asked. `acts`
-   *  is empty until a wall announces the `act:<verb>` words (not built yet), so
-   *  the answer today is the glass and the close — what a shadow has always
-   *  had. `closes` is true because the link refuses an old wall's close itself
-   *  and says why. */
+  /** What `handle.ts` needs to say which verbs this card can be asked: the
+   *  `act:<verb>` words its wall's roster row carries, and whether it takes a
+   *  person's close. A wall with no row yet, or an older one, offers no verbs
+   *  — the glass and, while heard, the close, which the link refuses itself
+   *  and says why. Read when a menu opens, never per frame. */
   get remote(): Remote {
-    return { host: this.host, unheard: this.face.unheard, acts: new Set(), closes: true };
+    const row = this.#walls.roster.find((r) => r.host === this.host && !r.me);
+    return {
+      host: this.host,
+      unheard: this.face.unheard,
+      acts: new Set(row && !row.older ? (row.acts ?? []) : []),
+      closes: row?.closes === true,
+    };
+  }
+  /** The accounts its wall can put it on, by label — what `put it on…`
+   *  offers. Empty from a wall that sent none. */
+  get accounts(): string[] {
+    return this.#walls.walls[this.host]?.accounts ?? [];
   }
 }
 
@@ -431,8 +460,8 @@ export class Elsewhere {
   #taken = new Map<string, { outcome: "taken" | "refused"; why?: string } | null>();
   #stopEffects: () => void;
 
-  #offered: CardDigest[] | null = null;
-  #pending: CardDigest[] | null = null;
+  #offered: { cards: CardDigest[]; accounts: string[] } | null = null;
+  #pending: { cards: CardDigest[]; accounts: string[] } | null = null;
   #lastAt = 0;
   #timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -454,7 +483,10 @@ export class Elsewhere {
     this.#stopEffects = $effect.root(() => {
       $effect(() => {
         if (!this.#skein.loaded) return;
-        this.#offer(this.#skein.convs.map((c) => digestOf(this.#sourceOf(c))));
+        this.#offer(
+          this.#skein.convs.map((c) => digestOf(this.#sourceOf(c))),
+          usable(waterfall.list).map((a) => a.label),
+        );
       });
       /* Whichever arrives second — the card or the link's word about it — is
          what stamps it, so neither order leaves a remotely born card silent. */
@@ -489,6 +521,11 @@ export class Elsewhere {
       ),
     );
     l.keep(listen<{ id: string; card: string }>("flyway:tail", (e) => void this.#lend(e.payload)));
+    l.keep(
+      listen<{ id: string; host: string; card: string; verb: string; args: Record<string, unknown> }>("flyway:act", (e) =>
+        void this.#perform(e.payload),
+      ),
+    );
     l.keep(
       listen<{ card: string; host: string; askerCard?: string | null }>("flyway:born", (e) => {
         this.births[e.payload.card] = e.payload.host;
@@ -581,13 +618,18 @@ export class Elsewhere {
     return k ? { host: null, card: k.parent } : null;
   }
 
-  /** Coalesce: the newest set wins, and it goes at most once a second. */
-  #offer(cards: CardDigest[]) {
-    if (this.#offered && sameCards(cards, this.#offered)) {
+  /** Coalesce: the newest set wins, and it goes at most once a second. The
+   *  wall's account labels ride along, so a change to them alone is a change. */
+  #offer(cards: CardDigest[], accounts: string[]) {
+    if (
+      this.#offered &&
+      sameCards(cards, this.#offered.cards) &&
+      accounts.join("\n") === this.#offered.accounts.join("\n")
+    ) {
       this.#pending = null;
       return;
     }
-    this.#pending = cards;
+    this.#pending = { cards, accounts };
     if (this.#timer) return;
     const wait = Math.max(0, this.#lastAt + PUBLISH_EVERY_MS - Date.now());
     this.#timer = setTimeout(() => {
@@ -598,7 +640,7 @@ export class Elsewhere {
       this.#offered = next;
       this.#lastAt = Date.now();
       void invoke("flyway_publish_cards", {
-        snapshot: { v: DIGEST_V, at: Date.now(), cards: next },
+        snapshot: { v: DIGEST_V, at: Date.now(), cards: next.cards, accounts: next.accounts },
       }).catch(() => {
         /* No flyway, or a build without the command: the snapshot has nowhere
            to go and nothing here is owed a reading of why. Forgetting what was
@@ -644,7 +686,12 @@ export class Elsewhere {
        when the link's stored copy can answer after a live one has arrived. */
     const held = this.walls[p.host];
     if (held && held.at !== null && snap.at !== null && snap.at < held.at) return;
-    this.walls[p.host] = { at: snap.at, madeAt: now - Math.max(0, p.ageMs || 0), cards: snap.cards };
+    this.walls[p.host] = {
+      at: snap.at,
+      madeAt: now - Math.max(0, p.ageMs || 0),
+      cards: snap.cards,
+      accounts: snap.accounts,
+    };
     /* A snapshot is sent only by the wall it describes — the link does not
        relay them — so one arriving is that wall being heard. */
     if (live) this.#hear(p.host, 0);
@@ -984,6 +1031,32 @@ export class Elsewhere {
     }
   }
 
+  /** Ask the card's own wall to do `verb` to it, as a person here — one of
+   *  the verbs its wall announced (`handle.ts::verbsFor`), with the arguments
+   *  `actFor` made from the row. One exchange (`flyway_act`), so of a prompt's
+   *  four readings this needs two and the moment between: `asked`, then
+   *  `taken` or `refused`. A wall drawn as unheard is refused here at once and
+   *  never queued — the link refuses it too, and so does the owner for a verb
+   *  that starts work while it takes none. What a setting did arrives with the
+   *  wall's next snapshot; a reading verb comes back as `text`. */
+  async act(s: Shadow, verb: Verb, args: Record<string, unknown> = {}): Promise<ActOutcome> {
+    const refuse = (why: string): ActOutcome => {
+      s.acting = { verb, state: "refused", why };
+      this.#skein.fault = `${s.host} did not ${verb} ${s.title || "that card"}: ${why}`;
+      return { outcome: "refused", why };
+    };
+    if (s.acting?.state === "asked") return refuse(`still waiting on ${s.host} for the last thing asked`);
+    if (s.face.unheard) return refuse(`${s.host} has not been heard from — nothing was sent`);
+    s.acting = { verb, state: "asked" };
+    try {
+      const text = await invoke<string | null>("flyway_act", { host: s.host, card: s.card, verb, args });
+      s.acting = { verb, state: "taken" };
+      return { outcome: "taken", text: text ?? undefined };
+    } catch (e) {
+      return refuse(String((e as Error)?.message ?? e) || "the link would not take it");
+    }
+  }
+
   #closed(id: string, outcome: "taken" | "refused", why?: string) {
     const s = this.#byClose.get(id);
     if (!s) return false;
@@ -1096,6 +1169,73 @@ export class Elsewhere {
       sent ? "taken" : "refused",
       sent ? undefined : `${this.me || "that wall"} could not deliver it — ${conv.activity}`,
     );
+  }
+
+  /* ── a person's gesture from another wall, on a card here ─────────── */
+
+  /** Do what a person at another wall asked of one of this wall's cards, with
+   *  the same `Skein` calls this wall's own menu makes — so a card cannot tell
+   *  a gesture made there from one made here. Rust has gated it already (the
+   *  verb, the switch, a card asking); this re-checks the card as it is now
+   *  (`actRefusal`), as `settle_delete` re-runs its refusals at the moment of
+   *  deleting. Always answered, for `#take`'s reason. */
+  async #perform(p: { id: string; host: string; card: string; verb: string; args: Record<string, unknown> }) {
+    const answer = (outcome: "taken" | "refused", why?: string, text?: string) =>
+      void invoke("flyway_act_answer", { id: p.id, outcome, why, text }).catch(() => {
+        /* The asker's own bound says it may or may not have happened. */
+      });
+    const me = this.me || "that wall";
+    try {
+      if (!this.#skein.loaded) return answer("refused", `${me} is still starting — ask again in a moment`);
+      const conv = this.#skein.convs.find((c) => c.id === p.card);
+      if (!conv) return answer("refused", `no card ${p.card.slice(0, 8)} is open on ${me} — it may have been closed since`);
+      const args = p.args ?? {};
+      const no = actRefusal(p.verb, args, conv, usable(waterfall.list).map((a) => a.label), me);
+      if (no) return answer("refused", no);
+      const on = args.on === true;
+      switch (p.verb) {
+        case "copy-resume":
+          return answer("taken", undefined, `claude --resume ${conv.sessionId}`);
+        case "copy-cwd":
+          return answer("taken", undefined, conv.cwd);
+        case "aside":
+          this.#skein.setAside(conv, on);
+          return answer("taken");
+        case "bypass":
+          conv.note(`asked from ${p.host}`);
+          this.#skein.setBypass(conv, on);
+          return answer("taken");
+        case "account": {
+          /* `putOnAccount` says a refusal as a fault rather than throwing, so
+             whether it went is read off the card. */
+          const to = String(args.account);
+          conv.note(`asked from ${p.host}`);
+          await this.#skein.putOnAccount(conv, to);
+          return conv.accountLabel === to
+            ? answer("taken")
+            : answer("refused", `${me} could not put it on ${to} — ${this.#skein.fault || "it refused"}`);
+        }
+        case "wake": {
+          if (!conv.dormant) return answer("taken");
+          const woke = await this.#skein.wake(conv);
+          if (woke) conv.note(`woken from ${p.host}`);
+          return woke ? answer("taken") : answer("refused", `${me} could not wake it — ${conv.activity}`);
+        }
+        case "clear": {
+          /* The same: a clear that failed keeps its session. */
+          const was = conv.sessionId;
+          await this.#skein.clear(conv);
+          if (conv.sessionId === was)
+            return answer("refused", `${me} could not clear it — ${this.#skein.fault || "it refused"}`);
+          conv.note(`cleared from ${p.host}`);
+          return answer("taken");
+        }
+        default:
+          return answer("refused", `${me} does not know how to ${p.verb} a card from another wall`);
+      }
+    } catch (e) {
+      answer("refused", `${me} could not do that — ${String((e as Error)?.message ?? e)}`);
+    }
   }
 
   /* ── a card's conversation, asked for by another wall ─────────────── */
