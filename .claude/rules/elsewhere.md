@@ -944,7 +944,17 @@ directory **on <host>**, wherever its wall announced the verb.
   refusal is said as a fault. What a setting did is drawn by the wall's next snapshot, never here.
 
 `test/handle.test.ts` reads `act.rs`'s `VERBS` and holds it equal to `handle.ts`'s `ACTS`, cost
-and all. **Both walls need the build**: an older owner announces no `act:` words, so its shadows'
+and all.
+
+Demonstrated 2026-10-13 between two labs of one frozen build (`acta`, `actb`), driven by the
+control surface's `menu` and `click`: a card opened on actb drew on acta with `copy-resume`,
+`copy-cwd` and `aside` on its menu; *set it aside* there set it aside on actb. After a restart
+left it dormant, *wake it* with actb's switch off (its default) was refused at once and the card
+stayed dormant; with the switch written on by hand (no control op — sink `4b634e26`) the next
+*wake it* woke it, and *pick it back up* cleared the aside. **Not shown:** the copied text reaching
+the clipboard — the write needs a focused window, and a *local* card's copy on the same unfocused
+lab failed identically ("could not reach the clipboard"); `clear` and `account` (the lab card had
+no turn and the lab no accounts), so those rest on the unit tests. **Both walls need the build**: an older owner announces no `act:` words, so its shadows'
 menus are the glass and the close, as before.
 
 **Not yet:** the dock, the keyboard chords and `Yonder`'s header still have their

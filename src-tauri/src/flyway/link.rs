@@ -1653,8 +1653,10 @@ impl Link {
         if c == act::Cost::Work {
             let accepting =
                 self.fleet.lock().ok().and_then(|f| f.entry(host).map(|e| e.facts.accepting)).unwrap_or(false);
+            /* `act::gate`'s sentence rather than the fleet's, whose tail —
+               ask another wall with this territory — is about a spawn. */
             if !accepting {
-                return Err(fleet::Refusal::NotAccepting.reason(host));
+                return act::gate(verb, None, false, host).map(|_| ());
             }
         }
         Ok(())
