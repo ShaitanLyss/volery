@@ -2,7 +2,8 @@
 //!
 //! Four vocabularies share the wire — the sink's (`session::Msg`), the
 //! fleet's (`fleet::FleetMsg`), the cards' (`cards::CardsMsg`) and a card's
-//! conversation read on demand (`tail::TailMsg`) — and each
+//! conversation read on demand (`tail::TailMsg`), with a move's, a look's and
+//! a person's gesture (`act::ActMsg`) since — and each
 //! names its messages under one tag, `msg`, with no name used twice. So the
 //! envelope is **untagged**: a frame is whichever vocabulary its `msg` belongs
 //! to, and a bare `session::Msg` from a wall that only ever spoke the sink is

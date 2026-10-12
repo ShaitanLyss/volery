@@ -5,6 +5,8 @@ paths:
   - "src/lib/Yonder.svelte"
   - "test/shadow.test.ts"
   - "src-tauri/src/flyway/tail.rs"
+  - "src-tauri/src/flyway/act.rs"
+  - "src/lib/handle.ts"
   - "src-tauri/src/flyway/look.rs"
   - "src-tauri/src/flyway/moving.rs"
   - "src-tauri/src/flyway/link/moves.rs"
@@ -806,13 +808,13 @@ to a shape — the row stores what a preset resolved to (`opus[1m]`), not `spawn
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.
 
-### Design, unbuilt: one card handle (sinks `865e555f`, `735f3234`)
+### One card handle (sinks `865e555f`, `735f3234`)
 
 Lyss, 2026-10-12: *"shadow vs local stop drifting and naturally offers the same features without
 crazy amount of code duplication and special casing … only pieces of code that need to know that
-some code is remote should deal with it."* Agreed as **option B** below. Nothing here is built
-beyond the two prerequisites that already landed: a persisted glass spot and the model, effort and
-account on the digest.
+some code is remote should deal with it."* Agreed as **option B** below. Built so far: the verb
+table and the menu (step 1), and the `act` frame with every verb the menu offers a shadow (steps 2
+and 3) — see *What was built* at the end. The dock, the keyboard and `Yonder` (step 4) are not.
 
 **The drift has one cause.** A shadow is its own type for the right reason (above: a `Conversation`
 reaches rousing, reaping and `#persistConv`), but every *gesture* then took a `Conversation`, so
@@ -892,8 +894,59 @@ is not the destruction an earlier draft of this note called it. They stay `work`
 prompt, so refused to a quiet wall (**quiet** is the fleet's word: not heard from for
 `QUIET_AFTER_MS`, 90 s — a lid shut, asleep or offline; nothing to do with the card being idle).
 
-**Built so far (front end only).** `handle.ts` is the verb/cost table and `verbsFor`;
-`menu.ts`'s card rows are one function (`cardRows`) behind `has(verb)`, and a shadow's menu is
-that function given the verbs its wall can be asked. Until a wall announces `act:<verb>` words
-(Rust, not built) that is still the glass and the close. The dock, the keyboard and `Yonder`
-still have their `focusedShadow` branches.
+### What was built: the menu and the `act` frame
+
+`handle.ts` is the verb/cost table and `verbsFor`; `menu.ts`'s card rows are one function
+(`cardRows`) behind `has(verb)`, and a shadow's menu is that function given the verbs its wall
+can be asked, filled from its digest the way a local card's is filled from its `Conversation`.
+`flyway/act.rs` carries them. A right-click on a shadow now offers wake, set aside / pick back up,
+ignore / respect the caps, put it on…, clear, copy resume command **on <host>** and copy working
+directory **on <host>**, wherever its wall announced the verb.
+
+- **One frame, one exchange.** `act { id, card, verb, args }` → `acted { id, outcome, why, text }`,
+  answered on the stream it came in on (`Link::answer_all` → `act_here`; the asker's `read_act`),
+  nothing kept, nothing retried. `outcome` is a string, not an enum, for `Tailed`'s reason —
+  anything but `taken` reads as refused. `text` is how `copy-resume` (`claude --resume
+  <sessionId>`) and `copy-cwd` come back; the asker copies it.
+- **Announced, so an older wall is offered nothing.** `Facts::can` carries `act:<verb>` per verb
+  this build does (`act::words`); the roster row turns them into `acts` (only verbs *this* build
+  also knows — `act::offered`) and `closes` (`close_by_person`); `Shadow.remote` reads both. Not
+  in `fleet::CAN`, for `tail::WORD`'s reason: those are what an *agent* may ask.
+- **Gated by cost, on the owner, on its switch read fresh** (`act::gate`). `work` — wake, clear,
+  account, bypass — needs "take work from other walls", exactly as a prompt does; `cosmetic`
+  (aside) and `read` (the copies) do not. The asker refuses at once a wall that is unknown, quiet
+  (`QUIET_AFTER_MS`), too old for the verb (`act_reachable` → `reachable`), or — for a work verb —
+  last announced as not taking work; nothing is queued, since a gesture is one exchange and an
+  exchange that does not land is the gesture refused.
+- **A person's, never an agent's.** No MCP tool sends an `act`; `flyway_act` is a Tauri command
+  the menu calls. The frame carries `from_card` anyway, never set by this build, and the owner
+  refuses one that names a card — `deliver_here`'s second lock on a notice answer.
+- **Strict shapes.** Id and card held to a uuid's alphabet (`act::is_id`); the verb to `VERBS`;
+  args read into a fresh object per verb (`read_args`) so nothing else a peer sends reaches the
+  front end. **A setting crosses as the state wanted, never a toggle** (`aside {on}`,
+  `bypass {on}`) — a gesture made against a face a snapshot old must not flip it the wrong way.
+  Every string either way is scrubbed and capped (`fit_text`).
+- **The owner's front end does it**, parked under a fresh id (`flyway:act`, answered by
+  `flyway_act_answer`, twelve seconds, `ACT_WITHIN`), with the same `Skein` calls its own menu
+  makes (`Elsewhere.#perform`). It **re-checks the card as it is** (`handle.ts::actRefusal`):
+  `clear` carries `sawWorking` — what the asker's face said when the person chose it — and is
+  refused if the card has *started* a turn since, while a turn already going wrong may still be
+  abandoned, as locally; `account` must name one of this wall's usable accounts. `putOnAccount`
+  and `clear` report failure as a fault rather than a throw, so whether they went is read off the
+  card (its account, its session id). A work verb leaves a note in the transcript naming the wall
+  that asked.
+- **The owner's accounts ride the snapshot** (`Snapshot.accounts`, labels only, read by
+  `readAccounts`), since `put it on…` is a choice among *that* wall's subscriptions. An older wall
+  sends none, which offers no choice.
+- **The asker's reading.** `Elsewhere.act` returns `taken` (with `text`) or `refused`, and keeps
+  `Shadow.acting` — `asked` → `taken` | `refused` — beside `closing` rather than generalising it,
+  since a close is answered on the prompt wire and an act is not. One at a time per shadow. A
+  refusal is said as a fault. What a setting did is drawn by the wall's next snapshot, never here.
+
+`test/handle.test.ts` reads `act.rs`'s `VERBS` and holds it equal to `handle.ts`'s `ACTS`, cost
+and all. **Both walls need the build**: an older owner announces no `act:` words, so its shadows'
+menus are the glass and the close, as before.
+
+**Not yet:** the dock, the keyboard chords and `Yonder`'s header still have their
+`focusedShadow` branches (step 4); `processes` stays local; `regroup`, `hand` and `pin` are
+`local` until a remote card has a row here.
