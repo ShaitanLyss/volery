@@ -72,7 +72,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # browser,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
                          # shell, finding, leader, synth, voice, steward, office, styles, zoom,
-                         # timeline, span, notice, shadow, machine
+                         # timeline, span, notice, shadow, machine, handle
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes

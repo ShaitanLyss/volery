@@ -886,6 +886,14 @@ flag — the menu is read-only plumbing and the local verbs must behave identica
 `focusedShadow` branches. Rust (`act` frame, `Facts::can`, owner-side dispatch) goes to a card on a
 machine that can compile it; the front end can be done anywhere.
 
-**Open for Lyss:** whether `account`/`bypass` should be remotely settable at all (they spend the
-*owner's* money from a machine that may be a work laptop); and whether `clear` is worth the remote
-risk of destroying a session you cannot see. Both are `can: no` until decided.
+**Decided (Lyss, 2026-10-13):** `account`, `bypass` and `clear` are settable remotely — *"I am the
+owner everywhere"*, and `clear` keeps the card and its session on disk to be adopted back, so it
+is not the destruction an earlier draft of this note called it. They stay `work` cost: gated like a
+prompt, so refused to a quiet wall (**quiet** is the fleet's word: not heard from for
+`QUIET_AFTER_MS`, 90 s — a lid shut, asleep or offline; nothing to do with the card being idle).
+
+**Built so far (front end only).** `handle.ts` is the verb/cost table and `verbsFor`;
+`menu.ts`'s card rows are one function (`cardRows`) behind `has(verb)`, and a shadow's menu is
+that function given the verbs its wall can be asked. Until a wall announces `act:<verb>` words
+(Rust, not built) that is still the glass and the close. The dock, the keyboard and `Yonder`
+still have their `focusedShadow` branches.

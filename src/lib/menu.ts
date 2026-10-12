@@ -8,6 +8,8 @@
  * Pure, so the vocabulary can be tested without a browser. The component turns
  * ids into calls; it never decides what appears. */
 
+import type { Verb } from "./handle";
+
 export type MenuKind =
   | "card"
   | "spawn"
@@ -54,6 +56,10 @@ export type MenuTarget = {
   /** shadow: the wall the card is on, named in the item that asks it to close
    *  the card — the close happens there, not here. */
   host?: string;
+  /** The verbs this card may be asked, from `handle.ts::verbsFor`. Absent is
+   *  every verb — a card on this wall, which is what its menu always was. A
+   *  shadow's absent means the two it has always had. */
+  verbs?: ReadonlySet<Verb> | null;
   /* card: drawn on the glass, but only because its whole territory is stuck
      there. The item is left off entirely — "put it back on the wall" would be a
      promise the card cannot keep while its territory is still carrying it, and
@@ -300,10 +306,15 @@ function tidy(items: (MenuItem | null | undefined | false)[]): MenuItem[] {
   return out;
 }
 
-export function menuFor(t: MenuTarget): MenuItem[] {
-  switch (t.kind) {
-    case "card":
-      return tidy([
+/** A card's rows, for a card on this wall and a card on another alike. Every
+ *  row is behind `has`, which is `handle.ts`'s answer for that card: a card
+ *  here has them all, so its menu is what it always was, and a card elsewhere
+ *  has the verbs its wall can be asked. One list, so a verb added to a local
+ *  card's menu reaches a remote one by being added to the table, not by being
+ *  written twice. */
+function cardRows(t: MenuTarget): (MenuItem | null)[] {
+  const has = (v: Verb) => !t.verbs || t.verbs.has(v);
+  return [
         /* First, because on a card that has one it is what you right-clicked
            for — and because handing a plan on is the only item here that does
            something with what the card *produced* rather than with the card.
@@ -318,7 +329,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            the house rule next door — an empty family is dropped rather than
            drawn — and a row that opens a submenu with nothing in it is the
            worst version of that, since it takes a gesture to find out. */
-        t.plan && (t.presets ?? []).length
+        has("hand") && t.plan && (t.presets ?? []).length
           ? more(
               "handoff",
               "hand the plan to a maker",
@@ -330,14 +341,14 @@ export function menuFor(t: MenuTarget): MenuItem[] {
               })),
             )
           : null,
-        t.plan && (t.presets ?? []).length ? sep : null,
+        has("hand") && t.plan && (t.presets ?? []).length ? sep : null,
         /* Which grouping of its project the card stands in. A submenu for the
            reason `handoff` has one — the list is as long as the project has
            regions — and absent entirely for a project with only one, which is
            every project until somebody makes a second. The card's own grouping
            is already filtered out by the caller, so a submenu that appears
            always has something in it to pick. */
-        (t.groupings ?? []).length
+        has("regroup") && (t.groupings ?? []).length
           ? more(
               "regroup",
               "move it to",
@@ -348,33 +359,33 @@ export function menuFor(t: MenuTarget): MenuItem[] {
               })),
             )
           : null,
-        (t.groupings ?? []).length ? sep : null,
+        has("regroup") && (t.groupings ?? []).length ? sep : null,
         /* The same verb across a machine boundary — the card, its whole
            conversation, picked up on another wall. A submenu for `regroup`'s
            reason, and absent where there is nowhere to go. The code moves by
            git and the move refuses a dirty tree, so this is not a row that can
            lose work; the card is not let go here until it has answered with
            its history there (`flyway/moving.rs`). */
-        (t.walls ?? []).length
+        has("move") && (t.walls ?? []).length
           ? more(
               "move",
               "move it to another machine",
               (t.walls ?? []).map((h) => item(`move:${h}`, h)),
             )
           : null,
-        (t.walls ?? []).length ? sep : null,
-        t.dormant ? item("wake", "wake it") : null,
+        has("move") && (t.walls ?? []).length ? sep : null,
+        has("wake") && t.dormant ? item("wake", "wake it") : null,
         /* The thing that was missing when a card and a terminal wanted the same
            conversation: the session id is what `--resume` takes, and until now
            it appeared nowhere in the UI at all. */
-        item("copy-resume", "copy resume command"),
-        item("copy-cwd", "copy working directory"),
+        has("copy-resume") ? item("copy-resume", "copy resume command") : null,
+        has("copy-cwd") ? item("copy-cwd", "copy working directory") : null,
         /* Only where there is something to look at. A dormant card owns no
            process, so this would open on an empty list — and an item that
            reliably answers "nothing" is one you stop reading after the second
            time, which is how a real answer gets missed later. */
-        t.dormant ? null : item("processes", "processes…"),
-        t.pinned ? item("unpin", "let it flow again") : null,
+        has("processes") && !t.dormant ? item("processes", "processes…") : null,
+        has("pin") && t.pinned ? item("unpin", "let it flow again") : null,
         /* One item with two labels rather than two items, because it is one
            state with two sides — the same shape as `pinned`'s "let it flow
            again", which is also only ever offered as the way back. A toggle
@@ -382,12 +393,12 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            but "set aside" / "pick up", and only one of those is available at a
            time. Kept beside pinning, since both are things you decide about a
            card rather than things you do to the conversation inside it. */
-        item("aside", t.aside ? "pick it back up" : "set it aside"),
+        has("aside") ? item("aside", t.aside ? "pick it back up" : "set it aside") : null,
         /* Beside `aside` because it is the same kind of decision — something
            you settle about this card rather than something you do to the
            conversation in it — and because both are read off the card's face.
            Only where there are accounts to have caps on. */
-        t.accounts
+        has("bypass") && t.accounts
           ? item("bypass", t.bypassing ? "respect the account caps" : "ignore the account caps")
           : null,
         /* And which subscription it spends, beside the caps that govern it —
@@ -400,7 +411,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            (current)" is a sentence where a tick is a glance — and the mark is
            what makes the list a *choice* rather than a list of four things it
            is not clear you are already doing one of. */
-        (t.accountPicks?.length ?? 0) > 1
+        has("account") && (t.accountPicks?.length ?? 0) > 1
           ? more(
               "account",
               "put it on…",
@@ -411,7 +422,7 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            you decide about the card rather than things you do to the
            conversation inside it. Nothing stops and nothing is lost — the wall
            still holds its slot — so it is not marked danger. */
-        t.held ? null : glassItem(t.glass),
+        t.held || !has("glass") ? null : glassItem(t.glass),
         sep,
         /* Beside `close`, because both end the conversation — but not marked
            danger, and the difference is real: closing takes the card off the
@@ -419,9 +430,15 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            holding stays on disk to be adopted back. Offered only once there is
            something to clear; on a card that has never spoken it would do
            nothing but mint an id. */
-        t.spoken ? item("clear", "clear it — start fresh") : null,
-        item("close", "close", true),
-      ].filter(Boolean) as MenuItem[]);
+        has("clear") && t.spoken ? item("clear", "clear it — start fresh") : null,
+        has("close") ? item("close", t.host ? `close it on ${t.host}` : "close", true) : null,
+  ];
+}
+
+export function menuFor(t: MenuTarget): MenuItem[] {
+  switch (t.kind) {
+    case "card":
+      return tidy(cardRows(t).filter(Boolean) as MenuItem[]);
 
     /* A card on another wall. Two things, because two are all this wall can
        do with one: the glass, whose spot for it lives in memory here and
@@ -429,11 +446,14 @@ export function menuFor(t: MenuTarget): MenuItem[] {
        menu offers besides — wake, resume, processes, set aside, the accounts —
        is about a process and a session that are on the other machine. */
     case "shadow":
-      return [
-        glassItem(t.glass),
-        sep,
-        item("close", t.host ? `close it on ${t.host}` : "close it", true),
-      ];
+      /* The same rows, from the same function: what differs is which verbs
+         the wall can be asked, which `handle.ts` decides. With none given, the
+         two a shadow has always had. */
+      return tidy(
+        cardRows({ ...t, verbs: t.verbs ?? new Set<Verb>(["glass", "close"]), spoken: t.spoken }).filter(
+          Boolean,
+        ) as MenuItem[],
+      );
 
     case "image":
       return [

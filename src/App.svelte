@@ -128,6 +128,7 @@
   } from "./lib/commands";
   import { isGear, planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
+import { verbsFor } from "./lib/handle";
   import {
     FALLBACK_DEFAULT_PRESET,
     presetById,
@@ -1949,7 +1950,7 @@
            a menu is a question about the thing, not a visit to it. */
         studio.clearSelection();
         focusedId = s.id;
-        target = { kind: "shadow", glass: !!s.glass, host: s.host };
+        target = { kind: "shadow", glass: !!s.glass, host: s.host, verbs: verbsFor(s.remote) };
         act = (id) => {
           if (id === "glass") canvas?.toggleGlass("shadow", s.id);
           else if (id === "close") closeElsewhere(s);

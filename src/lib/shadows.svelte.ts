@@ -67,6 +67,7 @@ import {
 } from "./shadow";
 import type { Spot } from "./glass";
 import type { Effort } from "./commands";
+import type { Remote } from "./handle";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
@@ -371,6 +372,14 @@ export class Shadow {
   readonly planDoc = null;
   get elsewhere() {
     return { host: this.host, unheard: this.face.unheard };
+  }
+  /** What `handle.ts` needs to say which verbs this card can be asked. `acts`
+   *  is empty until a wall announces the `act:<verb>` words (not built yet), so
+   *  the answer today is the glass and the close — what a shadow has always
+   *  had. `closes` is true because the link refuses an old wall's close itself
+   *  and says why. */
+  get remote(): Remote {
+    return { host: this.host, unheard: this.face.unheard, acts: new Set(), closes: true };
   }
 }
 
