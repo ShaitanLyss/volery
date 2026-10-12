@@ -3553,7 +3553,17 @@ export class Skein {
    *  and the next wake started the new session from nothing. `stir` no longer
    *  fires on a command (`stirsCard`); this is the guard for every other path
    *  into `#spawn` — the rouse queue, a relay wake, a click. */
-  async clear(conv: Conversation) {
+  async clear(conv: Conversation, stillMay?: () => string | null): Promise<string | null> {
+    /* For a clear asked from another wall (`Elsewhere.#perform`): the owner's
+       re-check has to run *after* a spawn in flight has landed, since that
+       spawn may open a turn the asker never saw. Nothing is touched before it
+       says go; a local clear passes nothing and takes the path below as it
+       always did. */
+    if (stillMay) {
+      await this.#waking.get(conv.id)?.catch(() => {});
+      const no = stillMay();
+      if (no) return no;
+    }
     this.#dropHeal(conv);
     this.#dropNudge(conv);
     try {
@@ -3569,9 +3579,11 @@ export class Skein {
          session that never ran it. */
       await invoke("forget_jobs", { conversationId: conv.id }).catch(() => {});
       conv.clear(sessionId);
+      return null;
     } catch (err) {
       conv.retiring = false;
       this.fault = String(err);
+      return this.fault;
     }
   }
 

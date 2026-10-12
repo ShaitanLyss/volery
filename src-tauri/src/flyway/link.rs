@@ -1589,7 +1589,10 @@ impl Link {
             return said(Err("no card was named".into()));
         }
         let Some(host) = from else {
-            return said(Err(format!("{} could not tell which wall asked", self.me)));
+            return said(Err(format!(
+                "{} could not tell which wall asked — it may not have heard from yours yet; try again in a minute",
+                self.me
+            )));
         };
         let accepting = self.store().and_then(|s| s.0.lock().ok().map(|c| here::accepting(&c))).unwrap_or(false);
         if let Err(why) = act::gate(&verb, from_card.as_deref(), accepting, &self.me) {
@@ -1673,7 +1676,13 @@ impl Link {
             .wire
             .exchange(peer, vec![ask], true)
             .await
-            .map_err(|e| format!("could not reach {host}: {e} — nothing was done"))?;
+            /* Not "nothing was done": the exchange can fail after the far wall
+               has read the act — its front end takes up to `ACT_WITHIN` of
+               the asker's twenty seconds, and a slow dial eats the rest — so a
+               fault here cannot tell an act never sent from one done unheard. */
+            .map_err(|e| {
+                format!("did not hear back from {host} ({e}) — it may or may not have done it; look at the card before asking again")
+            })?;
         let mut acts = Vec::new();
         let mut rest = Vec::new();
         for f in back {

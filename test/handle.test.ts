@@ -111,7 +111,7 @@ describe("the verbs that cross as an act", () => {
     const face = { aside: true, bypassCaps: false, working: true };
     expect(actFor("aside", face)).toEqual({ verb: "aside", args: { on: false } });
     expect(actFor("bypass", face)).toEqual({ verb: "bypass", args: { on: true } });
-    expect(actFor("account:work", face)).toEqual({ verb: "account", args: { account: "work" } });
+    expect(actFor("account:work", face)).toEqual({ verb: "account", args: { account: "work", sawWorking: true } });
     expect(actFor("clear", face)).toEqual({ verb: "clear", args: { sawWorking: true } });
     expect(actFor("copy-cwd", face)).toEqual({ verb: "copy-cwd", args: {} });
     for (const id of ["glass", "close", "processes", "unpin", "move:lab"]) expect(actFor(id, face)).toBeNull();
@@ -138,5 +138,14 @@ describe("the verbs that cross as an act", () => {
     expect(label("copy-cwd")).toMatchObject({ label: "copy working directory on lab" });
     const local = menuFor({ kind: "card" }).find((i) => i.kind === "item" && i.id === "copy-cwd");
     expect(local).toMatchObject({ label: "copy working directory" });
+  });
+});
+
+describe("a move to another account ends the process, as a clear does", () => {
+  test("so it is refused on a card that has started a turn since", () => {
+    expect(actRefusal("account", { account: "w", sawWorking: false }, { working: true }, ["w"], "lab")).toContain(
+      "started a turn",
+    );
+    expect(actRefusal("account", { account: "w", sawWorking: true }, { working: true }, ["w"], "lab")).toBeNull();
   });
 });

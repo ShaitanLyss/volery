@@ -117,7 +117,10 @@ export type ActFace = { aside: boolean; bypassCaps: boolean; working: boolean };
  *  was working when it was chosen, so the owner can refuse one that has
  *  *started* a turn since. */
 export function actFor(id: string, face: ActFace): { verb: Verb; args: Record<string, unknown> } | null {
-  if (id.startsWith("account:")) return { verb: "account", args: { account: id.slice(8) } };
+  /* Moving a card to another account ends its process, as a clear does, so it
+     carries what the face said too. */
+  if (id.startsWith("account:"))
+    return { verb: "account", args: { account: id.slice(8), sawWorking: face.working } };
   switch (id) {
     case "aside":
       return { verb: "aside", args: { on: !face.aside } };
@@ -146,8 +149,10 @@ export function actRefusal(
   me: string,
 ): string | null {
   if (!(ACTS as readonly string[]).includes(verb)) return `${me} does not know how to ${verb} a card from another wall`;
-  if (verb === "clear" && card.working && args.sawWorking !== true)
-    return `it has started a turn on ${me} since you chose that — look at it before clearing it`;
+  /* Both end the card's process: a turn it has started since the asker chose
+     this is a turn the asker never saw, and is not theirs to kill. */
+  if ((verb === "clear" || verb === "account") && card.working && args.sawWorking !== true)
+    return `it has started a turn on ${me} since you chose that — look at it before asking again`;
   if (verb === "account") {
     const label = typeof args.account === "string" ? args.account : "";
     if (!accounts.includes(label)) return `there is no account called ${label || "that"} on ${me} that can take work`;

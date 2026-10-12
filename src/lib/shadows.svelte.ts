@@ -402,7 +402,9 @@ export class Shadow {
       host: this.host,
       unheard: this.face.unheard,
       acts: new Set(row && !row.older ? (row.acts ?? []) : []),
-      closes: row?.closes === true,
+      /* No row yet — a stored snapshot drawn at launch — keeps the close, for
+         `verbsFor`'s reason: the link refuses one it cannot carry, in words. */
+      closes: row ? row.closes === true : true,
     };
   }
   /** The accounts its wall can put it on, by label — what `put it on…`
@@ -1045,7 +1047,13 @@ export class Elsewhere {
       this.#skein.fault = `${s.host} did not ${verb} ${s.title || "that card"}: ${why}`;
       return { outcome: "refused", why };
     };
-    if (s.acting?.state === "asked") return refuse(`still waiting on ${s.host} for the last thing asked`);
+    /* Not through `refuse`: writing `acting` here would clear the very mark
+       that makes a third click wait too. */
+    if (s.acting?.state === "asked") {
+      const why = `still waiting on ${s.host} for the last thing asked`;
+      this.#skein.fault = why;
+      return { outcome: "refused", why };
+    }
     if (s.face.unheard) return refuse(`${s.host} has not been heard from — nothing was sent`);
     s.acting = { verb, state: "asked" };
     try {
@@ -1198,12 +1206,17 @@ export class Elsewhere {
           return answer("taken", undefined, `claude --resume ${conv.sessionId}`);
         case "copy-cwd":
           return answer("taken", undefined, conv.cwd);
+        /* A setting already as asked is done, and touched no further: a stale
+           face asking again must not write a second note, nor have a bypass
+           release every held card on the wall. */
         case "aside":
-          this.#skein.setAside(conv, on);
+          if (conv.aside !== on) this.#skein.setAside(conv, on);
           return answer("taken");
         case "bypass":
-          conv.note(`asked from ${p.host}`);
-          this.#skein.setBypass(conv, on);
+          if (conv.bypassCaps !== on) {
+            conv.note(`asked from ${p.host}`);
+            this.#skein.setBypass(conv, on);
+          }
           return answer("taken");
         case "account": {
           /* `putOnAccount` says a refusal as a fault rather than throwing, so
@@ -1222,11 +1235,10 @@ export class Elsewhere {
           return woke ? answer("taken") : answer("refused", `${me} could not wake it — ${conv.activity}`);
         }
         case "clear": {
-          /* The same: a clear that failed keeps its session. */
-          const was = conv.sessionId;
-          await this.#skein.clear(conv);
-          if (conv.sessionId === was)
-            return answer("refused", `${me} could not clear it — ${this.#skein.fault || "it refused"}`);
+          /* Asked again once a spawn in flight has landed, since that spawn
+             may open a turn the check above could not see (`Skein.clear`). */
+          const no = await this.#skein.clear(conv, () => actRefusal(p.verb, args, conv, [], me));
+          if (no) return answer("refused", no);
           conv.note(`cleared from ${p.host}`);
           return answer("taken");
         }

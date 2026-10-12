@@ -161,7 +161,8 @@ pub fn fit_text(s: &str, most: usize) -> String {
 ///
 /// - `aside`, `bypass`: `{ on: bool }` — the state wanted, never a toggle, so
 ///   a gesture made against a face a snapshot old cannot flip it the wrong way.
-/// - `account`: `{ account: string }`, the label.
+/// - `account`: `{ account: string, sawWorking: bool }` — the label, and the
+///   face as `clear` carries it, since a move ends the process too.
 /// - `clear`: `{ sawWorking: bool }`, what the asker's face said when the
 ///   person chose it — so the owner can refuse a card that has *started* a
 ///   turn since, while still letting a turn going wrong be abandoned, which is
@@ -184,6 +185,8 @@ pub fn read_args(verb: &str, args: &Value) -> Result<Value, String> {
                 return Err("no account was named".into());
             }
             out.insert("account".into(), Value::String(label));
+            /* A move to another account ends the process, as a clear does. */
+            out.insert("sawWorking".into(), Value::Bool(matches!(get("sawWorking"), Some(Value::Bool(true)))));
         }
         "clear" => {
             /* Absent reads as resting: the stricter of the two, since a clear
@@ -300,6 +303,11 @@ mod tests {
         let got = read_args("account", &json!({ "account": long })).unwrap();
         let label = got["account"].as_str().unwrap();
         assert!(label.starts_with("worka") && label.chars().count() == LABEL_MOST);
+        assert_eq!(got["sawWorking"], false);
+        assert_eq!(
+            read_args("account", &json!({ "account": "w", "sawWorking": true })).unwrap(),
+            json!({ "account": "w", "sawWorking": true })
+        );
         assert!(read_args("account", &json!({ "account": "  " })).is_err());
         assert_eq!(read_args("clear", &json!({})).unwrap(), json!({ "sawWorking": false }));
         assert_eq!(read_args("clear", &json!({ "sawWorking": true })).unwrap(), json!({ "sawWorking": true }));
