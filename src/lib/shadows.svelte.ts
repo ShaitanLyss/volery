@@ -47,6 +47,7 @@ import {
   faceOf,
   idleOf,
   keepHost,
+  placedOf,
   spotsOf,
   NO_SPOTS,
   promptRefusal,
@@ -63,6 +64,7 @@ import {
   type DigestAsk,
   type Sent,
   type SentEvent,
+  type Placed,
   type Spots,
 } from "./shadow";
 import type { Spot } from "./glass";
@@ -73,6 +75,16 @@ import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
+
+const SECTIONS_KEY = "skein.sections.v1";
+function loadSections(): Placed {
+  try {
+    const raw = localStorage.getItem(SECTIONS_KEY);
+    return raw ? placedOf(JSON.parse(raw)) : {};
+  } catch {
+    return {};
+  }
+}
 
 /** How many times a question's design or files are asked for before the
  *  sentence saying why they could not be is left standing. */
@@ -442,6 +454,28 @@ export class Elsewhere {
    *  birth heard live, so a root grows for a card opened now and a restored one
    *  is simply there, as `Skein.kin`'s are. */
   askedBy = $state<Record<string, Asked>>({});
+  /** Where sections have been dragged to on the wall, by `sectionId`.
+   *  `localStorage`, not SQLite, on `berth.svelte.ts`'s argument: where this
+   *  window stands its furniture is per-machine and disposable, and a section
+   *  has no row to be a column of. */
+  sections = $state.raw<Placed>(loadSections());
+  /** Put a section somewhere, or back in line with `null`. Held in memory on
+   *  every move of a drag and written by `saveSections` when the gesture ends,
+   *  not sixty times a second. */
+  moveSection(id: string, at: { x: number; y: number } | null) {
+    const next = { ...this.sections };
+    if (at) next[id] = { x: at.x, y: at.y };
+    else delete next[id];
+    this.sections = next;
+  }
+  saveSections() {
+    try {
+      localStorage.setItem(SECTIONS_KEY, JSON.stringify(this.sections));
+    } catch {
+      /* The section is already where it was put; only the memory is lost. */
+    }
+  }
+
   /** Which shadows are stuck to the glass in the room in front of you. The
    *  store holds every room's (`arrange.rs`, kind `shadow`); this is the one
    *  `adopt_arrangement` last answered, written through on every change. */

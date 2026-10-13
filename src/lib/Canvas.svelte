@@ -72,7 +72,7 @@
   import Bump from "./Bump.svelte";
   import Card from "./Card.svelte";
   import type { Shadow } from "./shadows.svelte";
-  import { standElsewhere } from "./shadow";
+  import { standElsewhere, type Placed } from "./shadow";
   import Seats from "./Seats.svelte";
   import ImageNode from "./ImageNode.svelte";
   import WidgetNode from "./WidgetNode.svelte";
@@ -83,6 +83,9 @@
   let {
     convs,
     shadows = [],
+    sections = {},
+    onsection,
+    onsectionsave,
     leaving = [],
     projects,
     studio,
@@ -152,6 +155,11 @@
      *  gesture they share, because its spot for a shadow is in memory and
      *  nowhere else (`ShadowGlass`). See `.claude/rules/elsewhere.md`. */
     shadows?: readonly Shadow[];
+    /** Where sections of other walls' cards have been dragged to, and how a
+     *  drag says so (`Elsewhere.moveSection`, `saveSections`). */
+    sections?: Placed;
+    onsection?: (id: string, at: { x: number; y: number } | null) => void;
+    onsectionsave?: () => void;
     /** Where the home screen is inside the glass, in glass pixels, or null
      *  while the studio is on one screen and the two are the same box.
      *
@@ -700,7 +708,7 @@
     standElsewhere(shadows, [
       ...wallRegions,
       ...[...wallImages, ...wallWidgets].map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h })),
-    ]),
+    ], sections),
   );
   /** Whether a wall has gone quiet, read off its cards — every card on one wall
    *  shares the answer, so the first is asked. */
@@ -760,6 +768,70 @@
     el: HTMLElement;
     pointer: number;
   } | null = null;
+
+  /* A section of another wall's cards, dragged by its name. Screen delta over
+     the scale, as the wall's own carry does; written to memory on every move
+     and to localStorage once, on release. */
+  let sectionHeld: {
+    id: string;
+    sx: number;
+    sy: number;
+    ox: number;
+    oy: number;
+    moved: boolean;
+    el: HTMLElement;
+    pointer: number;
+  } | null = null;
+
+  function sectionDown(r: { id: string; x: number; y: number }, e: PointerEvent) {
+    if (e.button !== 0) return;
+    sectionHeld = {
+      id: r.id,
+      sx: e.clientX,
+      sy: e.clientY,
+      ox: r.x,
+      oy: r.y,
+      moved: false,
+      el: e.currentTarget as HTMLElement,
+      pointer: e.pointerId,
+    };
+    window.addEventListener("pointermove", sectionMove);
+    window.addEventListener("pointerup", sectionUp);
+    window.addEventListener("pointercancel", sectionUp);
+  }
+  function sectionMove(e: PointerEvent) {
+    const h = sectionHeld;
+    if (!h) return;
+    if (!h.moved) {
+      if (Math.hypot(e.clientX - h.sx, e.clientY - h.sy) < DRAG_SLOP) return;
+      h.moved = true;
+      try {
+        h.el.setPointerCapture?.(h.pointer);
+      } catch {}
+    }
+    onsection?.(h.id, {
+      x: h.ox + (e.clientX - h.sx) / studio.scale,
+      y: h.oy + (e.clientY - h.sy) / studio.scale,
+    });
+  }
+  function sectionUp() {
+    const h = sectionHeld;
+    sectionHeld = null;
+    window.removeEventListener("pointermove", sectionMove);
+    window.removeEventListener("pointerup", sectionUp);
+    window.removeEventListener("pointercancel", sectionUp);
+    if (!h) return;
+    if (h.el.hasPointerCapture?.(h.pointer)) h.el.releasePointerCapture(h.pointer);
+    if (h.moved) {
+      suppressClick = true;
+      onsectionsave?.();
+    }
+  }
+  $effect(() => () => {
+    window.removeEventListener("pointermove", sectionMove);
+    window.removeEventListener("pointerup", sectionUp);
+    window.removeEventListener("pointercancel", sectionUp);
+  });
 
   function shadowDown(n: { conv: Shadow; x: number; y: number }, e: PointerEvent) {
     if (e.button !== 0) return;
@@ -2704,9 +2776,11 @@
           style:left="{r.x + 11}px"
           style:top="{r.y + 8}px"
           style:z-index={Z_CHIP}
-          title="{r.name} on {r.host}"
+          title="{r.name} on {r.host} (drag to move it)"
+          role="presentation"
+          onpointerdown={(e) => sectionDown(r, e)}
         >
-          {r.name}
+          {r.name} · {r.host}
         </div>
       {/each}
 
@@ -3042,7 +3116,7 @@
     border-style: dotted;
   }
   .name.elsewhere {
-    cursor: default;
+    cursor: grab;
   }
   /* The wall a column of sections belongs to, over the first of them. A shade
      louder than a section's name, since it is the level above it — the same

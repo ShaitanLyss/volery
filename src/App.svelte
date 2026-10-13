@@ -4824,6 +4824,9 @@
         bind:this={canvas}
         convs={skein.convs}
         shadows={elsewhere.shadows}
+        sections={elsewhere.sections}
+        onsection={(id, at) => elsewhere.moveSection(id, at)}
+        onsectionsave={() => elsewhere.saveSections()}
         leaving={skein.leaving}
         projects={skein.territories}
         {asana}

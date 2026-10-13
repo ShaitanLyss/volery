@@ -175,7 +175,13 @@ design, unless it says so:
 - **Tab.** Deliberately not — see *Reached by keyboard* above.
 - **Delete**, the dock's gathering and broadcast: images and widgets only, and `selected` is
   this wall's cards. A shadow cannot be in either, which is right.
-- **Moving one on the wall.** By design: a section is laid out, not arranged.
+- **Moving a card on the wall.** By design: a card is laid out in its section, not arranged.
+- **Moving a section** is a gesture of its own (2026-10-13, Lyss: *"shadow projects should behave as
+  local projects"*): drag its name (`Canvas.sectionDown`). Its place is `Elsewhere.sections`, kept in
+  `localStorage` (`skein.sections.v1`) on `berth.svelte.ts`'s argument, passed to `standElsewhere`,
+  which still reserves the section's slot in the column so dragging one away does not slide the rest up.
+  The name says which wall it is on (`skein · QUEERISFREEDOM`); the host heading is far above a
+  tall section. No key path yet, and no way back into line short of editing the store.
 - **Strands and roots.** `cardBoxes` has no shadows, so no strands, roots or wisps reach one —
   61057379 is drawing roots across walls as this is written.
 

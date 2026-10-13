@@ -22,6 +22,7 @@ import {
   askedAt,
   remoteQuestions,
   standElsewhere,
+  placedOf,
   steadyDoing,
   ELSEWHERE_COLS,
   HOST_HEAD,
@@ -367,6 +368,30 @@ describe("where other walls stand", () => {
     id: `elsewhere:${host}:${project}:${n}`,
     host,
     project,
+  });
+
+  /* Lyss: shadow projects should behave as local projects by design, and a
+     local project can be dragged about the wall. */
+  test("a section somebody put somewhere stands there, and its slot in the column stays reserved", () => {
+    const shadows = [s("lab", 1, "atelier"), s("lab", 2, "skein")];
+    const beside = [{ x: 0, y: 0, w: 10, h: 10 }];
+    const inLine = standElsewhere(shadows, beside);
+    const id = sectionId("lab", "atelier");
+    const put = standElsewhere(shadows, beside, { [id]: { x: 5000, y: -300 } });
+    const was = inLine.regions.find((r) => r.name === "atelier")!;
+    const now = put.regions.find((r) => r.name === "atelier")!;
+    expect([now.x, now.y, now.moved]).toEqual([5000, -300, true]);
+    expect(was.moved).toBe(false);
+    // Its cards went with it, and the section under it did not slide up.
+    const card = put.laid.find((n) => n.conv.id === "elsewhere:lab:atelier:1")!;
+    expect(card.x).toBeGreaterThan(5000 - 1);
+    const other = (r: typeof put) => r.regions.find((x) => x.name === "skein")!;
+    expect([other(put).x, other(put).y]).toEqual([other(inLine).x, other(inLine).y]);
+  });
+
+  test("a stored blob that is not a pair of numbers puts a section back in line", () => {
+    expect(placedOf({ a: { x: 1, y: 2 }, b: { x: "1", y: 2 }, c: null, d: { x: NaN, y: 0 } })).toEqual({ a: { x: 1, y: 2 } });
+    expect(placedOf(null)).toEqual({});
   });
 
   test("nothing elsewhere stands nowhere", () => {

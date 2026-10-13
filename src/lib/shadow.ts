@@ -821,8 +821,29 @@ export const HOST_HEAD = 34;
  *  called "", which would be a box with nothing on its handle. */
 export const NO_PROJECT = "no project";
 
-/** A section of another wall's cards: one project of one host. */
-export type Elsewhere = Region & { host: string };
+/** A section of another wall's cards: one project of one host. `moved` is
+ *  whether somebody has put it somewhere other than its place in the column. */
+export type Elsewhere = Region & { host: string; moved: boolean };
+
+/** Where sections have been put, by `sectionId`, in the wall's own units.
+ *  Absent is "in line", which is where every section stood until it could be
+ *  dragged. Persisted on this machine only (`Elsewhere.sections`): a section is
+ *  this window's furniture, and the other wall has no say in where it stands. */
+export type Placed = Record<string, { x: number; y: number }>;
+
+/** What a stored blob says about where sections stand, with anything that is not
+ *  a pair of finite numbers dropped: a corrupt blob puts everything in line
+ *  rather than at NaN. */
+export function placedOf(raw: unknown): Placed {
+  const out: Placed = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [id, at] of Object.entries(raw as Record<string, unknown>)) {
+    const a = at as { x?: unknown; y?: unknown } | null;
+    if (a && typeof a.x === "number" && typeof a.y === "number" && Number.isFinite(a.x) && Number.isFinite(a.y))
+      out[id] = { x: a.x, y: a.y };
+  }
+  return out;
+}
 /** The name over a wall's sections, in canvas units. */
 export type HostHead = { host: string; x: number; y: number; w: number };
 
@@ -885,6 +906,7 @@ export function sectionId(host: string, project: string): string {
 export function standElsewhere<T extends { id: string; host: string; project: string }>(
   shadows: readonly T[],
   beside: readonly Box[],
+  placed: Placed = {},
 ): { regions: Elsewhere[]; heads: HostHead[]; laid: Laid<T>[] } {
   const hosts = [...new Set(shadows.map((s) => s.host))].sort();
   if (!hosts.length) return { regions: [], heads: [], laid: [] };
@@ -903,14 +925,17 @@ export function standElsewhere<T extends { id: string; host: string; project: st
     for (const project of sectionOrder(theirs.map((s) => s.project))) {
       const id = sectionId(host, project);
       const mine = theirs.filter((s) => sectionOf(s.project) === project);
-      const placed = layout(
+      /* Where it was put, if it was: the column's slot is still reserved, so
+         dragging one section away does not slide every section under it up. */
+      const at = placed[id] ?? { x, y };
+      const stood = layout(
         mine.map((s) => ({ id: s.id, cwd: id, project, projectId: id, territoryId: id, s })),
         {},
-        [{ id, projectId: id, name: project, project, cwd: id, x, y, cols: ELSEWHERE_COLS }],
+        [{ id, projectId: id, name: project, project, cwd: id, x: at.x, y: at.y, cols: ELSEWHERE_COLS }],
       );
-      const r = placed.regions[0]!;
-      regions.push({ ...r, host });
-      for (const n of placed.laid) laid.push({ ...n, conv: n.conv.s });
+      const r = stood.regions[0]!;
+      regions.push({ ...r, host, moved: !!placed[id] });
+      for (const n of stood.laid) laid.push({ ...n, conv: n.conv.s });
       y += r.h + REGION_GAP;
     }
     /* A wall apart from the next by more than a project is from its neighbour,
