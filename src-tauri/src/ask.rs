@@ -2351,6 +2351,18 @@ pub(crate) fn roster() -> Vec<Value> {
             "create pull request open a PR raise a PR edit PR title description \
              update PR body az repos pr create gh pr create certificate error ssl",
         ),
+        /* Updating the wall itself. Qualified `volery` and `release` throughout,
+           because "update" alone is `pull_request`'s and `task`'s word too, and
+           a card that meant either must not land on a tool that closes the wall.
+           The by-hand words are in it on purpose — a card reaching for this has
+           usually just been asked to "install the latest" and is about to write a
+           script, which is the thing this replaces. */
+        found_by(
+            crate::update::update_schema(),
+            "update volery to the newest release upgrade volery install the latest \
+             volery version restart the wall self-update out of date old version \
+             installer setup.exe on the other laptop",
+        ),
         /* Asana. The hints carry **the words on the ticket rather than the name
            of the service**, because a card is usually holding a sentence
            somebody typed — "the RISE board", "what's assigned to me" — and does
@@ -3616,6 +3628,52 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                        where `presence.rs`'s re-entry can check
                                        nothing about what has changed overnight.
                                        See `away.md`. */
+                                    let asks = app.state::<Asks>();
+                                    park_and_stream(
+                                        &app,
+                                        &asks,
+                                        &conversation_id,
+                                        &id,
+                                        &question,
+                                        progress,
+                                        req,
+                                        Some(settle),
+                                        None,
+                                    );
+                                }
+                            }
+                            return;
+                        }
+
+                        /* `update` asks too, and always: it closes this wall. Ahead
+                           of the chain for `pull_request`'s reason, and with its
+                           shape — every refusal comes back `Now`, and only a
+                           release downloaded and checked reaches a person. The
+                           question is the tool's own `Settle::new`, so it travels:
+                           the case this exists for is a card on the far laptop
+                           updating its wall while Lyss sits at the near one, and
+                           `quit.rs`'s dialog — the obvious question to lean on —
+                           never crosses. A yes consents for the close as well
+                           (`Quit::consent`), so the far machine puts up nothing
+                           nobody is there to answer.
+
+                           Not deferred while away, for `pull_request`'s reason
+                           too: re-entering a restart of the wall after an
+                           unattended night is not a decision the pile can make. */
+                        if tool == crate::update::UPDATE_TOOL {
+                            match crate::update::self_update(&app, &conversation_id, &args) {
+                                crate::update::Updating::Now(said) => {
+                                    respond(
+                                        req,
+                                        json!({
+                                            "jsonrpc": "2.0", "id": id,
+                                            "result": { "content": [
+                                                { "type": "text", "text": said }
+                                            ] }
+                                        }),
+                                    );
+                                }
+                                crate::update::Updating::Ask { question, settle } => {
                                     let asks = app.state::<Asks>();
                                     park_and_stream(
                                         &app,

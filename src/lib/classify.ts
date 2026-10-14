@@ -340,6 +340,16 @@ const CREDENTIAL_NAMES: Record<string, string> = {
  *  `.claude/rules/remove.md` has the reasoning. */
 export const SKEIN_REMOVE_TOOL = "mcp__skein__remove";
 
+/** A card putting its own wall onto the newest release and restarting it.
+ *
+ *  *Wants to*, for `SKEIN_PULL_REQUEST_TOOL`'s reason: an update that will
+ *  happen parks on a question, so when the call lands nothing has been armed
+ *  and the person may still be deciding — on this wall or another one. The
+ *  tool's own answer says what happened, including every refusal. Volery names
+ *  it `update_volery` in `update.rs`'s `pub const UPDATE_TOOL`; `.claude/rules/update.md`
+ *  has the reasoning. */
+export const SKEIN_UPDATE_TOOL = "mcp__skein__update_volery";
+
 export function basename(p: unknown): string {
   if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/);
@@ -803,6 +813,10 @@ export function describeTool(name: string, input: any): string {
       const t = arg(input?.title);
       return t ? `wants to open a pull request: ${clip(t, 40)}` : "wants to open a pull request";
     }
+    /* `wants to`, the same way: most calls park on a question, and every other
+       call is a refusal the answer explains. */
+    case SKEIN_UPDATE_TOOL:
+      return "wants to update volery";
     /* The music. A search is a reading; putting something on is the only act,
        and it is refused while the user is listening — hence `chose`. */
     case SKEIN_RECORDS_TOOL: {

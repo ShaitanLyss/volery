@@ -357,6 +357,15 @@ describe("describeTool degrades before arguments arrive", () => {
     expect(describeTool("mcp__skein__pull_request", {})).toBe("wants to open a pull request");
   });
 
+  test("updating the wall says it is asked for, never done", () => {
+    /* It parks on a question that may be answered on another wall, so the line
+       drawn when the call lands must not claim the wall is updating. */
+    expect(describeTool("mcp__skein__update_volery", {})).toBe("wants to update volery");
+    expect(describeTool("mcp__skein__update_volery", { why: "the other laptop" })).toBe(
+      "wants to update volery",
+    );
+  });
+
   test("the two forge readings say what they read", () => {
     expect(describeTool("mcp__skein__pipelines", {})).toBe("looked over the pipelines");
     expect(describeTool("mcp__skein__pipelines", { failed: true })).toBe(

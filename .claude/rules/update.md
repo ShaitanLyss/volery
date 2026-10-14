@@ -218,3 +218,164 @@ command.
 - **A short read deletes the file.** `Content-Length` is the server's own claim about what it
   was sending; less than that means the connection went, and a truncated installer is worse
   than no installer because it is still an executable somebody could run.
+
+### A card can ask for it (`mcp__skein__update_volery`)
+
+The button fires when the window comes to the front, which is exactly what a laptop left
+running at home never gets — so the machine that most needed updating was the one nobody was
+in front of. Twice a card did it by hand, on two machines, and **both times reached for the WMI
+escape** (`Win32_Process.Create`) because a card's own spawns die with the wall it is closing.
+`processes.md` had predicted it in as many words — *agents reach for it because nothing
+sanctions a process outliving a turn* — and the fix it named was not detection but removing
+the reason. This tool is that removal (sink `549f6a63`).
+
+**It is not a new mechanism; it is the button's tail with a question in front of it.**
+`self_update` resolves the newest release, downloads its installer into the holding directory
+(`fetch_to`, which the button now shares), checks it, asks, and on a yes arms `Arming`, writes a
+chronicle row and closes the window through the ordinary path — so the exit handler runs
+`run_armed` exactly as it does for the button. **Nothing a card spawns has to outlive the
+card**: the installer is still Volery's, launched from `lib.rs`.
+
+#### The decision, and why it is in Rust as well
+
+`resolve` is pure and is the whole decision. Rust rather than `update.ts`, because the tool is
+answered on an MCP request thread and a webview round trip would put a wedged front end between
+an unattended machine and its update. That breaks this file's *Rust asks; the wall decides* split
+for one function, so the half that would drift is held: `parse_version` is `parseVersion` in Rust
+and both suites read `test/fixtures/versions.json`. One going red alone is the mirror saying it
+has drifted.
+
+It reads two things: `/releases/latest` (required) and the release workflow's `push` runs
+(`release.yml` by file name, which a test reads the workflow to keep true). Only a tag push runs
+that workflow, so those runs *are* the tags being built — the only way to tell a tag that exists
+before its installer from a release. The order is the argument:
+
+- **A newer tag still building holds everything back**, even when an older-but-newer release
+  is installable — taking it would be a second restart twenty minutes later. The installable
+  one is named in the refusal, not taken.
+- **A newer tag that built green but is not the latest release yet** is `Publishing` — the
+  release is the build's last step — and says to ask again in a minute.
+- **A newer tag whose build failed** does *not* hold back a good release beside it; it only
+  refuses when nothing installable is newer than what runs. Fetching the newest tag instead of
+  the newest green release with a published installer is the shipped-twice mistake.
+- **The NSIS `-setup.exe`, fully uploaded and of a plausible size.** `state` must be
+  `uploaded` (an asset mid-upload is `open`), the size between 1 MB and 512 MB (the real one is
+  ~18 MB), and the downloaded file exactly that size and starting `MZ`. The button never needed
+  the size check — a person watches its progress bar. Nobody watches this.
+- **An unreadable build queue is not a refusal.** Its only use is to hold back an update that
+  would be overtaken; a published release with its installer is safe to install whatever is
+  building behind it.
+- Current, ahead (built from source), no release, an unordered tag, and a development build are
+  each refused in a sentence of their own, ending on what was not done.
+
+#### The confirmation is the tool's own, and it travels
+
+**This is the heart of the feature.** Lyss's case is a card she opened on the far laptop over
+the flyway, told to update its wall, while she sits at the near one: *"if there's a confirmation
+prompt, I need to be able to approve it from my local machine. if it's only on the remote, well
+it's not helpful."* The obvious design leaned on the quit dialog — arm, close, let `quit.rs`
+object if cards have background work. **That dialog never crosses**: it is its own
+`CloseRequested` path with a busy counter and a one-refusal latch, and the far machine would put
+it up with nobody in front of it while the update stalled behind it.
+
+So the tool asks first, through `Settle::new` with an `ask::Confirm` — the path every Volery
+confirmation travels (`ask.md`). The question says everything the quit dialog would have — how
+many cards have background work the restart takes down (`Quit::busy`, the dialog's own count),
+how many others are mid-turn, how many other `skein.exe` the installer will close — and a yes to
+it **consents for the close too**: `Quit::consent` sets the latch to the state a second press
+already leaves, so the close it approved goes straight through and the far machine shows nothing
+nobody will see. It is not a third path through the close; it is the one that already lets the
+second press through. The quit dialog itself was left alone rather than taught to travel: it is
+answered on the main thread inside `CloseRequested`, where nothing can park, and an update is the
+one close that knows in advance it is coming.
+
+It is downloaded and checked **before** anybody is asked, so nothing reaches a person until it is
+worth their attention, and the settle re-checks the file before arming — up to three quarters of
+an hour can pass between the download and the yes. It is not deferred while away, for
+`pull_request`'s reason: re-entering a restart after an unattended night is not a decision the
+pile can make.
+
+#### Who may call it, and who may not
+
+- **A card on the machine it updates** — including one opened over the flyway, which is a card
+  on this wall like any other and is the actual use.
+- **Not a chat card.** It reaches nothing on this machine, and closing the wall to install
+  software is the most of the machine there is.
+- **Not a development build**, which includes every lab wall. The release's installer replaces
+  the *installed* wall, not this one — and it closes every `skein.exe` the user has (below), so a
+  lab that ran it would take the installed wall down with it.
+- **Not a different wall.** The tool has no `host`; it updates the wall it is served from. A
+  remote update is `spawn` with `host` and a prompt asking that card to call this, which already
+  works. Reaching across to update another machine directly is a larger question — the far
+  wall's consent, its accepting switch, a restart of a machine nobody can see — and was
+  deliberately not built. What crosses is only the *confirmation*, over the path that already
+  carries confirmations.
+
+#### The restart is not optional, so it is owned three ways
+
+A machine left on the old version with Volery running is a bad outcome; a machine with Volery
+**not running** is worse — the other laptop has no peer and nothing can reach it until somebody
+sits down at it.
+
+- **The installer's `/R`**, which restarts the wall when the install succeeds — and only then.
+- **A watchdog** (`watch`), a hidden PowerShell started beside the installer from the exit
+  handler, outside every job: it waits for the exiting wall and then the installer *process*, and
+  starts the installed exe itself if nothing is running from that path 45 seconds later. Started
+  even when the installer failed to launch, since that is the case where nothing else will.
+  PowerShell rather than anything of ours, because everything of ours is the exe being replaced.
+  It encodes both by-hand traps, and a test reads its text to keep them: **`WaitForExit` on the
+  installer, never `Start-Process -Wait`** — `-Wait` waits on the tree, `/R` puts the new wall in
+  it, and the script's last act fires the next time somebody deliberately closes Volery (sink
+  `92d433d8`) — and **match the wall by its path, never by its name**. The wait is capped at ten
+  minutes, so a passive installer stuck on a dialog nobody will see does not leave the machine
+  wall-less for ever.
+- **The `Run` entry stays.** The main window's close clears it because she closed the wall; an
+  update's close is not that, so `lib.rs` skips `machine::leave` while `Arming` is armed. A
+  machine that restarts with the install half done opens the wall at the next sign-in.
+
+**And the installer itself closes every `skein.exe` by name.** Read out of the template the local
+CLI bundles (`CheckIfAppIsRunning` → `nsis_tauri_utils::KillProcessCurrentUser` in passive mode):
+lab walls, development builds and anything else called `skein.exe` go down with the installed
+wall. That is the button's behaviour too and always was; the tool counts them (`other_copies`, by
+path) and puts the number in the question.
+
+#### The receipt before the close, and the result after the restart
+
+The card that asked is cut off by the restart, so it cannot report. **Before the close** the
+settle writes a chronicle row naming the from and to versions and who asked. **At the exit**,
+`run_armed` leaves `underway.json` in the holding directory — what was attempted, and whether the
+installer launched — written there rather than at arming, because an arming a person then stayed
+out of is not an attempt. **At the next launch** `landed` turns it into a row — `good` if this
+build is not the one the install started from, `bad` with the installer's location if it is —
+and deletes it. The button gets the same morning-after row for free, with no `to`.
+
+The tool's own answer can only ever be "armed and closing". **The close waits for the asking
+card's turn to end** (`close_soon`, at most `TURN_GRACE`), and that was learned on the first lab
+run: a fixed three seconds after the yes, and the card had already finished its sentence — so
+whether the asker came back *interrupted*, and was sent a resume prompt about a turn that had
+ended cleanly, was a race between its last sentence and a timer. Now the clean end is the
+ordinary one, and the answer tells the card to end its turn saying the wall is restarting.
+Nothing reports back on its own afterwards — the app's version does not cross the flyway, and
+neither does the chronicle — so a person driving from another wall finds out by asking the card,
+which wakes on the send and can call `update_volery` again: it then says the new version is
+current.
+
+#### `here::accepting` is reported, never set
+
+A wall updated so that it can be driven from elsewhere, and then quietly refusing every remote
+spawn, is a trap with good manners. The switch is a person's (`flyway::here`), so every answer —
+refusals included — ends on whether this wall takes work from other walls, and the confirmation
+carries it as a fact. Nothing here turns it on.
+
+#### Watching it run on a lab
+
+A lab wall is a debug build and is refused, so in a debug build only, `VOLERY_UPDATE_FEED` names
+a directory standing in for GitHub: `feed.json` (`running`, `release` with `assets` naming files
+in that directory, `runs`) and the files it names, which "download" by copying (`feed:` urls, which
+only `read_feed` produces). Everything after the lookup is the real code — the download into the
+holding directory, the checks, the travelling question, the arming, the row, the consent, the
+close, `run_armed`, the watchdog and `landed`. The installer is a stand-in that waits for the
+lab's exe to be let go of, rewrites `feed.json`'s `running` and relaunches it — and closes no
+`skein.exe`, since the real one would close the installed wall. `bun run lab` tears its front end
+down when the exe exits, which an update does by design, so the demonstration launched its lab
+with lab.ts's identifier and environment and a front end of its own.

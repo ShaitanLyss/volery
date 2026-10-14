@@ -688,6 +688,9 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        this wall is open. Above the windows because `machine_status` reads
        what it sets up. See `machine.rs`. */
     machine::arrive(app.handle());
+    /* Whether the update the last run started landed — a chronicle row, since
+       the card that asked for it went down with the wall and cannot say. */
+    update::landed(app.handle());
 
     /* Last: the windows, and nothing that a command reads may move below
        this. `open_windows` also shows the studio — see there. */
@@ -868,8 +871,22 @@ pub fn run() {
                        So the exit handler runs on a Windows restart too, and
                        clearing the entry there would erase it in exactly the
                        case it exists for. A crash, a forced restart and a
-                       shutdown all skip this line; that is the design. */
-                    machine::leave();
+                       shutdown all skip this line; that is the design.
+
+                       **Unless the close is an update's.** The wall is not
+                       being put away, it is being replaced and is meant to be
+                       back within a minute — so the entry stays, and a machine
+                       that restarts with the installer half done, or whose
+                       installer never brought the wall back, opens it again
+                       at the next sign-in. The relaunched wall writes it
+                       afresh (`machine::arrive`) either way. */
+                    let updating = window
+                        .app_handle()
+                        .try_state::<update::Arming>()
+                        .is_some_and(|a| a.armed());
+                    if !updating {
+                        machine::leave();
+                    }
                     window.app_handle().exit(0);
                 }
             }
@@ -1130,6 +1147,7 @@ pub fn run() {
             open::show_in_explorer,
             open::open_folder,
             find::classify_paths,
+            find::find_names,
             find::find_files,
             find::find_grep,
             find::read_file_text,

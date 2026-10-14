@@ -236,6 +236,10 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     file: "src-tauri/src/remove.rs",
     items: ["const REMOVE_TOOL", "fn remove_schema"],
   },
+  {
+    file: "src-tauri/src/update.rs",
+    items: ["const UPDATE_TOOL", "fn update_schema"],
+  },
   /* Registered in `roster()` in 0.31 without a line here, which left this lift
      failing to compile — so for that stretch nothing on this machine could
      measure the loaded tier at all. */
@@ -520,6 +524,7 @@ const MODULES = [
   "store",
   "supervisor",
   "timeline",
+  "update",
 ];
 
 const body: string[] = [

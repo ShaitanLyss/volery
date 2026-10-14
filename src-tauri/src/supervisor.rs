@@ -3937,6 +3937,7 @@ mod tests {
         ("supervisor.rs", include_str!("supervisor.rs")),
         ("timeline.rs", include_str!("timeline.rs")),
         ("notice.rs", include_str!("notice.rs")),
+        ("update.rs", include_str!("update.rs")),
         /* In a subdirectory, so the scan below cannot find them: listed by
            hand because both answer tool calls — `reach.rs` its own and
            `link.rs` the receipts a remote spawn, send, recall and close
@@ -5257,6 +5258,17 @@ impl Supervisor {
     /// reader thread now clears the *row's* mark as well when its stream ends,
     /// and every stream here is about to end — without this, quitting mid-turn
     /// would race the very cards it is meant to flag.
+    /// The cards holding a turn open right now — what `shutdown` would mark
+    /// interrupted, read without taking anything down. The update tool says how
+    /// many a restart will cut off before a person approves one.
+    pub fn mid_turn(&self) -> Vec<String> {
+        let map = self.0.lock().unwrap();
+        map.iter()
+            .filter(|(_, conv)| conv.turn.load(Ordering::Relaxed))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     pub fn shutdown(&self) -> Vec<String> {
         self.1.store(true, Ordering::Relaxed);
         let mut map = self.0.lock().unwrap();

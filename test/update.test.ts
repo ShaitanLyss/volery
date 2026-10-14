@@ -13,6 +13,7 @@ import {
   type Latest,
   type Stage,
 } from "../src/lib/update";
+import table from "./fixtures/versions.json";
 
 /* Whether there is a newer Volery, and whether to say so.
  *
@@ -217,5 +218,24 @@ describe("worthResolving", () => {
     expect(worthResolving({ running: "0.6.1", tag: "v0.6.0" }, null)).toBe(false);
     expect(worthResolving({ running: "0.6.1", tag: "v0.6.0" }, offer)).toBe(false);
     expect(worthResolving({ running: "0.6.1", tag: "v0.8.0-rc.1" }, offer)).toBe(false);
+  });
+});
+
+/* The same table `update.rs`'s tests read. The button decides here and the
+ * update tool decides in Rust (`update::parse_version`), so the two readings of
+ * "is this newer" are held to one list of cases rather than to two copies of
+ * the same intention — one suite going red alone is the mirror saying it has
+ * drifted. */
+describe("the version table both languages read", () => {
+  test("every parse case reads the same here", () => {
+    for (const c of table.parse) {
+      expect([c.s, parseVersion(c.s)]).toEqual([c.s, c.is as [number, number, number] | null]);
+    }
+  });
+
+  test("every ordering case reads the same here", () => {
+    for (const c of table.newer) {
+      expect([c.tag, c.running, isNewer(c.tag, c.running)]).toEqual([c.tag, c.running, c.newer]);
+    }
   });
 });

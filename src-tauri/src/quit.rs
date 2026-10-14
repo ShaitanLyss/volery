@@ -60,6 +60,26 @@ impl Quit {
         }
         Some(busy)
     }
+
+    /// How many cards are holding background work, read without spending the
+    /// refusal — what the update tool tells a person before they approve.
+    pub fn busy(&self) -> usize {
+        self.busy.load(Ordering::Relaxed)
+    }
+
+    /// A person has already said yes to closing, in a question that told them
+    /// what this one would have — so the close they approved goes through.
+    ///
+    /// The update tool's (`update::self_update`), and the reason it exists is
+    /// where that question can be answered. This latch is answered by a dialog
+    /// on *this* machine, and the update is driven, in the case it exists for,
+    /// from another one: a held close here would put up a question nobody is in
+    /// front of, and the update would stall behind it. Setting `asked` is the
+    /// state a second press already leaves, so this is not a third path through
+    /// the close — it is the one that already lets the second press through.
+    pub fn consent(&self) {
+        self.asked.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The wall reporting how many of its cards are holding background work.
@@ -117,6 +137,19 @@ mod tests {
             Some(1),
             "after choosing to stay, the next close asks again"
         );
+    }
+
+    /// A yes given elsewhere — the update tool's question, answered from another
+    /// wall — lets the close it approved straight through, and the count it was
+    /// told is still readable without spending anything.
+    #[test]
+    fn consent_given_elsewhere_lets_the_close_through() {
+        let q = Quit::default();
+        q.busy.store(2, Ordering::Relaxed);
+        assert_eq!(q.busy(), 2);
+        assert_eq!(q.busy(), 2, "reading the count spends nothing");
+        q.consent();
+        assert_eq!(q.should_ask(), None, "the approved close must not be held a second time");
     }
 
     #[test]
