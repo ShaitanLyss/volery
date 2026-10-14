@@ -93,19 +93,33 @@ const KNOB_IDLE: &str = "AwayWhenIdle";
 
 /* ── nobody at the keyboard ──────────────────────────────────────────────── */
 
-/// The threshold when this machine has set none of the timeouts below.
-pub(crate) const IDLE_FALLBACK_MS: u64 = 15 * 60_000;
-/// And the least it may be. A display that sleeps after a minute is a battery
-/// setting, not a statement that a person reading for ninety seconds has left.
-pub(crate) const IDLE_FLOOR_MS: u64 = 5 * 60_000;
+/// The threshold when this machine sets no lock timeout of its own.
+pub(crate) const IDLE_FALLBACK_MS: u64 = 30 * 60_000;
+/// And the least it may be, whatever the machine says.
+///
+/// **Err long, because the two ways of being wrong are not the same size.**
+/// `GetLastInputInfo` cannot tell reading from absence: six minutes on a
+/// transcript without scrolling is six minutes of no input. Called away too
+/// soon, a wall she is sitting at stops announcing `present` — and then another
+/// wall she switched away *files* its questions into a pile that does not cross
+/// the flyway (sink `3368f78f`), which is sink `f931e6ca` reproduced by the
+/// feature meant to fix it, while she is in front of the machine. Called away
+/// too late costs only a question parked on a machine she will come back to,
+/// which still reaches her. The case this exists for — *"an open laptop that I
+/// forgot to set to i'm away"* — is hours, not minutes, so a long threshold
+/// serves it completely.
+pub(crate) const IDLE_FLOOR_MS: u64 = 20 * 60_000;
 
 /// How long with no keyboard or pointer input before this machine stops saying
-/// the person is at it: **the shortest of the timeouts at which Windows itself
-/// decides she has gone** — the machine-inactivity lock a policy sets, the
-/// screensaver, the display turning off — each a number she or her IT already
-/// chose, which is a better anchor than one picked here. Zero is Windows' word
-/// for never and is skipped; none set at all falls back to fifteen minutes, so a
-/// laptop set never to sleep still stops claiming her eventually. Seconds in,
+/// the person is at it: **the shortest of its lock timeouts** — the
+/// machine-inactivity lock a policy sets, and a screensaver that requires
+/// signing in again — because a locked machine is a statement that nobody is
+/// there, and a number she or her IT already chose. **Not the display-off
+/// timeout**, which was the first cut: people set it short for the battery and
+/// it says nothing about whether anybody is reading. Zero is Windows' word for
+/// never and is skipped; with no lock set it falls back to thirty minutes, so a
+/// laptop that never locks still stops claiming her eventually; and nothing is
+/// ever shorter than [`IDLE_FLOOR_MS`], for the reason written there. Seconds in,
 /// milliseconds out.
 pub(crate) fn idle_threshold_ms(timeouts_secs: &[Option<u32>]) -> u64 {
     timeouts_secs
@@ -150,7 +164,7 @@ pub fn idle_away() -> bool {
     if !enabled {
         return false;
     }
-    let threshold = idle_threshold_ms(&os::idle_timeouts(os::sample_power()));
+    let threshold = idle_threshold_ms(&os::idle_timeouts());
     idle_says_away(enabled, os::idle_ms(), threshold)
 }
 
@@ -519,10 +533,6 @@ mod os {
     const ACDC_POWER_SOURCE: GUID = GUID::from_u128(0x5d3e9a59_e9d5_4b00_a6bd_ff34ff516548);
     const SYSTEM_BUTTON_SUBGROUP: GUID = GUID::from_u128(0x4f971e89_eebd_4455_a8de_9e59040e7347);
     const LIDCLOSE_ACTION: GUID = GUID::from_u128(0x5ca83367_6e45_459f_a27b_476b1d01c936);
-    /* `GUID_VIDEO_SUBGROUP` and `GUID_VIDEO_POWERDOWN_TIMEOUT` (VIDEOIDLE),
-       winnt.h, for the same reason as the three above. */
-    const VIDEO_SUBGROUP: GUID = GUID::from_u128(0x7516b95f_f776_4464_8c53_06167f40cc99);
-    const VIDEOIDLE: GUID = GUID::from_u128(0x3c0bc021_c8a8_4e07_a973_6b14cbcb2b7e);
 
     pub fn make_request() -> Result<isize, String> {
         /* Leaked once, deliberately: the reason has to outlive the call, and
@@ -701,12 +711,13 @@ mod os {
         Some(u64::from(now.wrapping_sub(info.dwTime)))
     }
 
-    /// The timeouts, in seconds, at which Windows decides the person has gone:
-    /// the machine-inactivity lock a policy sets, a policy's screensaver
-    /// timeout, the user's own screensaver (only when one is chosen — the
-    /// timeout outlives switching it to *(None)*), and the display turning off
-    /// on the current power source. Each `None` when not set.
-    pub fn idle_timeouts(power: Power) -> Vec<Option<u32>> {
+    /// The lock timeouts, in seconds: the machine-inactivity lock a policy sets,
+    /// and a screensaver that requires signing in again — a policy's first, then
+    /// her own, which counts only when one is chosen (the timeout outlives
+    /// switching it to *(None)*) and set to ask for the password. A screensaver
+    /// that does not lock, like the display going dark, says nothing about
+    /// whether anybody is reading. Each `None` when not set.
+    pub fn idle_timeouts() -> Vec<Option<u32>> {
         let sz = |root: HKEY, key: &str, name: &str| -> Option<String> {
             let bytes = read_bytes(root, key, name, RRF_RT_REG_SZ)?;
             let wide: Vec<u16> =
@@ -714,48 +725,22 @@ mod os {
             Some(String::from_utf16_lossy(&wide).trim().to_string())
         };
         let secs = |s: Option<String>| s.and_then(|v| v.parse::<u32>().ok());
+        let on = |s: Option<String>| s.as_deref() == Some("1");
+        let policy = "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop";
         let desktop = "Control Panel\\Desktop";
-        let saver_chosen = sz(HKEY_CURRENT_USER, desktop, "SCRNSAVE.EXE").is_some_and(|s| !s.is_empty())
-            && sz(HKEY_CURRENT_USER, desktop, "ScreenSaveActive").as_deref() == Some("1");
+        let policy_locks = on(sz(HKEY_CURRENT_USER, policy, "ScreenSaverIsSecure"));
+        let own_locks = sz(HKEY_CURRENT_USER, desktop, "SCRNSAVE.EXE").is_some_and(|s| !s.is_empty())
+            && on(sz(HKEY_CURRENT_USER, desktop, "ScreenSaveActive"))
+            && on(sz(HKEY_CURRENT_USER, desktop, "ScreenSaverIsSecure"));
         vec![
             read_dword(
                 HKEY_LOCAL_MACHINE,
                 "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
                 "InactivityTimeoutSecs",
             ),
-            secs(sz(
-                HKEY_CURRENT_USER,
-                "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop",
-                "ScreenSaveTimeOut",
-            )),
-            if saver_chosen { secs(sz(HKEY_CURRENT_USER, desktop, "ScreenSaveTimeOut")) } else { None },
-            display_off(power),
+            if policy_locks { secs(sz(HKEY_CURRENT_USER, policy, "ScreenSaveTimeOut")) } else { None },
+            if own_locks { secs(sz(HKEY_CURRENT_USER, desktop, "ScreenSaveTimeOut")) } else { None },
         ]
-    }
-
-    /// The active scheme's display-off timeout for the current power source.
-    fn display_off(power: Power) -> Option<u32> {
-        use windows::Win32::System::Power::PowerReadDCValueIndex;
-        let mut scheme: *mut GUID = std::ptr::null_mut();
-        // SAFETY: Windows allocates the GUID and we free it below.
-        if unsafe { PowerGetActiveScheme(None, &mut scheme) } != ERROR_SUCCESS || scheme.is_null() {
-            return None;
-        }
-        let mut secs = u32::MAX;
-        // SAFETY: the scheme Windows just handed us, two static GUIDs, an out-u32.
-        /* The two answer in different types in this crate — the DC one a bare
-           `u32`, the AC one a `WIN32_ERROR` — so each is read as success. */
-        let read = unsafe {
-            if power == Power::Battery {
-                PowerReadDCValueIndex(None, Some(scheme), Some(&VIDEO_SUBGROUP), Some(&VIDEOIDLE), &mut secs)
-                    == ERROR_SUCCESS.0
-            } else {
-                PowerReadACValueIndex(None, Some(scheme), Some(&VIDEO_SUBGROUP), Some(&VIDEOIDLE), &mut secs)
-                    == ERROR_SUCCESS
-            }
-        };
-        unsafe { LocalFree(Some(HLOCAL(scheme as *mut core::ffi::c_void))) };
-        (read && secs != u32::MAX).then_some(secs)
     }
 
     pub fn write_knob(identifier: &str, name: &str, on: bool) -> Result<(), String> {
@@ -976,7 +961,7 @@ mod os {
     pub fn idle_ms() -> Option<u64> {
         None
     }
-    pub fn idle_timeouts(_: Power) -> Vec<Option<u32>> {
+    pub fn idle_timeouts() -> Vec<Option<u32>> {
         Vec::new()
     }
 }
@@ -991,16 +976,18 @@ mod tests {
     #[test]
     fn a_machine_is_idle_by_its_own_timeouts() {
         assert_eq!(idle_threshold_ms(&[]), IDLE_FALLBACK_MS);
-        assert_eq!(idle_threshold_ms(&[None, None, None, None]), IDLE_FALLBACK_MS);
+        assert_eq!(idle_threshold_ms(&[None, None, None]), IDLE_FALLBACK_MS);
         /* Zero is Windows' "never", not "at once". */
         assert_eq!(idle_threshold_ms(&[Some(0), None]), IDLE_FALLBACK_MS);
-        /* The shortest of those set: a 10-minute lock policy beats a 20-minute display. */
-        assert_eq!(idle_threshold_ms(&[Some(600), None, None, Some(1200)]), 600_000);
-        /* A one-minute display is a battery setting, not somebody leaving. */
-        assert_eq!(idle_threshold_ms(&[None, None, None, Some(60)]), IDLE_FLOOR_MS);
+        /* The shortest lock set: a 40-minute policy lock beats an hour's screensaver. */
+        assert_eq!(idle_threshold_ms(&[Some(2400), None, Some(3600)]), 2_400_000);
+        /* And never below the floor: a 5-minute lock would make somebody reading
+           invisible, and that error files questions where she cannot reach them. */
+        assert_eq!(idle_threshold_ms(&[Some(300), None, None]), IDLE_FLOOR_MS);
+        assert!(IDLE_FLOOR_MS >= 15 * 60_000, "err long — see IDLE_FLOOR_MS");
 
-        assert!(idle_says_away(true, Some(600_000), 600_000));
-        assert!(!idle_says_away(true, Some(599_999), 600_000));
+        assert!(idle_says_away(true, Some(IDLE_FLOOR_MS), IDLE_FLOOR_MS));
+        assert!(!idle_says_away(true, Some(IDLE_FLOOR_MS - 1), IDLE_FLOOR_MS));
         /* Switched off, or unreadable: says nothing, as before this existed. */
         assert!(!idle_says_away(false, Some(10 * 600_000), 600_000));
         assert!(!idle_says_away(true, None, 600_000));

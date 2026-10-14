@@ -156,13 +156,22 @@ longer than Windows itself would take to decide they had gone.
 
 - **`GetLastInputInfo`, system-wide**, not the app's focus: a forgotten laptop may well have
   Volery in front, and `attention.focused` would call that watching.
-- **The threshold is hers, not ours.** The shortest of the machine-inactivity lock a policy sets
-  (`InactivityTimeoutSecs`), a policy screensaver timeout, her own screensaver (only when one is
-  chosen, since the timeout outlives switching it to *(None)*), and the display-off timeout on the
-  current power source. Zero is Windows' *never* and is skipped. Floored at five minutes, since a
-  one-minute display is a battery setting rather than a statement that somebody reading has left,
-  and fifteen minutes when none is set, so a machine set never to sleep still stops claiming her.
-  `idle_threshold_ms` is pure and tested.
+- **The threshold is the machine's lock, never its display.** The shortest of the
+  machine-inactivity lock a policy sets (`InactivityTimeoutSecs`) and a screensaver that requires
+  signing in again (a policy's, or her own when one is chosen and `ScreenSaverIsSecure`). A locked
+  machine is a statement that nobody is there; a dark screen is not. The first cut also took the
+  display-off timeout and floored the lot at five minutes, and 34b07397 caught it before it
+  shipped: people set the display short for the battery, and **`GetLastInputInfo` cannot tell
+  reading from absence**.
+- **Err long, and the floor is twenty minutes because of which way the error falls.** Called
+  away too soon, a wall she is sitting at, reading, stops announcing `present`, and another wall
+  she had switched away then *files* its questions into a pile that does not cross the flyway.
+  That is `f931e6ca` reproduced by the feature meant to fix it, with her in front of the machine.
+  Called away too late costs a question parked on a machine she will come back to, which still
+  reaches her. The case this exists for, a laptop she forgot to switch, is hours rather than
+  minutes, so a long threshold serves it completely. With no lock set it is thirty minutes. Zero is
+  Windows' *never* and is skipped. `idle_threshold_ms` is pure and tested, and the test holds the
+  floor at fifteen minutes or more.
 - **No clock of its own.** It is read on demand in `link::facts`, which already runs on the
   flyway's 30s tick. There is no state and nothing to clear: the next input makes it false again.
 - **Switchable off**: `AwayWhenIdle` beside the other two knobs, absent meaning on, written by
