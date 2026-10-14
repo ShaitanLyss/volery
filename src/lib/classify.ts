@@ -163,6 +163,10 @@ export const SKEIN_ACCOUNTS_TOOL = "mcp__skein__accounts";
  *  after a condition outside the work that decides how the work should go, and
  *  neither changes anything. */
 export const SKEIN_STATUS_TOOL = "mcp__skein__claude_status";
+/** How hard the machine is working and who is making it — `load.rs`. The third
+ *  of the same shape: a condition outside the work, read before deciding a
+ *  check that misbehaved is the check's fault. */
+export const SKEIN_LOAD_TOOL = "mcp__skein__load";
 
 /** And the dev servers, which a card can now read and drive.
  *
@@ -685,6 +689,11 @@ export function describeTool(name: string, input: any): string {
        read it as still current. */
     case SKEIN_STATUS_TOOL:
       return "checked whether claude is up";
+    /* What was asked, not what came back, for the reason the line above gives:
+       "the machine is saturated" would go on being claimed long after it
+       stopped being true. */
+    case SKEIN_LOAD_TOOL:
+      return "checked how loaded the machine is";
     /* The dev servers. `servers` and `server_log` read something the wall is
        already holding and cost nobody anything; `server` runs processes on this
        machine, so it gets the specific line — the same asymmetry `spawn` and

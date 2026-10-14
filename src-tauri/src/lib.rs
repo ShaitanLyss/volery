@@ -43,10 +43,13 @@ mod later;
 mod lend;
 mod nvim;
 mod limits;
+mod load;
 mod machine;
+mod mcphost;
 mod open;
 mod perf;
 mod pin;
+mod pool;
 mod portage;
 mod notice;
 mod presence;
@@ -651,6 +654,11 @@ fn open_wall(app: &mut tauri::App) -> Result<(), String> {
        the mode it loads is what `browser_status` answers with. A wall closed
        with a browser up comes back with one. See `browser::resume_at_launch`. */
     browser::resume_at_launch(app.handle());
+    /* The one `@playwright/mcp` every card's `browser` is a session on. In the
+       background: it is an `npx` start, and nothing about a window waits on it.
+       A card spawned before it answers has its `browser` fail to connect and is
+       asked to reconnect the moment it does (`supervisor::reconnect_stranded`). */
+    mcphost::ensure(app.handle());
     /* Join the flyway, if this wall has a key. In the background and
        unawaited, because binding an endpoint reaches a lookup service and
        nothing about a window should wait on somebody else's DNS. A wall with no
@@ -732,6 +740,14 @@ pub fn run() {
         /* Empty until a performance widget asks: an app with none on the wall
            never enumerates a process. */
         .manage(Meter::default())
+        /* The machine's last few minutes, filled on the reaper's tick and read
+           by `mcp__skein__load` and the hook's note before a heavy command. */
+        .manage(load::Load::default())
+        /* The wall's one shared `@playwright/mcp`, started in `open_wall`. */
+        .manage(mcphost::Host::default())
+        /* Project stdio MCP servers shared across a territory's cards, each
+           started on its first request (`pool.rs`). */
+        .manage(pool::Pool::default())
         /* Likewise empty until a usage widget asks. It holds a read offset per
            transcript and the requests already counted, so the first reading
            costs a week of files and every one after it costs the tail. */
@@ -1030,6 +1046,8 @@ pub fn run() {
             perf::sample_performance,
             perf::release_performance,
             perf::kill_process,
+            pool::pool_candidates,
+            pool::set_pool_shared,
             reap::reap_survey,
             workflow::workflow_progress,
             usage::read_usage,

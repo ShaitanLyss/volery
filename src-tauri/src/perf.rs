@@ -34,13 +34,13 @@
 //! Normal single-instance use attributes the lot, since the parent chain from
 //! a renderer up to `skein.exe` is intact.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use serde::Serialize;
 use sysinfo::{
     CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind,
-    System,
+    System, UpdateKind,
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -318,6 +318,16 @@ const REAP_MIN_AGE: u64 = 60;
 /// minute of one idle process.
 const REAP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long a heavy check must have been running, on a card whose turn is over
+/// and which has no background work outstanding, before it is called a leftover.
+///
+/// Two minutes: a foreground check that outlives the turn that ran it is
+/// already a leftover the moment the turn ends, since the turn waited for the
+/// shell and the shell is gone — so this is not patience about the check, it is
+/// a margin against the one race there is, a turn that ended a moment ago with
+/// its last tool call's process still being torn down by the CLI.
+const LEFTOVER_MIN_AGE: u64 = 120;
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Reaped {
     pub pid: u32,
@@ -326,6 +336,72 @@ pub struct Reaped {
     pub conversation: String,
     /// Did the sweep do this, or did somebody press a button?
     pub automatic: bool,
+    /// Its command line, clipped. Reaped processes used to be reported by
+    /// image name alone — `node.exe` — which is the one fact that says nothing
+    /// on a wall where every other process is a `node.exe` (sink 968a4c6b).
+    pub command: String,
+    /// `"orphan"`, `"leftover"`, or `"by hand"`, in words a card note can use.
+    pub why: String,
+    /// Private bytes it was holding, which is what ending it gave back.
+    pub bytes: u64,
+}
+
+/// What the sweep makes of one process in a card's job. Pure, so each rule has
+/// a test rather than a paragraph.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Verdict {
+    Keep,
+    /// Its parent was seen alive at an earlier sweep and is gone now.
+    Orphan,
+    /// A heavy check still running after its card's turn ended.
+    Leftover(String),
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Facts {
+    pub age: u64,
+    pub parent_alive: bool,
+    /// An earlier sweep saw this very process (same pid, same start time) with
+    /// its parent alive.
+    pub seen_parented: bool,
+    /// What `load::heavy` called its command line.
+    pub heavy: Option<String>,
+    /// Its parent is itself a heavy check of the same card — a vitest under the
+    /// `pnpm test` that started it — so the parent is what gets judged, and
+    /// `/T` takes this one with it.
+    pub under_heavy: bool,
+    pub card_mid_turn: bool,
+    /// The card has a row in `job`: background work it started and nobody has
+    /// heard finish. Anything in its tree may be that work.
+    pub card_has_jobs: bool,
+}
+
+pub(crate) fn judge(f: &Facts) -> Verdict {
+    /* Background work outranks both rules. A `run_in_background` test run, a
+       Monitor, a backgrounded subagent's shell: each is meant to outlive the
+       turn, and the job row is the one record that says so. This is also the
+       old sweep's "honest caveat" closed — a backgrounded call whose shell
+       exited while the work went on is exactly a process with a dead parent on
+       a card with a job outstanding. */
+    if f.card_has_jobs || f.age < REAP_MIN_AGE || f.under_heavy {
+        return Verdict::Keep;
+    }
+    /* **Both rules are about heavy checks only.** The orphan rule used to reach
+       anything, and the review that caught it named the case: a card runs
+       `Start-Process pnpm dev; Start-Sleep 30; iwr localhost:3000`, a sweep lands
+       while that `pwsh` is alive, the server is seen parented, the call returns
+       and `pwsh` exits — and the dev server the card is still testing against
+       is ended mid-turn. A process a card detached on purpose is extra and is
+       not this reaper's (Lyss's line); what the card's job holds goes when the
+       card does, and an idle card is stood down by `reaping.ts` anyway. */
+    let Some(what) = &f.heavy else { return Verdict::Keep };
+    if !f.parent_alive && f.seen_parented {
+        return Verdict::Orphan;
+    }
+    if !f.card_mid_turn && f.age >= LEFTOVER_MIN_AGE {
+        return Verdict::Leftover(what.clone());
+    }
+    Verdict::Keep
 }
 
 /// End a process and everything under it.
@@ -376,56 +452,198 @@ pub async fn kill_process(app: AppHandle, pid: u32) -> Result<(), String> {
         kill_tree(pid);
         let _ = app.emit(
             "perf:reaped",
-            Reaped { pid, name: String::new(), conversation, automatic: false },
+            Reaped {
+                pid,
+                name: String::new(),
+                conversation,
+                automatic: false,
+                command: String::new(),
+                why: "by hand".into(),
+                bytes: 0,
+            },
         );
         Ok(())
     })
     .await?
 }
 
-/// One pass: end everything in a card's job whose parent has gone away.
+/// One pass over every process in every card's job, ending the two kinds
+/// nobody is waiting on. `judge` is the decision; this gathers its facts.
 ///
-/// Membership in the job says it is ours; a dead parent says nobody is waiting
-/// on it. Both halves are needed and neither is a guess — which is the entire
-/// reason this reaps *orphans* and not "idle" processes.
+/// **An orphan is a process whose parent was seen alive and is now gone** —
+/// not, as it was until 2026-10-14, any process whose parent is absent. That
+/// older rule killed real work. Git Bash (MSYS) emulates `fork`, so a process a
+/// card starts from a Bash tool call has a Windows parent that exits within a
+/// second of the child starting: under the old rule it was "parentless" from
+/// birth and ended 60–120s later with its whole tree, whatever it was doing.
+/// That is what cut cards' `npx vitest` runs off mid-suite with a vacuous exit
+/// 0 (sink e9c80389), and what killed labs and `bun test` runs started with
+/// `&` (sink 968a4c6b). Requiring the parent to have been *seen* is the
+/// discriminator: a process that never had a live parent in our sight is not
+/// one that lost it, and the job reaps it when the card goes anyway.
 ///
-/// The `claude` process itself can never match: its parent is Skein, and Skein
-/// is what is running this.
+/// **A leftover is a heavy check still running after its card's turn ended**,
+/// on a card with no background work outstanding. A foreground tool call
+/// blocks its turn, so a `tsc` still alive once the turn is over is one whose
+/// shell the CLI gave up on — the 2.6 GB orphan the brief for this work found.
+/// Only heavy checks (`load::heavy`), never "anything extra": a dev server a
+/// card started on purpose is extra and is not a leftover (Lyss chose this
+/// line, 2026-10-14).
 ///
-/// **The honest caveat**, recorded because it is the one way this can be
-/// wrong: a backgrounded tool call whose shell has exited while the work goes
-/// on is indistinguishable from a leak by these two tests, and killing one
-/// means a `<task-notification>` that never arrives and a card left holding a
-/// job it cannot decrement (`turns.md`). The window is real but narrow —
-/// Claude Code keeps the shell up to collect the output — and it was accepted
-/// deliberately in exchange for a wall that does not silt up.
-fn sweep(app: &AppHandle, sys: &mut System) -> Vec<Reaped> {
+/// The `claude` process itself can never match either rule: its parent is
+/// Skein, and Skein is what is running this.
+///
+/// `parented` is this reaper's memory between passes, keyed on pid *and* start
+/// time because a pid is reused once its process is gone.
+fn sweep(app: &AppHandle, sys: &mut System, parented: &mut HashSet<(u32, u64)>) -> Vec<Reaped> {
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
         ProcessRefreshKind::nothing(),
     );
-    let owned = app.state::<Supervisor>().owned_pids();
+    let sup = app.state::<Supervisor>();
+    let owned = sup.owned_pids();
+    /* Command lines and memory for the cards' processes only: reading a command
+       line reads another process's memory, and the rest of the machine is not
+       this sweep's business. */
+    let mine: Vec<Pid> = owned.keys().map(|p| Pid::from_u32(*p)).collect();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&mine),
+        false,
+        ProcessRefreshKind::nothing().with_memory().with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+
+    /* Per card, asked once: is a turn open, and is background work outstanding.
+       The two locks are taken one after the other and never together, so this
+       establishes no order between the supervisor's map and the store. */
+    let ids: HashSet<&String> = owned.values().collect();
+    let turns: HashMap<&String, bool> = ids.iter().map(|id| (*id, sup.liveness(id).1)).collect();
+    let jobs: HashMap<&String, bool> = {
+        let store = app.state::<crate::store::Store>();
+        let conn = store.0.lock().ok();
+        ids.iter()
+            .map(|id| {
+                let outstanding = conn
+                    .as_ref()
+                    .map(|c| crate::store::has_outstanding_jobs(c, id))
+                    .unwrap_or(true);
+                (*id, outstanding)
+            })
+            .collect()
+    };
+    let cards: HashMap<String, (bool, bool)> = ids
+        .iter()
+        .map(|id| {
+            let mid_turn = turns.get(id).copied().unwrap_or(true);
+            let outstanding = jobs.get(id).copied().unwrap_or(true);
+            ((*id).clone(), (mid_turn, outstanding))
+        })
+        .collect();
+
+    /* Each card's own `claude.exe`, which is never judged at all — not by
+       either rule and not by its argv. The argv rule below already cannot match
+       it, and this is the second lock on the same door: the card's process is
+       the one thing in its job that ending would end the card. */
+    let roots: HashSet<u32> = sup.pids().into_keys().collect();
+    let heavy: HashMap<u32, String> = owned
+        .keys()
+        .filter(|pid| !roots.contains(pid))
+        .filter_map(|pid| {
+            let p = sys.process(Pid::from_u32(*pid))?;
+            crate::load::heavy_argv(p).map(|w| (*pid, w))
+        })
+        .collect();
+    let heavy_of: HashMap<u32, String> = heavy
+        .keys()
+        .filter_map(|pid| owned.get(pid).map(|c| (*pid, c.clone())))
+        .collect();
+
+    let mut seen_now: HashSet<(u32, u64)> = HashSet::new();
     let mut done = Vec::new();
-    for (pid, conversation) in owned {
-        let Some(p) = sys.processes().get(&Pid::from_u32(pid)) else {
-            continue; // already gone
-        };
-        if p.run_time() < REAP_MIN_AGE {
+    for (pid, conversation) in &owned {
+        if roots.contains(pid) {
             continue;
         }
-        if p.parent().is_some_and(|up| sys.processes().contains_key(&up)) {
-            continue; // somebody is still above it
+        let Some(p) = sys.process(Pid::from_u32(*pid)) else {
+            continue; // already gone
+        };
+        let key = (*pid, p.start_time());
+        let parent_alive = p.parent().is_some_and(|up| sys.process(up).is_some());
+        let (card_mid_turn, card_has_jobs) = cards.get(conversation).copied().unwrap_or((true, true));
+        let facts = Facts {
+            age: p.run_time(),
+            parent_alive,
+            seen_parented: parented.contains(&key),
+            heavy: heavy.get(pid).cloned(),
+            under_heavy: crate::load::under_heavy(sys, *pid, conversation, &heavy_of),
+            card_mid_turn,
+            card_has_jobs,
+        };
+        if parent_alive {
+            seen_now.insert(key);
         }
-        kill_tree(pid);
+        let why = match judge(&facts) {
+            Verdict::Keep => continue,
+            Verdict::Orphan => "orphan".to_string(),
+            Verdict::Leftover(what) => format!("leftover {what}"),
+        };
+        let bytes = crate::load::tree_bytes(sys, *pid, &owned);
+        let command = crate::clip::preview(&crate::load::argv(p), 200);
+        kill_tree(*pid);
         done.push(Reaped {
-            pid,
+            pid: *pid,
             name: p.name().to_string_lossy().to_string(),
-            conversation,
+            conversation: conversation.clone(),
             automatic: true,
+            command,
+            why,
+            bytes,
         });
     }
+    /* Forget what is gone, so the set is the processes alive now that have been
+       seen parented — it never grows past the cards' own trees. */
+    parented.retain(|k| sys.process(Pid::from_u32(k.0)).is_some_and(|p| p.start_time() == k.1));
+    parented.extend(seen_now);
     done
+}
+
+/// Say what the sweep ended: on the card, through `perf:reaped`, and — for a
+/// leftover check, or anything that was holding real memory — in the
+/// chronicle, where Lyss reads what happened while she was not looking.
+///
+/// Until now nothing listened to `perf:reaped` at all, so every automatic reap
+/// this wall ever made was silent: a card's test run vanished, and the only
+/// trace was a log that stopped mid-line (sinks e9c80389, 968a4c6b).
+fn report(app: &AppHandle, r: &Reaped) {
+    log::info!(
+        target: "volery::reaper",
+        "ended pid {} ({}) on card {}: {} — {}",
+        r.pid, r.why, r.conversation, r.name, r.command
+    );
+    let _ = app.emit("perf:reaped", r.clone());
+    const WORTH_A_ROW: u64 = 200 * 1024 * 1024;
+    if !r.why.starts_with("leftover") && r.bytes < WORTH_A_ROW {
+        return;
+    }
+    let row = {
+        let store = app.state::<crate::store::Store>();
+        let conn = store.0.lock().ok();
+        conn.and_then(|c| crate::store::roster_one(&c, &r.conversation))
+    };
+    /* `note` takes the store lock itself, so the read above is dropped first
+       (the trap `chronicle.md` records). */
+    let (title, project) = row
+        .map(|w| (w.title, Some(w.project_id)))
+        .unwrap_or_else(|| (r.conversation.chars().take(8).collect(), None));
+    let what = r.why.strip_prefix("leftover ").unwrap_or(&r.why);
+    crate::chronicle::note(
+        app,
+        project.as_deref(),
+        &title,
+        "note",
+        &format!("volery ended a {what} still running on \"{title}\""),
+        &format!("{} freed — {}", crate::load::size(r.bytes), r.command),
+    );
 }
 
 /// Start the sweep. Detached, so it goes when the process does.
@@ -434,13 +652,18 @@ fn sweep(app: &AppHandle, sys: &mut System) -> Vec<Reaped> {
 /// created on the first widget and dropped with the last, and a reaper that
 /// only ran while a performance widget happened to be on the wall would be a
 /// guarantee with a decoration for a switch.
+///
+/// The same wake takes the machine's reading for `load.rs` — memory and the
+/// minute's CPU — which is why that module is not a poller of its own.
 pub fn spawn_reaper(app: AppHandle) {
     std::thread::spawn(move || {
         let mut sys = System::new_with_specifics(RefreshKind::nothing());
+        let mut parented: HashSet<(u32, u64)> = HashSet::new();
         loop {
             std::thread::sleep(REAP_EVERY);
-            for r in sweep(&app, &mut sys) {
-                let _ = app.emit("perf:reaped", r);
+            crate::load::tick(&app, &mut sys);
+            for r in sweep(&app, &mut sys, &mut parented) {
+                report(&app, &r);
             }
         }
     });
@@ -498,6 +721,80 @@ mod tests {
         let known = HashMap::from([(pid(10), ("studio".to_string(), None))]);
         let parents = HashMap::from([(pid(99), pid(98))]);
         assert!(ancestry(pid(99), &parents, &known).is_none());
+    }
+
+    fn idle(age: u64) -> Facts {
+        Facts { age, parent_alive: true, ..Facts::default() }
+    }
+
+    /// Sinks e9c80389 and 968a4c6b: under Git Bash a child's Windows parent is
+    /// gone within a second of its birth. A process that never had a live
+    /// parent in the sweep's sight did not *lose* one, and is not an orphan.
+    #[test]
+    fn a_process_born_without_a_parent_is_not_an_orphan() {
+        let f = Facts {
+            age: 3600,
+            parent_alive: false,
+            seen_parented: false,
+            heavy: Some("vitest".into()),
+            card_mid_turn: true,
+            ..Facts::default()
+        };
+        assert_eq!(judge(&f), Verdict::Keep);
+        let lost = Facts { seen_parented: true, ..f };
+        assert_eq!(judge(&lost), Verdict::Orphan);
+    }
+
+    /// The review's case: `Start-Process pnpm dev` from a `pwsh` that then
+    /// exits. Seen parented, parent gone, card still testing against it — and
+    /// not a heavy check, so not this reaper's to end.
+    #[test]
+    fn a_server_a_card_detached_on_purpose_is_never_an_orphan() {
+        let f = Facts {
+            age: 3600,
+            parent_alive: false,
+            seen_parented: true,
+            card_mid_turn: true,
+            ..Facts::default()
+        };
+        assert_eq!(judge(&f), Verdict::Keep);
+        assert_eq!(judge(&Facts { card_mid_turn: false, ..f }), Verdict::Keep);
+    }
+
+    /// The old sweep's "honest caveat": a backgrounded call whose shell exited
+    /// while the work goes on. Its job row is what says it is wanted.
+    #[test]
+    fn background_work_on_the_card_spares_everything_in_it() {
+        let f = Facts {
+            age: 3600,
+            parent_alive: false,
+            seen_parented: true,
+            heavy: Some("vitest".into()),
+            card_has_jobs: true,
+            ..Facts::default()
+        };
+        assert_eq!(judge(&f), Verdict::Keep);
+    }
+
+    #[test]
+    fn a_heavy_check_is_a_leftover_only_once_the_turn_is_over() {
+        let running = Facts { heavy: Some("tsc".into()), card_mid_turn: true, ..idle(600) };
+        assert_eq!(judge(&running), Verdict::Keep, "the turn may still be waiting on it");
+        let left = Facts { card_mid_turn: false, ..running.clone() };
+        assert_eq!(judge(&left), Verdict::Leftover("tsc".into()));
+        let young = Facts { age: LEFTOVER_MIN_AGE - 1, ..left.clone() };
+        assert_eq!(judge(&young), Verdict::Keep);
+        // A vitest under the `pnpm test` that started it: the parent is judged,
+        // and `/T` takes this one with it.
+        let child = Facts { under_heavy: true, ..left };
+        assert_eq!(judge(&child), Verdict::Keep);
+    }
+
+    /// Lyss's line: a dev server a card started on purpose is extra, and is not
+    /// a leftover. Only what `load::heavy` names is.
+    #[test]
+    fn an_ordinary_process_is_never_a_leftover() {
+        assert_eq!(judge(&idle(24 * 3600)), Verdict::Keep);
     }
 
     /// Pids are reused, so a stale parent map can close a loop. Mislabelling one

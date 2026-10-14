@@ -1251,6 +1251,17 @@ fn spawn_now(
        it is dialled. One port, two consumers — the `--mcp-config` below and the
        hook's argv — and reading it once is what keeps them the same port. */
     let ask_port = app.state::<crate::ask::Asks>().port();
+    /* The project's stdio MCP servers the user has chosen to share across this
+       territory's cards (`pool.rs`). Each is switched off in the settings layer
+       and handed to the card as an HTTP entry on the pool instead, so the card
+       does not also start its own ~500 MB copy. Read off the user's choices
+       and the project's `.mcp.json` at every spawn, never passed in — a wake
+       that forgot would be a card quietly back to its own copy. */
+    let pooled: Vec<String> = if chat || ask_port == 0 {
+        Vec::new()
+    } else {
+        crate::pool::shared_for(&app, &cwd)
+    };
     cmd.args([
         "--settings",
         &crate::hooks::settings(
@@ -1258,6 +1269,7 @@ fn spawn_now(
             Some((id.as_str(), studio.as_path())),
             locked,
             ask_port,
+            &pooled,
         ),
     ]);
 
@@ -1418,6 +1430,12 @@ fn spawn_now(
        truth. `hooks::settings` applies the identical guard for the identical
        reason, one argument over. */
     let card_browser = (!chat && ask_port != 0).then_some(shared_browser.as_str());
+    /* The card's `browser` is a session on the wall's shared server, so make
+       sure there is one. Cheap when it is up — one loopback connect — and never
+       waited on: a card that beats a cold start is reconnected when it lands. */
+    if card_browser.is_some() {
+        crate::mcphost::ensure(&app);
+    }
 
     /* Which subscription this card spends. `CLAUDE_SECURESTORAGE_CONFIG_DIR`
        selects the credential store and *only* the store — `CLAUDE_CONFIG_DIR`
@@ -1494,7 +1512,10 @@ fn spawn_now(
        conversation id, so a call arrives already addressed to a card. The port
        was read above, where the hook's argv needed it. */
     if ask_port != 0 {
-        let cfg = crate::ask::mcp_config(ask_port, &id, card_browser);
+        let mut cfg = crate::ask::mcp_config(ask_port, &id, card_browser);
+        for name in &pooled {
+            cfg["mcpServers"][name.as_str()] = crate::pool::entry(ask_port, &id, name);
+        }
         cmd.args(["--mcp-config", &cfg.to_string()]);
         /* Or the CLI abandons the parked call after one minute and the click
            lands on a request nobody is reading. This moves the *hard* deadline
@@ -1647,6 +1668,7 @@ fn spawn_now(
                         if let Some(down) = browser_down(&event) {
                             note_browser(&app, &id, down);
                         }
+                        note_pooled(&app, &id, &event);
                         let _ = app.emit(
                             "conv:event",
                             ConvEvent {
@@ -1801,14 +1823,70 @@ fn reconnect_request(server: &str) -> String {
 }
 
 fn write_reconnect(app: &AppHandle, id: &str) -> Result<(), String> {
+    write_reconnect_to(app, id, "browser")
+}
+
+fn write_reconnect_to(app: &AppHandle, id: &str, server: &str) -> Result<(), String> {
     let sup = app.state::<Supervisor>();
     let mut map = sup.0.lock().unwrap();
     let conv = map
         .get_mut(id)
         .ok_or_else(|| format!("no open conversation {id}"))?;
-    writeln!(conv.stdin, "{}", reconnect_request("browser"))
+    writeln!(conv.stdin, "{}", reconnect_request(server))
         .and_then(|()| conv.stdin.flush())
         .map_err(|e| format!("write to claude stdin: {e}"))
+}
+
+/// The servers a `system/init` reports `failed`, by name. Pure.
+pub(crate) fn failed_servers(event: &serde_json::Value) -> Vec<String> {
+    if event.get("type").and_then(|t| t.as_str()) != Some("system")
+        || event.get("subtype").and_then(|t| t.as_str()) != Some("init")
+    {
+        return Vec::new();
+    }
+    event
+        .get("mcp_servers")
+        .and_then(|s| s.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|s| s.get("status").and_then(|v| v.as_str()) == Some("failed"))
+        .filter_map(|s| s.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect()
+}
+
+/// A pooled project server (`pool.rs`) that a card reports `failed` is asked
+/// again once, after long enough for the pool's own start to have finished.
+///
+/// The CLI gives an HTTP server thirty seconds to answer and never retries; a
+/// pooled server's first request is also its *start*, and a slow `bun` under
+/// this machine's EDR can miss that window while the pool goes on starting it
+/// regardless. So the card is told to reconnect after the start's own deadline
+/// has had time to pass, once per failure — an init arrives every turn, and a
+/// card that stays failed must not be re-asked every turn.
+fn note_pooled(app: &AppHandle, id: &str, event: &serde_json::Value) {
+    static ASKED: std::sync::OnceLock<Mutex<HashSet<(String, String)>>> = std::sync::OnceLock::new();
+    let asked = ASKED.get_or_init(|| Mutex::new(HashSet::new()));
+    let failed = failed_servers(event);
+    if event.get("subtype").and_then(|t| t.as_str()) == Some("init") {
+        /* Anything this init does not report failed has recovered, and a later
+           failure of it is a new one worth asking about. */
+        asked.lock().unwrap().retain(|(card, name)| card != id || failed.contains(name));
+    }
+    let failed: Vec<String> = failed.into_iter().filter(|n| n != "browser").collect();
+    if failed.is_empty() {
+        return;
+    }
+    let pooled = crate::pool::pooled_for_card(app, id);
+    for name in failed.into_iter().filter(|n| pooled.contains(n)) {
+        if !asked.lock().unwrap().insert((id.to_string(), name.clone())) {
+            continue;
+        }
+        let (app, id) = (app.clone(), id.to_string());
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(25));
+            let _ = write_reconnect_to(&app, &id, &name);
+        });
+    }
 }
 
 /// Fold one card's `system/init` into the set of cards waiting for a browser.
@@ -1821,14 +1899,39 @@ fn note_browser(app: &AppHandle, id: &str, down: bool) {
         }
         set.insert(id.to_string())
     };
-    if first && crate::browser::is_up(app) && write_reconnect(app, id).is_ok() {
-        stranded().lock().unwrap().remove(id);
+    /* What a `browser` server needs in order to connect is the wall's shared
+       MCP server (`mcphost.rs`), not a Chrome — the server dials Chrome lazily,
+       per session. So "is there anything to reconnect to" asks the server, and
+       when it is down this is also the moment to start it: its start calls
+       `reconnect_stranded`, which reaches this card. */
+    if first {
+        if crate::mcphost::up() {
+            if write_reconnect(app, id).is_ok() {
+                stranded().lock().unwrap().remove(id);
+            }
+        } else {
+            crate::mcphost::ensure(app);
+        }
     }
 }
 
 /// A card's process is gone, so it is no longer waiting for anything.
 fn forget_browser(id: &str) {
     stranded().lock().unwrap().remove(id);
+}
+
+/// The wall's shared browser MCP server came back after dying: every live
+/// card's `browser` session was on the process that died, so each is asked to
+/// connect again, failed or not. A session the server no longer knows answers
+/// `404 Session not found`, and nothing guarantees the CLI starts a new one by
+/// itself — asking costs one line per card and settles it. A chat card has no
+/// `browser` server and answers the request with an error nothing reads.
+pub fn reconnect_every_browser(app: &AppHandle) {
+    let ids: Vec<String> = app.state::<Supervisor>().0.lock().unwrap().keys().cloned().collect();
+    for id in ids {
+        let _ = write_reconnect(app, &id);
+    }
+    stranded().lock().unwrap().clear();
 }
 
 /// The shared browser is up: ask every card that was told it failed to try
@@ -3161,16 +3264,12 @@ mod tests {
     fn the_browser_server_and_the_paragraph_agree() {
         let with = crate::ask::mcp_config(1234, "abc", Some("http://127.0.0.1:9222"));
         let server = &with["mcpServers"]["browser"];
-        assert_eq!(server["command"], "npx", "the browser server lost its command");
-        let args = server["args"].as_array().expect("the browser server has args");
-        assert!(
-            args.iter().any(|a| a == "--cdp-endpoint"),
-            "the browser server does not point at a CDP endpoint: {server}"
-        );
-        assert!(
-            args.iter().any(|a| a == "http://127.0.0.1:9222"),
-            "the browser server was given the wrong endpoint: {server}"
-        );
+        /* A session on the wall's one shared server (`mcphost.rs`), not a
+           process of the card's own. A regression to the stdio entry would
+           still pass every other assertion here and put ~217 MB back on every
+           card. */
+        assert_eq!(server["type"], "http", "the browser server is not the shared one: {server}");
+        assert!(server.get("command").is_none(), "the card was given a process of its own: {server}");
         assert!(
             append_prompt(false, true, None).contains("mcp__browser__"),
             "the config carries a browser the prompt does not mention"
@@ -3194,13 +3293,10 @@ mod tests {
            browser would compile, pass every other assertion here on a machine
            with a browser up, and quietly restore the gap. */
         let cold = crate::ask::mcp_config(1234, "abc", Some(&crate::browser::address()));
-        let args = cold["mcpServers"]["browser"]["args"]
-            .as_array()
-            .expect("the browser server has args")
-            .clone();
-        assert!(
-            args.iter().any(|a| a == &format!("http://127.0.0.1:{}", crate::browser::DEFAULT_PORT)),
-            "the endpoint handed to a card is not the fixed one: {cold}"
+        assert_eq!(
+            cold["mcpServers"]["browser"]["url"],
+            format!("http://127.0.0.1:{}/mcp", crate::browser::MCP_PORT),
+            "the address handed to a card is not the fixed one: {cold}"
         );
 
         /* And the two names are one name. `append_prompt` prints the prefix the
@@ -3793,6 +3889,7 @@ mod tests {
         ("later.rs", include_str!("later.rs")),
         ("lend.rs", include_str!("lend.rs")),
         ("limits.rs", include_str!("limits.rs")),
+        ("load.rs", include_str!("load.rs")),
         ("pin.rs", include_str!("pin.rs")),
         ("presence.rs", include_str!("presence.rs")),
         ("relay.rs", include_str!("relay.rs")),

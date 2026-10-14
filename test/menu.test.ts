@@ -734,3 +734,28 @@ describe("putting a card on a particular account", () => {
     expect(on.map((i) => i.id)).toEqual(["account:tx-team"]);
   });
 });
+
+describe("sharing a project's MCP servers", () => {
+  const pools = (t: Parameters<typeof menuFor>[0]) =>
+    menuFor(t).find((i) => i.kind === "more" && i.id === "pools");
+
+  test("one row per stdio server, the shared ones marked", () => {
+    const row = pools({
+      kind: "region",
+      pools: [
+        { name: "RISE", shared: true },
+        { name: "figma", shared: false },
+      ],
+    });
+    expect(row?.kind).toBe("more");
+    if (row?.kind !== "more") return;
+    expect(row.items.map((i) => (i as { id: string }).id)).toEqual(["pool:RISE", "pool:figma"]);
+    expect(row.items.map((i) => (i as { on?: boolean }).on)).toEqual([true, false]);
+  });
+
+  test("a project with none, and the chat territory, are offered nothing", () => {
+    expect(pools({ kind: "region" })).toBeUndefined();
+    expect(pools({ kind: "region", pools: [] })).toBeUndefined();
+    expect(pools({ kind: "region", chat: true, pools: [{ name: "x", shared: false }] })).toBeUndefined();
+  });
+});

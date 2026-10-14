@@ -812,9 +812,12 @@ afternoon. Whoever takes it should know the in-memory half is not the argument a
 
 #### The sweep
 
-`perf.rs::sweep`, started by `spawn_reaper`, ends anything in a card's job whose parent has gone away, once a
-minute. Two tests, neither a guess: the job says it is ours, a dead parent says nobody is
-waiting on it.
+`perf.rs::sweep`, started by `spawn_reaper`, ends anything in a card's job whose parent it
+*saw* alive and is now gone, once a minute — and, since 2026-10-14, a heavy check left
+running after its card's turn ended. **The rule used to be "parent absent", and that killed
+real work**: under Git Bash a child's Windows parent is gone within a second of its birth, so
+`npx vitest` runs died mid-suite (sinks e9c80389, 968a4c6b). `.claude/rules/load.md` §3 has
+the two rules as they stand and why; the bullets below are the reasoning that still holds.
 
 - **It has no idea of "hung", deliberately, because one cannot be had honestly.** Every leaked
   process on this machine sat at 0% CPU — and so does an idle dev server, an MCP server parked
@@ -827,11 +830,9 @@ waiting on it.
   thing that *stops* happening to a process — there is nothing to subscribe to.
 - **Started in `setup`, not with the meter.** The meter exists only while a widget is on the
   wall, and a guarantee that holds while you are looking at it is not one.
-- **The honest caveat**: a backgrounded tool call whose shell has exited while the work goes on
-  is indistinguishable from a leak by these two tests, and killing one means a
-  `<task-notification>` that never arrives and a card left holding a job it cannot decrement.
-  The window is narrow — Claude Code keeps the shell up to collect output — and was accepted
-  deliberately in exchange for a wall that does not silt up.
+- **The honest caveat is closed**: a backgrounded tool call whose shell has exited while the
+  work goes on used to be indistinguishable from a leak. A card with a row in `job` —
+  background work nobody has heard finish — now has nothing in its tree reaped at all.
 
 The control surface has `widget.add`, `widget.set`, `widget.update`, `widget.remove` and
 `widget.select`, and `snapshot` reports `widgets` and `meter`. `meter.sampling` is reported

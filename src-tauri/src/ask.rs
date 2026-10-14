@@ -277,7 +277,12 @@ pub fn mcp_config(port: u16, conversation_id: &str, shared_browser: Option<&str>
         }
     });
     if let Some(endpoint) = shared_browser {
-        servers["browser"] = crate::browser::mcp_server(endpoint);
+        /* The endpoint is not in the entry any more: the wall's one shared
+           server (`mcphost.rs`) was started pointing at it, and the card is a
+           session on that server. It still decides *whether* there is a
+           `browser` at all, which is the half `append_prompt` agrees with. */
+        let _ = endpoint;
+        servers["browser"] = crate::browser::mcp_server();
     }
     json!({ "mcpServers": servers })
 }
@@ -1930,6 +1935,17 @@ pub(crate) fn roster() -> Vec<Value> {
              have they finished or broken, recent activity, what did I miss, the feed \
              or notification history — not who is working on what, which is the board",
         ),
+        /* Deferred: the loaded tier is full, and the reflex this answers —
+           concluding a hung test means broken code — is reached by the hook's
+           note (`hooks::load_note`), which names this tool in full while the
+           machine is saturated. The hint carries the symptoms, because a card
+           searching here is holding "vitest hangs", not "machine load". */
+        found_by(
+            reads_only(crate::load::load_schema()),
+            "tests hang, test run prints nothing, tsc killed, check timed out, no output, \
+             out of memory, machine slow, CPU pinned, RAM full, is another card running \
+             tests, who is using the memory, is my code broken or is it the machine",
+        ),
         found_by(
             reads_only(crate::status::status_schema()),
             "is claude down, is it me or them, api error, 500, overloaded, rate \
@@ -2630,6 +2646,14 @@ pub const WAKE_PATH: &str = "/browser/wake";
 /// from the wall, by the thread that saw it through.
 pub const REMOVE_PATH: &str = "/remove/shell/";
 
+/// Where `hooks.rs` asks, before a heavy command, whether the machine is
+/// saturated: `POST /load/note/<card id>` with `{ "command" }`. A 200 carries
+/// the note to put in front of the model; a 204 means the machine has room,
+/// which is nearly always. Read-only and cheap to refuse, so it needs none of
+/// `REMOVE_PATH`'s hand-off: the census runs on this request's own thread and
+/// the hook gives up on it after a few seconds anyway. See `load::note_for`.
+pub const LOAD_PATH: &str = "/load/note/";
+
 /// How long [`REMOVE_PATH`] holds its request before telling the hook the
 /// question is standing. Under `hooks::ROUTE_TIMEOUT`, which is under the
 /// `PreToolUse` ceiling, so the hook always has its answer before it is killed.
@@ -2821,6 +2845,46 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                             );
                         }
                     }
+                    return;
+                }
+
+                /* A card's request to a pooled project MCP server (`pool.rs`).
+                   On this thread, which `pool::handle` may hold for as long as
+                   the upstream takes to answer — the thread-per-request above
+                   is what makes that cost nobody else anything. */
+                if req.url().starts_with(crate::pool::POOL_PATH) {
+                    let url = req.url().to_string();
+                    let mut body = String::new();
+                    if std::io::Read::read_to_string(req.as_reader(), &mut body).is_err() {
+                        let _ = req.respond(tiny_http::Response::empty(400));
+                        return;
+                    }
+                    let (status, said) = crate::pool::handle(&app, &url, &body);
+                    let mut resp = tiny_http::Response::from_string(said).with_status_code(status);
+                    if status == 200 {
+                        if let Ok(h) = tiny_http::Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/json"[..],
+                        ) {
+                            resp = resp.with_header(h);
+                        }
+                    }
+                    let _ = req.respond(resp);
+                    return;
+                }
+
+                if req.url().starts_with(LOAD_PATH) {
+                    let card = conversation_of(req.url()).to_string();
+                    let mut body = String::new();
+                    let command = std::io::Read::read_to_string(req.as_reader(), &mut body)
+                        .ok()
+                        .and_then(|_| serde_json::from_str::<Value>(&body).ok())
+                        .and_then(|b| b.get("command").and_then(Value::as_str).map(str::to_string))
+                        .unwrap_or_default();
+                    let _ = match crate::load::note_for(&app, &card, &command) {
+                        Some(note) => req.respond(tiny_http::Response::from_string(note)),
+                        None => req.respond(tiny_http::Response::empty(204)),
+                    };
                     return;
                 }
 
@@ -3470,6 +3534,11 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                 crate::chronicle::handle(&app, &conversation_id, &tool, &args)
                             })
                             .or_else(|| crate::limits::handle(&app, &conversation_id, &tool, &args))
+                            /* A census of the process table, so not free in
+                               time — a few hundred milliseconds on a loaded
+                               machine — but on this request's own thread, so it
+                               parks nobody but its caller. */
+                            .or_else(|| crate::load::handle(&app, &conversation_id, &tool, &args))
                             /* Takes neither the app nor the caller: it asks a
                                public page a question with no arguments, and the
                                answer is the same for every card on the wall. */

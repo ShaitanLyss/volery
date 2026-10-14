@@ -2104,9 +2104,15 @@
            and this is the list that says which one that is. */
         presets: presetPicks(),
         presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
+        pools: skein.pools[cwd] ?? [],
       };
+      /* The menu is drawn from the cache, and the cache is refreshed behind it:
+         a project added this session, or a `.mcp.json` written since load,
+         shows up the next time its territory is right-clicked. */
+      void skein.refreshPools(cwd);
       act = (id) => {
         if (id === "glass") canvas?.toggleGlass("region", terr);
+        else if (id.startsWith("pool:")) void skein.togglePool(cwd, id.slice(5));
         else if (id === "explorer") void skein.showInExplorer(cwd);
         else if (id === "chat") void openChat();
         else if (id === "new") void openIn(cwd);

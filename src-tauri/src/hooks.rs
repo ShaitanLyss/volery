@@ -740,6 +740,18 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>)
         return Some(deny(wipe_reason(&w)));
     }
 
+    /* The fifth arm, and the only one that is not a refusal or a rewrite: a
+       note in front of a heavy check while the machine is saturated
+       (`load_note`). Asked after the guards, since a refused call needs no
+       advice, and composed *with* the compensation below rather than instead of
+       it — the two answers live side by side in one `hookSpecificOutput`. The
+       pure classifier runs first and almost every command leaves there, so the
+       round trip to the wall is paid only by a test run, a type-check or a
+       build. */
+    let note = card
+        .filter(|_| crate::load::heavy(command).is_some())
+        .and_then(|card| load_note(ask_port, card, command));
+
     /* **The collapse is the Bash tool's, and only the Bash tool's.** Probed
        2026-08-25 against 2.1.241: the PowerShell tool hands the hook exactly
        what the API emitted — runs of 2, 4, 6 and 8 all arrive whole — so
@@ -748,34 +760,61 @@ fn reply(raw: &str, card: Option<&str>, db: Option<&str>, ask_port: Option<u16>)
        about, arriving from a direction nobody expected: not the Bash tool being
        fixed, but a second shell tool that never had the bug. Named rather than
        shape-checked, because there is no way to tell from a payload whether the
-       thing about to run it eats backslashes. */
-    if payload.get("tool_name").and_then(serde_json::Value::as_str) != Some("Bash") {
-        return None;
-    }
+       thing about to run it eats backslashes.
 
-    /* The overwhelming majority of commands contain no backslash at all. Saying
+       The overwhelming majority of commands contain no backslash at all. Saying
        nothing is cheaper than handing back an identical input for the CLI's
        schema validator to check, and it keeps the hook off the permission
        machinery's books for every such call. */
-    if !command.contains('\\') {
+    let is_bash = payload.get("tool_name").and_then(serde_json::Value::as_str) == Some("Bash");
+    let fixed = (is_bash && command.contains('\\'))
+        .then(|| compensate(command))
+        .filter(|f| f.as_str() != command);
+
+    if fixed.is_none() && note.is_none() {
         return None;
     }
+    let mut out = serde_json::json!({ "hookEventName": "PreToolUse" });
+    if let Some(fixed) = fixed {
+        input.insert("command".into(), serde_json::Value::String(fixed));
+        out["updatedInput"] = serde_json::Value::Object(input);
+    }
+    if let Some(note) = note {
+        out["additionalContext"] = serde_json::Value::String(note);
+    }
+    Some(serde_json::json!({ "hookSpecificOutput": out }).to_string())
+}
 
-    let fixed = compensate(command);
-    if fixed == command {
+/// How long the hook waits for the wall's reading before letting a heavy
+/// command through with nothing said. The census behind it is a few hundred
+/// milliseconds on a loaded machine; past this the wall is struggling too, and
+/// holding the agent's command up to explain that would be the wrong trade.
+const LOAD_NOTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ask the wall whether the machine is saturated, before a heavy command.
+///
+/// **Fails open, and silent**, which is this module's rule everywhere but the
+/// browser arm: the note is advice, the command runs either way, and a wall that
+/// cannot be reached has nothing worth saying about load. `None` is also the
+/// answer almost always when it *is* reached — the wall says something only
+/// while memory or CPU is saturated (`load::pressure`), so the note never
+/// becomes a sentence an agent learns to skim.
+///
+/// A route rather than a reading taken here: CPU is an average over minutes,
+/// which only the long-lived process has, and who else is running what is the
+/// wall's to know. See `.claude/rules/load.md`.
+fn load_note(ask_port: Option<u16>, card: &str, command: &str) -> Option<String> {
+    let port = ask_port?;
+    let agent = ureq::AgentBuilder::new().timeout(LOAD_NOTE_TIMEOUT).build();
+    let resp = agent
+        .post(&format!("http://127.0.0.1:{port}{}{card}", crate::ask::LOAD_PATH))
+        .send_string(&serde_json::json!({ "command": command }).to_string())
+        .ok()?;
+    if resp.status() != 200 {
         return None;
     }
-
-    input.insert("command".into(), serde_json::Value::String(fixed));
-    Some(
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "updatedInput": input,
-            }
-        })
-        .to_string(),
-    )
+    let said = resp.into_string().ok()?;
+    (!said.trim().is_empty()).then_some(said)
 }
 
 /// The `--settings` layer every card is spawned with.
@@ -813,8 +852,20 @@ pub fn settings(
     card: Option<(&str, &std::path::Path)>,
     locked: bool,
     ask_port: u16,
+    pooled: &[String],
 ) -> String {
     let mut root = serde_json::Map::new();
+
+    /* The project's own copies of the servers the wall shares (`pool.rs`). The
+       card is handed each of these as an HTTP entry on the pool, so its own
+       `.mcp.json` copy must not start as well — that copy is the ~500 MB the
+       pool exists to save. `tools/probe-mcp-override.ts` is the measurement this
+       rests on: what the CLI does when the flag config and `.mcp.json` name the
+       same server, and whether this key in the flag layer keeps the project's
+       copy from starting. */
+    if !pooled.is_empty() {
+        root.insert("disabledMcpjsonServers".into(), serde_json::json!(pooled));
+    }
 
     /* The permissions a chat card is granted, and the whole of them. Moved here
        from `supervisor::CHAT_SETTINGS` when the settings layer stopped being a
@@ -3388,7 +3439,7 @@ mod tests {
 
     #[test]
     fn settings_carry_the_hook_in_exec_form() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0, &[])).unwrap();
         let h = &v["hooks"]["PreToolUse"][0];
         /* **A matcher, and the three things that make it safe to have one.**
            This asserted `matcher.is_none()` until 2026-10-02, which was the
@@ -3436,7 +3487,7 @@ mod tests {
         assert_eq!(h["hooks"][0]["args"].as_array().unwrap().len(), 1);
         assert!(v.get("permissions").is_none(), "a project card gets no allow list");
 
-        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false, 0)).unwrap();
+        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false, 0, &[])).unwrap();
         assert_eq!(chat["permissions"]["allow"][0], "WebSearch");
         assert_eq!(chat["hooks"]["PreToolUse"][0]["hooks"][0]["type"], "command");
     }
@@ -3453,10 +3504,10 @@ mod tests {
     /// nobody turned on.
     #[test]
     fn a_locked_territory_denies_the_three_editing_tools_and_nothing_else() {
-        let open: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
+        let open: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0, &[])).unwrap();
         assert!(open.get("permissions").is_none(), "an unlocked card is granted nothing");
 
-        let shut: serde_json::Value = serde_json::from_str(&settings(false, None, true, 0)).unwrap();
+        let shut: serde_json::Value = serde_json::from_str(&settings(false, None, true, 0, &[])).unwrap();
         let deny = shut["permissions"]["deny"].as_array().expect("a deny list");
         assert_eq!(
             deny.iter().filter_map(|d| d.as_str()).collect::<Vec<_>>(),
@@ -3484,7 +3535,7 @@ mod tests {
     /// like `PreToolUse` — with no matcher, so nothing can quietly stop matching.
     #[test]
     fn the_two_forgetting_hooks_are_registered_the_same_way() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0, &[])).unwrap();
         for ev in ["SessionStart", "UserPromptSubmit"] {
             let h = &v["hooks"][ev][0];
             assert!(h.get("matcher").is_none(), "{ev}: a matcher is a name that can rot");
@@ -3494,7 +3545,7 @@ mod tests {
         /* A chat card gets them too. It can run nothing, so it will never have a
            row — but the registration must not be the thing that decides that,
            or the day a chat card gains a tool the guard is silently absent. */
-        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false, 0)).unwrap();
+        let chat: serde_json::Value = serde_json::from_str(&settings(true, None, false, 0, &[])).unwrap();
         assert!(chat["hooks"]["UserPromptSubmit"][0]["hooks"][0]["args"][0] == FLAG);
     }
 
@@ -3504,7 +3555,7 @@ mod tests {
     /// explanation that is always cut off is a feature that is not there.
     #[test]
     fn the_failure_hook_is_registered_broad_and_outlasts_the_look() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0, &[])).unwrap();
         let h = &v["hooks"]["PostToolUseFailure"][0];
         assert!(h.get("matcher").is_none(), "a matcher is a name that can rot");
         assert_eq!(h["hooks"][0]["args"][0], FLAG);
@@ -4140,7 +4191,7 @@ mod tests {
     fn a_named_card_arms_the_guard_through_the_argv() {
         let dir = std::path::Path::new("C:/Users/x/AppData/Roaming/dev.skein.studio");
         let v: serde_json::Value =
-            serde_json::from_str(&settings(false, Some(("abc123", dir)), false, 0)).unwrap();
+            serde_json::from_str(&settings(false, Some(("abc123", dir)), false, 0, &[])).unwrap();
         let args = v["hooks"]["PreToolUse"][0]["hooks"][0]["args"]
             .as_array()
             .unwrap()
@@ -4271,7 +4322,7 @@ mod tests {
     /// have explained it discarded unread.
     #[test]
     fn the_hook_outlives_the_wait_it_may_have_to_do() {
-        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&settings(false, None, false, 0, &[])).unwrap();
         let pre = v["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"]
             .as_u64()
             .expect("the PreToolUse hook has a timeout");
@@ -4308,7 +4359,7 @@ mod tests {
     #[test]
     fn a_chat_card_gets_no_port_to_wake_anything_with() {
         let chat: serde_json::Value =
-            serde_json::from_str(&settings(true, None, false, 51234)).unwrap();
+            serde_json::from_str(&settings(true, None, false, 51234, &[])).unwrap();
         let args = chat["hooks"]["PreToolUse"][0]["hooks"][0]["args"]
             .as_array()
             .unwrap()
@@ -4318,7 +4369,7 @@ mod tests {
         assert_eq!(after(&args, FLAG_PORT), None, "a chat card was given a port");
 
         let project: serde_json::Value =
-            serde_json::from_str(&settings(false, None, false, 51234)).unwrap();
+            serde_json::from_str(&settings(false, None, false, 51234, &[])).unwrap();
         let args = project["hooks"]["PreToolUse"][0]["hooks"][0]["args"]
             .as_array()
             .unwrap()

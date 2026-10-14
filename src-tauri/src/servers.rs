@@ -190,7 +190,9 @@ pub(crate) mod jobs {
 /// off Windows, where `Job` is a stub, and to reap the handle on the way out.
 struct PipeServer {
     child: Child,
-    _job: Option<jobs::Job>,
+    /// Also read by `owned_pids`, which is how `load.rs` weighs a group and
+    /// `servers` says when one has grown large.
+    job: Option<jobs::Job>,
     /// Set before any deliberate kill, and read by `exit_if_last`.
     ///
     /// Without it a *restart* reports the death it caused: `start_group` kills
@@ -681,7 +683,7 @@ fn spawn_one(
 
     Ok(PipeServer {
         child,
-        _job: job,
+        job,
         stopped,
     })
 }
@@ -1469,6 +1471,12 @@ fn do_servers(app: &AppHandle, caller: &str) -> String {
         );
     }
 
+    /* What each running group's tree costs, read before either lock below is
+       taken — `group_bytes` takes `running` itself, briefly. A group that has
+       grown past `load::GROUP_HEAVY` gets a sentence saying so and saying whose
+       call a restart is (sink: Lyss, 2026-10-14 — "suggest a restart when it
+       crosses a threshold, without restarting it on its own"). */
+    let weight = crate::load::group_bytes(app);
     let servers = app.state::<Servers>();
     /* Which groups are up is taken as a snapshot and the lock released, rather
        than held alongside `trace` for the length of the map below. Nothing here
@@ -1489,11 +1497,16 @@ fn do_servers(app: &AppHandle, caller: &str) -> String {
         .map(|g| {
             let up = up.contains(&g.id);
             let t = trace.as_ref().and_then(|m| m.get(&g.id));
+            let bytes = weight.get(&g.id).copied();
             json!({
                 "group": g.label,
                 "id": g.id,
                 "running": up,
                 "autostart": g.autostart,
+                /* Private bytes of the group's whole tree, absent for a group
+                   that is not running rather than a confident zero. */
+                "memory": bytes.map(crate::load::size),
+                "memory_note": bytes.and_then(crate::load::group_weight_note),
                 "servers": g.servers.iter().map(|s| json!({
                     "label": s.label,
                     "command": s.command,
@@ -2160,6 +2173,27 @@ impl Servers {
         for (id, group) in map.iter() {
             for s in &group.servers {
                 out.insert(s.child.id(), id.clone());
+            }
+        }
+        out
+    }
+
+    /// Every process each running group's job holds, pid → group id.
+    ///
+    /// `pids` is the one process we started; this is the whole tree, which is
+    /// what a group *costs* — `pnpm dev` is a few megabytes and the `next`
+    /// server under it was 4.4 GB on 2026-10-14. Same reading
+    /// `Supervisor::owned_pids` gives for a card, for the same reason.
+    pub fn owned_pids(&self) -> HashMap<u32, String> {
+        let map = self.running.lock().unwrap();
+        let mut out = HashMap::new();
+        for (id, group) in map.iter() {
+            for s in &group.servers {
+                if let Some(job) = &s.job {
+                    for pid in job.pids() {
+                        out.insert(pid, id.clone());
+                    }
+                }
             }
         }
         out

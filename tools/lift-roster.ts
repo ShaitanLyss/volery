@@ -221,6 +221,10 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     ],
   },
   {
+    file: "src-tauri/src/load.rs",
+    items: ["const LOAD_TOOL", "fn load_schema"],
+  },
+  {
     file: "src-tauri/src/status.rs",
     items: ["const STATUS_TOOL", "fn status_schema"],
   },
@@ -255,7 +259,7 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
      asserts about what it returns. */
   {
     file: "src-tauri/src/browser.rs",
-    items: ["fn mcp_server"],
+    items: ["fn mcp_server", "const MCP_PORT", "fn mcp_url", "const HOST"],
   },
   {
     file: "src-tauri/src/docket.rs",
@@ -497,6 +501,7 @@ const MODULES = [
   "later",
   "lend",
   "limits",
+  "load",
   "presence",
   "pin",
   "relay",

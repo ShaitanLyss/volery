@@ -86,6 +86,11 @@ export type MenuTarget = {
    *  Default false, so an ordinary territory needs to say nothing to be offered
    *  everything — the caller with the answer is the one that has to speak. */
   nowhere?: boolean;
+  /** region: the stdio MCP servers in this project's `.mcp.json`, and whether
+   *  each is shared across the territory's cards (`pool.rs`). Empty or absent
+   *  for a project with none — which is most of them — and then the row is not
+   *  drawn, since a list of nothing is a gesture that leads nowhere. */
+  pools?: { name: string; shared: boolean }[];
   /** This is the only grouping its project has, so taking it off the wall
    *  would leave its cards nowhere to stand — `forget_territory` refuses it,
    *  and an item that is always refused is an item that reads as broken. The
@@ -663,6 +668,28 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            entry you cannot learn the position of. The panel says what is set;
            the menu says where to go. */
         item("guidance", "this project's standing instructions…"),
+        /* Which of the project's own MCP servers run once for the whole
+           territory instead of once per card (`pool.rs`). With the project
+           items because it is a fact about the project, and a family because
+           there is one row per server. The dot is "shared", the same mark a
+           variant in force wears, and a click flips it — taking effect at each
+           card's next spawn, which the note says so the row is not read as
+           having done nothing. Nothing is shared until somebody says so: a
+           server that keeps per-client state would hand one card's to another,
+           and only the person who knows the server can say it does not. */
+        t.chat || !(t.pools ?? []).length
+          ? null
+          : more(
+              "pools",
+              "share an MCP server across cards…",
+              (t.pools ?? []).map((p) => ({
+                kind: "item" as const,
+                id: `pool:${p.name}`,
+                label: p.name,
+                note: p.shared ? "one copy for all cards" : "a copy per card",
+                on: p.shared,
+              })),
+            ),
         t.empty ? sep : null,
         t.empty ? item("forget", "forget this project", true) : null,
       ].filter(Boolean) as MenuItem[]);

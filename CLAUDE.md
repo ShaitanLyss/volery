@@ -107,7 +107,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # project.rs,
                               # usage.rs,
                               # tunnel.rs, applog.rs,
-                              # limits.rs,
+                              # limits.rs, load.rs, pool.rs, perf.rs,
                               # timeline.rs, arrange.rs, notice.rs, machine.rs
 cd src-tauri && cargo run --example limits-probe   # what /api/oauth/usage really answers
 bun tools/probe-prices.ts          # whether usage.ts's price table still agrees with the
@@ -298,6 +298,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `spotify.md` | music on the wall: why Volery *is* the player rather than a remote for one, what that costs in Spotify's terms, the two tools that let a card choose what plays without being able to silence you, and the loopback tunnel that gets librespot onto an address that answers | `spotify.rs`, `selector.rs`, `tunnel.rs`, `spotify.ts`, `Spotify.svelte` |
 | `browser.md` | a browser the wall owns and a page two things drive at once: why hosting it in a webview saves ~0, the profile collision two cards would have hit, the fixed port an MCP argument forces, the two Chrome flags that fail after everything looks fine, and why the input half needs no window focus | `browser.rs`, `browser.ts`, `pane.svelte.ts`, `Browser.svelte`, `tools/probe-browser.ts` |
 | `build.md` | building without MSVC — the four traps, and what a no-MSVC machine can check | `Cargo.toml`, `tools/*.ps1` |
+| `load.md` | ten cards on one laptop: one `@playwright/mcp` for the wall, a project's stdio server shared across its cards, the reaper that stopped killing Git Bash work, telling a card the machine is saturated, and the 403 the CLI remembers by server name machine-wide | `load.rs`, `mcphost.rs`, `pool.rs` |
 
 ## Architecture
 

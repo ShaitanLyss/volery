@@ -196,6 +196,16 @@ at 60fps after its task was torn down announced nothing, was in no receipt, and 
 wall as ambient machine load — it was nearly written into an audit report as a finding about
 the machine.
 
+### What the sweep may end, and what the wall shares instead
+
+Two things changed on 2026-10-14 and both are in `.claude/rules/load.md`. **The sweep stopped
+killing Git Bash work**: "parent absent" became "parent seen alive, now gone", because an MSYS
+child's Windows parent exits within a second of its birth and the old rule ended `npx vitest`
+runs mid-suite. And **a card is fewer processes**: its `browser` is a session on one wall-wide
+`@playwright/mcp` (`mcphost.rs`) rather than three processes of its own, and a project stdio
+server the user chose to share (`pool.rs`) is one process per territory rather than one per
+card. The ~1.1 GB "fully equipped card" above was measured before either.
+
 ### If you are diagnosing this again
 
 Walk the parent chain to the root; do not infer ownership from an image name. A `claude.exe`

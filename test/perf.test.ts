@@ -1,5 +1,44 @@
 import { describe, expect, test } from "bun:test";
-import { fold, members, orphans, since, type Proc, type Sample } from "../src/lib/perf";
+import {
+  fold,
+  members,
+  orphans,
+  reapedNote,
+  since,
+  type Proc,
+  type Reaped,
+  type Sample,
+} from "../src/lib/perf";
+
+describe("reapedNote", () => {
+  const r = (p: Partial<Reaped>): Reaped => ({
+    pid: 4168,
+    name: "node.exe",
+    conversation: "card-a",
+    automatic: true,
+    command: "node node_modules/typescript/bin/tsc --noEmit",
+    why: "leftover tsc",
+    bytes: 2.5 * 1024 ** 3,
+    ...p,
+  });
+
+  test("a leftover names the command, the memory and the rule", () => {
+    const said = reapedNote(r({}));
+    expect(said).toContain("typescript/bin/tsc --noEmit (pid 4168)");
+    expect(said).toContain("freeing 2.5 GB");
+    expect(said).toContain("after this card's turn ended");
+  });
+
+  test("an orphan says why nothing was waiting on it", () => {
+    expect(reapedNote(r({ why: "orphan", bytes: 0 }))).toBe(
+      "volery ended node node_modules/typescript/bin/tsc --noEmit (pid 4168) — the process that started it was gone, so nothing was waiting on it",
+    );
+  });
+
+  test("a process with no command line falls back to its image", () => {
+    expect(reapedNote(r({ command: "", why: "by hand", bytes: 0 }))).toBe("ended node.exe (pid 4168)");
+  });
+});
 
 function proc(p: Partial<Proc> & { pid: number }): Proc {
   return {

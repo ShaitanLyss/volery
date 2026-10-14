@@ -26,6 +26,7 @@ import {
 } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { listen } from "@tauri-apps/api/event";
+import { reapedNote, type Reaped } from "./perf";
 import {
   NO_ANSWER_NOTE,
   blankAnswers,
@@ -256,6 +257,37 @@ const HOLD_SWEEP_MS = 60_000;
 
 export class Skein {
   projects = $state<Project[]>([]);
+
+  /** Each project's stdio MCP servers and whether its cards share one copy,
+   *  by root (`pool.rs`). Read once per project at load and again after a
+   *  toggle, because the territory menu is built synchronously on a right-click
+   *  and cannot wait on a round trip to find out what to offer. A project whose
+   *  `.mcp.json` changes mid-session is read again the next time a toggle is
+   *  made; the list is a menu's cache, not the truth the spawn reads. */
+  pools = $state<Record<string, { name: string; shared: boolean }[]>>({});
+
+  async refreshPools(root: string) {
+    try {
+      const got = await invoke<{ name: string; shared: boolean }[]>("pool_candidates", { root });
+      this.pools = { ...this.pools, [root]: got.map(({ name, shared }) => ({ name, shared })) };
+    } catch {
+      /* A project whose `.mcp.json` cannot be read offers nothing to share,
+         which is what an absent entry already means. */
+    }
+  }
+
+  /** Share one of a project's MCP servers across its cards, or stop. Says
+   *  when it takes effect, because the toggle itself changes nothing a live
+   *  card can see — its servers were settled when it spawned. */
+  async togglePool(root: string, name: string) {
+    const now = this.pools[root]?.find((p) => p.name === name)?.shared ?? false;
+    try {
+      await invoke("set_pool_shared", { root, name, shared: !now });
+      await this.refreshPools(root);
+    } catch (e) {
+      this.fault = `could not change how ${name} is shared: ${e}`;
+    }
+  }
 
   /** Another grouping in a project you already have.
    *
@@ -847,6 +879,18 @@ export class Skein {
     );
 
     keep(
+      /* The reaper ended something a card owned (`perf.rs::sweep`). Said on the
+         card, because whoever started it looks there first — and for a long
+         time nothing listened to this event at all, so every automatic reap was
+         silent and a test run that had been ended read as one that broke. The
+         chronicle row for a leftover is written in Rust; this is the card's own
+         line, and a card no longer on the wall simply has nowhere to put it. */
+      listen<Reaped>("perf:reaped", (e) => {
+        this.#byId.get(e.payload.conversation)?.note(reapedNote(e.payload));
+      }),
+    );
+
+    keep(
       /* Every write to the billboard goes through `board.rs`, which emits — so
          there is an event for every change there is and nothing here polls.
          `refresh` is a no-op when nothing is looking at it, which is the whole
@@ -1139,6 +1183,8 @@ export class Skein {
       }>("load_studio");
 
       this.projects = s.projects;
+      /* Not awaited: a menu's cache, which the wall is correct without. */
+      for (const p of s.projects) void this.refreshPools(p.root_path);
       this.groupings = s.territories ?? [];
       /* `?? ""` rather than trusting the field: this arrives in the snapshot,
          and a snapshot from a build before v23 has no such key. Nothing set is

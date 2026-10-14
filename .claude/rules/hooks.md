@@ -737,3 +737,14 @@ the event never fires on a call that worked. The routing sits above the `PreTool
 because a failure payload carries the same `tool_input`, and falling through would hand an
 event that has already happened to the shell compensator. Everything except the one browser
 error leaves after a string comparison.
+
+## And a note before a heavy command
+
+The `PreToolUse` body has a fifth arm that neither refuses nor rewrites: before a command
+`load::heavy` names (a type-check, a test run, a build), the hook asks the wall over
+`ask::LOAD_PATH` whether the machine is saturated, and only if it is adds `additionalContext`
+saying who else is running what and that a hang would be load, not code. It sits after the
+guards (a refused call needs no advice) and is composed *beside* the backslash compensation in
+one `hookSpecificOutput`, never instead of it. It fails open and silent within five seconds,
+like the compensator and unlike the browser arm. `.claude/rules/load.md` §4 has the thresholds
+and why it says nothing while the machine has room.

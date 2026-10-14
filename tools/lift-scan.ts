@@ -263,6 +263,17 @@ const SERDE_JSON = /^libserde_json-[0-9a-f]+\.rlib$/;
 
 export type RustTarget = { deps: string; toolchain: string };
 
+/** Whether this machine has an MSVC toolchain at all. `vswhere.exe` ships with
+ *  every Visual Studio and Build Tools install, at a fixed path. */
+function hasMsvc(): boolean {
+  const base = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  try {
+    return statSync(join(base, "Microsoft Visual Studio", "Installer", "vswhere.exe")).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function holdsSerdeJson(dir: string): boolean {
   try {
     return readdirSync(dir).some((n) => SERDE_JSON.test(n));
@@ -274,7 +285,19 @@ function holdsSerdeJson(dir: string): boolean {
 /** The deps directory and the toolchain that built it, or null when neither
  *  tree has been built. */
 export function findTarget(): RustTarget | null {
-  if (holdsSerdeJson(MSVC_DEPS)) return { deps: MSVC_DEPS, toolchain: "stable-x86_64-pc-windows-msvc" };
+  /* **`target/debug` is not necessarily MSVC-built.** `tools/check-gnu.sh` sets
+     `RUSTUP_TOOLCHAIN` and passes no `--target`, so on a machine with no MSVC
+     the gnu build lands in this very directory — and naming it msvc made every
+     lift that borrows an rlib fail with E0461 ("expected target triple
+     x86_64-pc-windows-msvc") and every other one fail to link, 24 of 27 at once
+     on 2026-10-14. The tree cannot say which compiler wrote it, but the machine
+     can say which one it has: no Visual Studio installer, no MSVC build. */
+  if (holdsSerdeJson(MSVC_DEPS)) {
+    return {
+      deps: MSVC_DEPS,
+      toolchain: hasMsvc() ? "stable-x86_64-pc-windows-msvc" : "stable-x86_64-pc-windows-gnu",
+    };
+  }
   if (holdsSerdeJson(GNU_DEPS)) return { deps: GNU_DEPS, toolchain: "stable-x86_64-pc-windows-gnu" };
   return null;
 }

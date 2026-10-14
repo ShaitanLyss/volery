@@ -108,6 +108,8 @@ const BROWSER_ITEMS = [
   "const SHARED_START_WAIT",
   "fn address",
   "fn mcp_server",
+  "const MCP_PORT",
+  "fn mcp_url",
   /* What the failure hook reports, and the budget its ceiling is held to. The
      network half, `stalled_tabs`, stays behind: it dials a real Chrome, and
      `tools/probe-cdp-stall.ts` is where that half is measured. */

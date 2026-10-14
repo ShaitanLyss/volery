@@ -766,6 +766,13 @@ exactly the bug this subsystem was created by. It wants to be its own change wit
 fallback, and it would benefit every card that already carried the server. Filed in the sink
 with these numbers.
 
+**Superseded on 2026-10-14 by the middle of the ladder rather than either end**: one HTTP
+`@playwright/mcp` for the whole wall (`mcphost.rs`), each card a session on it. ~110 MB for
+the wall instead of ~217 MB per card, and no per-card `npx` cold start to miss the CLI's
+connect deadline. `.claude/rules/load.md` §1 has the source reading and the probe, including
+the host check that 403s a card and the machine-wide cache that remembers a 403 by server
+name. The paragraphs above are the history of why it cost what it did.
+
 The other end of the ladder, for whoever picks that up: a shim registered in place of
 `@playwright/mcp` — Volery's own binary answering `initialize` and `tools/list` from a cached
 schema and spawning the real server only on the first `tools/call` — takes the resting cost to

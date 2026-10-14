@@ -6797,6 +6797,44 @@ pub fn project_row(conn: &Connection, id: &str) -> Option<ProjectRow> {
     .ok()
 }
 
+/// A card's `cwd` — its project root, even for a worktree card. One indexed
+/// read, for the pool, which asks it on every request a card makes to a shared
+/// server and so must not pay for `roster_one`'s joins.
+pub fn cwd_of(conn: &Connection, id: &str) -> Option<String> {
+    conn.query_row("SELECT cwd FROM conversation WHERE id = ?1", params![id], |r| r.get(0))
+        .ok()
+}
+
+/// A group's label, for `load.rs` naming what is using the machine. `None` for
+/// an id with no row, which reads as the id rather than as an error.
+pub fn server_group_label(conn: &Connection, id: &str) -> Option<String> {
+    conn.query_row("SELECT label FROM server_group WHERE id = ?1", params![id], |r| r.get(0))
+        .ok()
+}
+
+/// Whether a card has background work it started and nobody has heard finish —
+/// a row in `job`, which by construction means exactly that (`turns.md`, "a row
+/// means outstanding, and settling deletes it").
+///
+/// The reaper's reason to keep its hands off a card's processes: a test run
+/// started with `run_in_background` is meant to outlive the turn, and its row is
+/// the one record that says so. An unreadable table answers `true`, which
+/// spares rather than kills — the cheap direction to be wrong in.
+///
+/// **Only the card's current session**, the scope `outstanding_jobs` reads at:
+/// a row from a session the card has since left is news `rouse` delivers, not
+/// work this process is running, and counting it would exempt a card from the
+/// reaper for as long as the row stood.
+pub fn has_outstanding_jobs(conn: &Connection, conversation_id: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM job j JOIN conversation c ON c.id = j.conversation_id
+                        WHERE j.conversation_id = ?1 AND j.session_id = c.agent_session_id)",
+        params![conversation_id],
+        |r| r.get::<_, bool>(0),
+    )
+    .unwrap_or(true)
+}
+
 /// One territory's dev server groups, in the order they start in.
 ///
 /// `load_studio` already reads every group on the wall, and this exists rather

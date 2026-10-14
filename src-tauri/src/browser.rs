@@ -941,11 +941,35 @@ pub fn address() -> String {
 /// at a listener that counted its accepts and saw **zero** across `initialize`
 /// and `tools/list`, which is what makes "lazy" true rather than merely hoped:
 /// registering the server does not itself cost 450 MB.
-pub fn mcp_server(endpoint: &str) -> serde_json::Value {
-    serde_json::json!({
-        "command": "npx",
-        "args": ["@playwright/mcp@latest", "--cdp-endpoint", endpoint],
-    })
+///
+/// **Since 2026-10-14 it is one server for the wall rather than one per card**,
+/// and the entry is an HTTP URL rather than a command: `mcphost.rs` runs
+/// `@playwright/mcp --port MCP_PORT --cdp-endpoint <address>` once, and every
+/// card's `browser` is a session on it. Everything above still holds — the
+/// endpoint is still an address the server dials lazily, per session — and the
+/// stdio arrangement's cost (~217 MB and three processes per card, sink
+/// 482e25ee) and its failure (a cold `npx` missing the CLI's thirty-second
+/// connect, the CONNECT_TIMEOUT sinks) are what changed. `mcphost.rs` has the
+/// reading of `@playwright/mcp`'s source that says a session gets exactly what a
+/// stdio server got.
+pub fn mcp_server() -> serde_json::Value {
+    serde_json::json!({ "type": "http", "url": mcp_url() })
+}
+
+/// Where the wall's shared `@playwright/mcp` listens. Fixed, for `DEFAULT_PORT`'s
+/// reason: a card's `--mcp-config` is written at spawn, before anything need be
+/// listening.
+pub const MCP_PORT: u16 = 9244;
+
+/// The URL a card's `browser` entry points at. `127.0.0.1` rather than
+/// `localhost`, because the server binds the address it is given and a
+/// `localhost` that resolves to `::1` on one side and `127.0.0.1` on the other
+/// is a refused connection naming nothing. The server's MCP route only admits a
+/// `Host` on its allow-list, which `mcphost.rs` sets to exactly this
+/// `127.0.0.1:<port>` — not `'*'`, which would let any page the user visits
+/// rebind a name to loopback and drive the shared browser.
+pub fn mcp_url() -> String {
+    format!("http://{HOST}:{MCP_PORT}/mcp")
 }
 
 #[tauri::command]
@@ -1063,6 +1087,11 @@ impl Drop for Starting {
 /// success and holds a child that bound nothing. A failure that looks like
 /// success is the one worth taking a lock to avoid.
 pub fn ensure_running(app: &AppHandle) -> Result<(), String> {
+    /* A card reaching for a browser tool is also the moment to notice the
+       shared MCP server died since it connected: restarting it reconnects every
+       card's session (`mcphost::ensure`). Not waited on — this call's own
+       session is either alive, or will be asked to reconnect when it is. */
+    crate::mcphost::ensure(app);
     let ours = {
         let state = app
             .try_state::<Browser>()
@@ -1138,12 +1167,6 @@ pub fn ensure_running(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the shared browser is running right now.
-pub fn is_up(app: &AppHandle) -> bool {
-    app.try_state::<Browser>()
-        .and_then(|s| s.inner.lock().ok().map(|g| g.is_some()))
-        .unwrap_or(false)
-}
 
 /// Wait out a start another caller claimed, and say whether it worked.
 ///

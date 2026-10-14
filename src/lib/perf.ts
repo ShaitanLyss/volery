@@ -243,13 +243,46 @@ export function members(sample: Sample, key: string): Proc[] {
 
 /** How many processes in this sample answer to nothing.
  *
- *  Drawn as a line on the list rather than a badge on the wall. The reaper
- *  takes these on its own within the minute, so a number here that is anything
- *  but briefly non-zero is the sweep failing to run — which is the one thing
- *  about it worth being able to see, since a reaper that silently stopped and
- *  one with nothing to do look identical. */
+ *  Drawn as a line on the list rather than a badge on the wall. **Not every one
+ *  of these is the reaper's to take**, and since 2026-10-14 it does not try: a
+ *  process a card starts from Git Bash has a Windows parent that exits within a
+ *  second of its birth, so it reads as an orphan here for the whole of its life
+ *  while doing exactly what it was asked to (sinks e9c80389, 968a4c6b). The
+ *  sweep ends only a process whose parent it *saw* alive and then gone, or a
+ *  heavy check left running after its card's turn — see `perf.rs::judge`. What
+ *  stays on this line goes with its card's job when the card goes. */
 export function orphans(sample: Sample): Proc[] {
   return sample.procs.filter((p) => p.orphan && p.role !== "other");
+}
+
+/** What the reaper ended, as Rust reports it on `perf:reaped`. */
+export type Reaped = {
+  pid: number;
+  name: string;
+  conversation: string;
+  automatic: boolean;
+  command: string;
+  why: string;
+  bytes: number;
+};
+
+/** The line a card's transcript gets when the wall ends something it owned.
+ *
+ *  Said on the card because that is where whoever started it will look for it:
+ *  until this existed every automatic reap was silent, and a card whose test run
+ *  had been ended read a log that stopped mid-line as its own failure. Names the
+ *  command rather than the image — every other process on this wall is a
+ *  `node.exe` — and says why, in the reaper's own two rules. */
+export function reapedNote(r: Reaped): string {
+  const what = r.command.trim() || r.name || `pid ${r.pid}`;
+  const freed = r.bytes > 0 ? `, freeing ${bytes(r.bytes)}` : "";
+  if (r.why.startsWith("leftover")) {
+    return `volery ended ${what} (pid ${r.pid})${freed} — a check still running after this card's turn ended, with no background work outstanding`;
+  }
+  if (r.why === "orphan") {
+    return `volery ended ${what} (pid ${r.pid})${freed} — the process that started it was gone, so nothing was waiting on it`;
+  }
+  return `ended ${what} (pid ${r.pid})${freed}`;
 }
 
 /** An age, in the shortest form that is still true.
