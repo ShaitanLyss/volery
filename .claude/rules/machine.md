@@ -144,6 +144,39 @@ Winlogon automatic restart sign-on, which signs the last interactive user back i
 whatever machine it is run on. It is read-only and needs no admin. It was written to be run
 on `AU-LT-288` the next time that machine is up.
 
+## Nobody at the keyboard
+
+A laptop left open with its away switch off is heard and not away, so for the flyway it counted
+as somewhere Lyss *is*. Then a wall she *had* switched away parked its questions for nobody
+instead of filing them (`away.md`, *Away is the person's*). Her words: *"if I haven't been
+touching a wall in a while, it should automatically go to I'm away … case of an open laptop that
+I forgot to set to i'm away"*. So `idle_away` (this file) is folded into what the wall announces:
+`Facts.present` is false while the switch says away **or** nobody has touched the machine for
+longer than Windows itself would take to decide they had gone.
+
+- **`GetLastInputInfo`, system-wide**, not the app's focus: a forgotten laptop may well have
+  Volery in front, and `attention.focused` would call that watching.
+- **The threshold is hers, not ours.** The shortest of the machine-inactivity lock a policy sets
+  (`InactivityTimeoutSecs`), a policy screensaver timeout, her own screensaver (only when one is
+  chosen, since the timeout outlives switching it to *(None)*), and the display-off timeout on the
+  current power source. Zero is Windows' *never* and is skipped. Floored at five minutes, since a
+  one-minute display is a battery setting rather than a statement that somebody reading has left,
+  and fifteen minutes when none is set, so a machine set never to sleep still stops claiming her.
+  `idle_threshold_ms` is pure and tested.
+- **No clock of its own.** It is read on demand in `link::facts`, which already runs on the
+  flyway's 30s tick. There is no state and nothing to clear: the next input makes it false again.
+- **Switchable off**: `AwayWhenIdle` beside the other two knobs, absent meaning on, written by
+  `machine_set("idle", …)`, reported in `Status.idle` and `Status.idle_away`. Nothing draws the
+  toggle yet, and nothing on another wall yet says "not at the keyboard for 40m" (sink `ae696b3a`).
+- **It changes what is announced and nothing else.** Counting an idle wall as away for *its own*
+  questions would file them into its pile, and the pile does not cross the flyway (sink
+  `3368f78f`). A question asked while she is gone everywhere would then be invisible if she came
+  back at the other machine, where today it stays parked and reachable for its whole window and is
+  filed only when that runs out. **An idle wall may change its own filing once the pile travels,
+  and not before** (sink `2ddb9ff2`). Without this at all nothing is lost either: the away wall
+  would park rather than file, and `ask::expired` files the question when its window runs out.
+  The same pile, ten minutes later. So this is an accuracy fix, not a rescue.
+
 ## Not built, on purpose
 
 - **AutoAdminLogon**: a clear-text password in the registry, almost certainly blocked by

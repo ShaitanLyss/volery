@@ -272,12 +272,49 @@ pub fn load(app: &AppHandle) {
     }
 }
 
-/// Is the wall away? Every failure is `false` — see `store::read_away_since`
-/// for why the fallback has to be "you are here".
-pub fn away(app: &AppHandle) -> bool {
+/// Is this wall's switch on? Every failure is `false` — see
+/// `store::read_away_since` for why the fallback has to be "you are here".
+///
+/// What this wall *announces* (`Facts.present`) and what draws its away screen.
+/// It is not whether a question should be filed rather than asked: that is
+/// [`away`], which is about the person.
+pub fn away_here(app: &AppHandle) -> bool {
     app.try_state::<Presence>()
         .and_then(|p| p.since())
         .is_some()
+}
+
+/// Is there nobody to ask? This wall switched away **and** the person not
+/// present at any other wall on the flyway.
+///
+/// **Away is a property of the person, not of a machine** (sink `f931e6ca`).
+/// Lyss had switched `AU-LT-288` to away and was working at `QUEERISFREEDOM`;
+/// a card on `AU-LT-288` asked her something, it was filed in that laptop's
+/// pile, and she never saw a question she could have answered at once. The
+/// per-wall switch was exactly right while a wall was the only place she could
+/// be, and the flyway made that false — the same shape as the `ours` list and
+/// unpost's argument the same day (`ask.md`): *a rule justified by two things
+/// not interacting expires the moment something makes them interact.*
+///
+/// A question parked here already reaches the wall she is at (`CardDigest.asks`,
+/// `confirms`, `elsewhere.md`), so knowing she is there is the whole fix: park
+/// it, and let it travel. Present elsewhere means a wall heard within the
+/// roster's `QUIET_AFTER_MS` that is not switched away; a quiet wall and one
+/// never heard count as away (her ruling), so a wall with no flyway or no peers
+/// answers exactly as it did before, and the new code only ever adds a reason
+/// to park. The rest — her away everywhere, the question filed in this wall's
+/// pile, which does not cross — is sink `3368f78f` and is untouched.
+pub fn away(app: &AppHandle) -> bool {
+    nobody_to_ask(app, true)
+}
+
+/// [`away`] for a question that may not travel: one made under `ask::Stay`
+/// reaches nobody elsewhere, so only this wall's switch decides whether it is
+/// asked or filed — parking it here while she is at another wall would be a
+/// question put to an empty room. `travels` is `Settle::travels`, so this keeps
+/// itself right when a `Stay` is retired.
+pub fn nobody_to_ask(app: &AppHandle, travels: bool) -> bool {
+    away_here(app) && !(travels && crate::flyway::link::present_elsewhere(app))
 }
 
 #[derive(Clone, Serialize)]
@@ -343,11 +380,21 @@ fn flip(
        deferred, and a card answering an `ask_user` between the two would park
        against a wall that has already gone quiet. */
     if away {
-        defer_parked(app);
-        /* And the notices already up go to the pile with them — the same move
-           made on the same edge, so coming back reads one pile. */
-        crate::notice::went_away(app);
+        /* Unless she is at another wall (`away`): then what is parked here
+           already reaches her there, and filing it would take it out of her
+           sight — so only a question that cannot travel (an `ask::Stay`) goes
+           to the pile, and the notices stay up, since they travel too. */
+        let elsewhere = crate::flyway::link::present_elsewhere(app);
+        defer_parked(app, elsewhere);
+        if !elsewhere {
+            /* And the notices already up go to the pile with them — the same
+               move made on the same edge, so coming back reads one pile. */
+            crate::notice::went_away(app);
+        }
     }
+    /* The other walls decide what to do with their own questions on this
+       wall's word, so it is said now rather than at the next tick. */
+    crate::flyway::link::announce_soon(app);
     Ok(since)
 }
 
@@ -450,9 +497,13 @@ fn file(app: &AppHandle, conversation_id: &str, args: &Value) -> Option<usize> {
 /// somebody else's service, where re-entry could check nothing about what
 /// changed overnight. Those still time out, and their unanswered behaviour is
 /// the conservative one.
-fn defer_parked(app: &AppHandle) {
+///
+/// `staying_only` is going away while she is at another wall: everything that
+/// travels stays parked and reaches her there, and only what cannot — a
+/// question made under `ask::Stay` — is filed (sink `f931e6ca`).
+fn defer_parked(app: &AppHandle, staying_only: bool) {
     let Some(asks) = app.try_state::<crate::ask::Asks>() else { return };
-    for taken in crate::ask::take_parked_questions(&asks) {
+    for taken in crate::ask::take_parked_questions(&asks, staying_only) {
         convert(app, taken, Queued::Away);
     }
 }

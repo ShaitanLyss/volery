@@ -258,6 +258,41 @@ pub struct Facts {
     /// a word here refuses (`missing`); a word in neither list is let through
     /// and said to be unconfirmed (`unvouched`).
     pub lacks: Vec<String>,
+    /// Whether the person is at this wall — its away switch is off. What lets
+    /// a wall that *is* away still put a question up rather than file it, when
+    /// she is demonstrably somewhere else on the flyway (`present_elsewhere`,
+    /// sink `f931e6ca`).
+    ///
+    /// **A positive word on purpose**, so its absence is the safe reading: a
+    /// wall from before it sends nothing, which reads as `false` — not here —
+    /// and a wall that has never been heard is not in the roster at all. Both
+    /// leave the asking wall doing exactly what it did before, which is the
+    /// direction to be wrong in: an `away` field would have read an older wall
+    /// as present, and parked a question for nobody.
+    pub present: bool,
+}
+
+/// Whether the person is at some other wall right now, by the roster: one
+/// heard within `QUIET_AFTER_MS` that says `present`.
+///
+/// **Away is a property of the person, not of a machine** — Lyss, sink
+/// `f931e6ca`: she had switched `AU-LT-288` to away and was working at
+/// `QUEERISFREEDOM`, a card on `AU-LT-288` asked her something, it went into
+/// that laptop's pile, and she never saw a question she could have answered at
+/// once. A parked question already travels (`CardDigest.asks`, `elsewhere.md`),
+/// so the whole fix is the asking wall knowing she is elsewhere and parking it.
+///
+/// **A quiet wall counts as away, and a never-heard one does not exist** (her
+/// ruling: *"a quiet wall should count the same as i'm away"*). So there is no
+/// third state for a caller to weigh: present means heard lately and not
+/// switched away, and everything else is away. `QUIET_AFTER_MS` is the
+/// roster's own reading of quiet, so a wall quiet for this is quiet for
+/// `walls`, for a prompt and for a shadow's face at the same moment. This wall
+/// is never counted — its own switch is the other half of the question.
+pub fn present_elsewhere<'a>(roster: impl IntoIterator<Item = &'a Entry>, me: &str, now: i64) -> bool {
+    roster
+        .into_iter()
+        .any(|e| e.host != me && e.facts.present && e.quiet_for(now) <= QUIET_AFTER_MS as u64)
 }
 
 /// The credentials a card may say it needs (`Ask::needs`, `spawn`'s `needs`),
@@ -3298,5 +3333,41 @@ mod tests {
         assert!(walls[0].wall.facts.accepting);
         assert!(walls[0].wall.facts.territories.is_empty());
         assert_eq!(walls[0].wall.said_at, None);
+    }
+
+    /// Away is the person's, read across the flyway (sink `f931e6ca`): another
+    /// wall heard lately and not switched away means she is there. A quiet wall
+    /// and a wall from before walls said count as away, and this wall's own
+    /// entry is never counted — its switch is the other half of the question.
+    #[test]
+    fn she_is_present_elsewhere_only_where_a_wall_heard_lately_says_so() {
+        let here = Facts { present: true, ..open_facts() };
+        let mut me = Node::new("lap", open_facts());
+        assert!(!present_elsewhere(me.f.roster(), "lap", 0), "nobody heard is nobody present");
+
+        /* This wall's own announcement says present, and it does not count. */
+        me.f.announce(here.clone(), 0);
+        assert!(!present_elsewhere(me.f.roster(), "lap", 0));
+
+        /* A wall that has said nothing about presence — the build before. */
+        me.hear(statement("old", 1, open_facts(), None, 0), 0);
+        assert!(!present_elsewhere(me.f.roster(), "lap", 0), "silence is not presence");
+
+        /* A wall switched away. */
+        me.hear(statement("away", 1, open_facts(), None, 0), 0);
+        assert!(!present_elsewhere(me.f.roster(), "lap", 0));
+
+        /* A wall she is at. */
+        me.hear(statement("desk", 1, here.clone(), None, 0), 0);
+        assert!(present_elsewhere(me.f.roster(), "lap", 1_000));
+        /* ... until it goes quiet, which counts the same as away. */
+        assert!(present_elsewhere(me.f.roster(), "lap", QUIET_AFTER_MS));
+        assert!(!present_elsewhere(me.f.roster(), "lap", QUIET_AFTER_MS + 1));
+
+        /* And the word crosses the wire, and is absent on an older wall's frame. */
+        let json = serde_json::to_string(&me.f.announce(here, 5)).unwrap();
+        assert!(json.contains("\"present\":true"), "{json}");
+        let older: Facts = serde_json::from_str("{\"accepting\":true}").unwrap();
+        assert!(!older.present);
     }
 }

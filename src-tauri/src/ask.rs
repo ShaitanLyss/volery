@@ -503,15 +503,17 @@ pub(crate) struct Taken {
     pub tx: Sender<String>,
 }
 
-pub(crate) fn take_parked_questions(asks: &Asks) -> Vec<Taken> {
+pub(crate) fn take_parked_questions(asks: &Asks, staying_only: bool) -> Vec<Taken> {
     let mut pending = asks.pending.lock().unwrap();
     /* Everything an agent asked, and everything Volery asked that carries a
        request it can be re-entered from. What is left behind is the third case
        — a question Volery composed whose caller is gone — and there is nothing
-       to file it under. */
+       to file it under. With `staying_only` (she is at another wall), only what
+       cannot reach her there: a question made under a `Stay`. */
     let ids: Vec<String> = pending
         .iter()
         .filter(|(_, p)| !p.ours || p.act.is_some())
+        .filter(|(_, p)| !staying_only || p.stays.is_some())
         .map(|(id, _)| id.clone())
         .collect();
     ids.into_iter()
@@ -1432,6 +1434,13 @@ impl Settle {
         run: impl FnOnce(&AppHandle, Option<&str>) -> String + Send + 'static,
     ) -> Self {
         Self { travel: Travel::Stays(stay), run: Box::new(run) }
+    }
+
+    /// Whether this one reaches a person at another wall — `presence::nobody_to_ask`
+    /// asks before filing a question rather than parking it, since a question
+    /// that cannot travel is only worth parking while somebody is *here*.
+    pub(crate) fn travels(&self) -> bool {
+        matches!(self.travel, Travel::Carries(_))
     }
 
     /// Do what the answer means. On the machine the question is parked on,
@@ -2945,7 +2954,7 @@ fn hand_off(app: &AppHandle, card: &str, command: &str, paths: Vec<String>) -> S
                    card tidying up its own `.scratch-<handle>/` after an
                    experiment, which is the commonest delete on this wall and
                    the one a night of refusals leaves lying around. */
-                if crate::presence::away(&app2) {
+                if crate::presence::nobody_to_ask(&app2, settle.travels()) {
                     crate::presence::defer_act(
                         &app2,
                         &card2,
@@ -3464,7 +3473,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                        That is what "if it is still relevant"
                                        means, and it is why the arguments are
                                        stored rather than the decision. */
-                                    if crate::presence::away(&app) {
+                                    if crate::presence::nobody_to_ask(&app, settle.travels()) {
                                         let note = crate::presence::defer_act(
                                             &app,
                                             &conversation_id,
@@ -3534,7 +3543,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                        That is what "if it is still relevant"
                                        means, and it is why the arguments are
                                        stored rather than the decision. */
-                                    if crate::presence::away(&app) {
+                                    if crate::presence::nobody_to_ask(&app, settle.travels()) {
                                         let note = crate::presence::defer_act(
                                             &app,
                                             &conversation_id,
@@ -3699,7 +3708,7 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                                        That is what "if it is still relevant"
                                        means, and it is why the arguments are
                                        stored rather than the decision. */
-                                    if crate::presence::away(&app) {
+                                    if crate::presence::nobody_to_ask(&app, settle.travels()) {
                                         let note = crate::presence::defer_act(
                                             &app,
                                             &conversation_id,
@@ -5120,6 +5129,41 @@ mod tests {
         assert!(err.contains("no longer waiting"), "{err}");
     }
 
+    /// Going away while she is at another wall (sink `f931e6ca`) files only
+    /// what cannot reach her there — a question made under a `Stay` — and leaves
+    /// everything that travels parked, where it reaches her.
+    #[test]
+    fn going_away_while_present_elsewhere_files_only_what_stays() {
+        let asks = Asks::default();
+        let park = |id: &str, ours: bool, stays: Option<&'static str>| {
+            let (tx, _rx) = mpsc::channel::<String>();
+            asks.pending.lock().unwrap().insert(
+                id.into(),
+                Parked {
+                    tx,
+                    conversation_id: "card".into(),
+                    args: json!({ "question": id }),
+                    ours,
+                    act: ours.then(|| ("close".to_string(), json!({}))),
+                    stays,
+                    stirred: Arc::new(Mutex::new(Instant::now())),
+                    held: Arc::new(Mutex::new(None)),
+                },
+            );
+        };
+        park("agent", false, None);
+        park("carried", true, None);
+        park("kept", true, Some("stays on its own wall"));
+
+        let taken: Vec<String> = take_parked_questions(&asks, true)
+            .into_iter()
+            .map(|t| t.question["question"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(taken, ["kept"]);
+        let left = asks.pending.lock().unwrap();
+        assert!(left.contains_key("agent") && left.contains_key("carried"), "what travels stays parked");
+    }
+
     /// Going away converts what is parked, and a half-answered sheet has to
     /// travel with its answers — `defer_parked` is the second of the two ways
     /// a call closes without a send, and the one this bug would have survived
@@ -5142,7 +5186,7 @@ mod tests {
                 held: Arc::clone(&held),
             },
         );
-        let taken = take_parked_questions(&asks);
+        let taken = take_parked_questions(&asks, false);
         assert_eq!(taken.len(), 1);
         let h = taken[0].held.as_ref().expect("the hold travels");
         assert!(h.said.contains("not reached"));

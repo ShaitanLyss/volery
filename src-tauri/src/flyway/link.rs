@@ -504,6 +504,14 @@ impl Link {
         f.cards_live = open.len() as u32;
         f.cards_working = open.iter().filter(|c| sup.liveness(c).1).count() as u32;
         f.allowance_used = crate::limits::headroom_used(&self.app);
+        /* This wall's own word only — never the union, which reads the roster
+           and would have every wall vouching for every other. Not here if the
+           switch says away, or if nobody has touched this machine for longer
+           than Windows would take to decide they had gone (`machine::idle_away`)
+           — a laptop left open is not where she is. That second half changes
+           what is *announced* and nothing else: this wall's own questions are
+           still filed by its switch alone, for the reason `idle_away` gives. */
+        f.present = !crate::presence::away_here(&self.app) && !crate::machine::idle_away();
         /* Outside the store lock: two vault reads, and the wall's cards do not
            wait on the credential manager. Names only — `creds::holdings`. */
         (f.holds, f.lacks) = crate::creds::holdings();
@@ -2007,6 +2015,13 @@ impl Link {
         &self.me
     }
 
+    /// Whether the person is at another wall right now — `fleet::present_elsewhere`
+    /// over the roster as it stands.
+    pub fn present_elsewhere(&self) -> bool {
+        let now = self.now();
+        self.fleet.lock().map(|f| fleet::present_elsewhere(f.roster(), &self.me, now)).unwrap_or(false)
+    }
+
     pub fn known_hosts(&self) -> Vec<String> {
         self.fleet
             .lock()
@@ -2758,6 +2773,25 @@ fn card_for(l: &Link, asked_by: &str, request: &str) -> String {
 /// The running link, for `spawn.rs`'s remote arm.
 pub fn link(app: &AppHandle) -> Option<Arc<Link>> {
     current(app)
+}
+
+/// Whether the person is at another wall, for `presence::away`. A wall with no
+/// flyway has nobody elsewhere, so it answers exactly as it did before there
+/// was one.
+pub fn present_elsewhere(app: &AppHandle) -> bool {
+    current(app).is_some_and(|l| l.present_elsewhere())
+}
+
+/// Say what this wall is now rather than at the next tick — for a change a
+/// peer acts on, which the away switch is. Not awaited; a wall with no flyway
+/// does nothing.
+pub fn announce_soon(app: &AppHandle) {
+    if current(app).is_some() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = pull(app).await;
+        });
+    }
 }
 
 /// Whether a card may be given a process, for `supervisor::spawn_now` — a

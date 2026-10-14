@@ -247,6 +247,43 @@ The claim comes **before** the send, `later::serve_due`'s ordering and its reaso
 interruption between the two loses an answer, where the other way round hands a card the same
 decision twice, and that is the worse failure.
 
+### Away is the person's, across every wall (sink `f931e6ca`)
+
+Lyss had switched `AU-LT-288` to away and was working at `QUEERISFREEDOM`. A card on `AU-LT-288`
+asked her something, it went into that laptop's pile, and she never saw a question she could have
+answered at once. The per-wall switch was exactly right while a wall was the only place she
+could be; the flyway made that false. It is the same shape as the `ours` list and `unpost`'s old
+argument on the same day (`ask.md`): **a rule justified by two things not interacting expires the
+moment something makes them interact.**
+
+**The fix is small because a parked question already travels** (`CardDigest.asks`, `confirms`,
+`elsewhere.md`). If the asking wall knows she is elsewhere it parks the question instead of
+filing it, and the existing path carries it to her. So there are now two readings, kept apart:
+
+- **`presence::away_here`** is this wall's switch. It draws the away screen, mutes this wall's
+  ladder, and is what this wall *announces* (`Facts.present`, on the flyway's existing tick, and
+  at once when the switch flips — `link::announce_soon`).
+- **`presence::away`** is whether there is nobody to ask: switched away here **and** no other
+  wall present. Present means heard within the roster's `QUIET_AFTER_MS` and announcing
+  `present`. **A quiet wall counts as away and a never-heard one does not exist** (her ruling: *"a
+  quiet wall should count the same as i'm away"*), so there is no third state for a call site to
+  weigh. `present` is a positive word so an older wall, which sends nothing, also reads as away.
+  On one machine, or with no peers, this is exactly the old switch: the change only ever *adds* a
+  reason to park.
+
+Every place that chooses between parking and filing asks `away` — `ask_user`, a waiting notice,
+and the settle-carrying arms, which ask `nobody_to_ask(app, settle.travels())` so that a question
+made under an `ask::Stay` (one that cannot reach her elsewhere) is still filed by this wall's
+switch alone, rather than parked for an empty room. **Going away while she is present elsewhere
+files only those**: what travels stays parked where it reaches her, and the notices stay up,
+since they travel too (`take_parked_questions(…, staying_only)`).
+
+What is **not** done, and should not be mistaken for done: she is away everywhere, the question is
+filed, and she comes back on the *other* machine. The pile does not cross the flyway; that is sink
+`3368f78f`. And a wall nobody has touched in a while stops *announcing* `present`
+(`machine::idle_away`, `machine.md`) but does not change its own filing, for the reason that
+section gives — sink `2ddb9ff2` is the stage after it, blocked on `3368f78f`.
+
 ## The away screen
 
 `Away.svelte`, and it stands whenever the wall is away — **including with the

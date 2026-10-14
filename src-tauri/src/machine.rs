@@ -86,6 +86,73 @@ const APPROVED_KEY: &str =
 
 const KNOB_AWAKE: &str = "KeepAwakeOnMains";
 const KNOB_REOPEN: &str = "ReopenAfterRestart";
+/// Whether a machine nobody has touched for a while stops saying she is at it.
+/// Absent means on, like the other two. No toggle draws it yet — that is the
+/// surface's half, filed with the far wall's heading (see `idle_away`).
+const KNOB_IDLE: &str = "AwayWhenIdle";
+
+/* ── nobody at the keyboard ──────────────────────────────────────────────── */
+
+/// The threshold when this machine has set none of the timeouts below.
+pub(crate) const IDLE_FALLBACK_MS: u64 = 15 * 60_000;
+/// And the least it may be. A display that sleeps after a minute is a battery
+/// setting, not a statement that a person reading for ninety seconds has left.
+pub(crate) const IDLE_FLOOR_MS: u64 = 5 * 60_000;
+
+/// How long with no keyboard or pointer input before this machine stops saying
+/// the person is at it: **the shortest of the timeouts at which Windows itself
+/// decides she has gone** — the machine-inactivity lock a policy sets, the
+/// screensaver, the display turning off — each a number she or her IT already
+/// chose, which is a better anchor than one picked here. Zero is Windows' word
+/// for never and is skipped; none set at all falls back to fifteen minutes, so a
+/// laptop set never to sleep still stops claiming her eventually. Seconds in,
+/// milliseconds out.
+pub(crate) fn idle_threshold_ms(timeouts_secs: &[Option<u32>]) -> u64 {
+    timeouts_secs
+        .iter()
+        .flatten()
+        .filter(|s| **s > 0)
+        .min()
+        .map(|s| (u64::from(*s) * 1000).max(IDLE_FLOOR_MS))
+        .unwrap_or(IDLE_FALLBACK_MS)
+}
+
+/// Whether the machine has been idle past its threshold. An idle time that
+/// could not be read says nothing, which reads as *not idle* — the answer that
+/// leaves the wall announcing exactly what it did before this existed.
+pub(crate) fn idle_says_away(enabled: bool, idle_ms: Option<u64>, threshold_ms: u64) -> bool {
+    enabled && idle_ms.is_some_and(|i| i >= threshold_ms)
+}
+
+/// Has nobody touched this machine for longer than Windows would take to decide
+/// they had gone? `GetLastInputInfo`, system-wide — not the app's focus, since a
+/// forgotten laptop may well have Volery in front.
+///
+/// **For what this wall announces, and nothing else.** A laptop left open with
+/// its switch off is heard and not away, so it used to count as somewhere she
+/// *is* — and another wall that she had switched away would park its questions
+/// for nobody instead of filing them (Lyss: *"if I haven't been touching a wall
+/// in a while, it should automatically go to I'm away … case of an open laptop
+/// that I forgot to set to i'm away"*). So `link::facts` folds this into
+/// `Facts.present`, read on demand on the flyway's existing tick: no new clock,
+/// no state, nothing to clear — the next input makes it false again.
+///
+/// **It deliberately does not change this wall's own filing**, and the next
+/// person to "finish the job" should read this first. Counting an idle wall as
+/// away for *its own* questions files them straight into its pile, and the pile
+/// does not cross the flyway (sink `3368f78f`): a question asked while she is
+/// gone everywhere would then be invisible if she came back at the *other*
+/// machine, where today it stays parked and reachable for its whole window and
+/// is filed only when that runs out. An idle wall may change its own filing
+/// once the pile travels, and not before.
+pub fn idle_away() -> bool {
+    let enabled = os::read_knob(identifier(), KNOB_IDLE).unwrap_or(true);
+    if !enabled {
+        return false;
+    }
+    let threshold = idle_threshold_ms(&os::idle_timeouts(os::sample_power()));
+    idle_says_away(enabled, os::idle_ms(), threshold)
+}
 
 /// What `powercfg /requests` prints beside the process. Written for the
 /// person who went looking because the machine would not sleep.
@@ -227,6 +294,10 @@ pub struct Status {
     /// Switched off in Task Manager's Startup tab.
     pub startup_blocked: bool,
     pub arso: Arso,
+    /// The knob: whether a machine nobody has touched stops saying she is here.
+    pub idle: bool,
+    /// Whether it says so right now (`idle_away`) — what the flyway is told.
+    pub idle_away: bool,
 }
 
 struct Awake {
@@ -365,6 +436,8 @@ pub fn status() -> Status {
         armed: os::run_exists(&name),
         startup_blocked: os::startup_approved(&name).is_some_and(|b| startup_blocked(&b)),
         arso: os::arso(),
+        idle: os::read_knob(id, KNOB_IDLE).unwrap_or(true),
+        idle_away: idle_away(),
     }
 }
 
@@ -379,6 +452,10 @@ fn set(knob: &str, on: bool) -> Result<Status, String> {
             let mut st = AWAKE.lock().map_err(|_| "the wake state is poisoned".to_string())?;
             st.enabled = on;
             settle(&mut st);
+        }
+        "idle" => {
+            os::write_knob(id, KNOB_IDLE, on)?;
+            /* Read on the flyway's next tick; nothing is held to bring into line. */
         }
         "reopen" => {
             os::write_knob(id, KNOB_REOPEN, on)?;
@@ -442,6 +519,10 @@ mod os {
     const ACDC_POWER_SOURCE: GUID = GUID::from_u128(0x5d3e9a59_e9d5_4b00_a6bd_ff34ff516548);
     const SYSTEM_BUTTON_SUBGROUP: GUID = GUID::from_u128(0x4f971e89_eebd_4455_a8de_9e59040e7347);
     const LIDCLOSE_ACTION: GUID = GUID::from_u128(0x5ca83367_6e45_459f_a27b_476b1d01c936);
+    /* `GUID_VIDEO_SUBGROUP` and `GUID_VIDEO_POWERDOWN_TIMEOUT` (VIDEOIDLE),
+       winnt.h, for the same reason as the three above. */
+    const VIDEO_SUBGROUP: GUID = GUID::from_u128(0x7516b95f_f776_4464_8c53_06167f40cc99);
+    const VIDEOIDLE: GUID = GUID::from_u128(0x3c0bc021_c8a8_4e07_a973_6b14cbcb2b7e);
 
     pub fn make_request() -> Result<isize, String> {
         /* Leaked once, deliberately: the reason has to outlive the call, and
@@ -602,6 +683,79 @@ mod os {
 
     pub fn read_knob(identifier: &str, name: &str) -> Option<bool> {
         read_dword(HKEY_CURRENT_USER, &super::settings_key(identifier), name).map(|v| v != 0)
+    }
+
+    /// Milliseconds since the last keyboard or pointer input anywhere on the
+    /// session. `GetTickCount` wraps every 49.7 days, and so does `dwTime`, so
+    /// the difference is taken wrapping — it is right across a wrap.
+    pub fn idle_ms() -> Option<u64> {
+        use windows::Win32::System::SystemInformation::GetTickCount;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+        let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+        // SAFETY: an out-pointer to a struct whose size it carries.
+        if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+            return None;
+        }
+        // SAFETY: no arguments.
+        let now = unsafe { GetTickCount() };
+        Some(u64::from(now.wrapping_sub(info.dwTime)))
+    }
+
+    /// The timeouts, in seconds, at which Windows decides the person has gone:
+    /// the machine-inactivity lock a policy sets, a policy's screensaver
+    /// timeout, the user's own screensaver (only when one is chosen — the
+    /// timeout outlives switching it to *(None)*), and the display turning off
+    /// on the current power source. Each `None` when not set.
+    pub fn idle_timeouts(power: Power) -> Vec<Option<u32>> {
+        let sz = |root: HKEY, key: &str, name: &str| -> Option<String> {
+            let bytes = read_bytes(root, key, name, RRF_RT_REG_SZ)?;
+            let wide: Vec<u16> =
+                bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|u| *u != 0).collect();
+            Some(String::from_utf16_lossy(&wide).trim().to_string())
+        };
+        let secs = |s: Option<String>| s.and_then(|v| v.parse::<u32>().ok());
+        let desktop = "Control Panel\\Desktop";
+        let saver_chosen = sz(HKEY_CURRENT_USER, desktop, "SCRNSAVE.EXE").is_some_and(|s| !s.is_empty())
+            && sz(HKEY_CURRENT_USER, desktop, "ScreenSaveActive").as_deref() == Some("1");
+        vec![
+            read_dword(
+                HKEY_LOCAL_MACHINE,
+                "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                "InactivityTimeoutSecs",
+            ),
+            secs(sz(
+                HKEY_CURRENT_USER,
+                "Software\\Policies\\Microsoft\\Windows\\Control Panel\\Desktop",
+                "ScreenSaveTimeOut",
+            )),
+            if saver_chosen { secs(sz(HKEY_CURRENT_USER, desktop, "ScreenSaveTimeOut")) } else { None },
+            display_off(power),
+        ]
+    }
+
+    /// The active scheme's display-off timeout for the current power source.
+    fn display_off(power: Power) -> Option<u32> {
+        use windows::Win32::System::Power::PowerReadDCValueIndex;
+        let mut scheme: *mut GUID = std::ptr::null_mut();
+        // SAFETY: Windows allocates the GUID and we free it below.
+        if unsafe { PowerGetActiveScheme(None, &mut scheme) } != ERROR_SUCCESS || scheme.is_null() {
+            return None;
+        }
+        let mut secs = u32::MAX;
+        // SAFETY: the scheme Windows just handed us, two static GUIDs, an out-u32.
+        /* The two answer in different types in this crate — the DC one a bare
+           `u32`, the AC one a `WIN32_ERROR` — so each is read as success. */
+        let read = unsafe {
+            if power == Power::Battery {
+                PowerReadDCValueIndex(None, Some(scheme), Some(&VIDEO_SUBGROUP), Some(&VIDEOIDLE), &mut secs)
+                    == ERROR_SUCCESS.0
+            } else {
+                PowerReadACValueIndex(None, Some(scheme), Some(&VIDEO_SUBGROUP), Some(&VIDEOIDLE), &mut secs)
+                    == ERROR_SUCCESS
+            }
+        };
+        unsafe { LocalFree(Some(HLOCAL(scheme as *mut core::ffi::c_void))) };
+        (read && secs != u32::MAX).then_some(secs)
     }
 
     pub fn write_knob(identifier: &str, name: &str, on: bool) -> Result<(), String> {
@@ -819,11 +973,38 @@ mod os {
     pub fn arso() -> Arso {
         Arso::default()
     }
+    pub fn idle_ms() -> Option<u64> {
+        None
+    }
+    pub fn idle_timeouts(_: Power) -> Vec<Option<u32>> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The threshold is the shortest timeout at which Windows itself decides
+    /// she has gone, floored so a battery setting cannot make reading count as
+    /// leaving, and fifteen minutes when nothing is set (sink `f931e6ca`).
+    #[test]
+    fn a_machine_is_idle_by_its_own_timeouts() {
+        assert_eq!(idle_threshold_ms(&[]), IDLE_FALLBACK_MS);
+        assert_eq!(idle_threshold_ms(&[None, None, None, None]), IDLE_FALLBACK_MS);
+        /* Zero is Windows' "never", not "at once". */
+        assert_eq!(idle_threshold_ms(&[Some(0), None]), IDLE_FALLBACK_MS);
+        /* The shortest of those set: a 10-minute lock policy beats a 20-minute display. */
+        assert_eq!(idle_threshold_ms(&[Some(600), None, None, Some(1200)]), 600_000);
+        /* A one-minute display is a battery setting, not somebody leaving. */
+        assert_eq!(idle_threshold_ms(&[None, None, None, Some(60)]), IDLE_FLOOR_MS);
+
+        assert!(idle_says_away(true, Some(600_000), 600_000));
+        assert!(!idle_says_away(true, Some(599_999), 600_000));
+        /* Switched off, or unreadable: says nothing, as before this existed. */
+        assert!(!idle_says_away(false, Some(10 * 600_000), 600_000));
+        assert!(!idle_says_away(true, None, 600_000));
+    }
 
     #[test]
     fn only_mains_holds_the_machine_awake() {
