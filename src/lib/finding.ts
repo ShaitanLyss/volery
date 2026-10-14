@@ -636,7 +636,15 @@ export type FileLinks = {
  *  `line` is `null` for the common case; `path` is exactly what was written,
  *  which may be absolute, may be relative to the card's directory, and may not
  *  exist at all. */
-export type Named = { from: number; to: number; path: string; line: number | null };
+export type Named = {
+  from: number;
+  to: number;
+  path: string;
+  line: number | null;
+  /** The symbol a `file::symbol` reference names, outermost first — absent for
+   *  every other shape. See `symbolRef`. */
+  symbol?: string[];
+};
 
 /** What a whole string is, read as a path — or null for one that is not.
  *
@@ -655,23 +663,39 @@ export type Named = { from: number; to: number; path: string; line: number | nul
  *
  *  - a url, which the separator class would otherwise swallow whole
  *    (`https://example.com/a.ts` has slashes and an extension)
- *  - anything with no separator in it at all, which is the same call `placesIn`
- *    makes for the same reason — a bare name in a sentence is somebody talking
- *    about a file, and resolving it against the card's directory invents a path
- *    nobody wrote
+ *  - anything with no separator that is not a **file name with an extension**
+ *    (`App.svelte`, `queue.ts::settleHold`, `store.rs:42`) — so `and`, `foo`
+ *    and `e.g` are never asked about
  *  - a *spaced* string that is not plainly absolute, so ``const a = 1 / 2`` in a
  *    code span is not asked about while `C:\Program Files\x\a.ts` still is.
- *    Windows paths have spaces in them and prose has more. */
+ *    Windows paths have spaces in them and prose has more.
+ *
+ *  **A bare name comes back as a bare name, and that is not the guard
+ *  `placesIn` refuses.** What `probe-places.ts` caught was a bare name being
+ *  *constructed* into a path — `RailReplayTests.cpp` handed to `insideRoot`,
+ *  reduced to a root-relative file that does not exist, and drawn as a dead
+ *  link because nothing asked the disk. A bare name here is *resolved*
+ *  instead: `isBareName` sends it to `resolve_names`, which looks the name up
+ *  across the project, and `soleMatch` links it only when exactly one file has
+ *  it. `App.svelte` becomes `src/App.svelte`; two `mod.rs` stay text; a name
+ *  nobody has stays text. It is never joined onto the root. */
 export function namedPath(
   raw: string,
-): { path: string; line: number | null; text: string } | null {
+): { path: string; line: number | null; text: string; symbol?: string[] } | null {
   let s = raw.trim();
   /* The punctuation a sentence wraps a path in. Leading and trailing, and
      repeatedly, since `(see src/a.ts).` wears three of them. */
   while (s && "([{<\"'`".includes(s[0])) s = s.slice(1);
   while (s && ".,;:!?)]}>\"'`".includes(s[s.length - 1])) s = s.slice(0, -1);
+  /* A possessive is grammar, not a name: `App.svelte's` is about `App.svelte`. */
+  s = s.replace(/['’]s$/, "");
   if (!s) return null;
   if (s.includes("://")) return null;
+
+  /* `queue.ts::settleHold` first, since the `::` would otherwise read as the
+     start of a place. */
+  const ref = symbolRef(s);
+  if (ref) return { path: ref.file, line: null, text: ref.text, symbol: ref.symbol };
 
   /* `a.ts:42` and `a.ts:42:7` — the column is parsed so that it is not left on
      the path, and then dropped, because the viewer takes a line and nothing
@@ -680,14 +704,16 @@ export function namedPath(
   let line: number | null = null;
   const text = s;
   const place = /^(.*?):(\d+)(?::\d+)?$/.exec(s);
-  if (place && /[\\/]/.test(place[1])) {
+  if (place && (/[\\/]/.test(place[1]) || BARE.test(place[1]))) {
     s = place[1];
     line = Number(place[2]);
   }
 
   const absolute = /^([A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(s);
   if (/\s/.test(s) && !absolute) return null;
-  if (!/[\\/]/.test(s)) return null;
+  /* No separator: a file name to be resolved, or nothing. See the note above
+     on why that is resolution rather than the construction `placesIn` refuses. */
+  if (!/[\\/]/.test(s)) return BARE.test(s) ? { path: s, line, text } : null;
   /* Only separators, or a version number somebody wrote with a slash in it. */
   if (!/[\w]/.test(s)) return null;
   if (/^[\d.\\/]+$/.test(s)) return null;
@@ -695,6 +721,153 @@ export function namedPath(
      the `:42:7` a place carries, and keeping both is what stops a column
      number being left dangling as plain text beside its own link. */
   return { path: s, line, text };
+}
+
+/* ── a file named by its name, and a symbol named beside it ─────────────── */
+
+/** A file name with nothing about where it is: `App.svelte`, `mod.rs`.
+ *
+ *  The extension is what says "this is a file name" and must start with a
+ *  letter, so `0.54.0` and `v1.2` are versions; a leading dot is refused, so a
+ *  dotfile still needs its directory. No `@`, so an address is not a name.
+ *  What says "and a real one, and only one" is the disk — see `soleMatch`. */
+const BARE = /^(?!\.)[\w.\-+]*[\w\-+]\.[A-Za-z][A-Za-z0-9]{0,11}$/;
+
+/** `queue.ts::settleHold`, read — or null for anything that is not one.
+ *
+ *  The file half is resolved exactly as a bare `queue.ts` is — by name, against
+ *  the disk, linked only when one file has it — and a path in front of it
+ *  (`src/lib/queue.ts::settleHold`) is asked about the way any path is. The
+ *  symbol half is only looked for when the link is pressed (`definitionLine`).
+ *
+ *  **The extension before the `::` is the guard**, the way the extension before
+ *  the colon is `placesIn`'s: `std::collections`, `Self::new` and C++'s
+ *  `foo::bar` have no `.ext` and are never asked about. The extension must
+ *  start with a letter, so `1.2::x` is a version and not a file. A Rust
+ *  turbofish (`iter.collect::<Vec<_>>`) fails on the symbol, which must be an
+ *  identifier; `obj.method::x`, which passes, is a name the disk then does not
+ *  have.
+ *
+ *  The symbol may be qualified — `store.rs::Store::open`,
+ *  `conversation.svelte.ts::Conversation.echo` — and comes back outermost
+ *  first, because the outer names narrow where the last one is looked for.
+ *  `#private` is a name (`#claimEcho`), and `settleHold()` is `settleHold`: the
+ *  parentheses are not in `text`, so the link covers the reference and not the
+ *  grammar around it — the same reason `namedPath` takes a possessive off. */
+export type SymbolRef = { file: string; symbol: string[]; text: string };
+
+const IDENT = String.raw`#?[A-Za-z_$][\w$]*`;
+const SYMBOL_REF = new RegExp(
+  String.raw`^((?:[A-Za-z]:[\\/]|~[\\/]|[\\/])?(?:[\w.\-+@]+[\\/])*[\w.\-+]*[\w\-+]\.[A-Za-z][A-Za-z0-9]{0,11})::(` +
+    IDENT +
+    String.raw`(?:(?:::|\.)` +
+    IDENT +
+    String.raw`)*)(?:\(\)?)?$`,
+);
+
+export function symbolRef(raw: string): SymbolRef | null {
+  const m = SYMBOL_REF.exec(raw);
+  if (!m) return null;
+  return { file: m[1], symbol: m[2].split(/::|\./), text: `${m[1]}::${m[2]}` };
+}
+
+/** Whether a path names a file and nothing about where it is. */
+export function isBareName(path: string): boolean {
+  return !/[\\/]/.test(path);
+}
+
+/** The one file a bare name resolves to, or null.
+ *
+ *  `candidates` is what the disk said has that name — ripgrep's `--iglob`,
+ *  which walks the project the way the finder does, gitignore and all. One is
+ *  an address; none is nothing to link; **several is refused rather than
+ *  picked**, the house answer to an ambiguous address (`Pick::Several`, the
+ *  sink's `twin_refusal`): the shortest path or the most recent file would be
+ *  right often enough to be trusted and wrong at exactly the moment it is,
+ *  opening a file of the right name in the wrong crate.
+ *
+ *  The basename is compared again here rather than trusting the glob, since a
+ *  glob is a pattern and this is a question about one exact name. Case is
+ *  folded because the disk folds it. */
+export function soleMatch(name: string, candidates: string[]): string | null {
+  const want = name.toLowerCase();
+  const hits = candidates.filter((c) => splitPath(c).name.toLowerCase() === want);
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** The line that defines a symbol in a file's text, 1-based — or null.
+ *
+ *  **There is no language server here**, so this is a heuristic over one file
+ *  rather than a semantic lookup, and it is run at *click* time over the one
+ *  file the link resolved to — never while a transcript renders. Null is a
+ *  fine answer: the reference was to a real file, so it opens at the top.
+ *
+ *  Three tiers, and the first tier with any hit wins, earliest line first:
+ *
+ *  1. **A declaration** — a keyword in front of the name: `function`, `fn`,
+ *     `def`, `func`, `class`, `struct`, `enum`, `trait`, `interface`, `type`,
+ *     `mod`, `const`/`let`/`var`/`static`, `macro_rules!`, under any run of
+ *     modifiers (`export`, `pub(crate)`, `async`, `unsafe`, …).
+ *  2. **A member** — the name at the start of a line followed by `(`, which is
+ *     a TS class method or an object method, and not a statement call (a line
+ *     ending in `;`); then a Rust `impl … Name`; then a C-style
+ *     `int Foo::bar(` with a type in front.
+ *  3. **A field or assignment** — `#known = …`, `name: Type`, a Rust struct
+ *     field, a Python module constant.
+ *
+ *  Tiers rather than one pattern, because a call to `settleHold` — or an
+ *  interface member typing it — routinely comes *before* its definition, and a
+ *  single "first line that mentions it plausibly" would land there. Every
+ *  pattern is anchored on code at the start of the line, so a comment saying
+ *  `function settleHold` (which starts `//`, `*` or `#`) is never the function.
+ *
+ *  A qualified symbol narrows: `Store::open` looks for `open` from the line
+ *  that defines `Store`, and falls back to the whole file if nothing follows. */
+export function definitionLine(text: string, symbol: string[]): number | null {
+  if (!symbol.length) return null;
+  const lines = text.split(/\r?\n/);
+  let from = 0;
+  for (const outer of symbol.slice(0, -1)) {
+    const at = defined(lines, outer, from);
+    if (at !== null) from = at;
+  }
+  const name = symbol[symbol.length - 1];
+  const at = defined(lines, name, from) ?? (from > 0 ? defined(lines, name, 0) : null);
+  return at === null ? null : at + 1;
+}
+
+const MODS = String.raw`(?:(?:export|default|declare|pub(?:\([^)]*\))?|async|unsafe|extern(?:\s+"[^"]*")?|static|abstract|public|private|protected|internal|override|readonly|final|inline|virtual|sealed|partial|get|set|accessor)\s+)*`;
+const DECL = String.raw`(?:function\*?|fn|def|func(?:\s*\([^)]*\))?|class|interface|type|enum|struct|trait|union|mod|namespace|module|record|const|let|var|static|macro_rules!)`;
+const STATEMENT = /^\s*(?:return|if|while|for|switch|else|await|yield|new|throw|case|delete|typeof)\b/;
+
+function escapeRe(s: string): string {
+  return s.replace(/[$.*+?^()[\]{}|\\]/g, "\\$&");
+}
+
+/** The first line at or after `from` defining `name`, by the best tier that
+ *  has one. Patterns are built once per lookup — this runs on a click, over
+ *  one file, so there is nothing here worth caching. */
+function defined(lines: string[], name: string, from: number): number | null {
+  const n = escapeRe(name) + String.raw`(?![\w$])`;
+  const decl = new RegExp(String.raw`^\s*` + MODS + DECL + String.raw`\s+\*?` + n);
+  const method = new RegExp(String.raw`^\s*` + MODS + String.raw`\*?` + n + String.raw`\s*(?:<[^()]*>)?\s*\(`);
+  const impl = new RegExp(String.raw`^\s*impl\b.*?(?:\s|::)` + n + String.raw`\s*(?:<.*)?(?:\{.*)?$`);
+  const typed = new RegExp(String.raw`^\s*(?:[\w<>,*&:]+\s+)+[*&]*(?:\w+::)*` + n + String.raw`\s*\(`);
+  const field = new RegExp(String.raw`^\s*` + MODS + n + String.raw`\s*(?:[?!]?\s*:(?!:)|=(?![=>]))`);
+  const tiers: ((line: string) => boolean)[] = [
+    (l) => decl.test(l),
+    (l) =>
+      (method.test(l) && !/;\s*$/.test(l)) ||
+      impl.test(l) ||
+      (typed.test(l) && !/;\s*$/.test(l) && !STATEMENT.test(l)),
+    (l) => field.test(l),
+  ];
+  for (const tier of tiers) {
+    for (let i = from; i < lines.length; i++) {
+      if (tier(lines[i])) return i;
+    }
+  }
+  return null;
 }
 
 /** Every path named in a run of prose, in the order they occur.
@@ -716,7 +889,9 @@ export function pathsIn(text: string): Named[] {
     const at = m[0].indexOf(found.text);
     if (at < 0) continue;
     const from = m.index + at;
-    out.push({ from, to: from + found.text.length, path: found.path, line: found.line });
+    const named: Named = { from, to: from + found.text.length, path: found.path, line: found.line };
+    if (found.symbol) named.symbol = found.symbol;
+    out.push(named);
   }
   return out;
 }

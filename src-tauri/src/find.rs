@@ -864,6 +864,99 @@ fn resolve(root: &str, raw: &str) -> PathBuf {
     Path::new(root).join(raw)
 }
 
+/* ── a file named by its name alone ───────────────────────────────────────── */
+
+/// How many names one ask may carry, and how many files per name are worth
+/// reporting. Two is enough to know a name is ambiguous — which is the only
+/// thing the front end does with more than one — and eight leaves room for
+/// it to say *how* ambiguous without a `mod.rs` in a large tree sending
+/// hundreds.
+const NAME_CAP: usize = 200;
+const SAME_NAME_CAP: usize = 8;
+
+/// Whether a string is a plain file name: no separator, nothing a glob would
+/// read as a pattern, and an extension. The front end only ever asks about
+/// `queue.ts`-shaped names, but a command is reachable from anything holding
+/// the IPC, and a name that is really `*` is a request for every file.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.contains('.')
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '@'))
+}
+
+/// Which files under the project carry each of these names.
+///
+/// The address half of a `queue.ts::settleHold` reference in an agent's prose
+/// (`symbolRef` in `finding.ts`). A bare name is refused everywhere else in
+/// prose because resolving it against the card's directory invents a path; the
+/// `::symbol` suffix is the evidence it was meant, and this is what then turns
+/// the name into a file — or into nothing, which is what keeps it plain text.
+///
+/// **One `rg --files` for the whole batch**, each name an `--iglob`, so the
+/// walk is the finder's own — gitignored trees, `node_modules` and `target`
+/// stay out of it, and `.claude/` is in. A glob with no slash matches the
+/// basename at any depth, and `--iglob` folds case because the disk does. The
+/// `.git` exclusions come *after* the names, since later globs win.
+///
+/// Answers every match up to `SAME_NAME_CAP` rather than deciding: whether two
+/// is "refuse" or "pick" is a judgement, and it is `soleMatch`'s, where it is
+/// tested. Keyed by the name as asked, for the reason `classify_paths` is.
+pub fn resolve_names(
+    root: &str,
+    names: &[String],
+) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    let names: Vec<&String> = names.iter().filter(|n| plain_name(n)).take(NAME_CAP).collect();
+    let mut out: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    if names.is_empty() {
+        return Ok(out);
+    }
+    let mut args: Vec<&str> = vec!["--files", "--hidden"];
+    for n in &names {
+        args.push("--iglob");
+        args.push(n.as_str());
+    }
+    args.extend(["--glob", "!.git", "--glob", "!.git/**"]);
+    let mut child = ripgrep(root, &args)?;
+    let stdout = child.stdout.take().ok_or("ripgrep gave nothing to read")?;
+    let mut seen = 0usize;
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        if line.is_empty() {
+            continue;
+        }
+        seen += 1;
+        if seen > FILE_CAP {
+            break;
+        }
+        let path = slashes(&line);
+        let base = path.rsplit('/').next().unwrap_or(&path).to_ascii_lowercase();
+        for n in &names {
+            if n.to_ascii_lowercase() == base {
+                let hits = out.entry((*n).clone()).or_default();
+                if hits.len() < SAME_NAME_CAP {
+                    hits.push(path.clone());
+                }
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(out)
+}
+
+/// The command, which is `resolve_names` off the main thread and nothing else.
+#[tauri::command]
+pub async fn find_names(
+    root: String,
+    names: Vec<String>,
+) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    crate::off_main(move || resolve_names(&root, &names)).await?
+}
+
 #[tauri::command]
 pub fn open_file_outside(root: String, path: String) -> Result<(), String> {
     /* Not `async`: a spawn is not a blocking read, and `rundll32` returns as
@@ -874,6 +967,46 @@ pub fn open_file_outside(root: String, path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name is a name, never a pattern: the IPC is reachable from anything,
+    /// and `*` is a request for every file in the project.
+    #[test]
+    fn only_a_plain_name_is_resolved() {
+        assert!(plain_name("queue.ts"));
+        assert!(plain_name("conversation.svelte.ts"));
+        assert!(plain_name("mod.rs"));
+        assert!(!plain_name("*"));
+        assert!(!plain_name("*.ts"));
+        assert!(!plain_name("src/queue.ts"));
+        assert!(!plain_name("..\\x.ts"));
+        assert!(!plain_name("{a,b}.ts"));
+        assert!(!plain_name("Makefile"));
+        assert!(!plain_name(".gitignore"));
+        assert!(!plain_name(""));
+    }
+
+    /// Against this repository, which is the one tree a test can count on:
+    /// a name that exists once resolves to its one path, a name that exists
+    /// twice comes back twice, and a name nobody has comes back as nothing.
+    /// Skipped quietly where ripgrep is not installed, since that is a
+    /// machine without the finder rather than a broken resolver.
+    #[test]
+    fn a_name_resolves_to_every_file_that_carries_it() {
+        let root = env!("CARGO_MANIFEST_DIR").to_string() + "/..";
+        let ask = |names: &[&str]| {
+            resolve_names(&root, &names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+        };
+        let Ok(found) = ask(&["queue.ts", "mod.rs", "no-such-file-anywhere.ts", "*"]) else {
+            return;
+        };
+        assert_eq!(found.get("queue.ts"), Some(&vec!["src/lib/queue.ts".to_string()]));
+        assert!(found.get("mod.rs").map_or(0, |v| v.len()) >= 2, "{found:?}");
+        assert!(!found.contains_key("no-such-file-anywhere.ts"));
+        assert!(!found.contains_key("*"));
+        /* Case folds, because the disk does. */
+        let upper = ask(&["QUEUE.TS"]).unwrap();
+        assert_eq!(upper.get("QUEUE.TS"), Some(&vec!["src/lib/queue.ts".to_string()]));
+    }
 
     /// The table decides by name, and the omissions are the interesting half.
     #[test]

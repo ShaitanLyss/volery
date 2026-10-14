@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { definitionLine, fullPath, insideRoot, isBareName, soleMatch } from "./finding";
 
 /* What the paths an agent named in prose actually are.
  *
@@ -83,8 +84,84 @@ class Paths {
     }
   }
 
+  /* ── a file named by its name alone ─────────────────────────────────────
+     `App.svelte` and `queue.ts::settleHold` name no directory, so the question
+     is not "is this there" but "which file is it" — one `rg --files` per batch
+     rather than a `stat` apiece, and its own map because the answer is a path
+     rather than a kind. Same three answers, same batching, same reason.
+
+     **Never joined onto the root.** That is the construction `placesIn`'s
+     separator rule exists to refuse — `RailReplayTests.cpp` reduced to a
+     root-relative file that does not exist — and resolving the name across the
+     project is what makes a bare name safe to offer at all. */
+
+  /** What each asked-about name resolved to: the one file, or `null` for none
+   *  *or several* — `soleMatch` refuses an ambiguous name rather than picking. */
+  #found = $state<Record<string, string | null>>({});
+  #seeking = new Map<string, Set<string>>();
+
+  /** The file a bare name resolves to under `root`, or `undefined` while
+   *  nobody has been told yet. */
+  found(root: string, name: string): string | null | undefined {
+    return this.#found[keyOf(root, name)];
+  }
+
+  seek(root: string, name: string) {
+    if (!root || !name) return;
+    if (keyOf(root, name) in this.#found) return;
+    let set = this.#seeking.get(root);
+    if (!set) {
+      set = new Set();
+      this.#seeking.set(root, set);
+    }
+    if (set.has(name)) return;
+    set.add(name);
+    if (this.#timer === null) {
+      this.#timer = setTimeout(() => void this.#drain(), GATHER_MS);
+    }
+  }
+
+  /** What a named place is: the path to open and whether it is a folder, or
+   *  `null` while it is not (yet) a link. One question for both shapes so the
+   *  renderer does not have to know there are two.
+   *
+   *  A reference with a symbol must land on a *file* — a symbol inside a
+   *  folder is nothing to open — and a bare name always lands on one, since
+   *  ripgrep lists files. */
+  target(root: string, at: { path: string; symbol?: string[] }): { path: string; kind: PathKind } | null {
+    if (isBareName(at.path)) {
+      const file = this.found(root, at.path);
+      return file ? { path: file, kind: "file" } : null;
+    }
+    const kind = this.kind(root, at.path);
+    if (!kind || (at.symbol && kind !== "file")) return null;
+    return { path: at.path, kind };
+  }
+
+  /** Queue whichever question `target` will need answered. */
+  want(root: string, at: { path: string; symbol?: string[] }) {
+    if (isBareName(at.path)) this.seek(root, at.path);
+    else this.ask(root, at.path);
+  }
+
   async #drain() {
     this.#timer = null;
+    const named = [...this.#seeking.entries()];
+    this.#seeking.clear();
+    for (const [root, set] of named) {
+      const names = [...set];
+      let answer: Record<string, string[]> = {};
+      try {
+        answer = await invoke<Record<string, string[]>>("find_names", { root, names });
+      } catch {
+        /* No ripgrep, or the walk failed: every name stays text, recorded so
+           it is not asked again on the next repaint. */
+      }
+      const next = { ...this.#found };
+      for (const n of names) next[keyOf(root, n)] = soleMatch(n, answer[n] ?? []);
+      this.#found = trim(next);
+    }
+
     const batches = [...this.#waiting.entries()];
     this.#waiting.clear();
     for (const [root, set] of batches) {
@@ -111,15 +188,36 @@ class Paths {
 /** Keep the map bounded. Oldest-inserted first, which object key order gives
  *  for free on string keys and is good enough for a cache whose whole job is
  *  the burst of repeats while one answer streams. */
-function trim(map: Record<string, PathKind | null>): Record<string, PathKind | null> {
+function trim<T>(map: Record<string, T>): Record<string, T> {
   const keys = Object.keys(map);
   if (keys.length <= KEEP) return map;
-  const out: Record<string, PathKind | null> = {};
+  const out: Record<string, T> = {};
   for (const k of keys.slice(keys.length - KEEP)) out[k] = map[k];
   return out;
 }
 
 export const paths = new Paths();
+
+/** The line a symbol is defined on in a file, or null — asked when a
+ *  `file::symbol` link is *clicked*, never when one is drawn.
+ *
+ *  That is the whole of what this costs, and it is the requirement: a
+ *  transcript renders thousands of times a turn and a reference in it costs a
+ *  name lookup in a map; reading the file and walking it for the definition is
+ *  paid once, by the press that wants it. Nothing here reaches an agent. Null
+ *  for anything that goes wrong — a file outside the root, a binary, a read
+ *  that fails — because the reference was to a real file and opening it at the
+ *  top is a fine degradation. */
+export async function symbolLine(root: string, path: string, symbol: string[]): Promise<number | null> {
+  const rel = insideRoot(fullPath(root, path), root);
+  if (!rel) return null;
+  try {
+    const file = await invoke<{ text: string; binary: boolean }>("read_file_text", { root, path: rel });
+    return file.binary ? null : definitionLine(file.text, symbol);
+  } catch {
+    return null;
+  }
+}
 
 /* ── which directory a surface's prose counts from ─────────────────────────
  *

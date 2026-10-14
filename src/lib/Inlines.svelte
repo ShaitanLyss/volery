@@ -11,7 +11,7 @@
   import Self from "./Inlines.svelte";
   import type { Inline } from "./markdown";
   import { namedPath, pathsIn } from "./finding";
-  import { paths, useFiles, useLinks } from "./paths.svelte";
+  import { paths, symbolLine, useFiles, useLinks } from "./paths.svelte";
 
   let { kids }: { kids: Inline[] } = $props();
 
@@ -45,14 +45,18 @@
      that it is there — which is also what says whether clicking it opens a
      file or a folder. */
 
+  /** A place in the prose: a path as written, the line it named, and the
+   *  symbol a `queue.ts::settleHold` reference named — see `symbolRef`. */
+  type At = { path: string; line: number | null; symbol?: string[] };
+
   /** The whole of a code span, if the disk has it. */
   const spanPath = $derived.by(() => {
-    const map = new Map<number, { path: string; line: number | null }>();
+    const map = new Map<number, At>();
     if (!files) return map;
     for (const [i, k] of kids.entries()) {
       if (k.t !== "code") continue;
       const found = namedPath(k.v);
-      if (found) map.set(i, { path: found.path, line: found.line });
+      if (found) map.set(i, { path: found.path, line: found.line, symbol: found.symbol });
     }
     return map;
   });
@@ -60,17 +64,17 @@
   /** A text node cut into plain runs and paths. Built for every text node up
    *  front rather than per render, so the template holds no logic. */
   const textRuns = $derived.by(() => {
-    const map = new Map<number, { text: string; at: { path: string; line: number | null } | null }[]>();
+    const map = new Map<number, { text: string; at: At | null }[]>();
     if (!files) return map;
     for (const [i, k] of kids.entries()) {
       if (k.t !== "text") continue;
       const found = pathsIn(k.v);
       if (!found.length) continue;
-      const runs: { text: string; at: { path: string; line: number | null } | null }[] = [];
+      const runs: { text: string; at: At | null }[] = [];
       let from = 0;
       for (const f of found) {
         if (f.from > from) runs.push({ text: k.v.slice(from, f.from), at: null });
-        runs.push({ text: k.v.slice(f.from, f.to), at: { path: f.path, line: f.line } });
+        runs.push({ text: k.v.slice(f.from, f.to), at: { path: f.path, line: f.line, symbol: f.symbol } });
         from = f.to;
       }
       if (from < k.v.length) runs.push({ text: k.v.slice(from), at: null });
@@ -87,30 +91,42 @@
   $effect(() => {
     const root = files?.root;
     if (!root) return;
-    for (const at of spanPath.values()) paths.ask(root, at.path);
+    for (const at of spanPath.values()) paths.want(root, at);
     for (const runs of textRuns.values()) {
-      for (const r of runs) if (r.at) paths.ask(root, r.at.path);
+      for (const r of runs) if (r.at) paths.want(root, r.at);
     }
   });
 
-  /** What a path is, or null while the disk has not answered — which draws as
-   *  plain text, so nothing flickers into a link and back out of one. */
-  function kindOf(path: string) {
-    return files ? (paths.kind(files.root, path) ?? null) : null;
+  /** Where a place opens and what it is, or null while the disk has not
+   *  answered — which draws as plain text, so nothing flickers into a link and
+   *  back out of one. A bare `queue.ts::settleHold` is the file the name
+   *  resolved to, which is the path the link carries from here on. */
+  function targetOf(at: At) {
+    return files ? paths.target(files.root, at) : null;
   }
 
   /** Ctrl is "the other thing you can do with this", which here is Explorer:
    *  for a file instead of the viewer, for a folder instead of opening it.
    *  Said in the title, because a modifier nobody is told about is one nobody
    *  uses, and repeated in the right-click menu for the same reason. */
-  function go(e: MouseEvent, path: string, line: number | null) {
-    files?.go(path, line, e.ctrlKey || e.metaKey ? "reveal" : "open");
+  function go(e: MouseEvent, path: string, at: At) {
+    const how = e.ctrlKey || e.metaKey ? "reveal" : "open";
+    const scope = files;
+    if (!scope) return;
+    /* The symbol is looked for now, at the press, and only for an open —
+       reading the file to find a definition is a cost one click pays, never
+       one a render does. Not found opens the file at the top. */
+    if (at.symbol && how === "open") {
+      void symbolLine(scope.root, path, at.symbol).then((line) => scope.go(path, line, how));
+      return;
+    }
+    scope.go(path, at.line, how);
   }
 
-  function hint(path: string, dir: boolean): string {
-    return dir
-      ? `Open ${path} in Explorer · ctrl-click to show it in Explorer`
-      : `Look at ${path} · ctrl-click to show it in Explorer`;
+  function hint(path: string, dir: boolean, symbol?: string[]): string {
+    if (dir) return `Open ${path} in Explorer · ctrl-click to show it in Explorer`;
+    const where = symbol ? ` at ${symbol.join("::")}` : "";
+    return `Look at ${path}${where} · ctrl-click to show it in Explorer`;
   }
 </script>
 
@@ -125,26 +141,26 @@
      place it is still true: the menu fires from a document-level listener, and
      reading the focused card there resolved a path in one project's question
      against another project's directory. -->
-{#each kids as k, i (i)}{#if k.t === "text"}{#if textRuns.has(i)}{#each textRuns.get(i)! as run, ri (ri)}{#if run.at && kindOf(run.at.path)}{@const at =
-          run.at}{@const dir = kindOf(at.path) === "dir"}<button
+{#each kids as k, i (i)}{#if k.t === "text"}{#if textRuns.has(i)}{#each textRuns.get(i)! as run, ri (ri)}{#if run.at && targetOf(run.at)}{@const at =
+          run.at}{@const to = targetOf(at)!}{@const dir = to.kind === "dir"}<button
         type="button"
         class="path"
         class:dir
-        data-path={at.path}
+        data-path={to.path}
         data-root={files?.root}
         data-dir={dir ? "1" : null}
-        title={hint(at.path, dir)}
-        onclick={(e) => go(e, at.path, at.line)}>{run.text}</button
-      >{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code"}{#if spanPath.has(i) && kindOf(spanPath.get(i)!.path)}{@const at =
-        spanPath.get(i)!}{@const dir = kindOf(at.path) === "dir"}<button
+        title={hint(to.path, dir, at.symbol)}
+        onclick={(e) => go(e, to.path, at)}>{run.text}</button
+      >{:else}{run.text}{/if}{/each}{:else}{k.v}{/if}{:else if k.t === "code"}{#if spanPath.has(i) && targetOf(spanPath.get(i)!)}{@const at =
+        spanPath.get(i)!}{@const to = targetOf(at)!}{@const dir = to.kind === "dir"}<button
       type="button"
       class="path code"
       class:dir
-      data-path={at.path}
+      data-path={to.path}
       data-root={files?.root}
       data-dir={dir ? "1" : null}
-      title={hint(at.path, dir)}
-      onclick={(e) => go(e, at.path, at.line)}><code>{k.v}</code></button
+      title={hint(to.path, dir, at.symbol)}
+      onclick={(e) => go(e, to.path, at)}><code>{k.v}</code></button
     >{:else}<code>{k.v}</code>{/if}{:else if k.t === "strong"}<strong
       ><Self kids={k.kids} /></strong
     >{:else if k.t === "em"}<em><Self kids={k.kids} /></em

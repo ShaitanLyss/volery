@@ -15,6 +15,7 @@ paths:
   - "src/lib/dogears.ts"
   - "src/lib/Dogears.svelte"
   - "tools/probe-places.ts"
+  - "tools/probe-prose-names.ts"
   # ToolCall is panel.md's file first, but half of "a path opens the file" lives
   # in it — so this loads there too rather than trusting a pointer in prose.
   - "src/lib/ToolCall.svelte"
@@ -688,9 +689,10 @@ quietly cannot see a file is worse than one that admits its bound.
 
 ### Where things live
 
-- `finding.ts` — pure and tested (`test/finding.test.ts`, 62 tests): the leader machine, the
-  scorer and its spans, `rank`, `fileRows`/`grepRows`, `moveIn`, `viewLines`,
-  `windowAround`, `isMarkdown`, `splitPath`, `shift`, `pieces`.
+- `finding.ts` — pure and tested (`test/finding.test.ts`): the scorer and its spans, `rank`,
+  `fileRows`/`grepRows`, `moveIn`, `viewLines`, `windowAround`, `isMarkdown`, `splitPath`,
+  `shift`, `pieces`, the two path matchers, and the name resolver's pure half — `symbolRef`,
+  `isBareName`, `soleMatch`, `definitionLine`.
 - `finder.svelte.ts` — `Finder`: the session, the debounces, the generation guard, the small
   sheet cache, and the Tauri calls. Told **where to look** rather than reaching for it
   (`finder.where`, the injection `devops.roots` and `pomodoro.watched` use), so it cannot see
@@ -725,6 +727,8 @@ quietly cannot see a file is worse than one that admits its bound.
   for a chat card, which has no project, and every path there stays text.
 - `tools/probe-places.ts` — what real tool results look like and what `placesIn` finds in
   them. Run it before changing that pattern; it is what caught the bare-filename case.
+- `tools/probe-prose-names.ts` — what the bare file names in real agent prose resolve to:
+  unique, several, or none. Run it before changing `namedPath`'s bare-name rule.
 
 The control surface has a `find` op (`show`, `hide`, `type`, `step`, `pick`, `look`, `back`,
 `swap`, `raw`) driving the panel's own functions, and `snapshot.finder` reports the panel and
@@ -760,11 +764,12 @@ would cost the thing somebody actually wants, which is that a folder, a dotfile 
 with no extension are all openable.
 
 Three things are still refused, because no amount of checking makes them worth asking about: a
-url (the separator class swallows a scheme whole), anything with **no separator at all** —
-which is `placesIn`'s rule arriving for its own reason, since a bare name in a sentence is
-somebody talking about a file and resolving it against the card's directory invents a path
-nobody wrote — and a *spaced* string that is not plainly absolute, so `const a = 1 / 2` in a
-code span is left alone while `C:\Program Files\x\a.ts` is not.
+url (the separator class swallows a scheme whole), anything with no separator that is **not a
+file name with an extension** — so `and`, `Makefile` and `v1.2` are never asked about — and a
+*spaced* string that is not plainly absolute, so `const a = 1 / 2` in a code span is left
+alone while `C:\Program Files\x\a.ts` is not. Until 2026-10-15 the second rule was "no
+separator at all", and a bare `App.svelte` was text; see the section below on why it no longer
+is, which is not the same as the guard having been torn out.
 
 - **Two sources, asked different questions.** A **code span** is one candidate whole, because
   an author who reached for backticks has already said it is a thing rather than words, and
@@ -801,6 +806,89 @@ prose. That is also why the file branch goes to the viewer and never here.
 count from different places, and everything that *acts* on a path wants to be told exactly
 which. It resolves `.` and `..` itself, because `safe_join` refuses a `..` outright and a path
 that climbs and comes back would otherwise be refused for a shape it does not really have.
+
+### A file named by its name, and a symbol named beside it
+
+`App.svelte`, `queue.ts::settleHold` and `store.rs:42` in an agent's prose are links, and open
+`src/App.svelte`, `src/lib/queue.ts` at the line that defines `settleHold`, and the one
+`store.rs` at line 42. Asked for by Lyss on 2026-10-15: these references are everywhere in
+agent output, and she wanted them to behave like the paths that already were links.
+
+**This looks like it reverses the bare-name refusal two sections up, and it does not.** What
+`probe-places.ts` caught was a bare name being *constructed* into a path: `RailReplayTests.cpp`
+handed to `insideRoot`, reduced to a root-relative file that does not exist, drawn as a dead
+link because nothing ever asked the disk. That construction is still refused, everywhere —
+`placesIn` is untouched and a bare name is never joined onto a root. What is new is
+*resolution*: the name is looked up across the whole project, and it is a link only when
+exactly one file has it. The dead links the measurement found were dead because nothing
+checked; this is "the disk is the guard" reaching one case earlier than it used to.
+
+- **One resolver, three shapes.** `namedPath` hands a bare name back bare, `isBareName` routes
+  it to `find::resolve_names` instead of `classify_paths`, and `soleMatch` decides. The `::`
+  form and the `:line` form share it; a path in front (`src/lib/queue.ts::settleHold`) skips it
+  and is asked about the way any path is.
+- **One file is an address; none is text; several is text too.** Refused rather than picked —
+  the house answer to an ambiguous address (`Pick::Several`, the sink's `twin_refusal`). The
+  shortest path or the newest file would be right often enough to be trusted and wrong at
+  exactly the moment it is, opening the right name in the wrong crate. Opening the finder
+  pre-filled with the name was the alternative and was not taken: a link that sometimes opens
+  the file and sometimes opens a list is two gestures behind one look.
+- **The extension is the guard on the name**, and must start with a letter: `0.54.0` and `v1.2`
+  are versions, a leading dot is refused (a dotfile still needs its directory), and no `@`, so
+  an address is not a name. **The extension before the `::` is the guard on the symbol form**,
+  the way the extension before the colon is `placesIn`'s: `std::collections`, `Self::new` and
+  C++'s `foo::bar` have no `.ext` and are never asked about, and a turbofish fails on the symbol,
+  which must be an identifier.
+- **Measured, not reasoned**, with `tools/probe-prose-names.ts`, which reads the assistant text
+  in this machine's transcripts and resolves every bare candidate against a project's file list
+  the way the app does. Over the newest 80 sessions of this repo (2026-10-15): **1,121 bare
+  candidates — 980 resolve to exactly one file, 5 to several, 136 to none.** All 176 distinct
+  names in the unique bucket are real files somebody meant (`link.rs`, `CLAUDE.md`,
+  `App.svelte`, …), the several bucket is `mod.rs` alone, and the none bucket is
+  `control.json`, `skein.exe`, `claude.ai`, `Conversation.leftAwake` — things that are not
+  files in this tree and correctly stay text. It also caught `.svelte.ts` slipping past a
+  leading-dot rule the comment claimed and the regex did not keep. Run it before changing the
+  pattern.
+
+#### Where each cost lands, because "no agent cost" was the requirement
+
+- **The agent: nothing.** No tool, nothing in any prompt, nothing on the wire to a card. It is
+  all render-side, in the one place prose becomes links.
+- **A render: a map lookup.** `paths.want` / `paths.target` in `paths.svelte.ts`, the same
+  shape `ask`/`kind` already had — and a miss is cached as `null`, so a word shaped like a file
+  name that resolves to nothing is a cheap negative forever rather than a walk per repaint.
+  Until the answer arrives it is plain text; it never draws as a link and then retracts.
+- **A new name: one ripgrep walk per batch**, every name in the batch an `--iglob`, off the main
+  thread, collected by the same `GATHER_MS`. **The file list is not in memory on this path** —
+  only the finder holds one, and only while it is open — so this is a walk of the project
+  (70ms here, ~180ms over 26,000 files), paid once per (root, name) and then cached with the
+  `classify_paths` answers. `SAME_NAME_CAP` stops a `mod.rs` in a large tree sending hundreds.
+- **The symbol: one file read, on the click.** `symbolLine` reads the resolved file and
+  `definitionLine` walks it — at the press, never while a transcript renders. A ctrl-click
+  (reveal) does not read at all.
+
+#### Finding the definition with no language server
+
+`definitionLine` is a heuristic over one file, in three tiers, the first tier with any hit
+winning at its earliest line: a **declaration** (a keyword in front of the name — `function`,
+`fn`, `def`, `func`, `class`, `struct`, `enum`, `trait`, `interface`, `type`, `mod`,
+`const`/`let`/`var`/`static`, `macro_rules!` — under any run of modifiers); then a **member**
+(a TS method at the start of a line and not a statement call ending in `;`, a Rust `impl … Name`,
+a C-style `int Foo::bar(`); then a **field** (`#known = …`, `name: Type`). Tiers rather than one
+pattern because a call to a function, or an interface member typing it, routinely comes *before*
+the definition — the test that holds that was added after the first version of it passed with
+the tiers flattened. A qualified name narrows: `Store::open` looks for `open` from the line
+defining `Store`, falling back to the whole file. No hit opens the file at the top, which is a
+fine degradation: the reference was to a real file.
+
+Every pattern is anchored on code at the start of a line, so a comment saying `function
+settleHold` is never the function. There was a comment-skipping pass as well, and it was taken
+out when the mutation check showed it could not fail — every comment starts with punctuation no
+pattern accepts, so it guarded nothing.
+
+**The right-click menu opens the file, not the symbol.** `data-path` carries the resolved path,
+so "open" and "show in Explorer" both work on a bare name, but the menu's open goes to the top —
+the symbol rides on the click handler, and the menu reads attributes.
 
 ### A path in prose is clickable everywhere, or the arrangement is wrong
 

@@ -28,6 +28,10 @@ import {
   fullPath,
   namedPath,
   pathsIn,
+  symbolRef,
+  soleMatch,
+  isBareName,
+  definitionLine,
 } from "../src/lib/finding";
 import { DOCUMENTS, TABLES } from "../src/lib/office";
 
@@ -715,11 +719,29 @@ describe("a path named in prose", () => {
     expect(pathsIn("see https://example.com/x/y.md for more")).toEqual([]);
   });
 
-  test("a bare name in a sentence is somebody talking about a file", () => {
-    /* The same call `placesIn` makes, for the same reason: resolving it
-       against the card's directory invents a path nobody wrote. */
-    expect(namedPath("package.json")).toBeNull();
-    expect(namedPath("Transcript.svelte")).toBeNull();
+  test("a bare name is offered as a name to resolve, never as a path to construct", () => {
+    /* What `placesIn`'s separator rule refuses is `RailReplayTests.cpp` being
+       joined onto the root into a file that does not exist. A bare name here
+       comes back bare — `isBareName` routes it to `resolve_names`, which looks
+       it up across the project, and `soleMatch` links it only when one file has
+       it. It is never handed to `insideRoot`. */
+    expect(namedPath("package.json")).toEqual({ path: "package.json", line: null, text: "package.json" });
+    expect(namedPath("Transcript.svelte")?.path).toBe("Transcript.svelte");
+    expect(isBareName(namedPath("Transcript.svelte")!.path)).toBe(true);
+  });
+
+  test("a bare name must carry an extension that starts with a letter", () => {
+    /* The extension says "file name"; without one, every word in a sentence
+       would be a walk of the project. */
+    for (const s of ["Makefile", "and", "v1.2", "0.54.0", "3.14", ".gitignore", ".svelte.ts", "lyss@example.com", "a."]) {
+      expect(namedPath(s)).toBeNull();
+    }
+    expect(pathsIn("version 0.54.0 shipped, see v1.2 too")).toEqual([]);
+  });
+
+  test("a bare place keeps its line", () => {
+    const found = namedPath("App.svelte:40:13");
+    expect(found).toEqual({ path: "App.svelte", line: 40, text: "App.svelte:40:13" });
   });
 
   test("a spaced string is only a path when it is plainly absolute", () => {
@@ -753,6 +775,242 @@ describe("a path named in prose", () => {
        the disk before anything is drawn as a link — so this is the *designed*
        behaviour rather than a false positive, and the test says so out loud. */
     expect(pathsIn("and/or it works")[0]?.path).toBe("and/or");
+  });
+});
+
+describe("a symbol named beside its file", () => {
+  test("the reference that started it", () => {
+    expect(symbolRef("queue.ts::settleHold")).toEqual({
+      file: "queue.ts",
+      symbol: ["settleHold"],
+      text: "queue.ts::settleHold",
+    });
+  });
+
+  test("a bare name with a symbol is offered as the name, symbol and all", () => {
+    expect(namedPath("queue.ts")?.symbol).toBeUndefined();
+    const found = namedPath("queue.ts::settleHold");
+    expect(found?.path).toBe("queue.ts");
+    expect(found?.symbol).toEqual(["settleHold"]);
+    expect(found?.line).toBeNull();
+  });
+
+  test("a path with a symbol resolves the path, and keeps it", () => {
+    expect(namedPath("src/lib/queue.ts::settleHold")).toEqual({
+      path: "src/lib/queue.ts",
+      line: null,
+      text: "src/lib/queue.ts::settleHold",
+      symbol: ["settleHold"],
+    });
+    expect(symbolRef("C:\\atelier\\skein\\src-tauri\\src\\lib.rs::off_main")?.file).toBe(
+      "C:\\atelier\\skein\\src-tauri\\src\\lib.rs",
+    );
+  });
+
+  test("a :: with no extension in front of it is a language's path, not a file's", () => {
+    for (const s of [
+      "std::collections",
+      "Self::new",
+      "crate::off_main",
+      "foo::bar",
+      "ask::tests::the_loaded_tier",
+      "skein_lib::run",
+    ]) {
+      expect(symbolRef(s)).toBeNull();
+      expect(namedPath(s)).toBeNull();
+    }
+    expect(pathsIn("see std::collections::HashMap and Self::new here")).toEqual([]);
+  });
+
+  test("a version is not a file, and a turbofish is not a symbol", () => {
+    expect(symbolRef("1.2::x")).toBeNull();
+    expect(symbolRef("v0.54.0::x")).toBeNull();
+    expect(symbolRef("iter.collect::<Vec<_>>()")).toBeNull();
+    expect(symbolRef("queue.ts::")).toBeNull();
+    expect(symbolRef("queue.ts::9lives")).toBeNull();
+    expect(symbolRef("queue.ts:42")).toBeNull();
+  });
+
+  test("a qualified symbol comes back outermost first, over either separator", () => {
+    expect(symbolRef("store.rs::Store::open")?.symbol).toEqual(["Store", "open"]);
+    expect(symbolRef("conversation.svelte.ts::Conversation.echo")?.symbol).toEqual([
+      "Conversation",
+      "echo",
+    ]);
+    expect(symbolRef("conversation.svelte.ts::#claimEcho")?.symbol).toEqual(["#claimEcho"]);
+  });
+
+  test("the grammar around a reference is not in the link", () => {
+    /* Parentheses and a possessive are the reference being talked about, not
+       part of its name — the link covers `queue.ts::settleHold` exactly. */
+    for (const raw of ["queue.ts::settleHold()", "queue.ts::settleHold's", "(queue.ts::settleHold).", "`queue.ts::settleHold`,"]) {
+      const found = namedPath(raw);
+      expect(found?.text).toBe("queue.ts::settleHold");
+      expect(found?.symbol).toEqual(["settleHold"]);
+    }
+    const line = "it lives in queue.ts::settleHold's first branch.";
+    const [one] = pathsIn(line);
+    expect(line.slice(one.from, one.to)).toBe("queue.ts::settleHold");
+    expect(one.path).toBe("queue.ts");
+    expect(one.symbol).toEqual(["settleHold"]);
+  });
+
+  test("an ordinary path in the same sentence carries no symbol", () => {
+    const found = pathsIn("compare src/lib/a.ts with queue.ts::settleHold");
+    expect(found.map((f) => [f.path, f.symbol ?? null])).toEqual([
+      ["src/lib/a.ts", null],
+      ["queue.ts", ["settleHold"]],
+    ]);
+    expect("symbol" in found[0]).toBe(false);
+  });
+});
+
+describe("resolving a bare name against the disk", () => {
+  test("one file is an address", () => {
+    expect(soleMatch("queue.ts", ["src/lib/queue.ts"])).toBe("src/lib/queue.ts");
+  });
+
+  test("none is nothing to link, and several is refused rather than picked", () => {
+    expect(soleMatch("queue.ts", [])).toBeNull();
+    expect(soleMatch("mod.rs", ["src-tauri/src/repair/mod.rs", "src-tauri/src/flyway/mod.rs"])).toBeNull();
+  });
+
+  test("the basename is checked again rather than trusted to the glob", () => {
+    /* A glob is a pattern; this is one exact name. Case folds, as the disk
+       does. */
+    expect(soleMatch("queue.ts", ["src/lib/queue.ts.bak", "src/lib/queue.ts"])).toBe("src/lib/queue.ts");
+    expect(soleMatch("Queue.TS", ["src/lib/queue.ts"])).toBe("src/lib/queue.ts");
+    expect(soleMatch("queue.ts", ["src/lib/myqueue.ts"])).toBeNull();
+  });
+
+  test("a bare name is told apart from a path", () => {
+    expect(isBareName("queue.ts")).toBe(true);
+    expect(isBareName("src/lib/queue.ts")).toBe(false);
+    expect(isBareName("src\\lib\\queue.ts")).toBe(false);
+  });
+});
+
+describe("finding where a symbol is defined", () => {
+  const at = (src: string, ...symbol: string[]) => definitionLine(src, symbol);
+
+  test("the reference that started it, against the real file", () => {
+    /* `queue.ts::settleHold` must open on the line that defines it — read
+       off the file itself, so the test moves when the code does. */
+    const text = readFileSync(join(import.meta.dir, "../src/lib/queue.ts"), "utf8");
+    const line = definitionLine(text, ["settleHold"]);
+    expect(line).not.toBeNull();
+    expect(text.split(/\r?\n/)[line! - 1]).toMatch(/function settleHold\b/);
+  });
+
+  test("a declaration beats a call that comes before it", () => {
+    const src = ["const x = settleHold(a);", "settleHold(b);", "", "export function settleHold(q) {", "}"].join("\n");
+    expect(at(src, "settleHold")).toBe(4);
+    /* And over a weaker match that comes first: an interface member typing it,
+       and a call broken across lines, are both found by a lower tier — the
+       declaration below them still wins. */
+    const typed = [
+      "interface Queue {",
+      "  settleHold: (q: Queue) => Hold;",
+      "}",
+      "settleHold(",
+      "  q,",
+      ");",
+      "function settleHold(q: Queue) {",
+    ].join("\n");
+    expect(at(typed, "settleHold")).toBe(7);
+  });
+
+  test("the declarations TS and JS write", () => {
+    expect(at("let a;\nexport const settleHold = (q) => q;", "settleHold")).toBe(2);
+    expect(at("\nexport default async function settleHold() {}", "settleHold")).toBe(2);
+    expect(at("\n\nexport class Finder {", "Finder")).toBe(3);
+    expect(at("export type Named = {", "Named")).toBe(1);
+    expect(at("x\nexport interface Scope {", "Scope")).toBe(2);
+    expect(at("function* walk() {}", "walk")).toBe(1);
+  });
+
+  test("the declarations Rust writes, under any modifiers", () => {
+    expect(at("use x;\npub(crate) async fn off_main<F>(f: F) {", "off_main")).toBe(2);
+    expect(at("pub const fn cap() -> usize {", "cap")).toBe(1);
+    expect(at('pub unsafe extern "C" fn hook() {', "hook")).toBe(1);
+    expect(at("#[derive(Debug)]\npub struct Store {", "Store")).toBe(2);
+    expect(at("\nmacro_rules! row {", "row")).toBe(2);
+    expect(at("const NAME_CAP: usize = 200;", "NAME_CAP")).toBe(1);
+  });
+
+  test("Python and Go", () => {
+    expect(at("import os\n\ndef main():", "main")).toBe(3);
+    expect(at("class Probe:\n    def run(self):", "Probe", "run")).toBe(2);
+    expect(at("package x\nfunc (s *Store) Open() error {", "Open")).toBe(2);
+  });
+
+  test("a class method, and not the statement that calls it", () => {
+    const src = [
+      "class Paths {",
+      "  constructor() {",
+      "    this.ask(1);",
+      "    ask(2);",
+      "  }",
+      "  ask(root: string, path: string) {",
+      "  }",
+      "  async #drain() {",
+      "  }",
+      "}",
+    ].join("\n");
+    expect(at(src, "ask")).toBe(6);
+    expect(at(src, "#drain")).toBe(8);
+    expect(at(src, "Paths", "ask")).toBe(6);
+  });
+
+  test("a field when nothing declares it any harder", () => {
+    const src = ["class Paths {", "  #known = $state({});", "  kind(): Kind | null {", "}"].join("\n");
+    expect(at(src, "#known")).toBe(2);
+    expect(at("pub struct Conv {\n    pub turn: bool,\n}", "Conv", "turn")).toBe(2);
+    expect(at("const o = {\n  look: (x) => x,\n};", "look")).toBe(2);
+  });
+
+  test("a Rust impl block, and a C++ method with its type in front", () => {
+    expect(at("use x;\nimpl<T> Drop for Guard<T> {", "Guard")).toBe(2);
+    expect(at('#include "a.h"\nFReply URailWidget::OnClick(const FGeometry& g)\n{', "URailWidget", "OnClick")).toBe(2);
+    /* A statement that happens to start with a word and call the name is not
+       a definition. */
+    expect(at("  return OnClick(g)", "OnClick")).toBeNull();
+  });
+
+  test("a qualified symbol narrows to the outer one's body", () => {
+    const src = [
+      "impl Other {",
+      "    pub fn open() {}", // 2: the wrong `open`
+      "}",
+      "impl Store {",
+      "    pub fn open() {}", // 5: the right one
+      "}",
+    ].join("\n");
+    expect(at(src, "open")).toBe(2);
+    expect(at(src, "Store", "open")).toBe(5);
+    /* An outer name the file does not have is no reason to miss the inner. */
+    expect(at(src, "Nowhere", "open")).toBe(2);
+  });
+
+  test("a comment saying the words is not the definition", () => {
+    const src = ["/** function settleHold is below */", " * fn settleHold", "// const settleHold", "# def settleHold", "function settleHold() {}"].join("\n");
+    expect(at(src, "settleHold")).toBe(5);
+  });
+
+  test("a name inside a longer name is not the name", () => {
+    expect(at("function settleHoldings() {}", "settleHold")).toBeNull();
+    expect(at("function unsettleHold() {}", "settleHold")).toBeNull();
+    expect(at("const $settle = 1;", "$settle")).toBe(1);
+  });
+
+  test("a symbol the file does not define is null, and the file opens at the top", () => {
+    expect(at("export const a = 1;", "settleHold")).toBeNull();
+    expect(at("", "x")).toBeNull();
+    expect(definitionLine("const a = 1;", [])).toBeNull();
+  });
+
+  test("CRLF files count lines the same", () => {
+    expect(at("a\r\nb\r\nfunction c() {}\r\n", "c")).toBe(3);
   });
 });
 
