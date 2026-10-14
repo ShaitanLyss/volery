@@ -698,16 +698,26 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    /* Said as it is, because it is no longer one thing (sink `f931e6ca`): away
+       here while she is at another wall still puts a question to her there, and
+       an agent told "it queues" would hold back what it could have asked. */
+    let elsewhere = crate::flyway::link::present_elsewhere(app);
+    let asking = if elsewhere {
+        "the user is at another of their machines on the flyway right now, so \
+         `mcp__skein__ask_user` still puts your question to them there and waits for the \
+         answer as usual — it is queued instead only once they are away from every wall"
+    } else {
+        "`mcp__skein__ask_user` now queues a question instead of parking on it, so asking \
+         one no longer costs you your turn"
+    };
     match flip(app, true, handle, note) {
-        Ok(_) if was => Some(
-            "The wall was already in away mode, and still is. Nothing changed — \
-             questions are being queued and the notifications are off."
-                .into(),
-        ),
-        Ok(_) => Some(
+        Ok(_) if was => Some(format!(
+            "The wall was already in away mode, and still is. Nothing changed — the \
+             notifications are off, and {asking}."
+        )),
+        Ok(_) => Some(format!(
             "The wall is in away mode. Every card is quiet — no peek, no chime, no \
-             taskbar — and `mcp__skein__ask_user` now queues a question instead of parking on it, \
-             so asking one no longer costs you your turn.\n\n\
+             taskbar — and {asking}.\n\n\
              You cannot end this; only the user can, from the wall itself. Carry on \
              with the work you were given, and ask what you need to ask — that is what \
              the queue is for. If you are about to stop for want of a decision, queue \
@@ -716,8 +726,7 @@ pub fn handle(app: &AppHandle, conversation_id: &str, tool: &str, args: &Value) 
              somebody working out what you wanted before they can answer it.\n\n\
              Say in your closing line what you got through and what is waiting on an \
              answer."
-                .into(),
-        ),
+        )),
         Err(e) => Some(format!("the wall could not be put into away mode: {e}")),
     }
 }
