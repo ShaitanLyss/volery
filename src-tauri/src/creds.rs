@@ -340,7 +340,7 @@ fn forget_nothing(_app: &AppHandle) {}
 
 /* ── the probes ────────────────────────────────────────────────────────────*/
 
-/// Azure DevOps: can this token read builds in an organisation on this wall?
+/// Azure DevOps: is this token accepted by an organisation on this wall?
 ///
 /// **Not `profiles/me`**, which is the obvious org-less check and is the wrong
 /// one — see the module header. A PAT scoped to Build (read) alone has no
@@ -357,11 +357,17 @@ fn probe_azdo(token: &str, roots: &[String]) -> Result<String, String> {
          from one"
             .to_string()
     })?;
-    /* `$top=1` because the answer is the status code. A build list is the
-       cheapest thing in the scope that matters, and one row of it is as
-       conclusive as a thousand. */
-    let url =
-        format!("https://dev.azure.com/{org}/_apis/build/builds?api-version=7.1&$top=1");
+    /* `connectionData`, because it is org-level and needs no project. The
+       first cut asked `_apis/build/builds`, which is a *project-scoped* route:
+       with no project segment Azure DevOps answers 400 VS800075 "the project
+       with id 'No project was specified.' does not exist", and the check
+       reported a perfectly good PAT as refused (sink ecf5f9c2, first live use
+       of `credential azdo`). The scope worry above still holds for
+       `profiles/me`; `connectionData` is the call the ladder already makes for
+       identity (`azdo::me_in`) and answers for any valid token. */
+    let url = format!(
+        "https://dev.azure.com/{org}/_apis/connectionData?api-version=7.1-preview"
+    );
     let header = format!("Basic {}", crate::base64(format!(":{token}").as_bytes()));
     let res = crate::forge::agent()
         .get(&url)
@@ -369,17 +375,40 @@ fn probe_azdo(token: &str, roots: &[String]) -> Result<String, String> {
         .set("Accept", "application/json")
         .call();
     match res {
-        Ok(_) => Ok(format!("reads builds in {org}")),
-        /* 203 is not in this arm because Azure DevOps does not use it here; a
-           401 or 403 is the token being insufficient, and both are worth
-           reporting in the service's own numbers rather than reworded, since
-           the difference between them is the difference between a scope and an
-           identity. */
-        Err(ureq::Error::Status(code, res)) => Err(format!(
-            "azure devops answered {code}{}",
-            trailing(res.into_string().unwrap_or_default())
-        )),
+        Ok(res) => {
+            let status = res.status();
+            let body = res.into_string().unwrap_or_default();
+            judge_azdo(status, &body, &org)
+        }
+        Err(ureq::Error::Status(code, res)) => {
+            judge_azdo(code, &res.into_string().unwrap_or_default(), &org)
+        }
         Err(e) => Err(format!("could not reach azure devops: {e}")),
+    }
+}
+
+/// What an Azure DevOps answer says about the *token*, as opposed to the check.
+///
+/// Only two things are the token's fault: a 401, and a **203**, which is how
+/// Azure DevOps answers a revoked or expired PAT — with a sign-in page, and a
+/// success-class status that `ureq` hands back as `Ok`. Everything else that is
+/// not a 2xx is the *check* failing (a malformed url, a proxy, a 5xx), and is
+/// worded so that nobody goes and re-mints a token that was fine: **a check
+/// that is wrong in the alarming direction sends people to fix the wrong
+/// thing.**
+fn judge_azdo(status: u16, body: &str, org: &str) -> Result<String, String> {
+    match status {
+        203 | 401 => Err(format!(
+            "azure devops did not accept this token ({status}) — it is revoked, expired or \
+             not for {org}{}",
+            trailing(body.to_string())
+        )),
+        200..=299 => Ok(format!("accepted by {org}")),
+        _ => Err(format!(
+            "the check itself failed — azure devops answered {status}{} — which says nothing \
+             about whether the token is good",
+            trailing(body.to_string())
+        )),
     }
 }
 
@@ -482,6 +511,21 @@ mod tests {
     fn every_lendable_credential_is_one_the_panel_stores() {
         for l in crate::lend::LENDABLE {
             assert!(lookup(l.id).is_ok(), "lend.rs offers {} and the panel stores no such thing", l.id);
+        }
+    }
+
+    #[test]
+    fn only_a_401_or_a_203_blames_the_token() {
+        let vs800075 = r#"{"message":"VS800075: The project with id 'No project was specified.' does not exist"}"#;
+        assert!(judge_azdo(200, "{}", "o").is_ok());
+        for bad in [401u16, 203] {
+            let e = judge_azdo(bad, "<html>sign in</html>", "o").unwrap_err();
+            assert!(e.contains("did not accept this token"), "{e}");
+        }
+        for other in [400u16, 403, 404, 500, 503] {
+            let e = judge_azdo(other, vs800075, "o").unwrap_err();
+            assert!(e.contains("the check itself failed"), "{other}: {e}");
+            assert!(!e.contains("did not accept"), "{other}: {e}");
         }
     }
 
