@@ -1588,9 +1588,10 @@ fn migrate_v30(conn: &Connection) -> Result<(), String> {
 /// with nothing to backfill, since until now nothing could be granted.
 ///
 /// **A row is a grant and its absence is the whole of the refusal**, which is
-/// what keeps this from drifting the way a status column would. `docket::token`
+/// what keeps this from drifting the way a status column would. `lend.rs`
 /// writes one when the user presses the button; `spawn_now` reads it to decide
-/// whether the card's process gets `ASANA_ACCESS_TOKEN`; `--secret` reads it to
+/// whether the card's process gets that credential's variable (`lend::LENDABLE`
+/// names one per service); `--secret` reads it to
 /// decide whether to print anything. Three readers, one fact, no state machine.
 ///
 /// **The grant dies with the card, and both ways of ending one delete it.**
@@ -2935,7 +2936,8 @@ pub fn secret_granted(conn: &Connection, conversation_id: &str, service: &str) -
 ///
 /// **It does not reach a running process**, and nothing here pretends it does:
 /// an environment is fixed when a process starts, so a card whose grant is
-/// deleted keeps `ASANA_ACCESS_TOKEN` until it is respawned. That is harmless
+/// deleted keeps the variable (`ASANA_ACCESS_TOKEN`, `AZURE_DEVOPS_EXT_PAT`, …) until it
+/// is respawned. That is harmless
 /// for the two callers, since both of them are ending or resetting the card
 /// anyway — but it is the reason there is no `revoke` command aimed at a live
 /// card, which would be a button that did nothing visible for the rest of the
@@ -4769,7 +4771,7 @@ pub struct Foreign {
 /// to something outside the process.
 ///
 /// Both callers hand the path to a *different* process — `hooks::settings` bakes
-/// it into a card's hook argv, and `docket::token` writes it into the command a
+/// it into a card's hook argv, and `lend::turn_command` writes it into the command a
 /// granted card runs — so it is derived in one place rather than each of them
 /// joining `skein.db` onto the studio directory. `tauri.conf.json` owns the
 /// folder name and CLAUDE.md is explicit about what a second hard-coding of it

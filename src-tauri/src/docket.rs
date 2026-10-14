@@ -20,9 +20,8 @@
 //!   in full with its description. Reading, and free.
 //! - **`task`** — create, edit, move, comment, tick, or delete one. Every one of
 //!   them asks the user first.
-//! - **`asana_token`** — the stored PAT itself, for everything the six actions
-//!   do not cover. Asks, and is the one tool here that hands over a secret; the
-//!   long argument is above `token`.
+//! - **`asana_token`** — lending the stored PAT itself lives in `lend.rs` now,
+//!   which hands any credential the wall holds through one path.
 //!
 //! ### The certificate matters here too, and it is not the reason
 //!
@@ -111,26 +110,6 @@ pub const TASKS_TOOL: &str = "tasks";
 /// cannot run the other way, since `task` requires an `action` and a call that
 /// meant to read is a schema error rather than something happening.
 pub const TASK_TOOL: &str = "task";
-/// The stored PAT itself, asked for and handed over.
-///
-/// The escape hatch from the six actions above, and the one tool on this server
-/// that hands a card a **secret**. See the section on it below the schemas — it
-/// crosses a line `creds.rs` draws deliberately, so it is worth reading before
-/// touching.
-pub const TOKEN_TOOL: &str = "asana_token";
-
-/// The service id `creds.rs` knows this token by, and `store::secret_grant`
-/// records a grant against.
-pub(crate) const SERVICE: &str = "asana";
-
-/// What a granted card finds the token under.
-///
-/// The name Asana's own tooling and every community client already read, so a
-/// script an agent writes reaches for it without being told — which is most of
-/// the value of an environment variable over a tool result the agent has to
-/// remember to thread through by hand.
-pub(crate) const TOKEN_ENV: &str = "ASANA_ACCESS_TOKEN";
-
 /// How many tasks one board or list answers with, unless a caller says
 /// otherwise.
 ///
@@ -483,64 +462,6 @@ pub fn task_schema() -> Value {
                 }
             },
             "required": ["action"]
-        }
-    })
-}
-
-pub fn token_schema() -> Value {
-    json!({
-        "name": TOKEN_TOOL,
-        "description":
-            "Ask the user to hand you the Asana personal access token Volery is holding, so you \
-             can call **any** Asana endpoint yourself rather than only the handful `task` \
-             covers. The call parks; the user is shown what you said you wanted it for, and \
-             decides.\n\n\
-             **Try `tasks` and `task` first.** Between them they read boards and tasks and do \
-             the six ordinary writes, each behind its own confirmation, and none of them puts a \
-             credential anywhere. Reach for this one when what you need is genuinely not there \
-             — attachments, subtasks, portfolios, goals, webhooks, custom field \
-             administration, a bulk read — and **say which, in `reason`**, because that sentence \
-             is the whole of what the user has to decide on.\n\n\
-             **What you are being given is not scoped and cannot be narrowed.** An Asana PAT is \
-             the entire account: every workspace, every project, read and write, with no \
-             permission subset to request. There is no version of this that hands you less.\n\n\
-             **The token is never put in this conversation.** What you get back is a grant: \
-             from your next turn onward the token is in your process environment as \
-             `ASANA_ACCESS_TOKEN`, which every Bash, PowerShell and script call you make \
-             inherits. Read it at the point of use — `$ASANA_ACCESS_TOKEN`, \
-             `$env:ASANA_ACCESS_TOKEN`, `os.environ[\"ASANA_ACCESS_TOKEN\"]` — and **never \
-             print it, echo it, log it, commit it, write it into a file, or repeat it to \
-             another card**. A transcript is on disk for ever and nothing can take it back \
-             out.\n\n\
-             The turn you ask on is the exception, and the answer hands you a one-line command \
-             for it: an environment is fixed when a process starts, and yours started before \
-             the user agreed.\n\n\
-             On this machine you can call the API directly with no certificate workaround: the \
-             network intercepts TLS, and `CURL_CA_BUNDLE`, `SSL_CERT_FILE` and \
-             `REQUESTS_CA_BUNDLE` are already set in the environment, so `curl`, Python and \
-             Node all reach `app.asana.com` (verified 2026-09-04). The API is \
-             `https://app.asana.com/api/1.0`, and the header is `Authorization: Bearer <the \
-             token>`.\n\n\
-             The grant lasts until this card is **closed or cleared**, so you do not need to \
-             ask again on a later turn — check whether `ASANA_ACCESS_TOKEN` is already set \
-             before calling this.\n\n\
-             If the user says no, that is an answer. Do not ask again for the same job — say \
-             what you could not do, and get on with the rest.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description":
-                        "What you need it for, in one or two plain sentences, written for the \
-                         user rather than for a log. Name the endpoint or the operation and \
-                         what you are trying to achieve — \"to attach the three screenshots to \
-                         DATA-412, which `task` cannot do\" is a decision somebody can take; \
-                         \"to work with Asana\" is not, and will be refused. This is shown to \
-                         them verbatim."
-                }
-            },
-            "required": ["reason"]
         }
     })
 }
@@ -1106,18 +1027,10 @@ pub(crate) enum Writing {
 /// free-text field beside its buttons, so what comes back is arbitrary prose and
 /// reading a yes out of prose works right up until *"yes, but call it something
 /// else"*.
-const DO_IT: &str = "do it";
+pub(crate) const DO_IT: &str = "do it";
 const DO_NOT: &str = "leave it alone";
 
-/// And for the token, which is a different decision and says so.
-///
-/// Its own words rather than `DO_IT` reused, because the two questions are not
-/// the same act and a button reading *do it* under a question about handing over
-/// a credential is the one place a habit could carry somebody through.
-const HAND_IT_OVER: &str = "hand it over";
-const KEEP_IT: &str = "keep it";
-
-fn approved(answer: &str, yes: &str) -> bool {
+pub(crate) fn approved(answer: &str, yes: &str) -> bool {
     answer.trim().eq_ignore_ascii_case(yes)
 }
 
@@ -1254,231 +1167,8 @@ pub(crate) fn writes(
 ) -> Option<Writing> {
     match tool {
         TASK_TOOL => Some(task(app, caller, args)),
-        TOKEN_TOOL => Some(token(app, caller, args)),
         _ => None,
     }
-}
-
-/* ── the credential itself ─────────────────────────────────────────────────
- *
- * **This is the one tool on this server that hands a card a secret, and it
- * crosses a line `creds.rs` draws on purpose.** That file states it plainly:
- * *"the one read path out of this file, and it hands back the secret — which
- * everything else here is arranged not to do"*, and `integration_held` answers
- * a boolean precisely so no command can return a token to the front end.
- *
- * An agent is further out than the front end, so this is a real exception and is
- * written down rather than quietly taken. What licenses it is that the
- * alternative is worse in a specific way: an Asana PAT is **unscoped**, the six
- * actions in `task` are a fraction of the API, and a card that needs an
- * attachment, a subtask, a portfolio or a webhook has no route at all. Faced
- * with that, the thing an agent actually does is go looking for the credential
- * itself — which on this machine it can, since the vault is readable by any
- * process running as the user. `processes.md` records the same shape one
- * subsystem over and states the lesson: **the fix for an escape is not detection,
- * it is removing the reason to reach for it.** A sanctioned door with a person
- * standing in it is better than an unsanctioned one with nobody.
- *
- * ### What the question has to say, and why nothing is masked
- *
- * The token is returned as a tool result, which is written to the session
- * transcript on disk in plain text and stays there. Three consequences, and the
- * question says all three rather than the panel hiding any of them:
- *
- * - **Volery's own `forget it` stops being enough.** Clearing the vault entry
- *   removes Volery's copy and not the one now on disk, so revocation moves to
- *   Asana — *my settings → apps → manage developer apps*. That is the single
- *   most important sentence in the question, because it is the one thing
- *   somebody would otherwise assume they still controlled from here.
- * - **It cannot be un-handed.** Approval is a moment; the token is in that
- *   card's context for the rest of the session and in the file for ever.
- * - **Masking it in the panel would be theatre.** `toolcall.ts` could redact the
- *   result and the bytes would still be on disk — so the reading would be
- *   *safer-looking* and no safer, which is the direction this codebase refuses
- *   everywhere else (`checkFailed`'s "a check that can be wrong in the
- *   reassuring direction is worse than no check").
- *
- * What is *not* a leak, and is worth stating so nobody widens the warning past
- * what is true: **another card cannot read it.** `relay::recall` folds only
- * `assistant` speech out of a transcript and never tool results, so the token
- * reaches a second card only if this agent quotes it in its own words — which is
- * why the schema tells it not to, in as many words.
- *
- * ### It asks every time, and that needs no state
- *
- * There is no grant to remember and no expiry to run, which looks like an
- * omission and is the design. A card that has been given the token is holding it
- * in context and will not call this again; a card that *does* call again is one
- * that genuinely does not have it — a new session, a cleared card, a fresh
- * rouse — and that is exactly the moment a fresh approval is right. So the
- * absence of a cache is not laziness: a remembered grant would hand the token to
- * a card the user approved *yesterday*, silently, on a turn they never saw. */
-
-/// The stored PAT, handed over if the user says so.
-pub(crate) fn token(app: &AppHandle, caller: &str, args: &Value) -> Writing {
-    if let Err(why) = permitted(app, caller) {
-        return Writing::Now(why);
-    }
-    let Some(reason) = named(args, "reason").map(str::trim).filter(|s| !s.is_empty()) else {
-        return Writing::Now(
-            "say what you need it for in `reason` — it is shown to the user verbatim and is the \
-             whole of what they have to decide on. Name the endpoint or the operation and what \
-             you are trying to achieve."
-                .into(),
-        );
-    };
-    /* Owned before the closure takes it: `args` does not outlive this call, and
-       the settle runs on the parking thread up to ten minutes later. */
-    let reason = reason.to_string();
-    /* Resolved before the question rather than after, per this module's rule for
-       the writes: the user deciding whether to hand over a credential wants to
-       know **whose** it is, and a token minted on the wrong account is accepted
-       by Asana and then sees none of your projects. It also catches a stored
-       token that is already dead, which is worth a refusal rather than a
-       question — nothing reaches a person until the call is worth their
-       attention. */
-    let who = match whoami() {
-        Ok(w) => w,
-        Err(why) => {
-            return Writing::Now(format!(
-                "{why}\n\nSo there is nothing worth handing over — the user has not been asked. \
-                 The tokens panel in the header is where this is fixed."
-            ))
-        }
-    };
-
-    let q = json!({
-        "questions": [{
-            "header": "hand over the asana token",
-            "question": format!(
-                "A card is asking for **your Asana personal access token**, to call the API \
-                 directly.\n\n**It says it needs it for:**\n\n---\n\n{}\n\n---\n\nThe token is \
-                 {}, and Asana tokens are **not scoped** — this is the whole account, every \
-                 workspace, read and write. There is no narrower thing to give it.\n\n\
-                 **It goes into the card's environment, not into the conversation** — as \
-                 `{TOKEN_ENV}`, where its shell and script calls will find it. It is written to \
-                 no file and appears in no transcript, so what you are agreeing to is this card \
-                 being able to *use* your account, rather than a copy of the token existing \
-                 somewhere new.\n\n\
-                 **It lasts until you close or clear this card.** There is no expiry and no \
-                 separate way to take it back — closing the card is how, and a card you clear \
-                 has to ask again. If you want the token itself dead, that is Asana's side: my \
-                 settings → apps → manage developer apps.\n\n\
-                 If you would rather it did not have this, say no: reading and updating \
-                 tasks still works, and the card will be told to carry on without it.",
-                clip(&reason, MAX_SHOWN),
-                if who.is_empty() { "live".to_string() } else { format!("**{who}**'s") }
-            ),
-            "options": [
-                {
-                    "label": HAND_IT_OVER,
-                    "detail": "The card gets the token. It goes in the transcript for good."
-                },
-                {
-                    "label": KEEP_IT,
-                    "detail": "Nothing is handed over. The agent is told you said so."
-                }
-            ]
-        }]
-    });
-
-    let card = caller.to_string();
-    Writing::Ask {
-        question: q,
-        settle: Box::new(move |app, answer| {
-            let Some(answer) = answer else {
-                return unanswered("the token");
-            };
-            if !approved(answer, HAND_IT_OVER) {
-                return declined("the token", answer, KEEP_IT);
-            }
-            /* The grant, and **not the token**. Nothing this function returns
-               carries the secret, which is the whole of the redesign: a tool
-               result is written to the session transcript on disk in plain text
-               and stays there, where an environment variable is in no file at
-               all. See the section above. */
-            let Some(store) = app.try_state::<crate::store::Store>() else {
-                return "the user agreed, but the wall's store is unavailable, so the grant \
-                        could not be recorded and nothing was handed over."
-                    .to_string();
-            };
-            let wrote = store
-                .0
-                .lock()
-                .map_err(|_| "the store is unavailable".to_string())
-                .and_then(|conn| crate::store::grant_secret(&conn, &card, SERVICE, &reason));
-            if let Err(why) = wrote {
-                return format!(
-                    "the user agreed, but the grant could not be recorded ({why}), so nothing \
-                     was handed over. Say so rather than trying again."
-                );
-            }
-            /* The command for *this* turn, because an environment is fixed when
-               a process starts and this process started before the user agreed.
-               Built here rather than described, so the card has something it can
-               run rather than a shape it has to assemble — and quoted, since
-               both paths can hold spaces. */
-            let now = match (std::env::current_exe(), crate::store::db_path(app)) {
-                (Ok(exe), Some(db)) => format!(
-                    "\n\nFor **this turn only**, your process was started before the grant \
-                     existed, so its environment does not have it yet. Fetch it once and it is \
-                     in your shell for the rest of the turn:\n\n\
-                     ```bash\n\
-                     export {TOKEN_ENV}=$(\"{}\" {} {SERVICE} {} {} {} \"{}\")\n\
-                     ```\n\n\
-                     That command prints nothing at all unless this card is granted, so it is \
-                     safe to leave in a script — but do not echo what it returns.",
-                    exe.display(),
-                    crate::hooks::FLAG_SECRET,
-                    crate::hooks::FLAG_CARD,
-                    card,
-                    crate::hooks::FLAG_DB,
-                    db.display(),
-                ),
-                /* No path to name is not a failure of the grant — the variable
-                   still lands at the next spawn. Say what is true and no more,
-                   rather than printing a command with a hole in it. */
-                _ => "\n\nYour current process was started before the grant existed, so its \
-                      environment does not have it yet; it will from your next turn."
-                    .to_string(),
-            };
-            format!(
-                "The user agreed, and the grant is recorded against this card.\n\n\
-                 **The token is not in this reply, and must not be put in one.** From your next \
-                 turn onward it is in your environment as `{TOKEN_ENV}` — every Bash, \
-                 PowerShell and script call you make inherits it, so read it with \
-                 `$env:{TOKEN_ENV}`, `$ {TOKEN_ENV}` or `os.environ[\"{TOKEN_ENV}\"]` at the \
-                 point of use and never print it.{now}\n\n\
-                 Use it as `Authorization: Bearer <token>` against \
-                 `https://app.asana.com/api/1.0`. No certificate workaround is needed on this \
-                 machine — the network intercepts TLS, and CURL_CA_BUNDLE, SSL_CERT_FILE and \
-                 REQUESTS_CA_BUNDLE are already set, so curl, Python and Node all reach the \
-                 host (verified 2026-09-04).\n\n\
-                 The grant lasts until this card is closed or cleared. It is unscoped, so every \
-                 request you make is the user's whole account acting under their name — stay \
-                 inside what you said you needed it for: {}",
-                clip(reason.trim(), 200)
-            )
-        }),
-    }
-}
-
-/// Whose token this is, or why there is none worth offering.
-///
-/// `GET /users/me` is the same probe `creds::probe_asana` makes and for the same
-/// reason — it is the cheapest authenticated call and it answers with the
-/// identity, which is both halves of the check at once.
-fn whoami() -> Result<String, String> {
-    let v = crate::asana::get("/users/me")?;
-    let data = v.get("data").cloned().unwrap_or(Value::Null);
-    let name = crate::forge::text(&data, "name");
-    let email = crate::forge::text(&data, "email");
-    Ok(match (name.is_empty(), email.is_empty()) {
-        (false, false) => format!("{name} <{email}>"),
-        (false, true) => name,
-        (true, false) => email,
-        (true, true) => String::new(),
-    })
 }
 
 /// The `task` tool, as far as it can be decided without a person.
@@ -1985,35 +1675,11 @@ mod tests {
     }
 
     #[test]
-    fn the_token_takes_its_own_word_and_not_the_writes_one() {
-        /* The two questions are not the same act, and a button reading `do it`
-           under a question about handing over an unscoped credential is the one
-           place a habit could carry somebody through. So the labels are
-           disjoint, and — the half that actually guards anything — the word
-           that approves a *write* must not approve the *token*. */
-        assert_ne!(DO_IT, HAND_IT_OVER);
-        assert_ne!(DO_NOT, KEEP_IT);
-        assert!(approved("hand it over", HAND_IT_OVER));
-        assert!(!approved(DO_IT, HAND_IT_OVER));
-        assert!(!approved("yes", HAND_IT_OVER));
-        assert!(!approved(KEEP_IT, HAND_IT_OVER));
-        /* And not the other way round either: the token's own yes must not
-           stand in for a write's. */
-        assert!(!approved(HAND_IT_OVER, DO_IT));
-    }
-
-    #[test]
     fn a_refusal_is_an_answer_and_says_so() {
         let said = declined("the deletion", DO_NOT, DO_NOT);
         assert!(said.contains("said no"), "{said}");
         assert!(said.contains("do not ask again"), "{said}");
 
-        /* The token's refusal reads the same way, off its own label — a `no`
-           matched against the wrong button would fall through to the verbatim
-           arm and tell the agent the user "pressed neither button" when they
-           had pressed one. */
-        let said = declined("the token", KEEP_IT, KEEP_IT);
-        assert!(said.contains("said no"), "{said}");
     }
 
     #[test]
@@ -2022,67 +1688,6 @@ mod tests {
            into a no would throw away the only instruction in the exchange. */
         let said = declined("the edit", "rename it to 'sync fails on reissue' instead", DO_NOT);
         assert!(said.contains("sync fails on reissue"), "{said}");
-    }
-
-    #[test]
-    fn asking_for_the_token_without_a_reason_is_refused_before_anybody_is_asked() {
-        /* `reason` is the whole of what the user decides on, so a call without
-           one must not reach them — and this is checked before the network, so
-           a malformed call costs no request either. Asserted on the argument
-           reading rather than through `token`, which needs an `AppHandle`. */
-        for args in [json!({}), json!({ "reason": "" }), json!({ "reason": "   " })] {
-            assert!(
-                named(&args, "reason").map(str::trim).filter(|s| !s.is_empty()).is_none(),
-                "{args} should not count as a reason"
-            );
-        }
-        let good = json!({ "reason": "to attach three screenshots to DATA-412" });
-        assert_eq!(
-            named(&good, "reason").map(str::trim).filter(|s| !s.is_empty()),
-            Some("to attach three screenshots to DATA-412")
-        );
-    }
-
-    #[test]
-    fn the_token_schema_says_what_it_cannot_take_back() {
-        /* The description is the only thing an agent reads before deciding
-           whether to reach for this, and four of its claims are the whole
-           reason it is safe to offer at all: that the token is unscoped, where
-           it will actually arrive, that it must never be printed, and how long
-           the grant lasts. A schema that lost any of them would still compile,
-           still register, and still be found.
-
-           The last one earns its place for a reason the others do not: without
-           it an agent re-asks on every turn, which is a question the user is
-           trained to click through — the way an approval stops meaning
-           anything. */
-        let text = token_schema()["description"].as_str().unwrap().to_string();
-        for claim in ["not scoped", TOKEN_ENV, "never", "closed or cleared"] {
-            assert!(text.contains(claim), "the token schema stopped saying {claim:?}");
-        }
-        /* And the environment is named as the place it arrives, rather than the
-           reply — the whole of the redesign, and a sentence that would read as
-           fine if it silently went back to promising the token inline. */
-        assert!(
-            text.contains("never put in this conversation"),
-            "the token schema stopped promising the token stays out of the transcript"
-        );
-        /* And `reason` is required, or the guard above is a suggestion. */
-        let req = token_schema()["inputSchema"]["required"].as_array().unwrap().clone();
-        assert_eq!(req, vec![json!("reason")]);
-    }
-
-    #[test]
-    fn the_env_var_is_the_name_asana_tooling_already_reads() {
-        /* Most of the value of an environment variable over a tool result is
-           that a script an agent writes reaches for the right name without
-           being told. A house-style rename here would be silent: everything
-           still compiles, the token is still exported, and every Asana client
-           on the machine stops finding it. */
-        assert_eq!(TOKEN_ENV, "ASANA_ACCESS_TOKEN");
-        /* And the service id is what `creds.rs` answers for, since `spawn_now`
-           and `--secret` both look the token up by it. */
-        assert_eq!(SERVICE, "asana");
     }
 
     #[test]
@@ -2336,9 +1941,11 @@ mod tests {
     }
 
     #[test]
-    fn the_three_tools_do_not_share_a_name_with_each_other() {
+    fn the_tools_do_not_share_a_name_with_each_other() {
         assert_ne!(TASKS_TOOL, TASK_TOOL);
-        assert_ne!(TASKS_TOOL, TOKEN_TOOL);
-        assert_ne!(TASK_TOOL, TOKEN_TOOL);
+        for t in [TASKS_TOOL, TASK_TOOL] {
+            assert_ne!(t, crate::lend::ASANA_TOKEN_TOOL);
+            assert_ne!(t, crate::lend::CREDENTIAL_TOOL);
+        }
     }
 }

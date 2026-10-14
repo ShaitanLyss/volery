@@ -246,14 +246,24 @@ export const SKEIN_TASKS_TOOL = "mcp__skein__tasks";
 export const SKEIN_TASK_TOOL = "mcp__skein__task";
 
 /** And the escape hatch, which is the one tool on this server that hands a card
- *  a **secret**.
+ *  a **secret** — any credential the wall holds, named by `credential`
+ *  (`lend.rs`'s `LENDABLE`). `asana_token` is the name it had while Asana was
+ *  the only one, kept as an alias because transcripts already quote it.
  *
  *  It gets a line of its own rather than falling in beside `task`, because what
  *  it is asking for is a different kind of thing and the card is the only place
  *  somebody looking at the wall would see it happen. The wording names the
  *  credential outright — *the asana token*, not "access" or "permission" — since
  *  the whole value of the line is that it is unmistakable at a glance. */
+export const SKEIN_CREDENTIAL_TOOL = "mcp__skein__credential";
 export const SKEIN_ASANA_TOKEN_TOOL = "mcp__skein__asana_token";
+
+/** What `credential`'s ids are called on a card. An id this does not know is
+ *  drawn as itself rather than guessed at — a newer build's entry still reads. */
+const CREDENTIAL_NAMES: Record<string, string> = {
+  asana: "the asana token",
+  azdo: "the azure devops token",
+};
 
 /** And the delete, which is the first tool on this server whose effect is on
  *  **this machine** and cannot be taken back.
@@ -784,6 +794,11 @@ export function describeTool(name: string, input: any): string {
       /* `wants` again, and here it is the whole of the honesty: at the moment
          this is drawn the question is up and the token has not moved. */
       return "wants to be given the asana token";
+    case SKEIN_CREDENTIAL_TOOL: {
+      const id = arg(input?.credential);
+      if (!id) return "wants to be given a credential";
+      return `wants to be given ${CREDENTIAL_NAMES[id] ?? `the ${clip(id, 24)} credential`}`;
+    }
     case "ExitPlanMode":
       return "wants the plan approved";
     default:

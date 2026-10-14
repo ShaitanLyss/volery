@@ -40,6 +40,7 @@ pub mod hooks;
 mod joblog;
 mod lab;
 mod later;
+mod lend;
 mod nvim;
 mod limits;
 mod machine;

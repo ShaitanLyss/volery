@@ -102,7 +102,7 @@ cd src-tauri && cargo test    # unit tests in store.rs, ask.rs, relay.rs, board.
                               # repair/text.rs, hooks.rs,
                               # control.rs,
                               # supervisor.rs,
-                              # creds.rs, asana.rs, docket.rs, attach.rs,
+                              # creds.rs, asana.rs, docket.rs, lend.rs, attach.rs,
                               # servers.rs, shell.rs, nvim.rs, find.rs, slash.rs, sessions.rs,
                               # project.rs,
                               # usage.rs,
@@ -208,7 +208,9 @@ bun tools/lift-project.ts          # same, for which files a version bump may to
 bun tools/lift-aside.ts            # same, for /btw's one-at-a-time claim and its frame
 bun tools/lift-selfhood.ts         # same, for what a card is told about itself and its parent
 bun tools/lift-ask.ts              # same, for the call that swallowed one of its own arguments
-bun tools/lift-docket.ts           # same, for the gate every asana write and the token pass through
+bun tools/lift-docket.ts           # same, for the gate every asana write passes through
+bun tools/lift-lend.ts             # same, for lending a card a stored credential: the table,
+                                   # the refusals, the question and the grant's wording
 bun tools/lift-remove.ts          # same, for the two halves of the safe delete — the gate
                                    # that decides it happens, and the guard that decides a
                                    # card is stopped
@@ -253,7 +255,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `timers.md` | timers, the pomodoro cycle, and why breaks are taken rather than offered | `timing.ts`, `cycle.svelte.ts`, `Rest.svelte` |
 | `azdo.md` | pipelines and reviews over **two** forges: the four-rung Azure DevOps ladder and the rung that could not spawn, why GitHub needs no ladder at all, the test a cross-forge projection has to pass, a 400 that means "not your project", one run opened in-app, where the one stored secret lives, and the TLS interception this network does | `azdo.ts`, `devops.svelte.ts`, `azdo.rs`, `forge.rs`, `github.rs`, `Run.svelte`, `vault.rs`, `Keyring.svelte` |
 | `integrations.md` | every credential the app keeps, in one panel: why the vault target is a string nobody may rename, why the wire names a service rather than a target, the table that makes the third integration free, and a check that has to be right in the alarming direction | `integrations.ts`, `creds.svelte.ts`, `Keyring.svelte`, `creds.rs`, `vault.rs` |
-| `asana.md` | three readings of Asana and the first thing on this wall that *writes*: why a column is a section, the one function that decides the optimistic redraw and the request together, the two races a poll and a rollback have, why the drag is pointer events, why silence is not "on track" — and then Asana as a *card* reaches it, where every write asks because the confirmation stands in for a scope an unscoped token cannot have — and the one tool on this server that lends a card a credential, as an environment variable rather than a tool result, because an environment can only be set at spawn | `asana.ts`, `asana.svelte.ts`, `Kanban.svelte`, `Tasks.svelte`, `Health.svelte`, `asana.rs`, `docket.rs` |
+| `asana.md` | three readings of Asana and the first thing on this wall that *writes*: why a column is a section, the one function that decides the optimistic redraw and the request together, the two races a poll and a rollback have, why the drag is pointer events, why silence is not "on track" — and then Asana as a *card* reaches it, where every write asks because the confirmation stands in for a scope an unscoped token cannot have — and the one tool on this server that lends a card a credential — any the panel stores, `lend.rs` — as an environment variable rather than a tool result, because an environment can only be set at spawn | `asana.ts`, `asana.svelte.ts`, `Kanban.svelte`, `Tasks.svelte`, `Health.svelte`, `asana.rs`, `docket.rs`, `lend.rs` |
 | `actions.md` | the verbs a project has all day, Unreal's shape, conflicts and the fetch clock | `actions.ts`, `project.rs`, `actions.rs` |
 | `ask.md` | the `ask_user` MCP server, parking a `tools/call`, and several questions in one call | `ask.rs`, `asking.ts`, `Ask.svelte` |
 | `away.md` | being away: why a deferred question does not park at all, converting the one already on the wall, the agent-facing note that is in the reply rather than the schema, a tool that may say you are gone and not that you are back, the whole notification ladder muted, the morning pile — and then what the wall does with nobody watching, where touching it is not coming back and the hue rule becomes a condition | `presence.rs`, `presence.ts`, `presence.svelte.ts`, `Vigil.svelte`, `attention.svelte.ts`, `away.ts`, `pieces.ts`, `Away.svelte`, `gate.ts`, `Gate.svelte`, `sketch.ts`, `sketch.rs` |

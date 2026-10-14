@@ -1285,20 +1285,29 @@ fn spawn_now(
        which says so rather than implying otherwise.
 
        Never on a chat card. That card kind reaches nothing on this machine and
-       `docket::permitted` refuses it the tools outright, so a credential in its
+       `lend::whoever` refuses it the tools outright, so a credential in its
        environment would be the one hole in a sandbox whose whole claim is that
        it has none — and it is refused here as well as there, because a
        capability that depends on one check is a capability one edit from being
        ungated. */
-    if !chat
-        && crate::store::secret_granted(
-            &app.state::<crate::store::Store>().0.lock().unwrap(),
-            &id,
-            crate::docket::SERVICE,
-        )
-    {
-        if let Some(secret) = crate::creds::token(crate::docket::SERVICE) {
-            cmd.env(crate::docket::TOKEN_ENV, secret);
+    if !chat {
+        /* Every credential `lend.rs` can lend, read off the one table so a new
+           entry there reaches the environment without an edit here. The grants
+           are read under the lock and the vault after it, since a vault read is
+           a syscall nobody else should wait on. */
+        let granted: Vec<&crate::lend::Lending> = {
+            let store = app.state::<crate::store::Store>();
+            let conn = store.0.lock().unwrap();
+            let granted = crate::lend::LENDABLE
+                .iter()
+                .filter(|l| crate::store::secret_granted(&conn, &id, l.id))
+                .collect();
+            granted
+        };
+        for l in granted {
+            if let Some(secret) = crate::creds::token(l.id) {
+                cmd.env(l.env, secret);
+            }
         }
     }
 
@@ -3782,6 +3791,7 @@ mod tests {
         ("chronicle.rs", include_str!("chronicle.rs")),
         ("docket.rs", include_str!("docket.rs")),
         ("later.rs", include_str!("later.rs")),
+        ("lend.rs", include_str!("lend.rs")),
         ("limits.rs", include_str!("limits.rs")),
         ("pin.rs", include_str!("pin.rs")),
         ("presence.rs", include_str!("presence.rs")),

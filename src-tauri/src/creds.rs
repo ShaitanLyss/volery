@@ -133,6 +133,21 @@ pub fn token(id: &str) -> Option<String> {
     crate::vault::read_at(lookup(id).ok()?.target)
 }
 
+/// Whether a token is stored for this service. Never the token — the boolean
+/// `integration_held` answers, for Rust callers. `false` for an unknown id.
+pub(crate) fn held(id: &str) -> bool {
+    lookup(id).is_ok_and(|s| crate::vault::held_at(s.target))
+}
+
+/// The service's own probe against what is stored, for `lend.rs`: what the
+/// token turns out to be, before anybody is asked to lend it. `verify_integration`
+/// minus the panel's verdict shape.
+pub(crate) fn check(id: &str, roots: &[String]) -> Result<String, String> {
+    let s = lookup(id)?;
+    let token = crate::vault::read_at(s.target).ok_or_else(|| "nothing is stored".to_string())?;
+    (s.probe)(&token, roots)
+}
+
 /* ── what this wall can say it holds, to another wall ──────────────────────
  *
  * A card asked for on another machine runs with that machine's credentials and
@@ -456,6 +471,17 @@ mod tests {
     fn every_service_answers_to_its_own_id() {
         for s in SERVICES {
             assert_eq!(lookup(s.id).unwrap().target, s.target);
+        }
+    }
+
+    /// `lend::LENDABLE` is keyed by this file's ids rather than living in
+    /// `SERVICES` (a lift constraint — see `lend.rs`), so the two are held
+    /// against each other here: a lendable id with no vault entry would be a
+    /// credential every card is told exists and none can ever be lent.
+    #[test]
+    fn every_lendable_credential_is_one_the_panel_stores() {
+        for l in crate::lend::LENDABLE {
+            assert!(lookup(l.id).is_ok(), "lend.rs offers {} and the panel stores no such thing", l.id);
         }
     }
 

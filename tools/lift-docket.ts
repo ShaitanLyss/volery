@@ -8,7 +8,8 @@
  *
  * ### Why this file earns a lift
  *
- * `docket.rs` has six writes and a credential handover behind one confirmation,
+ * `docket.rs` has six writes behind one confirmation (the credential handover
+ * that used to sit beside them is `lend.rs`'s now, and `lift-lend.ts`'s),
  * and **`approved` is the whole of the gate.** Everything the module promises —
  * that no card writes to somebody's Asana, and no card is given the unscoped
  * token, without a person pressing a button — reduces to one string comparison,
@@ -60,6 +61,11 @@ const FILE = "src-tauri/src/docket.rs";
  *  lift is evidence about the edit. */
 const FORGE = "src-tauri/src/forge.rs";
 
+/** The two tool names `lend.rs` owns, which the name-collision test reaches
+ *  for as `crate::lend::…` — lending a credential moved there on 2026-10-14,
+ *  and `lift-lend.ts` is where its own assertions run. */
+const LEND = "src-tauri/src/lend.rs";
+
 /** What to lift, in the order it has to be declared.
  *
  *  Listing what comes *in* rather than what stays out, as every other lift here
@@ -77,8 +83,6 @@ const ITEMS = [
   "const MAX_SHOWN",
   "const DO_IT",
   "const DO_NOT",
-  "const HAND_IT_OVER",
-  "const KEEP_IT",
   "fn approved",
   "fn clip",
   "fn unanswered",
@@ -94,10 +98,6 @@ const ITEMS = [
   "fn task_schema",
   "const TASKS_TOOL",
   "const TASK_TOOL",
-  "const TOKEN_TOOL",
-  "const SERVICE",
-  "const TOKEN_ENV",
-  "fn token_schema",
 ];
 
 /** The assertions. Every `#[test]` in the module that does not need the wall —
@@ -119,11 +119,7 @@ const TESTS = [
   "an_empty_array_means_the_column_is_empty_and_nothing_else",
   "a_shared_budget_reaches_every_column_and_over_allocates_none",
   "a_column_nobody_named_unambiguously_is_not_guessed_at",
-  "the_three_tools_do_not_share_a_name_with_each_other",
-  "the_token_takes_its_own_word_and_not_the_writes_one",
-  "asking_for_the_token_without_a_reason_is_refused_before_anybody_is_asked",
-  "the_token_schema_says_what_it_cannot_take_back",
-  "the_env_var_is_the_name_asana_tooling_already_reads",
+  "the_tools_do_not_share_a_name_with_each_other",
 ];
 
 /** The per-file machinery, closed over one file's lines. */
@@ -171,7 +167,10 @@ const body: string[] = [
      resolves to the `x` sitting beside it. `crate::` is this file's own root
      here, which is what makes it work at all. */
   "pub mod forge { pub use super::*; }",
+  "pub mod lend { pub use super::*; }",
   reader(FORGE).find("fn text"),
+  reader(LEND).find("const CREDENTIAL_TOOL"),
+  reader(LEND).find("const ASANA_TOKEN_TOOL"),
   ...ITEMS.map(find),
   "#[cfg(test)]",
   "mod tests {",

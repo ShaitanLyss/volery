@@ -7,6 +7,8 @@ paths:
   - "src/lib/Health.svelte"
   - "src-tauri/src/asana.rs"
   - "src-tauri/src/docket.rs"
+  - "src-tauri/src/lend.rs"
+  - "tools/lift-lend.ts"
   - "test/asana.test.ts"
 ---
 
@@ -504,6 +506,26 @@ it landed, so the card is not left guessing either.
 
 ### `asana_token` — the credential itself, and the line it crosses
 
+**Since 2026-10-14 this is not Asana's any more.** It is `lend.rs`'s `credential` tool, which
+lends *any* credential the tokens panel stores — Asana as `ASANA_ACCESS_TOKEN`, Azure DevOps as
+`AZURE_DEVOPS_EXT_PAT` (the name `az devops` reads) — from one table, `lend::LENDABLE`, through
+one question, one grant row and one spawn arm. `asana_token` survives as an alias with the
+credential fixed, because transcripts on this machine already quote it. Everything below was
+written while Asana was the only one and holds unchanged for every entry: read "the token" as
+"the lent credential" and `docket::token` as `lend::lend`. What is per-credential is data — the
+variable, the reach warning, where to revoke it, how to use it, which dedicated tools to try
+first — and adding one is a `Lending` entry (plus its panel entry in `creds.rs` if the panel
+does not store it yet; `every_lendable_credential_is_one_the_panel_stores` holds the two
+together). `LENDABLE` is not inside `creds::SERVICES` because `tools/lift-roster.ts` must lift
+the schema built from it, and `SERVICES` carries network probes. GitHub is absent on purpose:
+Volery stores no GitHub token, it derives one from `gh`, which a card can run itself.
+
+Two things the generalisation fixed on the way past: the approve button's detail still said *"It
+goes in the transcript for good"* — true of the first cut, false since the environment redesign,
+and telling the user the opposite of what happens at the moment they decide; and the Azure
+DevOps question names the organisation the PAT was just checked against (`creds::probe_azdo`,
+the card's own directory first), the way Asana's names the account.
+
 The six actions are a fraction of Asana's API. A card that needs an attachment, a subtask, a
 portfolio, a goal, a webhook or a bulk read has no route through them at all — so `asana_token`
 parks a question and, if the user agrees, **hands the card the PAT**.
@@ -652,7 +674,8 @@ over the whole account.
 because every one of them parks — a past tense would be the transcript claiming an outcome
 while the question is still up.
 
-`bun tools/lift-docket.ts` runs 20 assertions for real on a machine with no MSVC, which is the
+`bun tools/lift-docket.ts` runs 16 assertions for real on a machine with no MSVC (and
+`bun tools/lift-lend.ts` the credential's 12, since the token moved out), which is the
 rule `build.md` states: **`approved` is the whole of the gate**, and neither direction of it is
 visible to a typecheck. A version returning `true` for every answer compiles, passes
 `check-gnu`, and hands every agent on the wall the user's whole Asana account.
@@ -660,7 +683,8 @@ visible to a typecheck. A version returning `true` for every answer compiles, pa
 Two of those assertions guard things a typecheck cannot see at all. `approved` takes the label
 it matches, so a write's yes and the token's yes are different strings *by convention* — passing
 the wrong constant compiles perfectly, and only the test says the token still refuses a write's
-`do it`. And `TOKEN_ENV` is asserted to be the literal `ASANA_ACCESS_TOKEN`, because a
+`do it`. And each `Lending.env` is asserted literally (`ASANA_ACCESS_TOKEN`,
+`AZURE_DEVOPS_EXT_PAT`), because a
 house-style rename there would be silent: everything still compiles, the variable is still
 exported, and every Asana client on the machine stops finding it.
 

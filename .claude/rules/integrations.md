@@ -164,3 +164,12 @@ credential. So the widget's own fault says something no probe can — *which run
 and that is worth showing next to the row where you would fix it. Anything else that ever
 grows a ladder gets the same treatment. Nothing else has one, and if a second ever does, that
 is the moment the exception becomes a field.
+
+### A stored credential can be lent to a card
+
+A token in this panel is not only the widgets'. `lend.rs`'s `credential` tool lets a card ask for
+one by service id, and on the user's yes puts it in that card's process environment from its
+next spawn (`ASANA_ACCESS_TOKEN`, `AZURE_DEVOPS_EXT_PAT`). **Storing a third integration here does
+not make it lendable** — that is one `Lending` entry in `lend::LENDABLE`, deliberately, since a
+token the widgets need is not automatically one an agent should be offered. The argument for the
+whole hand-off, and what a grant is, is in `asana.md` under `asana_token`.

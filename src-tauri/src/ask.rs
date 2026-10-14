@@ -2119,16 +2119,25 @@ pub(crate) fn roster() -> Vec<Value> {
         ),
         /* The escape hatch, and its hint is written to be found by a card that
            has already hit the wall rather than by one shopping for a
-           capability — `attachment`, `subtask`, `webhook` and `portfolio` are
-           the words in its hand, because they are the things `task` does not
-           do. It deliberately does **not** claim the ordinary verbs: a card
-           searching "create an asana task" must land on `task`, which asks for
-           one thing, and not on the tool that hands over the whole account. */
+           capability — `attachment`, `subtask`, `commits`, `timeline` are the
+           words in its hand, because they are the things the dedicated tools do
+           not do. It deliberately does **not** claim the ordinary verbs: a card
+           searching "create an asana task" or "pipeline status" must land on
+           `task` or `pipelines`, which lend nothing, and not on the tool that
+           hands over a whole credential. One tool for every credential the wall
+           holds — `lend.rs` — so the hint names each service. */
         found_by(
-            crate::docket::token_schema(),
-            "asana api directly personal access token PAT credential attachment subtask \
-             portfolio goal webhook custom field admin bulk asana endpoint the task tool \
-             cannot do this",
+            crate::lend::credential_schema(),
+            "credential personal access token PAT lend me the token call the api directly \
+             azure devops PAT AZURE_DEVOPS_EXT_PAT git commits pull request commits build \
+             timeline work items rest api asana api ASANA_ACCESS_TOKEN attachment subtask \
+             portfolio webhook the dedicated tool cannot do this",
+        ),
+        /* The name it had while Asana was the only credential, kept because it
+           is quoted in transcripts already on this machine. Same path. */
+        found_by(
+            crate::lend::asana_alias_schema(),
+            "asana_token asana personal access token PAT",
         ),
         /* The delete, and its hint is written for a card that has already
            been stopped rather than one shopping for a capability. What is in
@@ -3325,10 +3334,11 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
                            problem comes back as `Now`, so nothing reaches a
                            person until the call is worth their attention.
 
-                           `asana_token` comes through the same arm and is the
-                           sharper case: it hands the card the **unscoped PAT
-                           itself**, which is the one secret anything on this
-                           server gives away. `docket::writes` is asked which
+                           `credential` (and its alias `asana_token`) comes
+                           through the same arm and is the sharper case: it
+                           lends the card a **stored credential itself**, the
+                           one secret anything on this server gives away —
+                           `lend::writes`, chained behind. `docket::writes` is asked which
                            tools park rather than the condition being spelled
                            out here, because that is a fact about that module —
                            and a tool that ought to park, left out of a list
@@ -3414,6 +3424,9 @@ pub fn start(app: AppHandle) -> Result<u16, String> {
 
                         if let Some(writing) =
                             crate::docket::writes(&app, &conversation_id, &tool, &args)
+                                .or_else(|| {
+                                    crate::lend::writes(&app, &conversation_id, &tool, &args)
+                                })
                         {
                             match writing {
                                 crate::docket::Writing::Now(said) => {

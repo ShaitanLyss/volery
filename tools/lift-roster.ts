@@ -262,10 +262,23 @@ const SOURCES: Array<{ file: string; items: string[] }> = [
     items: [
       "const TASKS_TOOL",
       "const TASK_TOOL",
-      "const TOKEN_TOOL",
       "fn tasks_schema",
       "fn task_schema",
-      "fn token_schema",
+    ],
+  },
+  /* Lending a credential, which was `docket::token_schema` until 2026-10-14.
+     The schema is built from `LENDABLE`, so the table and the struct come too. */
+  {
+    file: "src-tauri/src/lend.rs",
+    items: [
+      "const CREDENTIAL_TOOL",
+      "const ASANA_TOKEN_TOOL",
+      "struct Lending",
+      "const LENDABLE",
+      "fn ids",
+      "fn credential_schema",
+      "fn asana_alias_schema",
+      "fn reason_schema",
     ],
   },
   {
@@ -482,6 +495,7 @@ const MODULES = [
   "chronicle",
   "browser",
   "later",
+  "lend",
   "limits",
   "presence",
   "pin",

@@ -222,6 +222,24 @@ describe("describeTool degrades before arguments arrive", () => {
     ).toBe("asked you 2 things");
   });
 
+  test("a credential being asked for is named outright, and its alias still is", () => {
+    /* `wants`, because the question is up and nothing has moved. An id this
+       build does not know is drawn as itself rather than guessed at. */
+    expect(describeTool("mcp__skein__credential", { credential: "azdo" })).toBe(
+      "wants to be given the azure devops token",
+    );
+    expect(describeTool("mcp__skein__credential", { credential: "asana" })).toBe(
+      "wants to be given the asana token",
+    );
+    expect(describeTool("mcp__skein__credential", { credential: "jira" })).toBe(
+      "wants to be given the jira credential",
+    );
+    expect(describeTool("mcp__skein__credential", {})).toBe("wants to be given a credential");
+    expect(describeTool("mcp__skein__asana_token", { reason: "x" })).toBe(
+      "wants to be given the asana token",
+    );
+  });
+
   test("every other tool skein hosts is named too", () => {
     /* Six of nineteen were named and thirteen drew the raw wire name — so a
        card that had just put an image on the wall said `mcp__skein__pin` in a
