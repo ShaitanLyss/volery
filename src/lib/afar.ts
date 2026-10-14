@@ -396,6 +396,156 @@ export function closingHere(c: Closing, host: string): AskQuestion[] | null {
   ];
 }
 
+/* ── every other confirmation ─────────────────────────────────────────── */
+
+/* Sink `a02ecd0e`. A card on one laptop asked Lyss to approve opening a pull
+ * request while she sat at the other, reading that card over the flyway — the
+ * conversation reached her and the one thing she had to act on did not. Volery's
+ * own questions were excluded from the flyway by default and each that crossed
+ * was its own piece of work (removals, then closes, above), so every confirmation
+ * written after those was silently local. Her words: *"almost everything should
+ * travel across the flyway, by design, we shouldn't have to special case it."*
+ *
+ * So there is one generic block, written by `ask::Confirm` beside every question
+ * Volery composes and stamped on at park — a confirmation cannot be parked without
+ * one unless it names why it stays (`ask::Stay`). This file reads it and draws it,
+ * knowing no kind: a confirmation added next month crosses with nothing here
+ * changed. The removal and close readers above are kept because they are richer
+ * and because a wall a build older than this sends only those. */
+
+/** The most facts one confirmation carries — `ask::FACTS_CAP`. */
+export const CONFIRM_FACTS_CAP = 16;
+const FACT_CAP = 4_000;
+const ACT_CAP = 200;
+const LABEL_CAP = 80;
+
+/** `ask::Confirm::block`, as the question carries it. */
+export type Confirm = {
+  /** The flyway name of the machine the question is parked on and acted on. */
+  machine: string;
+  /** What is being decided, as the header names it: *open a pull request*. */
+  act: string;
+  facts: { label: string; value: string }[];
+  /** What the card said, or null. */
+  why: string | null;
+  /** What it costs and who sees it, or null. */
+  stakes: string | null;
+  /** The question's own options — the exact labels the owning wall's settle
+   *  reads a yes from, so a click here is the button there. */
+  options: { label: string; detail: string | null }[];
+};
+
+/** A confirmation a card is parked on, as it travels. */
+export type DigestConfirm = { askId: string; since: number; confirm: Confirm };
+
+function said(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const s = scrub(v).trim();
+  return s ? s : null;
+}
+
+/** `null`, or a non-empty string; anything else is a malformed field. */
+function optional(v: unknown, cap: number): { ok: true; v: string | null } | { ok: false } {
+  if (v === null || v === undefined) return { ok: true, v: null };
+  const s = said(v);
+  return s === null ? { ok: false } : { ok: true, v: capText(s, cap) };
+}
+
+/** The block off the wire, or null when anything a person would need is
+ *  missing — `ask::confirm_travels` is the same reading in Rust, on the machine
+ *  that would act, and `test/fixtures/confirm.json` holds the two to one corpus.
+ *  Strict in the direction that refuses, as `readRemoval` is: a confirmation
+ *  drawn with a hole in it is a question about less than it appears to be. */
+export function readConfirm(raw: unknown): Confirm | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const machine = said(r.machine);
+  const act = said(r.act);
+  if (!machine || !act) return null;
+  if (!Array.isArray(r.facts) || !r.facts.length || r.facts.length > CONFIRM_FACTS_CAP) return null;
+  const facts: Confirm["facts"] = [];
+  for (const f of r.facts) {
+    if (!f || typeof f !== "object") return null;
+    const x = f as Record<string, unknown>;
+    const label = said(x.label);
+    const value = said(x.value);
+    if (!label || !value) return null;
+    facts.push({ label: capText(label, LABEL_CAP), value: capText(value, FACT_CAP) });
+  }
+  if (!Array.isArray(r.options) || r.options.length < 2 || r.options.length > 4) return null;
+  const options: Confirm["options"] = [];
+  for (const o of r.options) {
+    if (!o || typeof o !== "object") return null;
+    const x = o as Record<string, unknown>;
+    const label = said(x.label);
+    if (!label) return null;
+    const detail = said(x.detail);
+    options.push({ label: capText(label, ACT_CAP), detail: detail ? capText(detail, 400) : null });
+  }
+  const why = optional(r.why, REASON_CAP);
+  const stakes = optional(r.stakes, REASON_CAP);
+  if (!why.ok || !stakes.ok) return null;
+  return { machine: capText(machine, NAME_CAP), act: capText(act, ACT_CAP), facts, why: why.v, stakes: stakes.v, options };
+}
+
+/** The confirmations a card is parked on, for its digest: every question Volery
+ *  composed carrying a readable block — **except one already travelling as a
+ *  removal or a close**, which a wall of the build before this reads only in
+ *  those fields. A wall of this build draws it from there too (`#sheets` keeps
+ *  the first sheet per ask), so publishing it twice would only cost bytes. */
+export function confirmsOf(
+  asks: readonly {
+    askId: string;
+    since: number;
+    ours: boolean;
+    confirm?: Confirm | null;
+    remove?: Removal | null;
+    close?: Closing | null;
+  }[],
+): DigestConfirm[] {
+  return asks.flatMap((a) =>
+    a.ours && a.confirm && !a.remove && !a.close ? [{ askId: a.askId, since: a.since, confirm: a.confirm }] : [],
+  );
+}
+
+/** Confirmations off the wire. One whose block cannot be read is dropped — not
+ *  drawn at all rather than drawn as less. */
+export function readConfirms(raw: unknown): DigestConfirm[] {
+  if (!Array.isArray(raw)) return [];
+  const out: DigestConfirm[] = [];
+  for (const a of raw.slice(0, 6)) {
+    if (!a || typeof a !== "object") continue;
+    const r = a as Record<string, unknown>;
+    const askId = typeof r.askId === "string" ? scrub(r.askId).trim().slice(0, 80) : "";
+    const since = typeof r.since === "number" && Number.isFinite(r.since) ? r.since : null;
+    const confirm = readConfirm(r.confirm);
+    if (askId && since !== null && confirm) out.push({ askId, since, confirm });
+  }
+  return out;
+}
+
+/** The question this wall draws for a confirmation parked on `host` — or null,
+ *  and it is not drawn, when the block names a different machine.
+ *
+ *  Composed from the fields alone, never from the owning wall's prose, which is
+ *  written from that machine's point of view and says *here* about a place that
+ *  is not here. The machine leads, in the header the peek prints and in the
+ *  first line, and the last line says the one thing every kind shares: nothing
+ *  happens on this machine, and that one checks again when the answer arrives. */
+export function confirmHere(c: Confirm, host: string, card: string): AskQuestion[] | null {
+  if (!host || c.machine.toLowerCase() !== host.toLowerCase()) return null;
+  const who = card.trim() ? `**${card.trim()}**, a card on **${host}**,` : `A card on **${host}**`;
+  const body = [
+    `${who} wants to **${c.act}**.`,
+    c.facts.map((f) => `- **${f.label}**: ${f.value.includes("\n") ? f.value.replace(/\n/g, "\n  ") : f.value}`).join("\n"),
+    ...(c.why ? [`Its reason: *${c.why}*`] : []),
+    ...(c.stakes ? [c.stakes] : []),
+    `Nothing happens on this machine. If you say yes, ${host} does it — as it would if you had ` +
+      `pressed the button there — and checks again at that moment.`,
+  ].join("\n\n");
+  return [{ header: `${c.act} on ${host}`, question: body, options: c.options.map((o) => ({ ...o })) }];
+}
+
 /* ── notices ──────────────────────────────────────────────────────────── */
 
 /** `notice::AFAR_PREFIX` and `AFAR_ACK`, which the owning wall reads. */

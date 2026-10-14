@@ -84,7 +84,7 @@ import { effortAnswer, isEffort, type Effort } from "./commands";
 import { isRelayPrompt, isWakePrompt, relayCap } from "./relay";
 import { answerNote } from "./asking";
 import type { Answers, AskQuestion } from "./asking";
-import type { Closing, Removal } from "./afar";
+import type { Closing, Confirm, Removal } from "./afar";
 import { capInput, landed, type ToolCall } from "./toolcall";
 import {
   afterAck,
@@ -428,6 +428,11 @@ export type PendingAsk = {
   /** The same, on a close confirmation (`spawn.rs`) — machine, the card named
    *  and handled, who asked and why (sink `2770489d`). */
   close?: Closing | null;
+  /** The generic block every confirmation Volery composes carries
+   *  (`ask::Confirm`), which is what lets *any* of them be answered from
+   *  another wall — a pull request, an Asana write, a credential lent, and
+   *  whatever is added next, with nothing here changed (sink `a02ecd0e`). */
+  confirm?: Confirm | null;
 };
 
 /** A one-second tick. Urgency decays with neglect, so the wall has to know

@@ -232,6 +232,68 @@ a restart can reproduce.
 The flag defaults to false on anything that does not set it, which is what keeps the control
 surface's synthetic `ask:opened` (`control.svelte.ts`) meaning what it always meant.
 
+#### A settle cannot be made without saying how it reaches another wall (sink `a02ecd0e`)
+
+`Settle` was a type alias for a boxed closure until a pull request asked on one laptop never
+reached Lyss at the other. Volery's own questions were excluded from the flyway by default, each
+that crossed (a removal, then a close) had been made to, and every confirmation written after
+them was silently local. **The default now lives in the type**, which is the one place it cannot
+be forgotten:
+
+- `Settle::new(confirm, |app, answer| …)` takes an `ask::Confirm` — a verb phrase, facts as
+  label/value pairs meaning the same on either machine, the card's reason, a sentence of stakes.
+  `park_and_stream` and `park_and_wait` stamp it onto the question as `confirm` (adding the
+  machine and the question's own option labels) **before** `open_ask`, so what is parked, what the
+  front end folds into the digest and what `answer_from_afar` checks are one value.
+- `Settle::stays(stay, |app, answer| …)` takes an `ask::Stay`: the short list of confirmations kept
+  on their own wall, one variant each, its argument written beside it. Nothing is stamped, and
+  `answer_from_afar` refuses an answer from afar with that argument as the reason.
+- There is no third constructor, so **a confirmation written next month travels without anybody
+  adding it to anything** — writing its evidence is part of writing it. Forgetting an inclusion
+  used to be invisible from everywhere; forgetting an *exclusion* now shows up on the other wall
+  the first time it happens, which is the direction a list worth keeping points in.
+- `afar_may_answer(ours, question)` is `!ours || confirm_travels(question)` and names no tool;
+  `test/afar.test.ts` reads its body out of this file to keep it so. `remove::travels` and
+  `spawn::travels` were the gate and are now test-only, holding the richer `remove`/`close`
+  blocks to the shape the far wall's dedicated readers draw from.
+- `test/fixtures/confirm.json` is the corpus both `confirm_travels` and `afar.ts::readConfirm`
+  are run against, and `smith.rs` asserts its first entry is exactly what a pull-request create
+  stamps. The far half — composing the question from the fields, never the prose — is
+  `elsewhere.md`, *Every confirmation travels unless it says why not*.
+
+`Stay` has one variant today, `BoardNotice` (`unpost`), and it is **held rather than argued**:
+pending the billboard itself crossing walls, after which `board.rs` flips to `Settle::new` and the
+variant goes. Its old argument — a board notice is one wall's coordination with its own cards — is
+the general lesson in a nutshell: **an exclusion justified by "these two things do not interact"
+expires silently the moment something makes them interact**, and the flyway made walls interact.
+Read any future `Stay` against an orchestrator on one machine with workers on another, not only
+against Lyss at a laptop.
+
+#### What waits on a person, and whether it reaches her
+
+The audit done for that item, read against the orchestrator-across-machines case (an orchestrator
+on wall A, its workers on B, Lyss at A). "Crosses" means a person at another wall is shown it and
+can answer it.
+
+| waits on a person | parks as (settle / act) | crosses |
+|---|---|---|
+| `ask_user` | none / none | yes — digest `asks`, files pulled (`look.rs`) |
+| `notice` with `wait` | none / none | yes — digest `notices` |
+| `close` naming another card | settle / `close` | yes — `closings` (richer) and the generic block |
+| `remove`, and a shell delete the hook hands off (`park_and_wait`) | settle / `remove` | yes — `removals` (richer) and the generic block |
+| `pull_request` create and update | settle / none | **yes, since this item** — `confirms` |
+| `task`, all six actions | settle / none | **yes, since this item** — `confirms` |
+| `credential` / `asana_token` | settle / none | **yes, since this item** — names and reach only; the credential stays where it is held |
+| `unpost` of a dead card's notice | settle / `unpost` | no — `Stay::BoardNotice`, pending the billboard crossing |
+| anything filed while **away** — the deferred pile (`deferred_ask`, `deferred_act`) | not parked | **no** — the pile is the owning wall's alone (sink `3368f78f`, `4a3f859b`) |
+| a deferred act re-entered from the pile | not parked; the settle runs from `answer_deferred_act` | no — it never parks, so no travelling rule reaches it |
+
+Two more things the audit turned up, filed rather than fixed here: the pile's approve button sends
+`"yes, do it"` into settles that accept only their exact label, so a deferred act can never be
+approved from it (sink `92e1f46c`); and the `pull_request`, `task` and `credential` arms have no
+away branch at all and park whatever presence says — which is now the right behaviour by accident,
+since a parked confirmation travels and a filed one does not.
+
 #### A call whose text swallowed one of its own arguments
 
 The client composes a `tools/call` by writing tagged parameters and parsing them back out,

@@ -289,6 +289,33 @@ fn clip(s: &str, max: usize) -> String {
 /// What the user is asked. `who` is what the service said the token is when
 /// it was checked just now — an identity for Asana, an organisation it reads
 /// for Azure DevOps — or empty where it would not say.
+/// The same question, as a person at another wall decides it (`ask::Confirm`).
+///
+/// **Names and reach, never the secret** — the credential stays on the machine
+/// that holds it whatever is decided, and what crosses is only what `question`
+/// already shows: which credential, whose account it checked as, what it can
+/// reach, where it lands and for how long. Approving from the other laptop lends
+/// it *there*, to that card, in that machine's environment; nothing about the
+/// token moves (Lyss: *"we're not sending tokens across the wire"*).
+fn evidence(l: &Lending, reason: &str, who: &str) -> crate::ask::Confirm {
+    crate::ask::Confirm::new(format!("lend your {} to this card", l.label.to_lowercase()))
+        .fact("credential", l.label)
+        .fact("checked just now", if who.is_empty() { "live" } else { who })
+        .fact("what it reaches", l.reach)
+        .fact(
+            "where it goes",
+            format!(
+                "`{}` in the card's environment on that machine — written to no file and in no \
+                 transcript",
+                l.env
+            ),
+        )
+        .fact("how long", "until the card is closed or cleared; a cleared card has to ask again")
+        .fact("to kill the token itself", l.revoke)
+        .why(Some(&clip(reason, MAX_REASON)))
+        .stakes("Every request the card makes with it acts under your name.")
+}
+
 pub(crate) fn question(l: &Lending, reason: &str, who: &str) -> Value {
     let checked = if who.is_empty() {
         "It was checked just now and is live.".to_string()
@@ -472,7 +499,7 @@ fn lend(app: &AppHandle, caller: &str, asked: &str, args: &Value) -> crate::dock
     let card = caller.to_string();
     Writing::Ask {
         question: question(l, &reason, &who),
-        settle: Box::new(move |app, answer| {
+        settle: crate::ask::Settle::new(evidence(l, &reason, &who), move |app, answer| {
             let Some(answer) = answer else {
                 return unanswered(l);
             };

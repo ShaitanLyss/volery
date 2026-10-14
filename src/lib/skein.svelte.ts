@@ -64,7 +64,7 @@ import {
   restNotice,
   type Notice,
 } from "./notice";
-import { readClosing, readRemoval } from "./afar";
+import { readClosing, readConfirm, readRemoval } from "./afar";
 import {
   repairWorthTrying,
   sayNothingToRepair,
@@ -761,6 +761,10 @@ export class Skein {
              question carrying the same block is still an agent's question. */
           remove: e.payload.ours === true ? readRemoval((raw as { remove?: unknown }).remove) : null,
           close: e.payload.ours === true ? readClosing((raw as { close?: unknown }).close) : null,
+          /* The block every one of Volery's own carries unless it stays
+             (`ask::Settle`), which is what puts it in the digest's `confirms`
+             — the field a confirmation added next month crosses in. */
+          confirm: e.payload.ours === true ? readConfirm((raw as { confirm?: unknown }).confirm) : null,
         });
         c.activity = questions.length > 1 ? "asked you a few things" : "asked you";
       }),

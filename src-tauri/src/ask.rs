@@ -314,6 +314,10 @@ struct Parked {
     /// is handed to the agent, and an answer to the second re-enters the
     /// decision, which needs the arguments rather than the drawn question.
     act: Option<(String, Value)>,
+    /// Why this one is kept on its own wall, for a question Volery composed
+    /// under a [`Stay`]. `None` for everything else — an agent's question, and
+    /// every confirmation that carries its evidence, which is the default.
+    stays: Option<&'static str>,
     /// When the user last touched the panel drawing this question.
     ///
     /// Shared with the parking thread, which is the only thing that reads it:
@@ -647,11 +651,12 @@ pub fn answer_ask(asks: State<'_, Asks>, ask_id: String, answer: String) -> Resu
 ///   uuid and cannot collide, so this is not a guard against chance; it is the
 ///   far wall's own claim about which card it was looking at, checked rather
 ///   than believed.
-/// - **`ask_user` travels, and of Volery's own questions only a removal or a
-///   close does.** A question Volery composed has an act behind it (`ours`, `act`),
-///   and an answer to it *does* the thing — see `afar_may_answer`, which is
-///   checked here, on the machine the act would happen on, rather than trusted
-///   to the far wall's drawing.
+/// - **`ask_user` travels, and so does every question Volery composed that
+///   carries its evidence** — which is all of them but a [`Stay`]. An answer to
+///   one *does* the thing, so `afar_may_answer` is checked here, on the machine
+///   the act would happen on, against the parked question rather than the far
+///   wall's drawing of it; and the settle that does it re-checks whatever it
+///   re-checks for a local click, since this reaches it through the same channel.
 pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer: &str) -> Result<(), String> {
     let asks = app.try_state::<Asks>().ok_or("this wall's questions are not up yet")?;
     let deferring = answer.trim() == DEFER_ANSWER;
@@ -666,11 +671,14 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
             Some(p) if p.conversation_id != card => {
                 return Err("that question belongs to another card on this wall".into())
             }
-            Some(p) if !afar_may_answer(p.ours, p.act.as_ref().map(|(t, _)| t.as_str()), &p.args) => {
-                return Err("that question is this wall's own — about something here that carries \
-                            no evidence a person elsewhere could decide it on — and is \
-                            answered on the machine it is about"
-                    .into())
+            Some(p) if !afar_may_answer(p.ours, &p.args) => {
+                return Err(match p.stays {
+                    Some(why) => format!("that question stays on its own wall: {why}"),
+                    None => "that question is this wall's own and carries no evidence a person \
+                             elsewhere could decide it on, so it is answered on the machine it is \
+                             about"
+                        .into(),
+                })
             }
             /* A defer from the other wall: checked by every gate above, since
                putting a question off is no less *this wall's* act than
@@ -693,36 +701,22 @@ pub(crate) fn answer_from_afar(app: &AppHandle, card: &str, ask_id: &str, answer
 ///
 /// An agent's `ask_user` always may: the answer is information flowing back to
 /// the agent, and what it does with it is the agent's. A question Volery
-/// composed (`ours`, or with an `act` behind it) is different — the answer
-/// *does* the thing — and of those exactly two cross:
+/// composed is different — the answer *does* the thing — and it may **when it
+/// carries its evidence whole**, which every one does unless it was made under a
+/// [`Stay`]. Nothing here names a tool.
 ///
-/// - **a removal carrying its evidence** (`remove::travels`). Lyss's decision,
-///   sink `7207a6d9`: whether to go through with a delete is her judgement, not
-///   Volery's to withhold because she is at the other laptop. What she gives up
-///   by not being at this machine is the glance, so it crosses only with the
-///   machine, the path as this machine resolved it and what is there. One that
-///   cannot carry those is refused, never asked as a bare path.
-/// - **a close carrying its evidence** (`spawn::travels`). Lyss's decision,
-///   2026-10-12, sink `2770489d`: nine closes asked by a card on one laptop
-///   stood unseen for 98 minutes because she was at the other, and nothing
-///   about them needed her to be at the machine they were about. It crosses
-///   with the machine, the card named and handled, who is asking and why.
-/// - **not an unpost.** A board notice is this wall's coordination with its
-///   own cards, and nothing on a shadow shows one.
-/// - **not `smith`'s or `docket`'s writes**: an answer re-enters a write to
-///   somebody else's service, and nothing about that confirmation was built to
-///   be read from elsewhere.
+/// It used to, and the list is the history worth keeping: a removal crossed
+/// (sink `7207a6d9`, Lyss: *"it should be my judgement whether to go through it
+/// or not"*), then a close (sink `2770489d`, nine of them unseen for 98 minutes),
+/// and everything else was refused — so a pull request asked on one laptop
+/// waited unseen while she sat at the other (sink `a02ecd0e`). Each that crossed
+/// was its own piece of work; every one after them was silently local. The two
+/// that crossed first still also carry their own richer evidence (`remove`,
+/// `close`) for the walls that read only that; the gate is the generic block.
 ///
 /// Pure, so the boundary is held by a test rather than by reading.
-pub(crate) fn afar_may_answer(ours: bool, act: Option<&str>, question: &Value) -> bool {
-    if !ours && act.is_none() {
-        return true;
-    }
-    ours && match act {
-        Some(crate::presence::REMOVE_ACT) => crate::remove::travels(question),
-        Some(crate::spawn::CLOSE_TOOL) => crate::spawn::travels(question),
-        _ => false,
-    }
+pub(crate) fn afar_may_answer(ours: bool, question: &Value) -> bool {
+    !ours || confirm_travels(question)
 }
 
 /// A design the user can look at instead of imagine.
@@ -1248,6 +1242,7 @@ fn open_ask(
     conversation_id: &str,
     args: &Value,
     ours: bool,
+    stays: Option<&'static str>,
     act: Option<(String, Value)>,
 ) -> (String, Receiver<String>, Arc<Mutex<Instant>>, Arc<Mutex<Option<Held>>>) {
     let ask_id = crate::store::uuid_v4();
@@ -1262,6 +1257,7 @@ fn open_ask(
             args: args.clone(),
             ours,
             act,
+            stays,
             stirred: Arc::clone(&stirred),
             held: Arc::clone(&held),
         },
@@ -1386,7 +1382,248 @@ pub(crate) fn park_for_answer(
 /// minutes ran out, or the card was dismissed. Passed rather than the sentence
 /// itself, so nothing downstream has to match on Skein's own prose to find out
 /// whether a person actually decided anything.
-pub(crate) type Settle = Box<dyn FnOnce(&AppHandle, Option<&str>) -> String + Send>;
+///
+/// ### A settle cannot be made without saying how it reaches another wall
+///
+/// **It was a bare closure, and that is how a pull request got stranded on one
+/// laptop** (sink `a02ecd0e`). A card on `AU-LT-288` asked Lyss to approve
+/// opening one while she sat at `QUEERISFREEDOM`, prompting that card over the
+/// flyway and reading its answers: the conversation reached her and the one thing
+/// she had to act on did not. Nothing refused it, drew it or logged it — it
+/// opened on one machine and waited. Volery's own questions were excluded from
+/// the flyway by default and each that crossed had been made to, one piece of
+/// work at a time (a removal, then a close), so every confirmation written after
+/// those was silently un-travellable until somebody at the other laptop noticed.
+/// Her words: *"almost everything should travel across the flyway, by design, we
+/// shouldn't have to special case it."*
+///
+/// So the default is inverted **in the type**, which is the only place a default
+/// cannot be forgotten. A `Settle` is made by [`Settle::new`], which takes the
+/// [`Confirm`] a person at another machine decides on, or by [`Settle::stays`],
+/// which takes a [`Stay`] — the short list of questions that are kept on their own
+/// wall, each variant carrying its argument. There is no third constructor, so a
+/// confirmation written next month travels without anybody adding it to anything:
+/// writing its evidence is part of writing it, and `park_and_stream` does the
+/// rest. That is CLAUDE.md's *a capability every surface should have is not a
+/// prop* one level up — a list of what travels is a list somebody forgets to
+/// append to, and the forgetting is silent.
+pub(crate) struct Settle {
+    travel: Travel,
+    run: Box<dyn FnOnce(&AppHandle, Option<&str>) -> String + Send>,
+}
+
+enum Travel {
+    Carries(Confirm),
+    Stays(Stay),
+}
+
+impl Settle {
+    /// A confirmation a person may decide from whichever wall they are at.
+    pub(crate) fn new(
+        confirm: Confirm,
+        run: impl FnOnce(&AppHandle, Option<&str>) -> String + Send + 'static,
+    ) -> Self {
+        Self { travel: Travel::Carries(confirm), run: Box::new(run) }
+    }
+
+    /// A confirmation kept on its own wall, for the reason the `Stay` names.
+    pub(crate) fn stays(
+        stay: Stay,
+        run: impl FnOnce(&AppHandle, Option<&str>) -> String + Send + 'static,
+    ) -> Self {
+        Self { travel: Travel::Stays(stay), run: Box::new(run) }
+    }
+
+    /// Do what the answer means. On the machine the question is parked on,
+    /// always — an answer from another wall reaches here through the same
+    /// channel a local click does, so the act and every re-check inside it run
+    /// where the act happens.
+    pub(crate) fn decide(self, app: &AppHandle, answer: Option<&str>) -> String {
+        (self.run)(app, answer)
+    }
+
+    /// Put the evidence on the question it travels with, and say what stays.
+    ///
+    /// Written into the arguments *before* the question is registered, so the
+    /// parked copy, the `ask:opened` the front end folds into the digest and the
+    /// copy `answer_from_afar` checks are one value. The options are read off the
+    /// question itself rather than restated, because they are the exact labels
+    /// the settle's `approved` reads — a second copy of them is a second place for
+    /// a renamed button to ship as a no.
+    fn stamp(&self, question: &mut Value) -> Option<&'static str> {
+        match &self.travel {
+            Travel::Carries(c) => {
+                question["confirm"] = c.block(&crate::flyway::key::host_name(), question);
+                None
+            }
+            Travel::Stays(s) => Some(s.argument()),
+        }
+    }
+}
+
+/// What a person at another wall decides a confirmation on, in fields rather
+/// than prose.
+///
+/// **Removal proved the pattern and this is it, generalised** (`remove::evidence`,
+/// sink `7207a6d9`). The local question is written from this machine's point of
+/// view — *here*, *this wall*, a path as typed — and read on another machine it
+/// says something false. So the far wall never draws it: it composes its own
+/// question from these fields (`afar.ts::confirmHere`) and names the machine
+/// itself, and a block missing a field is a question it refuses to draw rather
+/// than one drawn with less in it.
+///
+/// - **`act`** is the verb phrase the header carries: *open a pull request*,
+///   *create an asana task*. What is being decided, in the words a person would
+///   use for it.
+/// - **`facts`** are the things the decision turns on, each a label and a value,
+///   written so they mean the same on either machine: a repository by its org
+///   and name, a branch by name, a project in Asana by its name — never *this
+///   machine's* anything. At least one, or there is nothing to decide on.
+/// - **`why`** is what the card said, when it said anything.
+/// - **`stakes`** is the sentence about what the act costs and who sees it —
+///   *it goes out under your name, nothing here can take it back*. The far wall
+///   adds that the answer is acted on over there, re-checked at that moment.
+///
+/// The machine and the options are added at park (`Settle::stamp`), since the one
+/// is a fact about where this runs and the other is already on the question.
+pub(crate) struct Confirm {
+    act: String,
+    facts: Vec<(String, String)>,
+    why: Option<String>,
+    stakes: Option<String>,
+}
+
+/// The most of one fact that crosses. Generous, since a description is the
+/// longest of them and a module already cuts those with a marker of its own
+/// (`smith::MAX_SHOWN`); this bound is for the one that did not.
+const FACT_CAP: usize = 4_000;
+/// The most facts one confirmation carries. A question listing more is a form.
+const FACTS_CAP: usize = 16;
+
+impl Confirm {
+    pub(crate) fn new(act: impl Into<String>) -> Self {
+        Self { act: act.into(), facts: Vec::new(), why: None, stakes: None }
+    }
+
+    /// One thing the decision turns on. An empty value is left out rather than
+    /// sent, since a label with nothing beside it reads as a value that failed to
+    /// arrive — a fact that is genuinely *none* says so in words (*no
+    /// description*).
+    pub(crate) fn fact(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
+        let value = value.into();
+        if !value.trim().is_empty() {
+            self.facts.push((label.into(), value));
+        }
+        self
+    }
+
+    pub(crate) fn why(mut self, why: Option<&str>) -> Self {
+        self.why = why.map(str::trim).filter(|w| !w.is_empty()).map(str::to_string);
+        self
+    }
+
+    pub(crate) fn stakes(mut self, stakes: impl Into<String>) -> Self {
+        let s = stakes.into();
+        self.stakes = Some(s).filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    /// The block as it travels. Every string scrubbed — `crate::clean`'s rule for
+    /// a text another reader will be handed, and here it is two: a person on
+    /// another machine, and the far wall's own front end. Crate-visible for the
+    /// tests that hold what a module stamps to `test/fixtures/confirm.json`.
+    pub(crate) fn block(&self, machine: &str, question: &Value) -> Value {
+        let text = |s: &str, cap: usize| crate::clip::preview(&crate::clean::scrub(s.trim()), cap);
+        let options: Vec<Value> = question
+            .pointer("/questions/0/options")
+            .and_then(Value::as_array)
+            .map(|os| {
+                os.iter()
+                    .filter_map(|o| {
+                        let label = o.get("label").and_then(Value::as_str)?.trim();
+                        (!label.is_empty()).then(|| {
+                            json!({
+                                "label": text(label, 200),
+                                "detail": o.get("detail").and_then(Value::as_str).map(|d| text(d, 400)),
+                            })
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({
+            "machine": machine,
+            "act": text(&self.act, 200),
+            "facts": self.facts.iter().take(FACTS_CAP).map(|(l, v)| json!({
+                "label": text(l, 80),
+                "value": text(v, FACT_CAP),
+            })).collect::<Vec<_>>(),
+            "why": self.why.as_deref().map(|w| text(w, 2_000)),
+            "stakes": self.stakes.as_deref().map(|s| text(s, 1_000)),
+            "options": options,
+        })
+    }
+}
+
+/// Whether a parked question carries a confirmation a person at another wall
+/// can decide — the same reading `afar.ts::readConfirm` makes before drawing one,
+/// made again here on the machine that would act. Strict in the direction that
+/// refuses: what the far wall drew is a claim, and this is the fact.
+pub(crate) fn confirm_travels(question: &Value) -> bool {
+    let Some(c) = question.get("confirm") else { return false };
+    let said = |v: &Value| v.as_str().is_some_and(|s| !s.trim().is_empty());
+    let unsaid_or_said = |v: &Value| v.is_null() || said(v);
+    let facts = c.get("facts").and_then(Value::as_array);
+    let options = c.get("options").and_then(Value::as_array);
+    said(&c["machine"])
+        && said(&c["act"])
+        && facts.is_some_and(|f| {
+            !f.is_empty() && f.len() <= FACTS_CAP && f.iter().all(|x| said(&x["label"]) && said(&x["value"]))
+        })
+        && options.is_some_and(|o| (2..=4).contains(&o.len()) && o.iter().all(|x| said(&x["label"])))
+        && unsaid_or_said(&c["why"])
+        && unsaid_or_said(&c["stakes"])
+}
+
+/// The confirmations kept on their own wall, and each one's argument.
+///
+/// **The list a person must remember to extend is this one**, and that is the
+/// direction worth having it in: forgetting to add a variant here means a
+/// question travels that perhaps should not, which is visible on the other wall
+/// the first time it happens, where forgetting an inclusion was invisible from
+/// everywhere. An argument has to be written to add one.
+///
+/// **Read each against the orchestrator-across-machines case, not only against
+/// Lyss at a laptop.** Remote spawn made it ordinary for a card on one machine to
+/// have workers on another, and an exclusion justified by "these two walls do not
+/// interact" expires silently the moment something makes them interact. That is
+/// how `unpost`'s first argument — *a board notice is one wall's coordination
+/// with its own cards* — went: a notice need not be about a working tree at all,
+/// and an orchestrator on one wall now cannot see, post or clear the notices its
+/// workers raise on another.
+pub(crate) enum Stay {
+    /// Taking down a dead card's notice (`board::unpost`).
+    ///
+    /// **Not a standing argument, and it says so.** Whether this crosses is
+    /// waiting on whether the billboard itself is shared between walls — a notice
+    /// answered from a wall whose own board cannot show it is a decision about a
+    /// thing the person cannot see. That is the board-sync item's to settle; it is
+    /// deliberately left as it was rather than decided here. Moving it to
+    /// `Settle::new` is one line in `board.rs` once it is.
+    BoardNotice,
+}
+
+impl Stay {
+    fn argument(&self) -> &'static str {
+        match self {
+            Stay::BoardNotice => {
+                "taking down a notice is answered on the wall whose billboard holds it, for now — \
+                 billboards are not yet shared between walls, so the notice is not something \
+                 anybody elsewhere can see"
+            }
+        }
+    }
+}
 
 /// Park a question on its own request until the UI answers, speaking every
 /// `FEED_EVERY` so the client is still listening when it does.
@@ -1532,8 +1769,14 @@ fn park_and_stream(
     settle: Option<Settle>,
     act: Option<(String, Value)>,
 ) {
+    /* The evidence goes on before anything else sees the question — see
+       `Settle::stamp`. An agent's `ask_user` has no settle and is stamped with
+       nothing: its words are its own and travel as they are. */
+    let mut stamped = args.clone();
+    let stays = settle.as_ref().and_then(|s| s.stamp(&mut stamped));
+    let args = &stamped;
     let (ask_id, rx, stirred, held) =
-        open_ask(app, asks, conversation_id, args, settle.is_some(), act.clone());
+        open_ask(app, asks, conversation_id, args, settle.is_some(), stays, act.clone());
     let forget = || {
         asks.pending.lock().unwrap().remove(&ask_id);
     };
@@ -1672,7 +1915,7 @@ fn park_and_stream(
            here as well because the two facts live in different files, and the
            one that would be wrong here is a close performed because the wall
            went quiet. */
-        Some(decide) if !deferred => decide(app, if real { Some(answer.as_str()) } else { None }),
+        Some(s) if !deferred => s.decide(app, if real { Some(answer.as_str()) } else { None }),
         Some(_) => answer.clone(),
         None => answer.clone(),
     };
@@ -2768,7 +3011,10 @@ fn park_and_wait(
     settle: Settle,
     act: Option<(String, Value)>,
 ) -> String {
-    let (ask_id, rx, stirred, _) = open_ask(app, asks, conversation_id, question, true, act);
+    let mut stamped = question.clone();
+    let stays = settle.stamp(&mut stamped);
+    let question = &stamped;
+    let (ask_id, rx, stirred, _) = open_ask(app, asks, conversation_id, question, true, stays, act);
     let base = answer_window(question);
     /* A tick loop rather than one flat `recv_timeout(window)`, for the one
        reason `park_and_stream` grew the same shape: the deadline moves while
@@ -2791,7 +3037,7 @@ fn park_and_wait(
         }
     };
     let real = answer.as_deref().is_some_and(|a| a != DISMISSED);
-    let reply = settle(app, if real { answer.as_deref() } else { None });
+    let reply = settle.decide(app, if real { answer.as_deref() } else { None });
     let _ = app.emit(
         "ask:closed",
         AskClosed {
@@ -4842,6 +5088,7 @@ mod tests {
                     args: json!({ "question": id }),
                     ours,
                     act,
+                    stays: None,
                     stirred: Arc::new(Mutex::new(Instant::now())),
                     held: Arc::new(Mutex::new(None)),
                 },
@@ -4890,6 +5137,7 @@ mod tests {
                 args: json!({ "questions": [] }),
                 ours: false,
                 act: None,
+                stays: None,
                 stirred: Arc::new(Mutex::new(Instant::now())),
                 held: Arc::clone(&held),
             },
@@ -4904,55 +5152,96 @@ mod tests {
         assert!(held.lock().unwrap().is_some());
     }
 
-    /// What may be answered from another wall: an agent's question always; of
-    /// Volery's own, only a removal or a close carrying the evidence a person at
-    /// the other machine needs (sinks `7207a6d9`, `2770489d`). An unpost and a
-    /// write to somebody else's service are answered where they would act.
+    fn corpus() -> Value {
+        serde_json::from_str(include_str!("../../test/fixtures/confirm.json")).unwrap()
+    }
+
+    fn yes_no() -> Value {
+        json!({ "questions": [{
+            "header": "h", "question": "q",
+            "options": [
+                { "label": "do it", "detail": "Write it." },
+                { "label": "leave it alone", "detail": "Nothing is written." }
+            ]
+        }] })
+    }
+
+    /// What may be answered from another wall: an agent's question always, and
+    /// **every** question Volery composed that carries its evidence whole —
+    /// with no tool named anywhere (sink `a02ecd0e`). The removal and the close
+    /// that crossed first (`7207a6d9`, `2770489d`) now cross by the same block
+    /// as everything else.
     #[test]
-    fn of_volerys_own_questions_only_a_removal_or_a_close_with_its_evidence_crosses() {
+    fn every_confirmation_with_its_evidence_crosses_and_none_is_named() {
         let plain = json!({ "question": "teal or amber?" });
-        assert!(afar_may_answer(false, None, &plain));
+        assert!(afar_may_answer(false, &plain), "an agent's question always crosses");
+        assert!(!afar_may_answer(true, &plain), "Volery's own, bare, never does");
 
-        let removal = json!({
-            "questions": [],
-            "remove": {
-                "machine": "home",
-                "reason": "a stale build",
-                "targets": [{
-                    "path": "C:\\work\\nova\\dist", "kind": "directory", "exists": true,
-                    "entries": 12, "bytes": 4096, "capped": false, "own": true
-                }]
-            }
-        });
-        assert!(afar_may_answer(true, Some(crate::presence::REMOVE_ACT), &removal));
-        /* The same delete without what the far wall must show: refused, never
-           asked as a bare path. */
-        assert!(!afar_may_answer(true, Some(crate::presence::REMOVE_ACT), &plain));
-        /* Evidence on something that is not a removal proves nothing. */
-        assert!(!afar_may_answer(true, None, &removal));
-        assert!(!afar_may_answer(true, Some("docket"), &removal));
-        /* And an agent's own ask_user dressed up with a `remove` block is
-           still just an ask_user — it is `ours` that makes the evidence ours. */
-        assert!(!afar_may_answer(false, Some(crate::presence::REMOVE_ACT), &removal));
+        for block in corpus()["whole"].as_array().unwrap() {
+            let q = json!({ "questions": [], "confirm": block });
+            assert!(confirm_travels(&q), "{block}");
+            assert!(afar_may_answer(true, &q), "{block}");
+        }
+        for b in corpus()["broken"].as_array().unwrap() {
+            let q = json!({ "questions": [], "confirm": b["block"] });
+            assert!(!confirm_travels(&q), "should refuse: {}", b["why"]);
+            assert!(!afar_may_answer(true, &q), "should refuse: {}", b["why"]);
+        }
 
-        /* A close crosses the same way: with its evidence, as Volery's own, and
-           under its own act — not as a removal's, and not bare. */
-        let close = json!({
-            "questions": [],
-            "close": {
-                "machine": "home",
-                "card": { "title": "release notes", "handle": "ab12cd34" },
-                "by": { "title": "the gate watcher", "handle": "ef56ab78" },
-                "why": "its work is done"
-            }
+        /* The two richer blocks that crossed first are no longer the gate: a
+           removal or a close with only its old evidence and no generic block is
+           a question this build did not stamp, and is not answered from afar. */
+        let old = json!({ "questions": [], "remove": { "machine": "home", "reason": "x", "targets": [] } });
+        assert!(!afar_may_answer(true, &old));
+    }
+
+    /// A block written by `Confirm` reads whole by the same reader that gates it,
+    /// and carries the question's own option labels — the exact strings each
+    /// module's `approved` reads, so a far wall's click is the local button.
+    #[test]
+    fn what_a_confirm_writes_is_what_the_gate_reads() {
+        let c = Confirm::new("create an asana task")
+            .fact("task", "Ship it")
+            .fact("project", "RISE")
+            .fact("due", "")
+            .why(Some("  "))
+            .stakes("It shows as yours.");
+        let q = yes_no();
+        let block = c.block("home", &q);
+        assert_eq!(block["machine"], "home");
+        assert_eq!(block["options"][0]["label"], "do it");
+        assert_eq!(block["options"][1]["label"], "leave it alone");
+        /* An empty value is left out rather than sent as a hole, and a blank
+           reason is no reason. */
+        assert_eq!(block["facts"].as_array().unwrap().len(), 2);
+        assert!(block["why"].is_null());
+        assert!(confirm_travels(&json!({ "confirm": block })));
+
+        /* A confirmation whose every value was empty has nothing to decide on, and
+           the gate says so rather than crossing with a header and no body. */
+        let hollow = Confirm::new("delete an asana task").fact("task", "").block("home", &q);
+        assert!(!confirm_travels(&json!({ "confirm": hollow })));
+    }
+
+    /// The default is in the type: a `Settle` made by `new` stamps its evidence,
+    /// and one made by `stays` stamps nothing and names why. There is no third
+    /// constructor, which is what makes a confirmation written next month travel
+    /// without anybody adding it to a list.
+    #[test]
+    fn a_settle_travels_unless_it_names_why_it_stays() {
+        let carried = Settle::new(Confirm::new("close a card").fact("the card", "x (ab12)"), |_, _| {
+            String::new()
         });
-        assert!(afar_may_answer(true, Some(crate::spawn::CLOSE_TOOL), &close));
-        assert!(!afar_may_answer(true, Some(crate::spawn::CLOSE_TOOL), &plain));
-        assert!(!afar_may_answer(true, Some(crate::spawn::CLOSE_TOOL), &removal));
-        assert!(!afar_may_answer(true, Some(crate::presence::REMOVE_ACT), &close));
-        assert!(!afar_may_answer(true, None, &close));
-        assert!(!afar_may_answer(false, Some(crate::spawn::CLOSE_TOOL), &close));
-        /* An unpost has no evidence to carry and is still local. */
-        assert!(!afar_may_answer(true, Some(crate::board::UNPOST_TOOL), &close));
+        let mut q = yes_no();
+        assert_eq!(carried.stamp(&mut q), None);
+        assert!(confirm_travels(&q));
+        assert!(afar_may_answer(true, &q));
+
+        let kept = Settle::stays(Stay::BoardNotice, |_, _| String::new());
+        let mut q = yes_no();
+        let why = kept.stamp(&mut q).expect("a stay says why");
+        assert!(why.contains("billboard"), "{why}");
+        assert!(q.get("confirm").is_none(), "nothing is stamped on a question that stays");
+        assert!(!afar_may_answer(true, &q));
     }
 }

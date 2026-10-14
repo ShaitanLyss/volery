@@ -1067,6 +1067,24 @@ fn declined(what: &str, answer: &str, no: &str) -> String {
     )
 }
 
+/// What every write says about whose name is on it, unless it has something
+/// sharper to say.
+const AS_YOU: &str =
+    "It is written with your own Asana credential, so it shows as yours to everyone on that board.";
+
+/// A write as a person at another wall decides it (`ask::Confirm`). The project
+/// is a fact on every one of them, for the reason `question` gives: it is
+/// standing in for a scope the credential does not have, and the question exists
+/// to say *where* as much as *what*.
+fn evidence(act: &str, task: &str, project: &str, stakes: Option<&str>) -> crate::ask::Confirm {
+    crate::ask::Confirm::new(act)
+        /* Asana answers a nameless task with `""`, and a fact with nothing in it
+           is left out — which on a delete would leave nothing to decide on. */
+        .fact("task", if task.trim().is_empty() { "a task with no name" } else { task })
+        .fact("project", project)
+        .stakes(stakes.unwrap_or(AS_YOU))
+}
+
 /// The question every write goes through.
 ///
 /// One composer rather than one per action, because the six differ only in the
@@ -1075,10 +1093,7 @@ fn declined(what: &str, answer: &str, no: &str) -> String {
 /// project name is the whole reason this question exists, since it is standing
 /// in for a scope the credential does not have.
 fn question(header: &str, body: String, danger: Option<&str>) -> Value {
-    let tail = danger.unwrap_or(
-        "It is written with your own Asana credential, so it shows as yours to everyone on \
-         that board.",
-    );
+    let tail = danger.unwrap_or(AS_YOU);
     json!({
         "questions": [{
             "header": header,
@@ -1268,12 +1283,29 @@ fn create(args: &Value) -> Writing {
         ),
     );
 
+    let confirm = evidence(
+        "create an asana task",
+        name,
+        &found.name,
+        Some(
+            "It is created under your own Asana credential and your name, and everyone \
+             following that project sees it.",
+        ),
+    )
+    .fact("column", section.as_ref().map(|(_, c)| c.as_str()).unwrap_or_default())
+    .fact("due", due.as_str())
+    .fact("assigned to", assignee.as_str())
+    .fact(
+        "description",
+        if notes.trim().is_empty() { "none written".to_string() } else { clip(&notes, MAX_SHOWN) },
+    );
+
     let project = found.gid.clone();
     let project_name = found.name.clone();
     let title = name.to_string();
     Writing::Ask {
         question: q,
-        settle: Box::new(move |_app, answer| {
+        settle: crate::ask::Settle::new(confirm, move |_app, answer| {
             let Some(answer) = answer else {
                 return unanswered("the task");
             };
@@ -1382,10 +1414,28 @@ fn update(args: &Value) -> Writing {
         ),
         None,
     );
+    let cleared = |v: &Option<String>| match v.as_deref() {
+        None => String::new(),
+        Some("") => "cleared".to_string(),
+        Some(s) => s.to_string(),
+    };
+    let confirm = evidence("edit an asana task", &was, &project, None)
+        .fact("new title", name.clone().unwrap_or_default())
+        .fact(
+            "description",
+            match notes.as_deref() {
+                None => String::new(),
+                Some(n) if n.trim().is_empty() => "emptied".to_string(),
+                Some(n) => format!("replaced with:\n\n{}", clip(n, MAX_SHOWN)),
+            },
+        )
+        .fact("due", cleared(&due))
+        .fact("assigned to", cleared(&assignee))
+        .fact("left alone", "every other field — the column, the comments, the rest");
 
     Writing::Ask {
         question: q,
-        settle: Box::new(move |_app, answer| {
+        settle: crate::ask::Settle::new(confirm, move |_app, answer| {
             let Some(answer) = answer else {
                 return unanswered("the edit");
             };
@@ -1464,10 +1514,13 @@ fn shift(args: &Value) -> Writing {
         ),
         None,
     );
+    let confirm = evidence("move an asana task", &was, &project.name, None)
+        .fact("into the column", col.as_str())
+        .fact("the checkmark", "not touched — moving changes the column only");
 
     Writing::Ask {
         question: q,
-        settle: Box::new(move |_app, answer| {
+        settle: crate::ask::Settle::new(confirm, move |_app, answer| {
             let Some(answer) = answer else {
                 return unanswered("the move");
             };
@@ -1521,6 +1574,9 @@ fn project_of_task(gid: &str) -> Result<Found, String> {
     Ok(Found { gid: pgid, name: crate::forge::text(&first, "name") })
 }
 
+const COMMENT_STAKES: &str = "It is posted under your name and notifies everybody following that \
+     task. Nothing here can un-notify them.";
+
 fn comment(args: &Value) -> Writing {
     let gid = match wants_task(args, "comment") {
         Ok(g) => g,
@@ -1542,15 +1598,14 @@ fn comment(args: &Value) -> Writing {
             if project.is_empty() { String::new() } else { format!(" in **{project}**") },
             clip(&text, MAX_SHOWN)
         ),
-        Some(
-            "It is posted under your name and notifies everybody following that task. Nothing \
-             here can un-notify them.",
-        ),
+        Some(COMMENT_STAKES),
     );
+    let confirm = evidence("comment on an asana task", &was, &project, Some(COMMENT_STAKES))
+        .fact("comment", clip(&text, MAX_SHOWN));
 
     Writing::Ask {
         question: q,
-        settle: Box::new(move |_app, answer| {
+        settle: crate::ask::Settle::new(confirm, move |_app, answer| {
             let Some(answer) = answer else {
                 return unanswered("the comment");
             };
@@ -1589,10 +1644,18 @@ fn complete(args: &Value) -> Writing {
         ),
         None,
     );
+    let confirm = evidence(
+        if done { "tick off an asana task" } else { "reopen an asana task" },
+        &was,
+        &project,
+        None,
+    )
+    .fact("mark it", if done { "complete" } else { "not complete" })
+    .fact("the column", "not touched — this is the checkmark, and the task stays where it is");
 
     Writing::Ask {
         question: q,
-        settle: Box::new(move |_app, answer| {
+        settle: crate::ask::Settle::new(confirm, move |_app, answer| {
             let Some(answer) = answer else {
                 return unanswered("the change");
             };
@@ -1613,6 +1676,10 @@ fn complete(args: &Value) -> Writing {
     }
 }
 
+const DELETE_STAKES: &str = "Asana moves it to **your own trash**, where you can restore it for 30 \
+     days — after that it is gone. Its comments and attachments go with it, and anybody following \
+     it loses it from their list.";
+
 fn remove(args: &Value) -> Writing {
     let gid = match wants_task(args, "delete") {
         Ok(g) => g,
@@ -1629,16 +1696,13 @@ fn remove(args: &Value) -> Writing {
             "A card wants to **delete {was}**{}.",
             if project.is_empty() { String::new() } else { format!(" from **{project}**") }
         ),
-        Some(
-            "Asana moves it to **your own trash**, where you can restore it for 30 days — after \
-             that it is gone. Its comments and attachments go with it, and anybody following it \
-             loses it from their list.",
-        ),
+        Some(DELETE_STAKES),
     );
+    let confirm = evidence("delete an asana task", &was, &project, Some(DELETE_STAKES));
 
     Writing::Ask {
         question: q,
-        settle: Box::new(move |_app, answer| {
+        settle: crate::ask::Settle::new(confirm, move |_app, answer| {
             let Some(answer) = answer else {
                 return unanswered("the deletion");
             };

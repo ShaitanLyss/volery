@@ -1,0 +1,106 @@
+{
+  "about": "The generic confirmation block (`ask::Confirm`) as it travels in a card's digest. Read by `cargo test` (ask.rs, smith.rs) and by `bun test` (test/afar.test.ts), so the Rust that writes it and the TypeScript that draws it are held to one corpus. `whole[0]` is exactly what `smith.rs` stamps on a pull-request create — the confirmation sink a02ecd0e is about.",
+  "whole": [
+    {
+      "machine": "AU-LT-288",
+      "act": "open a pull request",
+      "facts": [
+        { "label": "repository", "value": "LagardereAWPL / RISE / rise-app" },
+        { "label": "merging", "value": "`feature/travel` into `main`" },
+        { "label": "title", "value": "Confirmations travel the flyway" },
+        { "label": "description", "value": "none written" }
+      ],
+      "why": null,
+      "stakes": "It goes out under the credential that machine holds and your own name, and lands on whoever reviews that repository. Nothing here can take it back.",
+      "options": [
+        { "label": "open it", "detail": "Open it. You get the url back." },
+        { "label": "do not open it", "detail": "Nothing is created. The agent is told you said so." }
+      ]
+    },
+    {
+      "machine": "home",
+      "act": "lend your asana token to this card",
+      "facts": [{ "label": "credential", "value": "Asana token" }],
+      "why": "to read the attachments on three tickets",
+      "stakes": null,
+      "options": [
+        { "label": "hand it over", "detail": null },
+        { "label": "keep it", "detail": "Nothing is lent." }
+      ]
+    }
+  ],
+  "broken": [
+    {
+      "why": "no machine, so nothing says which disk or which credential it is about",
+      "block": {
+        "act": "open a pull request",
+        "facts": [{ "label": "repository", "value": "a / b / c" }],
+        "why": null, "stakes": null,
+        "options": [{ "label": "open it", "detail": null }, { "label": "do not open it", "detail": null }]
+      }
+    },
+    {
+      "why": "a blank act, so the header names nothing",
+      "block": {
+        "machine": "home", "act": "  ",
+        "facts": [{ "label": "repository", "value": "a / b / c" }],
+        "why": null, "stakes": null,
+        "options": [{ "label": "open it", "detail": null }, { "label": "do not open it", "detail": null }]
+      }
+    },
+    {
+      "why": "no facts, so there is nothing to decide on",
+      "block": {
+        "machine": "home", "act": "open a pull request",
+        "facts": [],
+        "why": null, "stakes": null,
+        "options": [{ "label": "open it", "detail": null }, { "label": "do not open it", "detail": null }]
+      }
+    },
+    {
+      "why": "a fact with no value reads as one that failed to arrive",
+      "block": {
+        "machine": "home", "act": "open a pull request",
+        "facts": [{ "label": "repository", "value": "" }],
+        "why": null, "stakes": null,
+        "options": [{ "label": "open it", "detail": null }, { "label": "do not open it", "detail": null }]
+      }
+    },
+    {
+      "why": "one option is not a choice, and the yes must have a no beside it",
+      "block": {
+        "machine": "home", "act": "open a pull request",
+        "facts": [{ "label": "repository", "value": "a / b / c" }],
+        "why": null, "stakes": null,
+        "options": [{ "label": "open it", "detail": null }]
+      }
+    },
+    {
+      "why": "an option with no label is a button nobody can press",
+      "block": {
+        "machine": "home", "act": "open a pull request",
+        "facts": [{ "label": "repository", "value": "a / b / c" }],
+        "why": null, "stakes": null,
+        "options": [{ "label": "open it", "detail": null }, { "label": "", "detail": null }]
+      }
+    },
+    {
+      "why": "a reason that is present must say something",
+      "block": {
+        "machine": "home", "act": "open a pull request",
+        "facts": [{ "label": "repository", "value": "a / b / c" }],
+        "why": "", "stakes": null,
+        "options": [{ "label": "open it", "detail": null }, { "label": "do not open it", "detail": null }]
+      }
+    },
+    {
+      "why": "stakes the wrong shape",
+      "block": {
+        "machine": "home", "act": "open a pull request",
+        "facts": [{ "label": "repository", "value": "a / b / c" }],
+        "why": null, "stakes": 3,
+        "options": [{ "label": "open it", "detail": null }, { "label": "do not open it", "detail": null }]
+      }
+    }
+  ]
+}

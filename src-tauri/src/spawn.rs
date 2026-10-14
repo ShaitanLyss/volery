@@ -1220,12 +1220,45 @@ fn close_evidence(
     })
 }
 
+/// The same close in the generic block every confirmation carries
+/// (`ask::Confirm`), beside `close_evidence` rather than instead of it — that one
+/// is what a far wall draws a close from (`afar.ts::closingHere`), and this is what
+/// the gate on this machine reads, now that it reads one block for every kind.
+fn close_confirm(
+    card: (&str, &str),
+    by: (&str, &str),
+    why: Option<&str>,
+    timeline: Option<&str>,
+) -> crate::ask::Confirm {
+    let named = |(title, handle): (&str, &str)| {
+        if title.trim().is_empty() { format!("card {handle}") } else { format!("{title} ({handle})") }
+    };
+    let itself = card.1 == by.1;
+    crate::ask::Confirm::new(if itself { "close this card, at its own asking" } else { "close a card" })
+        .fact("the card", named(card))
+        .fact("asked by", if itself { "the card itself — it says its work is done".to_string() } else { named(by) })
+        .fact(
+            "its timeline",
+            timeline
+                .map(|t| format!("{t} — still in flight; closing archives it as left unfinished"))
+                .unwrap_or_default(),
+        )
+        .why(why)
+        .stakes(
+            "Closing takes the card off that wall and ends its process. It deletes nothing — the \
+             transcript stays and the session can be adopted back. That wall checks again at the \
+             moment of closing and refuses if the card has started work since.",
+        )
+}
+
 /// Whether a parked question is a close carrying everything a person on another
 /// machine would need to decide it — `ask::afar_may_answer`'s gate, on the
-/// machine the close would happen on. `remove::travels`' rule: strict in the
-/// direction that refuses, so a field missing or the wrong shape is a question
-/// that does not travel and its answer is refused. A reason may be absent, but
-/// not malformed: `null` is a card that gave none.
+/// machine the close would happen on, until that gate read one generic block
+/// (`ask::confirm_travels`). Kept for the tests that hold `close_evidence` to the
+/// shape `afar.ts::readClosing` draws from. Strict in the direction that refuses,
+/// so a field missing or the wrong shape reads as not whole. A reason may be
+/// absent, but not malformed: `null` is a card that gave none.
+#[cfg(test)]
 pub(crate) fn travels(question: &Value) -> bool {
     let Some(e) = question.get("close") else { return false };
     let named = |v: &Value| v.as_str().is_some_and(|s| !s.trim().is_empty());
@@ -1457,12 +1490,18 @@ pub(crate) fn close(app: &AppHandle, caller: &str, args: &Value) -> Closing {
                 with_timeline(&mut question, tl, f.spawner.as_deref() == Some(caller));
             }
 
+            let confirm = close_confirm(
+                (&f.title, &crate::relay::handle_of(&f.id)),
+                (&by, &crate::relay::handle_of(caller)),
+                why.as_deref(),
+                f.timeline.as_deref(),
+            );
             let caller = caller.to_string();
             let id = f.id.clone();
             let title = f.title.clone();
             Closing::Ask {
                 question,
-                settle: Box::new(move |app, answer| {
+                settle: crate::ask::Settle::new(confirm, move |app, answer| {
                     let Some(answer) = answer else {
                         return unanswered(&title);
                     };

@@ -73,7 +73,7 @@ import { actRefusal, type Remote, type Verb } from "./handle";
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
-import { DEFER_ANSWER, closingHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
+import { DEFER_ANSWER, closingHere, confirmHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
 
 const SECTIONS_KEY = "skein.sections.v1";
@@ -874,6 +874,30 @@ export class Elsewhere {
         continue;
       }
       const questions = closingHere(c.closing, s.host);
+      if (!questions) continue;
+      now.push({
+        askId: c.askId,
+        questions,
+        answers: blankAnswers(questions),
+        ours: true,
+        since: askedAt(c, w.at, w.madeAt),
+      });
+    }
+    /* And every other confirmation, by the one generic block (sink `a02ecd0e`):
+       composed here from its fields, named for the wall it was heard from, and
+       answered with the option's own label, which the owning wall's settle reads
+       verbatim. One already drawn above under the same ask is not drawn twice —
+       the richer reading wins, and an owning wall of this build never sends a
+       removal or a close in both fields anyway (`confirmsOf`). */
+    const drawn = new Set(now.map((a) => a.askId));
+    for (const c of s.digest.confirms) {
+      if (drawn.has(c.askId)) continue;
+      const kept = was.get(c.askId);
+      if (kept) {
+        now.push(kept);
+        continue;
+      }
+      const questions = confirmHere(c.confirm, s.host, s.title);
       if (!questions) continue;
       now.push({
         askId: c.askId,

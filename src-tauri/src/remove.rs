@@ -969,16 +969,67 @@ pub(crate) fn evidence(reason: &str, surveys: &[Survey], cwd: &str, machine: &st
     })
 }
 
+/// The same removal in the generic block every confirmation carries
+/// (`ask::Confirm`), beside `evidence` rather than instead of it.
+///
+/// `evidence` is the richer of the two and is what a far wall of this build or
+/// the one before draws a removal from (`afar.ts::removalHere`); this is what the
+/// gate on *this* machine reads (`ask::afar_may_answer`), now that it reads one
+/// block for every kind instead of naming the two kinds that crossed. One fact per
+/// target, carrying everything `described` would have drawn about it, so a wall
+/// that knew only the generic block would still decide on the whole glance.
+pub(crate) fn confirm_of(reason: &str, surveys: &[Survey], cwd: &str) -> crate::ask::Confirm {
+    let act = match surveys {
+        [s] if s.is_link => "delete a link".to_string(),
+        [s] if s.is_dir => "delete a directory".to_string(),
+        [_] => "delete a file".to_string(),
+        many => format!("delete {} paths", many.len()),
+    };
+    let mut c = crate::ask::Confirm::new(act);
+    for (i, s) in surveys.iter().enumerate() {
+        let size = if s.is_link {
+            "a link — the link goes, not what it points at".to_string()
+        } else if s.is_dir && s.capped {
+            format!("a directory, more than {} in more than {} files", human_size(s.bytes), s.files)
+        } else if s.is_dir {
+            format!("a directory, {} in {} files", human_size(s.bytes), s.files)
+        } else {
+            format!("a file, {}", human_size(s.bytes))
+        };
+        let tree = if !cwd.is_empty() && under(cwd, &s.path) {
+            "inside the card's own working tree"
+        } else {
+            "**outside the card's own working tree**"
+        };
+        let git = match (&s.repo_root, s.tracked) {
+            (None, _) => "not in a git work tree — nothing here comes back from a commit".to_string(),
+            (Some(_), 0) => "in a git work tree but **untracked** — git has no copy of any of it".to_string(),
+            (Some(_), n) => format!("git tracks {n} files under it, so those come back from a commit"),
+        };
+        let mut said = format!("{}\n\n{size}; {tree}; {git}", s.path);
+        if !s.writers.is_empty() {
+            said.push_str(&format!("; **other cards there have written in here**: {}", s.writers.join(", ")));
+        }
+        if !s.servers.is_empty() {
+            said.push_str(&format!("; **a dev server is running out of this tree**: {}", s.servers.join(", ")));
+        }
+        let label = if surveys.len() == 1 { "path".to_string() } else { format!("path {}", i + 1) };
+        c = c.fact(label, said);
+    }
+    c.why(Some(reason)).stakes(
+        "**This is permanent.** It is not moved to a recycle bin and nothing can bring it back. That \
+         machine checks again at the moment of deleting and refuses if the tree has changed under \
+         it — uncommitted work appearing there, say.",
+    )
+}
+
 /// Whether a parked question is a removal that carries everything a person on
 /// another machine would need to decide it — the gate `ask::answer_from_afar`
-/// asks before it lets an answer from another wall do the deleting.
-///
-/// The far wall applies the same reading before it draws the question; this is
-/// the second lock, on the machine the delete would happen on, because what the
-/// far wall drew is a claim and what is parked here is the fact. Strict in the
-/// direction that refuses: a field missing or the wrong shape is a question
-/// that does not travel, and its answer is refused with the reason the old rule
-/// gave.
+/// asked before it let an answer from another wall do the deleting, until that
+/// gate read one generic block (`ask::confirm_travels`, off `confirm_of`). Kept
+/// for the tests that hold `evidence`'s shape to the one `afar.ts::readRemoval`
+/// draws from — strict in the direction that refuses, as that reader is.
+#[cfg(test)]
 pub(crate) fn travels(question: &Value) -> bool {
     let Some(e) = question.get("remove") else { return false };
     let named = |v: &Value| v.as_str().is_some_and(|s| !s.trim().is_empty());
@@ -1527,10 +1578,11 @@ pub(crate) fn remove(app: &AppHandle, caller: &str, args: &Value) -> Writing {
        question as it always has, and the fields are what lets another wall
        draw one about the right disk — see `evidence`. */
     q["remove"] = evidence(reason, &surveys, &g.cwd, &crate::flyway::key::host_name());
+    let confirm = confirm_of(reason, &surveys, &g.cwd);
 
     Writing::Ask {
         question: q,
-        settle: Box::new(move |app, answer| {
+        settle: crate::ask::Settle::new(confirm, move |app, answer| {
             let Some(answer) = answer else {
                 return unanswered();
             };

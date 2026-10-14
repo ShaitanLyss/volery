@@ -321,9 +321,10 @@ them from my work laptop" is simply not true while a question can strand a card.
 - **The question rides the snapshot.** `CardDigest.asks` carries each parked question's words —
   header, question, options — and `since` on the owner's clock, read against the snapshot's `at`
   the way `restingSince` is (`askedAt`). Volery's own questions (`ours`) do not ride `asks`:
-  unpost never travels, and a removal or a close travels in a field of its own, with evidence —
-  see *A removal confirmed from another wall* and *A close confirmed from another wall* below,
-  because this sentence used to say none of the three ever would.
+  each travels in a field of its own carrying its evidence — a removal and a close in theirs,
+  and **every other confirmation in `confirms`, by default** — see *Every confirmation travels
+  unless it says why not* below. This sentence once said none of them ever would, then that
+  only a removal or a close did, and both versions were the bug.
 - **Words in the snapshot; the call itself pulled.** See *What a question shows* below — this
   bullet used to say a design or a file never crossed, and that was the bug.
 - **The answer rides the prompt wire**, `flyway_prompt` with an `askId`, carrying exactly what
@@ -615,6 +616,93 @@ Not built, by decision: batching several closes into one question (sink `c79df2f
 older owning wall publishes no `closings`, so nothing is drawn and the old behaviour (the question
 stands on its own wall) is unchanged.
 
+### Every confirmation travels unless it says why not (sink `a02ecd0e`)
+
+The two sections above are the history and this is the rule. A card on `AU-LT-288` asked Lyss to
+approve opening a pull request while she sat at `QUEERISFREEDOM`, prompting that card over the
+flyway and reading its answers: **the conversation reached her and the one thing she had to act
+on did not.** Nothing refused it, drew it or logged it — it opened on one machine and waited.
+Her words: *"almost everything should travel across the flyway, by design, we shouldn't have to
+special case it."*
+
+**The cause was a default, not a missing case.** Volery's own questions were excluded and each
+that crossed had been made to — a removal, then a close, each its own piece of work with its own
+argument — so every confirmation written after them (the pull request, six Asana writes, the
+credential lend) was silently local. That is CLAUDE.md's *a capability every surface should have
+is not a prop*, one level up: a list of what travels is a list somebody forgets to append to,
+and forgetting is silent.
+
+**So the default is in the type.** `ask::Settle` — the closure that does what an answer means —
+is no longer a bare closure. It is made by `Settle::new(confirm, …)`, which takes an
+`ask::Confirm`, or by `Settle::stays(stay, …)`, which takes an `ask::Stay`, and there is no third
+constructor. Writing a confirmation's evidence is therefore part of writing the confirmation,
+and travelling follows from having it: **a confirmation added next month crosses with nothing
+added to any list**, which is the test the item set.
+
+- **The evidence is generic, and it is the removal's pattern.** `Confirm` is a verb phrase
+  (*open a pull request*), facts as label/value pairs written to mean the same on either machine
+  (a repository by org and name, a branch by name, an Asana project by name — never *this
+  machine's* anything), the card's reason if it gave one, and a sentence of stakes. At least one
+  fact, or there is nothing to decide on. `Settle::stamp` adds the machine
+  (`flyway::key::host_name`) and copies the question's own option labels at park, before the
+  question is registered — so the parked copy, the `ask:opened` the digest is folded from and
+  the copy the gate checks are one value, and the labels are the exact strings each module's
+  `approved` reads.
+- **The far wall writes the question from the fields, never from the owning wall's prose**
+  (`afar.ts::confirmHere`). The prose is written from the owning machine's point of view, and
+  read on another it says *here* about a place that is not here. The machine leads in the header
+  (`open a pull request on AU-LT-288`) and the first line, the card is named by the shadow's own
+  title, and the last line says the one thing every kind shares: nothing happens on this
+  machine, and that one checks again when the answer arrives. A block whose machine is not the
+  wall it was heard from is not drawn; one missing a field is not drawn (`readConfirm`, strict in
+  the direction that refuses).
+- **One field, `CardDigest.confirms`, for every kind.** An older far wall reads nothing there —
+  the question stays where it was asked, as before — and an older owning wall sends nothing.
+  A removal or a close carries the block too but is published in its own field instead
+  (`confirmsOf` skips them), because a wall of the build before reads only those and the richer
+  drawing wins; `#sheets` keeps one sheet per ask whichever field it came in.
+- **The gate names no kind** (`ask::afar_may_answer(ours, question)` is `!ours ||
+  confirm_travels(question)`), and `test/afar.test.ts` reads its body out of `ask.rs` to keep it
+  that way: a tool name reappearing there is the old list coming back.
+- **The answer is re-checked where it acts, and approval travelling is not the decision
+  travelling.** The click crosses as the option's label down the prompt wire; `answer_from_afar`
+  checks the parked question (not the far wall's drawing) and hands the label into the same
+  channel a local click uses, so the settle — and every refusal inside it, `settle_delete`'s and
+  `spawn::close`'s re-reads included — runs on the machine that acts, at the moment it acts. A
+  pull request or an Asana write re-checks nothing locally by design (the service does —
+  `azdo.md`, `asana.md`), and that is the same from afar as from the dock.
+- **Credentials never cross.** Approving a credential lend from the other laptop lends it
+  *there*, into that card's environment on that machine; the block carries the credential's
+  name, whose account it checked as and what it reaches, and nothing else.
+- **A quiet wall refuses at once**, by the machinery a parked question already has: a sheet is
+  not offered once its wall is unheard, `Elsewhere.answer` refuses a click already on its way,
+  and the fleet refuses a prompt into a quiet wall. A pull request approved eight hours later on
+  a card running `--dangerously-skip-permissions` is the thing not built.
+- **`test/fixtures/confirm.json` is read by both `cargo test` and `bun test`**, and its first
+  entry is exactly what `smith.rs` stamps on a pull-request create — so the Rust that writes the
+  block and the TypeScript that draws it are held to one file rather than to two descriptions of
+  it (the rule *The digest is the owner's front end's* states about the taxonomy).
+
+**The exclusions are `ask::Stay`, one variant each with its argument written beside it, and
+today there is one — held, not argued.** `Stay::BoardNotice` keeps `unpost`'s confirmation (a
+dead card's notice coming down) on its own wall *pending the billboard itself crossing walls*,
+which card `e038b3e2` is building; when it lands, `board.rs` flips to `Settle::new` and the
+variant goes. Its old argument — *a board notice is one wall's coordination with its own cards,
+so a notice answered elsewhere means little* — did not survive scrutiny twice over: a notice
+need not be about a working tree at all (*"don't push to this repo"*, *"wrapping things up before
+a holiday"*), and remote spawn made an orchestrator on one wall with workers on another an
+ordinary topology, one that can neither see nor clear the notices its workers raise.
+
+**The general lesson, and it has now bitten twice in a day: an exclusion justified by "these two
+things do not interact" expires silently the moment something makes them interact.** The flyway
+made walls interact, so every rule written before it that turned on walls *not* interacting is
+owed a re-reading — and the reading to give it is the orchestrator across machines, not only Lyss
+at a laptop. The audit done for this item, read that way, is in `ask.md` under *What waits on a
+person, and whether it reaches her*; it found the away pile quietly local (sink `4a3f859b`).
+
+**Both walls need the build** for a pull request, an Asana write or a credential lend to cross;
+removals and closes cross between this build and the one before by their old fields, as they did.
+
 ### Deferring a question from the other wall
 
 *Defer* (sink `7805fa20`) has no field on the prompt wire and a wall from before it would read a new
@@ -877,9 +965,11 @@ hold the rest.
   almost always hears the wall it asked. A stray is drawn on the child's side only.
 - **The whole scrollback.** 120 lines from the end, which is the round you are in and the one
   before; older rounds stay on the owning wall, and the panel says so.
-- **An unpost confirmed from afar**, deliberately — a board notice is one wall's coordination with
-  its own cards. (A close *is* confirmed from afar since 2026-10-12 — see *A close confirmed from
-  another wall*.)
+- **An unpost confirmed from afar — for now, and not on a standing argument.** It is the one
+  confirmation made under an `ask::Stay`, pending the billboard itself crossing walls (card
+  `e038b3e2`'s work); see *Every confirmation travels unless it says why not*. The argument it
+  used to carry — *a board notice is one wall's coordination with its own cards* — did not
+  survive the flyway, and the section says why.
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.
 

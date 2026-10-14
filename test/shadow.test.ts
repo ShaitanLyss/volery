@@ -99,6 +99,7 @@ describe("making a digest", () => {
       asks: [],
       removals: [],
       closings: [],
+      confirms: [],
       notices: [],
       parent: null,
     });

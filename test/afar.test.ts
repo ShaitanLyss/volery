@@ -22,8 +22,13 @@ import {
   remoteNotices,
   removalHere,
   removalsOf,
+  confirmHere,
+  confirmsOf,
+  readConfirm,
+  readConfirms,
   type DigestNotice,
 } from "../src/lib/afar";
+import corpus from "./fixtures/confirm.json";
 import { composeAnswer, blankAnswers } from "../src/lib/asking";
 import { digestOf, readDigest, type DigestSource } from "../src/lib/shadow";
 import { NOTICE_ACK, type Notice } from "../src/lib/notice";
@@ -416,5 +421,91 @@ describe("notices travel", () => {
       detail: "finished — Done — all green",
       waitedSeconds: 6,
     });
+  });
+});
+
+/* Sink a02ecd0e: a pull request asked on one laptop never reached the other.
+   Every confirmation Volery composes now carries one generic block unless it
+   names why it stays (`ask::Stay`), and nothing on this side knows a kind. The
+   corpus is shared with `cargo test`, whose first entry is exactly what
+   `smith.rs` stamps on a pull-request create. */
+describe("every confirmation travels by one block (sink a02ecd0e)", () => {
+  const pr = corpus.whole[0]!;
+
+  test("the corpus reads the same here as in Rust", () => {
+    for (const block of corpus.whole) expect(readConfirm(block)).not.toBeNull();
+    for (const b of corpus.broken) expect(readConfirm(b.block), b.why).toBeNull();
+    expect(readConfirm(null)).toBeNull();
+  });
+
+  test("only Volery's own publishes it, and not twice beside a removal or a close", () => {
+    const confirm = readConfirm(pr);
+    const close = readClosing(closing());
+    const asks = [
+      { askId: "a", since: 5, ours: true, confirm },
+      /* An agent's ask_user dressed up with a block is still an agent's. */
+      { askId: "b", since: 6, ours: false, confirm },
+      /* One already travelling as a close goes in that field, which a wall of
+         the build before this reads; publishing it here as well buys nothing. */
+      { askId: "c", since: 7, ours: true, confirm, close },
+      /* One that stays carries no block. */
+      { askId: "d", since: 8, ours: true, confirm: null },
+    ];
+    expect(confirmsOf(asks).map((r) => r.askId)).toEqual(["a"]);
+  });
+
+  test("it travels in a field of its own, never among the questions", () => {
+    const confirm = readConfirm(pr);
+    const d = digestOf(source({ asks: [{ askId: "pr-1", since: 900, ours: true, questions: [], confirm }] }));
+    expect(d.asks).toEqual([]);
+    expect(d.confirms).toHaveLength(1);
+    const back = readDigest(JSON.parse(JSON.stringify(d)))!;
+    expect(back.confirms[0]!.askId).toBe("pr-1");
+    expect(back.confirms[0]!.confirm.act).toBe("open a pull request");
+    /* A wall from before this sends no `confirms`: the question stays where it
+       was asked, as it always did. */
+    const old = JSON.parse(JSON.stringify(d));
+    delete old.confirms;
+    expect(readDigest(old)!.confirms).toEqual([]);
+    /* And one that does not read back is dropped, not drawn as less. */
+    const broken = JSON.parse(JSON.stringify(d));
+    broken.confirms[0].confirm.facts = [];
+    expect(readConfirms(broken.confirms)).toEqual([]);
+  });
+
+  test("the question names the machine and the card, and answers with the button's own label", () => {
+    const q = confirmHere(readConfirm(pr)!, "AU-LT-288", "release the rise fix")!;
+    expect(q).toHaveLength(1);
+    expect(q[0]!.header).toBe("open a pull request on AU-LT-288");
+    const body = q[0]!.question;
+    expect(body).toContain("**release the rise fix**, a card on **AU-LT-288**");
+    expect(body).toContain("**repository**: LagardereAWPL / RISE / rise-app");
+    expect(body).toContain("`feature/travel` into `main`");
+    expect(body).toContain("your own name");
+    expect(body).toContain("Nothing happens on this machine");
+    /* The click is the owning wall's exact label, which `smith::approved`
+       reads verbatim — so the button here is the button there. */
+    const answers = blankAnswers(q);
+    answers[0] = q[0]!.options[0]!.label;
+    expect(composeAnswer(q, answers)).toBe("open it");
+    /* Heard from one machine, about another: not drawn at all. */
+    expect(confirmHere(readConfirm(pr)!, "QUEERISFREEDOM", "x")).toBeNull();
+    /* A reason is drawn when there is one. */
+    const lend = confirmHere(readConfirm(corpus.whole[1])!, "home", "")![0]!.question;
+    expect(lend).toContain("A card on **home**");
+    expect(lend).toContain("Its reason: *to read the attachments on three tickets*");
+  });
+
+  /* The gate on the machine that acts names no tool. A list of what crosses
+     is what stranded the pull request — every confirmation after the two that
+     were made to cross was silently local — so the way it comes back is a tool
+     name reappearing in this function. */
+  test("the gate that lets an answer from afar act names no kind", async () => {
+    const rs = await Bun.file(new URL("../src-tauri/src/ask.rs", import.meta.url)).text();
+    const start = rs.indexOf("pub(crate) fn afar_may_answer(");
+    expect(start).toBeGreaterThan(0);
+    const body = rs.slice(start, start + rs.slice(start).search(/\r?\n\}\r?\n/));
+    expect(body).toContain("confirm_travels");
+    expect(body).not.toMatch(/_TOOL|_ACT|remove::|spawn::|board::|smith::|docket::|lend::/);
   });
 });

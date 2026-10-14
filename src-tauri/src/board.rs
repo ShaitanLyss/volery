@@ -1146,7 +1146,10 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
     let subject = n.subject.clone();
     Unposting::Ask {
         question,
-        settle: Box::new(move |app, answer| {
+        /* Kept on this wall for now, as an open question rather than a standing
+           exclusion — see `ask::Stay::BoardNotice`, and the board-sync work that
+           decides it. Making it travel is `Settle::new` with a `Confirm` here. */
+        settle: crate::ask::Settle::stays(crate::ask::Stay::BoardNotice, move |app, answer| {
             let Some(answer) = answer else {
                 return format!(
                     "nobody answered, so {subject:?} stays up. Either the question stood \

@@ -1306,6 +1306,62 @@ fn update_question(
     })
 }
 
+/// The same create, as a person at another wall decides it (`ask::Confirm`).
+///
+/// **This is the confirmation sink `a02ecd0e` is about**: asked on one laptop
+/// while Lyss read the card from the other, and it never reached her. The four
+/// things `create_question` carries are the four here, in fields — where it
+/// lands, what into what, what it will say, and whose name is on it — with the
+/// organisation spelled out, since on another machine there is no remote to read
+/// it off.
+fn create_evidence(
+    at: &crate::azdo::Origin,
+    source: &str,
+    target: &str,
+    title: &str,
+    description: &str,
+    draft: bool,
+) -> crate::ask::Confirm {
+    crate::ask::Confirm::new(if draft { "open a draft pull request" } else { "open a pull request" })
+        .fact("repository", format!("{} / {} / {}", at.org, at.project, at.repo))
+        .fact("merging", format!("`{source}` into `{target}`"))
+        .fact("title", title)
+        .fact(
+            "description",
+            if description.trim().is_empty() { "none written".to_string() } else { clip(description, MAX_SHOWN) },
+        )
+        .stakes(
+            "It goes out under the credential that machine holds and your own name, and lands on \
+             whoever reviews that repository. Nothing here can take it back.",
+        )
+}
+
+/// And an edit, in fields. Says which fields change, for `update_question`'s
+/// reason: a description replaced by one the card never read is the thing worth
+/// catching.
+fn update_evidence(
+    at: &crate::azdo::Origin,
+    number: i64,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> crate::ask::Confirm {
+    crate::ask::Confirm::new(format!("edit pull request !{number}"))
+        .fact("repository", format!("{} / {} / {}", at.org, at.project, at.repo))
+        .fact("new title", title.unwrap_or_default())
+        .fact(
+            "description",
+            match description {
+                None => String::new(),
+                Some(d) if d.trim().is_empty() => "emptied".to_string(),
+                Some(d) => format!("replaced with:\n\n{}", clip(d, MAX_SHOWN)),
+            },
+        )
+        .stakes(
+            "The edit is made with your credential, so it shows as yours. Only the fields above \
+             change — the branches, the votes and the policies are not touched.",
+        )
+}
+
 /// What the caller is told when nobody answers.
 fn unanswered(what: &str) -> String {
     format!(
@@ -1400,6 +1456,7 @@ pub(crate) fn pull_request(app: &AppHandle, caller: &str, args: &Value) -> Writi
             }
 
             let question = update_question(&at, number, title, description);
+            let confirm = update_evidence(&at, number, title, description);
             let what = format!("editing pull request !{number}");
             /* Owned into the closure, because it outlives this call by up to ten
                minutes. `Settle` is `Send` and the request is answered on its own
@@ -1409,7 +1466,7 @@ pub(crate) fn pull_request(app: &AppHandle, caller: &str, args: &Value) -> Writi
             let description = description.map(str::to_string);
             Writing::Ask {
                 question,
-                settle: Box::new(move |app, answer| {
+                settle: crate::ask::Settle::new(confirm, move |app, answer| {
                     let Some(answer) = answer else {
                         return unanswered(&what);
                     };
@@ -1530,12 +1587,13 @@ pub(crate) fn pull_request(app: &AppHandle, caller: &str, args: &Value) -> Writi
             let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
             let description = description.unwrap_or("").to_string();
             let question = create_question(&at, &source, &target, title, &description, draft);
+            let confirm = create_evidence(&at, &source, &target, title, &description, draft);
             let what = format!("opening a pull request from `{source}`");
             let at = at.clone();
             let title = title.to_string();
             Writing::Ask {
                 question,
-                settle: Box::new(move |app, answer| {
+                settle: crate::ask::Settle::new(confirm, move |app, answer| {
                     let Some(answer) = answer else {
                         return unanswered(&what);
                     };
@@ -1786,6 +1844,32 @@ mod tests {
            somebody's queue and not. */
         let d = create_question(&at, "a", "b", "t", "body", true);
         assert!(d["questions"][0]["question"].as_str().unwrap().contains("draft"));
+    }
+
+    /// The confirmation sink `a02ecd0e` is about, stamped as it travels, is the
+    /// first entry of the corpus the far wall's reader is tested against
+    /// (`test/afar.test.ts`) — so what this module writes and what another wall
+    /// draws are held to one file rather than to two descriptions of it.
+    #[test]
+    fn a_pull_request_create_travels_as_the_corpus_says() {
+        let at = crate::azdo::Origin {
+            org: "LagardereAWPL".into(),
+            project: "RISE".into(),
+            repo: "rise-app".into(),
+        };
+        let q = create_question(&at, "feature/travel", "main", "Confirmations travel the flyway", "", false);
+        let block = create_evidence(&at, "feature/travel", "main", "Confirmations travel the flyway", "", false)
+            .block("AU-LT-288", &q);
+        let corpus: Value =
+            serde_json::from_str(include_str!("../../test/fixtures/confirm.json")).unwrap();
+        assert_eq!(block, corpus["whole"][0]);
+        assert!(crate::ask::confirm_travels(&json!({ "confirm": block })));
+        /* An edit carries what changes, and only that. */
+        let edit = update_evidence(&at, 41, Some("a better title"), None).block("h", &update_question(&at, 41, Some("a better title"), None));
+        let labels: Vec<&str> =
+            edit["facts"].as_array().unwrap().iter().filter_map(|f| f["label"].as_str()).collect();
+        assert_eq!(labels, ["repository", "new title"]);
+        assert_eq!(edit["options"][0]["label"], CHANGE_IT);
     }
 
     #[test]

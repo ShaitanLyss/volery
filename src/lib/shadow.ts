@@ -52,12 +52,16 @@ import {
   readNotices,
   readClosings,
   closingsOf,
+  readConfirms,
+  confirmsOf,
   readRemovals,
   removalsOf,
   type DigestNotice,
   type DigestClosing,
+  type DigestConfirm,
   type DigestRemoval,
   type Closing,
+  type Confirm,
   type Removal,
 } from "./afar";
 import type { Spot } from "./glass";
@@ -136,6 +140,13 @@ export type CardDigest = {
   /** Volery's own close confirmations the card is parked on — the same
    *  arrangement, for the same reason (`afar.ts`). */
   closings: DigestClosing[];
+  /** **Every other** confirmation Volery composed that the card is parked on —
+   *  a pull request, an Asana write, a credential lent — each in the generic
+   *  block every confirmation carries (`ask::Confirm`, sink `a02ecd0e`). The
+   *  field a confirmation written next month crosses in with nothing changed.
+   *  An older wall reads nothing here, which is the question staying where it
+   *  was asked, as it always did. */
+  confirms: DigestConfirm[];
   /** The card's notices standing in its wall's queue, oldest first. */
   notices: DigestNotice[];
   /** The card that opened this one, or null if a person did. `host` is the
@@ -262,9 +273,11 @@ export type DigestSource = {
   lines: readonly { kind: string; text: string }[];
   jobs: readonly unknown[];
   /** `Conversation.asks`. Volery's own questions (`ours`) never travel as
-   *  asks: an unpost is answered on the machine it would act on, and a close or
-   *  a delete crosses only in a field of its own carrying its evidence
-   *  (`removals`, `closings`). The link refuses an answer to anything else. */
+   *  asks — their prose is written from the owning machine's point of view —
+   *  but in fields of their own carrying their evidence, composed again on the
+   *  far wall: `removals`, `closings`, and `confirms` for every other kind. One
+   *  made under `ask::Stay` carries no evidence and stays where it was asked;
+   *  the link refuses an answer to it. */
   asks: readonly {
     askId: string;
     since: number;
@@ -274,6 +287,8 @@ export type DigestSource = {
     remove?: Removal | null;
     /** A close's evidence (`spawn::close_evidence`), on Volery's own. */
     close?: Closing | null;
+    /** The generic block every confirmation carries (`ask::Confirm`). */
+    confirm?: Confirm | null;
   }[];
   /** The wall's notice queue — this card's are picked out of it. */
   notices?: readonly Notice[];
@@ -348,6 +363,7 @@ export function digestOf(c: DigestSource): CardDigest {
       })),
     removals: removalsOf(c.asks).slice(0, ASKS_CAP),
     closings: closingsOf(c.asks).slice(0, ASKS_CAP),
+    confirms: confirmsOf(c.asks).slice(0, ASKS_CAP),
     notices: noticesOf(c.notices ?? [], c.id),
     parent: c.parent?.card
       ? { host: c.parent.host ? capText(c.parent.host, TITLE_CAP) : null, card: capText(c.parent.card, ID_CAP) }
@@ -450,6 +466,7 @@ export function readDigest(raw: unknown): CardDigest | null {
     asks: readAsks(r.asks),
     removals: readRemovals(r.removals),
     closings: readClosings(r.closings),
+    confirms: readConfirms(r.confirms),
     notices: readNotices(r.notices),
     parent: readParent(r.parent),
   };

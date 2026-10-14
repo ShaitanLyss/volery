@@ -956,7 +956,7 @@ pub async fn answer_deferred_act(
             Reentry::Stale(said) => {
                 format!("it did not happen — the wall has moved on since you were asked. {said}")
             }
-            Reentry::Live(settle) => settle(&app, Some(answer.as_str())),
+            Reentry::Live(settle) => settle.decide(&app, Some(answer.as_str())),
         };
         /* The card is told what came of it, and is **not** roused for it: it
            asked for something to be done rather than for an answer it is

@@ -438,8 +438,10 @@ whether to go through with a delete is her judgement, not Volery's to withhold. 
 up there is the glance, so the question carries `evidence` beside its prose — the machine, each
 target as this machine resolved it, kind, entries, size, floors, inside the card's own tree or
 not, git's word, other writers, live servers, the reason — and the far wall composes its
-question from those fields alone. `travels` is the gate on this machine: an answer from afar
-reaches the settle only if the parked question's evidence still reads whole. Nothing about the
+question from those fields alone. The gate on this machine is now the generic block every
+confirmation carries (`confirm_of`, read by `ask::confirm_travels` — sink `a02ecd0e`, `ask.md`):
+an answer from afar reaches the settle only if the parked question's evidence still reads whole.
+`travels` is kept, test-only, holding `evidence` to the shape the far wall draws from. Nothing about the
 delete changed — it is still permanent, the refusals still re-run in `settle_delete` at the
 moment of deleting, and that last re-check is what makes a confirmation from another laptop a
 decision about the tree as it is. `elsewhere.md`, *A removal confirmed from another wall*, has
