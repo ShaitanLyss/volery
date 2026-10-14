@@ -720,6 +720,17 @@ person, and whether it reaches her*; it found the away pile quietly local (sink 
 **Both walls need the build** for a pull request, an Asana write or a credential lend to cross;
 removals and closes cross between this build and the one before by their old fields, as they did.
 
+Demonstrated 2026-10-14 between two labs of one build (`cfa`, `cfb`, built from main at
+`421c207`): a card on cfb, standing in the tx-toolkit checkout, called `pull_request` create
+through its own MCP endpoint. The confirmation parked on cfb and cfa drew *open a draft pull
+request on lab-cfb.queerisfreedom*, composed from the block — repository, the branches, title,
+description, stakes — with the machine first and nothing of cfb's prose. `open it` pressed in
+cfa's dock went down the prompt wire, cfb's settle ran, and draft PR !830 opened in tx-toolkit
+under the credential cfb holds, 23 seconds after the call parked. It was abandoned and its branch
+deleted straight after; Lyss chose the repository. **Not shown:** an Asana write or a credential
+lend answered from afar (the same block and the same gate, so the shared corpus and the unit
+tests are their evidence), and an older wall at either end.
+
 ### Deferring a question from the other wall
 
 *Defer* (sink `7805fa20`) has no field on the prompt wire and a wall from before it would read a new
