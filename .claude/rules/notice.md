@@ -19,9 +19,12 @@ want to miss a card being done or waiting on me because it's off-screen."*
 
 A notice stands in the dock exactly where a parked `ask_user` and a `close` / `unpost`
 confirmation stand, drawn one at a time with *"N more waiting on you"* under it, and the
-"more" steps through `Skein.waitingCards` — asks first, then each card with a notice. Asks
-come first because they hold an agent mid-turn on a clock; a notice is a card that already
-stopped. The same attention ladder rings for it (peek, taskbar flash, chime, all muted while
+"more" steps through every item in the queue, this wall's and other walls' (`queue.ts`). Asks
+come first *when the dock chooses afresh*, because they hold an agent mid-turn on a clock and a
+notice is a card that already stopped — but **never by displacing a notice you are already
+on**: one hold covers every kind, and nothing arriving moves it (ask.md, "Nor does the
+question itself change while you are answering it"). A reply typed here lives in
+`replies.svelte.ts`, not in the panel. The same attention ladder rings for it (peek, taskbar flash, chime, all muted while
 away), and while the wall is away it goes into the pile beside the deferred questions,
 grouped by card — `presence::flip` marks the ones already up as `away`, the same edge
 `defer_parked` converts parked questions on. `Notice.svelte` is drawn by both the dock and

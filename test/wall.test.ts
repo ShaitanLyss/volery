@@ -1128,6 +1128,54 @@ ti("a real click on the close control removes the card", async () => {
   expect((await ctl("dom", { selector: sel })).count).toBe(0);
 });
 
+/* The dock's one hold, in the real app and with the real keyboard: a reply
+   half-typed into a notice, then a question arriving on the card in the ring,
+   one on another card, one on a card older than both, and another card's
+   parked notice — which jumps the notice queue. Until 2026-10-14 the first
+   question took the dock off the notice and the reply went with it; the hold
+   was per kind and questions outranked notices. `test/queue.test.ts` covers
+   the rule over every pair of kinds; this is the half no pure test can see —
+   that the field is never remounted, so the caret is still in it and the next
+   letter lands after the last. Real input because a dispatched `input` event
+   cannot tell a focused field from one that was rebuilt under the cursor. */
+ti("a question arriving does not take the dock off a notice being answered", async () => {
+  const here = await newCard();
+  const there = await newCard();
+  await ctl("focus", { id: here });
+  await ctl("ask", { id: here, askId: "hold-n", notice: "Migration landed." });
+  await until("the notice to be drawn", snapshot, (s) => s.dom.noticeShown === "hold-n");
+
+  await ctl("real.click", { selector: ".notice .row input" });
+  for (const key of ["h", "a", "l", "f"]) await ctl("real.key", { key });
+  const typed = await snapshot();
+  expect(typed.dom.focusedTag).toBe("INPUT");
+  expect(typed.dom.reply).toBe("half");
+
+  await ctl("ask", { id: here, askId: "hold-q1", question: "Push it?" });
+  await ctl("ask", { id: there, askId: "hold-q2", question: "Rebase first?" });
+  await ctl("ask", { id: card, askId: "hold-q3", question: "Or neither?" });
+  await ctl("ask", { id: there, askId: "hold-n2", notice: "Also done." });
+
+  const held = await snapshot();
+  expect(held.blocked).toContain(here);
+  expect(held.dom.askShown).toBe(null);
+  expect(held.dom.noticeShown).toBe("hold-n");
+  expect(held.dom.reply).toBe("half");
+  expect(held.dom.focusedTag).toBe("INPUT");
+  /* The caret is where it was: the next letter goes on the end. */
+  await ctl("real.key", { key: "s" });
+  expect((await snapshot()).dom.reply).toBe("halfs");
+
+  for (const askId of ["hold-q1", "hold-q2", "hold-q3", "hold-n2", "hold-n"]) {
+    await ctl("ask.close", { askId });
+  }
+  await until(
+    "the queue to clear",
+    snapshot,
+    (s) => s.dom.askShown === null && s.dom.noticeShown === null,
+  );
+});
+
 ti("a nudge focuses the card, a real drag pins it", async () => {
   const moved = await newCard();
   const sel = `[data-conv="${moved}"]`;

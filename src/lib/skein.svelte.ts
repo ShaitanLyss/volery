@@ -3786,6 +3786,11 @@ export class Skein {
   /** Pending raises, one per card, so a newer rest replaces an older one. */
   #noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  /** Whether the notice queue has been read at all yet. Before it has, every
+   *  notice looks gone — which the dock must not take as a reply's notice
+   *  having come down (`Dock.svelte`'s "not sent" line). */
+  noticesRead = $state(false);
+
   async #loadNotices() {
     try {
       const rows = await invoke<unknown[]>("notices_read");
@@ -3795,6 +3800,8 @@ export class Skein {
     } catch {
       /* A queue that cannot be read draws as empty, which is the same as no
          notices — and nothing here may fault the wall. */
+    } finally {
+      this.noticesRead = true;
     }
   }
 

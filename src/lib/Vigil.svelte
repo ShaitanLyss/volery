@@ -39,6 +39,7 @@
   import { actVerb, answerEnvelope, lasted, stood, type Act, type Deferred } from "./presence";
   import type { Skein } from "./skein.svelte";
   import { isComplete } from "./asking";
+  import { replies } from "./replies.svelte";
 
   let {
     presence,
@@ -150,6 +151,8 @@
    *  real answer and is why it is offered rather than only achievable by
    *  closing the panel and letting it sit for ever. */
   async function drop(d: Deferred) {
+    /* And anything half-typed into it, which nothing will draw again. */
+    replies.forget(`ask:${d.id}`);
     await presence.claim(d.id);
     if (!presence.waiting) onclose();
   }
@@ -239,7 +242,7 @@
                   title={who.title}
                   elsewhere={true}
                   onack={() => void skein.acknowledgeNotice(n)}
-                  onfollow={(text) => void skein.followUpNotice(n, text)}
+                  onfollow={(text) => skein.followUpNotice(n, text)}
                   onstir={() => skein.stirNotice(n)}
                   onselect={() => {
                     const c = convOf(n.conversationId);
@@ -293,6 +296,7 @@
               >
               <Ask
                 ask={{ askId: d.id, questions: d.questions, answers: d.answers, ours: false, since: d.askedAt }}
+                card={d.conversationId}
                 project={who.project}
                 title={who.title}
                 scripts={convOf(d.conversationId)?.kind !== "chat"}

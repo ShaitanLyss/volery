@@ -24,6 +24,8 @@
   import Markdown from "./Markdown.svelte";
   import Gallery from "./Gallery.svelte";
   import { parseMarkdown } from "./markdown";
+  import { replies } from "./replies.svelte";
+  import { replyKey } from "./replies";
   import {
     NO_PREFERENCE,
     SKIPPED,
@@ -60,6 +62,7 @@
     onstir,
     onheld,
     onselect,
+    card = "",
   }: {
     ask: PendingAsk;
     project: string;
@@ -100,6 +103,10 @@
     onheld?: () => void;
     /** Put the asking card in the ring. Only reachable while `elsewhere`. */
     onselect?: () => void;
+    /** The card asked on — a conversation here, or a shadow of one elsewhere.
+     *  Kept with what you type, so a reply whose question has gone can be put
+     *  back into that card's prompt (`replies.ts`). */
+    card?: string;
   } = $props();
 
   let free = $state("");
@@ -115,6 +122,12 @@
   let deferring = $state(false);
   async function defer() {
     if (!ondefer || deferring) return;
+    /* Yours, so the dock does not read the question leaving as something
+       taken from under you — and what was typed but not given stays, said to
+       be from a question you put off: the pile gives it a new id, so it is
+       not waiting there. */
+    replies.closing(item);
+    replies.note(item, "you deferred it before this was given");
     deferring = true;
     try {
       await ondefer();
@@ -126,6 +139,22 @@
   /* The separator goes with the name: a card nothing has named yet would
      otherwise read "skein · " with the dot left hanging. */
   const name = $derived(nameBesideProject(title));
+
+  /* The ask, as a string. Every effect below that is about *which* question
+     this is keys on this rather than on `ask.askId`: a derived string only
+     wakes its readers when it changes, where `ask` is a prop the dock may hand
+     over again on traffic that has nothing to do with this question. Read
+     directly, that reset the step, the stir and the gallery on an arrival
+     anywhere on the wall. `test/queue.test.ts` holds the line. */
+  const id = $derived(ask.askId);
+  const item = $derived(`ask:${id}`);
+  /* What a kept reply says it was for. */
+  const about = $derived({
+    item,
+    about: `the question from ${project}${name ? ` · ${name}` : ""}`,
+    card,
+    ...(parked ? {} : { pile: true }),
+  });
 
   const questions = $derived(ask.questions);
   const many = $derived(questions.length > 1);
@@ -142,14 +171,15 @@
   const current = $derived(questions[step]);
   const done = $derived(isComplete(ask.answers));
 
-  /* The dock draws whichever card is blocked, so this component survives the
-     card changing under it — `{#if skein.blocked.length}` stays true and only
-     `conv` is swapped. A `back` left over from the last card's sheet would then
+  /* The dock draws one question at a time, so this component survives the ask
+     changing under it — when you step to another with "more", or answer one
+     and the next comes forward — and only `ask` is swapped. A `back` left over
+     from the last card's sheet would then
      point into a different set of questions, and `answers` is on the ask rather
      than in here for the same reason: switching away and back must not throw
      away what has already been answered. */
   $effect(() => {
-    ask.askId;
+    void id;
     at = null;
     warned = null;
     stirredAt = 0;
@@ -168,12 +198,26 @@
      whatever was half-typed — ask.md's "losing what I was typing", arriving by
      a road only a remote question has. Found in review. */
   const chosen = $derived(ask.answers[step]);
+  /* And what is typed but not yet given is kept outside the panel altogether,
+     in `replies`, under the ask and the step. The dock draws whichever item is
+     in front of you and this field goes when it does — so a reply held only
+     here went with any re-render, reload or bug that unmounted it. Read back
+     whenever the question under the field changes; written on every
+     keystroke; let go when it is given. */
+  const draftKey = $derived(replyKey(item, step));
   $effect(() => {
     const said = chosen;
-    step;
+    const k = draftKey;
     const preset = untrack(() => current?.options.some((o) => o.label === said));
-    free = said && !preset ? said : "";
+    free = untrack(() => replies.text(k)) || (said && !preset ? said : "");
   });
+
+  /** The sheet goes: every step's unsent text goes with it. */
+  function send() {
+    replies.closing(item);
+    replies.forget(item);
+    onanswer();
+  }
 
   /* The agent gives up waiting and proceeds on its own judgement, so the
      countdown is real information, not decoration. It is the whole call's clock:
@@ -263,10 +307,11 @@
       return;
     }
     warned = null;
+    replies.put(draftKey, "", about);
     ask.answers[step] = t;
     free = "";
     at = null;
-    if (!many && isComplete(ask.answers)) onanswer();
+    if (!many && isComplete(ask.answers)) send();
     else if (parked) onheld?.();
   }
 
@@ -326,7 +371,7 @@
      the close button would then look like it had failed. */
   $effect(() => {
     step;
-    ask.askId;
+    void id;
     showing = false;
   });
 
@@ -374,8 +419,9 @@
            together, next to the name it is about.
 
            Nothing takes it down — it goes because it stops being true. Landing
-           on the card makes `askShown` return the focused one, `elsewhere` is
-           then false, and the offer has answered itself. -->
+           on the card puts it in the ring with this question still held
+           (`queue.ts::settleHold`), `elsewhere` is then false, and the offer
+           has answered itself. -->
       <button
         class="goto"
         onclick={() => onselect?.()}
@@ -434,7 +480,7 @@
 
     <div class="free">
       <span class="foot grow">reads them together — nothing has been sent yet</span>
-      <button class="send go" onclick={() => onanswer()}>send</button>
+      <button class="send go" onclick={send}>send</button>
     </div>
   {:else}
     <!-- Keyed, so switching question replaces the block rather than mutating it:
@@ -494,7 +540,10 @@
       {/if}
       <input
         bind:value={free}
-        oninput={() => (warned = null)}
+        oninput={() => {
+          warned = null;
+          replies.put(draftKey, free, about);
+        }}
         onkeydown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();

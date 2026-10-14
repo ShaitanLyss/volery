@@ -79,24 +79,8 @@ export function noticeQueue(notices: Notice[]): Notice[] {
   );
 }
 
-/** Which notice the dock draws: the one already drawn while it is still in the
- *  queue, else the focused card's if it has one — the card in the ring and the
- *  notice beside it should be about the same conversation — else the front of
- *  the queue. `askShown`'s rule, held the same way and for the same reason: a
- *  notice raised anywhere on the wall jumps the queue when it is a card's own
- *  parked one, and it must not take the panel away from a reply being typed. */
-export function noticeShown(
-  focusedId: string | null | undefined,
-  queue: Notice[],
-  heldId?: string | null,
-): Notice | null {
-  return (
-    (heldId ? queue.find((n) => n.id === heldId) : undefined) ??
-    queue.find((n) => n.conversationId === focusedId) ??
-    queue[0] ??
-    null
-  );
-}
+/* Which notice the dock draws — and whether it draws a notice at all, with a
+   question waiting too — is `queue.ts`'s, over every kind at once. */
 
 /** What the panel calls it, and what its reply box says. */
 export function noticeWords(n: Pick<Notice, "kind" | "askId" | "waited">): {
@@ -151,6 +135,19 @@ export function followUpText(n: Pick<Notice, "kind" | "text">, reply: string): s
     .map((l) => `> ${l}`)
     .join("\n");
   return `About the notice you sent me:\n\n${quoted}\n\n${said}`;
+}
+
+/** The key that closes the card a notice is about, from inside its reply box:
+ *  ctrl+shift+W. A modifier pair rather than a bare key because the box is a
+ *  text field, and closing is the one verb here that cannot be taken back. */
+export function isCloseKey(e: {
+  key: string;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+}): boolean {
+  return e.key.toLowerCase() === "w" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey;
 }
 
 /** What a parked notice's call returns to the agent. */

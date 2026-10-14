@@ -14,7 +14,6 @@ import {
   answerWindow,
   answeredCount,
   askHeadline,
-  askShown,
   blankAnswers,
   composeAnswer,
   galleryHint,
@@ -1030,58 +1029,6 @@ describe("previewDoc", () => {
     const doc = previewDoc(preview(), { scripts: false });
     expect(doc).toContain(`width:${PREVIEW_VIEWPORT.w}px`);
     expect(doc).toContain(`height:${PREVIEW_VIEWPORT.h}px`);
-  });
-});
-
-describe("askShown", () => {
-  const a = { id: "a" };
-  const b = { id: "b" };
-
-  test("the card in the ring answers its own question", () => {
-    expect(askShown(b, [a, b])).toBe(b);
-  });
-
-  test("otherwise it is the first card that asked", () => {
-    expect(askShown(null, [a, b])).toBe(a);
-    expect(askShown({ id: "c" }, [a, b])).toBe(a);
-  });
-
-  test("selecting the card it drew is what takes the offer down", () => {
-    /* The button appears exactly while the drawn card is not the focused one,
-       so landing on it has to make the two agree — nothing else clears it. */
-    const shown = askShown(null, [a, b]);
-    expect(shown).not.toBe(null);
-    expect(askShown(shown, [a, b])).toBe(shown);
-  });
-
-  test("nothing blocked draws nothing", () => {
-    expect(askShown(a, [])).toBe(null);
-  });
-
-  /* The whole reason the third argument exists: a question arriving anywhere on
-     the wall used to be able to take the panel out from under a half-written
-     answer, and neither way in was you choosing anything. */
-  test("what you are already on is not taken away by a card that starts asking", () => {
-    const c = { id: "c" };
-    /* You are answering `b`; `c` is the card in the ring and has just asked. */
-    expect(askShown(c, [a, b, c], b)).toBe(b);
-  });
-
-  test("nor by one that lands in front of it in the queue", () => {
-    /* `blocked` is in the order the cards were made, so a card older than the
-       one you are on jumps to the head of it merely by asking. */
-    expect(askShown(null, [a, b], b)).toBe(b);
-  });
-
-  test("the hold ends when the question does", () => {
-    expect(askShown(null, [a], b)).toBe(a);
-    expect(askShown(null, [], b)).toBe(null);
-  });
-
-  test("and moving the ring is how you choose another — the caller drops it", () => {
-    /* `Dock.svelte` passes null for `held` on the flush where `focused`
-       changed, which is what lets the two rules below decide again. */
-    expect(askShown(b, [a, b], null)).toBe(b);
   });
 });
 

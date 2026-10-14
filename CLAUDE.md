@@ -63,7 +63,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # applog,
                          # nvim,
                          # guidance,
-                         # undo, lineage, update,
+                         # undo, lineage, update, queue, replies,
                          # asking, presence, away, gate, sketch,
                          # toolcall,
                          # flow, relay, board, serverlog,
@@ -394,7 +394,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `unreallog.ts`,
 `gears.ts`, `handoff.ts`,
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
-`timeline.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`) are pure
+`timeline.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `queue.ts`, `replies.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.
@@ -584,6 +584,16 @@ these apply when you open almost anything.
   there is nothing for a component to forget. The judgement — `stillFollowing`, which turns on
   the position the follow last wrote, because a write's scroll event arrives a beat *after* the
   bottom has moved — is pure and tested. See `panel.md`.
+- **What you are typing into never changes under you, and that is one rule, not one per
+  kind.** The dock draws one item out of a queue every card writes to, and the item in front
+  of you stays there for as long as it exists — whatever arrives, whatever it is. Only you
+  move it: answer, dismiss, "more", or moving the ring onto a card with something waiting.
+  The first fix was a hold per kind, and a question arriving still took the dock off a notice
+  being answered, because questions outranked notices (2026-10-14). `queue.ts::settleHold`
+  knows no kinds; a new kind of waiting thing goes into `Dock.svelte`'s `items` and inherits
+  the hold. And a reply is never the panel's: it lives in `replies.svelte.ts` by item id, and
+  one whose item goes before it is sent is handed back, not dropped. Anything else that
+  presents a queue owes the same. See `ask.md`.
 - **A capability every surface should have is not a prop.** If the answer to
   "why does this panel not do X" is "it did not pass `x`", the prop is the bug
   and adding one more call site is not the fix. Threading a capability through

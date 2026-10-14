@@ -51,6 +51,10 @@ export type ShelfId = ToyId | PuzzleId;
  *  the chord, the right-click and a card on another wall are one vocabulary. */
 export type CardChord = "close" | "glass" | "aside" | "bypass" | "wake" | "clear" | "copy-resume" | "copy-cwd";
 
+/** What a `d` chord does in the dock's queue: step to the next thing waiting,
+ *  or deal with a reply whose item went before it was sent (`Dock.svelte`). */
+export type DockChord = "next" | "reclaim" | "copy" | "drop";
+
 export type Verb =
   | { kind: "find"; mode: FindMode }
   | { kind: "toy"; toy: ShelfId }
@@ -61,6 +65,7 @@ export type Verb =
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" }
   | { kind: "card"; act: CardChord }
+  | { kind: "dock"; act: DockChord }
   | { kind: "machine"; act: "awake" | "reopen" };
 
 /** One sequence the leader opens onto.
@@ -138,6 +143,15 @@ export const CHORDS: readonly Chord[] = [
      something else, and the whole value of writing a finding down is that it
      costs nothing to do and nothing to come back from. */
   { keys: "ss", label: "the sink", verb: { kind: "sink", act: "open" } },
+  /* `d` is the dock's queue — what is waiting on you, one at a time. A family
+     because there are two kinds of verb there and both had only a mouse: the
+     "more waiting on you" step, and the three things to do with a reply whose
+     item went before it was sent. `dp` is "into its prompt", `dx` is drop —
+     `x` for the same reason `cx` clears: it lets go of something. */
+  { keys: "dn", label: "next thing waiting on you", verb: { kind: "dock", act: "next" } },
+  { keys: "dp", label: "unsent reply: into its card's prompt", verb: { kind: "dock", act: "reclaim" } },
+  { keys: "dc", label: "unsent reply: copy it", verb: { kind: "dock", act: "copy" } },
+  { keys: "dx", label: "unsent reply: drop it", verb: { kind: "dock", act: "drop" } },
   { keys: "sd", label: "drop something in the sink", verb: { kind: "sink", act: "drop" } },
   { keys: "ws", label: "every screen / one screen", verb: { kind: "window", act: "span" } },
   /* `g` is the grouping family — how this folder's work is arranged on the

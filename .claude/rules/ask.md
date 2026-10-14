@@ -864,18 +864,68 @@ another card and back does not throw away answers already given — so anything 
   are on jumps to the head of the queue merely by raising a question. The comment on `askShown`
   claimed it was "the first that asked", which it never was.
 
-So `askShown` takes a third argument: what the dock drew last, which wins outright while it is
-still asking. `noticeShown` takes the same one for the same reason — a card's own parked notice
-jumps the notice queue the moment it is raised (`noticeQueue`), and a reply being typed into
-another notice is exactly as losable.
+The first fix was a hold per kind — `askShown` and `noticeShown`, each taking what the dock
+drew last — and **it was the wrong shape, which the next report proved**: a question
+outranked every notice, so a held notice was taken out from under a reply the moment any
+question arrived, and nothing about holding notices could stop it. Lyss, 2026-10-14: *"I guess
+you only fixed it for questions."*
 
-**The hold is dropped on one event: the ring moving.** That is the only thing reaching
-`Dock.svelte` that is unambiguously you choosing — clicking a card, stepping with the waiting
-cycle, taking the panel's own "select it" offer — and the user's own statement of the rule is
-the specification: *"it should change what shows up once i'm done with it or click to select
-others"*. Everything else leaves it alone. It is an `$effect.pre` so the hold is settled before
-the template reads the deriveds that turn on it; after, and the panel is drawn once with the
-stale hold on the frame you click a card.
+**So it is one rule over every kind, in `queue.ts`, and it is the invariant to keep:** the item
+in front of you stays in front of you for as long as it exists. Nothing arriving moves it — a
+question, a notice, either from another wall, the queue re-read or re-sorted. `Dock.svelte`
+builds every waiting thing into one list of items (key, card, tier, here or far) and holds one
+key; `settleHold` is the whole decision and knows no kinds, so a new kind of waiting thing gets
+the hold by being added to the list. Kinds and tiers only decide a *fresh* choice — nothing
+held, the held item gone, or you moving the ring.
+
+- **What changes it is you**: answering or taking it down, "more waiting on you"
+  (`nextItem`), or moving the ring onto a card that has something waiting — *"it should change
+  what shows up once i'm done with it or click to select others"*. Moving the ring onto a card
+  with nothing waiting does not (you went to read a transcript), nor onto the held item's own
+  card ("select it"), nor to nothing (its card closed under it).
+- **When the held item goes, the next is chosen from the same card first** — the question
+  queued behind the one just answered — then by `queueOrder`.
+- **Closing the card in the ring is not choosing another.** `closeConv` moves the ring on by
+  itself; the dock reads a ring move as yours only if the card it left is still standing.
+- **One branch per kind in the markup.** The caret survives only if the panel is never
+  remounted, and a far question used to have two branches (ahead of this wall's when its card
+  was in the ring, behind otherwise), so it could be remounted mid-sentence with the hold never
+  having moved. `test/queue.test.ts` asserts the branch count on the source, since no DOM runs
+  in the suite.
+- **Nor reset without being remounted.** The queue is rebuilt on any traffic anywhere — a far
+  wall's digest every few seconds — and a panel handed a new object for the same question
+  re-ran `Ask.svelte`'s per-question effects: the step jumped back and the gallery closed
+  mid-answer. Found in review, before it shipped. Two fixes, either sufficient: `steady` hands
+  back an unchanged item as the same object, and `Ask` keys those effects on
+  `$derived(ask.askId)`, which stops at an unchanged string. The second is asserted on the
+  source, because it is the one any future caller relies on.
+- **The reply is not the panel's either.** What is typed lives in `replies.svelte.ts`, keyed by
+  field (`notice:<id>`, `ask:<id>:<step>`), each entry naming its item, what it was for and the
+  card — written per keystroke to `localStorage`. The notice field is bound straight to the
+  store with no copy, because the away pile and the dock can draw the same notice at once.
+- **Whatever is kept for an item no longer waiting is handed back** — a deadline, a turn taking
+  a rest notice down, a follow-up refused or never answered (90s), a question you deferred
+  (the pile gives it a new id), a parked one that died with the process. The dock says so
+  above the panel — *not sent — the notice from … went before your reply did*, or the reason —
+  with the text, *to its prompt*, *copy* and *drop* (`<space>d p/c/x`). `replies.ts::orphans`
+  derives it from the store and the queue alone, so it survives a reload; it waits for the
+  notices to be read and a far card's wall to be heard, or everything would look gone at
+  launch. A far card whose wall never returns keeps its reply until `REPLY_KEEP_MS`, unsaid —
+  the one case it cannot reach. A follow-up is kept until its send is known to have landed
+  (`answerNotice` now answers that for another wall).
+- **When the held item goes from under your caret**, the next item of the same kind reuses the
+  panel and the caret stays put — so the rest of your sentence and its Enter would land on a
+  different question. Blurring is worse: a key typed with nothing focused goes to the prompt,
+  and its Enter sends the tail to the card in the ring. So the dock notes the swap and holds
+  the first Enter once (`guardEnter`); anything you closed yourself (`replies.closing`) is not
+  a swap.
+- **`<space>d n`** is "more waiting on you", which now goes through `focusCard`/`focusShadow`
+  like a click, and counts what it can reach: questions queued behind the card's own are a
+  plain count, not a button that would do nothing.
+
+It is an `$effect.pre` so the hold is settled before the template reads what turns on it, and
+`shownItem` asks the same rule rather than reading the hold, so the panel is right on the frame
+an item goes.
 
 Two things follow from a card being able to hold several, and both are the kind that would
 otherwise be found by somebody losing an answer:

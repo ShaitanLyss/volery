@@ -367,6 +367,13 @@ export function shadowKey(host: string, card: string): string {
   return `elsewhere:${host}:${card}`;
 }
 
+/** Is this id a `shadowKey` — a card on another wall — rather than a card
+ *  here? For an id whose shadow is not on the wall to be asked, as one is
+ *  before its wall has been heard from. */
+export function isShadowKey(id: string): boolean {
+  return id.startsWith("elsewhere:");
+}
+
 /** A parent off the wire, or null. A card id that is empty after scrubbing is
  *  no parent at all — the brief's one hard rule for an older or broken wall. */
 function readParent(raw: unknown): DigestParent | null {

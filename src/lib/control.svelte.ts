@@ -1296,6 +1296,11 @@ export class Control {
            the notice behind it. */
         askShown: document.querySelector(".ask")?.getAttribute("data-ask") ?? null,
         noticeShown: document.querySelector(".notice")?.getAttribute("data-notice") ?? null,
+        /* And what is typed into the reply field of whichever is drawn — the
+           half of "the panel held" that a key alone cannot show: the same item
+           redrawn from scratch has the same key and an empty field. */
+        reply:
+          document.querySelector<HTMLInputElement>(".notice .row input, .ask .free input")?.value ?? null,
         /* A drag on the wall must be a gesture, never a text selection. That
            distinction is invisible to a synthetic pointer — only a real one
            makes Chromium start selecting — so the count is reported here rather
@@ -1964,6 +1969,17 @@ export class Control {
       ask: async (op) => {
         const c = this.#card(op);
         const askId = op.askId ? String(op.askId) : crypto.randomUUID();
+        /* `notice` parks a card's own notice instead — the `{ notice: { text } }`
+           payload `notice.rs::parked_payload` sends down the same channel, so the
+           dock's queue can be driven with both kinds. `ask.close` takes it down. */
+        if (typeof op.notice === "string") {
+          await asRust("ask:opened", {
+            conversation_id: c.id,
+            ask_id: askId,
+            ask: { notice: { text: op.notice } },
+          });
+          return { id: c.id, askId, tier: c.tier, asks: c.asks.length };
+        }
         await asRust("ask:opened", {
           conversation_id: c.id,
           ask_id: askId,

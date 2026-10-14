@@ -476,6 +476,10 @@
       if (verb.act === "drop") showDrop = true;
       else showSink = true;
     }
+    else if (verb.kind === "dock") {
+      const why = dock?.chord(verb.act);
+      if (why) skein.fault = why;
+    }
     else if (verb.toy === "synth") synth.show();
     /* The rest of the shelf is the away gate's puzzles, opened on purpose
        rather than met on the way back to work. Same surface, `mode="play"` —
@@ -834,6 +838,8 @@
   });
 
   let canvas = $state<ReturnType<typeof Canvas> | undefined>();
+  /** The dock, for its own leader verbs (`<space>d`). */
+  let dock = $state<ReturnType<typeof Dock> | undefined>();
   /** The open panel, for the keys that move the reading. Undefined whenever
    *  there is no card focused, which is what makes those keys a no-op there
    *  without anything having to ask. */
@@ -945,23 +951,6 @@
    *  different object and a different type, so nothing that acts on `focused`
    *  can be handed it. See `shadow.ts`. */
   const focusedShadow = $derived(focused ? null : elsewhere.find(focusedId));
-  /** A question on another wall this one may answer: the focused card's first,
-   *  else the first any card elsewhere is parked on. The dock decides where it
-   *  stands against this wall's own questions. */
-  const remoteAsk = $derived.by(() => {
-    const mine = focusedShadow?.open[0];
-    if (focusedShadow && mine) return { shadow: focusedShadow, sheet: mine, focused: true };
-    const any = elsewhere.firstAsking();
-    return any ? { ...any, focused: false } : null;
-  });
-  /** A notice standing on another wall this one may take down, by the same
-   *  rule: the focused shadow's first, else the first any shadow has. */
-  const remoteNotice = $derived.by(() => {
-    const mine = focusedShadow?.notices[0];
-    if (focusedShadow && mine) return { shadow: focusedShadow, notice: mine, focused: true };
-    const any = elsewhere.firstNotice();
-    return any ? { ...any, focused: false } : null;
-  });
   /* A card you are looking at finishing is something you watched, so it raises
      no notice — the user's choice. All three facts live here, so this is where
      the question is answered for `Skein`. */
@@ -5030,16 +5019,16 @@
   <Hearing {voicing} />
 
   <Dock
+    bind:this={dock}
     {field}
     {skein}
     {bang}
     {focused}
     remote={focusedShadow}
-    {remoteAsk}
+    shadows={elsewhere.shadows}
     onremoteanswer={(s, sheet) => void elsewhere.answer(s, sheet)}
     onremotedefer={(s, sheet) => elsewhere.defer(s, sheet)}
-    {remoteNotice}
-    onremotenotice={(s, n, reply) => void elsewhere.answerNotice(s, n, reply)}
+    onremotenotice={(s, n, reply) => elsewhere.answerNotice(s, n, reply)}
     onremoteselect={(s) => focusShadow(s)}
     {targets}
     {waiting}
@@ -5061,8 +5050,14 @@
     onrun={runCommand}
     ontake={takeCompletion}
     oncycle={cycleWaiting}
-    onmore={(shown) =>
-      (focusedId = skein.waitingCards.find((c) => c !== shown)?.id ?? focusedId)}
+    onmore={(card) => {
+      /* As clicking it would: the gathering follows, and a card elsewhere
+         opens its panel — or the transcript beside the item is not its. */
+      const conv = skein.convs.find((c) => c.id === card);
+      const shadow = conv ? null : elsewhere.find(card);
+      if (conv) focusCard(conv);
+      else if (shadow) focusShadow(shadow);
+    }}
     onselect={focusCard}
   />
 

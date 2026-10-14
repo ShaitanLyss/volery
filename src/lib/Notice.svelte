@@ -11,10 +11,11 @@
      one that is genuinely blocking, and it borrows the ask's amber. */
   import Markdown from "./Markdown.svelte";
   import { parseMarkdown } from "./markdown";
+  import { replies } from "./replies.svelte";
   import { clock } from "./conversation.svelte";
   import { stood } from "./presence";
   import { nameBesideProject } from "./naming";
-  import { noticeWords, type Notice } from "./notice";
+  import { isCloseKey, noticeWords, type Notice } from "./notice";
 
   let {
     notice,
@@ -22,6 +23,7 @@
     title,
     elsewhere = false,
     onack,
+    onclosecard,
     onfollow,
     onselect,
     onstir,
@@ -32,33 +34,100 @@
     /** The card it is about is not the card in the ring — say which one. */
     elsewhere?: boolean;
     onack: () => void;
-    onfollow: (text: string) => void;
+    /** Close the card this is about — the card's own close, so a card that is
+     *  working asks first and the notice stays up behind that question. */
+    onclosecard?: () => void;
+    /** Send the reply. Answering whether it landed, where the caller knows —
+     *  a reply that did not is kept rather than dropped (`replies.svelte.ts`). */
+    onfollow: (text: string) => void | boolean | Promise<boolean | void>;
     onselect?: () => void;
     /** Typing into a notice that is holding a turn open — see `stirNotice`. */
     onstir?: () => void;
   } = $props();
 
-  let reply = $state("");
-  /* A different notice is a different reply: what you were typing to one card
+  /* The reply lives in `replies`, keyed by the notice, and this field is only
+     where it is being typed: it unmounts whenever the dock draws something
+     else, and it used to take what you had written with it. So the field is
+     bound straight to the store, with no copy of its own — a notice you come
+     back to, in the dock or in the away pile, or after a reload, has your
+     half-written reply still in it.
+
+     **No copy, because the same notice can be drawn twice at once**: the away
+     pile stands over the dock and both draw the notices queued while you were
+     out. Two fields each holding their own copy would let the one you had not
+     typed into write its stale text back over the one you had.
+
+     A different notice is a different reply: what you were typing to one card
      must not be sent to the next one the queue brings up. Keyed on the id, a
      string, and not on the prop: every re-read of the queue hands this a new
      object for the same notice, and depending on that wiped a half-typed reply
      whenever anything anywhere on the wall raised or took one. */
-  const id = $derived(notice.id);
-  $effect.pre(() => {
-    void id;
-    reply = "";
+  const key = $derived(`notice:${notice.id}`);
+  const reply = $derived(replies.text(key));
+  const name = $derived(nameBesideProject(title));
+  /* What a kept reply says it was for. A far notice's `conversationId` is
+     its shadow's id (`afar.ts::noticeHere`), which is what the ring takes. */
+  const about = $derived({
+    item: key,
+    about: `the notice from ${project}${name ? ` · ${name}` : ""}`,
+    card: notice.conversationId,
   });
 
+  /** How long a follow-up may be on its way before the reply is shown back
+   *  as not sent. A send to a dormant card spawns it first, which is seconds;
+   *  a minute and a half is a send that is not coming back. If it lands after
+   *  all, the reply goes then — this only stops a hung promise hiding it for
+   *  good. */
+  const PATIENCE_MS = 90_000;
+
+  /* A follow-up is kept until it is known to have landed: `followUpNotice`
+     takes the notice down before it sends, and a send that then finds the
+     notice already gone, or another wall refuses, leaves the words for the
+     dock to hand back. */
+  function follow(text: string) {
+    if (!text.trim()) return;
+    const k = key;
+    replies.closing(k);
+    replies.sending(k);
+    const failed = () => {
+      replies.note(k, "your reply did not go through");
+      replies.settled(k, false);
+    };
+    const r = onfollow(text);
+    if (!(r instanceof Promise)) {
+      if (r === false) failed();
+      else replies.settled(k, true);
+      return;
+    }
+    const late = setTimeout(failed, PATIENCE_MS);
+    r.then(
+      (ok) => {
+        clearTimeout(late);
+        if (ok === false) failed();
+        else replies.settled(k, true);
+      },
+      () => {
+        clearTimeout(late);
+        failed();
+      },
+    );
+  }
+
+  /* Taking it down without a word is a word: what was typed goes with it. */
+  function ack() {
+    replies.closing(key);
+    replies.forget(key);
+    onack();
+  }
+
   const words = $derived(noticeWords(notice));
-  const name = $derived(nameBesideProject(title));
   const tone = $derived(
     notice.askId ? "blocking" : notice.kind === "question" ? "question" : notice.kind,
   );
 
   function send() {
-    if (reply.trim()) onfollow(reply);
-    else onack();
+    if (reply.trim()) follow(reply);
+    else ack();
   }
 </script>
 
@@ -86,9 +155,15 @@
 
   <div class="row">
     <input
-      bind:value={reply}
+      bind:value={() => reply, (v) => replies.put(key, v, about)}
       placeholder={words.placeholder}
       onkeydown={(e) => {
+        if (onclosecard && isCloseKey(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+          onclosecard();
+          return;
+        }
         onstir?.();
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
@@ -97,14 +172,22 @@
       }}
       title="enter sends it; enter on an empty reply acknowledges"
     />
-    <button class="btn" onclick={() => onfollow(reply)} disabled={!reply.trim()}
+    <button class="btn" onclick={() => follow(reply)} disabled={!reply.trim()}
       >{words.send}</button
     >
     <button
       class="btn ack"
-      onclick={() => onack()}
+      onclick={ack}
       title="Take it down without a word (enter on an empty reply)">acknowledge</button
     >
+    {#if onclosecard}
+      <button
+        class="btn ack"
+        onclick={onclosecard}
+        title="Close the card this is about — asks first if it is working (ctrl+shift+W in the reply box)"
+        >close</button
+      >
+    {/if}
   </div>
 </div>
 

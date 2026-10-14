@@ -15,16 +15,20 @@
    * and it is the *boundary* between the dock and everything else rather than a
    * thing inside it. Splitting it across two files would put the two halves of
    * one priority order where neither can be read against the other. */
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import Ask from "./Ask.svelte";
   import Notice from "./Notice.svelte";
-  import { noticeShown, type Notice as NoticeRow } from "./notice";
+  import type { Notice as NoticeRow } from "./notice";
   import type { Skein } from "../lib/skein.svelte";
   import type { Conversation, PendingAsk } from "../lib/conversation.svelte";
   import type { Shadow } from "./shadows.svelte";
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
-  import { askShown } from "./asking";
+  import { nextItem, settleHold, shownItem, steady, type Hold, type Waiting } from "./queue";
+  import { replies } from "./replies.svelte";
+  import type { Orphan, Reply } from "./replies";
+  import { isShadowKey } from "./shadow";
+  import type { DockChord } from "./leader";
   import { scopeFiles } from "./paths.svelte";
   import { completionForChoice, slashAt, stirsCard, typingChoice, type Command } from "./commands";
   import { nameBesideProject } from "./naming";
@@ -39,10 +43,9 @@
     bang,
     focused,
     remote = null,
-    remoteAsk = null,
+    shadows = [],
     onremoteanswer,
     onremotedefer,
-    remoteNotice = null,
     onremotenotice,
     onremoteselect,
     targets,
@@ -75,20 +78,15 @@
      *  acts on a card can be aimed at one by accident; all the dock does with it
      *  is say where a prompt would go and let one be typed. */
     remote?: Shadow | null;
-    /** A question a card on another wall is parked on, which this wall may
-     *  answer: the focused shadow's, or else the first any shadow has. Drawn
-     *  the way a local question is, by the same panel — see the markup for
-     *  where it stands in the queue. */
-    remoteAsk?: { shadow: Shadow; sheet: PendingAsk; focused: boolean } | null;
+    /** Every card on another wall. Their questions and notices join the queue
+     *  beside this wall's own (`items`), drawn by the same panels, and held by
+     *  the same rule — see `queue.ts`. */
+    shadows?: readonly Shadow[];
     onremoteanswer?: (shadow: Shadow, sheet: PendingAsk) => void;
     onremotedefer?: (shadow: Shadow, sheet: PendingAsk) => void | Promise<void>;
-    /** A notice standing in another wall's queue — the focused shadow's, or
-     *  else the first any shadow has. Drawn by the panel a local notice uses;
-     *  where it stands is in the markup. */
-    remoteNotice?: { shadow: Shadow; notice: NoticeRow; focused: boolean } | null;
-    /** Take it down over there: an empty reply acknowledges, anything else is
-     *  a follow-up sent to the card. */
-    onremotenotice?: (shadow: Shadow, notice: NoticeRow, reply: string) => void;
+    /** Take a far notice down over there: an empty reply acknowledges,
+     *  anything else is a follow-up sent to the card. */
+    onremotenotice?: (shadow: Shadow, notice: NoticeRow, reply: string) => void | Promise<boolean>;
     onremoteselect?: (shadow: Shadow) => void;
     /** Everything a send would reach: the gathering, or the focused card, or
      *  nothing at all. */
@@ -137,9 +135,10 @@
     onrun: (cmd: Command, broadcast: boolean) => Promise<void>;
     ontake: (offer: Completion, match: Match) => Promise<void>;
     oncycle: (step: 1 | -1) => void;
-    /** Move to the next card waiting on an answer. Which one that is, is the
-     *  wall's question rather than the dock's. */
-    onmore: (shown: Conversation) => void;
+    /** Put the ring on the card — here or elsewhere — of the item "more
+     *  waiting on you" just stepped to, so the transcript beside it is that
+     *  card's. Which item is the dock's question (`queue.ts::nextItem`). */
+    onmore: (card: string) => void;
     /** Land on a card: the ring, the gathering and the panel, the way clicking
      *  it does. Asked for by the ask panel when the card being asked is not the
      *  one selected. */
@@ -148,70 +147,255 @@
 
   /* ── what the panel is already on ──────────────────────────────────────
    *
-   * The dock draws one thing out of a queue other cards are writing to all the
-   * time, and until this existed an arrival could re-pick it from under a
-   * half-written answer — see `askShown`, which carries the argument. These two
-   * are what it drew last, and they are dropped only when you move the ring,
-   * which is the one event in here that is you choosing rather than the wall
-   * changing. Everything else — a card starting to ask, a notice being raised,
-   * the queue being re-read — leaves them alone.
+   * The dock draws one thing out of a queue every card on the wall — and every
+   * card on every other wall in the flyway — is writing to all the time. Which
+   * one is a single hold over all of it, of every kind: a question, a notice,
+   * either from another wall. It stays on what it holds for as long as that
+   * exists, whatever arrives and whatever it is; `queue.ts` has the rule, and
+   * the bug that made it one rule rather than one per kind.
    *
    * `$effect.pre` rather than `$effect` so the hold is settled before the
-   * template reads the deriveds that depend on it: both rules run in the same
-   * flush either way, but doing it after would have the panel drawn once with
-   * the stale hold on the frame you click a card. */
-  let heldAsk = $state<Conversation | null>(null);
-  let heldNotice = $state<string | null>(null);
-  /* Plain, not `$state`: it is this effect's own memory of the last ring it
-     saw, and nothing may re-run on it. */
-  let ringed: Conversation | null = null;
+   * template reads the deriveds that depend on it: doing it after would have
+   * the panel drawn once with the stale hold on the frame you click a card. */
+
+  /** One thing waiting on you, with what its panel needs to draw it.
+   *
+   *  Only the question at the *front* of a card's queue is an item: a card's
+   *  questions are answered in the order it asked them, and `answerAsk`
+   *  answers the front one. The rest are counted in `waitingOnYou` and come
+   *  forward one by one, as the hold moves on to them (`settleHold`'s
+   *  same-card rule). */
+  type Item =
+    | (Waiting & { kind: "ask"; conv: Conversation; ask: PendingAsk })
+    | (Waiting & { kind: "notice"; conv: Conversation; notice: NoticeRow })
+    | (Waiting & { kind: "far-ask"; shadow: Shadow; ask: PendingAsk })
+    | (Waiting & { kind: "far-notice"; shadow: Shadow; notice: NoticeRow });
+
+  /* Keyed as the panels key their replies (`replies.ts`), so "this item is
+     still waiting" and "this reply's item is still waiting" are one question.
+     A far notice's id already carries its shadow's (`afar.ts::noticeHere`).
+
+     And every item that has not changed is handed back as the very object it
+     was (`steady`): this is rebuilt on any traffic anywhere — a far wall's
+     digest alone does it every few seconds — and a panel handed a new object
+     for the same question wakes everything reading it. Plain, not `$state`:
+     the derived's own memory, read and written only here. */
+  let lastItems = new Map<string, Item>();
+  const items = $derived.by((): Item[] => {
+    const out: Item[] = [];
+    for (const conv of skein.blocked) {
+      const ask = conv.pendingAsk;
+      if (ask) {
+        out.push({ kind: "ask", key: `ask:${ask.askId}`, card: conv.id, tier: 0, far: false, conv, ask });
+      }
+    }
+    for (const shadow of shadows) {
+      const ask = shadow.open[0];
+      if (ask) {
+        out.push({ kind: "far-ask", key: `ask:${ask.askId}`, card: shadow.id, tier: 0, far: true, shadow, ask });
+      }
+    }
+    for (const notice of skein.noticeQueue) {
+      const conv = skein.convs.find((c) => c.id === notice.conversationId);
+      if (conv) {
+        out.push({ kind: "notice", key: `notice:${notice.id}`, card: conv.id, tier: 1, far: false, conv, notice });
+      }
+    }
+    for (const shadow of shadows) {
+      for (const notice of shadow.notices) {
+        out.push({ kind: "far-notice", key: `notice:${notice.id}`, card: shadow.id, tier: 1, far: true, shadow, notice });
+      }
+    }
+    const kept = steady(lastItems, out);
+    lastItems = new Map(kept.map((t) => [t.key, t]));
+    return kept;
+  });
+
+  /** The card in the ring, here or on another wall — never both. */
+  const ring = $derived(focused?.id ?? remote?.id ?? null);
+
+  /** Is this card — here or elsewhere — still on the wall? */
+  function stands(card: string): boolean {
+    return skein.convs.some((c) => c.id === card) || shadows.some((s) => s.id === card);
+  }
+
+  function whoOf(t: Item): string {
+    const [project, title] =
+      t.kind === "ask" || t.kind === "notice"
+        ? [t.conv.project, t.conv.title]
+        : [`${t.shadow.project} · on ${t.shadow.host}`, t.shadow.title];
+    const name = nameBesideProject(title);
+    return `${project}${name ? ` · ${name}` : ""}`;
+  }
+
+  let hold = $state.raw<Hold | null>(null);
+  /* Plain, not `$state`: this effect's own memory of the last ring and the
+     last queue it saw, and nothing may re-run on either. */
+  let ringed: string | null = null;
+  let seen = new Map<string, Item>();
   $effect.pre(() => {
-    const ring = focused;
-    const asks = skein.blocked;
-    const notices = skein.noticeQueue;
+    const now = items;
+    const at = ring;
     untrack(() => {
-      const moved = ring !== ringed;
-      ringed = ring;
-      heldAsk = askShown(ring, asks, moved ? null : heldAsk);
-      const kept = moved ? null : heldNotice;
-      heldNotice = heldAsk ? kept : (noticeShown(ring?.id, notices, kept)?.id ?? null);
+      /* The ring moving is you choosing a card — unless the card it was on is
+         gone. Closing the card in the ring moves the ring on by itself
+         (`closeConv` in `App.svelte`), and that is the wall tidying up after
+         you, not you choosing whichever card it landed on. */
+      const moved = at !== ringed && (ringed === null || stands(ringed));
+      ringed = at;
+      const before = hold;
+      hold = settleHold(now, at, hold, moved);
+      if (moved || hold?.key !== before?.key) swapped = null;
+      /* The held item went without you: guard what you were typing. */
+      if (!moved && before && hold && hold.key !== before.key && !replies.byYou(before.key)) {
+        const gone = seen.get(before.key);
+        if (gone) guardSwap(gone);
+      }
+      seen = new Map(now.map((t) => [t.key, t]));
     });
   });
 
-  /* The dock draws whichever card is *blocked*, which need not be the card in
+  /* What is drawn. Asked of the same rule as the hold rather than read off
+     it, so it is right on the very frame an item goes, before the effect above
+     has re-settled anything. */
+  const shown = $derived(shownItem(items, ring, hold));
+
+  /* ── the held item going while you type into it ────────────────────────
+   *
+   * Nothing arriving moves the hold, but the held item can still *go*: a
+   * question's deadline, a rest notice taken down because its card started a
+   * turn, another wall answering it or going quiet. The hold moves on to the
+   * next — and when that is the same kind, the same panel is reused, the caret
+   * stays where it was, and the rest of your sentence and its Enter would land
+   * on a different question. Blurring the field is no answer: a key typed with
+   * nothing focused goes to the prompt (`onGlobalKey`), and its Enter would
+   * then send the tail of the sentence to the card in the ring.
+   *
+   * So the field keeps the caret, the note says what happened, and the first
+   * Enter after the swap is held — once. Your words for the one that went are
+   * still kept under it (`replies`), and handed back by the line below. */
+  let swapped = $state<string | null>(null);
+  let heldEl = $state<HTMLElement | undefined>(undefined);
+
+  function guardSwap(gone: Item) {
+    const el = document.activeElement;
+    if (!heldEl || !(el instanceof HTMLElement) || !heldEl.contains(el)) return;
+    const kind = gone.kind === "ask" || gone.kind === "far-ask" ? "question" : "notice";
+    swapped = `the ${kind} from ${whoOf(gone)} went while you were in it — this is another one, so enter is held once`;
+  }
+
+  function guardEnter(e: KeyboardEvent) {
+    if (!swapped || e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    swapped = null;
+  }
+
+  /* The whole queue, as the "more" line counts it. Questions are counted
+     rather than the cards holding them: one card can be parked on several at
+     once (`Conversation.asks`), and a line reading "2 more waiting on you"
+     over three unanswered questions is an instrument that cannot be trusted
+     to have counted the one you have not seen. Arrivals are signalled here and
+     only here — never by moving what you are on. */
+  const waitingOnYou = $derived(
+    skein.pendingAsks +
+      skein.noticeQueue.length +
+      shadows.reduce((n, s) => n + s.open.length + s.notices.length, 0),
+  );
+
+  /** What "more waiting on you" would step to — null when everything else is
+   *  queued behind the card's own question, which only answering reaches. */
+  const next = $derived(nextItem(items, shown?.key ?? null));
+
+  /** Step to the next item, and put its card in the ring so the transcript
+   *  beside it is the one it is about. Setting the hold first is what makes
+   *  the ring landing there agree with it rather than re-decide. */
+  function more() {
+    if (!next) return;
+    hold = { key: next.key, card: next.card };
+    swapped = null;
+    onmore(next.card);
+  }
+
+  /* The dock draws whichever card is waiting, which need not be the card in
      the ring — `elsewhere` is that case and it is drawn on the panel. So a
      path in the question belongs to the asking card's directory, and the root
      this falls back to otherwise is the focused one: the same file name in two
      projects would have opened the wrong one, silently. See `scopeFiles`. */
-  const asking = $derived(askShown(focused, skein.blocked, heldAsk));
-  /* A question from another wall. Ahead of a local one only when its card is
-     the one in the ring — you went to it, so that is the question you meant —
-     and otherwise behind every local question and ahead of every notice: it is
-     still an agent stopped on a clock, just one on another machine. */
-  const remoteShown = $derived(remoteAsk && (remoteAsk.focused || !asking) ? remoteAsk : null);
-  /* Behind every ask: a notice is a card that already stopped, where an ask is
-     an agent stopped mid-turn on a clock. So one only shows with no ask up. */
-  const notice = $derived(
-    asking || remoteShown ? null : noticeShown(focused?.id, skein.noticeQueue, heldNotice),
+  const shownCard = $derived(
+    shown?.kind === "ask" || shown?.kind === "notice" ? shown.conv : null,
   );
-  /* A notice from another wall: ahead of this wall's own only when its card is
-     the one in the ring, otherwise behind them — the same place a remote
-     question takes among the asks. */
-  const remoteNoticeShown = $derived(
-    asking || remoteShown || !remoteNotice ? null : remoteNotice.focused || !notice ? remoteNotice : null,
-  );
-  const noticeCard = $derived(
-    notice ? (skein.convs.find((c) => c.id === notice.conversationId) ?? null) : null,
-  );
-  /* The whole queue, asks and notices, as the "more" line counts it. Asks are
-     counted rather than the cards holding them: one card can be parked on
-     several at once (`Conversation.asks`), and a line reading "2 more waiting
-     on you" over three unanswered questions is an instrument that cannot be
-     trusted to have counted the one you have not seen. */
-  const waitingOnYou = $derived(skein.pendingAsks + skein.noticeQueue.length);
 
-  const shownCard = $derived(asking ?? noticeCard);
-  scopeFiles(() => (shownCard?.kind === "project" ? shownCard.cwd : null) ?? null);
+  /* ── a reply whose item went first ─────────────────────────────────────
+   *
+   * What you typed is kept under the item it was typed to (`replies`), and an
+   * item can go before its reply is sent: a deadline, a turn taking a rest
+   * notice down, a send the other side refused, a question you deferred, the
+   * process dying under a parked one. So whatever is kept for an item no
+   * longer waiting is said here, with the words, and offered back — derived
+   * from the store and the queue alone, which is what makes it survive a
+   * reload: nothing has to have watched the item go. A reply is only ever let
+   * go on purpose.
+   *
+   * Not before the queue it belongs to has been read: at launch every notice
+   * looks gone until the queue is read, and a far one until its wall is
+   * heard. A far card whose wall never comes back keeps its reply until it
+   * ages out (`REPLY_KEEP_MS`) — the one case this cannot say anything about. */
+  const live = $derived(new Set(items.map((t) => t.key)));
+  function ready(r: Reply): boolean {
+    const far = shadows.find((s) => s.id === r.card);
+    if (far) return !far.face.unheard;
+    if (isShadowKey(r.card)) return false;
+    return skein.loaded && skein.noticesRead;
+  }
+  const strays = $derived(replies.orphans(live, ready));
+  const stray = $derived(strays[0] ?? null);
+
+  function reachable(o: Orphan): { conv: Conversation | null; shadow: Shadow | null } | null {
+    const conv = skein.convs.find((c) => c.id === o.card) ?? null;
+    const shadow = conv ? null : (shadows.find((s) => s.id === o.card) ?? null);
+    return conv || shadow ? { conv, shadow } : null;
+  }
+
+  /** Into the prompt, at the card it was written to — the ring goes there
+   *  first, so the words land in that card's draft rather than whichever one
+   *  is in hand. Appended to anything already written there. */
+  async function reclaim(o: Orphan) {
+    const to = reachable(o);
+    if (!o.text || !to) return;
+    if (to.conv) onselect(to.conv);
+    else if (to.shadow) onremoteselect?.(to.shadow);
+    await tick();
+    field.put(field.text.trim() ? `${field.text.trimEnd()}\n\n${o.text}` : o.text);
+    replies.forget(o.item);
+    prompt?.focus();
+  }
+
+  async function copyStray(o: Orphan) {
+    try {
+      await navigator.clipboard.writeText(o.text);
+      replies.forget(o.item);
+    } catch {
+      skein.fault = "could not write to the clipboard — the reply is still kept";
+    }
+  }
+
+  /** The dock's verbs for the leader (`<space>d`, `leader.ts`), so nothing
+   *  here is mouse-only. Answers why it did nothing, for the caller to say. */
+  export function chord(act: DockChord): string | null {
+    if (act === "next") {
+      if (!next) return "nothing else is waiting on you";
+      more();
+      return null;
+    }
+    if (!stray) return "no unsent reply is waiting";
+    if (act === "reclaim") {
+      if (!reachable(stray)) return "the card it was for has gone — copy it or drop it";
+      void reclaim(stray);
+    } else if (act === "copy") void copyStray(stray);
+    else replies.forget(stray.item);
+    return null;
+  }
 
   let height = $state(0);
   /* Braced, not an arrow expression: an effect that *returns* a value is an
@@ -369,32 +553,33 @@
      asked. Answering goes back down the prompt wire into the parked call, and the
      line in the card's panel says how far it got — the same four readings a
      prompt to that wall has. -->
-{#snippet elsewhereAsk(r: { shadow: Shadow; sheet: PendingAsk; focused: boolean })}
+{#snippet elsewhereAsk(shadow: Shadow, sheet: PendingAsk)}
   <Ask
-    ask={r.sheet}
-    project="{r.shadow.project} · on {r.shadow.host}"
-    title={r.shadow.title}
-    scripts={r.shadow.digest.kind !== "chat"}
+    ask={sheet}
+    card={shadow.id}
+    project="{shadow.project} · on {shadow.host}"
+    title={shadow.title}
+    scripts={shadow.digest.kind !== "chat"}
     stirs={false}
-    elsewhere={!r.focused}
-    onanswer={() => onremoteanswer?.(r.shadow, r.sheet)}
-    ondefer={() => onremotedefer?.(r.shadow, r.sheet)}
-    onselect={() => onremoteselect?.(r.shadow)}
+    elsewhere={shadow.id !== ring}
+    onanswer={() => onremoteanswer?.(shadow, sheet)}
+    ondefer={() => onremotedefer?.(shadow, sheet)}
+    onselect={() => onremoteselect?.(shadow)}
   />
 {/snippet}
 
 <!-- A notice standing on another wall, in the panel a local one uses. No
      `onstir`: no touch travels, and a notice holding a turn open over there
      counts its own window. Taking it down goes back down the prompt wire. -->
-{#snippet elsewhereNotice(r: { shadow: Shadow; notice: NoticeRow; focused: boolean })}
+{#snippet elsewhereNotice(shadow: Shadow, notice: NoticeRow)}
   <Notice
-    notice={r.notice}
-    project="{r.shadow.project} · on {r.shadow.host}"
-    title={r.shadow.title}
-    elsewhere={!r.focused}
-    onack={() => onremotenotice?.(r.shadow, r.notice, "")}
-    onfollow={(text) => onremotenotice?.(r.shadow, r.notice, text)}
-    onselect={() => onremoteselect?.(r.shadow)}
+    {notice}
+    project="{shadow.project} · on {shadow.host}"
+    title={shadow.title}
+    elsewhere={shadow.id !== ring}
+    onack={() => onremotenotice?.(shadow, notice, "")}
+    onfollow={(text) => onremotenotice?.(shadow, notice, text)}
+    onselect={() => onremoteselect?.(shadow)}
   />
 {/snippet}
 
@@ -423,49 +608,103 @@
     onpointercancel={onmoor.up}
     ondblclick={onmoor.reset}
   ></div>
-  <!-- A blocked card jumps the queue: it is the only state where an agent is
-       genuinely stopped, so answering it comes before anything else. -->
-  {#if remoteShown?.focused}
-    {@render elsewhereAsk(remoteShown)}
-  {:else if asking}
-    {@const target = asking}
-    <Ask
-      ask={target.pendingAsk!}
-      project={target.project}
-      title={target.title}
-      scripts={target.kind !== "chat"}
-      elsewhere={target !== focused}
-      onanswer={() => skein.answerAsk(target)}
-      ondefer={() => skein.deferAsk(target)}
-      onstir={() => skein.stirAsk(target)}
-      onheld={() => skein.holdAsk(target)}
-      onselect={() => onselect(target)}
-    />
-  {:else if remoteShown}
-    {@render elsewhereAsk(remoteShown)}
-  {:else if remoteNoticeShown?.focused}
-    {@render elsewhereNotice(remoteNoticeShown)}
-  {:else if notice && noticeCard}
-    {@const n = notice}
-    {@const card = noticeCard}
-    <Notice
-      notice={n}
-      project={card.project}
-      title={card.title}
-      elsewhere={card !== focused}
-      onack={() => skein.acknowledgeNotice(n)}
-      onfollow={(text) => skein.followUpNotice(n, text)}
-      onstir={() => skein.stirNotice(n)}
-      onselect={() => onselect(card)}
-    />
-  {:else if remoteNoticeShown}
-    {@render elsewhereNotice(remoteNoticeShown)}
+  <!-- A reply typed to something that went before it was sent. Above the
+       panel rather than in it, because the panel has already moved on to the
+       next thing, and quiet: it is a thing kept for you, not a fault. -->
+  <!-- A reply typed to something that went before it was sent. Above the
+       panel rather than in it, because the panel has already moved on to the
+       next thing, and quiet: it is a thing kept for you, not a fault. -->
+  {#if stray}
+    {@const s = stray}
+    {@const to = reachable(s)}
+    <div class="unsent" role="status">
+      <span class="why"
+        >not sent — {s.about}{s.why ? `: ${s.why}` : " went before your reply did"}{strays.length > 1
+          ? ` · 1 of ${strays.length}`
+          : ""}</span
+      >
+      <span class="words">{s.text}</span>
+      {#if to}
+        <button
+          class="keep"
+          onclick={() => void reclaim(s)}
+          title="Put it in the prompt, aimed at the card it was written to (space then d p)"
+          >to its prompt</button
+        >
+      {/if}
+      <button class="keep" onclick={() => void copyStray(s)} title="Copy it, and let it go (space then d c)"
+        >copy</button
+      >
+      <button class="keep" onclick={() => replies.forget(s.item)} title="Let it go (space then d x)"
+        >drop</button
+      >
+    </div>
   {/if}
-  {#if shownCard && waitingOnYou > 1}
-    {@const shown = shownCard}
-    <button class="more" onclick={() => onmore(shown)}>
+  {#if swapped}
+    <div class="unsent" role="status"><span class="why">{swapped}</span></div>
+  {/if}
+
+  <!-- One branch per kind, and the kind of the thing held never changes, so
+       the panel drawing it is never torn down and rebuilt while it is held —
+       which is what keeps the caret in the field you are typing in. There used
+       to be two branches apiece for the far kinds (ahead of this wall's items
+       when their card was in the ring, behind otherwise), and an item moving
+       between them was remounted mid-sentence.
+
+       `display: contents`, so the wrapper changes no layout; it is here to
+       know whether the caret is in the panel, and to hold the first Enter
+       after the held item went from under it (`guardEnter`). A pointer in it
+       is you acting, and lets the guard go. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="held"
+    bind:this={heldEl}
+    onkeydowncapture={guardEnter}
+    onpointerdowncapture={() => (swapped = null)}
+  >
+    {#if shown?.kind === "ask"}
+      {@const target = shown.conv}
+      {@const sheet = shown.ask}
+      <Ask
+        ask={sheet}
+        card={target.id}
+        project={target.project}
+        title={target.title}
+        scripts={target.kind !== "chat"}
+        elsewhere={target.id !== ring}
+        onanswer={() => skein.answerAsk(target)}
+        ondefer={() => skein.deferAsk(target)}
+        onstir={() => skein.stirAsk(target)}
+        onheld={() => skein.holdAsk(target)}
+        onselect={() => onselect(target)}
+      />
+    {:else if shown?.kind === "far-ask"}
+      {@render elsewhereAsk(shown.shadow, shown.ask)}
+    {:else if shown?.kind === "notice"}
+      {@const n = shown.notice}
+      {@const card = shown.conv}
+      <Notice
+        notice={n}
+        project={card.project}
+        title={card.title}
+        elsewhere={card.id !== ring}
+        onack={() => skein.acknowledgeNotice(n)}
+        onfollow={(text) => skein.followUpNotice(n, text)}
+        onstir={() => skein.stirNotice(n)}
+        onselect={() => onselect(card)}
+      />
+    {:else if shown?.kind === "far-notice"}
+      {@render elsewhereNotice(shown.shadow, shown.notice)}
+    {/if}
+  </div>
+  {#if shown && next}
+    <button class="more" onclick={more} title="Step to the next thing waiting (space then d n)">
       {waitingOnYou - 1} more waiting on you
     </button>
+  {:else if shown && waitingOnYou > 1}
+    <!-- Questions queued behind this card's own, which nothing reaches but
+         answering it: a count, not a button that would do nothing. -->
+    <span class="behind">{waitingOnYou - 1} more queued behind this one</span>
   {/if}
 
   <div class="targets">
@@ -987,6 +1226,58 @@
     font-family: var(--mono);
     font-size: 0.64rem;
     color: var(--paper-faint);
+  }
+  .held {
+    display: contents;
+  }
+  .behind {
+    align-self: flex-start;
+    font-family: var(--util);
+    font-size: 0.68rem;
+    color: var(--paper-faint);
+  }
+  /* Achromatic: nothing here is waiting on you or has failed — it is your own
+     words, kept. */
+  .unsent {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    min-width: 0;
+    border: 1px dashed var(--edge);
+    border-radius: 4px;
+    background: var(--well);
+    padding: 0.35rem 0.6rem;
+    font-family: var(--util);
+    font-size: 0.66rem;
+  }
+  .unsent .why {
+    flex: 0 0 auto;
+    color: var(--paper-mute);
+  }
+  .unsent .words {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--body);
+    font-size: 0.8rem;
+    color: var(--paper-dim);
+  }
+  .unsent .keep {
+    flex: 0 0 auto;
+    background: none;
+    border: 0;
+    padding: 0;
+    font-family: var(--util);
+    font-size: 0.64rem;
+    color: var(--paper-mute);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .unsent .keep:hover {
+    color: var(--paper);
   }
 
   /* Achromatic, like the rest of the chrome: colour on this wall is status, and

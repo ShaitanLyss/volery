@@ -489,7 +489,10 @@ export class Elsewhere {
   /** The same for a close, which is answered on the same event. */
   #byClose = new Map<string, Shadow>();
   /** And for a notice taken down from here: which shadow, which notice. */
-  #byNotice = new Map<string, { shadow: Shadow; notice: string }>();
+  #byNotice = new Map<
+    string,
+    { shadow: Shadow; notice: string; resolve: (landed: boolean) => void }
+  >();
   #listeners = new Listeners();
   /** Prompts from other walls this wall has taken, by id, with the answer each
    *  got — or null while it is being delivered. See `#take`. */
@@ -923,25 +926,8 @@ export class Elsewhere {
     }
   }
 
-  /** The first notice on another wall this one may take down — what the dock
-   *  shows when nothing anywhere is asking and nothing here has a notice. */
-  firstNotice(): { shadow: Shadow; notice: Notice } | null {
-    for (const shadow of this.shadows) {
-      const notice = shadow.notices[0];
-      if (notice) return { shadow, notice };
-    }
-    return null;
-  }
-
-  /** The first question on another wall this one may answer — what the dock
-   *  shows when nothing on this wall is asking. */
-  firstAsking(): { shadow: Shadow; sheet: PendingAsk } | null {
-    for (const shadow of this.shadows) {
-      const sheet = shadow.open[0];
-      if (sheet) return { shadow, sheet };
-    }
-    return null;
-  }
+  /* What the dock draws out of these is the dock's question: it reads every
+     shadow's `open` and `notices` into the one queue (`queue.ts`). */
 
   /* ── speaking to one ──────────────────────────────────────────────── */
 
@@ -991,9 +977,16 @@ export class Elsewhere {
    *  given back if it is refused. A follow-up is drawn among what was said to
    *  the card, as a prompt is; an acknowledgement says nothing to the card and
    *  is not. */
-  async answerNotice(s: Shadow, n: Notice, reply = "") {
+  /** Take a notice on another wall down, with or without a follow-up.
+   *
+   *  Answers whether it landed — once the other wall says, since a link that
+   *  took the prompt is not a wall that took the notice down. The dock keeps a
+   *  follow-up typed into it until this says yes, so a refusal hands the words
+   *  back rather than giving the notice back with its field empty
+   *  (`replies.svelte.ts`). A wall that never says is the dock's to time out. */
+  async answerNotice(s: Shadow, n: Notice, reply = ""): Promise<boolean> {
     const d = s.digest.notices.find((x) => `${s.id}:${x.id}` === n.id);
-    if (!d) return;
+    if (!d) return false;
     const { answers, text } = noticeAnswer(d, reply);
     const id = crypto.randomUUID();
     const said = reply.trim();
@@ -1005,9 +998,11 @@ export class Elsewhere {
       const why = `${s.host} has not been heard from — nothing was sent`;
       this.#fold(id, { kind: "unsent", why });
       this.#skein.fault = `that notice is on ${s.host}: ${why}`;
-      return;
+      return false;
     }
-    this.#byNotice.set(id, { shadow: s, notice: d.id });
+    const outcome = new Promise<boolean>((resolve) => {
+      this.#byNotice.set(id, { shadow: s, notice: d.id, resolve });
+    });
     s.acking = [...s.acking, d.id];
     try {
       await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, askId: answers });
@@ -1016,6 +1011,7 @@ export class Elsewhere {
       this.#noticed(id, "refused", why);
       this.#fold(id, { kind: "unsent", why });
     }
+    return outcome;
   }
 
   /** A notice's answer settled. Refused gives the notice back and says why:
@@ -1025,6 +1021,7 @@ export class Elsewhere {
     const r = this.#byNotice.get(id);
     if (!r) return;
     this.#byNotice.delete(id);
+    r.resolve(outcome === "taken");
     if (outcome === "taken") return;
     r.shadow.acking = r.shadow.acking.filter((x) => x !== r.notice);
     this.#skein.fault = `${r.shadow.host} did not take that notice down: ${why || "refused"}`;

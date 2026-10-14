@@ -4,10 +4,10 @@ import {
   SETTLE_MS,
   YOUNG_JOB_MS,
   followUpText,
+  isCloseKey,
   noticeFromRow,
   noticeLine,
   noticeQueue,
-  noticeShown,
   noticeWords,
   parkedReply,
   raiseAt,
@@ -87,26 +87,6 @@ describe("the queue", () => {
     ]);
     expect(q.map((x) => x.id)).toEqual(["p", "a", "b"]);
   });
-
-  test("the focused card's notice is drawn first, else the front of the queue", () => {
-    const q = [n({ id: "a", conversationId: "x" }), n({ id: "b", conversationId: "y" })];
-    expect(noticeShown("y", q)?.id).toBe("b");
-    expect(noticeShown("z", q)?.id).toBe("a");
-    expect(noticeShown(null, [])).toBeNull();
-  });
-
-  test("the one already drawn stays drawn while it is still queued", () => {
-    /* A card's own parked notice jumps to the head of the queue the moment it
-       is raised (see `noticeQueue`), which must not take the panel away from a
-       reply being typed into another one. */
-    const q = [
-      n({ id: "p", conversationId: "x", askId: "ask-1", kind: "card" }),
-      n({ id: "b", conversationId: "y" }),
-    ];
-    expect(noticeShown("x", q, "b")?.id).toBe("b");
-    /* Gone from the queue, and the ordinary rules decide again. */
-    expect(noticeShown("x", q, "nope")?.id).toBe("p");
-  });
 });
 
 describe("words", () => {
@@ -153,5 +133,26 @@ describe("noticeFromRow", () => {
     ).toEqual(n({ id: "1", kind: "question", text: "t", raisedAt: 5, away: true }));
     expect(noticeFromRow({ id: 1 })).toBeNull();
     expect(noticeFromRow({ id: "1", conversation_id: "c", kind: "mystery" })?.kind).toBe("done");
+  });
+});
+
+describe("isCloseKey", () => {
+  const k = (over: object) => ({
+    key: "w",
+    ctrlKey: true,
+    shiftKey: true,
+    altKey: false,
+    metaKey: false,
+    ...over,
+  });
+  test("ctrl+shift+w closes, in either case", () => {
+    expect(isCloseKey(k({}))).toBe(true);
+    expect(isCloseKey(k({ key: "W" }))).toBe(true);
+  });
+  test("anything short of the full chord does not", () => {
+    expect(isCloseKey(k({ shiftKey: false }))).toBe(false);
+    expect(isCloseKey(k({ ctrlKey: false }))).toBe(false);
+    expect(isCloseKey(k({ altKey: true }))).toBe(false);
+    expect(isCloseKey(k({ key: "q" }))).toBe(false);
   });
 });
