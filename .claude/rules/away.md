@@ -284,6 +284,17 @@ filed, and she comes back on the *other* machine. The pile does not cross the fl
 (`machine::idle_away`, `machine.md`) but does not change its own filing, for the reason that
 section gives — sink `2ddb9ff2` is the stage after it, blocked on `3368f78f`.
 
+Demonstrated 2026-10-14 on two labs of one build (`cfa`, `cfb` on one private flyway key): with
+cfb switched away by its card's own `away` tool and cfa present, a card on cfb called `ask_user`.
+It **parked** rather than being filed, cfa drew it within seconds, and `teal` pressed in cfa's dock
+reached the card 15s after it asked. With cfa switched away as well, the same call was filed at
+once (*Volery is in away mode … queued*) — the union, not merely "always park". The run also
+caught the `away` tool still telling the card that `ask_user` queues, which became untrue the
+moment it was written; its reply now says whichever is true (`cb701b5`). **Not shown:** idle,
+which needs twenty untouched minutes on the one machine running both labs. Its threshold and
+verdict are unit-tested, and `idle_away` ran in both labs' announcements and answered *not idle*
+while the machine was in use, which is all a lab can show.
+
 ## The away screen
 
 `Away.svelte`, and it stands whenever the wall is away — **including with the
