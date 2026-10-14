@@ -129,7 +129,13 @@ export type RosterRow = {
   acts?: string[];
   /** It takes a close from a person here (`close_by_person`). */
   closes?: boolean;
+  /** It opens an empty card a person here asks for (`flyway/opening.rs`) —
+   *  what a section's menu reads to offer one. Absent from an older build. */
+  opens?: boolean;
 };
+
+/** How a card asked for from a section ended: its id on that wall, or why not. */
+export type OpenedThere = { card: string } | { why: string };
 
 /** A card on another wall, drawn on this one.
  *
@@ -497,6 +503,11 @@ export class Elsewhere {
   /** Prompts from other walls this wall has taken, by id, with the answer each
    *  got — or null while it is being delivered. See `#take`. */
   #taken = new Map<string, { outcome: "taken" | "refused"; why?: string } | null>();
+  /** Cards asked for from a section (`openThere`), by request id, until their
+   *  wall answers — and answers that arrived before the ask had its id back,
+   *  which the request's own reply can lose a race to. */
+  #opening = new Map<string, (o: OpenedThere) => void>();
+  #openedEarly = new Map<string, OpenedThere>();
   #stopEffects: () => void;
 
   #offered: { cards: CardDigest[]; accounts: string[] } | null = null;
@@ -560,6 +571,26 @@ export class Elsewhere {
       ),
     );
     l.keep(listen<{ id: string; card: string }>("flyway:tail", (e) => void this.#lend(e.payload)));
+    l.keep(
+      listen<{ id: string; host: string; outcome: string; card?: string | null; why?: string | null }>(
+        "flyway:opened-there",
+        (e) => {
+          const { id, outcome, card, why } = e.payload;
+          const o: OpenedThere =
+            outcome === "opened" && card ? { card } : { why: why || `${e.payload.host} did not open it` };
+          const done = this.#opening.get(id);
+          if (done) {
+            this.#opening.delete(id);
+            done(o);
+          } else if (this.#openedEarly.size < 8) {
+            /* Only the race it is for — an answer beating the ask's own reply
+               by a moment — so it is let go of soon after. */
+            this.#openedEarly.set(id, o);
+            setTimeout(() => this.#openedEarly.delete(id), 10_000);
+          }
+        },
+      ),
+    );
     l.keep(
       listen<{ id: string; host: string; card: string; verb: string; args: Record<string, unknown> }>("flyway:act", (e) =>
         void this.#perform(e.payload),
@@ -1062,6 +1093,40 @@ export class Elsewhere {
     } catch (e) {
       this.#closed(id, "refused", String(e) || "the link would not take it");
     }
+  }
+
+  /** Open a card in `project` on `host`, as a person here — a section's
+   *  menu (`flyway/opening.rs`). Set up as `preset` says, in `spawn`'s
+   *  vocabulary (`spawnPairOf`); empty, so it waits for its first message as
+   *  a card opened by that wall's own `+` does. Resolves when that wall has
+   *  answered: the card's id there, or the reason — refused up front (unknown,
+   *  quiet, older, not taking work, no such project), refused by that wall when
+   *  it decided (its switch, its bounds), or not answered in time. Nothing is
+   *  queued for a wall that is away. */
+  async openThere(host: string, project: string, pair: { model: string | null; effort: string | null }): Promise<OpenedThere> {
+    let id: string;
+    try {
+      id = await invoke<string>("flyway_open", { host, project, model: pair.model, effort: pair.effort });
+    } catch (e) {
+      return { why: String((e as Error)?.message ?? e) || "the link would not take it" };
+    }
+    const early = this.#openedEarly.get(id);
+    if (early) {
+      this.#openedEarly.delete(id);
+      return early;
+    }
+    /* Rust says "did not answer" by `GIVE_UP_MS`; this is the bound for a
+       link restarted in between, which would take the waiter with it. */
+    return new Promise<OpenedThere>((resolve) => {
+      const timer = setTimeout(() => {
+        this.#opening.delete(id);
+        resolve({ why: `${host} did not answer — if it opens the card after all, it will appear in its section` });
+      }, 7 * 60_000);
+      this.#opening.set(id, (o) => {
+        clearTimeout(timer);
+        resolve(o);
+      });
+    });
   }
 
   /** Ask the card's own wall to do `verb` to it, as a person here — one of

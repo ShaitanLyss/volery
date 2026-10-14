@@ -23,6 +23,8 @@
 //! - `moving` — a card changing wall: the vocabulary, the check that it
 //!   still has its history, and the rule that it never ends up on neither.
 //!   Pure; `link/moves.rs` is the wiring.
+//! - `opening` — a person opening a card on another wall from its menu: the
+//!   one ask allowed an empty brief, and why only a person's. Pure.
 //! - `frame` — how those vocabularies share one frame.
 //! - `wire` — iroh: QUIC, dial by public key, relay fallback. The only file
 //!   that knows about the transport, so the transport stays replaceable.
@@ -50,6 +52,7 @@ pub mod key;
 pub mod link;
 pub mod look;
 pub mod moving;
+pub mod opening;
 pub mod reach;
 pub mod seal;
 pub mod session;

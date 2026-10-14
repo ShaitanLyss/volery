@@ -146,6 +146,7 @@ describe("away mode has two spellings of one verb", () => {
 
   test("ee reaches a card on another wall, and e alone waits for the verb", () => {
     expect(chord("e", "e")).toMatchObject({ kind: "fire", verb: { kind: "elsewhere", act: "next" } });
+    expect(chord("e", "n")).toMatchObject({ kind: "fire", verb: { kind: "elsewhere", act: "new" } });
     expect(chord("", "e")).toMatchObject({ kind: "pending", open: "e" });
   });
 
@@ -180,6 +181,7 @@ describe("the which-key hint", () => {
       { keys: "dp", label: "unsent reply: into its card's prompt" },
       { keys: "dx", label: "unsent reply: drop it" },
       { keys: "ee", label: "a card on another wall" },
+      { keys: "en", label: "a new card in this section, there" },
       { keys: "ff", label: "find file" },
       { keys: "fw", label: "grep" },
       { keys: "gg", label: "this grouping on the glass / back" },

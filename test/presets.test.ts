@@ -7,6 +7,7 @@ import {
   presetById,
   presetForSpawn,
   presetPicks,
+  spawnPairOf,
 } from "../src/lib/presets";
 import { readFileSync } from "node:fs";
 import { EFFORT_LEVELS, isEffort } from "../src/lib/commands";
@@ -369,5 +370,29 @@ describe("what a card an agent opened is set up as", () => {
 
   test("it reads what a model would actually write", () => {
     expect(presetForSpawn(" Sonnet ")?.id).toBe(presetForSpawn("sonnet")?.id);
+  });
+});
+
+describe("a preset sent to another wall", () => {
+  test("every row arrives as its own model and effort, window included", () => {
+    for (const p of PRESETS) {
+      const pair = spawnPairOf(p);
+      const there = presetForSpawn(pair.model, pair.effort);
+      expect({ model: there?.model, effort: there?.effort }).toEqual({ model: p.model, effort: p.effort });
+    }
+  });
+
+  test("as claude code is set up is no model and no effort", () => {
+    expect(spawnPairOf(null)).toEqual({ model: null, effort: null });
+    expect(spawnPairOf(undefined)).toEqual({ model: null, effort: null });
+  });
+
+  test("haiku carries no level, and a model outside the three carries nothing", () => {
+    expect(spawnPairOf({ model: "haiku", effort: "high" })).toEqual({ model: "haiku", effort: null });
+    expect(spawnPairOf({ model: "fable", effort: "high" })).toEqual({ model: null, effort: null });
+  });
+
+  test("the family is what crosses, never the tier", () => {
+    for (const p of PRESETS) expect(SPAWN_MODELS as readonly string[]).toContain(spawnPairOf(p).model!);
   });
 });

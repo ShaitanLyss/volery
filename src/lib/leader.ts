@@ -63,7 +63,7 @@ export type Verb =
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
   | { kind: "sink"; act: "open" | "drop" }
-  | { kind: "elsewhere"; act: "next" }
+  | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
   | { kind: "machine"; act: "awake" | "reopen" };
@@ -195,6 +195,10 @@ export const CHORDS: readonly Chord[] = [
      those walk this wall's cards and hand each to gestures a card elsewhere
      cannot take. */
   { keys: "ee", label: "a card on another wall", verb: { kind: "elsewhere", act: "next" } },
+  /* `en`: a new card over there — the focused card-on-another-wall's section's
+     menu, which offers this wall's presets for a card opened in that project
+     on that wall. The same menu a right-click on the section's name opens. */
+  { keys: "en", label: "a new card in this section, there", verb: { kind: "elsewhere", act: "new" } },
   /* `c` is the focused card. A family of one for now, on `t`'s argument, and
      `cc` is the one you came for: close it — the card on this wall or on
      another, whichever has the focus. Until this the only keyboard path to a

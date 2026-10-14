@@ -10,6 +10,9 @@ paths:
   - "src-tauri/src/flyway/look.rs"
   - "src-tauri/src/flyway/moving.rs"
   - "src-tauri/src/flyway/link/moves.rs"
+  - "src-tauri/src/flyway/opening.rs"
+  - "src/lib/moveall.ts"
+  - "src/lib/Exodus.svelte"
 ---
 
 # Cards on other walls
@@ -181,7 +184,8 @@ design, unless it says so:
   `localStorage` (`skein.sections.v1`) on `berth.svelte.ts`'s argument, passed to `standElsewhere`,
   which still reserves the section's slot in the column so dragging one away does not slide the rest up.
   The name says which wall it is on (`skein · QUEERISFREEDOM`); the host heading is far above a
-  tall section. No key path yet, and no way back into line short of editing the store.
+  tall section. The way back is the section's own right-click, `put it back in line`
+  (`moveSection(id, null)`); the drag itself still has no key path.
 - **Strands and roots.** `cardBoxes` has no shadows, so no strands, roots or wisps reach one —
   61057379 is drawing roots across walls as this is written.
 
@@ -800,6 +804,71 @@ scrubbed, the session and card ids are held to letters, digits and dashes (the s
 a file name under the CLI's projects directory), a branch is refused if it could be read as a
 git option, the commit must be hex, and the model and effort travel as the row's own words held
 to a shape — the row stores what a preset resolved to (`opus[1m]`), not `spawn`'s family names.
+
+### A card opened in a section, from here (sink `0da533f2`)
+
+Lyss: *"if I right click a remote project I want to be able to spawn remote cards based on my
+local presets and default preset"*, and *"shadow projects should behave as local projects by
+design"*. So a section answers a right-click — on its name or its box, both carry
+`data-section` — the way a territory's `+` does here: **this wall's** presets (`menu.ts`'s
+`section` kind shares `presetRows` with the `spawn` kind, so a preset added or renamed reaches
+both), this wall's default dotted, and a pick opens a card in that project on that wall.
+`<space> e n` opens the same menu at the focused shadow's section. The menu's hint line says so,
+and says which wall.
+
+- **A person's ask, not an agent's, and the difference is the brief.** `spawn` with a `host`
+  refuses an empty prompt — a card an *agent* opens with nothing to do is a process and a turn
+  spent on nothing. A `+` opens a card that spends nothing until somebody types, so the person's
+  ask carries **no brief** and the far wall opens an empty card exactly as its own `+` would; the
+  first message is typed into this wall's dock once the shadow arrives. `flyway/opening.rs` is the
+  whole of it: `person_request` builds the `fleet::Request` (`card: None`, empty brief, no title,
+  no needs), and `brief_refusal` is the far wall's rule — empty is refused **only when a card
+  asked**, so an agent's empty ask from a build that forgot the guard is still refused where the
+  card would have opened. `openSpawned` sends nothing when the brief is empty.
+- **The preset crosses as `spawn`'s vocabulary** (`presets.ts::spawnPairOf`): the family and a
+  level, which the far wall resolves through its own `presetForSpawn`, keeping the family's window.
+  Every row round-trips to its own model and effort (`test/presets.test.ts`); *as claude code is
+  set up* is two nulls, the machine's own setting there. No `account` — that is the far wall's
+  ladder.
+- **Gated as an ask always was, and told up front.** `flyway_open` refuses at once a wall never
+  heard, quiet (`Fleet::ask`), too old (`opening::WORD`, `open_empty` in `Facts::can`, read as the
+  roster row's `opens`), not taking work, or without a project by that name — and the far wall
+  still weighs its switch, its bounds and the territory again when it decides. Never queued. The
+  menu offers the presets only where all of that holds here (`shadow.ts::openRefusal`), and
+  otherwise says why in its place.
+- **The answer reaches the front end, not a tool call.** A person's ask is a `Wants::Open` waiter
+  in `link.rs`: `answered` emits `flyway:opened-there` (`opened` with the card's id there, or
+  `refused` in a person's words), and `nobody_answered` emits a refusal once and keeps the waiter
+  so a late `opened` still lands. `Elsewhere.openThere` resolves on it; a refusal is a fault.
+- **The new card takes the focus when its shadow arrives** — the wall's next snapshot — so the
+  dock is aimed at it. Bounded (`landingNow`): only within `LAND_WITHIN_MS` (30 s) of asking, and
+  only if the focus is still where it was when you asked. A card that turns up later is drawn in
+  its section and left alone; something arriving a minute on and taking the focus would be the
+  wall moving under your hands.
+
+Demonstrated 2026-10-13 between two frozen labs (`opa`, `opb --peer opa`), driven by the control
+surface's `menu` and `click`: a card opened on opb in `labproj` drew a `labproj` section on opa,
+whose right-click offered opa's five presets and the plain row; *a quick question* opened a second
+card on opb — on haiku, `bornFor` opa, at rest with no turn spent — and opa's focus was on its
+shadow by the next snapshot. With opb's switch written off by hand (sink `4b634e26`), the same
+right-click offered no rows, only the reason. **Not shown:** `<space> e n` (the table is tested),
+the move-all (a lab card has no pushed commit to move by, so it rests on the per-card move's own
+demonstration and `moveall.test.ts`), and a far wall too old to announce `open_empty`.
+
+### A grouping's cards moved together
+
+The territory menu's `move its cards to another machine ▸ <host>` (Lyss: *"moving all the cards
+of a project to another machine is a nice idea as well"*). Offered where the card menu's `move`
+would be — heard, taking work, holding a territory of this project's name (`App.wallsHolding`, one
+filter for both) — and only with cards to move. It asks first (`Exodus.svelte`, the close plate's
+shape, with the count and `moveall.ts::departure`'s sentences), then runs **`Skein.moveCardThrough`
+one card at a time**, each to its end — quiesced, shipped, confirmed with a turn there, released
+here — before the next starts. Not fanned out: each move holds a card still and costs a turn, and
+the waits are the far wall's own bounds. A card the move refuses (mid-turn, dirty tree, a job, a
+pending wake…) or keeps stays exactly where it was, is not retried, and is named at the end with
+the first clause of its reason (`movedSummary`). `moveCardThrough` waits on `flyway:move`'s
+`moved`/`kept`, bounded past the far wall's twelve-minute deadline so one unheard ending cannot
+hold the rest.
 
 ### What is not here
 

@@ -19,7 +19,8 @@ export type MenuKind =
   | "ground"
   | "editable"
   | "prose"
-  | "shadow";
+  | "shadow"
+  | "section";
 
 /** One option among several, of which one is in force — a widget's variant. */
 export type Pick = { id: string; label: string; on: boolean };
@@ -102,6 +103,9 @@ export type MenuTarget = {
      every project until somebody makes a second — so the items below it simply
      do not appear, rather than appearing and doing nothing. */
   groupings?: { id: string; name: string }[];
+  /** section: why a card cannot be opened in it from here, or null/absent when
+   *  the presets may be offered — `shadow.ts::openRefusal`'s answer. */
+  openWhy?: string | null;
   /* card: the other walls this card could move to — ones heard from lately,
      taking work, and holding its territory. Empty on a wall with no flyway, so
      the row is simply not there; a wall it could not go to is not offered,
@@ -210,11 +214,12 @@ export type MenuItem =
   | { kind: "sep" }
   /** A line you cannot click, naming a gesture the rows themselves cannot show.
    *
-   *  There is exactly one, and it exists because `ContextMenu` has no room for a
-   *  second action on a row: a preset's row already means "open a card like
-   *  this", so "make this the default" had to be a modifier, and a modifier
-   *  nobody is told about is a feature only its author has. Not a disabled item
-   *  — a greyed row invites the click it will not answer. */
+   *  The first exists because `ContextMenu` has no room for a second action on
+   *  a row: a preset's row already means "open a card like this", so "make this
+   *  the default" had to be a modifier, and a modifier nobody is told about is a
+   *  feature only its author has. A section of another wall's cards uses it
+   *  twice more: for its chord, and for why nothing can be opened there. Not a
+   *  disabled item — a greyed row invites the click it will not answer. */
   | { kind: "hint"; text: string }
   | {
       /** A row that opens a list beside it rather than doing anything.
@@ -291,6 +296,29 @@ function offerItems(offers: Offer[]): MenuItem[] {
  *  answer ("let it flow again"). */
 const glassItem = (on = false): MenuItem =>
   item("glass", on ? "put it back on the wall" : "stick it to the glass");
+
+/** The presets as rows that open a card, with the default dotted where
+ *  somebody has said what it is — the `+`'s menu and a section of another
+ *  wall's cards both draw these, so a preset added or renamed reaches both.
+ *  Undefined `presetDefault` marks nothing; a value makes the list a radio
+ *  group with the dot on the row a plain `+` would open. */
+function presetRows(t: MenuTarget): MenuItem[] {
+  const mark = (id: string) => (t.presetDefault === undefined ? {} : { on: t.presetDefault === id });
+  return [
+    ...(t.presets ?? []).map((p) => ({
+      kind: "item" as const,
+      id: `preset:${p.id}`,
+      label: p.label,
+      note: p.note,
+      ...mark(p.id),
+    })),
+    sep,
+    /* `""` is this row's id as the default is stored — see
+       `presets.defaultPresetFor`, where it is the *chosen* absence of a
+       preset rather than nobody having chosen. */
+    { kind: "item" as const, id: "new", label: "as claude code is set up", ...mark("") },
+  ];
+}
 
 /** Trailing and leading separators, and runs of them, are artefacts of building
  *  a list conditionally — never something anybody meant.
@@ -511,21 +539,8 @@ export function menuFor(t: MenuTarget): MenuItem[] {
          leaves every row a plain item; a value makes the whole list a radio
          group with the dot on the one a plain `+` would open, which is the only
          way to see that setting without opening a card to find out. */
-      const mark = (id: string) =>
-        t.presetDefault === undefined ? {} : { on: t.presetDefault === id };
       return tidy([
-        ...(t.presets ?? []).map((p) => ({
-          kind: "item" as const,
-          id: `preset:${p.id}`,
-          label: p.label,
-          note: p.note,
-          ...mark(p.id),
-        })),
-        sep,
-        /* `""` is this row's id as the default is stored — see
-           `presets.defaultPresetFor`, where it is the *chosen* absence of a
-           preset rather than nobody having chosen. */
-        { kind: "item" as const, id: "new", label: "as claude code is set up", ...mark("") },
+        ...presetRows(t),
         /* Last, and only where there is a default to change. A hint about a
            gesture is worth its line while the gesture is new and worth nothing
            to somebody who has no way to act on it. */
@@ -534,6 +549,28 @@ export function menuFor(t: MenuTarget): MenuItem[] {
           : { kind: "hint" as const, text: "ctrl-click a row to make it what + opens" },
       ]);
     }
+
+    /* A section of another wall's cards — a project over there. Lyss:
+       *"shadow projects should behave as local projects by design"*, so its
+       right-click is the `+`'s: this wall's presets, the default dotted, and a
+       pick opens a card in that project on that wall (`flyway/opening.rs`),
+       empty, waiting for its first message as a local `+`'s card does. No
+       ctrl-click to change the default — that is the `+`'s job here, and the
+       dot is this wall's default, which is what a pick here opens.
+
+       Offered only where the click would reach the far wall's decision
+       (`openWhy` null); otherwise the reason, as a line, so a section with
+       nothing to offer says why. The chord is said last, in the house form. */
+    case "section":
+      return tidy([
+        ...(t.openWhy == null ? presetRows(t) : [{ kind: "hint" as const, text: t.openWhy }]),
+        t.openWhy == null
+          ? { kind: "hint" as const, text: `opens on ${t.host ?? "that wall"} · space then e n` }
+          : null,
+        sep,
+        /* The way back from dragging it, which the drag alone did not have. */
+        t.moved ? item("reline", "put it back in line") : null,
+      ]);
 
     case "region":
       return tidy([
@@ -635,6 +672,17 @@ export function menuFor(t: MenuTarget): MenuItem[] {
            project is refused by the store, and a menu entry whose only answer
            is a refusal is one this file's standing rule says not to draw. */
         t.chat || t.lone ? null : item("drop-grouping", "take this grouping off the wall", true),
+        /* Every card standing here, to another machine — the card menu's
+           `move it to another machine`, run over the grouping one card at a
+           time behind a question first (`moveall.ts`). Offered where the card
+           menu would offer it, and only with cards to move. */
+        !t.empty && (t.walls ?? []).length
+          ? more(
+              "moveall",
+              "move its cards to another machine",
+              (t.walls ?? []).map((h) => item(`moveall:${h}`, h)),
+            )
+          : null,
         /* Only once it is standing empty. A territory outlives its last card so
            you can start again in it; forgetting is how you say you won't, and
            it is not something to offer next to live work. */

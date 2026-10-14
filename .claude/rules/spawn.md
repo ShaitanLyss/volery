@@ -420,6 +420,16 @@ second door.
 - **The brief goes in through `send`**, so it is echoed into the child's transcript exactly as
   a typed prompt is. What the parent asked for should be *readable* there rather than inferred
   from what the card does next.
+- **An empty brief is a person's, never an agent's, and that is the one place the two remote
+  paths differ.** `spawn` with a `host` (`spawn::elsewhere`) still refuses an empty prompt: an
+  agent asking for a card with nothing to do is spending a process and a turn on nothing, and it
+  is the shape a spiral takes. A *person's* right-click on another wall's section
+  (`flyway/opening.rs`, `elsewhere.md`) is a `+` over there, and a `+` opens a card that waits for
+  its first message — so that ask carries no brief, and the far wall's `open_for` lets an empty
+  one through only when no card asked (`opening::brief_refusal`). `openSpawned` then opens the
+  card and sends nothing. Everything else is the same door: the far wall's switch, its bounds, the
+  territory by name, `#openIn`. No MCP tool can make the person's ask — `flyway_open` is a Tauri
+  command the menu calls — so an agent cannot reach the empty card by another road.
 - **A given title is not `named_by_hand`.** It is a label to tell cards apart until the card
   names itself from its first turn, and `read_ai_title` must be free to replace it — see
   `naming.md`.

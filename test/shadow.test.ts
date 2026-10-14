@@ -8,6 +8,9 @@ import {
   faceOf,
   GIVE_UP_MS,
   idleOf,
+  LAND_WITHIN_MS,
+  landingNow,
+  openRefusal,
   promptRefusal,
   QUIET_AFTER_MS,
   readDigest,
@@ -880,5 +883,40 @@ describe("weaving your own sends into their conversation", () => {
   test("an empty tail is every send, in the order they were made", () => {
     const w = weave([], [sent("b", 20, "left"), sent("a", 10, "queued")]);
     expect(w.map((x) => (x.at === "here" ? x.sent.text : "?"))).toEqual(["a", "b"]);
+  });
+});
+
+describe("opening a card in a section of another wall", () => {
+  const open = { host: "lab", standing: "open", territories: ["skein", "RISE"], opens: true };
+
+  test("a wall heard, new enough, taking work and holding the project is offered", () => {
+    expect(openRefusal(open, "lab", "skein")).toBeNull();
+    expect(openRefusal(open, "lab", "rise")).toBeNull();
+  });
+
+  test("everything else says why, in the order it would have to change", () => {
+    expect(openRefusal(undefined, "lab", "skein")).toContain("not been heard from");
+    expect(openRefusal({ ...open, me: true }, "lab", "skein")).toContain("not been heard from");
+    expect(openRefusal({ ...open, standing: "quiet" }, "lab", "skein")).toContain("never queued");
+    expect(openRefusal({ ...open, opens: undefined }, "lab", "skein")).toContain("needs updating");
+    expect(openRefusal({ ...open, older: true }, "lab", "skein")).toContain("needs updating");
+    expect(openRefusal({ ...open, standing: "closed", reason: "lab is not taking work" }, "lab", "skein")).toBe(
+      "lab is not taking work",
+    );
+    expect(openRefusal({ ...open, standing: "full" }, "lab", "skein")).toContain("not taking work");
+    expect(openRefusal(open, "lab", "nova")).toBe("lab has no project called nova");
+    expect(openRefusal({ ...open, territories: [...open.territories, NO_PROJECT] }, "lab", NO_PROJECT)).toContain(
+      "no project called",
+    );
+  });
+
+  test("a card that arrives in time takes the focus, and only if nothing else has", () => {
+    const l = { key: "elsewhere:lab:c1", until: 1000 + LAND_WITHIN_MS, focusWas: "here-1" };
+    expect(landingNow(l, false, "here-1", 2000)).toBe("wait");
+    expect(landingNow(l, true, "here-1", 2000)).toBe("focus");
+    expect(landingNow(l, true, "here-2", 2000)).toBe("drop");
+    expect(landingNow(l, true, null, 2000)).toBe("drop");
+    expect(landingNow(l, true, "here-1", 1001 + LAND_WITHIN_MS)).toBe("drop");
+    expect(landingNow({ ...l, focusWas: null }, true, null, 2000)).toBe("focus");
   });
 });

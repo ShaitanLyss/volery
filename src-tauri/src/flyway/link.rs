@@ -236,6 +236,12 @@ enum Wants {
     Recall,
     /// A card taken off. Told late either way, for `Spawn`'s reason in reverse.
     Close,
+    /// A card a *person* here asked for from a section's menu
+    /// (`flyway_open`). Nobody is parked on it and no card asked, so the
+    /// answer goes to the front end as `flyway:opened-there` rather than into
+    /// a tool call or a card's inbox — late or not, since a card that opened
+    /// over there is one its shadow is about to show anyway.
+    Open,
 }
 
 impl Wants {
@@ -249,7 +255,7 @@ impl Wants {
 
     fn worth_telling_late(self, a: &Answer) -> bool {
         match self {
-            Wants::Spawn | Wants::Close => true,
+            Wants::Spawn | Wants::Close | Wants::Open => true,
             Wants::Send => matches!(a.outcome, Outcome::Refused { .. }),
             Wants::Recall => false,
         }
@@ -482,7 +488,12 @@ impl Link {
                 .saturating_sub(in_flight),
                 can: fleet::can_now()
                     .into_iter()
-                    .chain([tail::WORD.to_string(), super::moving::WORD.to_string(), look::WORD.to_string()])
+                    .chain([
+                        tail::WORD.to_string(),
+                        super::moving::WORD.to_string(),
+                        look::WORD.to_string(),
+                        super::opening::WORD.to_string(),
+                    ])
                     .chain(act::words())
                     .collect(),
                 ..Facts::default()
@@ -934,6 +945,51 @@ impl Link {
         Ok(rx)
     }
 
+    /// Ask a wall to open a card for a person here — a section's menu, not a
+    /// tool call. Judged by `opening::person_request` against what that wall
+    /// last said, then by `Fleet::ask` (quiet, unknown), then by the far wall
+    /// when it decides. Answers with the request id; how it ends arrives as
+    /// `flyway:opened-there`.
+    pub fn ask_open(
+        self: &Arc<Self>,
+        host: &str,
+        project: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<String, String> {
+        let now = self.now();
+        let id = crate::store::uuid_v4();
+        let msg = {
+            let mut f = self.fleet.lock().map_err(|_| "the fleet is wedged".to_string())?;
+            let facts = f.entry(host).map(|e| e.facts.clone());
+            let r = super::opening::person_request(id.clone(), host, project, model, effort, facts.as_ref())?;
+            let to = r.to.clone();
+            let territory = r.territory.name.clone();
+            let m = f.ask(r, now).map_err(|u| u.reason())?;
+            (m, to, territory)
+        };
+        let (msg, to, territory) = msg;
+        if let Ok(mut w) = self.waiting.lock() {
+            w.insert(
+                id.clone(),
+                Waiter {
+                    wants: Wants::Open,
+                    there: None,
+                    card: None,
+                    tx: None,
+                    to: to.clone(),
+                    territory,
+                    title: None,
+                    gave_up: false,
+                    asked_at: now,
+                    note: None,
+                },
+            );
+        }
+        self.push(to, vec![Frame::Fleet(msg)]);
+        Ok(id)
+    }
+
     /// Send to, recall or close a card on another wall, for an agent here. What
     /// comes back is a receiver the parked tool call waits on, as a spawn's is;
     /// `Err` is said at once — an unknown wall, a quiet one, one too old to
@@ -989,6 +1045,18 @@ impl Link {
         let Some(w) = self.waiting.lock().ok().and_then(|mut w| w.remove(&a.request)) else {
             return;
         };
+        if w.wants == Wants::Open {
+            let (outcome, card, why) = match &a.outcome {
+                Outcome::Opened { card } => ("opened", Some(card.clone()), None),
+                Outcome::Refused { refusal } => ("refused", None, Some(prompt_why(refusal, &a.by))),
+                Outcome::Said { .. } => ("refused", None, Some(format!("{} answered with something other than a card", a.by))),
+            };
+            let _ = self.app.emit(
+                "flyway:opened-there",
+                OpenedThere { id: a.request.clone(), host: a.by.clone(), outcome, card, why },
+            );
+            return;
+        }
         /* The pair written down the moment the answer says the card opened —
            it is what lets that card's report back through this wall's switch
            (`fleet::may_reach`, `migrate_v48`). Before the receipt, so a reply
@@ -1040,6 +1108,28 @@ impl Link {
                long ago, and saying "still nothing" costs the card a turn to
                learn what it was already told. The waiter stays, so a late
                answer that is worth a turn still finds it. */
+            if w.wants == Wants::Open {
+                /* Taken away rather than kept for a late answer: nothing is
+                   waiting on one, and a card that opens after all simply
+                   appears in its section. Said once, after the lock is let go. */
+                let to = w.to.clone();
+                all.remove(request);
+                drop(all);
+                let _ = self.app.emit(
+                    "flyway:opened-there",
+                    OpenedThere {
+                        id: request.to_string(),
+                        host: to.clone(),
+                        outcome: "refused",
+                        card: None,
+                        why: Some(format!(
+                            "{to} did not answer — it may be asleep or off the network. If it opens the card \
+                             after all, it will appear in its section"
+                        )),
+                    },
+                );
+                return;
+            }
             if w.wants != Wants::Spawn {
                 return;
             }
@@ -1126,8 +1216,11 @@ impl Link {
             Ok(e) => e,
             Err(why) => return refuse(why),
         };
-        if s.brief.trim().is_empty() {
-            return refuse("the brief was empty, and a card opened with nothing to do is a process spent on nothing".into());
+        /* Empty only for a person's ask, which opens a card the way this
+           wall's own `+` does — waiting for its first message (`opening.rs`).
+           An agent's is refused here whatever the asking build checked. */
+        if let Some(why) = super::opening::brief_refusal(&s.brief, s.asked_by.card.as_deref()) {
+            return refuse(why.into());
         }
         let own = self.own_dirs();
         let own: Vec<&std::path::Path> = own.iter().map(|p| p.as_path()).collect();
@@ -1861,6 +1954,7 @@ impl Link {
                     older: older.get(&e.host).is_some_and(|until| now < *until),
                     acts: act::offered(&e.facts.can),
                     closes: e.facts.can.iter().any(|c| c == fleet::CAN_PERSON_CLOSE),
+                    opens: e.facts.can.iter().any(|c| c == super::opening::WORD),
                 }
             })
             .collect()
@@ -2101,6 +2195,17 @@ struct PromptLeft {
     id: String,
 }
 
+/// How a person's `flyway_open` ended: `opened` with the card's id on that
+/// wall, or `refused` with the reason in a person's words.
+#[derive(Serialize, Clone)]
+struct OpenedThere {
+    id: String,
+    host: String,
+    outcome: &'static str,
+    card: Option<String>,
+    why: Option<String>,
+}
+
 #[derive(Serialize, Clone)]
 struct PromptAnswered {
     id: String,
@@ -2181,6 +2286,9 @@ pub struct RosterRow {
     acts: Vec<String>,
     /// It announced `close_by_person` — `Remote.closes`.
     closes: bool,
+    /// It opens a card a person here asks for with no brief
+    /// (`opening::WORD`) — what a section's menu reads to offer one.
+    opens: bool,
 }
 
 #[derive(Serialize)]
@@ -2664,6 +2772,26 @@ pub fn move_blocks(app: &AppHandle, card: &str) -> Option<String> {
 /// A turn has ended on a card, for `supervisor::persist_turn`.
 pub fn move_turn_closed(app: &AppHandle, card: &str) {
     moves::turn_closed(app, card)
+}
+
+/// Open a card on another wall, for a person's right-click on one of that
+/// wall's sections (`opening.rs`). Answers at once with the request id or
+/// the reason it cannot be asked; how it ends arrives as
+/// `flyway:opened-there`. No MCP tool reaches this — an agent's road is
+/// `spawn` with a `host`, which keeps its own refusal of an empty brief.
+#[tauri::command]
+pub async fn flyway_open(
+    app: AppHandle,
+    host: String,
+    project: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<String, String> {
+    crate::off_main(move || {
+        let link = current(&app).ok_or("this wall is not on a flyway, so there is no other wall to open a card on")?;
+        link.ask_open(&host, &project, model.as_deref(), effort.as_deref())
+    })
+    .await?
 }
 
 /// Move a card on this wall to another one. Answers at once with the move's

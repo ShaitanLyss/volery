@@ -759,3 +759,46 @@ describe("sharing a project's MCP servers", () => {
     expect(pools({ kind: "region", chat: true, pools: [{ name: "x", shared: false }] })).toBeUndefined();
   });
 });
+
+describe("a section of another wall's cards", () => {
+  const presets = [
+    { id: "ask", label: "a quick question", note: "haiku" },
+    { id: "deep", label: "the hard thing", note: "opus[1m] · xhigh" },
+  ];
+
+  test("offers the presets the + does, the default dotted, and says its chord", () => {
+    const items = menuFor({ kind: "section", host: "lab", presets, presetDefault: "deep", openWhy: null });
+    expect(ids(items)).toEqual(["preset:ask", "preset:deep", "new"]);
+    const plus = menuFor({ kind: "spawn", presets, presetDefault: "deep" });
+    expect(items.filter((i) => i.kind === "item")).toEqual(plus.filter((i) => i.kind === "item"));
+    expect(items.some((i) => i.kind === "hint" && i.text.includes("space then e n") && i.text.includes("lab"))).toBe(true);
+    expect(items.some((i) => i.kind === "hint" && i.text.includes("ctrl-click"))).toBe(false);
+  });
+
+  test("a section that cannot take a card says why instead", () => {
+    const items = menuFor({ kind: "section", host: "lab", presets, openWhy: "lab needs updating" });
+    expect(ids(items)).toEqual([]);
+    expect(items).toEqual([{ kind: "hint", text: "lab needs updating" }]);
+  });
+
+  test("a section dragged out of line can be put back", () => {
+    expect(ids(menuFor({ kind: "section", host: "lab", presets, moved: true }))).toContain("reline");
+    expect(ids(menuFor({ kind: "section", host: "lab", presets }))).not.toContain("reline");
+    expect(ids(menuFor({ kind: "section", host: "lab", openWhy: "no", moved: true }))).toEqual(["reline"]);
+  });
+});
+
+describe("moving a grouping's cards to another machine", () => {
+  const moveAllOf = (items: MenuItem[]) => {
+    const row = items.find((i) => i.kind === "more" && i.id === "moveall");
+    return row && row.kind === "more" ? row : null;
+  };
+
+  test("offered per wall the card menu would offer, and only with cards to move", () => {
+    const row = moveAllOf(menuFor({ kind: "region", walls: ["lab", "desk"] }));
+    expect(row && ids(row.items)).toEqual(["moveall:lab", "moveall:desk"]);
+    expect(moveAllOf(menuFor({ kind: "region", walls: ["lab"], empty: true }))).toBeNull();
+    expect(moveAllOf(menuFor({ kind: "region", walls: [] }))).toBeNull();
+    expect(moveAllOf(menuFor({ kind: "region" }))).toBeNull();
+  });
+});

@@ -1372,3 +1372,63 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
   }
   return out;
 }
+
+/* ── opening a card on another wall, from a section ─────────────────── */
+
+/** What a section's menu needs to know about the wall it stands for — a
+ *  roster row's fields, structurally, so this file needs no runes. */
+export type Opener = {
+  host: string;
+  me?: boolean;
+  standing?: string;
+  reason?: string;
+  territories?: string[];
+  older?: boolean;
+  opens?: boolean;
+};
+
+/** Why a card cannot be opened in this section from here, or `null` when the
+ *  presets may be offered. The rows are offered only where the click would get
+ *  as far as the far wall deciding — heard lately, new enough, taking work,
+ *  holding a project by this name — which is the card menu's `move` filter
+ *  plus the one word an empty card needs (`flyway/opening.rs`). What it would
+ *  have done instead is said in the menu, so a section with nothing to offer
+ *  says why rather than showing nothing. The far wall still weighs its switch
+ *  and its bounds again when it decides; this is what can be known here. */
+export function openRefusal(row: Opener | undefined, host: string, project: string): string | null {
+  if (!row || row.me) return `${host} has not been heard from on this flyway`;
+  if (row.standing === "quiet")
+    return `${host} has not been heard from lately — a card is never queued for a wall that is away`;
+  if (row.older || !row.opens) return `${host} needs updating to open a card from here`;
+  if (row.standing === "closed" || row.standing === "full")
+    return row.reason ?? `${host} is not taking work from other walls`;
+  if (row.standing !== "open") return `${host} is not taking work from other walls`;
+  const want = project.trim().toLowerCase();
+  if (project === NO_PROJECT || !(row.territories ?? []).some((t) => t.toLowerCase() === want))
+    return `${host} has no project called ${project}`;
+  return null;
+}
+
+/** How long after asking a card that arrives still takes the focus. A card
+ *  that turns up later — a slow wall, a late answer — is drawn in its section
+ *  and left alone: the focus is where the person is working, and something
+ *  arriving a minute on and taking it would be the wall moving under their
+ *  hands. */
+export const LAND_WITHIN_MS = 30_000;
+
+/** A card asked for from here, waiting to arrive so it can take the focus.
+ *  `focusWas` is what had the focus when it was asked for: anything else
+ *  taking it since means the person has moved on, and the card is not owed it. */
+export type Landing = { key: string; until: number; focusWas: string | null };
+
+/** Whether the card a person just asked for takes the focus now, should be
+ *  waited for, or is no longer owed it. */
+export function landingNow(
+  l: Landing,
+  present: boolean,
+  focused: string | null,
+  now: number,
+): "focus" | "wait" | "drop" {
+  if (focused !== l.focusWas || now > l.until) return "drop";
+  return present ? "focus" : "wait";
+}

@@ -2764,8 +2764,14 @@
         </div>
       {/each}
       {#each elsewhere.regions as r (r.id)}
+        <!-- `data-section` on the box and the name both: a right-click on
+             either is a question about the project over there (App's
+             `sectionMenuFor`), the way a territory answers for itself. -->
         <div
           class="region elsewhere"
+          data-section={r.id}
+          data-host={r.host}
+          data-project={r.name}
           style:left="{r.x}px"
           style:top="{r.y}px"
           style:width="{r.w}px"
@@ -2776,8 +2782,11 @@
           style:left="{r.x + 11}px"
           style:top="{r.y + 8}px"
           style:z-index={Z_CHIP}
-          title="{r.name} on {r.host} (drag to move it)"
+          title="{r.name} on {r.host} (drag to move it; right-click to open a card there, or space then e n)"
           role="presentation"
+          data-section={r.id}
+          data-host={r.host}
+          data-project={r.name}
           onpointerdown={(e) => sectionDown(r, e)}
         >
           {r.name} · {r.host}

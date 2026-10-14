@@ -1025,9 +1025,16 @@ export class Skein {
          may be looking at something else — and its row is already closed and
          marked moved in Rust. Kept, it is simply here again, and says why. */
       listen<{ id: string; to: string; stage: string; why: string | null }>("flyway:move", (e) => {
+        const { to, stage, why } = e.payload;
+        /* Whoever is waiting for this move to end hears it first, even for a
+           card closed while it moved — or they would wait out their bound. */
+        if (stage === "moved" || stage === "kept") {
+          const done = this.#moveEnds.get(e.payload.id);
+          this.#moveEnds.delete(e.payload.id);
+          done?.(stage === "moved" ? null : (why ?? "the move did not finish"));
+        }
         const conv = this.#byId.get(e.payload.id);
         if (!conv) return;
-        const { to, stage, why } = e.payload;
         if (stage === "shipping") conv.activity = `moving to ${to} — sending its conversation`;
         else if (stage === "confirming") conv.activity = `moving to ${to} — checking it has its history there`;
         else if (stage === "moved") void this.close(conv, "agent");
@@ -1595,7 +1602,11 @@ export class Skein {
       conv.title = title;
       void invoke("update_conversation", { id, title }).catch(() => {});
     }
-    await this.send(conv, prompt);
+    /* A person on another wall opening a card in one of this wall's projects
+       sends no brief (`flyway/opening.rs`): the card waits for its first
+       message, as one opened by this wall's own `+` does. Only that ask may
+       arrive empty — `link.rs` refuses an agent's before it gets here. */
+    if (prompt.trim()) await this.send(conv, prompt);
   }
 
   /** A card that moved here from another wall: born through `#openIn` like
@@ -1649,6 +1660,39 @@ export class Skein {
     } catch (err) {
       return String(err);
     }
+  }
+
+  /** Moves under way that somebody is waiting to see end, by card id —
+   *  `moveCardThrough`'s. */
+  #moveEnds = new Map<string, (why: string | null) => void>();
+
+  /** Move a card and wait for the move to *end*: `null` once the card has
+   *  answered with its history over there and gone from here, or the reason it
+   *  is still here — refused before anything left, or kept when the far side
+   *  did not confirm. For a grouping moved one card at a time (`moveall.ts`),
+   *  where the next move must not start while this one holds a card still.
+   *  Bounded past the far wall's own deadline (`SETTLE_WITHIN_MS`, twelve
+   *  minutes) so a move whose ending was never heard cannot hold the rest. */
+  async moveCardThrough(conv: Conversation, host: string): Promise<string | null> {
+    if (this.#moveEnds.has(conv.id)) return "it is already being moved";
+    const ended = new Promise<string | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.#moveEnds.delete(conv.id);
+        resolve("this wall did not hear how the move ended — look for the card here and on " + host);
+      }, 13 * 60_000);
+      this.#moveEnds.set(conv.id, (why) => {
+        clearTimeout(timer);
+        resolve(why);
+      });
+    });
+    const refused = await this.moveCard(conv, host);
+    if (refused) {
+      const done = this.#moveEnds.get(conv.id);
+      this.#moveEnds.delete(conv.id);
+      done?.(refused);
+      return refused;
+    }
+    return ended;
   }
 
   /** Ask Rust where chat cards go, remembering the answer. Rust creates the

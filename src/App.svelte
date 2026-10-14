@@ -98,6 +98,7 @@
   import Flyway from "./lib/Flyway.svelte";
   import Annals from "./lib/Annals.svelte";
   import Unfinished from "./lib/Unfinished.svelte";
+  import Exodus from "./lib/Exodus.svelte";
   import { isReceipt, type Timeline } from "./lib/timeline";
   import { handleOf as cardHandle } from "./lib/relay";
   import { Creds } from "./lib/creds.svelte";
@@ -133,6 +134,7 @@
     FALLBACK_DEFAULT_PRESET,
     presetById,
     presetPicks,
+    spawnPairOf,
     type Preset,
   } from "./lib/presets";
   import { spotOf } from "./lib/glass";
@@ -151,7 +153,17 @@
   import Transcript from "./lib/Transcript.svelte";
   import Yonder from "./lib/Yonder.svelte";
   import { Elsewhere, type Shadow } from "./lib/shadows.svelte";
-  import { remoteQuestions } from "./lib/shadow";
+  import {
+    LAND_WITHIN_MS,
+    landingNow,
+    openRefusal,
+    remoteQuestions,
+    sectionId,
+    sectionOf,
+    shadowKey,
+    type Landing,
+  } from "./lib/shadow";
+  import { departure, movedSummary, type Moved } from "./lib/moveall";
   import { remoteNotices } from "./lib/afar";
   import Servers from "./lib/Servers.svelte";
   import Processes from "./lib/Processes.svelte";
@@ -466,7 +478,10 @@
     else if (verb.kind === "presence") void togglePresence();
     else if (verb.kind === "machine") void flipMachine(verb.act);
     else if (verb.kind === "grouping") groupingChord(verb.act);
-    else if (verb.kind === "elsewhere") focusElsewhere();
+    else if (verb.kind === "elsewhere") {
+      if (verb.act === "new") sectionMenuFocused();
+      else focusElsewhere();
+    }
     else if (verb.kind === "card") {
       if (verb.act === "glass") glassFocused();
       else if (verb.act === "close") closeFocused();
@@ -1272,6 +1287,12 @@
   /* The same question about a card on another wall, which its own wall closes
      the way its ✕ would. See `closeElsewhere`. */
   let unfinishedAway = $state<{ shadow: Shadow; warnings: string[] } | null>(null);
+  /* A grouping's cards about to move to another machine, asked about first.
+     See `moveAll`. */
+  let exodus = $state<{ cards: Conversation[]; name: string; host: string } | null>(null);
+  /* A card asked for from a section of another wall's cards, waiting to
+     arrive so it can take the focus — see `openThere`. */
+  let landing = $state<Landing | null>(null);
   /* The run whose insides are on screen, if any. The *row* rather than its id,
      because the panel draws the run's own heading — pipeline, branch, who, how
      long — out of the row it was opened from, and re-fetching a row we were
@@ -1783,6 +1804,9 @@
        `Conversation` — and before this it fell through to the *ground*'s menu,
        offering to open a project under a card. */
     const shadowEl = el.closest("[data-shadow]") as HTMLElement | null;
+    /* A section of another wall's cards — its name or its box — which is a
+       project over there and offers what a territory's `+` does here. */
+    const sectionEl = el.closest("[data-section]") as HTMLElement | null;
     /* Both the territory and the name that carries it — right-clicking the
        handle you just dragged should reach the project it belongs to. */
     const regionEl = el.closest("[data-cwd]") as HTMLElement | null;
@@ -1850,10 +1874,7 @@
              where it would get as far as the card. The rest (a dirty tree,
              work in flight) is said when it is asked for. */
           walls: conv.kind === "project"
-            ? elsewhere.roster
-                .filter((r) => !r.me && r.standing === "open" && !r.older)
-                .filter((r) => (r.territories ?? []).includes(skein.projects.find((p) => p.id === conv.projectId)?.name ?? ""))
-                .map((r) => r.host)
+            ? wallsHolding(skein.projects.find((p) => p.id === conv.projectId)?.name ?? "")
             : [],
           dormant: conv.dormant,
           pinned: !!studio.placements[conv.id]?.pinned,
@@ -1961,6 +1982,14 @@
           else askShadow(s, id);
         };
       }
+    } else if (sectionEl?.dataset.section) {
+      const made = sectionMenuFor(
+        sectionEl.dataset.host ?? "",
+        sectionEl.dataset.project ?? "",
+        sectionEl.dataset.section,
+      );
+      target = made.target;
+      act = made.act;
     } else if (imageEl?.dataset.image) {
       const id = imageEl.dataset.image;
       target = {
@@ -2105,6 +2134,15 @@
         presets: presetPicks(),
         presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
         pools: skein.pools[cwd] ?? [],
+        /* Where its cards could all go: the card menu's `move` filter, for
+           this territory's project. */
+        walls: skein.isChatHome(cwd)
+          ? []
+          : wallsHolding(
+              skein.projects.find(
+                (p) => p.id === skein.territories.find((q) => q.id === terr)?.projectId,
+              )?.name ?? "",
+            ),
       };
       /* The menu is drawn from the cache, and the cache is refreshed behind it:
          a project added this session, or a `.mcp.json` written since load,
@@ -2113,6 +2151,7 @@
       act = (id) => {
         if (id === "glass") canvas?.toggleGlass("region", terr);
         else if (id.startsWith("pool:")) void skein.togglePool(cwd, id.slice(5));
+        else if (id.startsWith("moveall:")) askMoveAll(terr, id.slice(8));
         else if (id === "explorer") void skein.showInExplorer(cwd);
         else if (id === "chat") void openChat();
         else if (id === "new") void openIn(cwd);
@@ -3445,6 +3484,12 @@
        were spelling. The two surfaces keep their own `svelte:window` handlers,
        which still run — this only stops the wall's. */
     if (presence.away || gating || playing) return;
+    /* A plate asking before something irreversible holds the keyboard the same
+       way: its own handler answers Escape and its buttons answer Enter, and
+       the wall underneath must not — Escape here would otherwise also stop the
+       focused card's turn, since a window listener's `stopPropagation` does not
+       reach another window listener. */
+    if (unfinishedAway || exodus) return;
     /* The toy owns the whole keyboard while it is up, and that is the point
        rather than an inconvenience — thirty keys are an instrument and the rest
        are its controls, so there is nothing left for the wall to be given.
@@ -3828,6 +3873,143 @@
      over `Skein.spend`. */
   const HORIZON_FULL_USD = 20;
   const burn = $derived(Math.min(1, skein.spend / HORIZON_FULL_USD));
+
+  /** Walls a card of this project could move to: heard from, taking work,
+   *  not answering only in the older language, and holding a territory of
+   *  this name — the three things the move itself checks first, so a row is
+   *  only offered where it would get as far as the card. */
+  function wallsHolding(project: string): string[] {
+    return elsewhere.roster
+      .filter((r) => !r.me && r.standing === "open" && !r.older)
+      .filter((r) => (r.territories ?? []).includes(project))
+      .map((r) => r.host);
+  }
+
+  /* ── a card on another wall, opened from here ──────────────────────────
+
+     A section of another wall's cards is a project over there, and it answers
+     a right-click the way a territory's `+` does here (Lyss: *"shadow projects
+     should behave as local projects by design"*): this wall's presets, the
+     default dotted, and a pick opens an empty card in that project on that
+     wall (`flyway/opening.rs`). The card arrives as a shadow with its wall's
+     next snapshot and takes the focus then, so the dock is aimed at it. */
+
+  function sectionMenuFor(
+    host: string,
+    project: string,
+    id: string,
+  ): { target: MenuTarget; act: (id: string, mod?: boolean) => void } {
+    const row = elsewhere.roster.find((r) => r.host === host);
+    return {
+      target: {
+        kind: "section",
+        host,
+        moved: !!elsewhere.sections[id],
+        openWhy: openRefusal(row, host, project),
+        presets: presetPicks(),
+        presetDefault: skein.defaultPreset ?? FALLBACK_DEFAULT_PRESET,
+      },
+      act: (which) => {
+        if (which === "reline") {
+          elsewhere.moveSection(id, null);
+          elsewhere.saveSections();
+          return;
+        }
+        /* `new` is "as claude code is set up": null, not the wall's default,
+           as on the `+`. */
+        const chosen = which === "new" ? "" : which.startsWith("preset:") ? which.slice(7) : null;
+        if (chosen === null) return;
+        void openThere(host, project, chosen === "" ? null : (presetById(chosen) ?? null));
+      },
+    };
+  }
+
+  async function openThere(host: string, project: string, preset: Preset | null) {
+    /* What had the focus when the person asked: anything else taking it
+       before the card arrives means they have moved on (`landingNow`). */
+    const focusWas = focusedId;
+    const at = Date.now();
+    const o = await elsewhere.openThere(host, project, spawnPairOf(preset));
+    if ("why" in o) {
+      skein.fault = `no card was opened on ${host}: ${o.why}`;
+      return;
+    }
+    landing = { key: shadowKey(host, o.card), until: at + LAND_WITHIN_MS, focusWas };
+  }
+
+  /* The card asked for above, taking the focus when its shadow arrives —
+     re-read on every snapshot and every change of focus, and let go of once
+     the focus has moved or the window has passed. */
+  $effect(() => {
+    const l = landing;
+    if (!l) return;
+    const s = elsewhere.find(l.key);
+    const now = landingNow(l, !!s, focusedId, Date.now());
+    if (now === "wait") return;
+    landing = null;
+    if (now === "focus" && s) focusShadow(s);
+  });
+
+  /** `<space>en`: the focused card-on-another-wall's section's menu, opened
+   *  at the section's name. */
+  function sectionMenuFocused() {
+    const s = focusedShadow;
+    if (!s) {
+      skein.fault = "focus a card on another wall first (space then e e), and this opens a card in its section";
+      return;
+    }
+    const project = sectionOf(s.project);
+    const id = sectionId(s.host, project);
+    const el = document.querySelector(`.name[data-section="${CSS.escape(id)}"]`) as HTMLElement | null;
+    const r = el?.getBoundingClientRect();
+    const made = sectionMenuFor(s.host, project, id);
+    const items = menuFor(made.target);
+    if (!items.length) return;
+    menu = {
+      x: r ? r.left : window.innerWidth / 3,
+      y: r ? r.bottom + 4 : window.innerHeight / 3,
+      items,
+      act: made.act,
+    };
+  }
+
+  /* ── every card of a grouping, to another machine ─────────────────────── */
+
+  /** A grouping's cards are on their way somewhere — one at a time, so one
+   *  such gesture at a time too. */
+  let movingAll = false;
+
+  function askMoveAll(terr: string, host: string) {
+    if (movingAll) {
+      skein.fault = "a grouping's cards are already moving — wait for that to finish";
+      return;
+    }
+    const t = skein.territories.find((q) => q.id === terr);
+    const cards = skein.convs.filter((c) => c.territoryId === terr && c.kind === "project");
+    if (!t || !cards.length) return;
+    exodus = { cards, name: t.name, host };
+  }
+
+  /** One card at a time, each to its end — quiesced, shipped, checked there
+   *  with a turn, let go here — before the next starts. A card the move
+   *  refuses stays and is named; nothing is retried. */
+  async function moveAll(cards: Conversation[], host: string) {
+    if (movingAll) return;
+    movingAll = true;
+    const results: Moved[] = [];
+    try {
+      for (const conv of cards) {
+        /* Closed while the earlier ones were moving: not this gesture's to do. */
+        if (!skein.convs.includes(conv)) continue;
+        const title = cardName(conv.title, conv.project).text;
+        const why = await skein.moveCardThrough(conv, host);
+        results.push(why === null ? { title, moved: true } : { title, moved: false, why });
+      }
+    } finally {
+      movingAll = false;
+    }
+    if (results.length) skein.fault = movedSummary(results, host);
+  }
 
   async function closeConv(conv: Conversation, sure = false) {
     /* A card with a timeline in flight asks first: closing it ends a plan you
@@ -4788,6 +4970,22 @@
       }}
     />
   {/if}
+
+  {#if exodus}
+    {@const going = exodus}
+    <Exodus
+      count={going.cards.length}
+      name={going.name}
+      host={going.host}
+      lines={departure(going.cards.length, going.host)}
+      onkeep={() => (exodus = null)}
+      ongo={() => {
+        exodus = null;
+        void moveAll(going.cards, going.host);
+      }}
+    />
+  {/if}
+
 
   {#if showEffects}
     <Effects {ambience} />

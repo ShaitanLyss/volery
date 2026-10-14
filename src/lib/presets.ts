@@ -338,3 +338,25 @@ export function presetForSpawn(
   if (!level || !isEffort(level) || level === base.effort || !base.effort) return base;
   return { ...base, id: `${base.id}·${level}`, note: `${base.model} · ${level}`, effort: level };
 }
+
+/** What a preset row becomes on the wire to another wall: one of `spawn`'s
+ *  three family names and a level, or nulls for *as claude code is set up*.
+ *
+ *  A section's menu offers **this wall's** presets for a card opened on another
+ *  (Lyss: *"spawn remote cards based on my local presets and default preset"*),
+ *  and the wire carries `spawn`'s vocabulary rather than a `--model` string —
+ *  the far wall resolves the pair through its own `presetForSpawn`, which keeps
+ *  the family's window. Every row here round-trips to its own model and effort
+ *  that way (`test/presets.test.ts` holds it), so `deep` arrives as opus[1m] ·
+ *  xhigh and not as `bug`. A model outside the three, or a level on a family
+ *  that takes none, degrades to the family alone and then to nulls — the far
+ *  wall would refuse the pair otherwise, and a card on the right model at its
+ *  own level beats no card. */
+export function spawnPairOf(
+  preset: Pick<Preset, "model" | "effort"> | null | undefined,
+): { model: string | null; effort: string | null } {
+  const family = preset?.model.replace(/\[.*\]$/, "").trim().toLowerCase();
+  if (!family || !(SPAWN_MODELS as readonly string[]).includes(family)) return { model: null, effort: null };
+  const base = presetById(SPAWN_PRESET[family as SpawnModel]);
+  return { model: family, effort: base?.effort && preset?.effort ? preset.effort : null };
+}
