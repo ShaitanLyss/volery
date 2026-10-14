@@ -1771,6 +1771,10 @@ fn always(mut schema: Value) -> Value {
 /// that cannot ask what it is planning for is not a gear, it is a broken card,
 /// and the roster is the only copy of the instruction telling it to ask.
 ///
+/// **`load` reads the process table and changes nothing** — it is a census and a
+/// verdict (`load.rs`). A planning card is exactly the card that should be able
+/// to ask whether the machine is saturated before it plans a fan-out of checks.
+///
 /// **`walls`, and `recall` with `host`, reach another machine and still pass.**
 /// `walls` reads this wall's own copy of the roster and snapshots and asks
 /// nothing of anybody. A remote `recall` is a request on the wire, and what it
@@ -4142,8 +4146,9 @@ mod tests {
            `sink` do sweep expired rows on the read path, and `ask_user` spends
            the user's attention; both are argued at `reads_only`, and the rule
            for the next one is stated there. */
-        const READS: [&str; 20] = [
+        const READS: [&str; 21] = [
             "ask_user",
+            "load",
             "board",
             "sink",
             "sink_read",

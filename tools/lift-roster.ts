@@ -377,6 +377,10 @@ const TESTS: Array<{ file: string; names: string[] }> = [
       "the_loaded_tier_is_what_every_turn_pays_for",
       /* Absent, not false — and every other test stays green if it is wrong. */
       "the_server_claims_no_tier_of_its_own",
+      /* Pins which tools a planning card may call. Red on v0.53.0 in CI and in
+         nothing here, because no lift ran it: `load` was annotated read-only and
+         not added. */
+      "a_planning_card_may_read_and_may_not_write",
       "reading_the_dev_servers_is_offered_before_running_them",
       "the_tool_that_runs_things_says_that_it_runs_things",
     ],
