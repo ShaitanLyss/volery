@@ -420,6 +420,30 @@ with less than 8 GB free; both happened on 2026-10-08.
 **What a named lab gives up** is Rust hot reload: the binary is a copy, so a Rust change needs
 the lab restarting. That is the point of the copy, not a cost of it.
 
+**Closing a lab from a harness: use the wall's own close, never the OS's guess at it.** Cards
+keep writing harnesses that close a wall and keep finding new ways for the close to misbehave,
+so the one way that works is said here once:
+
+```powershell
+$env:SKEIN_ID="dev.skein.lab.<name>"; bun tools/ctl.ts click selector=".ctl.close"
+# then wait on the exe pid from %LOCALAPPDATA%\dev.skein.lab.<name>\lab\lab.json
+```
+
+That is the title bar's own button, so it is `win.close()` → `CloseRequested` → the real exit
+handler, which is the clean quit a person makes. The `click` op will report "did not answer"
+because the page goes away under it; wait on the pid, not on the op. For a *crash*,
+`taskkill /F /PID <exe>` is honest: the job object takes every child and nothing at exit runs.
+
+What does **not** work, each met on a real run:
+
+- **`Process.CloseMainWindow()`** sends `WM_CLOSE` to whatever top-level window answers first,
+  and `skein.exe` has several (`main`, `peek`, the splash). On 2026-10-15 it landed on one
+  with an empty title, the webview stopped answering every op, and the exit handler never ran
+  — a wedged lab that reads exactly like an app bug. Before that a card's `CloseMainWindow`
+  matched the wrong `skein.exe` entirely, which on this machine can be the installed wall.
+- **`Start-Process -Wait` on an installer** never returns: `/R` relaunches the new wall
+  inside the waited tree, so the wait is on the wall's whole life (AU-LT-288, an update card).
+
 ### Testing in-memory state wants a frozen front end, because other cards keep remounting yours
 
 Found 2026-10-08 by `f8fb825e`, testing a shadow's glass spot — which is session-only and
