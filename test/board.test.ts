@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   author,
   covering,
+  elsewhere,
   isEmpty,
+  keyOf,
   normalize,
   normalizeAll,
   reading,
@@ -119,5 +121,48 @@ describe("what a row says", () => {
     expect(author(notice(), new Map())).toBe("aaaaaaaa");
     /* And one you posted yourself, which has no card behind it at all. */
     expect(author(notice({ from: null }), names)).toBe("you");
+  });
+});
+
+/* The board crosses the flyway (`flyway/boards.rs`): a notice from another
+   wall arrives in the same read, named by its machine. */
+describe("a notice from another wall", () => {
+  const far = (over: Record<string, unknown> = {}) =>
+    notice({ host: "lab2", title: "the orchestrator", projectId: null, project: "skein", ...over });
+
+  test("carries its machine, its author's name there and its project's name", () => {
+    const n = far();
+    expect(n.host).toBe("lab2");
+    expect(n.title).toBe("the orchestrator");
+    expect(n.project).toBe("skein");
+    expect(n.unheardMs).toBeNull();
+    /* One of this wall's own reads as before. */
+    const here = notice();
+    expect(here.host).toBeNull();
+    expect(here.title).toBeNull();
+    /* Rubbish degrades to "this wall", never to a blank host. */
+    expect(notice({ host: "", unheardMs: "soon" }).host).toBeNull();
+    expect(notice({ unheardMs: Number.NaN }).unheardMs).toBeNull();
+  });
+
+  test("is named by its own wall's name for its author, since this roster has none", () => {
+    expect(author(far(), new Map())).toBe("the orchestrator");
+    expect(author(far({ title: null }), new Map())).toBe("aaaaaaaa");
+    expect(author(far({ from: null }), new Map())).toBe("you");
+  });
+
+  test("is keyed under its wall, so two walls cannot collide in one list", () => {
+    expect(keyOf(far())).not.toBe(keyOf(notice()));
+    expect(keyOf(notice())).toBe(":n1");
+  });
+
+  test("says where it stands: that machine's checkout, and an unheard wall's doubt", () => {
+    expect(elsewhere(notice())).toBe("");
+    expect(elsewhere(far({ paths: [] }))).toBe("on lab2's billboard");
+    expect(elsewhere(far())).toContain("the files are lab2's checkout, not this one");
+    const quiet = elsewhere(far({ paths: [], unheardMs: 5 * 60_000 }));
+    expect(quiet).toContain("not heard from for 5m");
+    expect(quiet).toContain("may have changed there");
+    expect(elsewhere(far({ paths: [], unheardMs: 3 * 3_600_000 }))).toContain("for 3h");
   });
 });

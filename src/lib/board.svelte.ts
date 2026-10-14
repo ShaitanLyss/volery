@@ -92,28 +92,43 @@ export class Board {
     paths: string[] = [],
     projectId: string | null = null,
   ): Promise<boolean> {
-    let ok = false;
+    let refused: string | null = null;
     try {
       await invoke("post_notice", { subject, body, paths, projectId });
-      this.fault = null;
-      ok = true;
     } catch (err) {
-      this.fault = err instanceof Error ? err.message : String(err);
+      refused = err instanceof Error ? err.message : String(err);
     }
     /* Forced, because the event is coming and this is the one caller that
        should not wait for the round trip to come back the long way. */
     await this.refresh(true);
-    return ok;
+    this.#refused(refused);
+    return refused === null;
   }
 
-  /** Take one down — anybody's. It is your wall. */
-  async unpost(id: string) {
+  /** Say why a write was refused, **after** the read that follows it.
+   *
+   *  The fault used to be set before the forced refresh, and a successful read
+   *  sets it back to null — so a refused post, and every refused takedown, drew
+   *  nothing at all on the face. Found when a ✕ on a quiet wall's notice came
+   *  back refused in under half a second and the widget said nothing. */
+  #refused(why: string | null) {
+    if (why !== null) this.fault = why;
+  }
+
+  /** Take one down — anybody's. It is your wall, and so is every other wall on
+   *  the flyway: a notice from another wall is taken down *there*, by asking
+   *  the wall it lives on (`unpost_far_notice`), since this wall only holds a
+   *  picture of it. Refused at once when that wall is not being heard, and the
+   *  refusal is the fault line — never queued for a lid to lift. */
+  async unpost(id: string, host: string | null = null) {
+    let refused: string | null = null;
     try {
-      await invoke("unpost_notice", { id });
-      this.fault = null;
+      if (host === null) await invoke("unpost_notice", { id });
+      else await invoke("unpost_far_notice", { host, id });
     } catch (err) {
-      this.fault = err instanceof Error ? err.message : String(err);
+      refused = err instanceof Error ? err.message : String(err);
     }
     await this.refresh(true);
+    this.#refused(refused);
   }
 }

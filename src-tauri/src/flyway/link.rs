@@ -99,6 +99,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
 use super::act::{self, ActMsg};
+use super::boards::{self, BoardMsg, Boards};
 use super::cards::{Arrived, Cards};
 use super::fleet::{self, Act, Answer, Deliver, Facts, Fleet, FleetMsg, Origin, Outcome, PromptRequest, Refusal, Request, Spawn, Standing};
 use super::frame::Frame;
@@ -110,6 +111,7 @@ use super::tail::{self, TailMsg};
 use super::wire::{Dialler, Fault, Wire};
 use crate::store::Store;
 
+mod billboard;
 mod moves;
 
 /// How often a wall asks the others what it has missed — and says what it is.
@@ -205,6 +207,10 @@ pub struct Link {
     /// way until this wall's front end has done them (`act_here`).
     acts: StdMutex<HashMap<String, tokio::sync::oneshot::Sender<Result<Option<String>, String>>>>,
     cards_due: AtomicBool,
+    /// What every other wall's billboard says, and the version this wall's
+    /// own is said under (`boards.rs`, `link/billboard.rs`).
+    boards: StdMutex<Boards>,
+    board_due: AtomicBool,
 }
 
 /// One of this wall's prompts to another wall's card.
@@ -309,13 +315,17 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         return Ok(true);
     }
 
-    let (fleet_v, cards_v) = {
+    let (fleet_v, cards_v, board_v) = {
         /* `try_state`, because this is reached from a command as well as from
            setup, and a missing store must be an error here rather than a
            panic on a runtime thread, which takes the process with it. */
         let store = app.try_state::<Store>().ok_or("the store is not open yet")?;
         let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
-        (here::version(&conn, here::FLEET_VERSION), here::version(&conn, here::CARDS_VERSION))
+        (
+            here::version(&conn, here::FLEET_VERSION),
+            here::version(&conn, here::CARDS_VERSION),
+            here::version(&conn, here::BOARD_VERSION),
+        )
     };
     /* What questions from other walls left here last time: no sheet survives a
        restart, so none of it is pointed at any more (`sweep_looks`). Before the
@@ -341,6 +351,8 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         tails: StdMutex::new(HashMap::new()),
         acts: StdMutex::new(HashMap::new()),
         cards_due: AtomicBool::new(false),
+        boards: StdMutex::new(Boards::new(&me, board_v)),
+        board_due: AtomicBool::new(false),
     });
     *state.link.lock().map_err(|_| "the flyway is wedged".to_string())? = Some(link.clone());
     if let Some((snapshot, at)) = state.early_cards.lock().ok().and_then(|mut e| e.take()) {
@@ -493,6 +505,7 @@ impl Link {
                         super::moving::WORD.to_string(),
                         look::WORD.to_string(),
                         super::opening::WORD.to_string(),
+                        boards::WORD.to_string(),
                     ])
                     .chain(act::words())
                     .collect(),
@@ -628,6 +641,9 @@ impl Link {
             if let Some(c) = self.cards.lock().ok().and_then(|c| c.say(now)) {
                 out.push(Frame::Cards(c));
             }
+            if let Some(b) = self.board_say() {
+                out.push(Frame::Board(b));
+            }
         }
         Ok(out)
     }
@@ -751,6 +767,10 @@ impl Link {
                 Frame::Move(_) => {}
                 /* And a look's (`read_look`), and an act's (`read_act`). */
                 Frame::Look(_) | Frame::Act(_) => {}
+                Frame::Board(m @ BoardMsg::Board { .. }) => self.on_board(m),
+                /* An unpost's answer is read by the exchange that asked
+                   (`unpost_there`); an ask is only ever answered, never taken. */
+                Frame::Board(_) => {}
             }
         }
         if fleet_spoke {
@@ -832,6 +852,15 @@ impl Link {
                 Frame::Look(LookMsg::Look { id, card, ask, want }) if who.current => {
                     out.push(Frame::Look(self.look_here(&id, &card, &ask, &want)));
                 }
+                Frame::Board(m @ BoardMsg::Board { .. }) if who.current => self.on_board(m),
+                /* A notice of this wall's taken down from another — decided
+                   here, against this wall's own ladder (`board.rs`). Not gated
+                   by "take work from other walls": it starts nothing. */
+                Frame::Board(m @ BoardMsg::Unpost { .. }) if who.current => {
+                    if let Some(r) = self.unpost_here(m, from.as_deref()) {
+                        out.push(Frame::Board(r));
+                    }
+                }
                 _ => {}
             }
         }
@@ -840,6 +869,12 @@ impl Link {
                cards in the same exchange it sent its own. */
             if let Some(c) = self.cards.lock().ok().and_then(|c| c.say(now)) {
                 out.push(Frame::Cards(c));
+            }
+            /* And this wall's board, said after anything above was answered —
+               so an `unpost` it just carried out leaves the asker's copy in the
+               same exchange. */
+            if let Some(b) = self.board_say() {
+                out.push(Frame::Board(b));
             }
         }
         if fleet_spoke {
@@ -2389,6 +2424,12 @@ pub async fn flyway_forget(app: AppHandle, host: String) -> Result<(), String> {
         }
         f.forget(&host);
     }
+    /* Its notices go with it: a wall nobody will hear from again has nobody to
+       take them down. */
+    if let Ok(mut b) = link.boards.lock() {
+        b.forget(&host);
+    }
+    crate::board::heard_from_afar(&app);
     crate::chronicle::note(
         &app,
         None,

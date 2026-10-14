@@ -22,11 +22,17 @@
    * - **Colour is status, so the only colour here is the stale mark** — amber,
    *   the wall's "something wants attention", which is exactly what an old
    *   notice is. A current notice is achromatic like the rest of the chrome.
+   *
+   * - **Other walls' notices are here too, named by their machine.** The board
+   *   crosses the flyway (`boards.rs`): a notice from another wall is drawn with
+   *   its host beside its author, its ✕ asks that wall to take it down, and a
+   *   wall that has gone unheard draws its notices with the stale mark — the
+   *   same doubt for a different reason, said in the open detail.
    */
 
   import { clock } from "./conversation.svelte";
   import type { Board } from "./board.svelte";
-  import { author, covering, isEmpty, reading, since, type Notice } from "./board";
+  import { author, covering, elsewhere, isEmpty, keyOf, reading, since, type Notice } from "./board";
   import { textOf, variantOf, type Widget } from "./widgets";
 
   let {
@@ -63,7 +69,7 @@
      `notes` reading opens all of them and the click then closes one, which is
      the same state read the other way round rather than a second mechanism. */
   let open = $state<string | null>(null);
-  const opened = (id: string) => (variant === "notes" ? open !== id : open === id);
+  const opened = (key: string) => (variant === "notes" ? open !== key : open === key);
 
   let drafting = $state(false);
   let subject = $state("");
@@ -140,37 +146,41 @@
     </p>
   {:else}
     <ul class="rows" data-scroll>
-      {#each shown as n (n.id)}
+      {#each shown as n (keyOf(n))}
+        {@const k = keyOf(n)}
         {@const who = author(n, names)}
         {@const files = covering(n)}
-        <li class:stale={n.stale} class:open={opened(n.id)}>
+        {@const there = elsewhere(n)}
+        {@const off = n.host ? `Take this notice down on ${n.host}` : "Take this notice down"}
+        <li class:stale={n.stale || n.unheardMs !== null} class:open={opened(k)}>
           <button
             class="row"
             title={n.body}
-            onclick={() => (open = opened(n.id) === (variant === "notes") ? n.id : null)}
+            onclick={() => (open = opened(k) === (variant === "notes") ? k : null)}
           >
             <span class="mark" class:wall={n.scope === "skein"}></span>
             <span class="label">{n.subject}</span>
-            <span class="who">{who}</span>
+            <span class="who">{who}{#if n.host}&nbsp;· {n.host}{/if}</span>
             <span class="when">{since(n, now)}</span>
           </button>
           <button
             class="off"
-            title="Take this notice down"
-            aria-label="Take this notice down"
-            onclick={() => void board.unpost(n.id)}>×</button
+            title={off}
+            aria-label={off}
+            onclick={() => void board.unpost(n.id, n.host)}>×</button
           >
-          {#if opened(n.id)}
+          {#if opened(k)}
             <div class="detail">
               <p>{n.body}</p>
               {#if files}<p class="files">{files}</p>{/if}
+              {#if there}<p class="there" class:aged={n.unheardMs !== null}>{there}</p>{/if}
               {#if n.stale}
                 <p class="aged">
                   up {since(n, now)} without being touched — worth asking whether it
                   still holds
                 </p>
               {/if}
-              {#if n.from && onreveal}
+              {#if n.from && !n.host && onreveal}
                 <button class="goto" onclick={() => onreveal?.(n.from!)}
                   >go to {who}</button
                 >
@@ -373,6 +383,9 @@
     color: var(--paper-faint);
     font-family: var(--mono);
     font-size: 0.6rem;
+  }
+  .there {
+    color: var(--paper-faint);
   }
   .aged {
     color: var(--st-soft);

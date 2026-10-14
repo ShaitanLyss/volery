@@ -14,6 +14,8 @@
 //!   one. Pure.
 //! - `fleet` — the roster, and asking another wall to open a card. Pure.
 //! - `cards` — what each wall's cards look like, carried and never read. Pure.
+//! - `boards` — what each wall's billboard says, held by the others, and a
+//!   notice taken down from another wall. Pure; `link/boards.rs` is the wiring.
 //! - `tail` — one card's conversation, pulled by a wall with a panel open on
 //!   it and answered in the same exchange. Pure.
 //! - `look` — what a question asked on another wall shows: its arguments and
@@ -44,6 +46,7 @@
    crate in any case. */
 
 pub mod act;
+pub mod boards;
 pub mod cards;
 pub mod fleet;
 pub mod frame;

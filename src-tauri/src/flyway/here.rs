@@ -34,6 +34,7 @@ use super::fleet::{Bound, Territory};
 
 pub const FLEET_VERSION: &str = "fleet_version";
 pub const CARDS_VERSION: &str = "cards_version";
+pub const BOARD_VERSION: &str = "board_version";
 pub const ACCEPTING: &str = "accepting";
 pub const BOUND_LIVE: &str = "bound_live";
 pub const BOUND_HOUR: &str = "bound_hour";

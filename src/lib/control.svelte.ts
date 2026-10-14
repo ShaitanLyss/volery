@@ -808,6 +808,7 @@ export class Control {
           subject: n.subject,
           paths: n.paths,
           stale: n.stale,
+          host: n.host,
         })),
       },
       /* Other walls' cards, as this one draws them. `unheard` beside `tier`
@@ -1712,6 +1713,10 @@ export class Control {
             body: n.body,
             paths: n.paths,
             stale: n.stale,
+            host: n.host,
+            title: n.title,
+            project: n.project,
+            unheardMs: n.unheardMs,
           })),
           fault: h.skein.board.fault,
         };
@@ -1742,10 +1747,12 @@ export class Control {
       },
 
       /** Take one down — by notice id as you, or by subject as the card that
-       *  posted it, which is the path an agent actually walks. */
+       *  posted it, which is the path an agent actually walks. With `host`, a
+       *  notice from that wall's billboard, taken down there as the widget's ✕
+       *  does. */
       unpost: async (op) => {
         if (op.id !== undefined && op.subject === undefined && op.card === undefined) {
-          await h.skein.board.unpost(String(op.id));
+          await h.skein.board.unpost(String(op.id), op.host === undefined ? null : String(op.host));
           return { by: "you", fault: h.skein.board.fault };
         }
         const card = this.#card(op, op.card !== undefined ? "card" : "id");

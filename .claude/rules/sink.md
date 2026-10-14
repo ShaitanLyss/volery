@@ -60,9 +60,21 @@ So the differences are not accidents of implementation:
 |---|---|---|
 | when its author's card closes | deleted (`sweep_notices`) | kept; only the *hold* is released |
 | staleness | marked, never removed | a **hold** expires and gives way |
-| reaches out on a file write | yes (`on_touch`) | never — it is read when asked for |
-| who may take it down | its author, or you | anyone who dealt with it, or you |
+| reaches out on a file write | yes (`on_touch`) — on its own wall only | never — it is read when asked for |
+| who may take it down | its author, or you, from any wall | anyone who dealt with it, or you |
 | lives as long as | the work it describes | until somebody settles it |
+| across the flyway | a **picture** of each wall's board, the wall it lives on the authority | **events**, folded into one pile on every wall |
+
+**Both cross the flyway now, and they cross opposite ways for the same reason the rest of the
+table differs.** This section used to argue that the board should not cross at all — a notice
+is about one working tree, two walls do not share one, and a finding is about the code, which
+they do share through git. That holds for the half of the board that *claims files*, which is
+why `on_touch` still serves only on its own wall. It never held for a notice that names none
+(*"don't push to this repo"*), and remote spawn put orchestrators on one machine and their
+workers on another, so the exclusion was overturned on 2026-10-14 (`board.md`, *Across the
+flyway*). What survives of the argument is the *shape*: a notice has exactly one writer and
+nothing to converge, so it crosses as a picture its home wall replaces whole; an item is written
+by many walls and must converge, so it crosses as events (`flyway/sync.rs`).
 
 **`from_id` is provenance and nothing more.** No foreign key, no cascade, no sweep. The card
 that found a thing going away says nothing at all about whether the thing is still true, and

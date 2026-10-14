@@ -71,6 +71,7 @@ const ITEMS: [string, string][] = [
   [BOARD, "fn globs_of"],
   [BOARD, "fn stale"],
   [BOARD, "fn ago"],
+  [BOARD, "fn span"],
   [BOARD, "fn globs_from"],
   [BOARD, "fn refuse_globs"],
   [BOARD, "fn quiet_ms"],
@@ -111,6 +112,7 @@ const TESTS: string[] = [
   "a_notice_watches_more_globs_than_a_card_has_notices",
   "a_notice_goes_stale_by_being_left_alone_and_re_posting_revives_it",
   "ages_read_as_prose",
+  "a_span_reads_without_ago",
   /* What a limit does when it is reached — the item. */
   "a_truncation_says_how_much_it_took",
   "a_receipt_is_silent_about_what_fitted_and_loud_about_what_did_not",

@@ -557,13 +557,27 @@ finished a turn, its "finished" notice was in lab2's queue and on lab's shadow, 
 attention ladder within seconds, and pressing *acknowledge* in lab's dock emptied lab2's queue
 inside a second.
 
+### The billboard crosses too — and it is not the notice queue
+
+Two things on this wall are called notices and only one of them is *Notices travel too* above:
+that is the queue a card's finished turn or question raises for a person. The **billboard** —
+`board`, `post`, `unpost`, standing coordination between cards — crosses as well since
+2026-10-14, by a different shape and for a different reader: each wall says its whole board on
+every exchange (`flyway/boards.rs`, a `board` frame beside the cards snapshot, in Rust because the
+board is Rust's), every other wall reads it beside its own named by machine, and a notice is
+taken down from another wall by asking the wall it lives on. `board.md`, *Across the flyway*, is
+the design: why the home wall stays the authority, why a notice that names files is read on
+another wall and never served there, what a quiet wall's notices do, and who may take one down
+from where.
+
 ### A removal confirmed from another wall
 
 The one of Volery's own three questions that crosses, and it crosses because Lyss overruled
 the proposal that it should not: *"it should be my judgement whether to go through it or not,
 blocked away by volery."* (sink `7207a6d9`). Close stays local — a shadow has its own close,
-asked as a person from its ✕ — and unpost stays local, since a board notice is one wall's
-coordination with its own cards. **The next person will read the old sentence in `ask.rs` or
+asked as a person from its ✕ — and unpost stayed local, on the argument that a board notice is
+one wall's coordination with its own cards, until the billboard itself crossed (`board.md`,
+*Across the flyway*); a close and an unpost both travel now. **The next person will read the old sentence in `ask.rs` or
 here and think none of the three travel; `ask::afar_may_answer` is the rule, and holds it by
 test.**
 
@@ -701,14 +715,17 @@ added to any list**, which is the test the item set.
   it (the rule *The digest is the owner's front end's* states about the taxonomy).
 
 **The exclusions are `ask::Stay`, one variant each with its argument written beside it, and
-today there is one — held, not argued.** `Stay::BoardNotice` keeps `unpost`'s confirmation (a
-dead card's notice coming down) on its own wall *pending the billboard itself crossing walls*,
-which card `e038b3e2` is building; when it lands, `board.rs` flips to `Settle::new` and the
-variant goes. Its old argument — *a board notice is one wall's coordination with its own cards,
-so a notice answered elsewhere means little* — did not survive scrutiny twice over: a notice
-need not be about a working tree at all (*"don't push to this repo"*, *"wrapping things up before
-a holiday"*), and remote spawn made an orchestrator on one wall with workers on another an
-ordinary topology, one that can neither see nor clear the notices its workers raise.
+today there are none.** The last was `Stay::BoardNotice`, which kept `unpost`'s confirmation (a
+dead card's notice coming down) on its own wall *pending the billboard itself crossing walls*.
+It has (`board.md`, *Across the flyway*), so the question carries `board::retire_confirm`'s
+evidence — with the notice's home wall as a `whose billboard` fact when a card retires another
+wall's notice, since `machine` is where the question is parked — and the variant is gone. Its old
+argument — *a board notice is one wall's coordination with its own cards, so a notice answered
+elsewhere means little* — did not survive scrutiny twice over: a notice need not be about a
+working tree at all (*"don't push to this repo"*, *"wrapping things up before a holiday"*), and
+remote spawn made an orchestrator on one wall with workers on another an ordinary topology, one
+that could neither see nor clear the notices its workers raise. The enum is kept, empty, so the
+next exclusion is an argument to write rather than a mechanism to rebuild.
 
 **The general lesson, and it has now bitten twice in a day: an exclusion justified by "these two
 things do not interact" expires silently the moment something makes them interact.** The flyway
@@ -993,11 +1010,6 @@ hold the rest.
   almost always hears the wall it asked. A stray is drawn on the child's side only.
 - **The whole scrollback.** 120 lines from the end, which is the round you are in and the one
   before; older rounds stay on the owning wall, and the panel says so.
-- **An unpost confirmed from afar — for now, and not on a standing argument.** It is the one
-  confirmation made under an `ask::Stay`, pending the billboard itself crossing walls (card
-  `e038b3e2`'s work); see *Every confirmation travels unless it says why not*. The argument it
-  used to carry — *a board notice is one wall's coordination with its own cards* — did not
-  survive the flyway, and the section says why.
 - **Persistence.** What was said to a shadow from here is in memory only, like a `!` line: it
   is in nobody's session file, and a prompt is only worth tracking while somebody waits on it.
 

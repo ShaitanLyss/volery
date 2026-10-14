@@ -928,6 +928,7 @@ pub fn run() {
             board::read_board,
             board::post_notice,
             board::unpost_notice,
+            board::unpost_far_notice,
             board::board_touch,
             board::relay_board,
             board::relay_post,

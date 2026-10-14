@@ -39,6 +39,17 @@
 //! And the notice can reach out. A notice carrying `paths` is served to any
 //! card that touches a file it covers, once — see `on_touch`, which is the only
 //! part of this that does not wait to be asked.
+//!
+//! **And the board crosses the flyway** (`flyway/boards.rs` has the argument).
+//! Every wall says its whole board to the walls it flies with, and each reads
+//! the others' notices beside its own, named by their machine. The wall a notice
+//! lives on stays the authority: every clearing above runs there and reaches the
+//! others in the next picture, a copy ages on the clock its home wall would have
+//! used (`far_shown`), and taking one down from elsewhere asks the wall it lives
+//! on (`unpost_for_afar`). What does **not** cross is `on_touch`: a notice that
+//! names files names *that machine's* checkout, so another wall reads it and
+//! never serves it — serving it would intercept a card editing a different file
+//! that happens to share the name, and say something false about it.
 
 use std::collections::HashMap;
 
@@ -46,6 +57,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::flyway::boards::{Posted, Reply, Retiring, Taker};
 use crate::store::{Notice, Store};
 
 pub const BOARD_TOOL: &str = "board";
@@ -183,6 +195,19 @@ struct BoardChanged {
 
 fn changed(app: &AppHandle, project_id: Option<String>) {
     let _ = app.emit("board:changed", BoardChanged { project_id });
+    /* And to the walls this one flies with, within a second. What crosses is
+       the whole board, so any change is a reason to say it again — which is
+       what makes an orchestrator's `unpost` reach its workers on the other
+       machine in about a second rather than at the next exchange. */
+    if let Some(l) = crate::flyway::link::link(app) {
+        l.board_changed();
+    }
+}
+
+/// Another wall's board changed: redraw this one. Never said on — it is not
+/// this wall's to say (`boards.rs`, *not relayed*).
+pub fn heard_from_afar(app: &AppHandle) {
+    let _ = app.emit("board:changed", BoardChanged { project_id: None });
 }
 
 /* ── globs ────────────────────────────────────────────────────────────────
@@ -334,6 +359,163 @@ fn seen_of(seen: &HashMap<String, i64>, n: &Notice) -> Option<i64> {
     n.from_id.as_ref().and_then(|id| seen.get(id).copied())
 }
 
+/* ── notices from other walls ──────────────────────────────────────────────
+ *
+ * Held by the link as its home wall last said them (`flyway/boards.rs`), with
+ * their ages advanced on this wall's clock. Nothing here writes one: every
+ * clearing runs on the wall the notice lives on, and what is decided here is
+ * only whether a copy is still worth showing and how it reads.
+ */
+
+/// One notice from another wall's board, as this wall reads it.
+#[derive(Debug, Clone)]
+pub(crate) struct Far {
+    pub host: String,
+    pub n: Posted,
+    /// How long its wall has gone unheard — the roster's word.
+    pub wall_quiet: u64,
+}
+
+/// Whether a copy is still shown here.
+///
+/// **This is the answer to `sweep_notices` being unable to run for a machine
+/// that is not there.** A card's notice that nobody has been behind for
+/// `EXPIRE_AFTER_MS` is not shown — its home wall, had it been heard, would have
+/// taken it down by now, and the copy has been ageing on that wall's own clock
+/// (`boards.rs`, *ages*). And nothing from a wall unheard for that long is shown
+/// either, which is what reaches a *person's* notice, since those never expire
+/// at home: a wall gone three days is a lid that has not lifted over a weekend,
+/// and its standing instructions are no longer anybody's to rely on. Hidden
+/// rather than deleted, so a wall heard again shows its board again, whatever
+/// it says by then.
+///
+/// Short of that a quiet wall's notices **stay up, marked** (`far_unheard`).
+/// A shadow drops to rest when its wall goes quiet because *working* is a live
+/// claim and a link that is down must not look like an agent thinking. A
+/// notice is not that kind of claim: "leave this alone" from a laptop in a bag
+/// is still true — the half-finished edits are in its checkout — and deleting a
+/// true notice is worse than showing an old one (`board.md`'s rule for stale).
+pub(crate) fn far_shown(n: &Posted, wall_quiet: u64) -> bool {
+    let expired = n.from.is_some() && n.quiet_ms as i64 > EXPIRE_AFTER_MS;
+    !expired && wall_quiet as i64 <= EXPIRE_AFTER_MS
+}
+
+/// The home wall's stale mark, carried forward on this wall's clock.
+pub(crate) fn far_stale(n: &Posted) -> bool {
+    n.quiet_ms as i64 > STALE_AFTER_MS
+}
+
+/// Its wall has gone quiet — the fleet's bound, the one the shadows and the
+/// roster read — so what it shows may have changed there unseen.
+pub(crate) fn far_unheard(wall_quiet: u64) -> bool {
+    wall_quiet as i64 > crate::flyway::fleet::QUIET_AFTER_MS
+}
+
+/// Every notice from another wall that is still shown, by host.
+fn far_seen(app: &AppHandle) -> Vec<Far> {
+    let Some(l) = crate::flyway::link::link(app) else { return Vec::new() };
+    let mut out: Vec<Far> = l
+        .boards_seen()
+        .into_iter()
+        .filter(|(s, wall)| far_shown(&s.notice, *wall))
+        .map(|(s, wall)| Far { host: s.host, n: s.notice, wall_quiet: wall })
+        .collect();
+    out.sort_by(|a, b| a.host.cmp(&b.host).then(b.n.posted_ms.cmp(&a.n.posted_ms)));
+    out
+}
+
+/// The ones a card standing in `project` reads: wall-wide notices, and the
+/// ones posted to a project of that **name** — which is how two checkouts of
+/// one repository are the same project on two walls (`sinksync::scope_of`'s
+/// reason). `whole` is a `skein` read, which takes everything.
+fn far_for(far: Vec<Far>, project: Option<&str>, whole: bool) -> Vec<Far> {
+    if whole {
+        return far;
+    }
+    far.into_iter()
+        .filter(|f| {
+            f.n.scope != "project"
+                || project.zip(f.n.project.as_deref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+        .collect()
+}
+
+/// What this wall says of its own board, for the walls it flies with.
+///
+/// Swept first, as every reading here is, so what crosses is what a card here
+/// would read: nothing expired, nothing from a card that has closed. The ages
+/// are taken now — `boards.rs` builds the picture every time it is said — and
+/// `quiet_ms` is the same reading the stale mark here turns on, so the far wall
+/// marks the same notices this one does.
+pub fn published(app: &AppHandle) -> Option<Vec<Posted>> {
+    let store = app.try_state::<Store>()?;
+    sweep(app);
+    let now = crate::store::now();
+    let conn = store.0.lock().ok()?;
+    let notices = crate::store::notices(&conn, None).ok()?;
+    let roster = crate::store::roster(&conn, None).unwrap_or_default();
+    let seen: HashMap<String, i64> =
+        roster.iter().filter_map(|r| r.last_turn_at.map(|t| (r.id.clone(), t))).collect();
+    let titles: HashMap<&str, &str> = roster.iter().map(|r| (r.id.as_str(), r.title.as_str())).collect();
+    Some(
+        notices
+            .iter()
+            .map(|n| Posted {
+                id: n.id.clone(),
+                scope: n.scope.clone(),
+                project: if n.scope == "project" {
+                    crate::sinksync::scope_of(&conn, n.project_id.as_deref())
+                } else {
+                    None
+                },
+                from: n.from_id.clone(),
+                title: n.from_id.as_deref().and_then(|id| titles.get(id)).map(|t| t.to_string()),
+                subject: n.subject.clone(),
+                body: n.body.clone(),
+                paths: globs_of(n).into_iter().map(str::to_string).collect(),
+                posted_ms: (now - n.posted_at).max(0) as u64,
+                quiet_ms: quiet_ms(n, seen_of(&seen, n), now) as u64,
+            })
+            .collect(),
+    )
+}
+
+/// The walls a post here reaches, as a receipt says it — empty off the flyway,
+/// so an ordinary receipt reads exactly as it did.
+fn reaches(app: &AppHandle, paths: bool) -> String {
+    let Some(l) = crate::flyway::link::link(app) else { return String::new() };
+    let hosts = l.flying_with();
+    if hosts.is_empty() {
+        return String::new();
+    }
+    format!(
+        " Cards on {} read it on their boards too{}.",
+        hosts.join(", "),
+        if paths {
+            " — read, never served: those walls work in checkouts of their own, so the file claim \
+             only reaches cards on this one"
+        } else {
+            ""
+        }
+    )
+}
+
+/// What a takedown here says about the other walls, or nothing off the flyway.
+fn leaves(app: &AppHandle) -> String {
+    let Some(l) = crate::flyway::link::link(app) else { return String::new() };
+    let hosts = l.flying_with();
+    if hosts.is_empty() {
+        return String::new();
+    }
+    format!(
+        " It leaves {} within a few seconds.",
+        match hosts.as_slice() {
+            [one] => format!("{one}'s board"),
+            _ => format!("the boards of {}", hosts.join(" and ")),
+        }
+    )
+}
+
 /* ── the pass that runs on every reading ───────────────────────────────────
  *
  * Two clearings, one after the other, and the second is the one that reaches a
@@ -382,7 +564,7 @@ fn expiry_note(gone: &[Notice], quiet: i64) -> String {
          subject puts it straight back up. If it is finished, there is nothing to do \
          and nothing to reply to.",
         gone.len(),
-        ago(quiet),
+        span(quiet),
     )
 }
 
@@ -644,9 +826,12 @@ fn do_board(app: &AppHandle, caller: &str, args: &Value) -> String {
         Err(e) => return format!("could not read the board: {e}"),
     };
     let seen = seen_map(&conn);
+    let mine_project = crate::sinksync::scope_of(&conn, me.project_id.as_deref());
     drop(conn);
+    let far = far_for(far_seen(app), mine_project.as_deref(), all || me.project_id.is_none());
+    let withheld = crate::flyway::link::link(app).map(|l| l.boards_withheld()).unwrap_or_default();
 
-    if notices.is_empty() {
+    if notices.is_empty() && far.is_empty() {
         return "the billboard is empty — nobody has anything up.".into();
     }
 
@@ -669,14 +854,85 @@ fn do_board(app: &AppHandle, caller: &str, args: &Value) -> String {
         out.push('\n');
     }
     if theirs.is_empty() {
-        out.push_str("Nobody else has anything up.");
+        out.push_str(if far.is_empty() {
+            "Nobody else has anything up."
+        } else {
+            "Nobody else on this wall has anything up."
+        });
     } else {
         out.push_str("From the other conversations on this wall:\n\n");
         for n in &theirs {
             out.push_str(&render(n, &seen, now));
         }
     }
+    out.push_str(&far_section(&far, &withheld));
     out
+}
+
+/// The other walls' notices, as a card reads them — one heading per wall, and
+/// what such a notice is said once, at the top, rather than on every line.
+fn far_section(far: &[Far], withheld: &[(String, u32)]) -> String {
+    let mut out = String::new();
+    if !far.is_empty() {
+        out.push_str(
+            "\n\nFrom other walls on the flyway. Each is about its own machine: one naming files \
+             names that machine's checkout, so it is read here and never served to a card editing a \
+             file on this one — the two checkouts meet when both are pushed. Take one down with \
+             `mcp__skein__unpost` as you would a notice here; the wall it lives on decides.\n",
+        );
+    }
+    let mut hosts: Vec<&str> = far.iter().map(|f| f.host.as_str()).collect();
+    hosts.dedup();
+    for host in hosts {
+        let these: Vec<&Far> = far.iter().filter(|f| f.host == host).collect();
+        let wall = these[0].wall_quiet;
+        if far_unheard(wall) {
+            out.push_str(&format!(
+                "\nOn {host} — not heard from for {}, so this may have changed there:\n\n",
+                span(wall as i64)
+            ));
+        } else {
+            out.push_str(&format!("\nOn {host}:\n\n"));
+        }
+        for f in these {
+            out.push_str(&render_far(f));
+        }
+    }
+    for (host, n) in withheld {
+        out.push_str(&format!(
+            "\n({n} more of {host}'s notices did not fit what one wall sends another — read them on {host}.)\n"
+        ));
+    }
+    out
+}
+
+/// One notice from another wall. Its author is named by title as well as
+/// handle, since this wall's roster has no row for a card on another machine
+/// — the handle is still what `send` and `close` reach it by.
+fn render_far(f: &Far) -> String {
+    let n = &f.n;
+    let who = match (&n.from, &n.title) {
+        (Some(id), Some(t)) => format!("{t:?}, {}", crate::relay::handle_of(id)),
+        (Some(id), None) => crate::relay::handle_of(id),
+        (None, _) => "the user".into(),
+    };
+    let project = match (n.scope.as_str(), &n.project) {
+        ("project", Some(p)) => format!(" · {p}"),
+        _ => String::new(),
+    };
+    let mark = if far_stale(n) { " — STALE, may no longer be true" } else { "" };
+    let files = if n.paths.is_empty() {
+        String::new()
+    } else {
+        format!("\n  files, in {}'s checkout: {}", f.host, n.paths.join(", "))
+    };
+    format!(
+        "- [{}] {} (from {who}{project}, {}{mark})\n  {}{files}\n",
+        n.id.chars().take(8).collect::<String>(),
+        n.subject,
+        ago(n.posted_ms as i64),
+        n.body.replace('\n', "\n  "),
+    )
 }
 
 fn render(n: &Notice, seen: &HashMap<String, i64>, now: i64) -> String {
@@ -717,6 +973,16 @@ fn ago(ms: i64) -> String {
         return format!("{hours}h ago");
     }
     format!("{}d ago", hours / 24)
+}
+
+/// `ago` without the "ago", for "quiet for …" and "not heard from for …" —
+/// `ago` read there as "quiet for 5h ago", in three messages, for as long as
+/// they have existed.
+fn span(ms: i64) -> String {
+    match ago(ms).strip_suffix(" ago") {
+        Some(s) => s.to_string(),
+        None => "under a minute".into(),
+    }
 }
 
 /* -- being crowded ---------------------------------------------------------
@@ -848,10 +1114,11 @@ fn do_post(app: &AppHandle, caller: &str, args: &Value) -> String {
                 )
             };
             format!(
-                "posted to the {} board: {subject:?}.{watching}{} Take it down with \
+                "posted to the {} board: {subject:?}.{watching}{}{} Take it down with \
                  `mcp__skein__unpost` as soon as it is no longer true — a notice left up \
                  after the work is done stops somebody else for no reason.",
                 if skein { "wall-wide" } else { "project" },
+                reaches(app, !paths.is_empty()),
                 format!("{}{crowd}", lost(&subject, subject_cut, &body, body_cut)),
             )
         }
@@ -961,13 +1228,13 @@ fn still_theirs(subject: &str, who: &str, title: &str, live: bool, quiet: i64) -
          everything it has up. And if nobody is ever behind it again, the wall takes it \
          down by itself once it and its card have been silent for three days.",
         if live {
-            format!("It has a process and has been quiet {}.", ago(quiet))
+            format!("It has a process and has been quiet for {}.", span(quiet))
         } else {
             format!(
-                "It is dormant and has been quiet {} — not yet long enough for this card \
+                "It is dormant and has been quiet for {} — not yet long enough for this card \
                  to offer to retire it on its behalf, which needs {}.",
-                ago(quiet),
-                ago(STALE_AFTER_MS),
+                span(quiet),
+                span(STALE_AFTER_MS),
             )
         },
     )
@@ -981,7 +1248,17 @@ fn still_theirs(subject: &str, who: &str, title: &str, live: bool, quiet: i64) -
 /// migration will say no; the same person shown only two titles has been handed
 /// a decision with the evidence left out, which is the thing `close`'s own
 /// refusals are written to avoid.
-fn retire_question(subject: &str, body: &str, globs: &[&str], title: &str, handle: &str, by: &str, quiet: i64) -> Value {
+#[allow(clippy::too_many_arguments)]
+fn retire_question(
+    subject: &str,
+    body: &str,
+    globs: &[&str],
+    title: &str,
+    handle: &str,
+    by: &str,
+    quiet: i64,
+    host: &str,
+) -> Value {
     let holding = if globs.is_empty() {
         "It names no files, so nothing is being unclaimed by taking it down — it is an \
          announcement nobody is making any more."
@@ -999,13 +1276,13 @@ fn retire_question(subject: &str, body: &str, globs: &[&str], title: &str, handl
             "question": format!(
                 "{by:?} wants to take {title:?}'s billboard notice off the wall.\n\n\
                  **{subject}**\n\n{body}\n\n\
-                 {title:?} ({handle}) has no process and nothing has been said on this \
-                 notice's behalf for {}. {holding}\n\n\
+                 {title:?} ({handle}) on {host} has no process and nothing has been said on \
+                 this notice's behalf for {}. {holding}\n\n\
                  The card itself is untouched — this takes down the notice and nothing \
                  else. Worth knowing before you answer: a card that died part-way \
                  through still has its half-finished edits in the tree, and a notice \
                  like this one is the only thing telling anybody to leave them alone.",
-                ago(quiet),
+                span(quiet),
             ),
             "options": [
                 { "label": RETIRE_IT, "detail": "Take the notice down. The card stays as it is." },
@@ -1023,6 +1300,48 @@ const KEEP_IT: &str = "leave it up";
 /// that works until "yes, but ask it first".
 fn agreed(answer: &str) -> bool {
     answer.trim().eq_ignore_ascii_case(RETIRE_IT)
+}
+
+/// What a person at another wall decides a retirement on — the same facts the
+/// question carries, in fields (`ask::Confirm`), so the far wall composes its
+/// own question rather than drawing this wall's prose. `home` names the wall the
+/// notice lives on when that is not the wall the question is parked on: the
+/// stamped `machine` is where the *question* is, which is what the far wall
+/// checks it heard it from, and for a notice on a third wall that is not where
+/// the notice is.
+#[allow(clippy::too_many_arguments)]
+fn retire_confirm(
+    subject: &str,
+    body: &str,
+    globs: &[&str],
+    title: &str,
+    handle: &str,
+    by: &str,
+    quiet: i64,
+    home: Option<&str>,
+) -> crate::ask::Confirm {
+    let mut c = crate::ask::Confirm::new("take down a billboard notice")
+        .fact("notice", subject)
+        .fact("says", body)
+        .fact("posted by", format!("{title} ({handle})"))
+        .fact("its card", format!("no process, and nothing said on the notice's behalf for {}", span(quiet)))
+        .fact(
+            "it claims",
+            if globs.is_empty() {
+                "no files — it is an announcement nobody is making any more".to_string()
+            } else {
+                globs.join(", ")
+            },
+        )
+        .fact("asked by", by);
+    if let Some(h) = home {
+        c = c.fact("whose billboard", h);
+    }
+    c.stakes(
+        "Only the notice comes down; the card is untouched. A card that died part-way through still has \
+         its half-finished edits in the tree, and a notice like this is the only thing telling anybody \
+         to leave them alone.",
+    )
 }
 
 /// What a `unpost` turns out to be — `spawn::Closing`'s shape, one tool over.
@@ -1055,8 +1374,8 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
         changed(app, me.project_id);
         return Unposting::Now(match n {
             0 => "you had nothing up.".into(),
-            1 => "took your notice down.".into(),
-            n => format!("took all {n} of your notices down."),
+            1 => format!("took your notice down.{}", leaves(app)),
+            n => format!("took all {n} of your notices down.{}", leaves(app)),
         });
     }
 
@@ -1077,7 +1396,7 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
         drop(conn);
         return Unposting::Now(if gone {
             changed(app, me.project_id);
-            format!("took {subject:?} down.")
+            format!("took {subject:?} down.{}", leaves(app))
         } else {
             format!("{subject:?} was already gone.")
         });
@@ -1096,7 +1415,7 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
         .collect();
     let Some(n) = resolve(&theirs, want) else {
         drop(conn);
-        return Unposting::Now(nothing_called(want, &mine));
+        return unpost_far(app, caller, want, &mine);
     };
 
     let now = crate::store::now();
@@ -1133,6 +1452,7 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
     }
 
     let by = reader_title(app, caller);
+    let me_host = crate::flyway::key::host_name();
     let question = retire_question(
         &n.subject,
         &n.body,
@@ -1141,15 +1461,27 @@ pub(crate) fn unpost(app: &AppHandle, caller: &str, args: &Value) -> Unposting {
         &crate::relay::handle_of(&from),
         &by,
         quiet,
+        &me_host,
+    );
+    let confirm = retire_confirm(
+        &n.subject,
+        &n.body,
+        &globs_of(n),
+        &title,
+        &crate::relay::handle_of(&from),
+        &by,
+        quiet,
+        None,
     );
     let id = n.id.clone();
     let subject = n.subject.clone();
     Unposting::Ask {
         question,
-        /* Kept on this wall for now, as an open question rather than a standing
-           exclusion — see `ask::Stay::BoardNotice`, and the board-sync work that
-           decides it. Making it travel is `Settle::new` with a `Confirm` here. */
-        settle: crate::ask::Settle::stays(crate::ask::Stay::BoardNotice, move |app, answer| {
+        /* Travels: the board itself crosses the flyway now, so a person at
+           another wall can see the notice this decides about — the condition
+           `ask::Stay::BoardNotice` was waiting on. The settle still runs here,
+           on the wall the notice lives on, and re-reads it before acting. */
+        settle: crate::ask::Settle::new(confirm, move |app, answer| {
             let Some(answer) = answer else {
                 return format!(
                     "nobody answered, so {subject:?} stays up. Either the question stood \
@@ -1241,6 +1573,223 @@ fn resolve<'a>(rows: &[&'a Notice], want: &str) -> Option<&'a Notice> {
         .or_else(|| rows.iter().find(|n| n.subject.eq_ignore_ascii_case(want)))
         .or_else(|| rows.iter().find(|n| n.id.starts_with(want) && want.len() >= 4))
         .copied()
+}
+
+/// Which of another wall's notices a written name means — `resolve`'s ladder,
+/// but **every** match at the first rung that has any, because two walls are
+/// two boards and a subject is only unique within one. Several is refused by
+/// the caller, naming them, rather than guessed at: a takedown addressed by an
+/// ambiguous key whose receipt echoes the key cannot be checked from its own
+/// output (`sink.md`, *a receipt names the row*).
+fn resolve_far<'a>(far: &'a [Far], want: &str) -> Vec<&'a Far> {
+    let by_id: Vec<&Far> = far.iter().filter(|f| f.n.id == want).collect();
+    if !by_id.is_empty() {
+        return by_id;
+    }
+    let by_subject: Vec<&Far> = far.iter().filter(|f| f.n.subject.eq_ignore_ascii_case(want)).collect();
+    if !by_subject.is_empty() {
+        return by_subject;
+    }
+    if want.len() < 4 {
+        return Vec::new();
+    }
+    far.iter().filter(|f| f.n.id.starts_with(want)).collect()
+}
+
+/// Several notices on other walls answer to one name.
+fn several_far(want: &str, hits: &[&Far]) -> String {
+    format!(
+        "nothing was taken down: {want:?} names {} notices on other walls — {}. Name the one you \
+         mean by the id in square brackets.",
+        hits.len(),
+        hits.iter()
+            .map(|f| format!("[{}] on {}", f.n.id.chars().take(8).collect::<String>(), f.host))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// `unpost` for a name nothing on this wall's board answers to: one of
+/// another wall's, decided by the wall it lives on.
+///
+/// **The card asking is never its author** — a card posts to its own wall —
+/// so this is always the "somebody else's" half of `unpost`, and the wall the
+/// notice lives on runs that half (`unpost_for_afar`): a live card's claim is
+/// refused with the two things that do work, one that has not been quiet long
+/// enough says so, and one nobody is behind any more is put to a person. The
+/// question is parked **here**, on the asking card, and travels to wherever
+/// the person is like any other confirmation; the yes is carried back and the
+/// home wall reads its own board again before taking anything down.
+fn unpost_far(app: &AppHandle, caller: &str, want: &str, mine: &[&Notice]) -> Unposting {
+    let far = far_seen(app);
+    let hits = resolve_far(&far, want);
+    let f = match hits.as_slice() {
+        [] => return Unposting::Now(nothing_called(want, mine)),
+        [one] => (*one).clone(),
+        _ => return Unposting::Now(several_far(want, &hits)),
+    };
+    if f.n.from.is_none() {
+        return Unposting::Now(format!(
+            "{:?} is the user's own notice, put up on {} — no card may take it down, here or \
+             there. It is theirs to remove from the billboard, on either wall. If it has stopped \
+             being true, say so in your reply.",
+            f.n.subject, f.host
+        ));
+    }
+    let Some(link) = crate::flyway::link::link(app) else {
+        return Unposting::Now(format!(
+            "{:?} is on {}'s board, and this wall is not on the flyway any more, so {} cannot be \
+             asked to take it down.",
+            f.n.subject, f.host, f.host
+        ));
+    };
+    let by = Taker { card: caller.to_string(), title: reader_title(app, caller) };
+    let host = f.host.clone();
+    let id = f.n.id.clone();
+    let subject = f.n.subject.clone();
+    let r = match link.unpost_there(&host, &id, Some(by.clone()), false) {
+        Ok(r) => r,
+        Err(why) => return Unposting::Now(why),
+    };
+    let a: Retiring = match r {
+        Reply::Gone => return Unposting::Now(format!("{subject:?} is already gone from {host}'s board.")),
+        Reply::Taken => return Unposting::Now(format!("took {subject:?} down on {host}.")),
+        Reply::Ask(a) => a,
+    };
+    let globs: Vec<&str> = a.paths.iter().map(String::as_str).collect();
+    let handle = crate::relay::handle_of(&a.card);
+    let quiet = a.quiet_ms as i64;
+    let question = retire_question(&a.subject, &a.body, &globs, &a.title, &handle, &by.title, quiet, &host);
+    let confirm = retire_confirm(&a.subject, &a.body, &globs, &a.title, &handle, &by.title, quiet, Some(&host));
+    Unposting::Ask {
+        question,
+        settle: crate::ask::Settle::new(confirm, move |app, answer| {
+            let Some(answer) = answer else {
+                return format!(
+                    "nobody answered, so {subject:?} stays up on {host}. Either the question stood \
+                     for ten minutes or this card was dismissed while it was up. Carry on with your \
+                     own judgement, and say that you offered to retire it."
+                );
+            };
+            if !agreed(answer) {
+                let said = answer.trim();
+                if said.eq_ignore_ascii_case(KEEP_IT) {
+                    return format!(
+                        "the user was asked and said to leave {subject:?} up on {host}, so it stays. \
+                         That is an answer rather than this tool refusing you — treat the claim as \
+                         live, do not ask again about the same notice, and say in your reply that you \
+                         offered."
+                    );
+                }
+                return format!(
+                    "the user was asked about {subject:?} on {host} and answered {said:?} rather \
+                     than taking it down, so it stays up. Act on what they said."
+                );
+            }
+            /* Approved — and the home wall reads its own board again before it
+               acts: the card may have woken since, which is exactly what the two
+               conditions were checked against ten minutes ago. */
+            let Some(link) = crate::flyway::link::link(app) else {
+                return format!(
+                    "the user approved it, but this wall is no longer on the flyway, so {host} could \
+                     not be told — {subject:?} is still up there."
+                );
+            };
+            match link.unpost_there(&host, &id, Some(by), true) {
+                Ok(Reply::Taken) => format!(
+                    "the user approved it — {subject:?} is off {host}'s board. It was not yours, so \
+                     say in your reply that you asked and they agreed, and that what it named is now \
+                     unclaimed."
+                ),
+                Ok(Reply::Gone) => format!(
+                    "the user approved it, but {subject:?} was already gone from {host}'s board — it \
+                     went while the question was up. Nothing to do."
+                ),
+                Ok(Reply::Ask(_)) => format!(
+                    "the user approved it, but {host} asked again rather than taking {subject:?} \
+                     down, so it is still up. Say so in your reply."
+                ),
+                Err(why) => format!("the user approved it, but {host} did not take {subject:?} down: {why}"),
+            }
+        }),
+    }
+}
+
+/// Another wall asking to take one of this wall's notices down — `unpost`'s
+/// rules, run here because this is where the notice lives.
+///
+/// `by` is `None` for a person, who may take anything down: it is their wall,
+/// and every wall on the flyway is. A card is held to what a card here is held
+/// to — a live card's notice is its claim, a person's notice is no card's to
+/// touch, and a dead card's is put to a person, whose yes comes back as
+/// `confirm` and is checked against the board **as it is now**, since this is a
+/// fresh reading of both conditions rather than the one the question was asked
+/// on. Addressed by id only: the asker resolved the name against this wall's
+/// own picture, which carries ids, and a subject is not unique across walls.
+pub(crate) fn unpost_for_afar(
+    app: &AppHandle,
+    want: &str,
+    by: Option<&Taker>,
+    confirm: bool,
+    host: &str,
+) -> Result<Reply, String> {
+    sweep(app);
+    let store = app.try_state::<Store>().ok_or("the store is unavailable")?;
+    let me = crate::flyway::key::host_name();
+    let (n, quiet, card) = {
+        let conn = store.0.lock().map_err(|_| "the store is unavailable".to_string())?;
+        let all = crate::store::notices(&conn, None)?;
+        let Some(n) = all.into_iter().find(|n| n.id == want) else {
+            return Ok(Reply::Gone);
+        };
+        let seen = seen_map(&conn);
+        let quiet = quiet_ms(&n, seen_of(&seen, &n), crate::store::now());
+        let card = n.from_id.as_deref().and_then(|id| crate::store::roster_one(&conn, id));
+        (n, quiet, card)
+    };
+    let take_down = |why: String| -> Result<Reply, String> {
+        let gone = store
+            .0
+            .lock()
+            .map(|conn| crate::store::drop_notice(&conn, &n.id, None))
+            .map_err(|_| "the store is unavailable".to_string())?;
+        if !gone {
+            return Ok(Reply::Gone);
+        }
+        changed(app, None);
+        /* Nobody at this wall did it, so the wall says who did. */
+        crate::chronicle::note(app, None, "volery", "note", &why, "the billboard");
+        Ok(Reply::Taken)
+    };
+    let Some(by) = by else {
+        return take_down(format!("a notice came down at {host}'s request: {:?}", n.subject));
+    };
+    let Some(from) = n.from_id.clone() else {
+        return Err(format!(
+            "{:?} is the user's own notice on {me}, not a card's — no card may take it down, here or from \
+             another wall. It is theirs to remove from the billboard, on either wall.",
+            n.subject
+        ));
+    };
+    let title = card.map(|r| r.title).unwrap_or_else(|| format!("card {}", crate::relay::handle_of(&from)));
+    let live = app.state::<crate::supervisor::Supervisor>().liveness(&from).0;
+    if !retirable(live, quiet) {
+        return Err(still_theirs(&n.subject, &crate::relay::handle_of(&from), &title, live, quiet));
+    }
+    if !confirm {
+        return Ok(Reply::Ask(Retiring {
+            subject: n.subject.clone(),
+            body: n.body.clone(),
+            paths: globs_of(&n).into_iter().map(str::to_string).collect(),
+            title,
+            card: from,
+            quiet_ms: quiet.max(0) as u64,
+        }));
+    }
+    take_down(format!(
+        "{:?} came down — {} on {host} offered to retire it and the user agreed",
+        n.subject, by.title
+    ))
 }
 
 /// Nothing anywhere on the board answers to that name.
@@ -1494,8 +2043,34 @@ pub fn read_board(app: AppHandle, project_id: Option<String>) -> Result<Value, S
     let conn = store.0.lock().map_err(|_| "the store is unavailable")?;
     let notices = crate::store::notices(&conn, project_id.as_deref())?;
     let seen = seen_map(&conn);
+    drop(conn);
     let now = crate::store::now();
-    Ok(json!(notices.iter().map(|n| as_json(n, &seen, now)).collect::<Vec<_>>()))
+    let mut rows: Vec<Value> = notices.iter().map(|n| as_json(n, &seen, now)).collect();
+    rows.extend(far_seen(&app).iter().map(|f| far_json(f, now)));
+    Ok(json!(rows))
+}
+
+/// One of another wall's notices, as the widget reads it. Its times are this
+/// wall's clock, worked back from the ages it travelled with, and its
+/// `projectId` is null because that wall's id means nothing here — `project` is
+/// the name.
+fn far_json(f: &Far, now: i64) -> Value {
+    json!({
+        "id": f.n.id,
+        "scope": f.n.scope,
+        "projectId": null,
+        "project": f.n.project,
+        "from": f.n.from,
+        "title": f.n.title,
+        "subject": f.n.subject,
+        "body": f.n.body,
+        "paths": f.n.paths,
+        "postedAt": now - f.n.posted_ms as i64,
+        "touchedAt": now - f.n.quiet_ms as i64,
+        "stale": far_stale(&f.n),
+        "host": f.host,
+        "unheardMs": if far_unheard(f.wall_quiet) { Some(f.wall_quiet) } else { None },
+    })
 }
 
 /// Post as *yourself*. A notice with no card behind it, which is the one
@@ -1565,6 +2140,24 @@ pub fn unpost_notice(app: AppHandle, id: String) -> Result<bool, String> {
     };
     changed(&app, None);
     Ok(gone)
+}
+
+/// Take one of another wall's notices down, as you — the widget's ✕. Asked of
+/// the wall it lives on, which takes a person's word for it; refused at once
+/// when that wall is not being heard, never queued. `true` if it came down,
+/// `false` if it was already gone.
+#[tauri::command]
+pub async fn unpost_far_notice(app: AppHandle, host: String, id: String) -> Result<bool, String> {
+    crate::off_main(move || {
+        let link = crate::flyway::link::link(&app).ok_or("this wall is not on the flyway")?;
+        match link.unpost_there(host.trim(), id.trim(), None, false)? {
+            Reply::Taken => Ok(true),
+            Reply::Gone => Ok(false),
+            /* A person is never asked to ask a person. */
+            Reply::Ask(_) => Err(format!("{host} asked for a person's answer to a person's takedown")),
+        }
+    })
+    .await?
 }
 
 /* Driving the three tools by hand, as a named card, so `wall.test.ts` can
@@ -2018,6 +2611,10 @@ mod tests {
            than reading as the same flat no. */
         let soon = still_theirs("the store schema", "ab12cd34", "the migration", false, 60_000);
         assert!(soon.contains("dormant"));
+        /* A span, not an age: this read "quiet 1m ago" and "which needs 4h ago"
+           for as long as it existed. */
+        assert!(out.contains("quiet for 1m."), "{out}");
+        assert!(soon.contains("quiet for 1m") && soon.contains("which needs 4h."), "{soon}");
     }
 
     /// **The old answer was "you have no notices up", and that is a lie of the
@@ -2049,11 +2646,16 @@ mod tests {
             "85071001",
             "the board sweep",
             EXPIRE_AFTER_MS,
+            "QUEERISFREEDOM",
         );
         let text = q["questions"][0]["question"].as_str().unwrap();
         assert!(text.contains("the board sweep"));
         assert!(text.contains("the preview router"));
         assert!(text.contains("85071001"));
+        /* Which machine the card is on — the question may be answered from
+           another one now. */
+        assert!(text.contains("on QUEERISFREEDOM"));
+        assert!(text.contains("behalf for 3d."), "{text}");
         /* What is being unclaimed, by name. */
         assert!(text.contains("preview-router/**, web.config"));
         /* The reason this is a question rather than a rule: a card that died
@@ -2065,7 +2667,7 @@ mod tests {
         assert_eq!(q["questions"][0]["options"][1]["label"], KEEP_IT);
 
         /* A notice naming no files is not described as unclaiming any. */
-        let bare = retire_question("a thought", "b", &[], "t", "h", "by", 0);
+        let bare = retire_question("a thought", "b", &[], "t", "h", "by", 0, "lab");
         let text = bare["questions"][0]["question"].as_str().unwrap();
         assert!(text.contains("names no files"));
     }
@@ -2080,6 +2682,132 @@ mod tests {
         assert!(!agreed(KEEP_IT));
         assert!(!agreed("yes, but ask it first"));
         assert!(!agreed(""));
+    }
+
+    /// The retirement travels: its evidence is a block the far wall can draw,
+    /// and a notice on a third wall says whose billboard it is on, since the
+    /// stamped machine is where the *question* is parked.
+    #[test]
+    fn the_retirement_is_a_confirmation_another_wall_can_draw() {
+        let mut q = retire_question("a thought", "b", &["x.rs"], "t", "h1234567", "by", STALE_AFTER_MS * 2, "lab");
+        let c = retire_confirm("a thought", "b", &["x.rs"], "t", "h1234567", "by", STALE_AFTER_MS * 2, Some("lab2"));
+        q["confirm"] = c.block("lab", &q);
+        assert!(crate::ask::confirm_travels(&q), "{}", q["confirm"]);
+        let facts = q["confirm"]["facts"].to_string();
+        assert!(facts.contains("whose billboard") && facts.contains("lab2"), "{facts}");
+        assert!(facts.contains("x.rs"));
+        /* A notice on the wall the question is parked on names no other. */
+        let here = retire_confirm("a thought", "b", &[], "t", "h", "by", 0, None).block("lab", &q);
+        assert!(!here["facts"].to_string().contains("whose billboard"));
+        assert!(here["facts"].to_string().contains("no files"));
+    }
+
+    fn far(subject: &str, from: Option<&str>, quiet: u64, wall: u64) -> Far {
+        Far {
+            host: "lab2".into(),
+            n: Posted {
+                id: "cccccccc-3333-4333-8333-333333333333".into(),
+                scope: "skein".into(),
+                project: None,
+                from: from.map(str::to_string),
+                title: Some("the orchestrator".into()),
+                subject: subject.into(),
+                body: "do not push to this repo".into(),
+                paths: vec![],
+                posted_ms: 60_000,
+                quiet_ms: quiet,
+            },
+            wall_quiet: wall,
+        }
+    }
+
+    /// **The answer to a sweep that cannot run for a machine that is not
+    /// there.** A copy expires on the clock its home wall would have used, a
+    /// quiet wall's notices stay up marked, and a wall gone for days takes even
+    /// a person's notice with it.
+    #[test]
+    fn a_far_notice_is_shown_until_its_home_wall_would_have_retired_it() {
+        let f = far("s", Some(AUTHOR), 0, 0);
+        assert!(far_shown(&f.n, 0));
+        /* Quiet is marked, not removed: "leave it alone" from a laptop in a
+           bag is still true. */
+        let quiet = crate::flyway::fleet::QUIET_AFTER_MS as u64 * 10;
+        assert!(far_shown(&f.n, quiet));
+        assert!(far_unheard(quiet));
+        assert!(!far_unheard(0));
+        /* A card's notice nobody has been behind for three days, here as there. */
+        assert!(!far_shown(&far("s", Some(AUTHOR), EXPIRE_AFTER_MS as u64 + 1, 0).n, 0));
+        /* A person's never expires on its own clock... */
+        let yours = far("s", None, EXPIRE_AFTER_MS as u64 * 5, 0);
+        assert!(far_shown(&yours.n, 0));
+        /* ...but not past its wall being gone that long. */
+        assert!(!far_shown(&yours.n, EXPIRE_AFTER_MS as u64 + 1));
+        /* Stale off the same number as here. */
+        assert!(far_stale(&far("s", Some(AUTHOR), STALE_AFTER_MS as u64 + 1, 0).n));
+        assert!(!far_stale(&f.n));
+    }
+
+    /// Two checkouts of one repository are one project by name, and a
+    /// wall-wide notice is everybody's.
+    #[test]
+    fn a_project_read_takes_its_projects_far_notices_by_name_and_every_wall_wide_one() {
+        let mut ours = far("ours", Some(AUTHOR), 0, 0);
+        ours.n.scope = "project".into();
+        ours.n.project = Some("Skein".into());
+        let mut other = far("other", Some(AUTHOR), 0, 0);
+        other.n.scope = "project".into();
+        other.n.project = Some("nova".into());
+        let all = vec![ours, other, far("wide", Some(AUTHOR), 0, 0)];
+        let got: Vec<String> = far_for(all.clone(), Some("skein"), false).into_iter().map(|f| f.n.subject).collect();
+        assert_eq!(got, ["ours", "wide"]);
+        assert_eq!(far_for(all.clone(), None, false).len(), 1, "no project of its own: the wall-wide only");
+        assert_eq!(far_for(all, Some("skein"), true).len(), 3);
+    }
+
+    /// The reading says once what a notice from another wall is, names its
+    /// machine and its checkout, and keeps the handle `send` reaches the
+    /// author by.
+    #[test]
+    fn a_far_notice_reads_with_its_machine_its_checkout_and_its_author() {
+        let mut f = far("wrapping up", Some(AUTHOR), 0, 0);
+        f.n.paths = vec!["src/lib/markdown.ts".into()];
+        let out = far_section(&[f.clone()], &[]);
+        assert!(out.contains("From other walls"));
+        assert!(out.contains("never served"));
+        assert!(out.contains("On lab2:"));
+        assert!(out.contains("\"the orchestrator\", aaaaaaaa"), "{out}");
+        assert!(out.contains("files, in lab2's checkout: src/lib/markdown.ts"));
+        assert!(!out.contains("STALE"));
+        f.wall_quiet = 5 * 60_000;
+        assert!(far_section(&[f], &[]).contains("On lab2 — not heard from for 5m"));
+        assert!(render_far(&far("s", None, 0, 0)).contains("from the user"));
+        /* What did not fit is said, not dropped — and nothing at all is empty. */
+        assert!(far_section(&[], &[("lab2".into(), 3)]).contains("3 more of lab2's notices"));
+        assert_eq!(far_section(&[], &[]), "");
+    }
+
+    /// Two walls are two boards, so one subject can name two notices — and
+    /// that is refused, naming both, rather than guessed at.
+    #[test]
+    fn a_name_on_two_walls_is_refused_and_an_id_is_exact() {
+        let a = far("wrapping up", Some(AUTHOR), 0, 0);
+        let mut b = a.clone();
+        b.host = "lab3".into();
+        b.n.id = "dddddddd-4444-4444-8444-444444444444".into();
+        let all = vec![a, b];
+        assert_eq!(resolve_far(&all, "Wrapping Up").len(), 2);
+        let out = several_far("wrapping up", &resolve_far(&all, "wrapping up"));
+        assert!(out.contains("nothing was taken down"));
+        assert!(out.contains("[cccccccc] on lab2") && out.contains("[dddddddd] on lab3"), "{out}");
+        assert_eq!(resolve_far(&all, "dddddddd-4444-4444-8444-444444444444").len(), 1);
+        assert_eq!(resolve_far(&all, "dddd").len(), 1);
+        assert!(resolve_far(&all, "dd").is_empty(), "a prefix under four is not a name");
+    }
+
+    #[test]
+    fn a_span_reads_without_ago() {
+        assert_eq!(span(5 * 60_000), "5m");
+        assert_eq!(span(0), "under a minute");
     }
 
     #[test]

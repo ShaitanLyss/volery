@@ -30,6 +30,19 @@ export type Notice = {
   /** Computed in Rust off `STALE_AFTER_MS`, never here — the reading an agent
    *  gets and the reading you get must not disagree about what is current. */
   stale: boolean;
+  /** The wall whose billboard this is, or null for this one. A notice from
+   *  another wall is a picture of that wall's board (`boards.rs`): taking it
+   *  down asks that wall, and it is never served to a card here. */
+  host: string | null;
+  /** What its author is called on its own wall — this wall's roster has no
+   *  name for a card on another machine. */
+  title: string | null;
+  /** The project's name, for a notice from another wall: its `projectId` is
+   *  that wall's id, which means nothing here. */
+  project: string | null;
+  /** How long its wall has gone unheard, when that is long enough to say —
+   *  past the fleet's quiet bound. What it shows may have changed there. */
+  unheardMs: number | null;
 };
 
 function str(v: unknown, fallback = ""): string {
@@ -60,7 +73,18 @@ export function normalize(raw: unknown): Notice | null {
     postedAt: num(r.postedAt),
     touchedAt: num(r.touchedAt),
     stale: r.stale === true,
+    host: typeof r.host === "string" && r.host ? r.host : null,
+    title: typeof r.title === "string" && r.title ? r.title : null,
+    project: typeof r.project === "string" && r.project ? r.project : null,
+    unheardMs: typeof r.unheardMs === "number" && Number.isFinite(r.unheardMs) ? r.unheardMs : null,
   };
+}
+
+/** A notice's key on the board: its id, under the wall it is on. Ids are
+ *  uuids and two walls will not share one, but a key that cannot collide costs
+ *  nothing, and a keyed list that does collide throws. */
+export function keyOf(notice: Notice): string {
+  return `${notice.host ?? ""}:${notice.id}`;
 }
 
 export function normalizeAll(raw: unknown): Notice[] {
@@ -111,7 +135,23 @@ export function covering(notice: Notice, max = 3): string {
  *  next read catches up. */
 export function author(notice: Notice, names: Map<string, string>): string {
   if (notice.from === null) return "you";
+  /* A card on another wall is not in this wall's roster, so its own wall's
+     name for it travels with the notice. */
+  if (notice.host !== null) return notice.title ?? notice.from.slice(0, 8);
   return names.get(notice.from) ?? notice.from.slice(0, 8);
+}
+
+/** Where a notice from another wall stands, as a line for its open detail —
+ *  empty for one of this wall's own. It says the two things that differ: the
+ *  files it names are that machine's checkout, and an unheard wall's board may
+ *  have changed since. */
+export function elsewhere(notice: Notice): string {
+  if (notice.host === null) return "";
+  const files = notice.paths.length > 0 ? ` — the files are ${notice.host}'s checkout, not this one` : "";
+  if (notice.unheardMs === null) return `on ${notice.host}'s billboard${files}`;
+  const mins = Math.floor(notice.unheardMs / 60_000);
+  const quiet = mins < 60 ? `${Math.max(1, mins)}m` : `${Math.floor(mins / 60)}h`;
+  return `on ${notice.host}'s billboard${files} · not heard from for ${quiet}, so it may have changed there`;
 }
 
 /** Whether this board is worth drawing anything but a line of prose for. */

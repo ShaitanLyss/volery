@@ -4,6 +4,8 @@ paths:
   - "src/lib/board.ts"
   - "src/lib/board.svelte.ts"
   - "src/lib/Billboard.svelte"
+  - "src-tauri/src/flyway/boards.rs"
+  - "src-tauri/src/flyway/link/billboard.rs"
 ---
 
 # The billboard
@@ -33,10 +35,14 @@ Only the first works without anybody remembering anything.
    notice by a long way is one from a card that finished and went away.
 2. **Clearing a card clears its notices.** A reset card is not still doing what it said it was
    doing.
-3. **Stale is marked, never removed.** Ninety minutes untouched and every reading says so — the
-   agent's and yours, off the same number, because `board.rs` computes `stale` onto the row
-   rather than letting each side recompute a threshold. A long refactor is a real thing, and
-   deleting a true notice is worse than showing an old one.
+3. **Stale is marked, never removed.** Four hours with neither the notice touched nor its
+   author taking a turn (`quiet_ms` — it was ninety minutes of the notice alone, and fired on
+   everything) and every reading says so — the agent's and yours, off the same number, because
+   `board.rs` computes `stale` onto the row rather than letting each side recompute a
+   threshold. A long refactor is a real thing, and deleting a true notice is worse than showing
+   an old one. **Three days** of the same silence and the wall takes it down itself
+   (`EXPIRE_AFTER_MS`), telling the author on its next wake — the one clearing that reaches a
+   card killed mid-turn.
 4. **Your own notices come first on every read**, under a line saying they are yours to take
    down, and the receipt for posting one says the same.
 
@@ -76,6 +82,114 @@ agents must remember to consult and one that reaches the agent who needed it.
   exactly as a message and there is one recogniser rather than two. `relayCap` says "from the
   billboard". It draws a strand from the poster's card when there still is one — it is the same
   event on the wall, something leaving one card and arriving at another.
+
+### Across the flyway (`flyway/boards.rs`, `link/billboard.rs`)
+
+For its first life the board was one wall's, on an argument `sink.md` made at length: a notice
+is about *now*, in one working tree, held by live processes, and two walls do not share a tree
+— so a notice saying "leave `markdown.ts` alone", carried to another machine, is a claim over a
+different file on a different disk. That argument is true of a notice that names files and was
+never true of one that does not: *"don't push to this repo"*, *"Lyss is away next week, we are
+wrapping up"* are standing context for every card everywhere. And remote spawn made a second
+case ordinary, which is the one that decided it: **an orchestrator on one machine with its
+workers on another could not post a notice its own children would see, and could not take one
+down** — the wall's one coordination mechanism did not reach the cards it most needed to.
+Lyss overruled the exclusion on 2026-10-14. The lesson is worth more than the feature: **an
+exclusion justified by "these two things do not interact" expires silently the moment
+somebody makes them interact**, and every rule written before the flyway that turns on walls
+*not* interacting is owed a re-reading.
+
+**The wall a notice lives on is the authority, and what crosses is a picture of its board.** A
+notice lives in the store of the wall its author stands on. That wall says its whole board on
+every exchange and within a second of any change (`changed` → `Link::board_changed`, coalesced
+as a cards snapshot is), and every other wall holds the newest picture per host and **never
+writes a notice from one**. So every clearing on the ladder above runs where the notice lives
+and reaches the other walls in the next picture — no event per mechanism, nothing that could
+leave two walls disagreeing about whether a notice is up. This is the sink's opposite on
+purpose: the sink ships events because many walls write one pile and must converge; a notice
+has one writer and nothing to converge.
+
+- **Every notice crosses, files or not, and is drawn with its machine.** A card's `board` read
+  lists this wall's first and then one heading per other wall; the widget draws the host
+  beside the author. A project notice crosses by the project's **name**, the one thing two
+  checkouts share (`sinksync::scope_of`'s choice), so a card in `skein` on one machine reads
+  the `skein` notices from the other.
+- **`on_touch` does not cross, and that is the design rather than a gap.** A notice that names
+  files names *that machine's* checkout. Served on another wall it would intercept a card
+  editing a different file of the same name and tell it something false — the shared-index
+  hazard that makes a claim load-bearing does not exist between two checkouts, whose collision
+  is a merge git will announce. Not crossing at all was the other option and the worse one:
+  an orchestrator's file split would then be invisible to the workers it was written for. So a
+  far notice with files is **read, never served**, and says so — `files, in lab2's checkout`.
+- **Ages, so no two clocks are compared.** Each notice travels with how long ago it went up and
+  how long nobody has been behind it (`quiet_ms`), taken at the moment it is said; the holder
+  adds its own time since. A far stale mark is the home wall's own, carried forward.
+
+**A quiet wall's notices stay up, marked** — and here the board parts from a shadow. A shadow
+drops to rest when its wall goes quiet because *working* is a live claim, and a link that is
+down must not look like an agent thinking. A notice is not that kind of claim: "leave this
+alone" from a laptop in a bag is still true, its half-finished edits are in its checkout, and
+deleting a true notice is worse than showing an old one. So the heading says `not heard from
+for 12m, so this may have changed there`, the widget draws the stale mark, and nothing is
+removed. What `sweep_notices` cannot do for a machine that is not there, the copy's own clock
+does (`far_shown`): a card's notice nobody has been behind for three days is not shown here,
+since its home wall would have expired it by then; and **nothing from a wall unheard for three
+days is shown**, which is what reaches a *person's* notice — those never expire at home. Hidden,
+not deleted: the wall heard again shows its board again, as it is by then. In memory only, as a
+shadow is — a wall restarted while another is quiet shows that wall's notices once it is heard.
+
+**Who may take a notice down from another wall** is the ladder above, run on the wall the notice
+lives on (`unpost_for_afar`), over one exchange answered on the same stream (`unpost` →
+`unposted`, `act.rs`'s shape):
+
+| from another wall | what happens |
+|---|---|
+| its author | posts on its own wall, so it `unpost`s there as always — the picture carries it (~1s) |
+| a person (the widget's ✕) | taken down: every wall is hers. A chronicle row on the home wall says which wall asked |
+| another card, author live | refused there with `still_theirs` — `send` reaches it by handle across walls |
+| another card, author dormant and quiet 4h+ | the home wall answers `ask`; the question is parked **on the asking card's wall** and travels to wherever the person is (`ask::Confirm`, with the home wall as a `whose billboard` fact, since `machine` is where the *question* is). A yes goes back as `confirm`, and the home wall reads its own board again before acting |
+| a person's notice, by a card | refused, here or there — it is hers |
+| anything, wall quiet | refused at once (`Link::reachable`), never queued: a takedown landing when a lid lifts hours later is a decision about a board nobody has looked at since |
+
+A card's own notices are always on its own wall, so `unpost`'s mine-first rung never crosses; a
+card that *moved* walls has its old notices swept when its old row is released. The receipts
+say where things went: a post names the walls it reaches (and that a file claim reaches only
+this one), a takedown that it leaves the others within seconds. A name that matches notices on
+two walls is refused, naming both — `sink.md`'s *a receipt names the row*.
+
+**A local retirement travels too.** The question `unpost` puts up for a dead card's notice was
+kept on its own wall (`ask::Stay::BoardNotice`) while the board itself was one wall's, on the
+argument that a person elsewhere could not see the notice it decides about. Now they can, so it
+is `Settle::new` with `retire_confirm`'s evidence, and `Stay::BoardNotice` is gone.
+
+**Bounds.** A picture is at most `MAX_BOARD` (192 KiB); past it the notices most recently stood
+behind go and the count of the rest travels as `withheld`, read out as *N more of lab2's notices
+did not fit*. Every string off the wire is scrubbed and capped (`boards::cleaned`), an id must be
+a uuid's alphabet, an unknown scope reads as wall-wide. An older wall reads `board`, `unpost` and
+`unposted` as words it has no use for (`frame::take`) and announces no `board` in `Facts::can`,
+so it is never asked.
+
+**The fault line had swallowed every refusal, and this is where it was found.** `Board.post` and
+`Board.unpost` set `fault` and then forced a refresh, whose successful read sets it back to
+null — so a refused post, and a ✕ refused by a quiet wall in under half a second, drew nothing
+at all. The fault is now set after the refresh (`#refused`). And three messages here said a
+quiet card had been "quiet 5h ago" (`ago` where a span was meant); `span` is that word.
+
+Demonstrated 2026-10-14 between two frozen labs (`bra`, `brb --peer bra`), driven by the control
+surface. A card on bra posted a bare project notice and a wall-wide one; a card on brb read both
+under `On lab-bra…` within seconds, the project one by the name both walls' `labproj` share.
+The bra card's `unpost` was off brb's board 1.8s later. A file claim from bra on
+`src/lib/markdown.ts` beside a local claim on brb on the same glob: `touch` on brb served the
+local one only — one strand, from the brb poster. A person's ✕ on brb took bra's notice down on
+bra. A dead card's notice planted in bra's store (no process, five hours quiet) was named by a
+card on brb through a real parked `unpost` call to its own MCP endpoint: bra answered `ask`, the
+question parked on brb and was drawn on bra as a confirmation reading `whose billboard:
+lab-bra`, and *take it down* pressed in **bra's** dock returned the parked call on brb 0.8s
+later with the notice off bra's board. With bra stopped, brb kept its notice under `not heard
+from for 2m, so this may have changed there`. **Not shown:** the quiet wall's refusal sentence
+in the widget — the rerun's binary was another card's build without this change, so only the
+front-end half (a refusal surviving the refresh) was seen; the refusal is `Link::reachable`, which
+`act` and `tail` already rest on.
 
 ### The globs
 

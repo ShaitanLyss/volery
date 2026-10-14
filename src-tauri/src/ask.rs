@@ -1416,6 +1416,9 @@ pub(crate) struct Settle {
 
 enum Travel {
     Carries(Confirm),
+    /* Never constructed while `Stay` has no members — kept so that the next
+       exclusion is an argument to write rather than a mechanism to rebuild. */
+    #[allow(dead_code)]
     Stays(Stay),
 }
 
@@ -1429,6 +1432,8 @@ impl Settle {
     }
 
     /// A confirmation kept on its own wall, for the reason the `Stay` names.
+    /// Unreachable while `Stay` is empty, and kept for the reason it is.
+    #[allow(dead_code)]
     pub(crate) fn stays(
         stay: Stay,
         run: impl FnOnce(&AppHandle, Option<&str>) -> String + Send + 'static,
@@ -1608,29 +1613,21 @@ pub(crate) fn confirm_travels(question: &Value) -> bool {
 /// interact" expires silently the moment something makes them interact. That is
 /// how `unpost`'s first argument — *a board notice is one wall's coordination
 /// with its own cards* — went: a notice need not be about a working tree at all,
-/// and an orchestrator on one wall now cannot see, post or clear the notices its
+/// and an orchestrator on one wall could not see, post or clear the notices its
 /// workers raise on another.
-pub(crate) enum Stay {
-    /// Taking down a dead card's notice (`board::unpost`).
-    ///
-    /// **Not a standing argument, and it says so.** Whether this crosses is
-    /// waiting on whether the billboard itself is shared between walls — a notice
-    /// answered from a wall whose own board cannot show it is a decision about a
-    /// thing the person cannot see. That is the board-sync item's to settle; it is
-    /// deliberately left as it was rather than decided here. Moving it to
-    /// `Settle::new` is one line in `board.rs` once it is.
-    BoardNotice,
-}
+///
+/// **Empty since 2026-10-14.** Its one member was `BoardNotice`, which kept
+/// `unpost`'s question on its own wall while the billboard was one wall's — a
+/// notice answered from a wall whose own board could not show it would have
+/// been a decision about a thing the person could not see. The board crosses
+/// the flyway now (`flyway/boards.rs`), so that question is a `Settle::new` with
+/// `board::retire_confirm`'s evidence, and there was nothing left to hold. The
+/// enum stays, empty, so the next exclusion has somewhere to write its argument.
+pub(crate) enum Stay {}
 
 impl Stay {
     fn argument(&self) -> &'static str {
-        match self {
-            Stay::BoardNotice => {
-                "taking down a notice is answered on the wall whose billboard holds it, for now — \
-                 billboards are not yet shared between walls, so the notice is not something \
-                 anybody elsewhere can see"
-            }
-        }
+        match *self {}
     }
 }
 
@@ -5281,11 +5278,12 @@ mod tests {
         assert!(confirm_travels(&q));
         assert!(afar_may_answer(true, &q));
 
-        let kept = Settle::stays(Stay::BoardNotice, |_, _| String::new());
-        let mut q = yes_no();
-        let why = kept.stamp(&mut q).expect("a stay says why");
-        assert!(why.contains("billboard"), "{why}");
-        assert!(q.get("confirm").is_none(), "nothing is stamped on a question that stays");
+        /* `Stay` has no members since the billboard crossed the flyway, so the
+           half of this that held a question back has nothing to hold. What is
+           left to hold is the other direction: a Volery question with no
+           evidence stamped on it is not answerable from another wall. */
+        let q = yes_no();
+        assert!(q.get("confirm").is_none());
         assert!(!afar_may_answer(true, &q));
     }
 }

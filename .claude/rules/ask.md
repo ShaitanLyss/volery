@@ -261,10 +261,12 @@ be forgotten:
   stamps. The far half — composing the question from the fields, never the prose — is
   `elsewhere.md`, *Every confirmation travels unless it says why not*.
 
-`Stay` has one variant today, `BoardNotice` (`unpost`), and it is **held rather than argued**:
-pending the billboard itself crossing walls, after which `board.rs` flips to `Settle::new` and the
-variant goes. Its old argument — a board notice is one wall's coordination with its own cards — is
-the general lesson in a nutshell: **an exclusion justified by "these two things do not interact"
+`Stay` has no variants today. Its one member was `BoardNotice` (`unpost`), **held rather than
+argued** while the billboard was one wall's; the board crossed the flyway on 2026-10-14
+(`board.md`, *Across the flyway*), `board.rs` moved to `Settle::new` with `retire_confirm`'s
+evidence, and the variant went. The enum is kept, empty, so the next exclusion has somewhere to
+write its argument. Its old argument — a board notice is one wall's coordination with its own
+cards — is the general lesson in a nutshell: **an exclusion justified by "these two things do not interact"
 expires silently the moment something makes them interact**, and the flyway made walls interact.
 Read any future `Stay` against an orchestrator on one machine with workers on another, not only
 against Lyss at a laptop.
@@ -284,7 +286,7 @@ can answer it.
 | `pull_request` create and update | settle / none | **yes, since this item** — `confirms` |
 | `task`, all six actions | settle / none | **yes, since this item** — `confirms` |
 | `credential` / `asana_token` | settle / none | **yes, since this item** — names and reach only; the credential stays where it is held |
-| `unpost` of a dead card's notice | settle / `unpost` | no — `Stay::BoardNotice`, pending the billboard crossing |
+| `unpost` of a dead card's notice | settle / `unpost` | **yes, since the billboard crossed** — `confirms`; a notice on another wall is decided by that wall (`board.md`) |
 | anything filed while **away** — the deferred pile (`deferred_ask`, `deferred_act`) | not parked | **no** — the pile is the owning wall's alone (sink `3368f78f`, `4a3f859b`) |
 | a deferred act re-entered from the pile | not parked; the settle runs from `answer_deferred_act` | no — it never parks, so no travelling rule reaches it |
 
