@@ -175,6 +175,12 @@ pub struct StoredConversation {
     pub last_ending: Option<String>,
     /// Put by on purpose: on the wall, out of what is waiting, and not roused.
     pub aside: bool,
+    /// You acknowledged the notice about the rest this card is in, so its
+    /// neglect clock has stopped until it next takes a turn — see
+    /// `migrate_v50`. Defaulted so a layout written before the column still
+    /// reads.
+    #[serde(default)]
+    pub rest_seen: bool,
     /// `project` or `chat` — see `migrate_v11`. A string rather than a bool
     /// because this is a taxonomy with room in it, and `chat: false` would be a
     /// column that could only ever answer one more question.
@@ -349,7 +355,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 49;
+const SCHEMA_VERSION: i64 = 50;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -404,6 +410,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (47, migrate_v47),
     (48, migrate_v48),
     (49, migrate_v49),
+    (50, migrate_v50),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2860,6 +2867,23 @@ fn migrate_v49(conn: &Connection) -> Result<(), String> {
     .map_err(|e| format!("migrate v49: {e}"))
 }
 
+/// The rest a card is in has been seen: you acknowledged its notice, so its
+/// neglect clock stops (`classify.ts::urgencyFor`) until it takes another turn.
+///
+/// A column for `aside`'s reason, which is `migrate_v6`'s: what it protects
+/// against happens at launch. A question card restored off disk comes back
+/// half amber whatever you did yesterday, so a flag held only in the front end
+/// would have you acknowledge the same rest once per restart — the complaint
+/// it exists for, one day later.
+///
+/// Written only by `take_notice` and cleared only by `set_mid_turn` opening a
+/// turn, both here, so the flag and the turn boundary that spends it are one
+/// file's statements rather than two writes from two sides that can land in
+/// either order. Every existing row is a rest nobody has acknowledged.
+fn migrate_v50(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "conversation", "rest_seen", "INTEGER NOT NULL DEFAULT 0")
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -4384,7 +4408,8 @@ fn clear_row(conn: &Connection, id: &str, session_id: &str) -> Result<(), String
                named_by_hand    = 0,
                last_ctx_frac    = 0,
                last_ending      = NULL,
-               interrupted      = 0
+               interrupted      = 0,
+               rest_seen        = 0
              WHERE id = ?1",
             params![id, session_id],
         )
@@ -5108,7 +5133,10 @@ pub fn close_conversation_record(
 /// card on its way off the wall is not a card with work standing still.
 pub fn set_mid_turn(conn: &Connection, id: &str, open: bool) {
     let _ = conn.execute(
-        "UPDATE conversation SET interrupted = ?2 WHERE id = ?1 AND closed_at IS NULL",
+        "UPDATE conversation
+            SET interrupted = ?2,
+                rest_seen = CASE WHEN ?2 THEN 0 ELSE rest_seen END
+          WHERE id = ?1 AND closed_at IS NULL",
         params![id, open],
     );
 }
@@ -5258,7 +5286,8 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                     c.model, c.interrupted, c.last_ctx_frac, c.last_ending, c.aside,
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
-                    c.permission_mode, c.held_text, c.held_why, c.held_until
+                    c.permission_mode, c.held_text, c.held_why, c.held_until,
+                    c.rest_seen
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
               WHERE c.closed_at IS NULL
@@ -5294,6 +5323,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 held_text: r.get(23)?,
                 held_why: r.get(24)?,
                 held_until: r.get(25)?,
+                rest_seen: r.get::<_, i64>(26)? != 0,
             })
         })
         .map_err(|e| e.to_string())?
@@ -8016,8 +8046,28 @@ pub fn take_notice(conn: &Connection, id: &str) -> Option<NoticeRow> {
     let gone = conn
         .execute("DELETE FROM pending_notice WHERE id = ?1", params![id])
         .unwrap_or(0);
+    if gone > 0 && SEEN_KINDS.contains(&row.kind.as_str()) {
+        /* The rest it was about has been seen, which stops the card's clock
+           (`migrate_v50`). Only while no turn is open: `interrupted` is the
+           mid-turn mark `set_mid_turn` writes as one opens, so a take landing a
+           moment after the card stirred cannot mark a rest that is already
+           over — that flag would outlive the turn and silence the *next* rest,
+           which is the one lie this column must not tell. A follow-up takes
+           too, and is then sent, which opens the turn that clears it. */
+        let _ = conn.execute(
+            "UPDATE conversation SET rest_seen = 1 WHERE id = ?1 AND interrupted = 0",
+            params![row.conversation_id],
+        );
+    }
     (gone > 0).then_some(row)
 }
+
+/// The notice kinds whose acknowledgement stops the card's clock — the two
+/// rests `urgencyFor` measures as neglect, and `notice.ts::SEEN_KINDS` says
+/// the same. Not `error`: rust is a fact about a card that broke and is still
+/// broken, not a clock, and having read it changes nothing about it. Not
+/// `card`: that is news the card sent, not its rest.
+pub const SEEN_KINDS: [&str; 2] = ["done", "question"];
 
 /// A turn opened on this card, so the rest its notice was about is over. The
 /// card's own notices stay: they were about something it said, not about it
@@ -9382,6 +9432,68 @@ mod tests {
 
         drop_deferred_asks_of(&conn, "c1");
         assert!(ids(&conn).is_empty(), "a closed card's notices go with it");
+    }
+
+    /// Taking a rest notice down marks the rest seen, and the next turn opening
+    /// spends the mark — so the flag can never outlive the rest it was about.
+    #[test]
+    fn taking_a_rest_notice_marks_the_rest_seen_until_a_turn_opens() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate(&conn).unwrap();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        let n = |id: &str, kind: &str| NoticeRow {
+            id: id.into(),
+            conversation_id: "c1".into(),
+            kind: kind.into(),
+            text: kind.into(),
+            raised_at: 1,
+            away: false,
+            waited: false,
+        };
+        let seen = |conn: &Connection| -> bool {
+            conn.query_row("SELECT rest_seen FROM conversation WHERE id = 'c1'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                != 0
+        };
+
+        /* Neither a card's own news nor a breakage is a rest you can see off. */
+        raise_notice(&conn, &n("k", "card")).unwrap();
+        take_notice(&conn, "k").unwrap();
+        raise_notice(&conn, &n("e", "error")).unwrap();
+        take_notice(&conn, "e").unwrap();
+        assert!(!seen(&conn), "an error or a card's own notice stopped the clock");
+
+        raise_notice(&conn, &n("q", "question")).unwrap();
+        take_notice(&conn, "q").unwrap();
+        assert!(seen(&conn), "acknowledging the question did not mark the rest");
+
+        set_mid_turn(&conn, "c1", true);
+        assert!(!seen(&conn), "a turn opened and the mark outlived it");
+        set_mid_turn(&conn, "c1", false);
+        assert!(!seen(&conn), "closing the turn brought an old mark back");
+
+        /* A take that lands after the card has already stirred marks nothing:
+           the rest it was about is over, and a mark written now would silence
+           the next one. */
+        raise_notice(&conn, &n("d", "done")).unwrap();
+        set_mid_turn(&conn, "c1", true);
+        take_notice(&conn, "d");
+        assert!(!seen(&conn), "a take mid-turn marked a rest that had ended");
+        set_mid_turn(&conn, "c1", false);
+
+        raise_notice(&conn, &n("d2", "done")).unwrap();
+        take_notice(&conn, "d2").unwrap();
+        assert!(seen(&conn));
+        clear_row(&conn, "c1", "s2").unwrap();
+        assert!(!seen(&conn), "a cleared card kept a mark about a session it no longer has");
     }
 
     /// The v2 repair: a card that has turns behind it must come back resumable.

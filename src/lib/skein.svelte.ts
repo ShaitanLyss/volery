@@ -62,6 +62,7 @@ import {
   parkedReply,
   raiseAt,
   restNotice,
+  seesRest,
   type Notice,
 } from "./notice";
 import { readClosing, readConfirm, readRemoval } from "./afar";
@@ -3943,9 +3944,19 @@ export class Skein {
     if (n.askId) void invoke("stir_ask", { askId: n.askId }).catch(() => {});
   }
 
-  /** Take a notice down without a word. */
+  /** Take a notice down without a word.
+   *
+   *  And having read it is having been back, so the card's clock stops
+   *  (`Conversation.restSeen`) — without that the notice went and the amber
+   *  stayed, still saying "ended on a question" about a question you had just
+   *  read. Set here because this is the gesture; the row is written by
+   *  `store::take_notice`, beside the mid-turn mark that decides whether the
+   *  rest is still the one the notice was about. A follow-up does not set it:
+   *  the send opens a turn, which would spend it at once. */
   async acknowledgeNotice(n: Notice) {
     this.notices = this.notices.filter((x) => x.id !== n.id);
+    const c = this.#byId.get(n.conversationId);
+    if (c && !c.working && seesRest(n)) c.restSeen = true;
     if (n.askId) {
       await invoke("answer_ask", { askId: n.askId, answer: parkedReply() }).catch((err) => {
         this.fault = String(err);

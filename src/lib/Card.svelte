@@ -37,6 +37,11 @@
     elsewhere?: { host: string; unheard: boolean };
     /** The wall that asked for this card to be opened here, if one did. */
     bornFor?: string | null;
+    /** You acknowledged the notice about this card's rest — see
+     *  `Conversation.restSeen`. Optional because a card on another wall is
+     *  drawn off its digest, whose tier already says `rest` and which carries
+     *  no such flag: there it reads as an ordinary rest, which is not false. */
+    restSeen?: boolean;
   };
 </script>
 
@@ -153,6 +158,11 @@
        for a fortnight is not four hundred hours overdue. `working` still wins,
        since a card set aside mid-turn is genuinely still working. */
     if (conv.aside && !conv.working) return "set aside";
+    /* The same withdrawal for a rest whose notice you acknowledged: the clock
+       stopped, so the age that counts it goes too. The words stay — `ending`
+       is what the turn was, and "ended on a question" is still true of it —
+       and `seen` says why the card is no longer asking about it. */
+    if (conv.restSeen && conv.tier === "rest" && !conv.working) return `${conv.doing} · seen`;
     /* `doing` rather than `activity`: it is the same word everywhere except
        during a compaction, which is the one wait long enough and quiet enough
        that the word alone reads as a card that has stopped. It counts itself,

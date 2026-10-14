@@ -151,6 +151,38 @@ describe("a card set aside stops decaying", () => {
   });
 });
 
+describe("a rest whose notice you acknowledged stops decaying", () => {
+  /* Lyss, 2026-10-14: acknowledged cards still glowed and still said "ended on
+     a question". The notice is having been back; the clock measures nobody
+     having been back. */
+  test("the question it ended on goes quiet, however long it stands", () => {
+    expect(urgencyFor("question", 0, false, true)).toBe("rest");
+    expect(urgencyFor("question", QUESTION_BLOOM_S, false, true)).toBe("rest");
+    expect(urgencyFor("question", 99_999, false, true)).toBe("rest");
+  });
+
+  test("so does a clean finish, and a turn you stopped", () => {
+    expect(urgencyFor("ok", CLEAN_WARM_S, false, true)).toBe("rest");
+    expect(urgencyFor("ok", CLEAN_BLOOM_S, false, true)).toBe("rest");
+    expect(urgencyFor("stopped", CLEAN_BLOOM_S, false, true)).toBe("rest");
+  });
+
+  test("but a question standing now is not answered by a notice about the last rest", () => {
+    expect(urgencyFor("asked", 0, false, true)).toBe("ask");
+    expect(urgencyFor("asked", 99_999, false, true)).toBe("ask");
+  });
+
+  test("and a card that broke stays rust: reading it did not mend it", () => {
+    expect(urgencyFor("error", 0, false, true)).toBe("fail");
+    expect(urgencyFor("error", 99_999, false, true)).toBe("fail");
+  });
+
+  test("and unacknowledged, the clock runs as it always did", () => {
+    expect(urgencyFor("question", QUESTION_BLOOM_S, false, false)).toBe("ask");
+    expect(urgencyFor("ok", CLEAN_BLOOM_S, false, false)).toBe("ask");
+  });
+});
+
 describe("endsOnQuestion", () => {
   test("plain closing question", () => {
     expect(endsOnQuestion("I've done the thing. Want me to push it?")).toBe(true);

@@ -12,6 +12,7 @@ import {
   parkedReply,
   raiseAt,
   restNotice,
+  seesRest,
   type Notice,
 } from "../src/lib/notice";
 
@@ -58,6 +59,20 @@ describe("restNotice", () => {
 
   test("a turn with nothing to say still says it finished", () => {
     expect(restNotice("ok", "  ")?.kind).toBe("done");
+  });
+});
+
+describe("seesRest", () => {
+  test("acknowledging a finish or a question stops the card's clock", () => {
+    expect(seesRest(n({ kind: "done" }))).toBe(true);
+    expect(seesRest(n({ kind: "question" }))).toBe(true);
+  });
+
+  test("but not a breakage, a card's own news, or one holding a turn open", () => {
+    expect(seesRest(n({ kind: "error" }))).toBe(false);
+    expect(seesRest(n({ kind: "card" }))).toBe(false);
+    expect(seesRest(n({ kind: "card", askId: "a" }))).toBe(false);
+    expect(seesRest(n({ kind: "question", askId: "a" }))).toBe(false);
   });
 });
 

@@ -889,6 +889,9 @@ export class Control {
            set aside and one that is merely resting both read `rest`, which is
            the intended effect and therefore the thing a test cannot see. */
         aside: c.aside,
+        /* And for the same reason: a rest whose notice you acknowledged reads
+           `rest` too, and so does one that simply has not warmed yet. */
+        restSeen: c.restSeen,
         /* The wall that asked for this card, if one did — what its face says. */
         bornFor: c.bornFor,
         /* The gear, for exactly the reason `kind` is reported: from out here a

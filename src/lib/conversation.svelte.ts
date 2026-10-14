@@ -689,6 +689,25 @@ export class Conversation {
    *  must not be roused (`rousing.ts`). */
   aside = $state(false);
 
+  /** You acknowledged the notice about the rest this card is in, so its clock
+   *  has stopped (`urgencyFor`'s `seen`): it reads `rest` and leaves the
+   *  waiting cycle, the dock's count and the peek together, the way `aside`
+   *  does, with `ending` left alone — that is what the turn *was*, and
+   *  acknowledging it does not rewrite history.
+   *
+   *  **Spent by the next turn.** A flag that says "you have seen this" and is
+   *  never unset is `interrupted` again, which resumed the same lost turn at
+   *  every launch: a mark left from one rest would silence the next one, and a
+   *  new question would arrive muted. So `#beginTurn` clears it here and
+   *  `store::set_mid_turn` clears the row as the turn opens, both without
+   *  anybody remembering to.
+   *
+   *  Persisted (schema v50), for `aside`'s reason: a question card restored
+   *  off disk comes back amber whatever you did yesterday, and acknowledging
+   *  the same rest once per launch is the complaint again a day later. The row
+   *  is written by `store::take_notice`, not from here. */
+  restSeen = $state(false);
+
   /** The wall that asked for this card to be opened here, or null for one
    *  opened on this wall. A card born over the flyway runs with the machine in
    *  its hands like every project card, and the only protection that design
@@ -1375,6 +1394,8 @@ export class Conversation {
     last_ending: string | null;
     worktree?: string | null;
     aside?: boolean;
+    /** Optional because a row written before schema v50 has none. */
+    rest_seen?: boolean;
     kind?: string | null;
     named_by_hand?: boolean;
     territoryId?: string | null;
@@ -1435,6 +1456,7 @@ export class Conversation {
     c.everSpoke = row.last_ending !== null;
     c.ending = (row.last_ending as Ending | null) ?? "ok";
     c.aside = row.aside ?? false;
+    c.restSeen = row.rest_seen ?? false;
     /* Restored so `choose`'s stickiness survives a restart. Without it every
        card comes back unattached, and the first send moves the whole wall onto
        the first account at once — every conversation re-read uncached, for
@@ -1590,7 +1612,7 @@ export class Conversation {
                 this.held
                 ? "rest"
                 : this.ending
-                ? urgencyFor(this.ending, this.idleSeconds, this.aside)
+                ? urgencyFor(this.ending, this.idleSeconds, this.aside, this.restSeen)
                 : "rest",
   );
 
@@ -2216,6 +2238,9 @@ export class Conversation {
     this.streaming = "";
     this.restingSince = null;
     this.working = true;
+    /* The rest it was about is over, so whatever you saw of it is too — a new
+       rest counts from nothing, and a new question reaches you. */
+    this.restSeen = false;
     /* A turn opening *is* the job being picked up, and it does not matter
        whether the agent woke on its own, Skein nudged it, or you typed
        something — all three are the queue being flushed, which is the whole of
@@ -3233,6 +3258,7 @@ export class Conversation {
     this.goodTurnsSinceRepair = 0;
     this.pendingBackupDiscard = false;
     this.restingSince = null;
+    this.restSeen = false;
     /* So the first prompt names the card again, as it does for a new one. The
        model and its window are kept: which model this card talks to is a fact
        about the card, and the ring should read 0% of the same size rather than

@@ -57,15 +57,33 @@ export const CLEAN_BLOOM_S = 900; // ...and is loud after 15m
  *  A crash and a structured ask are things that happened, not time passing, and
  *  a card that broke in the middle of the turn you walked away from still has
  *  to be able to say so. In practice a card set aside is a card with no process
- *  doing anything, so those arms are about the one you set aside mid-turn. */
+ *  doing anything, so those arms are about the one you set aside mid-turn.
+ *
+ *  @param seen you acknowledged the notice about the rest this card is in —
+ *  see `Conversation.restSeen`.
+ *
+ *  The same silence for a smaller reason. What the clock measures is that
+ *  nobody has been back, and acknowledging the notice *is* having been back:
+ *  past that, amber is a card asking for attention it has had, and the only
+ *  way to quiet it was to send it something you did not mean. Unlike `aside`
+ *  it is spent — the next turn opening clears it, so the *next* rest counts
+ *  from nothing and a new question still reaches you.
+ *
+ *  Below the same two arms as `aside`, and the order is the argument. `asked`
+ *  is a question standing now, which a notice about the last rest cannot
+ *  answer. `error` is not a clock at all: rust does not warm, it says the card
+ *  broke and is still broken, and having read that changes nothing about it —
+ *  the next thing you send is what does. Quieting it would be the wall saying
+ *  a card is fine because you looked at it. */
 export function urgencyFor(
   ending: Ending,
   idleSeconds: number,
   aside = false,
+  seen = false,
 ): Tier {
   if (ending === "error") return "fail";
   if (ending === "asked") return "ask";
-  if (aside) return "rest";
+  if (aside || seen) return "rest";
   if (ending === "question") {
     return idleSeconds >= QUESTION_BLOOM_S ? "ask" : "soft";
   }

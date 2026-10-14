@@ -22,6 +22,19 @@ export type Notice = {
   askId?: string;
 };
 
+/** Whether acknowledging this notice stops its card's clock — sets
+ *  `Conversation.restSeen`, which `urgencyFor` reads as having been back.
+ *
+ *  Only the two rests that clock measures. Not `error`: rust is a card that
+ *  broke and is still broken, not neglect, and reading it mended nothing. Not
+ *  `card`: that is news the card sent, often mid-turn, not the rest it is in.
+ *  And not a parked one, which is holding a turn open — acknowledging it lets
+ *  that turn go on, and a working card has no rest to have seen.
+ *  `store::SEEN_KINDS` is the same list, for the row. */
+export function seesRest(n: Notice): boolean {
+  return !n.askId && (n.kind === "done" || n.kind === "question");
+}
+
 /** How long a rest must last before it raises anything.
  *
  *  Measured on 926 real rests (2026-10-07): a card rests between a turn and a

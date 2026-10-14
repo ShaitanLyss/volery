@@ -49,6 +49,39 @@ since that may be hours old. No relay mark on either — they are your words.
 **No notice for the card you are watching** — selected, panel open, window focused
 (`Skein.watching`, set in `App.svelte`). You saw it finish.
 
+### Acknowledging one puts its card to rest
+
+Taking a notice down used to touch nothing on the card, so the colour and the label were
+downstream of a fact nobody updated: `ending` stayed `question`, `urgencyFor` went on
+answering `ask` past `QUESTION_BLOOM_S`, and the card glowed amber saying *"ended on a
+question"* about a question you had just read (Lyss, 2026-10-14). The clock measures nobody
+having been back, and acknowledging is having been back.
+
+- **It goes into `urgencyFor`, as `seen`, beside `aside`** — not into the waiting cycle, the
+  dock's count or `attention.items`, which are four readings of the tier. `aside`'s reasoning
+  in `restore.md` is the whole argument and it is not repeated here.
+- **Below `error` and `asked`, on purpose.** `asked` is a question standing now, which a notice
+  about the last rest cannot answer. `error` is not a clock: rust does not warm, it says the
+  card broke and is still broken, and reading that mended nothing — so an acknowledged error
+  stays rust and stays in the Tab cycle until you send it something. `notice.ts::seesRest` and
+  `store::SEEN_KINDS` are the same list for the same reason: only `done` and `question` set
+  it; not `error`, not a card's own news, not a notice parked on a turn.
+- **Spent by the next turn, on both sides at once.** `#beginTurn` clears `restSeen`, and
+  `store::set_mid_turn` clears `rest_seen` in the same statement that marks the turn open —
+  nobody has to remember to. That is the whole defence against the shape this codebase keeps
+  meeting (`interrupted`, `#toldAboutJobs`): a "you have seen this" flag that outlived its rest
+  would silence the next one, and a new question would arrive muted.
+- **Persisted (schema v50), written by `take_notice`, not by the front end.** A question card
+  restored off disk comes back half amber, so a flag held only in memory had you acknowledge
+  the same rest once per launch. The write is `WHERE interrupted = 0` — `interrupted` *is* the
+  mid-turn mark — so a take landing a moment after the card stirred cannot mark a rest that is
+  already over. A follow-up takes too and sets it, and its send opens the turn that clears it.
+- **The words stay and say why.** `ending` is what the turn was and is not rewritten, so the
+  label keeps it and adds `· seen` in place of the age: `ended on a question · seen`. The age
+  goes for `set aside`'s reason — it is the reading being withdrawn. A card on another wall
+  has no flag in its digest; its tier already arrives `rest`, and it reads as an ordinary
+  rest there.
+
 ### Detecting "ended on a question" was measured, not guessed
 
 848 real turn endings from this machine's transcripts (2026-10-07) were labelled four ways
