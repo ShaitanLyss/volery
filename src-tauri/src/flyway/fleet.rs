@@ -569,6 +569,18 @@ pub struct Ask {
     /// would use.
     #[serde(default)]
     pub answers: Option<String>,
+    /// On a person's prompt only: the pictures it carries, each named by the
+    /// `[name]` token that sits where it goes in `brief` (`attach.md`). Rides
+    /// under a tag of its own (`FleetMsg::Pictured`), for `card`'s reason one
+    /// step further: a wall from before pictures would read this as absent and
+    /// hand the card a sentence about `[image 1]` with no image — and a relay
+    /// from before them would strip it on the way through, which is the same
+    /// silence one wall later. Under its own tag both skip the whole request,
+    /// and the asker has already refused a wall that does not announce
+    /// `CAN_PICTURES`. Never written to disk on any wall, and held only until
+    /// the prompt is answered (`unburden`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<Picture>,
     /// What a request carrying a `card` asks of it. **Never on the wire as a
     /// field** — the tag says it (`FleetMsg::Prompt`, `Recall`, `Close`), for
     /// `card`'s reason: a field a wall from before it has never heard of reads
@@ -616,9 +628,27 @@ pub const CAN_PERSON_CLOSE: &str = "close_by_person";
 /// nobody checked should not read as one that was checked and passed.
 pub const CAN_NEEDS: &str = "needs";
 
+/// The word that says a wall takes a person's prompt with pictures in it
+/// (`FleetMsg::Pictured`). Asked before sending, so a wall from before it is
+/// refused with the draft kept rather than sent words about a picture it would
+/// never receive.
+pub const CAN_PICTURES: &str = "pictures";
+
 /// Everything this wall announces in `Facts::can`.
 pub fn can_now() -> Vec<String> {
-    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS]).map(str::to_string).collect()
+    CAN.iter().copied().chain([CAN_PERSON_CLOSE, CAN_NEEDS, CAN_PICTURES]).map(str::to_string).collect()
+}
+
+/// One picture riding a person's prompt — what `attach.ts::Carried` is, field
+/// for field. Base64 with no data-URL preamble, which is what the CLI's image
+/// block wants and what the owning wall's front end decodes. Checked on both
+/// walls by `attach::carried_fit` and refused whole rather than mended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Picture {
+    pub name: String,
+    pub media_type: String,
+    pub data: String,
 }
 
 /// The word a request needs the far wall to have announced, if any. A person's
@@ -902,6 +932,10 @@ pub enum FleetMsg {
     /// no new outcome, because a wall from before prompts relays answers too,
     /// and an outcome it had no word for would fail its whole exchange.
     Prompt { ask: Ask, age_ms: u64 },
+    /// A person's prompt with pictures in it (`Ask::pictures`) — a `Prompt` in
+    /// every other respect, and passed over whole by any wall that has no word
+    /// for it, so a picture is never delivered as the sentence without it.
+    Pictured { ask: Ask, age_ms: u64 },
     /// Read a card's last words — a prompt's shape, a recall's act. Answered
     /// with `Outcome::Said`, or a refusal.
     Recall { ask: Ask, age_ms: u64 },
@@ -954,6 +988,8 @@ pub struct Deliver {
     /// says — for the envelope a message from it arrives in. Labels, believed.
     pub from_title: Option<String>,
     pub from_project: Option<String>,
+    /// What a person's prompt carries besides its words (`Ask::pictures`).
+    pub pictures: Vec<Picture>,
 }
 
 /// Everything one message caused.
@@ -1035,6 +1071,11 @@ impl Unsendable {
             Unsendable::Older { host, what } if *what == CAN_PERSON_CLOSE => {
                 format!("{host} needs updating to close cards from here")
             }
+            Unsendable::Older { host, what } if *what == CAN_PICTURES => format!(
+                "{host} runs a Volery from before pictures could be sent to its cards — it would \
+                 take the words and not the pictures, so nothing was sent. send the words alone, \
+                 or update Volery on {host}"
+            ),
             Unsendable::Older { host, what } => format!(
                 "{host} runs a Volery from before a card on another wall could {} its cards, \
                  so nothing was sent — it would be skipped there, or handed over with nothing \
@@ -1082,6 +1123,9 @@ pub struct PromptRequest {
     /// wall's name alone.
     pub title: Option<String>,
     pub project: Option<String>,
+    /// The pictures a person's prompt carries (`Ask::pictures`). Empty for
+    /// everything else.
+    pub pictures: Vec<Picture>,
 }
 
 /// An ask or answer's identity: the asking host and the request id. The id
@@ -1271,6 +1315,21 @@ impl Fleet {
         out
     }
 
+    /// This wall's own prompts with pictures in them that `peer` has not
+    /// answered and could still act on, by request id — each to be said to it
+    /// again in an exchange of its own (`link.rs::push_pictured`), never in the
+    /// greeting `gossip` makes. Only the asker's: a wall that heard one never
+    /// holds it to say again, since nothing passes one on.
+    pub fn pictured_for(&self, now: i64, peer: &str) -> Vec<(String, FleetMsg)> {
+        self.asks
+            .iter()
+            .filter(|(k, h)| k.0 == self.me && h.it.to == peer && !h.it.pictures.is_empty())
+            .filter(|(k, _)| !self.answers.contains_key(*k))
+            .filter(|(_, h)| age(now, h.origin_at) <= ASK_TTL_MS as u64)
+            .map(|(k, h)| (k.1.clone(), tagged(h.it.clone(), age(now, h.origin_at))))
+            .collect()
+    }
+
     /// Ask a wall to open a card. What comes back is the message to say; the
     /// answer arrives later through `on`, in `Reply::answered`.
     ///
@@ -1324,6 +1383,7 @@ impl Fleet {
             needs: r.needs,
             card: None,
             answers: None,
+            pictures: Vec::new(),
             act: Act::Prompt,
         };
         self.asks.insert(
@@ -1380,6 +1440,12 @@ impl Fleet {
                 return Err(Unsendable::Older { host: r.to, what: word });
             }
         }
+        if !r.pictures.is_empty() && !there.facts.can.iter().any(|c| c == CAN_PICTURES) {
+            return Err(Unsendable::Older { host: r.to, what: CAN_PICTURES });
+        }
+        /* A person's prompt only: an agent's message, a recall and a close
+           never carry one, whatever the request says. */
+        let pictures = if act == Act::Prompt && r.from_card.is_none() { r.pictures } else { Vec::new() };
         let ask = Ask {
             id: r.id.clone(),
             from: Origin { host: self.me.clone(), card: r.from_card },
@@ -1395,6 +1461,7 @@ impl Fleet {
             needs: Vec::new(),
             card: Some(r.card),
             answers: r.answers,
+            pictures,
             act,
         };
         self.asks.insert(
@@ -1457,8 +1524,22 @@ impl Fleet {
     }
 
     fn record(&mut self, key: Key, answer: Answer, now: i64, keep_until: i64) -> FleetMsg {
+        self.unburden(&key);
         self.answers.insert(key, Held { it: answer.clone(), origin_at: now, keep_until });
         FleetMsg::Answer { answer, age_ms: 0 }
+    }
+
+    /// Let go of a request's pictures once it is answered. What is kept after
+    /// that is kept for the *key* — the dedup that stops a redelivered frame
+    /// being a second prompt — and an answered request is never said again
+    /// (`gossip`) or re-sent (`reach` hands back the answer), so megabytes held
+    /// for the ten minutes the key is would be held for nothing.
+    fn unburden(&mut self, key: &Key) {
+        if let Some(h) = self.asks.get_mut(key) {
+            if !h.it.pictures.is_empty() {
+                h.it.pictures = Vec::new();
+            }
+        }
     }
 
     /// Forget what is too old to matter, and say which of this wall's own asks
@@ -1490,6 +1571,7 @@ impl Fleet {
             FleetMsg::Close { .. } => Act::Close,
             _ => Act::Prompt,
         };
+        let pictured = matches!(m, FleetMsg::Pictured { .. });
         match m {
             FleetMsg::Roster { walls, greeting } => {
                 let mut theirs: BTreeMap<String, u64> = BTreeMap::new();
@@ -1524,16 +1606,23 @@ impl Fleet {
 
             FleetMsg::Ask { ask, age_ms } => {
                 /* Never a prompt under this tag — see `Ask::card`. */
-                let ask = Ask { card: None, answers: None, act: Act::Prompt, ..clean_ask(ask) };
+                let ask = Ask { card: None, answers: None, pictures: Vec::new(), act: Act::Prompt, ..clean_ask(ask) };
                 self.hear_ask(ask, age_ms, now, here, &mut reply);
             }
 
-            FleetMsg::Prompt { ask, age_ms } | FleetMsg::Recall { ask, age_ms } | FleetMsg::Close { ask, age_ms } => {
+            FleetMsg::Prompt { ask, age_ms }
+            | FleetMsg::Pictured { ask, age_ms }
+            | FleetMsg::Recall { ask, age_ms }
+            | FleetMsg::Close { ask, age_ms } => {
                 /* The tag is the act, and nothing else is — see `Ask::act`.
-                   Only a prompt answers a question. */
+                   Only a prompt answers a question, and only one under its own
+                   tag carries pictures (`Ask::pictures`). */
                 let mut ask = Ask { act, ..clean_ask(ask) };
                 if act != Act::Prompt {
                     ask.answers = None;
+                }
+                if !pictured {
+                    ask.pictures = Vec::new();
                 }
                 /* A request for no card is nothing anybody could deliver, and
                    it is dropped rather than refused: there is no card on any
@@ -1550,6 +1639,7 @@ impl Fleet {
                 if self.answers.contains_key(&key) {
                     return reply;
                 }
+                self.unburden(&key);
                 let origin_at = now.saturating_sub(clamp(age_ms));
                 if answer.asked_by == self.me {
                     self.answers.insert(
@@ -1618,6 +1708,11 @@ impl Fleet {
             if age(now, origin_at) > ASK_TTL_MS as u64 || stamp_age(now, ask.asked_at) > ASK_TTL_MS + CLOCK_SLACK_MS {
                 return;
             }
+            /* Never relayed — see `gossip`. Nothing of ours sends one to a wall
+               it is not for, so this is a frame that should not exist. */
+            if !ask.pictures.is_empty() {
+                return;
+            }
             self.asks.insert(
                 key,
                 Held { it: ask.clone(), origin_at, keep_until: now.saturating_add(ANSWER_KEPT_MS) },
@@ -1629,7 +1724,10 @@ impl Fleet {
         let keep_until = now
             .saturating_add(ANSWER_KEPT_MS)
             .max(ask.asked_at.saturating_add(ASK_TTL_MS + CLOCK_SLACK_MS + 1));
-        self.asks.insert(key.clone(), Held { it: ask.clone(), origin_at, keep_until });
+        /* The addressee never says its own asks again (`gossip`), so its
+           memory of one is only ever a key — the pictures go to the card and
+           are not kept here for the ten minutes the key is. */
+        self.asks.insert(key.clone(), Held { it: Ask { pictures: Vec::new(), ..ask.clone() }, origin_at, keep_until });
         let decided = if prompt {
             /* A prompt, a recall or a close has no territory and counts
                against no bound; what it shares with an ask is the trust. The
@@ -1651,6 +1749,7 @@ impl Fleet {
                     accepting: here.accepting,
                     from_title: ask.title.as_deref().and_then(named),
                     from_project: named(&ask.territory.name),
+                    pictures: ask.pictures.clone(),
                 });
             })
         } else {
@@ -1811,11 +1910,23 @@ impl Fleet {
     /// this wall — it is their destination, and nobody beyond it needs them.
     /// Answers for as long as they are kept, since the asker may be the wall
     /// that just arrived.
+    ///
+    /// **Never a prompt carrying pictures.** It is megabytes where everything
+    /// else here is a few hundred bytes, and a greeting is one exchange bounded
+    /// at twenty seconds: one picture in it on a slow link would time the whole
+    /// greeting out — sink, cards and board with it — on every tick until the
+    /// prompt aged out. So a pictured prompt is only ever said by the wall that
+    /// asked, to the wall it is for, in an exchange of its own with time for its
+    /// size (`pictured_for`, `link.rs::push_pictured`), and never relayed. A
+    /// wall that can only be reached through a third, or only dials *in*, does
+    /// not receive one: the prompt reads *never left this wall*, which is the
+    /// truth, rather than arriving as words.
     fn gossip(&self, now: i64) -> Vec<FleetMsg> {
         let asks = self
             .asks
             .iter()
             .filter(|(_, h)| h.it.to != self.me)
+            .filter(|(_, h)| h.it.pictures.is_empty())
             .filter(|(k, _)| !self.answers.contains_key(*k))
             .filter(|(_, h)| age(now, h.origin_at) <= ASK_TTL_MS as u64)
             .filter(|(_, h)| stamp_age(now, h.it.asked_at) <= ASK_TTL_MS + CLOCK_SLACK_MS)
@@ -1855,6 +1966,7 @@ pub(crate) fn over_bound(f: &Facts, in_flight: u32) -> Option<Refusal> {
 fn tagged(ask: Ask, age_ms: u64) -> FleetMsg {
     match (ask.card.is_some(), ask.act) {
         (false, _) => FleetMsg::Ask { ask, age_ms },
+        (true, Act::Prompt) if !ask.pictures.is_empty() => FleetMsg::Pictured { ask, age_ms },
         (true, Act::Prompt) => FleetMsg::Prompt { ask, age_ms },
         (true, Act::Recall) => FleetMsg::Recall { ask, age_ms },
         (true, Act::Close) => FleetMsg::Close { ask, age_ms },
@@ -1949,6 +2061,10 @@ fn clean_ask(a: Ask) -> Ask {
         needs: words(a.needs),
         card: sc_opt(a.card),
         answers: sc_opt(a.answers),
+        /* Passed on as they came. A picture is refused whole where it would be
+           used (`attach::carried_fit`), never mended on the way: a relay that
+           dropped a bad one would deliver the sentence without it. */
+        pictures: a.pictures,
         act: a.act,
     }
 }
@@ -2098,6 +2214,7 @@ mod tests {
             needs: Vec::new(),
             card: None,
             answers: None,
+            pictures: Vec::new(),
             act: Act::Prompt,
         }
     }
@@ -2819,7 +2936,12 @@ mod tests {
             answers: None,
             title: None,
             project: None,
+            pictures: Vec::new(),
         }
+    }
+
+    fn picture(name: &str) -> Picture {
+        Picture { name: name.into(), media_type: "image/png".into(), data: "iVBORw0KGgo=".into() }
     }
 
     /// An answer to a question a card parked is not work from another wall,
@@ -2958,6 +3080,103 @@ mod tests {
             assert_eq!(r.deliver[0].act, act);
             assert!(r.open.is_empty());
         }
+    }
+
+    /// **A picture travels under a tag of its own, to the card, whole.** The
+    /// person's prompt that carries one is `pictured` — so a wall from before
+    /// pictures skips it instead of reading the sentence without them — and is
+    /// handed over with its pictures where it was going. A prompt with none is
+    /// still `prompt`, byte for byte what it was.
+    #[test]
+    fn a_picture_rides_its_own_tag_to_the_card() {
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: can_now(), ..open_facts() }, None, 0), 0, &open_facts());
+        let mut desk = Fleet::new("desk", 0);
+        let req = PromptRequest {
+            text: "look at [image 1]".into(),
+            pictures: vec![picture("image 1")],
+            ..prompt_req("p", "desk", "card-9")
+        };
+        let m = lap.prompt(req, 10).unwrap();
+        let json = serde_json::to_value(&m).unwrap();
+        assert_eq!(json["msg"], "pictured");
+        assert_eq!(json["ask"]["pictures"][0]["mediaType"], "image/png");
+        let r = desk.on(serde_json::from_value(json).unwrap(), 20, &open_facts());
+        assert_eq!(r.deliver.len(), 1);
+        assert_eq!(r.deliver[0].pictures, vec![picture("image 1")]);
+        assert_eq!(r.deliver[0].text, "look at [image 1]");
+
+        let plain = serde_json::to_value(lap.prompt(prompt_req("q", "desk", "card-9"), 10).unwrap()).unwrap();
+        assert_eq!(plain["msg"], "prompt");
+        assert!(plain["ask"].get("pictures").is_none(), "a prompt with none is what it always was");
+    }
+
+    /// Asked before sending: a wall that does not announce `pictures` would
+    /// take the words and not the pictures, so nothing is sent and the reason
+    /// says what to do. Only a person's prompt carries one — an agent's message
+    /// arriving with pictures has them taken off, as does any other tag.
+    #[test]
+    fn a_picture_is_refused_up_front_to_a_wall_that_cannot_take_one() {
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: CAN.iter().map(|s| s.to_string()).collect(), ..open_facts() }, None, 0), 0, &open_facts());
+        let req = PromptRequest { pictures: vec![picture("image 1")], ..prompt_req("p", "desk", "card-9") };
+        match lap.prompt(req, 10) {
+            Err(u @ Unsendable::Older { .. }) => assert!(u.reason().contains("take the words and not the pictures"), "{}", u.reason()),
+            other => panic!("a wall from before pictures was sent one: {other:?}"),
+        }
+        assert!(lap.prompt(prompt_req("q", "desk", "card-9"), 10).is_ok(), "words alone still go");
+
+        let mut desk = Fleet::new("desk", 0);
+        let ask = Ask { card: Some("card-9".into()), pictures: vec![picture("x")], ..raw_ask("r", "lap", "desk", 0) };
+        let r = desk.on(FleetMsg::Prompt { ask, age_ms: 0 }, 0, &open_facts());
+        assert!(r.deliver[0].pictures.is_empty(), "only the pictured tag carries pictures");
+    }
+
+    /// **Megabytes never ride the greeting.** A greeting is one exchange with
+    /// twenty seconds to land, and a picture in it on a slow link would time
+    /// out the sink and the cards beside it on every tick. So a pictured
+    /// prompt is not gossiped, not relayed, and is said again only by the wall
+    /// that asked, to the wall it is for, until it is answered.
+    #[test]
+    fn a_picture_is_said_only_to_its_own_wall_and_never_in_a_greeting() {
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: can_now(), ..open_facts() }, None, 0), 0, &open_facts());
+        let req = PromptRequest { pictures: vec![picture("image 1")], ..prompt_req("p", "desk", "card-9") };
+        let m = lap.prompt(req, 10).unwrap();
+        lap.prompt(prompt_req("q", "desk", "card-9"), 10).unwrap();
+        let tags: Vec<_> = lap.open(20).iter().map(|m| serde_json::to_value(m).unwrap()["msg"].clone()).collect();
+        assert!(tags.contains(&"prompt".into()) && !tags.contains(&"pictured".into()), "{tags:?}");
+        assert_eq!(lap.pictured_for(20, "desk").len(), 1);
+        assert!(lap.pictured_for(20, "server").is_empty());
+
+        let mut server = Fleet::new("server", 0);
+        assert!(server.on(m.clone(), 10, &open_facts()).say.is_empty(), "a relay passes none on");
+        assert!(server.asks.is_empty());
+
+        let mut desk = Fleet::new("desk", 0);
+        let r = desk.on(m, 20, &open_facts());
+        let answer = desk.taken(&r.deliver[0].asked_by.host, &r.deliver[0].request, "card-9", 30).unwrap();
+        lap.on(answer, 30, &open_facts());
+        assert!(lap.pictured_for(40, "desk").is_empty(), "an answered prompt is not said again");
+        assert!(lap.pictured_for(10 + ASK_TTL_MS + 1, "desk").is_empty());
+    }
+
+    /// A picture is held until its prompt is answered and not for the ten
+    /// minutes the key is: by the asker, and by the wall it was for, which
+    /// never keeps them at all.
+    #[test]
+    fn pictures_are_let_go_once_the_prompt_is_answered() {
+        let mut lap = Fleet::new("lap", 0);
+        lap.on(statement("desk", 1, Facts { can: can_now(), ..open_facts() }, None, 0), 0, &open_facts());
+        let req = PromptRequest { pictures: vec![picture("image 1")], ..prompt_req("p", "desk", "card-9") };
+        let m = lap.prompt(req, 10).unwrap();
+        let mut desk = Fleet::new("desk", 0);
+        let r = desk.on(m, 20, &open_facts());
+        assert!(desk.asks.values().all(|h| h.it.pictures.is_empty()), "the addressee keeps a key, not pictures");
+        assert!(lap.asks.values().any(|h| !h.it.pictures.is_empty()), "the asker holds them until answered");
+        let answer = desk.taken(&r.deliver[0].asked_by.host, &r.deliver[0].request, "card-9", 30).unwrap();
+        lap.on(answer, 30, &open_facts());
+        assert!(lap.asks.values().all(|h| h.it.pictures.is_empty()));
     }
 
     /// Only a prompt answers a question. A recall or close that somehow carries

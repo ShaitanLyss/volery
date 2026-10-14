@@ -781,6 +781,9 @@ export type Sent = {
    *  and the question's header, so the line can say what it answered. */
   askId?: string;
   about?: string;
+  /** The thumbnails of the pictures it carried, drawn under the line as a
+   *  local prompt's are — never the pictures, which left with the send. */
+  shots?: { name: string; thumb: string }[];
 };
 
 export type SentEvent =
@@ -1408,6 +1411,7 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
         const r = sentReading(w.sent, host, now);
         line.receipt = r.words;
         if (r.look === "failed") line.state = "failed";
+        if (w.sent.shots?.length) line.shots = w.sent.shots;
       }
       out.push(line);
       continue;
@@ -1421,6 +1425,7 @@ export function asLines(woven: readonly Woven[], host: string, now: number): Lin
          failed would be this wall claiming to know something it does not. It
          stays pending, and the receipt is what says where it actually is. */
       state: r.look === "failed" ? "failed" : "pending",
+      ...(w.sent.shots?.length ? { shots: w.sent.shots } : {}),
     });
   }
   return out;

@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { textOf } from "../src/lib/classify";
+import { join } from "node:path";
 
 import {
+  CARRY_MOST,
+  MAX_ATTACHED,
+  MAX_BYTES,
   MAX_SIDE,
+  carriedCost,
   compose,
   dropToken,
   echoOf,
@@ -16,6 +23,7 @@ import {
   sizeNote,
   stillIn,
   tokenFor,
+  turnOf,
   uniqueName,
   type Attachment,
 } from "../src/lib/attach";
@@ -179,13 +187,22 @@ describe("compose", () => {
 });
 
 describe("echoOf", () => {
-  /* Measured, not assumed: `tools/probe-image.ts` sent five blocks and the
-     replay's extractable text was exactly the three text ones joined. Get this
-     wrong and the line is never claimed — the card reads `sent, not picked up`
-     for ever and burns its nudge budget. */
-  test("it is the text blocks joined, with the images contributing nothing", () => {
+  /* Get this wrong and the line is never claimed — the card reads `sent, not
+     picked up` for ever and burns its nudge budget. It was wrong: joined with
+     "" where the replay's extractor joins with a newline, and nothing caught it
+     until a picture was sent on a running wall (2026-10-15). So it is held to
+     the extractor itself, on the shape the replay really has. */
+  test("it is exactly what the replay's extractor reads back", () => {
     const blocks = compose("look at [shot 1] please", [shot("shot 1")]);
-    expect(echoOf(blocks)).toBe("look at  please");
+    expect(echoOf(blocks)).toBe(textOf(blocks));
+    expect(echoOf(blocks)).toBe("look at \n please");
+    /* What the CLI replayed on lab-picb for "…written in [pasted.png], and…". */
+    const replay = [
+      { type: "text", text: "What is written in " },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "x" } },
+      { type: "text", text: ", and what colour?" },
+    ];
+    expect(echoOf(compose("What is written in [p.png], and what colour?", [shot("p.png")]))).toBe(textOf(replay));
   });
 
   test("an ordinary prompt echoes as itself", () => {
@@ -360,5 +377,51 @@ describe("the reading under a chip", () => {
   /* Never `0 KB`, which reads as an empty file rather than a small one. */
   test("a tiny image still has a size", () => {
     expect(sizeNote(shot("a", { bytes: 200 }))).toBe("100×80 · 1 KB");
+  });
+});
+
+/* A prompt to a card on another wall carries its pictures (`attach.md`), cut by
+   the same `turnOf` on both walls. */
+describe("a turn, for here and for another wall", () => {
+  test("one cut: what goes on the wire, what it replays, what is drawn, what is carried", () => {
+    const list = [shot("a"), shot("b"), shot("gone")];
+    const turn = turnOf("look at [a], then [b]", list);
+    expect(turn.content).toEqual(compose("look at [a], then [b]", list));
+    expect(turn.echo).toBe("look at \n, then");
+    expect(turn.shots.map((s) => s.name)).toEqual(["a", "b"]);
+    /* Only what the sentence still names — the bytes the far wall needs, and
+       nothing it would attach to no token. */
+    expect(turn.carried).toEqual([
+      { name: "a", mediaType: "image/png", data: "<a>" },
+      { name: "b", mediaType: "image/png", data: "<b>" },
+    ]);
+  });
+
+  test("words alone carry nothing", () => {
+    expect(turnOf("just words", [shot("a")]).carried).toEqual([]);
+  });
+
+  /* Measured the way `attach::carried_fit` measures it — the sentence as
+     typed, tokens and spaces included — so the dock refuses what the link
+     would. */
+  test("the cost is the sentence as JSON and each picture with its name", () => {
+    const turn = turnOf("[a]  [a] é", [shot("a", { data: "x".repeat(100) })]);
+    expect(turn.text).toBe("[a]  [a] é");
+    const words = new TextEncoder().encode(JSON.stringify("[a]  [a] é")).length;
+    expect(carriedCost(turn)).toBe(words + 100 + 1 + "image/png".length + 48);
+  });
+
+  /* Three numbers live on both sides of the link and must not drift: the
+     sender refuses on the TypeScript, the owning wall on the Rust. */
+  test("the limits here are the limits attach.rs holds", () => {
+    const src = readFileSync(join(import.meta.dir, "../src-tauri/src/attach.rs"), "utf8");
+    const read = (name: string) => {
+      const m = src.match(new RegExp(`pub const ${name}: usize = ([0-9_ *]+);`));
+      if (!m) throw new Error(`${name} is not in attach.rs`);
+      return m[1]!.split("*").reduce((n, f) => n * Number(f.trim().replace(/_/g, "")), 1);
+    };
+    expect(read("MAX_ATTACHED")).toBe(MAX_ATTACHED);
+    expect(read("MAX_BYTES")).toBe(MAX_BYTES);
+    expect(read("CARRY_MOST")).toBe(CARRY_MOST);
   });
 });

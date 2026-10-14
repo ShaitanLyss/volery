@@ -76,6 +76,8 @@ import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
 import { DEFER_ANSWER, closingHere, confirmHere, noticeAnswer, noticeHere, NOTICE_AFAR_ACK, removalHere } from "./afar";
 import type { Notice } from "./notice";
+import { Attachments } from "./attach.svelte";
+import { turnOf, type Carried, type Turn } from "./attach";
 
 const SECTIONS_KEY = "skein.sections.v1";
 function loadSections(): Placed {
@@ -130,6 +132,9 @@ export type RosterRow = {
   acts?: string[];
   /** It takes a close from a person here (`close_by_person`). */
   closes?: boolean;
+  /** It takes a person's prompt with pictures in it (`fleet::CAN_PICTURES`).
+   *  Absent from an older build, which is a no. */
+  pictures?: boolean;
   /** It opens an empty card a person here asks for (`flyway/opening.rs`) —
    *  what a section's menu reads to offer one. Absent from an older build. */
   opens?: boolean;
@@ -474,6 +479,9 @@ export class Shadow {
       /* No row yet — a stored snapshot drawn at launch — keeps the close, for
          `verbsFor`'s reason: the link refuses one it cannot carry, in words. */
       closes: row ? row.closes === true : true,
+      /* No row, or an older one, is no: a picture sent there would arrive as
+         the sentence without it. The link refuses one too. */
+      pictures: !!row && !row.older && row.pictures === true,
     };
   }
   /** The accounts its wall can put it on, by label — what `put it on…`
@@ -1135,10 +1143,15 @@ export class Elsewhere {
   }
 
   /** Send a prompt to a card on another wall. Drawn at once, as a local send
-   *  is, and marked for what it is until the other wall answers. */
-  async send(s: Shadow, text: string) {
+   *  is, and marked for what it is until the other wall answers.
+   *
+   *  Its pictures go with it (`turn.carried`) and are drawn under the line
+   *  here as a local prompt's are — the thumbnails, never the bytes, which
+   *  leave with the send and are not kept (`attach.md`). */
+  async send(s: Shadow, text: string, turn?: Turn) {
     const id = crypto.randomUUID();
-    s.sent.push({ id, text, at: Date.now(), state: "queued" });
+    const shots = turn?.shots.length ? turn.shots : undefined;
+    s.sent.push({ id, text, at: Date.now(), state: "queued", ...(shots ? { shots } : {}) });
     this.#byPrompt.set(id, s);
     /* Refused here when the card is drawn as unheard, in the words the card is
        already wearing — the link would refuse it too, but a wall that says one
@@ -1149,7 +1162,8 @@ export class Elsewhere {
       return;
     }
     try {
-      await invoke("flyway_prompt", { id, to: s.host, card: s.card, text });
+      const pictures = turn?.carried.length ? turn.carried : undefined;
+      await invoke("flyway_prompt", { id, to: s.host, card: s.card, text, pictures });
     } catch (e) {
       this.#fold(id, { kind: "unsent", why: String(e) || "the link would not take it" });
     }
@@ -1285,6 +1299,9 @@ export class Elsewhere {
     /** Set when this takes down one of the card's notices rather than being a
      *  prompt — see `afar.ts`. */
     notice?: string;
+    /** What it carries besides its words, already checked by Rust
+     *  (`attach::carried_fit`). */
+    pictures?: Carried[];
   }) {
     /* A redelivered frame gets the answer the first one got, and never a
        second send. The link already drops repeats; this is the second lock on
@@ -1337,10 +1354,28 @@ export class Elsewhere {
       );
     }
 
+    /* Its pictures are attached here the way a paste in this wall's own dock
+       is — decoded, held to the same limits, given a thumbnail — and then the
+       sentence is cut with them by the same `turnOf` the dock uses, so the far
+       card gets the turn a person at this keyboard would have sent. All or
+       nothing: the sentence without one of its pictures is refused, never
+       sent. Nothing is written to disk; the bytes leave with the send. */
+    let turn: Turn | undefined;
+    if (p.pictures?.length) {
+      const shots = new Attachments();
+      /* A decode that throws is answered too — an asker that never hears back
+         can only say it does not know, and the key above would swallow its
+         retry. */
+      const why = await shots.fromCarried(p.pictures).catch((e) => String((e as Error)?.message ?? e) || "could not be read");
+      if (why) return this.#settle(p, "refused", `${this.me || "that wall"} would not take its pictures: ${why}`);
+      turn = turnOf(p.text, shots.list);
+      shots.clear();
+    }
+
     conv.note(`sent from ${p.from.host}`);
     let sent = false;
     try {
-      sent = await this.#skein.send(conv, p.text);
+      sent = await this.#skein.send(conv, p.text, turn);
     } catch {
       sent = false;
     }

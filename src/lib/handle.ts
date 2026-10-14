@@ -11,6 +11,8 @@
  * Design and reasons: `.claude/rules/elsewhere.md`, "one card handle". Pure,
  * so every row of the table is tested without a window. */
 
+import { CARRY_MOST, carriedCost, looksLike, type Turn } from "./attach";
+
 export type Verb =
   | "glass"
   | "close"
@@ -83,6 +85,9 @@ export type Remote = {
   acts: ReadonlySet<string>;
   /** Whether that wall announced `close_by_person`. */
   closes: boolean;
+  /** Whether that wall announced `pictures` — that a person's prompt to one
+   *  of its cards may carry them (`fleet::CAN_PICTURES`). Absent is no. */
+  pictures?: boolean;
 };
 
 /** The verbs on offer for a card. `null` for a card on this wall means all of
@@ -118,6 +123,44 @@ export const ACTS: readonly Verb[] = VERBS.filter((v) => v !== "close" && COST[v
  *  is what a person acts on, so a verb a card cannot do is said rather than
  *  hidden. The shape every surface asks (`cards.svelte.ts`). */
 export type Can = "yes" | { no: string };
+
+/** Whether this turn can reach a card on another wall, asked before the draft
+ *  is cleared so a refusal keeps what was typed.
+ *
+ *  A picture travels (`attach.md`): what a card here can be shown, a card
+ *  there can be, by construction — the far wall attaches it exactly as a paste
+ *  in its own dock. So what is refused is only what cannot honestly arrive,
+ *  each said in a sentence:
+ *
+ *  - a wall drawn as unheard, which would refuse it — and clearing the draft
+ *    into a line nobody is looking at would be the send looking like it went;
+ *  - pictures to a wall from before they could travel, which would take the
+ *    words and not the pictures — the sentence arriving without the thing it
+ *    is about;
+ *  - a prompt past `CARRY_MOST`, which no frame between two walls can hold.
+ *    Never cut down to fit: a picture dropped to make room is the second case
+ *    again;
+ *  - a picture whose bytes are not the type it says, which the far wall's
+ *    check (`attach::carried_fit`) would refuse after the draft had gone. */
+export function carriesTo(remote: Remote, turn: Turn): Can {
+  if (remote.unheard) return { no: `${remote.host} has not been heard from — a prompt would be refused` };
+  if (!turn.carried.length) return "yes";
+  if (!remote.pictures) {
+    return {
+      no: `${remote.host} runs a Volery from before pictures could be sent to its cards — send the words alone, or update it there`,
+    };
+  }
+  const odd = turn.carried.find((c) => !looksLike(c));
+  if (odd) return { no: `${odd.name} is not the ${odd.mediaType} it says it is — save it as what it is and attach it again` };
+  const cost = carriedCost(turn);
+  if (cost > CARRY_MOST) {
+    const mb = (n: number) => (n / (1024 * 1024)).toFixed(1);
+    return {
+      no: `this prompt comes to ${mb(cost)} MB and at most ${CARRY_MOST / (1024 * 1024)} MB goes to ${remote.host} at once — send fewer pictures, or smaller ones`,
+    };
+  }
+  return "yes";
+}
 
 /** The reason, or null where it may. */
 export const whyNot = (c: Can): string | null => (c === "yes" ? null : c.no);
@@ -254,7 +297,7 @@ export function dockHints(
     out.push(
       remote.unheard
         ? { text: `on ${remote.host}, not heard from — a prompt would be refused`, tone: "warn" }
-        : { text: `on ${remote.host} — words only, sent there` },
+        : { text: remote.pictures ? `on ${remote.host} — sent there` : `on ${remote.host} — words only, sent there` },
     );
   /* "when you type" and not "on send" here: `Skein.stir` starts the spawn on
      the first character. No touch travels, so a card elsewhere wakes when the

@@ -8,6 +8,7 @@ import {
   actFor,
   actRefusal,
   canDo,
+  carriesTo,
   dockHints,
   panelNotes,
   refusal,
@@ -266,6 +267,73 @@ describe("what the dock says beside a card", () => {
     ]);
     const quiet = dockHints({ dormant: true, aside: false }, lab({ unheard: true }));
     expect(quiet).toEqual([{ text: "on lab, not heard from — a prompt would be refused", tone: "warn" }]);
+  });
+
+  /* "words only" is said of a wall that can take nothing else, and only of it. */
+  test("a wall that takes pictures is not called words only", () => {
+    expect(dockHints({ dormant: false, aside: false }, lab({ pictures: true }))).toEqual([{ text: "on lab — sent there" }]);
+  });
+});
+
+/* A picture travels to a card elsewhere as it reaches a card here; what is
+   refused is only what could not honestly arrive, each in a sentence, and
+   always before the draft is cleared (`attach.md`, `elsewhere.md`). */
+describe("whether a turn can reach a card on another wall", () => {
+  /* A real PNG's first bytes, so the type check passes, padded to size. */
+  const png = (name: string, chars: number) => ({
+    name,
+    mediaType: "image/png" as "image/png" | "image/jpeg",
+    data: "iVBORw0KGgoAAAAN" + "A".repeat(Math.max(0, chars - 16)),
+  });
+  const turn = (carried: ReturnType<typeof png>[] = []) => ({
+    content: [],
+    echo: "look at ",
+    shots: carried.map((c) => ({ name: c.name, thumb: "" })),
+    carried,
+    text: "look at " + carried.map((c) => `[${c.name}]`).join(" "),
+  });
+
+  test("words go to any wall that is heard", () => {
+    expect(carriesTo(lab(), turn())).toBe("yes");
+  });
+
+  test("a picture goes to a wall that takes them", () => {
+    expect(carriesTo(lab({ pictures: true }), turn([png("image 1", 400_000)]))).toBe("yes");
+  });
+
+  test("a quiet wall is refused first, pictures or not", () => {
+    expect(carriesTo(lab({ unheard: true, pictures: true }), turn([png("image 1", 10)]))).toEqual({
+      no: "lab has not been heard from — a prompt would be refused",
+    });
+  });
+
+  /* The old reading refused every picture to every wall. Now only a wall
+     that would take the words and not the picture is refused for it. */
+  test("a picture to a wall from before them is refused, and words alone are not", () => {
+    const why = carriesTo(lab(), turn([png("image 1", 10)]));
+    expect(why).toEqual({
+      no: "lab runs a Volery from before pictures could be sent to its cards — send the words alone, or update it there",
+    });
+    expect(carriesTo(lab(), turn([]))).toBe("yes");
+  });
+
+  test("past the ceiling is refused whole, in megabytes, never cut down to fit", () => {
+    const four = 4 * 1024 * 1024;
+    const why = carriesTo(lab({ pictures: true }), turn([png("a", four), png("b", four)]));
+    expect(why).toEqual({
+      no: "this prompt comes to 8.0 MB and at most 7 MB goes to lab at once — send fewer pictures, or smaller ones",
+    });
+    expect(carriesTo(lab({ pictures: true }), turn([png("a", four)]))).toBe("yes");
+  });
+
+  /* A file named .png that is a JPEG would pass here and be refused by the far
+     wall's check after the draft had gone; asked here, the draft stays. */
+  test("a picture that is not the type it says is refused before the draft goes", () => {
+    const liar = { ...png("photo.png", 40), data: "/9j/4AAQSkZJRgABAQ" + "A".repeat(22) };
+    expect(carriesTo(lab({ pictures: true }), turn([liar]))).toEqual({
+      no: "photo.png is not the image/png it says it is — save it as what it is and attach it again",
+    });
+    expect(carriesTo(lab({ pictures: true }), turn([{ ...liar, mediaType: "image/jpeg" }]))).toBe("yes");
   });
 });
 

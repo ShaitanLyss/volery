@@ -10,7 +10,7 @@ import {
 } from "./commands";
 import { bangOf, isBang } from "./bang";
 import { Attachments } from "./attach.svelte";
-import { compose, echoOf, stillIn, type Turn } from "./attach";
+import { turnOf, type Turn } from "./attach";
 import type { Draft } from "./drafts";
 
 /** What is being typed, and what the typing currently means.
@@ -284,17 +284,7 @@ export class Field {
    *  is never claimed, the card reads *sent, not picked up*, and the nudge
    *  budget goes. See `attach.ts`. */
   turn(text = this.text): Turn {
-    const content = compose(text, this.shots.list);
-    return {
-      content,
-      echo: echoOf(content),
-      /* Only the ones the sentence still mentions, and in the order they sit in
-         it — the strip under the prompt should read like the prompt. */
-      shots: stillIn(text, this.shots.list).map((a) => ({
-        name: a.name,
-        thumb: a.thumb,
-      })),
-    };
+    return turnOf(text, this.shots.list);
   }
 
 }

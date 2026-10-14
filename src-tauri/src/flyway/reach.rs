@@ -287,6 +287,8 @@ fn reach(app: &AppHandle, caller: &str, act: Act, host: &str, args: &Value) -> A
         answers: None,
         title: Some(me.title.clone()).filter(|t| !t.trim().is_empty()),
         project: Some(me.project.clone()).filter(|p| !p.trim().is_empty()),
+        /* An agent's message is words; a picture is a person's to attach. */
+        pictures: Vec::new(),
     };
     match link.reach_card(act, request) {
         Ok(rx) => Afar::Wait {

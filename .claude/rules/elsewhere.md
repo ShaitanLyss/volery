@@ -52,9 +52,10 @@ a shadow gets on the wall:
   `App.card` is the focused card's handle whichever wall it is on; `App.focused` is the same card
   when it is this wall's, for what only a card here can be — picked into a gathering, the
   directory of a `!` line.
-- **Spoken to**, from the dock, through the same `send` a card here takes — words only. What
-  cannot travel is the handle's to say: a picture or a quiet wall is refused by
-  `CardHandle.carries` before the draft is cleared, a `!` line has no card here to run in, and
+- **Spoken to**, from the dock, through the same `send` a card here takes — pictures included
+  (see *A picture crosses with its prompt* below). What cannot arrive is the handle's to say: a
+  quiet wall, a picture to a wall too old to take one, or a prompt past the frame's ceiling is
+  refused by `CardHandle.carries` before the draft is cleared, a `!` line has no card here to run in, and
   Volery's own commands are refused with the reason unless they are a verb (`/clear`,
   `/account`), which is asked of the far wall as the right-click would. **The palette is the
   trap here**: it still opens over a `/` offering this wall's commands, and its line sent raw put
@@ -313,6 +314,101 @@ and the id (the fleet's lesson about ids alone); the link drops repeats too, and
 second lock on a door whose failure is a second turn on a card with the machine in its hands.
 And every arrival is **answered**, success or throw — an asker that never hears back can only
 say it does not know.
+
+### A picture crosses with its prompt
+
+Lyss attached a screenshot to a prompt for a card on the other laptop and was told *"pictures
+stay on this wall — only words go to …"*. That was one line in `RemoteCard.carries`, and it was
+a special case standing exactly where her principle says none should: a card elsewhere gets
+what a card here gets, by construction. And there was nothing to build on either end — every
+wall already knows how to attach a picture (`attach.md`); the far wall needed only the bytes.
+
+So **the payload rides the prompt**, and both ends are the code a local paste already runs:
+
+- **The sender** cuts the draft with `attach.ts::turnOf` — the function `Field.turn` now is —
+  which carries, beside the blocks, echo and thumbnails, the pictures the sentence still names
+  (`Turn.carried`). `Elsewhere.send` hands those to `flyway_prompt` with the sentence *as typed*,
+  tokens and all, and keeps only the thumbnails on the `Sent`, which `asLines` draws under the
+  line as a local prompt's are, while it travels and once it has landed.
+- **The owning wall** (`Elsewhere.#take`) puts each picture through `Attachments.fromCarried`,
+  which is the same private `#take` a paste goes through — decoded, held to `MAX_BYTES`, scaled
+  if over the edge, given a thumbnail — and cuts the sentence with the same `turnOf`. The card
+  then gets, through `Skein.send`, the turn a person at that keyboard would have sent: interleaved
+  blocks, the echo the replay will claim, thumbnails in its own panel. All or nothing — one
+  picture the webview cannot decode refuses the prompt, named, because the sentence arriving
+  without one of its pictures is the one thing this must not do.
+
+**On the wire it is its own tag, `pictured`** (`FleetMsg::Pictured`), an `Ask` with `pictures`
+set. Not a field on `prompt`: a wall from before would read the field as absent and hand its
+card a sentence about `[image 1]` with no image — and an older *relay* would strip it on the way
+through, the same silence one hop later. Under its own tag both pass over the whole request
+(`frame::take`), and the sender has already refused a wall that does not announce `pictures` in
+`Facts::can` (`Unsendable::Older`, and `handle.ts::carriesTo` before that, with the draft kept).
+`Remote.pictures` is the roster row's word; the dock says *words only* of exactly the walls it is
+still true of.
+
+**The one limit a remote picture has, and it is the frame's.** A prompt is one sealed frame, a
+frame is at most 8 MB (`wire::MAX_FRAME`), and a wall sent a larger one fails the *whole*
+exchange — sink and cards with it. So `CARRY_MOST` — 7 MB of words-as-JSON plus base64, one
+number in `attach.rs` and `attach.ts` held equal by a test — is the ceiling, a megabyte under the
+frame rather than to the millimetre. One picture at the API's own 5 MB fits; several full-size
+screenshots together may not, and are refused before the draft is cleared, in megabytes, never
+cut down to fit. The per-picture limits (`MAX_ATTACHED`, `MAX_BYTES`) are the dock's, reused on
+the far side, not a second set.
+
+- **Checked on both walls, refused rather than mended** (`attach::carried_fit`): count, a name
+  that can sit in a sentence and appears there as its token, a sendable media type, base64 and
+  nothing else, the size, and the first bytes agreeing with the media type — the API refuses a
+  request where the two disagree, with a 400 that names nothing. On the sending wall before
+  anything is queued; on the owning wall before anything reaches the front end, because those
+  bytes came from another machine and end up in a `src=` and a request.
+- **On an exchange of its own, never in a greeting, never relayed.** A words-only prompt rides
+  every tick's greeting until answered. A greeting is one exchange bounded at twenty seconds,
+  and seven megabytes on a slow uplink would time the *whole greeting* out — sink, cards and
+  board with it — on every tick for the two minutes the prompt lives (found in review). So
+  `gossip` never carries a pictured request; the asker alone says it, to the wall it is for, in
+  `link.rs::push_pictured`: its own exchange, given `wire::carrying_within` (twenty seconds
+  plus one per 128 KB, a megabit floor — 76s at the ceiling), one upload in flight per prompt,
+  re-said on each tick while unanswered (`Fleet::pictured_for`), and marked *left* only when
+  that exchange lands. The cost is reach: a wall this one cannot dial — reachable only through
+  a third, or only dialling in — never receives one, and the prompt reads *never left this wall*
+  rather than arriving as words. A relay that is handed one anyway drops it.
+- **Never held for an account.** A prompt the waterfall would hold keeps its *text*, in the
+  store (`held_text`), to send when an account frees up. A picture can be neither written there
+  nor dropped from the sentence naming it — the release would send `[image 1]` about nothing,
+  and tell the far wall `taken` now. So `#deliver` fails a pictured prompt instead of holding it
+  (`attach.ts::PICTURES_NOT_HELD`), and the far wall is answered refused. Local and remote alike:
+  it was a local bug first.
+- **Held until answered, and never written to disk.** The fleet keeps an ask for ten minutes for
+  the *key* that stops a redelivered frame being a second prompt; `unburden` drops the pictures
+  the moment an answer is recorded or heard, and the addressee never keeps them at all. Nothing
+  on either wall writes them anywhere, which is `attach.md`'s rule kept across the wire.
+
+**What driving it found that the suites did not.** Three bugs, each invisible to a green run:
+
+- **No prompt with a picture in it had ever been claimed, here or anywhere.** `attach.ts::echoOf`
+  joined text blocks with nothing; `textOf`, which reads the replay, has always joined them with
+  a newline. The far card answered correctly and then drew the prompt twice and was nudged about
+  a prompt it had answered. `echoOf` is `textOf` now (`attach.md`).
+- **A picture dropped on the dock for a far card was pinned to the wall.** The drop handler
+  asked `targets` — this wall's cards — where the send asks `reach`. It asks `reach` now.
+- **A picture whose bytes are not its type** (a JPEG named `.png`) passed the dock and was
+  refused by the far wall's check after the draft had gone; `carriesTo` asks `looksLike` too.
+
+Demonstrated 2026-10-15 between two frozen labs (`pica`, `picb --peer pica`), driven by the
+control surface through the dock's own path. A card opened on picb, its wall taking work, and
+its shadow on pica focused by `<space> e e`; the dock read *on lab-picb — sent there*, no
+longer *words only*. A pasted picture (`KIWI 4817` beside an orange circle) sent as
+*"What word and number are written in [pasted.png], and what colour is the circle?"* was
+answered on picb *"It says KIWI 4817, and the circle is orange."*, claimed once with no nudge,
+its thumbnail drawn under the prompt on both walls and pica's receipt reading *lab-picb has
+it*. Two 3.6 MB pictures dropped on the dock attached rather than pinned, and the send was
+refused with both kept: *"this prompt comes to 9.2 MB and at most 7 MB goes to
+lab-picb.queerisfreedom at once — send fewer pictures, or smaller ones"*. One of them alone
+(4.8 MB of base64) crossed in one frame and was described *"Grey static of random coloured
+pixels."* **Not shown:** a slow link (both labs are on one machine, so `carrying_within` is
+held by reasoning, not measured), a far wall from before pictures (the unit tests hold the
+refusal and the skipped tag), and the hold, which needs every account at its limit.
 
 A card **opened** here at another wall's request says so on its own face — `Conversation.bornFor`,
 drawn as *from desk* in the qualifier row beside the account. A field rather than a prop for

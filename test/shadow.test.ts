@@ -726,6 +726,7 @@ import {
   TAIL_LINES,
   TAIL_RESULT_CAP,
   TAIL_TEXT_CAP,
+  asLines,
   readTail,
   tailOf,
   weave,
@@ -832,6 +833,27 @@ describe("reading a tail back from a wall you did not write", () => {
   test("a state nobody recognises is not kept", () => {
     const out = readTail([{ kind: "you", text: "x", state: "exploded" }]);
     expect(out?.[0].state).toBeUndefined();
+  });
+});
+
+/* What you sent to a card elsewhere draws its pictures under the line, as a
+   prompt to a card here does — the thumbnails, kept on the send. */
+describe("a sent prompt's pictures", () => {
+  const shots = [{ name: "image 1", thumb: "data:image/png;base64,AA==" }];
+
+  test("under the line while it travels", () => {
+    const line = asLines(weave([], [{ ...sent("look at [image 1]", 10, "left"), shots }]), "lab", 20)[0]!;
+    expect(line).toMatchObject({ kind: "you", text: "look at [image 1]", shots });
+  });
+
+  test("and under their copy once it has arrived", () => {
+    const tail: WireLine[] = [{ kind: "you", text: "look at [image 1]" }];
+    const line = asLines(weave(tail, [{ ...sent("look at [image 1]", 10), shots }]), "lab", 20)[0]!;
+    expect(line.shots).toEqual(shots);
+  });
+
+  test("a send with none draws none", () => {
+    expect(asLines(weave([], [sent("words", 10, "left")]), "lab", 20)[0]!.shots).toBeUndefined();
   });
 });
 

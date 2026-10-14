@@ -49,6 +49,8 @@
  *  list. `attach.svelte.ts` owns the bytes, the decoding and the scaling, which
  *  need a DOM. */
 
+import { textOf } from "./classify";
+
 /** What the API will take. Anything else is refused at the door rather than
  *  sent and rejected — a 400 out of a prompt you typed reads as the card being
  *  broken, and names nothing. */
@@ -90,6 +92,27 @@ export const MAX_BYTES = 5 * 1024 * 1024;
  *  reference. At this size a thumbnail is a few kilobytes, it survives being
  *  copied into a `Line`, and there is nothing to release. */
 export const THUMB_SIDE = 160;
+
+/** The most one prompt may cost on the wire to a card on another wall: its
+ *  words as JSON and every picture's base64, together. `attach::CARRY_MOST` in
+ *  Rust, held equal by `test/attach.test.ts`.
+ *
+ *  The frame's number rather than the API's: a prompt to another wall rides
+ *  one sealed frame, a frame is at most 8 MB, and a wall that is sent a larger
+ *  one fails the whole exchange — the sink and the cards beside it. A megabyte
+ *  under, for the rest of the request and the seal. One picture at `MAX_BYTES`
+ *  fits; several full-size screenshots together may not, and are refused with
+ *  the draft kept (`handle.ts::carriesTo`). A card on this wall has no such
+ *  ceiling — the one difference a picture to another wall has. */
+export const CARRY_MOST = 7 * 1024 * 1024;
+
+/** What a prompt with pictures says when every account is at its limit. The
+ *  hold keeps one prompt's *text*, in the store, to send when an account frees
+ *  up; a picture can be neither written there (see `drafts.ts`, and the
+ *  section on disk above) nor dropped from the sentence that names it. So it is
+ *  not held, and says so — `Skein.#deliver`. */
+export const PICTURES_NOT_HELD =
+  "not sent — every account is at its limit, and a prompt with pictures is not held; send it again when one frees up";
 
 /** One image attached to a draft. */
 export type Attachment = {
@@ -133,7 +156,79 @@ export type Turn = {
   echo: string;
   /** Small data URLs, drawn under the prompt in the panel. */
   shots: { name: string; thumb: string }[];
+  /** The pictures themselves, by name, for a card on another wall — whose
+   *  wall is handed the sentence with its tokens and these, and cuts it again
+   *  with `turnOf` exactly as this one did. Not kept past the send: a `Line`
+   *  takes `shots`, never this. */
+  carried: Carried[];
+  /** The sentence as typed, tokens and all — what another wall is handed, and
+   *  so what `carriedCost` measures. */
+  text: string;
 };
+
+/** One picture as another wall is handed it — `fleet::Picture` in Rust, field
+ *  for field. */
+export type Carried = { name: string; mediaType: MediaType; data: string };
+
+/** The turn a sentence and its attachments make: cut once at the tokens, and
+ *  every reading of the cut taken from that one cut.
+ *
+ *  The draft's own send (`Field.turn`) and a prompt arriving from another wall
+ *  (`Elsewhere.#take`) both come here, so a picture sent across is composed on
+ *  the wall that sends it exactly as it would have been on the wall it went
+ *  to. A second split would be a second thing to get wrong, and its failure is
+ *  silent: the line is never claimed, the card reads *sent, not picked up*, and
+ *  the nudge budget goes. See the header. */
+export function turnOf(text: string, list: readonly Attachment[]): Turn {
+  const content = compose(text, list);
+  /* Only the ones the sentence still mentions — a picture whose token was
+     typed over is one you plainly did not mean to send. */
+  const kept = stillIn(text, list);
+  return {
+    content,
+    echo: echoOf(content),
+    shots: kept.map((a) => ({ name: a.name, thumb: a.thumb })),
+    carried: kept.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data })),
+    text,
+  };
+}
+
+/** What a turn would cost on the wire to another wall, measured exactly as
+ *  `attach::carried_fit` measures it — the sentence as JSON in UTF-8, and each
+ *  picture's base64 with its name and type — so the dock refuses what the link
+ *  would, and never clears a draft the link then turns away. */
+export function carriedCost(turn: Turn): number {
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  let cost = bytes(JSON.stringify(turn.text));
+  for (const c of turn.carried) cost += c.data.length + bytes(c.name) + c.mediaType.length + 48;
+  return cost;
+}
+
+/** Whether a picture's first bytes are the format its media type names — the
+ *  check `attach::carried_fit` makes, asked here too so a refusal keeps the
+ *  draft. A file dropped as `photo.png` that is really a JPEG keeps the type
+ *  its extension gave it (`read_attachment`), and the API refuses a request
+ *  where the two disagree with a 400 that names nothing. */
+export function looksLike(c: Carried): boolean {
+  let head: string;
+  try {
+    head = atob(c.data.slice(0, 16));
+  } catch {
+    return false;
+  }
+  const at = (s: string, i = 0) => head.slice(i, i + s.length) === s;
+  switch (c.mediaType) {
+    case "image/png":
+      return at("\x89PNG\r\n\x1a\n");
+    case "image/jpeg":
+      return at("\xFF\xD8\xFF");
+    case "image/gif":
+      return at("GIF87a") || at("GIF89a");
+    case "image/webp":
+      return at("RIFF") && at("WEBP", 8);
+  }
+}
+
 
 /** The token an attachment wears in the draft.
  *
@@ -322,10 +417,13 @@ export function runsOf(text: string, list: readonly Attachment[]): Run[] {
  *  of the split is a second thing to get wrong, and the failure it produces is
  *  silent (see the header). */
 export function echoOf(blocks: readonly Block[]): string {
-  return blocks
-    .filter((b): b is Extract<Block, { type: "text" }> => b.type === "text")
-    .map((b) => b.text)
-    .join("");
+  /* `textOf` itself, not a second spelling of it. The first version joined the
+     text blocks with "" while `textOf` has always joined them with a newline,
+     so no prompt with a picture in it was ever claimed: the replay pushed a
+     second `you` line and the card was nudged about a prompt it had answered.
+     Found 2026-10-15 driving a picture across two lab walls — the first time
+     the feature met a running app. */
+  return textOf(blocks);
 }
 
 /** Does this turn carry anything at all? A draft that is nothing but a token

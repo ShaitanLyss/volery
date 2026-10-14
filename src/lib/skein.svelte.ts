@@ -72,7 +72,7 @@ import {
   sayRepair,
   type RepairReport,
 } from "./repair";
-import type { Block, Turn } from "./attach";
+import { PICTURES_NOT_HELD, type Block, type Turn } from "./attach";
 import { Conversation, type ConvKind } from "./conversation.svelte";
 import { foldTranscript, trimOverlap } from "./history";
 import { LEAVE_MS, layout, type Placement, type Territory } from "./layout";
@@ -3617,7 +3617,17 @@ export class Skein {
        overwrite a different prompt already waiting there, so a card already
        holding one drops the second — and answering "kept" off `held` alone
        told another wall a prompt had arrived that nothing would ever send. */
-    if (!(await this.#settleAccount(conv, text))) return conv.held?.text === text;
+    /* A prompt with pictures in it is never held. The slot keeps text and is
+       written to the store, so holding one would either put screenshots on
+       disk (`attach.md`) or release, hours later, the sentence without its
+       pictures — `[image 1]` sent about nothing. Failed with the reason
+       instead; from another wall that is a refusal the sender reads. */
+    const pictured = !!turn?.content.some((b) => b.type === "image");
+    if (!(await this.#settleAccount(conv, pictured ? null : text))) {
+      if (!pictured) return conv.held?.text === text;
+      conv.echoFailed(text, PICTURES_NOT_HELD);
+      return false;
+    }
     if (conv.dormant && !(await this.wake(conv))) {
       conv.echoFailed(text, "could not wake");
       return false;

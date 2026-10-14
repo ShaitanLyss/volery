@@ -69,8 +69,16 @@ the concatenation of the *text* blocks, with the tokens gone:
 
 ```text
 drawn:    "Here is the first picture: [a] and here is the second: [b]."
-replayed: "Here is the first picture:  and here is the second: ."
+replayed: "Here is the first picture: \n and here is the second: ."
 ```
+
+**The newline is the part that was got wrong for two months.** `textOf`, which reads the replay,
+has always joined text blocks with `\n`; `echoOf` joined them with nothing, so no prompt with a
+picture in it was ever claimed. The card took the turn and answered correctly, then drew the
+prompt a second time and was nudged about a prompt it had already answered. Nothing
+caught it until a picture was sent on a running wall on 2026-10-15, the first time this feature
+was driven at all. `echoOf` is now `textOf` itself rather than a second spelling of it, which is
+the bullet below made literal.
 
 Left alone, **no image prompt would ever be claimed**: the line keeps `awaited` for the life of
 the process, the card reads *sent, not picked up*, and every following `result` schedules a
@@ -266,7 +274,11 @@ is written to `localStorage` behind a `KEEP_AFTER_MS` debounce and read back at 
   which picture it meant — but it is a real limit and `history.ts` is where it would be fixed.
 - **`deliver` is text-only**, and that is a property of its callers rather than a limitation:
   `relay.rs`, `board.rs`, `later.rs` and `spawn.rs` all compose messages out of words in Rust,
-  where there is no clipboard. Only a prompt you typed can carry an image.
+  where there is no clipboard. Only a prompt you typed can carry an image — **to a card on
+  this wall or on another**: since 2026-10-15 the payload crosses the flyway with the prompt,
+  and the far wall attaches it through `Attachments.fromCarried` and cuts the sentence with
+  the same `turnOf` the dock does. The one limit a remote picture has that a local one does
+  not is the frame's (`CARRY_MOST`). `elsewhere.md`, *A picture crosses with its prompt*.
 - **None of this has been driven against a running app.** This machine has no MSVC (see
   `build.md`), so what is proved is: the pure suites, `svelte-check`, `cargo check --lib
   --profile test`, and the CLI probe. `gears.md` records what driving the real wall found that

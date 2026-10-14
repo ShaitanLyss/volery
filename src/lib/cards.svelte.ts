@@ -34,7 +34,7 @@ import type { Notice } from "./notice";
 import type { MenuTarget } from "./menu";
 import type { Turn } from "./attach";
 import type { Timeline } from "./timeline";
-import { actFor, canDo, dockHints, verbsFor, whyNot, type Can, type Remote, type Said, type Verb } from "./handle";
+import { actFor, canDo, carriesTo, dockHints, verbsFor, whyNot, type Can, type Remote, type Said, type Verb } from "./handle";
 import { closeWarnings } from "./closing";
 import { presetById } from "./presets";
 import { usable } from "./accounts";
@@ -71,8 +71,8 @@ export interface CardHandle {
   /** Do it. A refusal is said (as a fault) and returned, never thrown. */
   do(verb: Verb, args?: Record<string, unknown>): Promise<Can>;
   /** Whether this turn can reach it — asked before the draft is cleared, so
-   *  a refusal keeps what was typed. Pictures cannot travel, and a wall
-   *  drawn as unheard is not sent to. */
+   *  a refusal keeps what was typed. Pictures travel to a card elsewhere as
+   *  they reach one here; what cannot arrive is said (`handle.ts::carriesTo`). */
   carries(turn: Turn): Can;
   /** Say something to it. */
   say(text: string, turn: Turn): Promise<void>;
@@ -398,18 +398,15 @@ export class RemoteCard implements CardHandle {
     if (r.text) await this.#hands.copy(r.text);
     return "yes";
   }
-  /* Words only. A picture is this machine's file and the prompt wire is
-     text; the far wall's own send decides what the words mean there. A wall
-     drawn as unheard is refused too, with the draft kept: clearing it into a
-     line nobody is looking at would be the send looking like it went. */
+  /* The sentence and its pictures go as they are, and the far wall's own
+     send decides what they mean there — attaching each exactly as a paste in
+     its dock would (`attach.md`). What cannot arrive is refused with the draft
+     kept, in `carriesTo`'s words. */
   carries(turn: Turn): Can {
-    const s = this.shadow;
-    if (turn.shots.length) return { no: `pictures stay on this wall — only words go to ${s.host}` };
-    if (s.face.unheard) return { no: `${s.host} has not been heard from — a prompt would be refused` };
-    return "yes";
+    return carriesTo(this.shadow.remote, turn);
   }
-  async say(text: string) {
-    await this.#walls.send(this.shadow, text);
+  async say(text: string, turn: Turn) {
+    await this.#walls.send(this.shadow, text, turn);
   }
   stir() {}
   history() {

@@ -120,7 +120,7 @@ pub fn take(plain: &[u8], into: &mut Vec<Frame>) -> Result<(), String> {
 /// variant added to one of them without this list is caught rather than
 /// silently skipped as "from a newer build".
 const KNOWN: &[&str] = &[
-    "hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards", "tail", "tailed",
+    "hello", "events", "roster", "ask", "answer", "prompt", "pictured", "recall", "close", "cards", "tail", "tailed",
     "move_offer", "move_part", "move_answer", "move_settled", "move_released", "look", "looked",
     "act", "acted", "board", "unpost", "unposted",
 ];
@@ -189,6 +189,21 @@ mod tests {
         assert!(matches!(read(&old).unwrap(), Read::Frame(f) if matches!(*f, Frame::Sink(_))));
     }
 
+    /// A prompt carrying pictures, read by a wall from before them, is a word it
+    /// has no use for and is passed over whole — never read as a `prompt` with
+    /// its pictures missing, which is the sentence arriving without the thing
+    /// it is about.
+    #[test]
+    fn a_pictured_prompt_is_only_a_newer_word_to_an_older_wall() {
+        let pictured = br#"{"msg":"pictured","ask":{},"age_ms":0}"#;
+        let before: &[&str] = &["hello", "events", "roster", "ask", "answer", "prompt", "recall", "close", "cards"];
+        let tag = serde_json::from_slice::<Value>(pictured).unwrap()["msg"].as_str().unwrap().to_string();
+        assert!(!before.contains(&tag.as_str()));
+        let mut got = Vec::new();
+        take(br#"{"msg":"pictured_v2","ask":{}}"#, &mut got).expect("skipped, not fatal");
+        assert!(got.is_empty());
+    }
+
     #[test]
     fn a_word_from_a_newer_build_is_skipped_not_fatal() {
         let newer = br#"{"msg":"carry","id":"x"}"#;
@@ -245,7 +260,7 @@ mod tests {
         .collect();
         /* `ask` and `answer` want whole structs to build; their tags are the
            variant names under `rename_all = "snake_case"`. */
-        written.extend(["ask", "answer", "prompt", "recall", "close"].map(str::to_string));
+        written.extend(["ask", "answer", "prompt", "pictured", "recall", "close"].map(str::to_string));
         written.extend(crate::flyway::moving::TAGS.map(str::to_string));
         for m in [
             LookMsg::Look { id: String::new(), card: String::new(), ask: String::new(), want: vec![] },

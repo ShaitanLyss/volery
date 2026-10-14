@@ -122,6 +122,126 @@ pub async fn read_attachment(path: String) -> Result<Read, String> {
     .await?
 }
 
+/* ── a picture carried to another wall's card ─────────────────────────────── */
+
+/// How many pictures one prompt may carry — `attach.ts::MAX_ATTACHED`, the
+/// dock's own cap, held equal by `test/attach.test.ts`.
+pub const MAX_ATTACHED: usize = 20;
+
+/// The largest one picture may be, in bytes of the encoded file —
+/// `attach.ts::MAX_BYTES`, which is the API's own limit. Held equal by
+/// `test/attach.test.ts`.
+pub const MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// The most one prompt may cost on the wire to another wall: its words as JSON
+/// and its pictures' base64 together. `attach.ts::CARRY_MOST`, held equal by
+/// `test/attach.test.ts`.
+///
+/// **This is the frame's number, not the API's.** A prompt rides one sealed
+/// frame (`FleetMsg::Pictured`) and a frame is at most `wire::MAX_FRAME`, 8 MB,
+/// which a wall refuses to read past — and refusing it fails the *whole*
+/// exchange, the sink and the cards beside it. So the ceiling is set a
+/// megabyte under, for the ask's other fields and the seal, rather than to the
+/// millimetre (`a_prompt_at_the_ceiling_still_fits_a_frame`). One picture at
+/// `MAX_BYTES` is 6.7 MB of base64 and fits; a handful of full-size screenshots
+/// together may not, and are refused in words with the draft kept. A local
+/// prompt has no such ceiling, and that is the one difference.
+pub const CARRY_MOST: usize = 7 * 1024 * 1024;
+
+/// The longest a picture's name may be. `attach.ts::nameFromFile` cuts at 32 and
+/// `uniqueName` adds a few characters; this is room above both, and a bound on a
+/// string another machine wrote.
+const NAME_MOST: usize = 64;
+
+/// Whether these pictures may ride (or be handed on with) a prompt whose words
+/// are `text`, and if not, why — in a sentence for the person who attached
+/// them. Asked by the wall that sends, before anything is queued, and again by
+/// the wall the card is on, before anything is handed to it: the bytes came
+/// from another machine, and both the media type and the data end up inside a
+/// `src=` and in a request the API will refuse if they disagree.
+///
+/// **Refused whole, never mended** (`attach.md`): a picture taken out of a
+/// prompt leaves its `[name]` in the sentence pointing at nothing, which is the
+/// one thing `Attachments.prune` exists to prevent. The webview on the owning
+/// wall decodes each again (`Attachments.fromCarried`), which is the real
+/// "is this an image" check; this is the shape, and the one that runs in Rust.
+pub fn carried_fit(pictures: &[crate::flyway::fleet::Picture], text: &str) -> Result<(), String> {
+    if pictures.len() > MAX_ATTACHED {
+        return Err(format!("{} pictures — {MAX_ATTACHED} is the most one prompt carries", pictures.len()));
+    }
+    let mut cost = serde_json::to_string(text).map(|s| s.len()).unwrap_or(text.len());
+    let mut seen: Vec<&str> = Vec::with_capacity(pictures.len());
+    for p in pictures {
+        let name = p.name.as_str();
+        let called = if name.trim().is_empty() { "a picture" } else { name };
+        if name.trim().is_empty()
+            || name.chars().count() > NAME_MOST
+            || name.contains(['[', ']'])
+            || crate::clean::scrub(name).len() != name.len()
+        {
+            return Err(format!("{} has a name that cannot sit in a sentence", crate::clean::scrub(called)));
+        }
+        if seen.contains(&name) {
+            return Err(format!("two pictures are both called {name}"));
+        }
+        seen.push(name);
+        if !text.contains(&format!("[{name}]")) {
+            return Err(format!("{name} is not in the sentence — its [{name}] is missing"));
+        }
+        if !["image/png", "image/jpeg", "image/gif", "image/webp"].contains(&p.media_type.as_str()) {
+            return Err(format!("{name} is not an image this can send"));
+        }
+        let data = p.data.as_str();
+        if data.is_empty()
+            || data.len() % 4 != 0
+            || !data.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+        {
+            return Err(format!("{name} did not arrive as an image"));
+        }
+        let pad = data.bytes().rev().take_while(|b| *b == b'=').count();
+        if pad > 2 || data[..data.len() - pad].contains('=') {
+            return Err(format!("{name} did not arrive as an image"));
+        }
+        let bytes = data.len() / 4 * 3 - pad;
+        if bytes > MAX_BYTES {
+            return Err(format!("{name} is too large to send ({} MB)", bytes.div_ceil(1024 * 1024)));
+        }
+        /* The first bytes say what the file is, and they must say what the
+           media type does: the API refuses a request where the two disagree,
+           and that 400 names nothing. Sixteen characters are twelve bytes,
+           which covers WebP's `RIFF….WEBP`. */
+        let head = crate::unbase64(&data[..data.len().min(16)]).unwrap_or_default();
+        if !media_matches(&p.media_type, &head) {
+            return Err(format!("{name} is not the {} it says it is", p.media_type));
+        }
+        cost += data.len() + name.len() + p.media_type.len() + 48;
+    }
+    if cost > CARRY_MOST {
+        return Err(format!(
+            "this prompt comes to {} MB and at most {} MB goes to another wall at once — send fewer pictures, or smaller ones",
+            mb(cost),
+            CARRY_MOST / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
+/// One decimal place of a megabyte, for a sentence.
+fn mb(n: usize) -> String {
+    format!("{:.1}", n as f64 / (1024.0 * 1024.0))
+}
+
+/// Whether a file's first bytes are the format its media type names.
+fn media_matches(media: &str, head: &[u8]) -> bool {
+    match media {
+        "image/png" => head.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => head.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "image/gif" => head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a"),
+        "image/webp" => head.len() >= 12 && head.starts_with(b"RIFF") && &head[8..12] == b"WEBP",
+        _ => false,
+    }
+}
+
 /// A file's own name, for a message somebody reads. The whole path would put an
 /// absolute path in the fault bar for a file the user just dragged in and can
 /// plainly see.
@@ -168,5 +288,74 @@ mod tests {
     #[test]
     fn a_refusal_names_the_file_and_not_the_path() {
         assert_eq!(name_of(Path::new(r"C:\Users\someone\pics\shot.png")), "shot.png");
+    }
+
+    use crate::flyway::fleet::Picture;
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+    fn pic(name: &str, media: &str, bytes: &[u8]) -> Picture {
+        Picture { name: name.into(), media_type: media.into(), data: crate::base64(bytes) }
+    }
+
+    /// What the dock sends passes, on both walls.
+    #[test]
+    fn a_picture_the_dock_would_send_fits() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 16];
+        let ps = [pic("image 1", "image/png", PNG), pic("shot.jpg", "image/jpeg", &jpeg)];
+        assert_eq!(carried_fit(&ps, "look at [image 1], then [shot.jpg]"), Ok(()));
+        assert_eq!(carried_fit(&[], "words alone"), Ok(()));
+    }
+
+    /// **Refused whole, never mended** — each of the ways a payload from
+    /// another machine can be wrong, and each says which picture.
+    #[test]
+    fn a_picture_that_is_not_what_it_says_is_refused_by_name() {
+        let png = |name: &str| pic(name, "image/png", PNG);
+        let refused = |ps: &[Picture], text: &str| carried_fit(ps, text).unwrap_err();
+        assert!(refused(&[png("a")], "no token here").contains("not in the sentence"));
+        assert!(refused(&[png("a"), png("a")], "[a]").contains("both called a"));
+        assert!(refused(&[png("a]b")], "[a]b]").contains("cannot sit in a sentence"));
+        assert!(refused(&[png("a\u{0}")], "[a\u{0}]").contains("cannot sit in a sentence"));
+        assert!(refused(&[pic("a", "image/bmp", PNG)], "[a]").contains("not an image this can send"));
+        assert!(refused(&[pic("a", "image/jpeg", PNG)], "[a]").contains("not the image/jpeg it says"));
+        let mut quote = png("a");
+        quote.data.replace_range(4..5, "\"");
+        assert!(refused(&[quote], "[a]").contains("did not arrive as an image"));
+        /* All padding, or padding in the middle, is not base64 — and the first
+           would underflow the size arithmetic. */
+        for data in ["====", "AA==AAAA"] {
+            let p = Picture { data: data.into(), ..png("a") };
+            assert!(refused(&[p], "[a]").contains("did not arrive as an image"), "{data}");
+        }
+        let many: Vec<Picture> = (0..=MAX_ATTACHED).map(|i| png(&format!("p{i}"))).collect();
+        let text: String = many.iter().map(|p| format!("[{}]", p.name)).collect();
+        assert!(refused(&many, &text).contains("most one prompt carries"));
+    }
+
+    /// One picture past the API's limit is refused for its own size; pictures
+    /// each under it but too many together are refused for the prompt's.
+    #[test]
+    fn too_large_is_said_in_megabytes() {
+        let mut big = PNG.to_vec();
+        big.resize(MAX_BYTES + 3, 0);
+        let why = carried_fit(&[pic("big", "image/png", &big)], "[big]").unwrap_err();
+        assert!(why.contains("too large to send (6 MB)"), "{why}");
+        let mut four = PNG.to_vec();
+        four.resize(4 * 1024 * 1024, 0);
+        let two = [pic("a", "image/png", &four), pic("b", "image/png", &four)];
+        let why = carried_fit(&two, "[a] [b]").unwrap_err();
+        assert!(why.contains("10.7 MB") && why.contains("at most 7 MB"), "{why}");
+    }
+
+    /// The ceiling leaves a frame room for everything else in the ask and for
+    /// the seal — a megabyte, not a few bytes — and the largest single picture
+    /// the dock allows still fits under it.
+    #[test]
+    fn a_prompt_at_the_ceiling_still_fits_a_frame() {
+        assert!(CARRY_MOST + 1024 * 1024 <= crate::flyway::wire::MAX_FRAME);
+        let mut one = PNG.to_vec();
+        one.resize(MAX_BYTES, 0);
+        assert_eq!(carried_fit(&[pic("one", "image/png", &one)], "[one]"), Ok(()));
     }
 }

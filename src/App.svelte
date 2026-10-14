@@ -1169,7 +1169,11 @@
          strip two hundred pixels tall. */
       for (const dir of sorted.dirs) await openIn(dir);
 
-      if (onto === "prompt" && targets.length) {
+      /* `reach`, not `targets`: the dock talks to the card in the ring wherever
+         it is, and a picture now travels to a card on another wall
+         (`elsewhere.md`) — asking `targets`, which is this wall's alone, pinned
+         a picture dropped for a far card to the wall instead. */
+      if (onto === "prompt" && reach.length) {
         for (const token of await field.shots.fromPaths(sorted.images)) {
           typeIntoDraft(token);
         }

@@ -13,6 +13,7 @@ import {
   tokenFor,
   uniqueName,
   type Attachment,
+  type Carried,
   type MediaType,
 } from "./attach";
 
@@ -157,6 +158,37 @@ export class Attachments {
       this.busy = false;
     }
     return out;
+  }
+
+  /** Take the pictures a prompt from another wall carried — the owning wall's
+   *  half of a picture crossing the flyway (`attach.md`).
+   *
+   *  Through the same `#take` a paste goes through, so a picture from another
+   *  machine is decoded, held to `MAX_BYTES`, scaled if it is over the edge and
+   *  given its thumbnail here exactly as one pasted here would be — and one the
+   *  webview cannot decode is refused for the reason it would be refused here.
+   *  Rust has already checked the shape (`attach::carried_fit`); this is the
+   *  check that the bytes are a picture at all.
+   *
+   *  Each keeps the name it was sent under, because that name is the token in
+   *  the sentence that came with it. Returns why not, naming the picture, or
+   *  null when every one is attached — all or nothing, since a sentence handed
+   *  over with one of its pictures missing is the one thing this must not do. */
+  async fromCarried(carried: readonly Carried[]): Promise<string | null> {
+    this.busy = true;
+    try {
+      for (const c of carried) {
+        const media = mediaTypeOf(c.mediaType);
+        if (!media) return `${c.name} is not an image this can send`;
+        if (!this.#room()) return this.refused;
+        const token = await this.#take(new Blob([bytesOf(c.data) as BlobPart], { type: media }), media, c.name, c.data);
+        if (!token) return this.refused ?? `${c.name} could not be read`;
+        if (token !== tokenFor(c.name)) return `two pictures are both called ${c.name}`;
+      }
+      return null;
+    } finally {
+      this.busy = false;
+    }
   }
 
   /** Is there room for one more? Says so once, rather than per file, so a folder

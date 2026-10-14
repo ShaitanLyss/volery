@@ -77,7 +77,7 @@ pub const ALPN_V1: &[u8] = b"volery/flyway/1";
 /// rather than allocated for — the only thing on the other end *should* be
 /// another Volery, and a bound is what makes that "should" cost nothing to be
 /// wrong about.
-const MAX_FRAME: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_FRAME: usize = 8 * 1024 * 1024;
 
 /// How long one exchange may take, dial included.
 ///
@@ -87,6 +87,15 @@ const MAX_FRAME: usize = 8 * 1024 * 1024;
 /// however long a relay takes to say so. Twenty seconds is far past a real
 /// exchange (a few round trips and a few frames) and well inside a tick.
 const EXCHANGE_WITHIN: Duration = Duration::from_secs(20);
+
+/// How long an exchange carrying `bytes` may take: the ordinary twenty seconds,
+/// plus a second for every 128 KB — about a megabit a second, the floor of a
+/// slow uplink or a relay somebody else runs. A prompt with pictures in it is
+/// up to `attach::CARRY_MOST`, seven megabytes, which no link writes in twenty
+/// seconds below three megabits; at this rate it has 76.
+pub fn carrying_within(bytes: usize) -> Duration {
+    EXCHANGE_WITHIN + Duration::from_secs((bytes / (128 * 1024)) as u64)
+}
 
 /// Why an exchange came to nothing, in the one distinction the caller acts on.
 #[derive(Debug)]
@@ -169,12 +178,24 @@ impl Wire {
     /// nothing is held open). `current: false` dials in the old language, and
     /// the caller is the one who knows to send it only sink frames.
     pub async fn exchange(&self, peer: EndpointId, out: Vec<Frame>, current: bool) -> Result<Vec<Frame>, Fault> {
+        self.exchange_within(peer, out, current, EXCHANGE_WITHIN).await
+    }
+
+    /// `exchange`, given longer — for the one exchange that carries megabytes
+    /// (`carrying_within`). Everything else keeps the twenty seconds.
+    pub async fn exchange_within(
+        &self,
+        peer: EndpointId,
+        out: Vec<Frame>,
+        current: bool,
+        within: Duration,
+    ) -> Result<Vec<Frame>, Fault> {
         let alpn = if current { ALPN } else { ALPN_V1 };
-        match tokio::time::timeout(EXCHANGE_WITHIN, self.exchange_on(peer, alpn, out)).await {
+        match tokio::time::timeout(within, self.exchange_on(peer, alpn, out)).await {
             Ok(got) => got,
             Err(_) => Err(Fault::Other(format!(
                 "no answer within {}s — that wall is probably asleep",
-                EXCHANGE_WITHIN.as_secs()
+                within.as_secs()
             ))),
         }
     }

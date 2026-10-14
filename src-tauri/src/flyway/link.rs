@@ -198,6 +198,8 @@ pub struct Link {
     prompts_out: StdMutex<HashMap<String, PromptOut>>,
     /// Prompts handed to cards here, by the asker's host and request id.
     prompts_in: StdMutex<HashMap<(String, String), i64>>,
+    /// Prompts with pictures being written right now (`push_pictured`).
+    pictured_out: StdMutex<std::collections::HashSet<String>>,
     /// Conversations another wall asked for, parked until this wall's front
     /// end has made them — `ask.rs`'s shape, a channel per request under an id
     /// the front end answers by. Keyed on an id minted here rather than the
@@ -221,6 +223,9 @@ struct PromptOut {
     /// needs, so that a link that is down never reads as an agent thinking.
     left: bool,
     asked_at: i64,
+    /// Carries pictures, so it leaves only on an exchange of its own
+    /// (`push_pictured`) and a greeting written to `to` is not it leaving.
+    pictured: bool,
 }
 
 /// What one of this wall's own asks was for — which decides what its answer
@@ -348,6 +353,7 @@ pub async fn arrive(app: AppHandle) -> Result<bool, String> {
         opening: StdMutex::new(HashMap::new()),
         prompts_out: StdMutex::new(HashMap::new()),
         prompts_in: StdMutex::new(HashMap::new()),
+        pictured_out: StdMutex::new(std::collections::HashSet::new()),
         tails: StdMutex::new(HashMap::new()),
         acts: StdMutex::new(HashMap::new()),
         cards_due: AtomicBool::new(false),
@@ -679,6 +685,13 @@ impl Link {
            to a connection to it. */
         if current {
             self.left_for(host);
+            /* A prompt with pictures never rides the greeting (`fleet::gossip`),
+               so it is said again here, on an exchange of its own, for as long
+               as it is unanswered and could still be acted on. */
+            let pictured = self.fleet.lock().map(|f| f.pictured_for(self.now(), host)).unwrap_or_default();
+            for (id, m) in pictured {
+                self.push_pictured(host.to_string(), id, m);
+            }
         }
         let (news, theirs) = self.take(back, Some(host));
 
@@ -934,6 +947,8 @@ impl Link {
     fn route(self: &Arc<Self>, say: &[FleetMsg], except: Option<&str>) {
         for m in say {
             let to = match m {
+                /* Never relayed and never pushed from here — see `push_pictured`. */
+                FleetMsg::Pictured { .. } => None,
                 FleetMsg::Ask { ask, .. }
                 | FleetMsg::Prompt { ask, .. }
                 | FleetMsg::Recall { ask, .. }
@@ -1364,11 +1379,70 @@ impl Link {
             .map_err(|_| "the fleet is wedged".to_string())?
             .reach(act, r.clone(), now)
             .map_err(|u| u.reason())?;
+        let pictured = matches!(msg, FleetMsg::Pictured { .. });
         if let Ok(mut o) = self.prompts_out.lock() {
-            o.entry(r.id.clone()).or_insert(PromptOut { to: r.to.clone(), left: false, asked_at: now });
+            o.entry(r.id.clone()).or_insert(PromptOut { to: r.to.clone(), left: false, asked_at: now, pictured });
         }
-        self.push(r.to, vec![Frame::Fleet(msg)]);
+        if pictured {
+            self.push_pictured(r.to, r.id, msg);
+        } else {
+            self.push(r.to, vec![Frame::Fleet(msg)]);
+        }
         Ok(())
+    }
+
+    /// Say one prompt with pictures in it to the wall it is for, on an exchange
+    /// of its own and with time for its size (`wire::carrying_within`) — never
+    /// in a greeting, where megabytes on a slow link would time out the sink and
+    /// the cards beside it (`fleet::gossip`). One at a time per prompt: the tick
+    /// re-says an unanswered one, and two uploads of the same seven megabytes
+    /// would each get half the link. It has left when *this* exchange lands.
+    fn push_pictured(self: &Arc<Self>, host: String, id: String, msg: FleetMsg) {
+        if host.eq_ignore_ascii_case(&self.me) || self.speaks_older(&host) {
+            return;
+        }
+        let bytes = match &msg {
+            FleetMsg::Pictured { ask, .. } => ask.pictures.iter().map(|p| p.data.len()).sum::<usize>() + ask.brief.len(),
+            _ => 0,
+        };
+        let first = self.pictured_out.lock().map(|mut o| o.insert(id.clone())).unwrap_or(false);
+        if !first {
+            return;
+        }
+        let l = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let landed = match l.wire.peer(&host) {
+                Ok(peer) => l
+                    .wire
+                    .exchange_within(peer, vec![Frame::Fleet(msg)], true, super::wire::carrying_within(bytes))
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e),
+            };
+            if let Ok(mut o) = l.pictured_out.lock() {
+                o.remove(&id);
+            }
+            match landed {
+                Ok(back) => {
+                    l.left_one(&id);
+                    l.take(back, Some(&host));
+                }
+                Err(e) => log::debug!("flyway: a prompt with pictures did not reach {host} (the tick will say it again): {e}"),
+            }
+        });
+    }
+
+    /// One prompt has been written to a connection to the wall it is for.
+    fn left_one(&self, id: &str) {
+        let left = self
+            .prompts_out
+            .lock()
+            .ok()
+            .and_then(|mut o| o.get_mut(id).map(|p| !std::mem::replace(&mut p.left, true)))
+            .unwrap_or(false);
+        if left {
+            let _ = self.app.emit("flyway:prompt-left", PromptLeft { id: id.to_string() });
+        }
     }
 
     /// Every prompt for `host` that had not yet left has now been written to a
@@ -1377,7 +1451,7 @@ impl Link {
         let gone: Vec<String> = match self.prompts_out.lock() {
             Ok(mut o) => o
                 .iter_mut()
-                .filter(|(_, p)| !p.left && p.to == host)
+                .filter(|(_, p)| !p.left && !p.pictured && p.to == host)
                 .map(|(id, p)| {
                     p.left = true;
                     id.clone()
@@ -1487,7 +1561,14 @@ impl Link {
                 }
                 let _ = self.app.emit(
                     "flyway:prompt",
-                    PromptHere { id: request, from: PromptFrom { host, card: None }, card: row.id, text: d.text, notice },
+                    PromptHere {
+                        id: request,
+                        from: PromptFrom { host, card: None },
+                        card: row.id,
+                        text: d.text,
+                        notice,
+                        pictures: Vec::new(),
+                    },
                 );
             }
             /* An answer to a parked question goes straight into the parked call
@@ -1517,14 +1598,27 @@ impl Link {
                 answer(self, m);
             }
             /* From a person at another wall's dock: the front end sends it as
-               though typed here, introduced, and answers `flyway_prompt_answer`. */
+               though typed here, introduced, and answers `flyway_prompt_answer`.
+               Its pictures are checked again here, on the machine whose card
+               would be handed them — the sender's check is a claim, and these
+               bytes go into a `src=` and a request (`attach::carried_fit`). */
             Act::Prompt => {
+                if let Err(why) = crate::attach::carried_fit(&d.pictures, &d.text) {
+                    return refuse(self, format!("{} would not take its pictures: {why}", self.me));
+                }
                 if let Ok(mut p) = self.prompts_in.lock() {
                     p.insert((host.clone(), request.clone()), now);
                 }
                 let _ = self.app.emit(
                     "flyway:prompt",
-                    PromptHere { id: request, from: PromptFrom { host, card: d.asked_by.card }, card: row.id, text: d.text, notice: None },
+                    PromptHere {
+                        id: request,
+                        from: PromptFrom { host, card: d.asked_by.card },
+                        card: row.id,
+                        text: d.text,
+                        notice: None,
+                        pictures: d.pictures,
+                    },
                 );
             }
             /* A transcript read is a file read, up to eight megabytes of it, and
@@ -1998,6 +2092,7 @@ impl Link {
                     acts: act::offered(&e.facts.can),
                     closes: e.facts.can.iter().any(|c| c == fleet::CAN_PERSON_CLOSE),
                     opens: e.facts.can.iter().any(|c| c == super::opening::WORD),
+                    pictures: e.facts.can.iter().any(|c| c == fleet::CAN_PICTURES),
                 }
             })
             .collect()
@@ -2282,6 +2377,11 @@ struct PromptHere {
     /// follow-up from another wall rather than a prompt (`notice::afar`).
     #[serde(skip_serializing_if = "Option::is_none")]
     notice: Option<String>,
+    /// What it carries besides its words, already checked here
+    /// (`attach::carried_fit`) — the front end decodes each again and attaches
+    /// it exactly as a paste in its own dock is (`Attachments.fromCarried`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pictures: Vec<fleet::Picture>,
 }
 
 #[derive(Serialize, Clone)]
@@ -2336,6 +2436,9 @@ pub struct RosterRow {
     acts: Vec<String>,
     /// It announced `close_by_person` — `Remote.closes`.
     closes: bool,
+    /// It announced `pictures` — `Remote.pictures`: a person's prompt to one
+    /// of its cards may carry them.
+    pictures: bool,
     /// It opens a card a person here asks for with no brief
     /// (`opening::WORD`) — what a section's menu reads to offer one.
     opens: bool,
@@ -2572,6 +2675,11 @@ pub async fn flyway_births(app: AppHandle) -> Result<Vec<here::Birth>, String> {
 /// With `ask_id`, the text **answers** that card's parked `ask_user` question
 /// rather than being a new prompt — composed exactly as the owning wall's own
 /// dock would compose it — and is not held to the far wall's switch.
+///
+/// With `pictures`, the prompt carries them (`fleet::FleetMsg::Pictured`): each
+/// named by the `[name]` token where it sits in `text`, checked here before
+/// anything is queued, so a prompt that could not cross is refused at once
+/// with the draft still in the dock.
 #[tauri::command]
 pub async fn flyway_prompt(
     app: AppHandle,
@@ -2580,6 +2688,7 @@ pub async fn flyway_prompt(
     card: String,
     text: String,
     ask_id: Option<String>,
+    pictures: Option<Vec<fleet::Picture>>,
 ) -> Result<(), String> {
     let Some(l) = current(&app) else {
         return Err("this wall is not on a flyway, so it cannot reach another wall's card".into());
@@ -2587,8 +2696,22 @@ pub async fn flyway_prompt(
     if text.trim().is_empty() {
         return Err("an empty prompt is nothing to send".into());
     }
+    /* An answer is words, as the dock composes it; only a prompt carries
+       pictures. */
+    let pictures = if ask_id.is_some() { Vec::new() } else { pictures.unwrap_or_default() };
     crate::off_main(move || {
-        l.send_prompt(PromptRequest { id, from_card: None, to, card, text, answers: ask_id, title: None, project: None })
+        crate::attach::carried_fit(&pictures, &text)?;
+        l.send_prompt(PromptRequest {
+            id,
+            from_card: None,
+            to,
+            card,
+            text,
+            answers: ask_id,
+            title: None,
+            project: None,
+            pictures,
+        })
     })
     .await?
 }
@@ -2606,7 +2729,17 @@ pub async fn flyway_close(app: AppHandle, id: String, to: String, card: String) 
     crate::off_main(move || {
         l.send_person(
             Act::Close,
-            PromptRequest { id, from_card: None, to, card, text: String::new(), answers: None, title: None, project: None },
+            PromptRequest {
+                id,
+                from_card: None,
+                to,
+                card,
+                text: String::new(),
+                answers: None,
+                title: None,
+                project: None,
+                pictures: Vec::new(),
+            },
         )
     })
     .await?
