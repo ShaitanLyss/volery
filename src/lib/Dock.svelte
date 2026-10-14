@@ -48,6 +48,8 @@
     onremotedefer,
     onremotenotice,
     onremoteselect,
+    onclosecard,
+    onremoteclose,
     targets,
     waiting,
     clashing,
@@ -88,6 +90,10 @@
      *  anything else is a follow-up sent to the card. */
     onremotenotice?: (shadow: Shadow, notice: NoticeRow, reply: string) => void | Promise<boolean>;
     onremoteselect?: (shadow: Shadow) => void;
+    /** Close the card a notice is about, through the card's own close — it
+     *  asks first if the card is working. */
+    onclosecard?: (card: Conversation) => void;
+    onremoteclose?: (shadow: Shadow) => void;
     /** Everything a send would reach: the gathering, or the focused card, or
      *  nothing at all. */
     targets: Conversation[];
@@ -578,6 +584,7 @@
     title={shadow.title}
     elsewhere={shadow.id !== ring}
     onack={() => onremotenotice?.(shadow, notice, "")}
+    onclosecard={onremoteclose ? () => onremoteclose(shadow) : undefined}
     onfollow={(text) => onremotenotice?.(shadow, notice, text)}
     onselect={() => onremoteselect?.(shadow)}
   />
@@ -689,6 +696,7 @@
         title={card.title}
         elsewhere={card.id !== ring}
         onack={() => skein.acknowledgeNotice(n)}
+        onclosecard={onclosecard ? () => onclosecard(card) : undefined}
         onfollow={(text) => skein.followUpNotice(n, text)}
         onstir={() => skein.stirNotice(n)}
         onselect={() => onselect(card)}

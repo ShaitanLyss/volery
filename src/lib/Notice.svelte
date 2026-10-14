@@ -120,6 +120,14 @@
     onack();
   }
 
+  /* Closing the card is a gesture of yours that takes this notice away too —
+     said before it goes so the dock does not read it as swapped from under you.
+     The reply is not forgotten: it stays kept as "not sent" if the card goes. */
+  function closeCard() {
+    replies.closing(key);
+    onclosecard?.();
+  }
+
   const words = $derived(noticeWords(notice));
   const tone = $derived(
     notice.askId ? "blocking" : notice.kind === "question" ? "question" : notice.kind,
@@ -161,7 +169,7 @@
         if (onclosecard && isCloseKey(e)) {
           e.preventDefault();
           e.stopPropagation();
-          onclosecard();
+          closeCard();
           return;
         }
         onstir?.();
@@ -183,7 +191,7 @@
     {#if onclosecard}
       <button
         class="btn ack"
-        onclick={onclosecard}
+        onclick={closeCard}
         title="Close the card this is about — asks first if it is working (ctrl+shift+W in the reply box)"
         >close</button
       >

@@ -5030,6 +5030,8 @@
     onremotedefer={(s, sheet) => elsewhere.defer(s, sheet)}
     onremotenotice={(s, n, reply) => elsewhere.answerNotice(s, n, reply)}
     onremoteselect={(s) => focusShadow(s)}
+    onclosecard={(c) => void closeConv(c)}
+    onremoteclose={(s) => closeElsewhere(s)}
     {targets}
     {waiting}
     {clashing}
