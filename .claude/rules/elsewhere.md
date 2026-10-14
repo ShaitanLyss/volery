@@ -2,7 +2,7 @@
 paths:
   - "src/lib/shadow.ts"
   - "src/lib/shadows.svelte.ts"
-  - "src/lib/Yonder.svelte"
+  - "src/lib/cards.svelte.ts"
   - "test/shadow.test.ts"
   - "src-tauri/src/flyway/tail.rs"
   - "src-tauri/src/flyway/act.rs"
@@ -37,38 +37,47 @@ round: **a mark is a guard every caller must remember; a type that cannot be pas
 `Conversation` is wanted is a guard nobody can forget.**
 
 So `Shadow` (`shadows.svelte.ts`) is its own class in its own collection (`Elsewhere.shadows`),
-and it shares exactly one thing with a card: the **face**. `Card.svelte` takes a structural
-`CardFace` both satisfy; every *gesture* still takes a `Conversation`. What a shadow gets on
-the wall is precisely what was built for it:
+and it shares three things with a card, each a shape rather than the class: the **face**
+(`Card.svelte` takes a structural `CardFace` both satisfy), the **readable** (`Transcript.svelte`
+takes `Readable`), and the **handle** a gesture holds (`CardHandle`, `cards.svelte.ts` — see *One
+card handle* at the end). Nothing that wants a `Conversation` can be handed any of the three, and
+that is the guard; `Skein.convs`, rousing, the reap pass and persistence never see a handle. What
+a shadow gets on the wall:
 
 - **Drawn**, by `layout()` itself (`standElsewhere`), in the wall's **left** margin —
   territories flow rightward from the origin, so the left edge is the one that stays put — as
   **a section per project under each wall's name**. See *Sectioned by project* below. Dotted
   border where a territory's is dashed.
 - **Focused**, on the same `focusedId` a card uses, so focusing one lets go of the other.
-  `focusedShadow` is a separate derived of a separate type.
-- **Spoken to**, from the dock (`App.sendElsewhere`) — text only. A `!` line, pictures and
-  this wall's own commands are refused with a flash, draft kept, and the dock says so up
-  front. **The palette is the trap here**: it still opens over a `/` offering this wall's
-  commands, and its line sent raw put `/gear planning` in front of the far agent as a prompt
-  about the word "planning" and `/btw …` into the conversation as a real turn (found in
-  review). So a half-typed name completes as it would here, a whole one that is Volery's is
-  refused, and one that is the CLI's goes — the far wall carries it out as if typed there.
+  `App.card` is the focused card's handle whichever wall it is on; `App.focused` is the same card
+  when it is this wall's, for what only a card here can be — picked into a gathering, the
+  directory of a `!` line.
+- **Spoken to**, from the dock, through the same `send` a card here takes — words only. What
+  cannot travel is the handle's to say: a picture or a quiet wall is refused by
+  `CardHandle.carries` before the draft is cleared, a `!` line has no card here to run in, and
+  Volery's own commands are refused with the reason unless they are a verb (`/clear`,
+  `/account`), which is asked of the far wall as the right-click would. **The palette is the
+  trap here**: it still opens over a `/` offering this wall's commands, and its line sent raw put
+  `/gear planning` in front of the far agent as a prompt about the word "planning" and `/btw …`
+  into the conversation as a real turn (found in review). So a half-typed name completes as it
+  would here, a whole one that is Volery's is run or refused, and one that is the CLI's goes —
+  the far wall carries it out as if typed there.
 - **Reached by keyboard**, `<space> e e`, which steps through them. Deliberately not a third
   arm of the Tab cycle: both arms walk `canvas.order()`, whose cards are handed to the
   selection and the waiting cycle.
-- **Stuck to the glass**, from its own right-click menu or `<space> c g` on the focused one,
-  and dragged about there by its own gesture. Its spot is session-only — see *On the glass*
-  below, which is the one gesture a shadow shares with a card and the argument for why it
-  needed no row.
+- **Stuck to the glass**, from its right-click menu or `<space> c g` on the focused one, and
+  dragged about there by its own gesture. See *On the glass* below for why its spot needed no
+  row.
+- **Every verb its wall announced**, from the same right-click, chords and dock a card here has
+  — see *One card handle*.
 
-And nothing else. The node carries `data-shadow`, never `data-conv`, so `nodeOf` reads a press
-on one as bare ground — no pick, no carry on the wall, no pin (which would write a placement
-row keyed on an id this store has never seen), no card menu: its right-click is a menu of its
-own (`menu.ts`'s `shadow` kind), the glass and the close and nothing else (for now — `865e555f` is about changing that), since everything a
-card's menu offers besides reaches for a process or a session on the other machine. Before it
-had one, a right-click on a shadow fell through to the *ground's* menu and offered to open a
-project underneath it. Its one control is a ✕ (and `<space>cc` on the focused one) that
+The node carries `data-shadow`, never `data-conv`, so `nodeOf` reads a press on one as bare
+ground — no pick, no carry on the wall, no pin (which would write a placement row keyed on an id
+this store has never seen). Its right-click is the card's own menu (`menu.ts::cardRows`, built by
+the handle), behind the verbs its wall announced; what is only meaningful on that machine — its
+processes, pinning, a move — is not offered, and a verb it cannot be asked by key says why.
+Before it had a menu, a right-click on a shadow fell through to the *ground's* menu and offered
+to open a project underneath it. Its one control is a ✕ (and `<space>cc` on the focused one) that
 **asks its own wall to close it** — a person's close, which that wall allows
 whatever its switch says and whoever opened the card (Lyss: closing only stops work and cannot
 hurt the other machine). It asks first when the digest says working or jobs (`closing.ts`, the
@@ -345,7 +354,7 @@ them from my work laptop" is simply not true while a question can strand a card.
 - **Hidden while its answer is on the way**, given back if the answer is refused (the sheet
   still filled in), and **not answerable at all once its wall is unheard** — the question may
   have been answered there or run out of time, and a question not confirmed as still waiting
-  must not look like one waiting for an answer. `Yonder.svelte` says which.
+  must not look like one waiting for an answer. The panel says which (`handle.ts::panelNotes`).
 
 Demonstrated 2026-10-08 between two walls of one build: a card on lab2 parked on a real
 `ask_user`, the question was on lab's dock within ~3s, "square" clicked there was `taken` in
@@ -431,7 +440,10 @@ after being answered rings again. The shadow's own `open` decides what counts, s
 whose answer is on its way, or whose wall has gone quiet, is not news either.
 `waitedSeconds` is measured from `askedAt`, which is what keeps a question that arrived with a
 wall this one had just met from ringing as fresh. Clicking the row (`peek:goto`) lands on the
-shadow by `focusShadow`, so its question is in the dock and its panel is open.
+shadow by `focusCard`, exactly as a card here is landed on, so its question is in the dock.
+(It used to open the panel as well, which a card here's row never did — one of the small
+differences the handle took out; `<space> e e` still opens it, since stepping to a card over
+there is asking to read it.)
 
 Demonstrated 2026-10-08: a question parked on lab2, lab unfocused and undriven — the peek came
 up reading "one thing wants you · proj-b · on lab2", and a real click on it brought lab to the
@@ -451,10 +463,13 @@ wall's cards say `unknown` — the honesty `faceOf` keeps on the glass, kept in 
 
 A digest is the tier; a conversation is the other kind of thing — hundreds of kilobytes,
 wanted one card at a time, and only while somebody is reading it. So it is **never
-gossiped**. Opening the panel on a shadow (`Yonder.svelte`) asks the owning wall for that
-card's tail (`flyway_tail`), and the panel draws it through the same `Transcript.svelte` a
-local card uses: folded tool calls that open onto their arguments and result, markdown, the
-rails.
+gossiped**. Opening the panel on a shadow asks the owning wall for that card's tail
+(`flyway_tail`, through `CardHandle.history`), and the panel is the same `Transcript.svelte` a
+local card uses, mounted the same way: folded tool calls that open onto their arguments and
+result, markdown, the rails, the find bar. There is no second panel component any more — what
+only a card elsewhere says (where it runs, in the footer beside its model; the notes above the
+column; when to read again) is three optional fields of `Readable` (`elsewhere`, `notes`,
+`historyMark`) the shadow answers and a card here does not.
 
 - **One exchange, answered on the same stream** (`flyway/tail.rs`). Every other request
   between walls is answered by the far wall dialling *back* with a fleet `answer`, which is
@@ -484,12 +499,14 @@ rails.
 - **Not gated by "take work from other walls".** That switch is about *starting* work; a read
   starts nothing, and gating it would be a wall whose cards you can see and not read — the
   argument that already lets an answer to a parked question through.
-- **Refreshed off the snapshot, not a clock.** While the panel is open, `Yonder` re-reads
-  when the card's settled last line, its activity (`doing` — the only field a run of tool
-  calls with nothing said between them moves), its resting moment or `working` changes, and
-  when its wall is heard again — a `$derived` string, so a snapshot that moved *another* card
-  reads nothing, and a read refused while the wall was quiet is not the last word (found in
-  review: without `unheard` in the string, an idle card's panel stayed on the error for good).
+- **Refreshed off the snapshot, not a clock.** While the panel is open, `Transcript`'s history
+  effect re-reads whenever `Shadow.historyMark` changes — when the card's settled last line, its
+  activity (`doing` — the only field a run of tool calls with nothing said between them moves),
+  its resting moment or `working` changes, and when its wall is heard again. A `$derived` string,
+  **not a getter**: `digest` is replaced on every snapshot, and a getter would hand the effect
+  that signal, so a snapshot that moved *another* card would pull this one's conversation over
+  the link again. A read refused while the wall was quiet is not the last word (found in review:
+  without `unheard` in the string, an idle card's panel stayed on the error for good).
   One read in flight and one queued behind it (`Shadow.readTail`). Only a first read says
   `loading`; a refresh that fails keeps what was read, since it is still what was said, and
   puts the reason in `tailWhy`.
@@ -977,9 +994,10 @@ hold the rest.
 
 Lyss, 2026-10-12: *"shadow vs local stop drifting and naturally offers the same features without
 crazy amount of code duplication and special casing … only pieces of code that need to know that
-some code is remote should deal with it."* Agreed as **option B** below. Built so far: the verb
-table and the menu (step 1), and the `act` frame with every verb the menu offers a shadow (steps 2
-and 3) — see *What was built* at the end. The dock, the keyboard and `Yonder` (step 4) are not.
+some code is remote should deal with it."* Agreed as **option B** below, and built in four steps:
+the verb table and the menu (1), the `act` frame with every verb the menu offers a shadow (2, 3),
+and the dock, the keyboard and the panel onto the handle (4) — see the two *What was built*
+sections at the end.
 
 **The drift has one cause.** A shadow is its own type for the right reason (above: a `Conversation`
 reaches rousing, reaping and `#persistConv`), but every *gesture* then took a `Conversation`, so
@@ -1000,8 +1018,8 @@ interface CardHandle {
 
 `LocalCard` wraps a `Conversation` and calls `Skein`; `RemoteCard` wraps a `Shadow` and sends one
 `act` frame. `Skein.convs`, rousing, the reap pass and persistence never see a handle. The menu,
-the dock's send, the keyboard chords and `Yonder`'s header are built from `handle.can`, so a verb
-added once appears on both kinds, and a verb a kind cannot do says why instead of vanishing.
+the dock's send, the keyboard chords and the panel are built from `handle.can`, so a verb added
+once appears on both kinds, and a verb a kind cannot do says why instead of vanishing.
 
 **What it must not do: touch the hot paths.** Rendering stays on `CardFace` and `Conversation`'s
 own event fold; a handle is made once per card, `LocalCard`'s verbs are one-line delegates, and no
@@ -1015,7 +1033,7 @@ worse"*; the constraint is that nothing a local card does per event or per frame
 | verb | remote means | cost class |
 |---|---|---|
 | send, answer, close | exist today (`prompt`, `close_by_person`) | starts work / person's |
-| model, effort | **already work**: `/model` and `/effort` are the CLI's, and a prompt starting with one goes through `sendElsewhere` and is carried out as if typed there | starts work |
+| model, effort | **already work**: `/model` and `/effort` are the CLI's, and a prompt starting with one goes through the same `send` and is carried out as if typed there | starts work |
 | wake | the owner's `Skein.wake`; today implicit in `send` | starts work |
 | clear | owner's `Skein.clear` | starts work, destructive-ish |
 | aside, bypass, account, regroup | owner's setter | cosmetic / money (account, bypass spend) |
@@ -1036,7 +1054,7 @@ same stream (`tail.rs`'s shape), the owner's front end running it against its ow
   from other walls" switch like a prompt, refused to a quiet wall **at once and never queued** — a
   card runs `--dangerously-skip-permissions`, and a lid lifting hours later must not deliver
   something you have changed your mind about.
-- *a person's* (close): passes whatever the switch says, as today.
+- *a person's* (close, stop): passes whatever the switch says, as today.
 - *cosmetic and reads* (aside, regroup, copy-*): not gated by the switch, still refused when quiet.
 - **Agents never reach `act`.** It is a person's gesture from the dock/menu, as `deliver_here`
   already refuses a notice answer from an agent. `walls`/`send` stay the agents' road.
@@ -1122,6 +1140,92 @@ lab failed identically ("could not reach the clipboard"); `clear` and `account` 
 no turn and the lab no accounts), so those rest on the unit tests. **Both walls need the build**: an older owner announces no `act:` words, so its shadows'
 menus are the glass and the close, as before.
 
-**Not yet:** the dock, the keyboard chords and `Yonder`'s header still have their
-`focusedShadow` branches (step 4); `processes` stays local; `regroup`, `hand` and `pin` are
-`local` until a remote card has a row here.
+### What was built: the dock, the keyboard and the panel (step 4)
+
+**`cards.svelte.ts` is the handle**, and the rest of the front end holds one. `CardHandle` is the
+brief's interface grown by what the surfaces turned out to ask: `can`/`do`, `face`/`readable`,
+`remote`, the project line a panel heads it with (`where`), whether its questions run scripts or
+take a touch (`scripts`, `stirs`), what the dock says beside it (`hints`), its right-click fields
+(`menu()`), `carries(turn)`/`say` for a prompt, `stir`, `history`, `look`, and its questions and
+notices with the gestures that answer them. `LocalCard` is one-line delegates to `Skein`;
+`RemoteCard` sends one `act` (or the prompt wire, or `close_by_person`). `Cards` makes one handle
+per card and keeps it (a `WeakMap` over the `Conversation`/`Shadow`), so a `$derived` holding a
+handle hands back the same object and `queue.ts::steady` sees an item unchanged. The window's own
+state — the close plate, the glass, the clipboard, this wall's furniture for a menu — is lent in as
+`Hands`, so a handle carries nothing that is a card's beyond what it wraps.
+
+**Measured as branches removed**, which was the brief's test: lines in `App.svelte` and
+`Dock.svelte` that name the remote kind (`focusedShadow`, `remote`, `onremote*`, `far-ask`,
+`far-notice`, `focusShadow`, `closeElsewhere`, `sendElsewhere`, `askShadow`, `unfinishedAway`,
+the `shadow` menu kind…) went from **86 to 10**, and `focusedShadow` from 11 to none. What is left
+asks *where* on purpose: the `[data-shadow]` selector a right-click reads, a section (`<space> e
+n`, which is about elsewhere), the plate and the placeholder naming the wall, one command refusal
+naming it, and whether a far queue has been read. `Yonder.svelte` is gone.
+
+- **The menu is one branch.** `[data-conv]` and `[data-shadow]` both reach `cards.find`, the
+  target is `handle.menu()` and every row is dispatched as `rowVerb(id)` → `handle.do`. `menu.ts`
+  lost its `shadow` kind: a card elsewhere is `kind: "card"` with `host` and `verbs`.
+  `test/handle.test.ts` holds that every row `cardRows` can draw is a verb the handle dispatches.
+- **The dock has one card** (`card`, plus `cards` for the queue) where it had `focused`,
+  `remote`, `shadows` and six `onremote*` callbacks. The queue is **two kinds, not four** — an
+  `ask` and a `notice`, each carrying its card's handle (`of`), with `far` the item's flag for
+  `queueOrder` — so the far snippets went and `test/queue.test.ts` holds one branch per kind and no
+  `far-` kind. A far confirmation (`b717f78`) is one more sheet on the shadow and needed nothing
+  here. The line above the field is `handle.hints` (`dockHints`, pure and tested), the stop button
+  is `do("stop")` for either kind, and the `!` bar says *where* when the card is not here.
+- **One send.** `send` → `runCommand`/`sendText`, with `reach` (the gathering, else the card in
+  the ring wherever it is) in place of `targets` where a lone card elsewhere counts. A turn is
+  asked `carries` *before* the draft is cleared. `/clear` and `/account` are verbs and reach a far
+  card through its handle; Volery's other commands refuse one with the reason, draft kept.
+- **Stopping a turn crosses** — the brief's one missing verb that the dock offers. `stop` is a
+  `person` cost (it only ends work, as a close does, so it passes the far wall's switch) and the
+  first person's verb to ride `act` (`act.rs`, `Cost::Person`); the owner stops it with the card's
+  own `Skein.stop` and notes who asked, and a card that finished first is `taken`. Escape stops a
+  far card's turn only where its wall can be asked, and otherwise falls through to letting go —
+  Escape must not become a key that says no for ever; the dock's button is where the reason is
+  said.
+- **The keyboard reaches everything the menu does.** `<space> c` and a letter is
+  `verbFocused(verb)` → `card.do`, for either kind; `c p` is processes, and `c m` opens the card's
+  own right-click at the card with the first row under the keyboard — `ContextMenu` now walks
+  with j/k or the arrows, → and ← into and out of a family — which is how the verbs that are a
+  pick from a list (account, grouping, maker, machine) are reached without the mouse.
+- **The panel is `Transcript` for both.** What only a card elsewhere had in `Yonder` is three
+  optional `Readable` fields the shadow answers: `elsewhere` (drawn in the footer, *on lab*,
+  beside the model the item said was missing — the model itself was put on the digest by
+  `206c5a5`), `notes` (`handle.ts::panelNotes`, Yonder's conditions as a pure tested function) and
+  `historyMark` (when to pull the tail again). Ctrl+F finds in a far card's conversation now,
+  which it never did. The header Yonder drew — title, status — is the card face's, and a card
+  here's panel never had one.
+- **One close plate.** `do("close")` asks first on either kind (a timeline in flight or work in
+  hand here; the digest's working or jobs there) through `Hands.confirmClose`, and the plate's yes
+  is `do("close", { sure: true })`. It now holds the whole keyboard whichever kind it is about,
+  where only the far plate did before.
+- **Small differences that went with it**, each the local behaviour winning: the peek and "more
+  waiting on you" land on a far card with `focusCard` (they used to force its panel open; `<space>
+  e e` still does), and landing on a card from the peek reveals it, as every other landing does.
+- **And one that came back.** The hold rule (`f96136e`) dropped the dock's `scopeFiles` call, so
+  a path in a question opened against nothing; the dock scopes it to the asking card's directory
+  again (none for a card elsewhere, whose pictures arrive resolved).
+
+**Still `local`:** `processes`, `regroup`, `hand` and `pin` until a remote card has a row here,
+and Volery's own `/rename`, `/btw`, `/gear`/`/plan` on a far card, which say so.
+
+Demonstrated 2026-10-14 between two frozen labs of one build (`acta`, `actb --peer acta`, the
+binary HEAD plus this `act.rs`), driven by the control surface. A card opened on actb drew on
+acta, and its right-click there offered `copy-resume, copy-cwd, aside, glass, close` where the
+same card's on actb offered those plus `regroup` and `processes` — one row function, two verb
+sets. With the shadow focused, acta's panel was `Transcript` (the notes above the column, `on
+lab-actb…` in the footer beside `opus[1m] · xhigh`), the dock read *on lab-actb — words only,
+sent there*, and Ctrl+F opened the find field in the far conversation. Put on haiku, the card
+on actb was given a forty-five-second `ping`; acta drew it working, and acta's dock **stop**
+ended it within a second — the owner's column reads *stopped from lab-acta*, the call is cut
+off, and the shadow says *stopped · 7s*. `<space> c m` opened the card's menu with
+`copy-resume` under the keyboard; j, j, k, ↑, ↑ walked `copy-cwd`, `aside`, `copy-cwd`,
+`copy-resume` and wrapped to `close` (read off the snapshot's `dom.focusedMenu`, since `:focus`
+matches nothing in a window that is not in front); taking `aside` from it set the card aside on
+actb. In the dock, `/rename alpha` was refused with the draft kept (*reaches this wall's cards —
+not yet one on lab-actb*), and `/clear` went to actb as the verb and came back refused by its
+switch (*not taking work from other walls*). **Not shown:** a wall too old to announce
+`act:stop` (the unit tests hold the refusal), Enter on a menu row (a synthetic key does not
+press a button; the click it stands for was), and a far question or notice in the dock, whose
+drawing is the queue test's and was not changed beyond the handle it carries.

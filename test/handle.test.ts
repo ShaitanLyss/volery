@@ -1,7 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACTS, COST, VERBS, actFor, actRefusal, refusal, verbsFor, type Remote } from "../src/lib/handle";
+import {
+  ACTS,
+  COST,
+  VERBS,
+  actFor,
+  actRefusal,
+  canDo,
+  dockHints,
+  panelNotes,
+  refusal,
+  rowVerb,
+  verbsFor,
+  type Remote,
+} from "../src/lib/handle";
 import { menuFor } from "../src/lib/menu";
 
 const lab = (over: Partial<Remote> = {}): Remote => ({
@@ -68,13 +81,13 @@ describe("which verbs a card can be asked", () => {
 
 describe("the menu a shadow gets is the card's, filtered", () => {
   test("unannounced: glass and close, as before", () => {
-    expect(ids({ kind: "shadow", host: "lab", verbs: verbsFor(lab()) })).toEqual(["glass", "close"]);
+    expect(ids({ kind: "card", host: "lab", verbs: verbsFor(lab()) })).toEqual(["glass", "close"]);
   });
 
   test("announced verbs reach the same rows a local card has", () => {
     const verbs = verbsFor(lab({ acts: new Set(["aside", "bypass", "account", "clear", "wake"]) }));
     const got = ids({
-      kind: "shadow",
+      kind: "card",
       host: "lab",
       verbs,
       dormant: true,
@@ -109,12 +122,36 @@ describe("the verbs that cross as an act", () => {
 
   test("a setting crosses as the state wanted, never as a toggle", () => {
     const face = { aside: true, bypassCaps: false, working: true };
-    expect(actFor("aside", face)).toEqual({ verb: "aside", args: { on: false } });
-    expect(actFor("bypass", face)).toEqual({ verb: "bypass", args: { on: true } });
-    expect(actFor("account:work", face)).toEqual({ verb: "account", args: { account: "work", sawWorking: true } });
-    expect(actFor("clear", face)).toEqual({ verb: "clear", args: { sawWorking: true } });
-    expect(actFor("copy-cwd", face)).toEqual({ verb: "copy-cwd", args: {} });
-    for (const id of ["glass", "close", "processes", "unpin", "move:lab"]) expect(actFor(id, face)).toBeNull();
+    const asked = (id: string) => {
+      const r = rowVerb(id)!;
+      return actFor(r.verb, r.args, face);
+    };
+    expect(asked("aside")).toEqual({ verb: "aside", args: { on: false } });
+    expect(asked("bypass")).toEqual({ verb: "bypass", args: { on: true } });
+    expect(asked("account:work")).toEqual({ verb: "account", args: { account: "work", sawWorking: true } });
+    expect(asked("clear")).toEqual({ verb: "clear", args: { sawWorking: true } });
+    expect(asked("copy-cwd")).toEqual({ verb: "copy-cwd", args: {} });
+    expect(asked("stop")).toEqual({ verb: "stop", args: {} });
+    for (const id of ["glass", "close", "processes", "unpin", "move:lab"]) expect(asked(id)).toBeNull();
+  });
+
+  /* A key that says which way it wants the setting is believed over the face,
+     which may be a snapshot old. */
+  test("a toggle the gesture states is sent as stated", () => {
+    const face = { aside: true, bypassCaps: false, working: false };
+    expect(actFor("aside", { on: true }, face)).toEqual({ verb: "aside", args: { on: true } });
+  });
+
+  /* Stopping a turn ends work and starts none: a person's, like the close, so
+     it passes the far wall's switch — but it crosses as an act, where the close
+     has its own road. */
+  test("a stop is a person's and crosses as an act; the close does not", () => {
+    expect(COST.stop).toBe("person");
+    expect(ACTS).toContain("stop");
+    expect(ACTS).not.toContain("close");
+    expect(verbsFor(lab({ acts: new Set(["stop"]) }))!.has("stop")).toBe(true);
+    expect(verbsFor(lab())!.has("stop")).toBe(false);
+    expect(refusal(lab(), "stop")).toBe("lab needs updating to do that from here");
   });
 
   /* What the owner checks again at the moment of acting. */
@@ -132,7 +169,7 @@ describe("the verbs that cross as an act", () => {
 
   test("the copy rows on a remote card say whose machine the answer is from", () => {
     const verbs = verbsFor(lab({ acts: new Set(["copy-resume", "copy-cwd"]) }));
-    const rows = menuFor({ kind: "shadow", host: "lab", verbs }).filter((i) => i.kind === "item");
+    const rows = menuFor({ kind: "card", host: "lab", verbs }).filter((i) => i.kind === "item");
     const label = (id: string) => rows.find((i) => i.kind === "item" && i.id === id);
     expect(label("copy-resume")).toMatchObject({ label: "copy resume command on lab" });
     expect(label("copy-cwd")).toMatchObject({ label: "copy working directory on lab" });
@@ -147,5 +184,134 @@ describe("a move to another account ends the process, as a clear does", () => {
       "started a turn",
     );
     expect(actRefusal("account", { account: "w", sawWorking: true }, { working: true }, ["w"], "lab")).toBeNull();
+  });
+});
+
+describe("one row vocabulary for the menu and the keys", () => {
+  test("a row names its verb and the verb's own arguments", () => {
+    expect(rowVerb("hand:deep")).toEqual({ verb: "hand", args: { preset: "deep" } });
+    expect(rowVerb("regroup:t1")).toEqual({ verb: "regroup", args: { territory: "t1" } });
+    expect(rowVerb("move:lab")).toEqual({ verb: "move", args: { host: "lab" } });
+    expect(rowVerb("account:work")).toEqual({ verb: "account", args: { account: "work" } });
+    expect(rowVerb("unpin")).toEqual({ verb: "pin", args: { on: false } });
+    expect(rowVerb("close")).toEqual({ verb: "close", args: {} });
+    expect(rowVerb("set:clock")).toBeNull();
+  });
+
+  /* Every row the card's menu can draw is one the handle can dispatch, so a
+     row added to `cardRows` without a verb behind it fails here rather than
+     doing nothing when it is clicked. */
+  test("every card row is a verb", () => {
+    const everything = menuFor({
+      kind: "card",
+      dormant: true,
+      pinned: true,
+      spoken: true,
+      accounts: true,
+      accountPicks: [
+        { id: "a", label: "a", on: true },
+        { id: "b", label: "b", on: false },
+      ],
+      plan: true,
+      presets: [{ id: "deep", label: "deep", note: "" }],
+      groupings: [{ id: "t", name: "t" }],
+      walls: ["lab"],
+    });
+    const leaves = everything.flatMap((i) =>
+      i.kind === "item" ? [i.id] : i.kind === "more" ? i.items.flatMap((x) => (x.kind === "item" ? [x.id] : [])) : [],
+    );
+    expect(leaves.length).toBeGreaterThan(10);
+    for (const id of leaves) expect(rowVerb(id)).not.toBeNull();
+  });
+});
+
+describe("whether a verb has anything to act on", () => {
+  const face = { dormant: false, working: false, spoken: true };
+  test("the face decides, the same for a card here and one elsewhere", () => {
+    expect(canDo(null, "wake", face)).toEqual({ no: "it is not dormant" });
+    expect(canDo(null, "stop", face)).toEqual({ no: "it is not working" });
+    expect(canDo(null, "stop", { ...face, working: true })).toBe("yes");
+    expect(canDo(null, "clear", { ...face, spoken: false })).toEqual({ no: "nothing to clear yet" });
+    expect(canDo(null, "clear", { ...face, spoken: false, working: true })).toBe("yes");
+    expect(canDo(lab({ acts: new Set(["stop"]) }), "stop", { ...face, working: true })).toBe("yes");
+  });
+
+  /* Where the card stands is the reason that explains the rest, so it is
+     asked first: a quiet wall's card is "not heard from", not "not working". */
+  test("a reason about the wall comes before one about the card", () => {
+    expect(canDo(lab({ unheard: true, acts: new Set(VERBS) }), "stop", face)).toEqual({
+      no: "lab has not been heard from",
+    });
+    expect(canDo(lab(), "processes", face)).toEqual({ no: "that is on lab" });
+  });
+});
+
+describe("what the dock says beside a card", () => {
+  test("a card here: what sending will do to it", () => {
+    expect(dockHints({ dormant: true, aside: true, interrupted: true }, null).map((h) => h.text)).toEqual([
+      "dormant — wakes when you type",
+      "set aside — sending picks it back up",
+      "last turn was interrupted",
+    ]);
+    expect(dockHints({ dormant: false, aside: false }, null)).toEqual([]);
+  });
+
+  /* Where the words go comes first, and a dormant card over there wakes when
+     the words arrive — no touch travels to give it a head start. */
+  test("a card elsewhere: where the words go, then the same", () => {
+    expect(dockHints({ dormant: true, aside: true }, lab())).toEqual([
+      { text: "on lab — words only, sent there" },
+      { text: "dormant — wakes when your words arrive" },
+      { text: "set aside — sending picks it back up" },
+    ]);
+    const quiet = dockHints({ dormant: true, aside: false }, lab({ unheard: true }));
+    expect(quiet).toEqual([{ text: "on lab, not heard from — a prompt would be refused", tone: "warn" }]);
+  });
+});
+
+describe("what a card elsewhere's panel says above its conversation", () => {
+  const base = {
+    host: "lab",
+    unheard: false,
+    tailState: "ready",
+    tailWhy: null,
+    closing: null,
+    acting: null,
+    open: 0,
+    sheets: 0,
+  };
+  test("always how far back it goes", () => {
+    const n = panelNotes(base);
+    expect(n).toHaveLength(1);
+    expect(n[0]!.text).toContain("older rounds stay there");
+  });
+
+  test("a failed read, a close, a refused act and a question each say so, in their tone", () => {
+    const n = panelNotes({
+      ...base,
+      tailState: "error",
+      tailWhy: "it timed out",
+      closing: { state: "refused", why: "not now" },
+      acting: { verb: "copy-cwd", state: "refused", why: "gone" },
+      open: 2,
+    });
+    expect(n.slice(1).map((x) => x.text)).toEqual([
+      "could not read its conversation — it timed out",
+      "lab did not close it — not now",
+      "lab did not copy cwd — gone",
+      "parked on 2 questions for you — answer them in the dock, and it goes back to lab",
+    ]);
+    expect(n.map((x) => x.tone)).toEqual([undefined, undefined, "warn", "warn", "ask"]);
+  });
+
+  /* A taken act is not said: the next snapshot shows what it did. */
+  test("an act its wall took says nothing; one in flight says it is asking", () => {
+    expect(panelNotes({ ...base, acting: { verb: "aside", state: "taken" } })).toHaveLength(1);
+    expect(panelNotes({ ...base, acting: { verb: "aside", state: "asked" } })[1]!.text).toBe("asking lab to aside…");
+  });
+
+  test("a question left when its wall went quiet is not offered as one still waiting", () => {
+    const n = panelNotes({ ...base, unheard: true, sheets: 1 });
+    expect(n[1]!.text).toContain("cannot be answered from here until lab is heard again");
   });
 });

@@ -69,7 +69,7 @@ import {
 } from "./shadow";
 import type { Spot } from "./glass";
 import type { Effort } from "./commands";
-import { actRefusal, type Remote, type Verb } from "./handle";
+import { actRefusal, panelNotes, type Remote, type Said, type Verb } from "./handle";
 import { usable } from "./accounts";
 import { waterfall } from "./waterfall.svelte";
 import { kinAcross, type Asked } from "./lineage";
@@ -408,6 +408,38 @@ export class Shadow {
   readonly planDoc = null;
   get elsewhere() {
     return { host: this.host, unheard: this.face.unheard };
+  }
+  /** What the panel keys its read of the conversation on: it reads when it
+   *  opens and again whenever this changes. The card's own wall saying it has
+   *  moved on — a new settled line, a new activity (which is what a run of tool
+   *  calls with nothing said between them changes), a turn opening or closing —
+   *  and its wall being heard again, so a read refused while it was quiet is
+   *  not the last word. Folded off the snapshot and the roster that already
+   *  arrive, never a timer.
+   *
+   *  A `$derived` and not a getter, and that is the whole of it: a reader of a
+   *  derived is woken only when its *value* changes, where a getter hands the
+   *  reader every signal under it — `digest` is replaced on every snapshot, so
+   *  a getter would have the panel pull the conversation over the link again
+   *  each time its wall said anything about any card. */
+  historyMark = $derived(this.#historyMark());
+  #historyMark(): string {
+    const d = this.digest;
+    return [this.id, d.said, d.doing, d.restingSince, this.working, this.face.unheard].join("\u0000");
+  }
+  /** What its panel says above the conversation — what this wall knows that
+   *  the conversation cannot say for itself (`handle.ts::panelNotes`). */
+  get notes(): Said[] {
+    return panelNotes({
+      host: this.host,
+      unheard: this.face.unheard,
+      tailState: this.tailState,
+      tailWhy: this.tailWhy,
+      closing: this.closing,
+      acting: this.acting,
+      open: this.open.length,
+      sheets: this.sheets.length,
+    });
   }
   /** What `handle.ts` needs to say which verbs this card can be asked: the
    *  `act:<verb>` words its wall's roster row carries, and whether it takes a
@@ -1348,6 +1380,14 @@ export class Elsewhere {
             ? answer("taken")
             : answer("refused", `${me} could not put it on ${to} — ${this.#skein.fault || "it refused"}`);
         }
+        /* A turn ended, as Escape ends one here. Not working any more is
+           what was asked, so a card that finished first is taken. */
+        case "stop":
+          if (conv.working) {
+            conv.note(`stopped from ${p.host}`);
+            await this.#skein.stop(conv);
+          }
+          return answer("taken");
         case "wake": {
           if (!conv.dormant) return answer("taken");
           const woke = await this.#skein.wake(conv);

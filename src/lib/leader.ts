@@ -48,8 +48,19 @@ export const LAPSE_MS = 1000;
 export type ShelfId = ToyId | PuzzleId;
 
 /** What a `c` chord does to the focused card. The ids are `handle.ts` verbs, so
- *  the chord, the right-click and a card on another wall are one vocabulary. */
-export type CardChord = "close" | "glass" | "aside" | "bypass" | "wake" | "clear" | "copy-resume" | "copy-cwd";
+ *  the chord, the right-click and a card on another wall are one vocabulary —
+ *  and `menu` is the right-click itself, for the verbs that are a pick. */
+export type CardChord =
+  | "close"
+  | "glass"
+  | "aside"
+  | "bypass"
+  | "wake"
+  | "clear"
+  | "copy-resume"
+  | "copy-cwd"
+  | "processes"
+  | "menu";
 
 /** What a `d` chord does in the dock's queue: step to the next thing waiting,
  *  or deal with a reply whose item went before it was sent (`Dock.svelte`). */
@@ -212,15 +223,22 @@ export const CHORDS: readonly Chord[] = [
      the same way. */
   { keys: "cg", label: "this card on the glass / back", verb: { kind: "card", act: "glass" } },
   /* The rest of what the card's right-click offers that needs no choice, on
-     the focused card here or on another wall alike (`App.verbFocused`). The
-     account is a pick from a list and stays in the menu. Each is `c` and then
-     the verb's own letter where that is free. */
+     the focused card here or on another wall alike (`App.verbFocused`, through
+     the card's handle). The account is a pick from a list, reached by `cm`.
+     Each is `c` and then the verb's own letter where that is free. */
   { keys: "ca", label: "set it aside / pick it back up", verb: { kind: "card", act: "aside" } },
   { keys: "cb", label: "ignore the account caps / respect them", verb: { kind: "card", act: "bypass" } },
   { keys: "cw", label: "wake it", verb: { kind: "card", act: "wake" } },
   { keys: "cx", label: "clear it — start fresh", verb: { kind: "card", act: "clear" } },
   { keys: "cy", label: "copy its resume command", verb: { kind: "card", act: "copy-resume" } },
   { keys: "cd", label: "copy its working directory", verb: { kind: "card", act: "copy-cwd" } },
+  { keys: "cp", label: "its processes", verb: { kind: "card", act: "processes" } },
+  /* `cm`: the card's own right-click, opened at it and walked with the keys
+     (`ContextMenu`'s j/k and arrows). It is how the verbs that are a pick from
+     a list — which account, which grouping, which maker for its plan, which
+     machine — are reached without the mouse, on this wall or another; every
+     row the right-click offers is under the keyboard through it. */
+  { keys: "cm", label: "its menu — everything the right-click offers", verb: { kind: "card", act: "menu" } },
   /* `m` is the machine the wall runs on, rather than anything on the wall or
      the window: whether it is held awake on mains and whether a wall Windows
      took down comes back. Both are toggles nobody can see happen, so the chord

@@ -13,8 +13,11 @@ import {
 import { textUnder, withReply, type Replies } from "../src/lib/replies";
 
 /* Every kind of thing the dock's queue holds, as `Dock.svelte::items` builds
-   them: the key is the one the panel keeps its reply under. A new kind belongs
-   in this list, and the matrix below then covers it without another line. */
+   them — a question or a notice, from a card here or on another wall (`far`):
+   the key is the one the panel keeps its reply under. A new kind belongs in
+   this list, and the matrix below then covers it without another line. The
+   far two are the dock's `ask` and `notice` with `far` set, since a card
+   elsewhere is the same item from a different handle (`cards.svelte.ts`). */
 const KINDS = {
   ask: { tier: 0, far: false, prefix: "ask" },
   notice: { tier: 1, far: false, prefix: "notice" },
@@ -242,12 +245,19 @@ describe("steady", () => {
 describe("the dock draws each kind from exactly one branch", () => {
   const dockSource = readFileSync(join(import.meta.dir, "../src/lib/Dock.svelte"), "utf8");
   const markup = dockSource.slice(dockSource.indexOf("</script>"));
-  for (const kind of kinds) {
+  /* A question and a notice, wherever their card runs: one branch each, and
+     no third and fourth for a card on another wall — those were a branch and a
+     snippet apiece until the card handle, and the drift between them is what
+     it removed. */
+  for (const kind of ["ask", "notice"]) {
     test(kind, () => {
       const branches = markup.split(`shown?.kind === "${kind}"`).length - 1;
       expect(branches).toBe(1);
     });
   }
+  test("and a card elsewhere is no kind of its own", () => {
+    expect(dockSource).not.toMatch(/"far-(ask|notice)"/);
+  });
   test("and nothing re-keys the panel", () => {
     expect(markup).not.toMatch(/\{#key[^}]*(shown|hold|items)/);
   });

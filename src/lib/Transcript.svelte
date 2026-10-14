@@ -887,10 +887,17 @@
 
      Untracked, because the loader's own first act is to read `historyState` to
      see whether it has already run — inside a tracking scope that would make
-     this effect depend on the very field it is about to write. */
+     this effect depend on the very field it is about to write.
+
+     And again whenever the card says there is more to read (`historyMark`),
+     which only a card on another wall has: its conversation is pulled from its
+     own wall rather than read off this disk, so it is pulled again when that
+     wall says it has moved on. A card here reads once, and its own fold does
+     the rest. */
   $effect(() => {
     const c = conv;
     void c.id;
+    void c.historyMark;
     untrack(() => onhistory?.());
   });
 
@@ -1353,6 +1360,18 @@
      here can be sized in step with the reading; only what is *in* the column
      actually uses it today. -->
 <section class="detail" bind:this={panel} style:--read={read}>
+  <!-- What this wall knows about the conversation that the conversation cannot
+       say for itself — only a card on another wall has any: how far back what
+       is drawn goes, a read that failed, an ask of its wall in flight or
+       refused, a question it is parked on. Read off the readable, so the panel
+       is one component for both kinds of card (`handle.ts::panelNotes`). -->
+  {#if conv.notes?.length}
+    <div class="notes">
+      {#each conv.notes as n, i (i)}
+        <p class="note" class:warn={n.tone === "warn"} class:ask={n.tone === "ask"}>{n.text}</p>
+      {/each}
+    </div>
+  {/if}
   <!-- Over the wall rather than in the panel: what is being read keeps its full
        column, and the gaps between the rails stay wall you can pan. -->
   <div class="rails" class:other={rails === "right"}>
@@ -1541,6 +1560,16 @@
       <span>${conv.costUsd.toFixed(3)}</span>
     {/if}
     <span class="grow"></span>
+    <!-- Where the conversation is, for a card on another wall: said once, in
+         the line that says what the card *is*, and nowhere in the column —
+         repeating it beside every line would make the conversation harder to
+         read for nothing new. Muted with its wall. -->
+    {#if conv.elsewhere}
+      <span class="where" class:quiet={conv.elsewhere.unheard} title="this card runs on {conv.elsewhere.host}"
+        >on {conv.elsewhere.host}{conv.elsewhere.unheard ? ", not heard from" : ""}</span
+      >
+      <span class="sep">·</span>
+    {/if}
     {#if conv.model}<span class="model">{conv.model}</span>{/if}
     <!-- Beside the model because it is the other half of the same fact: which
          mind this card is talking to, and how hard it has been asked to think.
@@ -2260,6 +2289,45 @@
   }
   .meta-bar .grow {
     flex: 1 1 auto;
+  }
+  /* A host name is free text and can be long (`lab-actb.queerisfreedom`), and a
+     flex row shrinks every item in proportion, so one long name wrapped "0%
+     context" onto two lines. The name gives way first — a heavier shrink and
+     no floor, ellipsised, its full spelling in the title — but not to nothing:
+     at a weight of a hundred it collapsed to "o…" beside a long model id,
+     which says less than wrapping did. Only this item; a card here's footer is
+     exactly what it was. */
+  .meta-bar .where {
+    flex: 0 4 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .meta-bar .where.quiet {
+    color: var(--paper-mute);
+  }
+  /* What only a card on another wall says above its conversation. Quiet, and
+     coloured only where it is a status — rust for an ask its wall refused,
+     amber for a question it is parked on. */
+  .notes {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    flex: 0 0 auto;
+  }
+  .notes .note {
+    margin: 0;
+    font-family: var(--util);
+    font-size: calc(0.74rem * var(--read, 1));
+    line-height: 1.5;
+    color: var(--paper-note, var(--paper-faint));
+  }
+  .notes .note.warn {
+    color: var(--st-fail);
+  }
+  .notes .note.ask {
+    color: var(--st-ask);
   }
   .meta-bar .sep {
     color: var(--edge);

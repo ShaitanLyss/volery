@@ -137,8 +137,8 @@ notices in place the register is the passive history and the notice is the thing
 
 A notice offers `close` beside acknowledge (ctrl+shift+W in the reply box, `isCloseKey`), for the
 card you have read and are finished with: it was acknowledge, then find the card, then close.
-It is `closeConv`'s own close — `Dock` passes `onclosecard` and `App` hands it `closeConv`, so a
-card that is working or holds a timeline asks first and the notice stays up behind that question.
-On another wall it is `closeElsewhere`. `replies.closing` is said first so the dock does not read
+It is the card's own close — the dock calls `do("close")` on the notice's card handle
+(`cards.svelte.ts`), so a card that is working or holds a timeline asks first and the notice stays
+up behind that question, and a card on another wall is asked of its wall the same way. `replies.closing` is said first so the dock does not read
 the notice leaving as swapped from under you; a half-typed reply is kept as "not sent". Not
 offered in the away pile (`Vigil`), which has no close wired.

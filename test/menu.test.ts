@@ -109,7 +109,7 @@ describe("a menu offers only what the target can actually do", () => {
      card and sticking a clock are called different things is a wall you have
      to learn twice. */
   test("the glass reads the same on everything that can go on it", () => {
-    for (const kind of ["card", "image", "widget", "region", "shadow"] as const) {
+    for (const kind of ["card", "image", "widget", "region"] as const) {
       expect(label(menuFor({ kind }), "glass")).toBe("stick it to the glass");
       expect(label(menuFor({ kind, glass: true }), "glass")).toBe(
         "put it back on the wall",
@@ -117,12 +117,13 @@ describe("a menu offers only what the target can actually do", () => {
     }
   });
 
-  /* A card on another wall gets the glass and its close, and nothing that
-     reaches for a process or a session — those are on the other machine. The
-     close names where it happens. */
+  /* A card on another wall whose wall announced no verbs gets the glass and
+     its close, and nothing that reaches for a process or a session — those
+     are on the other machine. The close names where it happens. */
   test("a card on another wall is offered the glass and its close, and nothing else", () => {
-    expect(ids(menuFor({ kind: "shadow", host: "lab" }))).toEqual(["glass", "close"]);
-    expect(label(menuFor({ kind: "shadow", host: "lab" }), "close")).toBe("close it on lab");
+    const far = { kind: "card", host: "lab", verbs: new Set(["glass", "close"] as const) } as const;
+    expect(ids(menuFor(far))).toEqual(["glass", "close"]);
+    expect(label(menuFor(far), "close")).toBe("close it on lab");
   });
 
   /* Nothing stops and nothing is lost — the wall still holds the card's slot,

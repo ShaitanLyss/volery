@@ -173,6 +173,8 @@ describe("the which-key hint", () => {
       { keys: "cc", label: "close this card" },
       { keys: "cd", label: "copy its working directory" },
       { keys: "cg", label: "this card on the glass / back" },
+      { keys: "cm", label: "its menu — everything the right-click offers" },
+      { keys: "cp", label: "its processes" },
       { keys: "cw", label: "wake it" },
       { keys: "cx", label: "clear it — start fresh" },
       { keys: "cy", label: "copy its resume command" },

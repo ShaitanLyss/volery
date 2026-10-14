@@ -33,6 +33,10 @@
 //!   another wall — *"I am the owner everywhere"* — and gated like a prompt.
 //! - **cosmetic** (aside) and **read** (copy-resume, copy-cwd) start nothing
 //!   and pass the switch, for `tail_here`'s reason.
+//! - **person** (stop) only ever ends work, as a close does — the turn stops,
+//!   the context survives — so it passes the switch the way a person's close
+//!   does (`close_by_person`). The close keeps its own road; a stop is the
+//!   first person's verb to ride this one.
 //! - **Never an agent's.** The road an agent has to another wall's cards is
 //!   `walls`/`send`/`recall`/`close`; nothing an agent can call sends an
 //!   `act`, and an `act` that names a card as its asker is refused anyway —
@@ -63,12 +67,14 @@ pub const PREFIX: &str = "act:";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cost {
     Work,
+    Person,
     Cosmetic,
     Read,
 }
 
 /// Every verb this build will do for a person on another wall.
-pub const VERBS: [(&str, Cost); 7] = [
+pub const VERBS: [(&str, Cost); 8] = [
+    ("stop", Cost::Person),
     ("wake", Cost::Work),
     ("clear", Cost::Work),
     ("account", Cost::Work),

@@ -981,8 +981,8 @@ held, the held item gone, or you moving the ring.
   and its Enter sends the tail to the card in the ring. So the dock notes the swap and holds
   the first Enter once (`guardEnter`); anything you closed yourself (`replies.closing`) is not
   a swap.
-- **`<space>d n`** is "more waiting on you", which now goes through `focusCard`/`focusShadow`
-  like a click, and counts what it can reach: questions queued behind the card's own are a
+- **`<space>d n`** is "more waiting on you", which now goes through `focusCard` (one, for a card
+  here or elsewhere, through its handle) like a click, and counts what it can reach: questions queued behind the card's own are a
   plain count, not a button that would do nothing.
 
 It is an `$effect.pre` so the hold is settled before the template reads what turns on it, and

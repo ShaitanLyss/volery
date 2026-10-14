@@ -1317,6 +1317,12 @@ export class Control {
            needs the class, and then `real.key` to see the scroll actually
            happen. */
         focusedClass: (document.activeElement as HTMLElement | null)?.className?.toString() ?? null,
+        /* Which row of a menu has the keyboard. A row's class is the same on
+           every row, and `:focus` matches nothing while the window is not the
+           one in front — which a driven wall never is — so walking a menu with
+           its keys (`<space> c m`, then j/k) is unreadable without the row's
+           own id. */
+        focusedMenu: (document.activeElement as HTMLElement | null)?.dataset?.menu ?? null,
       },
       errors: [...this.#errors],
     };

@@ -19,7 +19,6 @@ export type MenuKind =
   | "ground"
   | "editable"
   | "prose"
-  | "shadow"
   | "section";
 
 /** One option among several, of which one is in force — a widget's variant. */
@@ -54,12 +53,12 @@ export type MenuTarget = {
      labels, the shape `pinned` and `aside` already have — it is one state with
      two sides and only ever one of them is available. */
   glass?: boolean;
-  /** shadow: the wall the card is on, named in the item that asks it to close
-   *  the card — the close happens there, not here. */
+  /** card: the wall it runs on, when that is not this one — named in the rows
+   *  whose answer is that machine's (its close, its resume command, its
+   *  folder), since they happen there and not here. */
   host?: string;
   /** The verbs this card may be asked, from `handle.ts::verbsFor`. Absent is
-   *  every verb — a card on this wall, which is what its menu always was. A
-   *  shadow's absent means the two it has always had. */
+   *  every verb — a card on this wall, which is what its menu always was. */
   verbs?: ReadonlySet<Verb> | null;
   /* card: drawn on the glass, but only because its whole territory is stuck
      there. The item is left off entirely — "put it back on the wall" would be a
@@ -472,23 +471,16 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
 
 export function menuFor(t: MenuTarget): MenuItem[] {
   switch (t.kind) {
+    /* A card on this wall or on another, from the one function: what differs
+       is which verbs it can be asked (`handle.ts::verbsFor`, through the card's
+       handle). On another wall the glass is this wall's, the close is a
+       person's asked of that wall, and the rest cross as an `act`
+       (`flyway/act.rs`) for the verbs that wall announced; what is only
+       meaningful on that machine (processes, pinning, a move) is not offered.
+       There used to be a `shadow` kind here with a menu of its own, which is
+       how the two drifted. */
     case "card":
       return tidy(cardRows(t).filter(Boolean) as MenuItem[]);
-
-    /* A card on another wall. The glass is this wall's; everything else is
-       asked of the wall the card runs on — the close as a person's, the rest
-       as an `act` (`flyway/act.rs`) for the verbs that wall announced. What is
-       only meaningful on that machine (processes, pinning, a move) is never
-       offered. */
-    case "shadow":
-      /* The same rows, from the same function: what differs is which verbs
-         the wall can be asked, which `handle.ts` decides. With none given, the
-         two a shadow has always had. */
-      return tidy(
-        cardRows({ ...t, verbs: t.verbs ?? new Set<Verb>(["glass", "close"]), spoken: t.spoken }).filter(
-          Boolean,
-        ) as MenuItem[],
-      );
 
     case "image":
       return [

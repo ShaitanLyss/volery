@@ -75,6 +75,19 @@ export type Readable = {
   effort: Effort | undefined;
   gear: Gear;
   jobs: Job[];
+  /* Three that only a card on another wall has, and optional for that reason:
+     a card here has no honest value for any of them, and a required field
+     would make `Conversation` carry three constants to say so. They are read
+     off the readable rather than passed beside it — `CardFace.elsewhere`'s
+     bargain — so no panel can forget to say where the conversation is. */
+  /** The wall it runs on, said in the footer beside its model. */
+  elsewhere?: { host: string; unheard: boolean };
+  /** The panel reads the history when it opens on a card, and again whenever
+   *  this changes. Absent for a card whose history is read once. */
+  historyMark?: string;
+  /** Lines the panel says above the conversation — what this wall knows that
+   *  the conversation cannot say for itself (`handle.ts::panelNotes`). */
+  notes?: readonly { text: string; tone?: "warn" | "ask" }[];
 };
 
 /** How many consecutive calls it takes to be worth folding.

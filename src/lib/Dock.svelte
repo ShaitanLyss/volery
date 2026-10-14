@@ -21,7 +21,7 @@
   import type { Notice as NoticeRow } from "./notice";
   import type { Skein } from "../lib/skein.svelte";
   import type { Conversation, PendingAsk } from "../lib/conversation.svelte";
-  import type { Shadow } from "./shadows.svelte";
+  import type { CardHandle, Cards } from "./cards.svelte";
   import type { Field } from "./field.svelte";
   import type { Bang } from "./bang.svelte";
   import { nextItem, settleHold, shownItem, steady, type Hold, type Waiting } from "./queue";
@@ -41,15 +41,8 @@
     field,
     skein,
     bang,
-    focused,
-    remote = null,
-    shadows = [],
-    onremoteanswer,
-    onremotedefer,
-    onremotenotice,
-    onremoteselect,
-    onclosecard,
-    onremoteclose,
+    card,
+    cards,
     targets,
     waiting,
     clashing,
@@ -65,7 +58,6 @@
     onrun,
     ontake,
     oncycle,
-    onmore,
     onselect,
   }: {
     /** What is being typed and what the typing currently means. */
@@ -73,29 +65,17 @@
     skein: Skein;
     /** The `!` line's session — its runs and its completions. */
     bang: Bang;
-    /** The card in the ring, if there is one. */
-    focused: Conversation | null;
-    /** The card in the ring when it is on another wall — never at the same time
-     *  as `focused`. Its own prop and its own type, so that nothing here that
-     *  acts on a card can be aimed at one by accident; all the dock does with it
-     *  is say where a prompt would go and let one be typed. */
-    remote?: Shadow | null;
-    /** Every card on another wall. Their questions and notices join the queue
-     *  beside this wall's own (`items`), drawn by the same panels, and held by
-     *  the same rule — see `queue.ts`. */
-    shadows?: readonly Shadow[];
-    onremoteanswer?: (shadow: Shadow, sheet: PendingAsk) => void;
-    onremotedefer?: (shadow: Shadow, sheet: PendingAsk) => void | Promise<void>;
-    /** Take a far notice down over there: an empty reply acknowledges,
-     *  anything else is a follow-up sent to the card. */
-    onremotenotice?: (shadow: Shadow, notice: NoticeRow, reply: string) => void | Promise<boolean>;
-    onremoteselect?: (shadow: Shadow) => void;
-    /** Close the card a notice is about, through the card's own close — it
-     *  asks first if the card is working. */
-    onclosecard?: (card: Conversation) => void;
-    onremoteclose?: (shadow: Shadow) => void;
-    /** Everything a send would reach: the gathering, or the focused card, or
-     *  nothing at all. */
+    /** The card in the ring, on this wall or another, as the handle every
+     *  gesture here takes (`cards.svelte.ts`): what the line above the field
+     *  says about it, its stop, and the words typed to it all come through
+     *  it, so the dock has one card and never asks which kind. */
+    card: CardHandle | null;
+    /** Every card on every wall, as handles. Their questions and notices are
+     *  the queue (`items`), drawn by the same panels and held by the same rule
+     *  — see `queue.ts`. */
+    cards: Cards;
+    /** A gathering of this wall's cards, for a broadcast — a selection never
+     *  holds a card on another wall. */
     targets: Conversation[];
     /** Cards that want you, in the order the Tab cycle takes them. */
     waiting: Conversation[];
@@ -141,14 +121,10 @@
     onrun: (cmd: Command, broadcast: boolean) => Promise<void>;
     ontake: (offer: Completion, match: Match) => Promise<void>;
     oncycle: (step: 1 | -1) => void;
-    /** Put the ring on the card — here or elsewhere — of the item "more
-     *  waiting on you" just stepped to, so the transcript beside it is that
-     *  card's. Which item is the dock's question (`queue.ts::nextItem`). */
-    onmore: (card: string) => void;
-    /** Land on a card: the ring, the gathering and the panel, the way clicking
-     *  it does. Asked for by the ask panel when the card being asked is not the
-     *  one selected. */
-    onselect: (conv: Conversation) => void;
+    /** Land on a card, here or elsewhere, the way clicking it does — asked for
+     *  by a panel when the card being asked is not the one in the ring, and by
+     *  "more waiting on you", so the transcript beside the item is its card's. */
+    onselect: (card: CardHandle) => void;
   } = $props();
 
   /* ── what the panel is already on ──────────────────────────────────────
@@ -172,12 +148,16 @@
    *  forward one by one, as the hold moves on to them (`settleHold`'s
    *  same-card rule). */
   type Item =
-    | (Waiting & { kind: "ask"; conv: Conversation; ask: PendingAsk })
-    | (Waiting & { kind: "notice"; conv: Conversation; notice: NoticeRow })
-    | (Waiting & { kind: "far-ask"; shadow: Shadow; ask: PendingAsk })
-    | (Waiting & { kind: "far-notice"; shadow: Shadow; notice: NoticeRow });
+    | (Waiting & { kind: "ask"; of: CardHandle; ask: PendingAsk })
+    | (Waiting & { kind: "notice"; of: CardHandle; notice: NoticeRow });
 
-  /* Keyed as the panels key their replies (`replies.ts`), so "this item is
+  /* Two kinds, not four: a question and a notice, each carrying its card's
+     handle, so one panel answers either wherever the card runs. There were a
+     far-ask and a far-notice beside them, each with a snippet of its own and a
+     callback per gesture threaded in from `App.svelte` — the shape that let a
+     card on another wall drift from one here.
+
+     Keyed as the panels key their replies (`replies.ts`), so "this item is
      still waiting" and "this reply's item is still waiting" are one question.
      A far notice's id already carries its shadow's (`afar.ts::noticeHere`).
 
@@ -189,49 +169,32 @@
   let lastItems = new Map<string, Item>();
   const items = $derived.by((): Item[] => {
     const out: Item[] = [];
-    for (const conv of skein.blocked) {
-      const ask = conv.pendingAsk;
-      if (ask) {
-        out.push({ kind: "ask", key: `ask:${ask.askId}`, card: conv.id, tier: 0, far: false, conv, ask });
-      }
+    /* `far` is the one thing the queue asks about where a card runs: this
+       wall's before another's at the same tier, unless it is the card in the
+       ring (`queueOrder`). */
+    for (const of of cards.asking) {
+      const ask = of.ask;
+      if (ask) out.push({ kind: "ask", key: `ask:${ask.askId}`, card: of.id, tier: 0, far: !of.conv, of, ask });
     }
-    for (const shadow of shadows) {
-      const ask = shadow.open[0];
-      if (ask) {
-        out.push({ kind: "far-ask", key: `ask:${ask.askId}`, card: shadow.id, tier: 0, far: true, shadow, ask });
-      }
-    }
-    for (const notice of skein.noticeQueue) {
-      const conv = skein.convs.find((c) => c.id === notice.conversationId);
-      if (conv) {
-        out.push({ kind: "notice", key: `notice:${notice.id}`, card: conv.id, tier: 1, far: false, conv, notice });
-      }
-    }
-    for (const shadow of shadows) {
-      for (const notice of shadow.notices) {
-        out.push({ kind: "far-notice", key: `notice:${notice.id}`, card: shadow.id, tier: 1, far: true, shadow, notice });
-      }
+    for (const { card: of, notice } of cards.noticing) {
+      out.push({ kind: "notice", key: `notice:${notice.id}`, card: of.id, tier: 1, far: !of.conv, of, notice });
     }
     const kept = steady(lastItems, out);
     lastItems = new Map(kept.map((t) => [t.key, t]));
     return kept;
   });
 
-  /** The card in the ring, here or on another wall — never both. */
-  const ring = $derived(focused?.id ?? remote?.id ?? null);
+  /** The card in the ring, here or on another wall. */
+  const ring = $derived(card?.id ?? null);
 
   /** Is this card — here or elsewhere — still on the wall? */
-  function stands(card: string): boolean {
-    return skein.convs.some((c) => c.id === card) || shadows.some((s) => s.id === card);
+  function stands(id: string): boolean {
+    return cards.stands(id);
   }
 
   function whoOf(t: Item): string {
-    const [project, title] =
-      t.kind === "ask" || t.kind === "notice"
-        ? [t.conv.project, t.conv.title]
-        : [`${t.shadow.project} · on ${t.shadow.host}`, t.shadow.title];
-    const name = nameBesideProject(title);
-    return `${project}${name ? ` · ${name}` : ""}`;
+    const name = nameBesideProject(t.of.face.title);
+    return `${t.of.where}${name ? ` · ${name}` : ""}`;
   }
 
   let hold = $state.raw<Hold | null>(null);
@@ -286,7 +249,7 @@
   function guardSwap(gone: Item) {
     const el = document.activeElement;
     if (!heldEl || !(el instanceof HTMLElement) || !heldEl.contains(el)) return;
-    const kind = gone.kind === "ask" || gone.kind === "far-ask" ? "question" : "notice";
+    const kind = gone.kind === "ask" ? "question" : "notice";
     swapped = `the ${kind} from ${whoOf(gone)} went while you were in it — this is another one, so enter is held once`;
   }
 
@@ -303,11 +266,7 @@
      over three unanswered questions is an instrument that cannot be trusted
      to have counted the one you have not seen. Arrivals are signalled here and
      only here — never by moving what you are on. */
-  const waitingOnYou = $derived(
-    skein.pendingAsks +
-      skein.noticeQueue.length +
-      shadows.reduce((n, s) => n + s.open.length + s.notices.length, 0),
-  );
+  const waitingOnYou = $derived(cards.waitingOnYou);
 
   /** What "more waiting on you" would step to — null when everything else is
    *  queued behind the card's own question, which only answering reaches. */
@@ -320,17 +279,20 @@
     if (!next) return;
     hold = { key: next.key, card: next.card };
     swapped = null;
-    onmore(next.card);
+    const to = cards.find(next.card);
+    if (to) onselect(to);
   }
 
   /* The dock draws whichever card is waiting, which need not be the card in
      the ring — `elsewhere` is that case and it is drawn on the panel. So a
-     path in the question belongs to the asking card's directory, and the root
-     this falls back to otherwise is the focused one: the same file name in two
-     projects would have opened the wrong one, silently. See `scopeFiles`. */
-  const shownCard = $derived(
-    shown?.kind === "ask" || shown?.kind === "notice" ? shown.conv : null,
-  );
+     path in the question belongs to the asking card's directory, and never to
+     the focused one: the same file name in two projects would have opened the
+     wrong one, silently. See `scopeFiles`. A card on another wall has no
+     directory here, so its paths are plain words — its pictures arrive
+     resolved (`flyway/look.rs`). This call went missing with the hold rule
+     (f96136e), which left every path in a question pointing at nothing. */
+  const shownCard = $derived(shown?.of.conv ?? null);
+  scopeFiles(() => (shownCard?.kind === "project" ? shownCard.cwd : null) ?? null);
 
   /* ── a reply whose item went first ─────────────────────────────────────
    *
@@ -349,18 +311,18 @@
    * ages out (`REPLY_KEEP_MS`) — the one case this cannot say anything about. */
   const live = $derived(new Set(items.map((t) => t.key)));
   function ready(r: Reply): boolean {
-    const far = shadows.find((s) => s.id === r.card);
-    if (far) return !far.face.unheard;
+    /* A queue is read once its wall has said what is in it: this one's at
+       launch, another's when it is heard. */
+    const far = cards.find(r.card)?.remote;
+    if (far) return !far.unheard;
     if (isShadowKey(r.card)) return false;
     return skein.loaded && skein.noticesRead;
   }
   const strays = $derived(replies.orphans(live, ready));
   const stray = $derived(strays[0] ?? null);
 
-  function reachable(o: Orphan): { conv: Conversation | null; shadow: Shadow | null } | null {
-    const conv = skein.convs.find((c) => c.id === o.card) ?? null;
-    const shadow = conv ? null : (shadows.find((s) => s.id === o.card) ?? null);
-    return conv || shadow ? { conv, shadow } : null;
+  function reachable(o: Orphan): CardHandle | null {
+    return cards.find(o.card);
   }
 
   /** Into the prompt, at the card it was written to — the ring goes there
@@ -369,8 +331,7 @@
   async function reclaim(o: Orphan) {
     const to = reachable(o);
     if (!o.text || !to) return;
-    if (to.conv) onselect(to.conv);
-    else if (to.shadow) onremoteselect?.(to.shadow);
+    onselect(to);
     await tick();
     field.put(field.text.trim() ? `${field.text.trimEnd()}\n\n${o.text}` : o.text);
     replies.forget(o.item);
@@ -479,7 +440,7 @@
   function edited() {
     caretMoved();
     if (field.banging || !stirsCard(field.text)) return;
-    skein.stir(focused);
+    card?.stir();
   }
 
   /* An image lives by its token, so backspacing over one detaches it — and that
@@ -548,47 +509,6 @@
     field.at = 0;
   });
 </script>
-
-<!-- A question parked on another wall, in the panel a local one uses.
-     Held still (`stirs={false}`): no touch travels to that wall, so its
-     countdown runs on the question's base window, which only a touch over
-     there can lengthen. A question that shows something arrives as words and
-     is redrawn from the call's own arguments once they are pulled over
-     (`flyway/look.rs`), so its designs and files are drawn exactly as a local
-     card's are — scripts included, gated as they are here by what kind of card
-     asked. Answering goes back down the prompt wire into the parked call, and the
-     line in the card's panel says how far it got — the same four readings a
-     prompt to that wall has. -->
-{#snippet elsewhereAsk(shadow: Shadow, sheet: PendingAsk)}
-  <Ask
-    ask={sheet}
-    card={shadow.id}
-    project="{shadow.project} · on {shadow.host}"
-    title={shadow.title}
-    scripts={shadow.digest.kind !== "chat"}
-    stirs={false}
-    elsewhere={shadow.id !== ring}
-    onanswer={() => onremoteanswer?.(shadow, sheet)}
-    ondefer={() => onremotedefer?.(shadow, sheet)}
-    onselect={() => onremoteselect?.(shadow)}
-  />
-{/snippet}
-
-<!-- A notice standing on another wall, in the panel a local one uses. No
-     `onstir`: no touch travels, and a notice holding a turn open over there
-     counts its own window. Taking it down goes back down the prompt wire. -->
-{#snippet elsewhereNotice(shadow: Shadow, notice: NoticeRow)}
-  <Notice
-    {notice}
-    project="{shadow.project} · on {shadow.host}"
-    title={shadow.title}
-    elsewhere={shadow.id !== ring}
-    onack={() => onremotenotice?.(shadow, notice, "")}
-    onclosecard={onremoteclose ? () => onremoteclose(shadow) : undefined}
-    onfollow={(text) => onremotenotice?.(shadow, notice, text)}
-    onselect={() => onremoteselect?.(shadow)}
-  />
-{/snippet}
 
 <footer
   bind:clientHeight={height}
@@ -669,40 +589,45 @@
     onkeydowncapture={guardEnter}
     onpointerdowncapture={() => (swapped = null)}
   >
+    <!-- A question or a notice from a card here or on another wall, in the
+         one panel each has. What differs is the card's, read off its handle:
+         its project line names the wall it is on, a question elsewhere is held
+         still (`stirs`, since no touch travels to lengthen its window), and
+         answering goes back down the prompt wire to the wall it came from. A
+         question that shows something is drawn from the call's own arguments
+         either way (`flyway/look.rs`), scripts gated as here by the card's
+         kind. -->
     {#if shown?.kind === "ask"}
-      {@const target = shown.conv}
+      {@const target = shown.of}
       {@const sheet = shown.ask}
       <Ask
         ask={sheet}
         card={target.id}
-        project={target.project}
-        title={target.title}
-        scripts={target.kind !== "chat"}
+        project={target.where}
+        title={target.face.title}
+        scripts={target.scripts}
+        stirs={target.stirs}
         elsewhere={target.id !== ring}
-        onanswer={() => skein.answerAsk(target)}
-        ondefer={() => skein.deferAsk(target)}
-        onstir={() => skein.stirAsk(target)}
-        onheld={() => skein.holdAsk(target)}
+        onanswer={() => target.answer(sheet)}
+        ondefer={() => target.defer(sheet)}
+        onstir={() => target.stirAsk()}
+        onheld={() => target.holdAsk()}
         onselect={() => onselect(target)}
       />
-    {:else if shown?.kind === "far-ask"}
-      {@render elsewhereAsk(shown.shadow, shown.ask)}
     {:else if shown?.kind === "notice"}
       {@const n = shown.notice}
-      {@const card = shown.conv}
+      {@const target = shown.of}
       <Notice
         notice={n}
-        project={card.project}
-        title={card.title}
-        elsewhere={card.id !== ring}
-        onack={() => skein.acknowledgeNotice(n)}
-        onclosecard={onclosecard ? () => onclosecard(card) : undefined}
-        onfollow={(text) => skein.followUpNotice(n, text)}
-        onstir={() => skein.stirNotice(n)}
-        onselect={() => onselect(card)}
+        project={target.where}
+        title={target.face.title}
+        elsewhere={target.id !== ring}
+        onack={() => target.acknowledge(n, "")}
+        onclosecard={() => void target.do("close")}
+        onfollow={(text) => target.acknowledge(n, text)}
+        onstir={() => target.stirNotice(n)}
+        onselect={() => onselect(target)}
       />
-    {:else if shown?.kind === "far-notice"}
-      {@render elsewhereNotice(shown.shadow, shown.notice)}
     {/if}
   </div>
   {#if shown && next}
@@ -724,40 +649,17 @@
           {nameBesideProject(t.title)}
         </span>
       {/each}
-    {:else if focused}
+    {:else if card}
       <span class="count">To</span>
-      <span class="tgt"><b>{focused.project}</b> {nameBesideProject(focused.title)}</span>
-      <!-- "when you type" and not "on send", which is what this said while the
-           rousing queue woke the whole wall and a dormant card was the unusual
-           one. It is now the ordinary state of most cards, and the true answer
-           moved: `Skein.stir` starts the spawn on the first character, so this
-           line is gone by the time the sentence is. Worth being exact about,
-           because "on send" reads as a wait you are about to be made to do. -->
-      {#if focused.dormant}
-        <span class="hint">dormant — wakes when you type</span>
-      {/if}
-      <!-- Said here as well as on the card, because this is the one place
-           where it is about to stop being true: a prompt picks the card back
-           up, and a card quietly rejoining the waiting cycle is worth one
-           clause of warning rather than a surprise later. -->
-      {#if focused.aside}
-        <span class="hint">set aside — sending picks it back up</span>
-      {/if}
-      {#if focused.interrupted}
-        <span class="hint warn">last turn was interrupted</span>
-      {/if}
-    {:else if remote}
-      <span class="count">To</span>
-      <span class="tgt"><b>{remote.project}</b> {nameBesideProject(remote.title)}</span>
-      <!-- Where the words will go, and the limits of what can: a prompt is
-           carried to the other wall as text, so this wall's commands, a `!`
-           line and pictures stay here. Said up front rather than discovered
-           as a refusal flash. -->
-      {#if remote.face.unheard}
-        <span class="hint warn">on {remote.host}, not heard from — a prompt would be refused</span>
-      {:else}
-        <span class="hint">on {remote.host} — words only, sent there</span>
-      {/if}
+      <span class="tgt"><b>{card.face.project}</b> {nameBesideProject(card.face.title)}</span>
+      <!-- What sending will do to it, said before you find out — dormant, set
+           aside, interrupted, and for a card on another wall where the words go
+           and what can travel there. One list off the handle
+           (`handle.ts::dockHints`, which has the reasons), so the two kinds of
+           card cannot say different things here. -->
+      {#each card.hints as h (h.text)}
+        <span class="hint" class:warn={h.tone === "warn"}>{h.text}</span>
+      {/each}
     {:else}
       <span class="count dim">No card focused</span>
     {/if}
@@ -766,10 +668,13 @@
          broadcast readout, because "stop" beside a list of four is a
          question rather than a verb — the key and the button both aim at
          the focused card alone. -->
-    {#if focused?.working}
-      <button class="stop" onclick={() => skein.stop(focused)}>
+    {#if card?.face.working}
+      <!-- On a card elsewhere too: stopping a turn crosses as an act, and a
+           wall too old to be asked says so when it is pressed rather than the
+           button being missing. -->
+      <button class="stop" onclick={() => void card?.do("stop")}>
         <span class="sq"></span>
-        stop{targets.length > 1 ? ` ${focused.project}` : ""}
+        stop{targets.length > 1 ? ` ${card.face.project}` : ""}
         <span class="kbd">esc</span>
       </button>
     {/if}
@@ -922,7 +827,13 @@
          replaces the dock's usual claim about reach: a run is one directory,
          so the target line's "5 cards" would be a lie here. -->
     <p class="bangbar">
-      <span class="where">{bangCard ? promptPath(bangCard.cwd, "") : "no card"}</span>
+      <span class="where"
+        >{bangCard
+          ? promptPath(bangCard.cwd, "")
+          : card
+            ? `${card.where} — a ! line runs on this machine, in a card that is here`
+            : "no card"}</span
+      >
       {#if bangCard?.bangCmd}
         <span class="going">running {bangCard.bangCmd} · esc stops it</span>
       {:else if bang.asking}
@@ -1010,12 +921,12 @@
           ? "run a command in this card's directory…"
           : targets.length > 1
             ? `Say something to all ${targets.length}…`
-            : focused
-              ? "Say something…"
-              : remote
-                ? `Say something to ${remote.host}…`
+            : card?.remote
+              ? `Say something to ${card.remote.host}…`
+              : card
+                ? "Say something…"
                 : "Open a conversation first"}
-        disabled={targets.length === 0 && !remote}
+        disabled={targets.length === 0 && !card}
         spellcheck={!field.banging}
         rows="1"
       ></textarea>

@@ -122,7 +122,6 @@
     onfocus,
     ondeselect,
     onclose,
-    onclosewall,
     onplan,
     onpin,
     onplace,
@@ -276,10 +275,10 @@
     /** Let go of everything: a click on bare ground. The focus lives in App
      *  beside the panel it opens, so the canvas can only report the gesture. */
     ondeselect?: () => void;
-    onclose: (conv: Conversation) => void;
-    /** Close a card on another wall — asked of its own wall, which takes it off
-     *  and drops it from its next snapshot. */
-    onclosewall?: (shadow: Shadow) => void;
+    /** Close a card by its id, on this wall or another — through the card's
+     *  handle, which asks first where it is doing something, and for a card on
+     *  another wall asks its own wall, which drops it from its next snapshot. */
+    onclose: (id: string) => void;
     /** Open a plan a card has written, in the file viewer. */
     onplan: (conv: Conversation, path: string) => void;
     onpin?: (id: string, x: number, y: number) => void;
@@ -2599,7 +2598,7 @@
         if (e.shiftKey || e.ctrlKey || e.metaKey) return;
         onfocus(n.conv.id);
       }}
-      onclose={onclosewall ? () => onclosewall(n.conv) : undefined}
+      onclose={() => onclose(n.conv.id)}
     />
   </div>
 {/snippet}
@@ -2626,7 +2625,7 @@
       if (e.shiftKey || e.ctrlKey || e.metaKey) return;
       onfocus(n.conv.id);
     }}
-    onclose={() => onclose(n.conv)}
+    onclose={() => onclose(n.conv.id)}
     onplan={(path) => onplan(n.conv, path)}
   />
 {/snippet}

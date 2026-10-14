@@ -27,14 +27,25 @@
    * this needs no timers. The classic submenu bug is a dead zone you have to
    * cross diagonally before the thing closes; with the list flush against the
    * row, moving into it never leaves the pair, and moving onto any other row
-   * closes it because that row says so. */
+   * closes it because that row says so.
+   *
+   * ## The keyboard
+   *
+   * The arrows or `j`/`k` move between rows, Enter takes one (a row is a
+   * button, so that is the browser's own), → opens a family and ← comes back
+   * out of it. A menu opened by a chord — the card's own, `<space> c m` — puts
+   * the first row under the keyboard at once; one opened by the mouse leaves
+   * the focus where it was, so the editable menu's copy and paste still act on
+   * the field you right-clicked, and the first arrow is what takes the keys. */
 
+  import { tick } from "svelte";
   import type { MenuItem } from "./menu";
 
   let {
     x,
     y,
     items,
+    keyed = false,
     onpick,
     onclose,
   }: {
@@ -42,6 +53,8 @@
     x: number;
     y: number;
     items: MenuItem[];
+    /** Opened from the keyboard, so the first row takes the focus. */
+    keyed?: boolean;
     /** `mod` is ctrl (or cmd) held at the moment of the click — a second thing
      *  a row can mean, for the one menu that needs one. Optional, and every
      *  other call site simply takes the id and ignores it. */
@@ -115,15 +128,52 @@
     open = id;
   }
 
-  function keyOn(e: KeyboardEvent, it: MenuItem, row: HTMLElement) {
+  async function keyOn(e: KeyboardEvent, it: MenuItem, row: HTMLElement) {
     if (it.kind !== "more") return;
-    if (e.key === "ArrowRight" || e.key === "Enter" || e.key === " ") {
+    if (e.key === "ArrowRight" || e.key === "l" || e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       reveal(it.id, row);
-    } else if (e.key === "ArrowLeft") {
+      /* Into the list it opened, as → into a family does anywhere. */
+      await tick();
+      rowsOf(subEl)[0]?.focus();
+    } else if (e.key === "ArrowLeft" || e.key === "h") {
       open = null;
     }
   }
+
+  /** The rows of one level, in order — the menu's own, or an open family's. */
+  function rowsOf(list: HTMLElement | undefined): HTMLButtonElement[] {
+    if (!list) return [];
+    return [...list.children].flatMap((c) =>
+      c instanceof HTMLButtonElement ? [c] : c.classList.contains("nest") ? [c.querySelector(":scope > button")!] : [],
+    ).filter((b): b is HTMLButtonElement => !!b);
+  }
+
+  /** Down or up a level, wrapping, from wherever the keyboard is — and from
+   *  nowhere onto the first or last row, which is how a menu opened by the
+   *  mouse is taken over by the keys. */
+  function step(by: 1 | -1) {
+    const at = document.activeElement;
+    const inSub = !!subEl && at instanceof HTMLElement && subEl.contains(at);
+    const rows = rowsOf(inSub ? subEl : el);
+    if (!rows.length) return;
+    const i = rows.indexOf(at as HTMLButtonElement);
+    rows[i < 0 ? (by > 0 ? 0 : rows.length - 1) : (i + by + rows.length) % rows.length]!.focus();
+  }
+
+  /** ← inside a family goes back to the row that opened it. */
+  function backOut(): boolean {
+    const at = document.activeElement;
+    if (!subEl || !(at instanceof HTMLElement) || !subEl.contains(at)) return false;
+    const opener = el?.querySelector(`.nest > button[data-menu="${CSS.escape(open ?? "")}"]`) as HTMLElement | null;
+    open = null;
+    opener?.focus();
+    return true;
+  }
+
+  $effect(() => {
+    if (keyed && el) rowsOf(el)[0]?.focus();
+  });
 </script>
 
 <!-- Escape closes the submenu first where one is open, and the menu otherwise.
@@ -132,9 +182,18 @@
      with it. -->
 <svelte:window
   onkeydown={(e) => {
-    if (e.key !== "Escape") return;
-    if (open) open = null;
-    else onclose();
+    if (e.key === "ArrowDown" || e.key === "j") {
+      e.preventDefault();
+      step(1);
+    } else if (e.key === "ArrowUp" || e.key === "k") {
+      e.preventDefault();
+      step(-1);
+    } else if ((e.key === "ArrowLeft" || e.key === "h") && backOut()) {
+      e.preventDefault();
+    } else if (e.key === "Escape") {
+      if (open) open = null;
+      else onclose();
+    }
   }}
   onresize={onclose}
 />

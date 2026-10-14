@@ -129,7 +129,8 @@
   } from "./lib/commands";
   import { isGear, planFile, planRoot } from "./lib/gears";
   import { menuFor, type MenuItem, type MenuTarget } from "./lib/menu";
-  import { actFor, refusal, verbsFor } from "./lib/handle";
+  import { rowVerb, whyNot, type Verb } from "./lib/handle";
+  import { Cards, type CardHandle } from "./lib/cards.svelte";
   import {
     FALLBACK_DEFAULT_PRESET,
     presetById,
@@ -140,7 +141,6 @@
   import { spotOf } from "./lib/glass";
   import { selectionMarkdown } from "./lib/copy";
   import { cardName, displayName, nameBesideProject } from "./lib/naming";
-  import { closeWarnings } from "./lib/closing";
   import { noticeLine, noticeWords } from "./lib/notice";
   import {
     Drafts,
@@ -151,8 +151,7 @@
     type Draft,
   } from "./lib/drafts";
   import Transcript from "./lib/Transcript.svelte";
-  import Yonder from "./lib/Yonder.svelte";
-  import { Elsewhere, type Shadow } from "./lib/shadows.svelte";
+  import { Elsewhere } from "./lib/shadows.svelte";
   import {
     LAND_WITHIN_MS,
     landingNow,
@@ -221,6 +220,21 @@
      them. Holds subscriptions and an effect, so it is released below. */
   const elsewhere = new Elsewhere(skein);
   elsewhere.attach();
+  /* Every card a gesture can reach, on this wall and on the others, as one
+     kind of thing (`cards.svelte.ts`). What it borrows from here is the
+     window's — a plate, the glass, the clipboard, this wall's furniture — and
+     nothing that is a card's. */
+  const cards = new Cards(skein, elsewhere, {
+    copy: (text) => copyText(text),
+    glass: (kind, id) => canvas?.toggleGlass(kind, id),
+    heldByGlass: (conv) => heldByGlassTerritory(conv),
+    confirmClose: (card, warnings, t) => (unfinished = { card, t, warnings }),
+    close: (conv) => closeConv(conv),
+    processes: (conv) => (showProcs = conv.id),
+    unpin: (conv) => unpinCard(conv),
+    look: (root, path, line) => void finder.lookAt(root, path, line),
+    furniture: (conv) => furnitureOf(conv),
+  });
   const board = new Board();
   const widgets = new Widgets();
   /* One stacking order for the whole wall (see layout.ts), so each of the two
@@ -483,8 +497,7 @@
       else focusElsewhere();
     }
     else if (verb.kind === "card") {
-      if (verb.act === "glass") glassFocused();
-      else if (verb.act === "close") closeFocused();
+      if (verb.act === "menu") menuFocused();
       else verbFocused(verb.act);
     }
     else if (verb.kind === "sink") {
@@ -595,15 +608,10 @@
         canvas?.revealWidget(id);
         return;
       }
-      /* And a card on another wall, which is no card here: focused the one way
-         a shadow is, so its question is in the dock and its panel is open. */
-      const shadow = elsewhere.find(id);
-      if (shadow) {
-        focusShadow(shadow);
-        return;
-      }
-      focusedId = id;
-      studio.selectOnly(id);
+      /* A card here or on another wall, landed on the one way: its question
+         is in the dock whichever wall it is on. */
+      const c = cards.find(id);
+      if (c) focusCard(c);
     },
     () => rungTimers(),
     () => presence.away,
@@ -960,12 +968,15 @@
   let prompt: HTMLTextAreaElement | undefined = $state();
   let spawning = $state(false);
 
-  const focused = $derived(skein.convs.find((c) => c.id === focusedId) ?? null);
-  /** The card on another wall that has the focus, if the focus is one. The same
-   *  `focusedId` as a card's, so focusing one lets go of the other — but a
-   *  different object and a different type, so nothing that acts on `focused`
-   *  can be handed it. See `shadow.ts`. */
-  const focusedShadow = $derived(focused ? null : elsewhere.find(focusedId));
+  /** The card that has the focus, on this wall or on another, as the handle
+   *  every gesture takes — the menu, the dock, the chords and the panel ask it
+   *  `can` and call `do`, and none of them asks which kind it is. */
+  const card = $derived(cards.find(focusedId));
+  /** The same card when it is one of this wall's: for what only a card here
+   *  can be — picked into a gathering, the directory a `!` line runs in, the
+   *  shell's project. A gesture takes `card`. A shadow is never this, which is
+   *  the guard that made it its own type (`elsewhere.md`). */
+  const focused = $derived(card?.conv ?? null);
   /* A card you are looking at finishing is something you watched, so it raises
      no notice — the user's choice. All three facts live here, so this is where
      the question is answered for `Skein`. */
@@ -1277,16 +1288,14 @@
   /* The timeline archive, behind `<space>a` and a header button that is only
      there once something has been archived. */
   let showAnnals = $state(false);
-  /* A close held back because the card has a timeline in flight — see
-     `closeConv`. The card and the timeline, so the question can name both. */
+  /* A close held back because the card is doing something or has a timeline
+     in flight — on this wall or another, one plate (`CardHandle.do("close")`
+     asks for it). The card and the timeline, so the question can name both. */
   let unfinished = $state<{
-    conv: Conversation;
+    card: CardHandle;
     t: Timeline | null;
     warnings: string[];
   } | null>(null);
-  /* The same question about a card on another wall, which its own wall closes
-     the way its ✕ would. See `closeElsewhere`. */
-  let unfinishedAway = $state<{ shadow: Shadow; warnings: string[] } | null>(null);
   /* A grouping's cards about to move to another machine, asked about first.
      See `moveAll`. */
   let exodus = $state<{ cards: Conversation[]; name: string; host: string } | null>(null);
@@ -1774,6 +1783,8 @@
     y: number;
     items: MenuItem[];
     act: (id: string, mod?: boolean) => void;
+    /** Opened by a chord, so the first row takes the keyboard. */
+    keyed?: boolean;
   } | null>(null);
 
   async function copyText(text: string) {
@@ -1853,133 +1864,19 @@
           }
         }
       };
-    } else if (cardEl?.dataset.conv) {
-      const conv = skein.convs.find((c) => c.id === cardEl.dataset.conv);
-      if (conv) {
-        focusedId = conv.id;
-        studio.selectOnly(conv.id);
-        target = {
-          kind: "card",
-          /* The other groupings of this card's project, so it can be moved
-             between them. Its own is filtered out — "move it to where it
-             already is" is a row that does nothing — and a project carrying
-             only one yields an empty list, which the menu drops rather than
-             drawing a submenu you have to open to find empty. */
-          groupings: skein.territories
-            .filter((t) => t.projectId === conv.projectId && t.id !== conv.territoryId)
-            .map((t) => ({ id: t.id, name: t.name })),
-          /* Walls this card could move to: heard from, taking work, and
-             holding a territory of this card's project's name — the three
-             things the move itself checks first, so the row is only offered
-             where it would get as far as the card. The rest (a dirty tree,
-             work in flight) is said when it is asked for. */
-          walls: conv.kind === "project"
-            ? wallsHolding(skein.projects.find((p) => p.id === conv.projectId)?.name ?? "")
-            : [],
-          dormant: conv.dormant,
-          pinned: !!studio.placements[conv.id]?.pinned,
-          /* Its *own* spot, not whether it happens to be drawn on the pane. */
-          glass: !!spotOf(studio.placements[conv.id]),
-          /* A card drawn on the glass because its whole territory is stuck is
-             not a card anybody stuck, and there is nothing honest for the item
-             to say about it: "put it back on the wall" would be a promise it
-             cannot keep, since the territory would still be carrying it. So it
-             is not offered, which is a real answer here — see menu.ts. */
-          held: heldByGlassTerritory(conv),
-          /* Something to clear means a turn taken or one under way — not a
-             line on screen, which a *cleared* card still has (its own "cleared"
-             note), and which would leave the item offered forever on a card
-             with nothing left to clear. `working` earns its place: abandoning a
-             first turn that is going wrong is exactly when this is wanted. */
-          spoken: conv.everSpoke || conv.working,
-          aside: conv.aside,
-          bypassing: conv.bypassCaps,
-          accounts: waterfall.list.length > 0,
-          /* The same list `/account` offers and for the same reasons — see the
-             effect that fills `field.accounts`. `menu.ts` drops the submenu
-             below two, so a wall with one account grows no row. */
-          accountPicks: usable(waterfall.list).map((a) => ({
-            id: a.label,
-            label: a.label,
-            on: a.label === conv.accountLabel,
-          })),
-          /* Only where there is a plan to hand on — see menu.ts. The field is
-             cleared when a card goes back into making, so a plan that has been
-             acted on stops being offered as one that has not. */
-          plan: !!conv.planDoc,
-          presets: presetPicks(),
-        };
+    } else if (cardEl?.dataset.conv || shadowEl?.dataset.shadow) {
+      /* A card on this wall or another: one menu, built by its handle out of
+         its own fields (`CardHandle.menu`) and dispatched through it, so a verb
+         added once is on both and a verb one cannot do says why. */
+      const c = cards.find(cardEl?.dataset.conv ?? shadowEl?.dataset.shadow);
+      if (c) {
+        /* The focus, as a click takes it, and not the panel — a menu is a
+           question about the thing, not a visit to it. */
+        ring(c);
+        target = c.menu();
         act = (id) => {
-          /* The maker opens on the preset the row named, never on the wall's
-             default: this menu exists precisely because the choice is worth
-             making here, and falling back to the default would make the five
-             rows decorative. */
-          if (id.startsWith("hand:"))
-            void skein.handOff(conv, presetById(id.slice(5)) ?? null);
-          else if (id.startsWith("regroup:"))
-            void skein.setCardTerritory(conv.id, id.slice(8));
-          else if (id.startsWith("move:"))
-            void skein.moveCard(conv, id.slice(5)).then((why) => {
-              if (why) skein.fault = why;
-            });
-          else if (id === "wake") void skein.wake(conv);
-          else if (id === "aside") skein.setAside(conv, !conv.aside);
-          else if (id === "bypass") skein.setBypass(conv, !conv.bypassCaps);
-          else if (id.startsWith("account:"))
-            void skein.putOnAccount(conv, id.slice(8));
-          /* The session id is what `--resume` takes, and this is the only place
-             the UI hands it over — see the note on adoption in CLAUDE.md. It is
-             `sessionId` rather than `id`, or a cleared card would hand over a
-             resume command for a session that never existed. */
-          else if (id === "copy-resume")
-            void copyText(`claude --resume ${conv.sessionId}`);
-          else if (id === "copy-cwd") void copyText(conv.cwd);
-          else if (id === "processes") showProcs = conv.id;
-          else if (id === "clear") void skein.clear(conv);
-          else if (id === "unpin") {
-            const was = { ...studio.placements[conv.id] };
-            studio.unpin(conv.id);
-            savePlacement(conv.id);
-            undo.did("letting a card flow again", [
-              {
-                at: "placement",
-                id: conv.id,
-                was,
-                now: studio.placements[conv.id]
-                  ? { ...studio.placements[conv.id] }
-                  : null,
-              },
-            ]);
-          } else if (id === "glass") canvas?.toggleGlass("card", conv.id);
-          else if (id === "close") void closeConv(conv);
-        };
-      }
-    } else if (shadowEl?.dataset.shadow) {
-      const s = elsewhere.find(shadowEl.dataset.shadow);
-      if (s) {
-        /* The focus, as a card's right-click takes it, and not the panel —
-           a menu is a question about the thing, not a visit to it. */
-        studio.clearSelection();
-        focusedId = s.id;
-        /* The card's own rows (`menu.ts::cardRows`), behind the verbs its wall
-           announced, and filled from what its digest says — the same fields a
-           local card's target reads off the `Conversation`. */
-        target = {
-          kind: "shadow",
-          glass: !!s.glass,
-          host: s.host,
-          verbs: verbsFor(s.remote),
-          dormant: s.dormant,
-          spoken: s.everSpoke || s.working,
-          aside: s.aside,
-          bypassing: s.bypassCaps,
-          accounts: s.accounts.length > 0,
-          accountPicks: s.accounts.map((a) => ({ id: a, label: a, on: a === s.accountLabel })),
-        };
-        act = (id) => {
-          if (id === "glass") canvas?.toggleGlass("shadow", s.id);
-          else if (id === "close") closeElsewhere(s);
-          else askShadow(s, id);
+          const r = rowVerb(id);
+          if (r) void c.do(r.verb, r.args);
         };
       }
     } else if (sectionEl?.dataset.section) {
@@ -2645,13 +2542,19 @@
     if (typeof picked === "string") await openIn(picked);
   }
 
-  /** The cards a prompt would reach right now. */
+  /** The cards a gathering's prompt would reach: this wall's only, since a
+   *  selection never holds a card on another wall. */
   const targets = $derived(
     studio.selected.length > 1
       ? skein.convs.filter((c) => studio.isSelected(c.id))
       : focused
         ? [focused]
         : [],
+  );
+  /** What a prompt or a command reaches right now, as handles: the gathering
+   *  when there is one, else the card in the ring — wherever it is. */
+  const reach = $derived<CardHandle[]>(
+    targets.length > 1 ? targets.map((c) => cards.of(c)) : card ? [card] : [],
   );
 
   /** The reach of the draft, for the cards that draw it as their name-to-be.
@@ -2903,7 +2806,7 @@
        it offers the sessions on disk, which is the same offer whatever is
        standing in front of you — so an empty gathering is no reason to refuse
        it. */
-    if (cmd.needsCard && targets.length === 0) return;
+    if (cmd.needsCard && reach.length === 0) return;
     /* A command that takes a value is not finished being chosen, so Enter on it
        means "show me them" rather than running anything — there is nothing yet
        to run. Tab does the identical thing, which is the point: at this row the
@@ -2925,7 +2828,7 @@
        no card: friction here is meant to scale with reach, and a panel opens
        once however many cards you are pointed at, so charging the modifier for
        it would be a toll on a number that is always one. */
-    if (cmd.needsCard && targets.length > 1 && !broadcast) return field.refuse();
+    if (cmd.needsCard && reach.length > 1 && !broadcast) return field.refuse();
     /* The CLI's own commands are carried out by sending them. Skein has nothing
        to do here beyond having helped you type it: `/compact` goes down the
        same stdin as any prompt, and the agent answers it. */
@@ -2938,6 +2841,30 @@
     if (cmd.by !== "skein") {
       return sendText(arg ? `/${cmd.name} ${arg}` : `/${cmd.name}`, broadcast);
     }
+    /* The two of Volery's own that are a card's verbs reach a card wherever it
+       is, through its handle: `/clear` and `/account` on a card on another
+       wall are the right-click's clear and put-it-on, asked of its wall. The
+       rest are this wall's own and reach this wall's cards. Asked before the
+       field is cleared, so a lone card that cannot be asked keeps the draft and
+       says why, as a prompt into a quiet wall does. */
+    const asVerb: { verb: Verb; args: Record<string, unknown> } | null =
+      cmd.name === "clear"
+        ? { verb: "clear", args: {} }
+        : cmd.name === "account"
+          ? { verb: "account", args: { account: arg } }
+          : null;
+    const lone = cmd.needsCard && reach.length === 1 ? reach[0]! : null;
+    const no = !lone
+      ? null
+      : asVerb
+        ? whyNot(lone.can(asVerb.verb))
+        : lone.remote
+          ? `/${cmd.name} reaches this wall's cards — not yet one on ${lone.remote.host}`
+          : null;
+    if (no) {
+      skein.fault = no;
+      return field.refuse();
+    }
     field.put("");
     field.at = 0;
     /* Forced open rather than `openImport()`, which toggles: toggling is the
@@ -2946,10 +2873,19 @@
        request to put it away. Answered before the gathering is snapshotted,
        since this is the one command with nothing to act on. */
     if (cmd.name === "resume") return openImport(true);
+    /* `/account`'s value is one of the registry's labels, since `withAccounts`
+       fills its choices off the wall — but the palette is a help rather than a
+       gate, so the handle's `putOnAccount` (or the far wall's re-check) does
+       the rest of the checking, the menu reaching the same one. Sequential
+       rather than `Promise.all`, like every other arm: each move or clear ends
+       a process, and five at once is a herd aimed at the one thing on this
+       wall that is already the slowest. */
+    if (asVerb) {
+      for (const c of [...reach]) await c.do(asVerb.verb, asVerb.args);
+      return;
+    }
     const on = [...targets];
-    if (cmd.name === "clear") {
-      for (const c of on) await skein.clear(c);
-    } else if (cmd.name === "rename") {
+    if (cmd.name === "rename") {
       /* Reaching the whole gathering, like everything else here, and gated by
          the same modifier above. Renaming five cards to one word is a strange
          thing to want, but it is a strange thing you asked for twice — where a
@@ -2969,17 +2905,6 @@
          is easy to find and hard to undo would be a worse trade than the one
          that made this exist. */
       for (const c of on) await skein.setGear(c, "planning");
-    } else if (cmd.name === "account") {
-      /* The value is one of the registry's labels, since `withAccounts` fills
-         this command's choices off the wall — but the palette is a help rather
-         than a gate, and `resolveCommand` already refuses a word that is not
-         one of them, so what arrives here is a label. `putOnAccount` does the
-         rest of the checking, because the menu reaches it too and a rule that
-         lives at one of two call sites is a rule the other one does not have.
-         Sequential rather than `Promise.all`, like every other arm: each move
-         ends a process and spawns nothing, and five at once is a herd aimed at
-         the one thing on this wall that is already the slowest. */
-      for (const c of on) await skein.putOnAccount(c, arg);
     } else if (cmd.name === "gear") {
       /* The value is one of `GEAR_CHOICES`, since a command with `choices` is
          incomplete until it has one — but the palette is a help rather than a
@@ -2991,9 +2916,11 @@
     }
   }
 
-  /** Say something to every target, with the reach gate the dock's Enter has. */
+  /** Say something to every card it reaches, with the reach gate the dock's
+   *  Enter has. One card is said to through its handle, wherever it is; a
+   *  gathering is this wall's. */
   async function sendText(text: string, broadcast: boolean) {
-    if (!text || targets.length === 0) return;
+    if (!text || reach.length === 0) return;
     /* Friction scales with reach: Enter sends to one, Ctrl+Enter to many.
        With permissions bypassed a broadcast is the most destructive gesture in
        the app, and one modifier is the cheapest possible insurance.
@@ -3004,7 +2931,7 @@
        expected to have noticed `Ctrl ↵` already written beside the field. So
        the refusal flashes exactly that reading, which is the answer and is
        already on screen; anything more would be prose about a key. */
-    if (targets.length > 1 && !broadcast) return field.refuse();
+    if (reach.length > 1 && !broadcast) return field.refuse();
 
     /* Composed *before* the field is cleared, and that ordering is the whole of
        it: the pictures live on the field, and `put("")` prunes every one of
@@ -3012,20 +2939,36 @@
        string the wire will replay for them, and the thumbnails the transcript
        keeps, all three from one split of the sentence. See `attach.ts`. */
     const turn = field.turn(text);
+    /* And asked whether it can arrive before anything is cleared: a card on
+       another wall takes words only, and none at all while its wall is quiet.
+       Refused rather than dropped, with the draft kept and the reason said. */
+    const one = reach.length === 1 ? reach[0]! : null;
+    const carries = one ? one.carries(turn) : "yes";
+    if (carries !== "yes") {
+      skein.fault = carries.no;
+      return field.refuse();
+    }
     field.put("");
     field.at = 0;
-    if (targets.length === 1) await skein.send(targets[0], text, turn);
+    if (one) await one.say(text, turn);
     else await skein.broadcast(targets, text, turn);
   }
 
   async function send(broadcast = false) {
-    /* A card on another wall is spoken to and nothing else. No palette, none
-       of this wall's commands, no `!` line and no pictures: the text goes as
-       words, and the other wall's own send path decides what they mean there —
-       a CLI command like `/compact` is carried out on that machine exactly as if
-       it had been typed at its keyboard. What cannot travel is refused rather
-       than dropped, and the dock says which. */
-    if (focusedShadow && targets.length === 0) return sendElsewhere(focusedShadow);
+    /* One path for a card here and a card on another wall. What differs is
+       what can travel, and the handle says so where it is asked: a picture or a
+       quiet wall is refused by `carries`, a `!` line by having no card here to
+       run in (`runBang`), and one of Volery's own commands by `runCommand`
+       unless it is a verb the card's wall can be asked — while a CLI command
+       like `/compact` goes as the words it is, carried out on that machine
+       exactly as if typed at its keyboard.
+
+       The palette is the trap that made this careful: it opens over a `/` on
+       any card, offering this wall's commands, and sending its line raw put
+       `/gear planning` in front of a far agent as a prompt about the word
+       "planning" (`gears.md`) and `/btw …` into its conversation as a turn. So
+       a half-typed name completes as it would here, and a whole one is run —
+       or refused, with the draft kept — and never shipped as text. */
     /* With a value lit the line is complete, so Enter runs it.
        
        *Sends* it, if it is the CLI's — those commands are carried out by being
@@ -3060,7 +3003,7 @@
     }
 
     const text = field.text.trim();
-    if (!text || targets.length === 0) return;
+    if (!text || reach.length === 0) return;
     /* A command typed in full and sent without the palette ever opening —
        pasted, or completed and then dismissed. Only Skein's own arrive here:
        the CLI's, and every unknown name, fall through and go to the agent as
@@ -3069,43 +3012,6 @@
     if (found) return runCommand(found.cmd, broadcast, found.arg);
 
     await sendText(text, broadcast);
-  }
-
-  /** The dock's Enter, aimed at a card on another wall.
-   *
-   *  Words only, and every way a line could mean something *here* is refused
-   *  rather than shipped as text. The palette is the trap: it still opens over a
-   *  `/`, offering this wall's commands, and sending its line raw would put
-   *  `/gear planning` in front of the far agent as a prompt about the word
-   *  "planning" (the bug `gears.md` records) and `/btw …` into the conversation
-   *  as a real turn, on a card running with that machine in its hands. So a
-   *  half-typed name completes, as it would here; a whole one that is this
-   *  wall's own is refused; and one that belongs to the CLI goes, because the
-   *  far wall carries it out exactly as if it had been typed there.
-   *
-   *  A wall drawn as unheard is refused here too, with the draft kept: the card
-   *  already says why, and clearing the field into a line nobody is looking at
-   *  would be the send looking like it went. */
-  async function sendElsewhere(s: Shadow) {
-    if (field.banging || field.shots.list.length || s.face.unheard) return field.refuse();
-    if (field.choicePick && field.choosing) {
-      const { cmd } = field.choosing;
-      if (cmd.by === "skein") return field.refuse();
-      return speakElsewhere(s, completionForChoice(cmd, field.choicePick));
-    }
-    if (field.commandPick) {
-      if (!field.whole) return completeName(field.commandPick);
-      if (field.commandPick.by === "skein") return field.refuse();
-    }
-    const text = field.text.trim();
-    if (!text || resolveCommand(text)) return field.refuse();
-    return speakElsewhere(s, text);
-  }
-
-  async function speakElsewhere(s: Shadow, text: string) {
-    field.put("");
-    field.at = 0;
-    await elsewhere.send(s, text);
   }
 
   /** Step along the cards that want something, in urgency order.
@@ -3124,7 +3030,7 @@
           ? 0
           : waiting.length - 1
         : (at + step + waiting.length) % waiting.length;
-    focusCard(waiting[to]);
+    focusCard(cards.of(waiting[to]!));
   }
 
   /** Step the focus along the wall: Tab forwards, shift+Tab back.
@@ -3144,7 +3050,7 @@
           ? 0
           : order.length - 1
         : (at + step + order.length) % order.length;
-    focusCard(order[to]);
+    focusCard(cards.of(order[to]!));
   }
 
   /** What Tab does, wherever it is pressed.
@@ -3163,14 +3069,23 @@
     else cycleConv(step);
   }
 
-  /** Land on a card the way clicking it does.
+  /** Land on a card the way clicking it does — here or on another wall.
    *
    *  Both halves matter: the gathering has to follow, or Tab would move the ring
    *  while the dock still pointed a broadcast at whatever was picked before it. */
-  function focusCard(conv: Conversation) {
-    focusedId = conv.id;
-    studio.selectOnly(conv.id);
-    canvas?.reveal(conv.id);
+  function focusCard(c: CardHandle) {
+    ring(c);
+    canvas?.reveal(c.id);
+  }
+
+  /** Put the ring on a card without moving the wall. The gathering follows: a
+   *  card here becomes the whole of it, and a card on another wall empties it,
+   *  since a gathering is a set of this wall's cards a broadcast would reach —
+   *  the one thing in a focus that is about which wall a card is on. */
+  function ring(c: CardHandle) {
+    focusedId = c.id;
+    if (c.conv) studio.selectOnly(c.id);
+    else studio.clearSelection();
   }
 
   /** Step to the next card on another wall, and open its panel.
@@ -3187,14 +3102,10 @@
       return;
     }
     const at = all.findIndex((s) => s.id === focusedId);
-    focusShadow(all[(at + 1) % all.length]!);
-  }
-
-  function focusShadow(s: Shadow) {
-    studio.clearSelection();
-    focusedId = s.id;
+    const next = cards.find(all[(at + 1) % all.length]!.id);
+    if (!next) return;
+    focusCard(next);
     showDetail = true;
-    canvas?.reveal(s.id);
   }
 
   /** Let go of the card: no ring, no gathering, no panel.
@@ -3229,7 +3140,7 @@
   async function jumpToWrite(ownerId: string, timelineId: string, rev: number) {
     const conv = skein.convs.find((c) => c.id === ownerId);
     if (!conv) return;
-    focusCard(conv);
+    focusCard(cards.of(conv));
     showDetail = true;
     const wrote = (line: import("./lib/conversation.svelte").Line) =>
       line.kind === "tool" &&
@@ -3292,7 +3203,7 @@
       return;
     }
     showAnnals = false;
-    focusCard(owner);
+    focusCard(cards.of(owner));
   }
 
   function onDraftKey(e: KeyboardEvent) {
@@ -3489,7 +3400,7 @@
        the wall underneath must not — Escape here would otherwise also stop the
        focused card's turn, since a window listener's `stopPropagation` does not
        reach another window listener. */
-    if (unfinishedAway || exodus) return;
+    if (unfinished || exodus) return;
     /* The toy owns the whole keyboard while it is up, and that is the point
        rather than an inconvenience — thirty keys are an instrument and the rest
        are its controls, so there is nothing left for the wall to be given.
@@ -3579,7 +3490,7 @@
        you typed, which is what every find bar does. */
     if ((e.key === "f" || e.key === "F") && (e.ctrlKey || e.metaKey) && !e.altKey) {
       e.preventDefault();
-      if (!shell.open && !finder.open && focused && showDetail) transcript?.hunt();
+      if (!shell.open && !finder.open && card && showDetail) transcript?.hunt();
       return;
     }
 
@@ -3790,7 +3701,10 @@
          The same key, for the same reason it stops a turn: this is the thing
          this card is doing that you might want to take back. */
       if (focused?.bangCmd) void bang.stop(focused);
-      else if (focused?.working) void skein.stop(focused);
+      /* Only where it can be stopped: a card on a wall too old to be asked
+         falls through to letting go, rather than Escape becoming a key that
+         says no for ever. The dock's stop button is where the reason is said. */
+      else if (card?.face.working && card.can("stop") === "yes") void card.do("stop");
       /* Escape backs out one kind at a time, innermost first, which is what it
          did while images and widgets each held a selection of their own. There
          is one selection now, spanning all four kinds, so these ask it rather
@@ -3835,7 +3749,7 @@
       !e.metaKey &&
       !e.altKey &&
       !menu &&
-      (targets.length > 0 || !!focusedShadow) &&
+      reach.length > 0 &&
       !isTyping(e.target)
     ) {
       /* The character is carried across by hand rather than left to the
@@ -3943,26 +3857,28 @@
   $effect(() => {
     const l = landing;
     if (!l) return;
-    const s = elsewhere.find(l.key);
+    const s = cards.find(l.key);
     const now = landingNow(l, !!s, focusedId, Date.now());
     if (now === "wait") return;
     landing = null;
-    if (now === "focus" && s) focusShadow(s);
+    if (now === "focus" && s) focusCard(s);
   });
 
   /** `<space>en`: the focused card-on-another-wall's section's menu, opened
    *  at the section's name. */
   function sectionMenuFocused() {
-    const s = focusedShadow;
-    if (!s) {
+    /* A section is where another wall's cards stand, so this one asks where
+       the card is — the chord is the `e` family's, which is about elsewhere. */
+    const host = card?.remote?.host;
+    if (!card || !host) {
       skein.fault = "focus a card on another wall first (space then e e), and this opens a card in its section";
       return;
     }
-    const project = sectionOf(s.project);
-    const id = sectionId(s.host, project);
+    const project = sectionOf(card.face.project);
+    const id = sectionId(host, project);
     const el = document.querySelector(`.name[data-section="${CSS.escape(id)}"]`) as HTMLElement | null;
     const r = el?.getBoundingClientRect();
-    const made = sectionMenuFor(s.host, project, id);
+    const made = sectionMenuFor(host, project, id);
     const items = menuFor(made.target);
     if (!items.length) return;
     menu = {
@@ -3970,6 +3886,35 @@
       y: r ? r.bottom + 4 : window.innerHeight / 3,
       items,
       act: made.act,
+      keyed: true,
+    };
+  }
+
+  /** `<space>cm`: the focused card's own right-click, opened at the card and
+   *  walked with the keys — which is what puts the verbs that are a pick from a
+   *  list (the account, the grouping, a maker for the plan, another machine)
+   *  under the keyboard as well, on this wall or another. */
+  function menuFocused() {
+    const c = card;
+    if (!c) {
+      skein.fault = "no card has the focus";
+      return;
+    }
+    const items = menuFor(c.menu());
+    if (!items.length) return;
+    const node = document.querySelector(
+      `[data-conv="${CSS.escape(c.id)}"], [data-shadow="${CSS.escape(c.id)}"]`,
+    ) as HTMLElement | null;
+    const r = node?.getBoundingClientRect();
+    menu = {
+      x: r ? r.left + 12 : window.innerWidth / 3,
+      y: r ? r.top + 12 : window.innerHeight / 3,
+      items,
+      act: (id) => {
+        const v = rowVerb(id);
+        if (v) void c.do(v.verb, v.args);
+      },
+      keyed: true,
     };
   }
 
@@ -4011,21 +3956,13 @@
     if (results.length) skein.fault = movedSummary(results, host);
   }
 
-  async function closeConv(conv: Conversation, sure = false) {
-    /* A card with a timeline in flight asks first: closing it ends a plan you
-       have been watching on the glass, and the user asked to decide that. The
-       timeline is archived as left unfinished by the close itself
-       (`timeline::leave_for`), so saying yes needs nothing more from here. */
-    const t = skein.timelines.liveFor(conv.id);
-    /* And a card doing something asks too — mid-turn, or with work running in
-       the background — since the ✕ sits on every card and a stray click on one
-       that was working cost its work. An idle card still closes at once.
-       `closing.ts` decides; this only asks. */
-    const warnings = closeWarnings({ working: conv.working, jobs: conv.jobs.length });
-    if ((t || warnings.length) && !sure) {
-      unfinished = { conv, t: t ?? null, warnings };
-      return;
-    }
+  /** Take a card here off the wall, once nothing is left to ask: the plate
+   *  that asks first is `LocalCard.do("close")`'s — a card with a timeline in
+   *  flight, or doing something, since the ✕ sits on every card and a stray
+   *  click on one that was working cost its work. The timeline is archived as
+   *  left unfinished by the close itself (`timeline::leave_for`), so saying yes
+   *  needs nothing more from here. */
+  async function closeConv(conv: Conversation) {
     /* Closing is not undoable — it takes an agent down, and see the boundary at
        the head of `undo.ts` — so anything on the stack about where this card
        stood is a press that would appear to do nothing. It goes with the card. */
@@ -4052,79 +3989,66 @@
     await skein.close(conv, "you");
   }
 
-  /** Close a card on another wall, as a person: that wall allows it whatever
-   *  its switch says (`fleet::may_reach`). A card that is doing something asks
-   *  first, off its digest. Nothing is removed here — the card goes when its
-   *  wall's next snapshot drops it, and a refusal comes back on the shadow. */
-  function closeElsewhere(s: Shadow, sure = false) {
-    const warnings = closeWarnings({ working: s.digest.working, jobs: s.digest.jobs });
-    if (warnings.length && !sure) {
-      unfinishedAway = { shadow: s, warnings };
-      return;
-    }
-    void elsewhere.close(s);
-  }
-
-  /** `<space>cg`: stick whichever card has the focus to the glass, or put it
-   *  back — on this wall or another. A card drawn on the pane only because its
-   *  territory is stuck there is refused, as the menu refuses it: the territory
-   *  would go on carrying it. */
-  function glassFocused() {
-    if (focused) {
-      if (heldByGlassTerritory(focused)) {
-        skein.fault =
-          "this card is on the glass with its grouping — move the grouping instead (space then g g)";
-      } else canvas?.toggleGlass("card", focused.id);
-    } else if (focusedShadow) canvas?.toggleGlass("shadow", focusedShadow.id);
-    else skein.fault = "no card has the focus to put on the glass";
-  }
-
-  /** Everything a card elsewhere is asked besides the glass and the close is
-   *  asked of its wall (`flyway/act.rs`). A refusal is said by `Elsewhere.act`
-   *  itself; what a reading verb answered is this wall's to copy. One function
-   *  for the right-click and the chords, so they cannot disagree. */
-  function askShadow(s: Shadow, id: string) {
-    const asked = actFor(id, { aside: s.aside, bypassCaps: s.bypassCaps, working: s.working });
-    if (asked)
-      void elsewhere.act(s, asked.verb, asked.args).then((r) => {
-        if (r.outcome === "taken" && r.text) void copyText(r.text);
-      });
-  }
-
-  /** `<space>c` and a letter: the right-click's choiceless verbs on whichever
-   *  card has the focus, on this wall or another. A card elsewhere that cannot
-   *  be asked says why — its wall needs updating, or has not been heard — rather
+  /** `<space>c` and a letter: a verb on whichever card has the focus, on this
+   *  wall or another — the right-click's own, through the same handle, so the
+   *  two cannot disagree. A verb the card cannot be asked says why (its wall
+   *  needs updating, has not been heard, the card has nothing to clear) rather
    *  than the key doing nothing. */
-  function verbFocused(id: "aside" | "bypass" | "wake" | "clear" | "copy-resume" | "copy-cwd") {
-    const c = focused;
-    if (c) {
-      if (id === "aside") skein.setAside(c, !c.aside);
-      else if (id === "bypass") skein.setBypass(c, !c.bypassCaps);
-      else if (id === "wake") {
-        if (c.dormant) void skein.wake(c);
-        else skein.fault = "it is not dormant";
-      } else if (id === "clear") {
-        if (c.everSpoke || c.working) void skein.clear(c);
-        else skein.fault = "nothing to clear yet";
-      } else if (id === "copy-resume") void copyText(`claude --resume ${c.sessionId}`);
-      else void copyText(c.cwd);
-      return;
-    }
-    const s = focusedShadow;
-    if (!s) {
+  function verbFocused(verb: Verb) {
+    const c = card;
+    if (!c) {
       skein.fault = "no card has the focus";
       return;
     }
-    const why = refusal(s.remote, id);
-    if (why) skein.fault = why;
-    else askShadow(s, id);
+    void c.do(verb);
   }
 
-  /** `<space>cc`: close whichever card has the focus, on this wall or another. */
-  function closeFocused() {
-    if (focused) void closeConv(focused);
-    else if (focusedShadow) closeElsewhere(focusedShadow);
-    else skein.fault = "no card has the focus to close";
+  /** Let a pinned card flow again — the right-click's "let it flow again",
+   *  with the undo record a moved card always gets. */
+  function unpinCard(conv: Conversation) {
+    const was = { ...studio.placements[conv.id] };
+    studio.unpin(conv.id);
+    savePlacement(conv.id);
+    undo.did("letting a card flow again", [
+      {
+        at: "placement",
+        id: conv.id,
+        was,
+        now: studio.placements[conv.id] ? { ...studio.placements[conv.id] } : null,
+      },
+    ]);
+  }
+
+  /** This wall's furniture around a card here, for its menu — what only this
+   *  wall knows about it and a card on another wall has none of. */
+  function furnitureOf(conv: Conversation): Partial<MenuTarget> {
+    return {
+      /* The other groupings of this card's project, so it can be moved between
+         them. Its own is filtered out — "move it to where it already is" is a
+         row that does nothing — and a project carrying only one yields an
+         empty list, which the menu drops rather than drawing a submenu you
+         have to open to find empty. */
+      groupings: skein.territories
+        .filter((t) => t.projectId === conv.projectId && t.id !== conv.territoryId)
+        .map((t) => ({ id: t.id, name: t.name })),
+      /* Walls this card could move to: heard from, taking work, and holding a
+         territory of this card's project's name — the three things the move
+         itself checks first, so the row is only offered where it would get as
+         far as the card. The rest (a dirty tree, work in flight) is said when
+         it is asked for. */
+      walls:
+        conv.kind === "project" ? wallsHolding(skein.projects.find((p) => p.id === conv.projectId)?.name ?? "") : [],
+      pinned: !!studio.placements[conv.id]?.pinned,
+      /* Its *own* spot, not whether it happens to be drawn on the pane. */
+      glass: !!spotOf(studio.placements[conv.id]),
+      /* A card drawn on the glass because its whole territory is stuck is not
+         a card anybody stuck, and there is nothing honest for the item to say
+         about it: "put it back on the wall" would be a promise it cannot keep,
+         since the territory would still be carrying it. So it is not offered,
+         which is a real answer here — see menu.ts. */
+      held: heldByGlassTerritory(conv),
+      presets: presetPicks(),
+    };
   }
 
   /* The handles a pair of hands would have. Named rather than inlined into
@@ -4167,7 +4091,7 @@
        which is why the emptiness check is here rather than inside `stir`. */
     setDraft: (t) => {
       field.put(t);
-      if (stirsCard(t) && !field.banging) skein.stir(focused);
+      if (stirsCard(t) && !field.banging) card?.stir();
     },
     commands: () => field.commands,
     choices: () => field.choices.map((c) => c.value),
@@ -4800,6 +4724,7 @@
       x={menu.x}
       y={menu.y}
       items={menu.items}
+      keyed={menu.keyed}
       onpick={(id, mod) => {
         menu?.act(id, mod);
         menu = null;
@@ -4946,27 +4871,14 @@
   {#if unfinished}
     {@const held = unfinished}
     <Unfinished
-      card={held.conv.title}
+      card={cardName(held.card.face.title, "").text}
+      where={held.card.remote?.host ?? null}
       t={held.t}
       warnings={held.warnings}
       onkeep={() => (unfinished = null)}
       onclose={() => {
         unfinished = null;
-        void closeConv(held.conv, true);
-      }}
-    />
-  {/if}
-
-  {#if unfinishedAway}
-    {@const held = unfinishedAway}
-    <Unfinished
-      card={cardName(held.shadow.title, "").text}
-      where={held.shadow.host}
-      warnings={held.warnings}
-      onkeep={() => (unfinishedAway = null)}
-      onclose={() => {
-        unfinishedAway = null;
-        closeElsewhere(held.shadow, true);
+        void held.card.do("close", { sure: true });
       }}
     />
   {/if}
@@ -5101,11 +5013,10 @@
         }}
         onfocus={(id) => (focusedId = id)}
         {ondeselect}
-        onclose={(c) => void closeConv(c)}
-        onclosewall={(s) => closeElsewhere(s)}
+        onclose={(id) => void cards.find(id)?.do("close")}
         timelines={skein.timelines.shown}
         ontimelinepick={(id) => {
-          const c = skein.convs.find((c) => c.id === id);
+          const c = cards.find(id);
           if (c) focusCard(c);
         }}
         ontimelinejump={(owner, id, rev) => void jumpToWrite(owner, id, rev)}
@@ -5118,7 +5029,7 @@
         onstickproject={(id, at) => skein.stickTerritory(id, at)}
         onnameterritory={(id, name) => skein.renameTerritory(id, name)}
       />
-      {#if (focused || focusedShadow) && showDetail}
+      {#if card && showDetail}
         <aside
           class="side"
           class:moored-left={berths.panel.site === "left"}
@@ -5175,27 +5086,21 @@
             onpointercancel={moorUp}
             ondblclick={() => moorReset("panel")}
           ></div>
-          {#if focused}
-            <Transcript
-              bind:this={transcript}
-              conv={focused}
-              read={reading}
-              rails={railsOn}
-              watching={attention.focused}
-              onhistory={() => void skein.loadHistory(focused)}
-              onfile={(path, line) =>
-                void finder.lookAt(focused.kind === "project" ? focused.cwd : "", path, line)}
-              onread={setRead}
-            />
-          {:else if focusedShadow}
-            <Yonder
-              shadow={focusedShadow}
-              read={reading}
-              rails={railsOn}
-              watching={attention.focused}
-              onread={setRead}
-            />
-          {/if}
+          <!-- One transcript for a card here and a card on another wall: it
+               takes a `Readable`, which both are, and what only a card
+               elsewhere has — where it runs, what this wall knows about its
+               conversation, when to read it again — is read off that shape
+               rather than drawn by a second panel. -->
+          <Transcript
+            bind:this={transcript}
+            conv={card.readable}
+            read={reading}
+            rails={railsOn}
+            watching={attention.focused}
+            onhistory={() => card?.history()}
+            onfile={card.look}
+            onread={setRead}
+          />
         </aside>
       {/if}
     {:else}
@@ -5227,15 +5132,8 @@
     {field}
     {skein}
     {bang}
-    {focused}
-    remote={focusedShadow}
-    shadows={elsewhere.shadows}
-    onremoteanswer={(s, sheet) => void elsewhere.answer(s, sheet)}
-    onremotedefer={(s, sheet) => elsewhere.defer(s, sheet)}
-    onremotenotice={(s, n, reply) => elsewhere.answerNotice(s, n, reply)}
-    onremoteselect={(s) => focusShadow(s)}
-    onclosecard={(c) => void closeConv(c)}
-    onremoteclose={(s) => closeElsewhere(s)}
+    {card}
+    {cards}
     {targets}
     {waiting}
     {clashing}
@@ -5256,14 +5154,6 @@
     onrun={runCommand}
     ontake={takeCompletion}
     oncycle={cycleWaiting}
-    onmore={(card) => {
-      /* As clicking it would: the gathering follows, and a card elsewhere
-         opens its panel — or the transcript beside the item is not its. */
-      const conv = skein.convs.find((c) => c.id === card);
-      const shadow = conv ? null : elsewhere.find(card);
-      if (conv) focusCard(conv);
-      else if (shadow) focusShadow(shadow);
-    }}
     onselect={focusCard}
   />
 
