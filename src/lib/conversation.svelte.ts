@@ -59,11 +59,15 @@ import {
   startedJob,
   taskNumberOf,
   textOf,
+  foldTimers,
+  timersArmed,
+  TIMER_TOOLS,
   urgencyFor,
   workflowMeta,
   workflowName,
   type Ending,
   type JobKind,
+  type SessionTimer,
   type TaskNote,
   type Tier,
 } from "./classify";
@@ -816,6 +820,19 @@ export class Conversation {
    *  know *whether* a result belongs to a gate. Bounded by deleting on the
    *  result, and by the fact that a call without one is a turn that ended. */
   #gateCalls = new Map<string, true>();
+
+  /** Schedules the CLI is keeping in this card's process — `CronCreate` jobs and
+   *  a `ScheduleWakeup` — which die with it. See `foldTimers`. */
+  timers = $state<SessionTimer[]>([]);
+
+  /** Does this process hold a schedule that has not fired yet? The reaper's
+   *  question, and the reason it is a reading of the clock: a wakeup is spent
+   *  once its time has passed, with nothing on the wire to say so. */
+  scheduled = $derived(timersArmed(this.timers, clock.t));
+
+  /** Schedule calls gone out and not yet come back, by `tool_use` id — the
+   *  receipt is what says whether one was armed, and it names no tool. */
+  #timerCalls = new Map<string, { name: string; input: unknown }>();
 
   /** The agent's own plan for the turn, in the order the items were created. */
   plan = $state<PlanTask[]>([]);
@@ -2535,6 +2552,9 @@ export class Conversation {
                tool's name, for the reason `hooks.md` records at length — the
                Windows shell tool is `Bash` on a card and `PowerShell` on a
                fresh claude, and both names are live on this machine at once. */
+            if (block.id && TIMER_TOOLS.has(block.name)) {
+              this.#timerCalls.set(block.id, { name: block.name, input: block.input });
+            }
             if (block.id) {
               const g = recognise(block.input);
               if (g) {
@@ -3053,6 +3073,12 @@ export class Conversation {
              and sink 28cb1c5d. */
           this.#land(b.tool_use_id, said, b.is_error === true, picturesOf(b.content));
 
+          const timed = this.#timerCalls.get(b.tool_use_id);
+          if (timed) {
+            this.#timerCalls.delete(b.tool_use_id);
+            this.timers = foldTimers(this.timers, timed.name, timed.input, said, b.is_error === true, Date.now());
+          }
+
           /* **A gate settling, and `is_error` is the whole of the verdict.**
              Reading the exit status the CLI already computed rather than
              grepping the output for the word "error" is what makes this immune
@@ -3287,6 +3313,11 @@ export class Conversation {
        running: these are grandchildren of `claude`, not of Skein. */
     const orphaned = this.jobs.length;
     this.jobs = [];
+    /* A schedule the CLI held in memory went with it, and unlike a job there is
+       nothing anywhere that will ever report on it. */
+    const unscheduled = this.scheduled;
+    this.timers = [];
+    this.#timerCalls.clear();
     /* A card with no process cannot be nudged into looking at anything, and the
        amber would be asking for a gesture that does nothing. The note below is
        what a dead card has to say about its work instead. */
@@ -3329,6 +3360,9 @@ export class Conversation {
           ? "a background job was left running — its outcome is no longer being reported here"
           : `${orphaned} background jobs were left running — their outcomes are no longer being reported here`,
       );
+    }
+    if (unscheduled) {
+      this.#push("meta", "a scheduled prompt this card had armed went with its process — it lived only in that session");
     }
     /* A prompt still marked pending here did leave — `echoFailed` is what marks
        one that did not, and a send that failed is never followed by an exit. So

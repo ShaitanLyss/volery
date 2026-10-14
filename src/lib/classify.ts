@@ -1181,6 +1181,116 @@ export function startedJob(resultText: string): {
   return { started: false, taskId: null, outputPath: null, journalDir: null };
 }
 
+/* ── schedules that live only in the card's own process ────────────────────
+ *
+ * `CronCreate` and `ScheduleWakeup` arm a prompt the CLI enqueues for itself
+ * later, and both keep it **in memory**: `CronCreate`'s own description says
+ * "Jobs live only in this Claude session — nothing is written to disk, and the
+ * job is gone when Claude exits", and its receipt repeats it. So a card holding
+ * one loses it when its process goes, which is exactly why `reaping.ts` must not
+ * stand such a card down — the same argument as an armed `wake_me`, for the
+ * CLI's own clock rather than Volery's.
+ *
+ * Probed 2026-10-14 against claude 2.1.288 (`tools/probe-sleep.ts timers`), in
+ * a `--print` stream-json card: both fire, on time, and **the firing is not
+ * echoed** — no `user` replay of the scheduled prompt, only `command_lifecycle`
+ * events, a fresh `system/init` and the answer. So a schedule cannot be crossed
+ * off by seeing it fire; it is held until it is deleted, its due time has
+ * passed, or the process goes. The receipts, verbatim:
+ *
+ *   Scheduled one-shot task fb128532 (50 22 14 10 *). Session-only (not written
+ *   to disk, dies when Claude exits). It will fire once then auto-delete.
+ *   Next wakeup scheduled for 22:50:00 (in 100s). If you owe the user …
+ *
+ * Neither had ever been called by a card on this machine when this was written
+ * (0 calls across every transcript); the arm exists because the loss is silent,
+ * not because it is common. */
+
+/** One schedule a card's process is holding. */
+export type SessionTimer = {
+  /** `CronCreate`'s task id, or `WAKEUP` for `ScheduleWakeup`'s single slot. */
+  id: string;
+  /** Epoch ms after which it has certainly fired or expired; null while only
+   *  a delete or the process ending can retire it. */
+  until: number | null;
+};
+
+/** `ScheduleWakeup` keeps one wakeup per session — a second call replaces it. */
+export const WAKEUP = "wakeup";
+
+/** The tools whose calls `foldTimers` needs to see the result of. */
+export const TIMER_TOOLS: ReadonlySet<string> = new Set(["CronCreate", "CronDelete", "ScheduleWakeup"]);
+
+/** Past a schedule's own time, how long before it is taken as fired. The
+ *  scheduler only fires while the session is idle and jitters a recurring task
+ *  up to 15 minutes late, so the slack is that, rather than the 90s a one-shot
+ *  on the hour may come *early* — erring towards keeping a card a little longer. */
+const TIMER_SLACK_MS = 15 * 60_000;
+
+/** Recurring cron jobs "auto-expire after 7 days" — the tool's own words. */
+const CRON_LIFE_MS = 7 * 24 * 3600_000;
+
+/** A one-shot cron's due time, when its expression pins a single moment.
+ *
+ *  The tool tells the model to pin minute, hour, day and month for a one-shot,
+ *  and every probe call did. Anything looser — a step, a list, a wildcard —
+ *  answers null and the schedule is held until the process goes, which is the
+ *  direction to be wrong in: a card kept awake costs memory, a reminder lost
+ *  costs the reminder. Local time, as the tool says it reads. */
+export function oneShotDue(cron: string, now: number): number | null {
+  const f = cron.trim().split(/\s+/);
+  if (f.length !== 5 || !f.slice(0, 4).every((x) => /^\d+$/.test(x))) return null;
+  const [minute, hour, day, month] = f.slice(0, 4).map(Number);
+  const year = new Date(now).getFullYear();
+  for (const y of [year, year + 1]) {
+    const at = new Date(y, month - 1, day, hour, minute).getTime();
+    /* A date that rolled over (31 Feb) is not the date that was asked for. */
+    if (new Date(at).getMonth() !== month - 1) return null;
+    if (at + TIMER_SLACK_MS > now) return at;
+  }
+  return null;
+}
+
+/** Fold one finished call into the schedules a card is holding.
+ *
+ *  Only a call that succeeded changes anything; a refused `CronCreate` armed
+ *  nothing and a refused `CronDelete` deleted nothing. Pure, and given the time
+ *  rather than reading it, so it can be asserted against the probed receipts. */
+export function foldTimers(
+  timers: readonly SessionTimer[],
+  name: string,
+  input: any,
+  resultText: string,
+  isError: boolean,
+  now: number,
+): SessionTimer[] {
+  if (isError) return [...timers];
+  if (name === "CronCreate") {
+    const m = /\bScheduled (one-shot|recurring) task ([A-Za-z0-9_-]+)/.exec(resultText);
+    if (!m) return [...timers];
+    const due = m[1] === "one-shot" ? oneShotDue(String(input?.cron ?? ""), now) : null;
+    const until = m[1] === "recurring" ? now + CRON_LIFE_MS + TIMER_SLACK_MS : due === null ? null : due + TIMER_SLACK_MS;
+    return [...timers.filter((t) => t.id !== m[2]), { id: m[2], until }];
+  }
+  if (name === "CronDelete") {
+    const id = String(input?.id ?? input?.jobId ?? "");
+    return timers.filter((t) => t.id !== id);
+  }
+  if (name === "ScheduleWakeup") {
+    const rest = timers.filter((t) => t.id !== WAKEUP);
+    if (input?.stop === true) return rest;
+    const m = /\bNext wakeup scheduled\b[^(]*\(in (\d+)s\)/.exec(resultText);
+    if (!m) return rest;
+    return [...rest, { id: WAKEUP, until: now + Number(m[1]) * 1000 + TIMER_SLACK_MS }];
+  }
+  return [...timers];
+}
+
+/** Is anything still armed at `now`? */
+export function timersArmed(timers: readonly SessionTimer[], now: number): boolean {
+  return timers.some((t) => t.until === null || t.until > now);
+}
+
 /** How a background job ended. */
 export type JobEnd = "done" | "failed" | "killed";
 

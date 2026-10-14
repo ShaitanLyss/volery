@@ -26,8 +26,14 @@
  * project and its session id. Waking it is `--resume`, which hands the model
  * the whole conversation back off disk — the same path a wall coming back from
  * a restart already uses for every card on it, thirty times a launch. What it
- * costs is a second or two, and `Skein.stir` already spends that on the first
- * keystroke into a draft, so the ordinary way back in does not even show it.
+ * costs is **five to seven seconds** of process start — measured 2026-10-14
+ * (`tools/probe-sleep.ts`), flat from a 1 MB transcript to a 14 MB one — and
+ * `Skein.stir` spends that on the first keystroke into a draft, so a sentence
+ * that takes longer than that to type does not show it at all. It costs **no
+ * tokens**, at any wait: the CLI caches with a one-hour TTL only, a card idle
+ * past the hour is cold whether its process lived or not, and inside the hour a
+ * resumed process reads the whole conversation back out of the cache exactly as
+ * the live one would have — `processes.md` has the figures.
  *
  * Because nothing is lost, **nothing is sent**. A reaped card is not prompted
  * when it comes back and is told nothing by Skein in the session, for the
@@ -63,19 +69,44 @@
  *    it existed. A job in flight and a job whose ending nobody picked up are the
  *    same fact one beat apart.
  *  - **`wake`** — an armed `wake_me`. See below; this one was nearly left out.
+ *  - **`scheduled`** — a `CronCreate` job or a `ScheduleWakeup` the CLI is
+ *    holding. Added 2026-10-14, a month after the list, and it was the arm the
+ *    list's own rule demanded and nobody had asked for: both live *only in the
+ *    process* ("Session-only (not written to disk, dies when Claude exits)" is
+ *    the receipt's own sentence), so a card told "remind me at nine tomorrow"
+ *    and then left alone would be stood down at three hours and the reminder
+ *    would simply never come, with nothing anywhere to say it had existed.
+ *    Nothing on this machine had ever called either when it was added; the arm
+ *    is there because the loss is silent, not because it is common.
+ *    `classify.ts::foldTimers` has the probe and the receipts.
  *  - **`children`** — a card with a live child on the wall. A parent that spawned
  *    six cards and is waiting to be reported to is holding background work one
  *    level out, and the report is a relay — which *queues* for a dormant card
  *    rather than waking it. Cheap to check, because `Skein.kin` is already in
  *    memory for the roots the wall draws. It converges the right way round:
  *    leaves go dormant first, and their parent becomes reapable once they have.
- *  - **`aside`** — you put this card by on purpose. `close` refuses one outright
- *    and the rousing queue skips one, both on the argument that setting a card
- *    aside is you saying you are coming back to it. Reaping it behind your back
- *    is the same instruction ignored a third time.
  *
  * And two that are not exclusions but states with nothing to do: `dormant`
  * (already), `retiring` (a kill is in flight).
+ *
+ * #### A card set aside goes first, not never
+ *
+ * `aside` was an arm on this list for its first month, on the argument that
+ * setting a card aside means you are coming back to it, so reaping it ignores
+ * the instruction. That argument was about *coming back*, and coming back to a
+ * dormant card loses nothing: measured 2026-10-14, a resumed process reads the
+ * whole conversation back out of the prompt cache, and the wake is 5–7 s that
+ * `stir` hides behind typing. So the arm protected nothing and cost ~0.75 GB per
+ * card on the cards least likely to be spoken to. Lyss settled it the same day,
+ * in her words: setting aside means "coming back to it in a long time or just
+ * keeping it for reference", so it "should definitely get reaped instantly".
+ *
+ * So an aside card skips the wait. It still meets every arm above, because
+ * those are losses and being set aside changes none of them. What it keeps is
+ * `ASIDE_GRACE_S` on the *process* clock, and that is not a wait: `stir` wakes a
+ * card the moment you type into it, aside or not, and `#deliver` only takes it
+ * out of aside on the send. Without the grace, the card you are typing into
+ * would be stood down under the sentence you were writing to it.
  *
  * #### The `wake_me` exclusion is real, and the shortcut that would remove it is not
  *
@@ -213,6 +244,15 @@ export function waitOf(id: RestId): number | null {
  *  the wall fighting you. */
 export const REST_FLOOR_S = 15 * 60;
 
+/** How old an aside card's process must be before it is stood down.
+ *
+ *  Covers the gap between the keystroke that woke it and the send that takes it
+ *  out of aside — see "A card set aside goes first" above. Being wrong is cheap
+ *  in both directions: a draft longer than this is rare, and if it does happen,
+ *  the card is reaped under it and the next keystroke spends another 5–7 s
+ *  waking it. Nothing in the draft lives in the process. */
+export const ASIDE_GRACE_S = 5 * 60;
+
 /** Available memory at or above which the baseline stands unshortened. */
 export const AMPLE_BYTES = 4 * 1024 * 1024 * 1024;
 
@@ -270,6 +310,9 @@ export type Restable = {
   busy: boolean;
   /** A job that reported in and the card never stirred for. */
   unwoken: unknown;
+  /** A `CronCreate` job or `ScheduleWakeup` the CLI is holding in this process
+   *  and has not fired yet: `Conversation.scheduled`. */
+  scheduled: boolean;
   aside: boolean;
   /** Null if this card has never rested — spawned and then abandoned without a
    *  word — which is the case `idleSeconds` reads as zero and cannot speak for.
@@ -322,8 +365,8 @@ export type Kept =
   | "jobs"
   | "unheard"
   | "wake"
+  | "scheduled"
   | "children"
-  | "aside"
   | "recent";
 
 export function keptFrom(card: Restable, around: Around, wait: number): Kept | null {
@@ -344,8 +387,16 @@ export function keptFrom(card: Restable, around: Around, wait: number): Kept | n
   if (card.busy) return "jobs";
   if (card.unwoken) return "unheard";
   if (around.wake) return "wake";
+  /* The same fact as `wake`, kept by the CLI rather than by Volery — and worse
+     off for it: a `wake_me` survives the process in a row and is merely late,
+     where these are in memory and simply stop existing. */
+  if (card.scheduled) return "scheduled";
   if (around.children) return "children";
-  if (card.aside) return "aside";
+  /* Below every loss, and not one of them: being set aside changes nothing
+     about what a card would lose, only how long it should wait. It waits for
+     nothing but `ASIDE_GRACE_S` of process age, the card you have just typed
+     into — see "A card set aside goes first" above. */
+  if (card.aside) return card.awakeSeconds >= ASIDE_GRACE_S ? null : "recent";
 
   return quietFor(card) >= wait ? null : "recent";
 }
@@ -371,14 +422,18 @@ export function quietFor(card: Restable): number {
  *  reason to ask the machine how much there is. Deliberately does *not* consult
  *  `Around`: those answers cost the very call this is deciding whether to make.
  *  An excluded card that gets this far only costs the survey it was going to
- *  cost anyway. */
+ *  cost anyway.
+ *
+ *  A card set aside is the one exception to the floor, since it waits only for
+ *  `ASIDE_GRACE_S`. It still costs no more than one survey a minute, because
+ *  `ASK_FLOOR_MS` sits behind this. */
 export function worthAsking(cards: readonly Restable[]): boolean {
   return cards.some(
     (c) =>
       !c.dormant &&
       !c.retiring &&
       !c.working &&
-      quietFor(c) >= REST_FLOOR_S,
+      (quietFor(c) >= REST_FLOOR_S || (c.aside && c.awakeSeconds >= ASIDE_GRACE_S)),
   );
 }
 
@@ -416,14 +471,20 @@ export function saidFor(seconds: number): string {
  *  Names the wait that actually applied rather than the setting, and says so
  *  when pressure shortened it. That is the whole answer to "a threshold you
  *  cannot read off the menu": the menu carries the promise and the line carries
- *  what happened. */
-export function restNote(quiet: number, wait: number, baseline: number): string {
+ *  what happened.
+ *
+ *  A card set aside says that instead of a span, since no wait applied to it and
+ *  "nothing had been said for 2m" would read as the wall being impatient. */
+export function restNote(quiet: number, wait: number, baseline: number, aside = false): string {
   const why =
     wait < baseline
       ? ` — the wall was short of memory, so the wait came in from ${saidFor(baseline)} to ${saidFor(wait)}`
       : "";
+  const what = aside
+    ? "this card is set aside"
+    : `nothing had been said to this card for ${saidFor(quiet)}${why}`;
   return (
-    `nothing had been said to this card for ${saidFor(quiet)}${why}, so skein let it ` +
+    `${what}, so skein let it ` +
     `put its process down. nothing else has gone: the transcript, the context, ` +
     `the session and this card's place on the wall are all as they were. speak ` +
     `to it and it resumes where it left off.`
@@ -456,17 +517,18 @@ export function restMark(names: readonly string[]): string {
 const NAMED = 4;
 
 export function restDetail(
-  entries: readonly { name: string; quiet: number }[],
+  entries: readonly { name: string; quiet: number; aside?: boolean }[],
   wait: number,
   baseline: number,
 ): string {
   const shown = entries
     .slice(0, NAMED)
-    .map((e) => `${e.name} (${saidFor(e.quiet)})`)
+    .map((e) => `${e.name} (${e.aside ? "set aside" : saidFor(e.quiet)})`)
     .join(", ");
   const rest = entries.length > NAMED ? ` and ${entries.length - NAMED} more` : "";
+  /* Only a card that waited can have had its wait shortened. */
   const why =
-    wait < baseline
+    wait < baseline && entries.some((e) => !e.aside)
       ? `; the wait was ${saidFor(wait)} rather than ${saidFor(baseline)}, the wall being short of memory`
       : "";
   return `${shown}${rest}${why}`;

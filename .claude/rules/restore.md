@@ -6,9 +6,11 @@ paths:
   - "src-tauri/src/sessions.rs"
   - "src-tauri/src/supervisor.rs"
   - "src/lib/Import.svelte"
+  - "src/lib/reaping.ts"
+  - "src-tauri/src/reap.rs"
 ---
 
-# Lazy restore, rousing, setting aside, and adopting sessions
+# Lazy restore, rousing, going back to dormant, setting aside, and adopting sessions
 
 ### Lazy restore, and rousing the wall
 
@@ -344,6 +346,101 @@ The control surface has a `rouse` op driving that same pass, and `snapshot` repo
 look identical from outside, and a card that is dormant *yet* is not one that is staying
 that way.
 
+### Going back to dormant on its own
+
+Rousing decides which dormant cards get a process at launch. Nothing used to give a process
+back, so a card you finished with at nine was still holding ~0.75 GB at midnight. Since
+2026-09-13 a card nobody has been near for a while is **stood down to dormant**. This file
+said nothing about it for a month, and in that time a card was briefed to build it a second
+time. `reaping.ts` is the policy and its reasoning, `Skein.letRest` is the doing, and
+`processes.md` has what a card costs and what waking one costs, re-measured 2026-10-14.
+
+- **Not a fourth poller.** It folds the wall's one-second `clock`, which `idleSeconds` already
+  reads (`App.svelte`'s effect calls `letRest`). The only thing it goes and asks is
+  `reap_survey`: available memory, armed `wake_me`s and Rust's turn marks. That ask happens
+  only once some card has been quiet past the 15-minute floor, and never twice a minute.
+- **The wait is a setting, and pressure only shortens it.** Ground menu: `idle cards keep
+  their process` / `rest after an hour` / `three hours` (default, chosen with Lyss) / `eight
+  hours`. It is stored in `localStorage` (`skein.rest`) because it is a judgement about this
+  machine's memory. Below 4 GB available the wait eases in towards `REST_FLOOR_S` (15 min),
+  which it reaches at 1 GB. The menu carries the promise, and `restNote` says what actually
+  applied.
+- **A sleep is not a crash, and four things make sure of it.** `retiring` is set before the
+  kill, so `markExited` takes its quiet branch: no exit code, no error line, and
+  `#forgetEchoes(true)` keeps any unsent echo. The kill is `rest_conversation`, not
+  `close_conversation`, and it refuses **under the supervisor's lock** when Rust's turn mark
+  is set. That catches a prompt `serve_due`, `do_send`, `drain_inbox` or `sweep` wrote into
+  stdin a moment ago, whose echo the front end has not seen (3349b16). The reader thread
+  closing the stream clears the row's mid-turn mark, since the app is not `going_away`. And
+  `jobs` is an arm, so no job row can be outstanding. The card therefore comes back at the
+  next launch exactly like any card at rest: `needsRousing` is false and no resume prompt
+  is spent.
+- **Nothing is sent to the agent, either way.** Dormancy is lossless: transcript, context,
+  session id and place are all kept, and `--resume` hands the model everything back. The
+  line in the transcript (`restNote`, `meta`) is for you, and one chronicle row covers each
+  pass.
+- **What brings it back is what brings any dormant card back.** `stir` on the first keystroke
+  and `#deliver` on send. The spawn is 5–7 s, flat in session length, and costs no tokens:
+  the cache section in `processes.md` measured a resumed process reading the whole
+  conversation back from the prompt cache. A relay or a `wake_me` addressed to a dormant
+  card *queues* in the inbox rather than waking it. That is why `wake` and `children` are
+  arms, and it is `relay.md`'s position, not this file's.
+
+`keptFrom` is the list of what would be **lost**, and it is the one place to read before
+widening anything. It covers working, `sending` (Rust's turn mark), asking, jobs, unheard,
+`wake`, `scheduled` and children. The brief that found the gap in this file asked about two
+more states, and neither is an arm, for reasons worth keeping:
+
+- **A prompt held for an account is not in the process.** It is `conv.held` and the
+  `held_text` row (`accounts.md`). The retiring branch of `markExited` keeps its echo, and
+  `releaseHeld` goes through `#deliver`, which wakes the card. When a different account has
+  freed up, that is one spawn on the right subscription, where a live card would have had
+  its process killed and respawned by `#moveTo` anyway.
+- **A compaction is always inside a turn mark.** A `/compact` is written by `send_prompt` →
+  `deliver_blocks`, which sets Rust's mark, and only the `result` clears it. An automatic
+  compaction happens mid-turn. Either way `rest_conversation` refuses, and the `sending` arm
+  stands in front of it.
+
+**`scheduled` is the arm added on 2026-10-14**, and the only change the re-measurement asked
+for. `CronCreate` jobs and `ScheduleWakeup` live in the CLI's memory and nowhere else. A card
+holding one was reapable, and its schedule would have ceased to exist with nothing to say it
+had ever been armed. `classify.ts::foldTimers` reads the receipts. A schedule is held until it
+is deleted, until its own time has passed plus the scheduler's fifteen minutes of jitter, or
+until the process goes; the firing itself is not echoed on the wire, so it cannot be crossed
+off by seeing it. A process that dies holding one says so in the transcript.
+
+**A card set aside goes first rather than never.** For its first month `aside` was an arm on
+that list, on the argument that setting a card aside is saying you will come back to it, so
+reaping it "ignores the instruction a third time". The argument was about *coming back*, and
+coming back to a dormant card loses nothing. The measurements above say so, and they made the
+arm a cost with no protection behind it: ~0.75 GB a card, on the cards least likely to be
+spoken to soon. Lyss settled it on 2026-10-14. Setting aside means "coming back to it in a
+long time or just keeping it for reference", so it "should definitely get reaped instantly".
+
+- **It skips the wait, not the list.** Every loss arm still stands in front of it. A card set
+  aside mid-job keeps its process until the job reports in, and then goes.
+- **`setAside` asks the pass straight away** rather than at the next minute's survey, which is
+  what "instantly" means from the gesture. The pass still decides, and the setting being off
+  still means off: the label is "idle cards keep their process", and a card set aside is an
+  idle card.
+- **`ASIDE_GRACE_S` (five minutes) on the process clock is the one thing it waits for.** `stir`
+  wakes an aside card on your first keystroke, as it wakes any card, and only the send takes
+  it out of aside. Without the grace it would be stood down under the sentence you were
+  writing to it. Being wrong is one more 5–7 s wake on the next keystroke; nothing in a draft
+  lives in the process.
+- **It says "set aside" rather than a span**, in `restNote` and in the chronicle's detail,
+  since no wait applied to it and "nothing had been said for 2m" reads as the wall being
+  impatient.
+
+Rousing still skips an aside card, and an agent's `mcp__skein__close` still refuses one
+(`spawn.rs`). Both of those act on the card: one spends a prompt on it, the other takes it
+off the wall. This only takes away a process the card can have back for a keystroke.
+
+**Per turn was not taken, deliberately.** The SDK's own model spawns a subprocess per turn,
+and an idle session there costs nothing. Here that would put the 5–7 s in front of *every*
+send instead of the first one after a quiet spell. A TTL back to dormant gets the memory back
+without that.
+
 ### Closing a card changes the wall first, and does the bookkeeping after
 
 `Skein.close` removes the card from `convs` **before** it awaits anything, and that ordering
@@ -464,8 +561,10 @@ queue takes the edge off that and does not settle it — a card's urgency is a c
 runs whether or not the card has a process.
 
 So a card can be **set aside** — right-click, `set it aside` / `pick it back up`. Nothing
-stops, nothing closes, nothing on disk moves; it keeps its process if it has one, its
-transcript, its place and its context. What it stops doing is counting.
+closes and nothing on disk moves: it keeps its transcript, its place and its context. What it
+stops doing is counting. **Since 2026-10-14 its process goes too**, at once, unless it is
+holding something that would be lost. It used to keep one; "Going back to dormant on its own"
+above has why that changed and the five-minute grace that keeps the card you are typing into.
 
 - **It goes into `urgencyFor`, not into the places that read a tier.** `waiting` in
   `App.svelte`, the dock's count, `attention.items` and the card's own colour are four

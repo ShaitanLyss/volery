@@ -2756,3 +2756,81 @@ describe("narration: the prose between tool calls, delivered as thinking", () =>
     expect(narrationOf("text").size).toBe(0);
   });
 });
+
+/* Imported here rather than in the list at the top, so this block is one hunk
+   that another card's edit to that list cannot collide with. */
+import { WAKEUP, foldTimers, oneShotDue, timersArmed, type SessionTimer } from "../src/lib/classify";
+
+describe("schedules the CLI keeps in the card's process", () => {
+  /* The receipts as claude 2.1.288 wrote them (`tools/probe-sleep.ts timers`). */
+  const ONE_SHOT =
+    "Scheduled one-shot task fb128532 (50 22 14 10 *). Session-only (not written to disk, dies when Claude exits). It will fire once then auto-delete.";
+  const RECURRING =
+    "Scheduled recurring task 9a1b2c3d (7 * * * *). Session-only (not written to disk, dies when Claude exits).";
+  const WAKE =
+    "Next wakeup scheduled for 22:50:00 (in 100s). If you owe the user a status update this tick, write it now as ordinary response text; then end the turn — the harness re-invokes you when the wakeup fires or a task-notification arrives.";
+  const now = new Date(2026, 9, 14, 22, 48, 20).getTime();
+  const MIN = 60_000;
+
+  test("a one-shot is held until its pinned moment, and a little past it", () => {
+    const t = foldTimers([], "CronCreate", { cron: "50 22 14 10 *", recurring: false }, ONE_SHOT, false, now);
+    expect(t.map((x) => x.id)).toEqual(["fb128532"]);
+    expect(timersArmed(t, now)).toBe(true);
+    expect(timersArmed(t, new Date(2026, 9, 14, 22, 59).getTime())).toBe(true);
+    /* The scheduler jitters up to fifteen minutes late; past that it has fired. */
+    expect(timersArmed(t, new Date(2026, 9, 14, 23, 6).getTime())).toBe(false);
+  });
+
+  test("a one-shot whose moment cannot be read is held for the life of the process", () => {
+    /* Wrong in the cheap direction: a card kept awake, never a reminder lost. */
+    const t = foldTimers([], "CronCreate", { cron: "*/5 9 * * *", recurring: false }, ONE_SHOT, false, now);
+    expect(t[0].until).toBe(null);
+    expect(timersArmed(t, now + 365 * 24 * 60 * MIN)).toBe(true);
+  });
+
+  test("a recurring job lasts the seven days the tool gives it", () => {
+    const t = foldTimers([], "CronCreate", { cron: "7 * * * *" }, RECURRING, false, now);
+    expect(timersArmed(t, now + 6 * 24 * 60 * MIN)).toBe(true);
+    expect(timersArmed(t, now + 8 * 24 * 60 * MIN)).toBe(false);
+  });
+
+  test("a delete takes it away, and only the one named", () => {
+    let t = foldTimers([], "CronCreate", { cron: "7 * * * *" }, RECURRING, false, now);
+    t = foldTimers(t, "CronCreate", { cron: "50 22 14 10 *" }, ONE_SHOT, false, now);
+    t = foldTimers(t, "CronDelete", { id: "9a1b2c3d" }, "Deleted", false, now);
+    expect(t.map((x) => x.id)).toEqual(["fb128532"]);
+  });
+
+  test("a wakeup is spent once its time has passed, and a second one replaces the first", () => {
+    let t = foldTimers([], "ScheduleWakeup", { delaySeconds: 90 }, WAKE, false, now);
+    expect(t).toEqual([{ id: WAKEUP, until: now + 100_000 + 15 * MIN }]);
+    expect(timersArmed(t, now + 10 * MIN)).toBe(true);
+    expect(timersArmed(t, now + 20 * MIN)).toBe(false);
+    t = foldTimers(t, "ScheduleWakeup", { delaySeconds: 1800 }, WAKE.replace("(in 100s)", "(in 1800s)"), false, now);
+    expect(t.length).toBe(1);
+    expect(t[0].until).toBe(now + 1_800_000 + 15 * MIN);
+  });
+
+  test("stopping the loop clears the wakeup", () => {
+    const t = foldTimers([], "ScheduleWakeup", { delaySeconds: 90 }, WAKE, false, now);
+    expect(foldTimers(t, "ScheduleWakeup", { stop: true }, "Loop stopped.", false, now)).toEqual([]);
+  });
+
+  test("a refused call arms nothing and deletes nothing", () => {
+    const armed: SessionTimer[] = [{ id: "fb128532", until: null }];
+    expect(foldTimers([], "CronCreate", { cron: "50 22 14 10 *" }, ONE_SHOT, true, now)).toEqual([]);
+    expect(foldTimers(armed, "CronDelete", { id: "fb128532" }, "no such job", true, now)).toEqual(armed);
+  });
+
+  test("a receipt in some other shape arms nothing", () => {
+    /* A CLI that rewords the receipt costs this arm, visibly, rather than
+       inventing a schedule — the same bargain `startedJob` strikes. */
+    expect(foldTimers([], "CronCreate", { cron: "50 22 14 10 *" }, "Done.", false, now)).toEqual([]);
+  });
+
+  test("a pinned date already past this year is next year's", () => {
+    const jan = new Date(2027, 0, 2, 9, 3).getTime();
+    expect(oneShotDue("3 9 2 1 *", now)).toBe(jan);
+    expect(oneShotDue("0 0 31 2 *", now)).toBe(null);
+  });
+});

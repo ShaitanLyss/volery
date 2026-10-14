@@ -206,6 +206,99 @@ runs mid-suite. And **a card is fewer processes**: its `browser` is a session on
 server the user chose to share (`pool.rs`) is one process per territory rather than one per
 card. The ~1.1 GB "fully equipped card" above was measured before either.
 
+### A card at rest, re-taken 2026-10-14 — and the reaper that already answered it
+
+Lyss asked whether half a gigabyte per awake card was the right design, against the Agent
+SDK's own model, where a subprocess is per *turn* and an idle session costs nothing. A card
+was briefed to measure it and then build a sleep for idle cards. **The sleep had already
+shipped a month before** (969b6d2, 2026-09-13, `reaping.ts`). Neither this file nor
+`restore.md` mentioned it, and both argue at length about exactly what it answers. A
+behaviour with no rule is one the next person re-derives or rebuilds, so the gap is the
+finding. The section below is the measurement, and `restore.md` has the mechanism.
+
+Installed 0.53.1, claude 2.1.288, seven live cards on a 32 GB machine with 21 GB free. Read
+from the process table every 20 seconds for 30 minutes, private commit with private working
+set in brackets:
+
+```text
+per card, at rest
+  claude.exe                    560–718 MB avg by card (150–278)   range 479–781
+  user-scope `playwright` MCP   ~152 MB  cmd 5 + node(npx) 77 + cmd 5 + node(cli.js) 65
+  conhost x2                    ~3 MB
+  `browser`                     0 — a session on the wall's one server (~162 MB for all of it)
+  `skein`                       0 — HTTP, answered inside Volery
+  ------------------------------------------------------------------------------
+  a card at rest                ~710–880 MB, 7 processes; ~0.3 GB of it resident
+mid-turn                        claude.exe +16–80 MB over its own rest, peak 859 MB,
+                                plus whatever the turn runs (one card's tree read 3 GB under cargo)
+```
+
+- **Mid-turn barely differs from at rest.** The CLI does not give its heap back after a turn,
+  so an idle card costs ~95% of a working one. The one card on the wall that took no turn in
+  30 minutes held 572 MB.
+- **What the pooling won**: from the 2026-08-19 figure of 12 processes and ~1.1 GB per card to
+  7 processes and ~0.8 GB. The per-card `npx` stdio `browser` (~217 MB, three processes) is
+  gone. What is left of "18 node for 6 cards" is two per card, and both are the **user's**
+  `playwright` entry in `~/.claude.json`, which is `--isolated --storage-state …wall.json` on
+  purpose (`browser.md`'s two-browser table). `pool.rs` shares a *project's* `.mcp.json`
+  server, and this one is neither the project's nor stateless, so it stays per card. It
+  costs ~150 MB idle, and the ~580 MB in `browser.md` applies only once it has launched a
+  Chrome. The other two node on the wall were the shared browser server and the dev server
+  groups.
+- **Idle cost does not grow with the session.** Across the live cards, 224k to 787k tokens of
+  context and 1.5 to 14.8 MB of transcript, there is no trend. The card at 787k after a
+  compaction was second-lowest. What does grow is a few dozen MB of heap over a long
+  session's turns. `tools/probe-sleep.ts` resumed copies of real transcripts and read the
+  process after the session had loaded:
+
+```text
+                                spawn → init     claude.exe at rest
+fresh, no MCP                   3.6 / 4.3 s      541 / 548 MB
+fresh, a card's MCP             6.0 / 4.9 s      557 / 557 MB    (tree 754)
+resume  1.0 MB /  151k tokens   6.6 / 6.0 s      586 / 581 MB
+resume  3.0 MB /  226k          6.0 / 7.0 s      578 / 588 MB
+resume  7.2 MB /  871k          6.1 / 6.2 s      541 / 571 MB
+resume 14.2 MB /  626k          5.0 / 5.1 s      607 / 587 MB
+real turn, Haiku                first token 5.6 s from a cold spawn, 0.64 s from a warm process
+```
+
+  So a card at 80% does not cost twice one at 10%, and the brief's worst case does not hold:
+  the cards most worth sleeping are not the most expensive to wake.
+- **A wake costs five to seven seconds, flat in session length.** It is process start plus
+  the stdio MCP servers' `initialize`, which `init` waits for, and the transcript read is lost
+  in the noise. The known ~12 s per-turn-spawn overhead reported against the SDK measures
+  4–7 s here. One cold run on a loaded machine took 10.4 s. `Skein.stir` starts the spawn on
+  the first keystroke, so a sentence that takes longer than that to type never shows it.
+- **And a wake costs no tokens at any wait.** This was the question that could have inverted
+  the policy. If a resumed process sent a different prefix, every wake inside the cache's
+  life would rewrite the whole context at cache-write prices. The CLI writes **one-hour**
+  cache only: 32.1M `ephemeral_1h` tokens and no 5-minute ones on the orchestrator's
+  transcript. Two real Haiku turns per arm, each session's first message unique so only its
+  own cache entry could serve it:
+
+```text
+warm, one process       turn 2: read 64,611   wrote 161
+turn, kill, --resume    turn 2: read 64,613   wrote 495
+same, git status changed in between: read 64,613, wrote 208
+```
+
+  So a resumed process reads the whole conversation back out of the cache exactly as the live
+  one would have. A card idle past the hour is cold whether its process lived or not, and
+  inside the hour it is warm either way. Sleeping is free in tokens, and the only things it
+  spends are the seconds above.
+
+**What that makes the policy.** The reaper's shape was right and these numbers do not ask it
+to move. An idle card holds ~0.75 GB to save ~6 s. On a machine with room, the three-hour
+default (chosen with Lyss, "well clear of a lunch") is a comfort setting rather than an
+economic one. Under pressure, the ramp already brings it down to the 15-minute floor, and the
+cache result means that floor costs nothing beyond the spawn. That last point was never shown
+before. The one gap the measurement turned up was in what `keptFrom` protects, not in the
+wait. `CronCreate` and `ScheduleWakeup` keep their prompt only in the process, so a card
+holding one was reapable and its schedule would silently cease to exist. The `scheduled` arm
+closes that. The other change was Lyss's own decision on the same numbers: a card **set
+aside** now sleeps at once rather than never, since what it was protected against turned out
+to cost nothing. `restore.md` has the rest of the mechanism.
+
 ### If you are diagnosing this again
 
 Walk the parent chain to the root; do not infer ownership from an image name. A `claude.exe`
@@ -221,7 +314,24 @@ pwsh tools/probe-processes.ps1 -Wmi      # prove the WMI escape
 ```
 
 The census is read-only. The two proofs spawn their own throwaway trees and clean up after
-themselves; neither touches anything on the wall. **The `unattributed` section is the one to
+themselves; neither touches anything on the wall.
+
+What a card costs to keep and to wake is `tools/probe-sleep.ts`:
+
+```powershell
+bun tools/probe-sleep.ts          # spawn → init and memory at rest: fresh, and --resume of
+                                  # four real transcripts COPIED under new ids. No API turn —
+                                  # it sends `/cost`, which the CLI answers locally
+bun tools/probe-sleep.ts real     # + a cold and a warm Haiku turn, for first-token latency
+bun tools/probe-sleep.ts cache    # whether a resumed process still hits the prompt cache.
+                                  # Six Haiku turns, in a throwaway git repo of its own
+bun tools/probe-sleep.ts timers   # what CronCreate / ScheduleWakeup look like on the wire
+                                  # and that they fire in a --print card. Two minutes
+```
+
+It copies rather than resumes a real session in place, because the CLI finds a session by id
+beyond its cwd's directory (`probe-migrate.ts`). A probe that reused the id could append to a
+live card's transcript. **The `unattributed` section is the one to
 read** — on a healthy wall it is empty, and an entry in it is what both sink items were
 looking for and did not find.
 

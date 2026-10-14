@@ -2440,7 +2440,7 @@ export class Skein {
       const going = toRest(here, around, wait);
       if (!going.length) return;
 
-      const rested: { name: string; quiet: number }[] = [];
+      const rested: { name: string; quiet: number; aside: boolean }[] = [];
       for (const conv of going) {
         /* Re-asked at the card rather than trusted from the list above, for
            `rouse`'s reason one gesture over: closing several cards takes
@@ -2476,13 +2476,13 @@ export class Skein {
              redrew the card dormant — which is a real but cosmetic ordering,
              where a note claiming a card was rested when it was not is a lie in
              the transcript. The ordering lost, the truthfulness kept. */
-          conv.note(restNote(quiet, wait, baseline));
+          conv.note(restNote(quiet, wait, baseline, conv.aside));
           await this.#awaitDormant(conv);
           /* The backstop for the timeout, exactly as `#moveTo` has it. A card
              that would not die inside four seconds is not a reason to leave the
              wall believing it still has a process. */
           conv.dormant = true;
-          rested.push({ name: conv.title || conv.project || "a card", quiet });
+          rested.push({ name: conv.title || conv.project || "a card", quiet, aside: conv.aside });
         } catch (e) {
           conv.retiring = false;
           conv.note(`skein could not stand this card down to rest — ${e}`);
@@ -3520,8 +3520,12 @@ export class Skein {
    *  The whole of the mechanism: `Conversation.aside` feeds `urgencyFor`, and
    *  everything that reads a tier follows from there — the waiting cycle, the
    *  dock's count, the peek and the card's own colour all go quiet together.
-   *  Nothing is stopped, nothing is closed, nothing on disk moves; a card set
-   *  aside keeps its process if it has one, its transcript, and its place.
+   *  Nothing is closed and nothing on disk moves: a card set aside keeps its
+   *  transcript, its context and its place. **Its process does go**, at once
+   *  rather than after the idle wait, unless it is holding something that would
+   *  be lost — Lyss, 2026-10-14: setting aside means "coming back to it in a long
+   *  time or just keeping it for reference". `reaping.ts` has why that loses
+   *  nothing, and the grace that keeps the card you are typing into.
    *
    *  Written through immediately rather than at the next settling turn, because
    *  a card set aside is very often one that will never take another turn —
@@ -3532,6 +3536,13 @@ export class Skein {
     void invoke("update_conversation", { id: conv.id, aside }).catch((err) => {
       this.fault = String(err);
     });
+    /* "At once" means this gesture, not the next minute's survey. The pass
+       still decides — every loss arm, the grace, the setting being off — this
+       only lets it ask now. */
+    if (aside && !conv.dormant) {
+      this.#askedAt = 0;
+      void this.letRest();
+    }
   }
 
   /** Stop the turn a card is in the middle of, and keep the card.

@@ -135,13 +135,16 @@ if (-not $loose) {
   Write-Output '         Check for a live parent before calling any of this a leak.'
 }
 
+# Commit from Win32_OperatingSystem rather than Get-Counter: counter paths are
+# localized, and on a French Windows '\Memory\Committed Bytes' does not exist —
+# the census died on its last line having printed everything but this.
 $os = Get-CimInstance Win32_OperatingSystem
 Write-Output ''
 '== machine: {0} MB RAM, {1} MB free; commit {2} of {3} MB ==' -f `
   [math]::Round($os.TotalVisibleMemorySize / 1KB, 0),
   [math]::Round($os.FreePhysicalMemory / 1KB, 0),
-  [math]::Round((Get-Counter '\Memory\Committed Bytes').CounterSamples[0].CookedValue / 1MB, 0),
-  [math]::Round((Get-Counter '\Memory\Commit Limit').CounterSamples[0].CookedValue / 1MB, 0)
+  [math]::Round(($os.TotalVirtualMemorySize - $os.FreeVirtualMemory) / 1KB, 0),
+  [math]::Round($os.TotalVirtualMemorySize / 1KB, 0)
 
 if (-not ($Reap -or $Wmi)) { return }
 

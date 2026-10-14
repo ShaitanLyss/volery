@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   AMPLE_BYTES,
+  ASIDE_GRACE_S,
   REST_DEFAULT,
   REST_FLOOR_S,
   RESTS,
@@ -33,6 +34,7 @@ const card = (over: Partial<Restable> = {}): Restable => ({
   pendingAsk: null,
   busy: false,
   unwoken: null,
+  scheduled: false,
   aside: false,
   restingSince: 1,
   idleSeconds: 4 * HOUR,
@@ -194,6 +196,15 @@ describe("keptFrom — what must not be reaped", () => {
     expect(keptFrom(card(), { ...FREE, wake: true }, 3 * HOUR)).toBe("wake");
   });
 
+  test("a card holding the CLI's own schedule is left alone", () => {
+    /* `CronCreate` and `ScheduleWakeup` keep their prompt in the process and
+       nowhere else, so standing the card down does not delay the reminder the
+       way it delays a `wake_me` — it deletes it. */
+    expect(keptFrom(card({ scheduled: true }), FREE, 3 * HOUR)).toBe("scheduled");
+    /* And at the floor too: pressure shortens the wait, never the list. */
+    expect(keptFrom(card({ scheduled: true }), FREE, REST_FLOOR_S)).toBe("scheduled");
+  });
+
   test("a card with a live child on the wall is left alone", () => {
     /* A parent waiting to be reported to is holding background work one level
        out, and the report is a relay — which queues for a dormant card. */
@@ -228,16 +239,45 @@ describe("keptFrom — what must not be reaped", () => {
     expect(keptFrom(fresh, { ...FREE, midTurn: true }, 3 * HOUR)).toBe("sending");
   });
 
-  test("a card set aside is left alone", () => {
-    /* Setting a card aside is you saying you are coming back to it. `close`
-       refuses one and the rousing queue skips one; this is the third place that
-       has to hear the same instruction. */
-    expect(keptFrom(card({ aside: true }), FREE, 3 * HOUR)).toBe("aside");
+  test("a card set aside does not wait", () => {
+    /* It was an arm for a month, on the argument that aside means coming back,
+       and coming back to a dormant card loses nothing. Lyss, 2026-10-14: aside
+       "should definitely get reaped instantly". Two minutes since its last turn
+       is as good as a day. */
+    const parked = card({ aside: true, idleSeconds: 120, awakeSeconds: 2 * HOUR });
+    expect(keptFrom(parked, FREE, 3 * HOUR)).toBe(null);
+    expect(keptFrom(parked, FREE, 8 * HOUR)).toBe(null);
   });
 
-  test("and being set aside outranks being long idle, however long", () => {
-    const old = card({ aside: true, idleSeconds: 400 * HOUR, awakeSeconds: 400 * HOUR });
-    expect(keptFrom(old, FREE, REST_FLOOR_S)).toBe("aside");
+  test("but a set-aside card you have just typed into keeps its process", () => {
+    /* `stir` wakes it on the first keystroke and only the send takes it out of
+       aside, so without the grace it would be stood down under your sentence. */
+    const typing = card({ aside: true, restingSince: null, idleSeconds: 0, awakeSeconds: 30 });
+    expect(keptFrom(typing, FREE, 3 * HOUR)).toBe("recent");
+    const later = card({ aside: true, idleSeconds: 400 * HOUR, awakeSeconds: ASIDE_GRACE_S });
+    expect(keptFrom(later, FREE, 3 * HOUR)).toBe(null);
+  });
+
+  test("and being set aside changes nothing about what would be lost", () => {
+    /* Aside is a reason not to wait, never a reason to drop a job, a question or
+       a schedule. Every loss arm stands in front of it. */
+    const aside = { aside: true, idleSeconds: 120, awakeSeconds: 2 * HOUR };
+    expect(keptFrom(card({ ...aside, busy: true }), FREE, 3 * HOUR)).toBe("jobs");
+    expect(keptFrom(card({ ...aside, pendingAsk: {} }), FREE, 3 * HOUR)).toBe("asking");
+    expect(keptFrom(card({ ...aside, scheduled: true }), FREE, 3 * HOUR)).toBe("scheduled");
+    expect(keptFrom(card({ ...aside, working: true }), FREE, 3 * HOUR)).toBe("working");
+    expect(keptFrom(card(aside), { ...FREE, wake: true }, 3 * HOUR)).toBe("wake");
+    expect(keptFrom(card(aside), { ...FREE, midTurn: true }, 3 * HOUR)).toBe("sending");
+    expect(keptFrom(card(aside), { ...FREE, children: true }, 3 * HOUR)).toBe("children");
+  });
+
+  test("a set-aside card is worth asking about before anything has been quiet for the floor", () => {
+    /* Or the pass would never reach it: `worthAsking` is the bound that stops
+       the survey until some card could go, and an aside card can go early. */
+    const parked = card({ aside: true, idleSeconds: 60, awakeSeconds: ASIDE_GRACE_S });
+    expect(worthAsking([parked])).toBe(true);
+    expect(worthAsking([card({ aside: true, idleSeconds: 60, awakeSeconds: 60 })])).toBe(false);
+    expect(worthAsking([card({ idleSeconds: 60, awakeSeconds: ASIDE_GRACE_S })])).toBe(false);
   });
 
   test("a dormant card has nothing to put down", () => {
@@ -320,7 +360,7 @@ describe("toRest", () => {
       [
         named("busy", { busy: true, idleSeconds: 11 * HOUR, awakeSeconds: 11 * HOUR }),
         named("plain"),
-        named("parked", { aside: true }),
+        named("recent", { idleSeconds: HOUR, awakeSeconds: HOUR }),
       ],
       () => FREE,
       3 * HOUR,
@@ -366,6 +406,32 @@ describe("what it says about itself", () => {
 
   test("and says nothing about memory when nothing was short", () => {
     expect(restNote(4 * HOUR, 3 * HOUR, 3 * HOUR)).not.toContain("short of memory");
+  });
+
+  test("a card set aside is told so, not how long it waited", () => {
+    /* No wait applied, so a span would read as the wall being impatient — and
+       a shortened wait it never had is not something to report. */
+    const said = restNote(2 * 60, 20 * 60, 3 * HOUR, true);
+    expect(said).toContain("set aside");
+    expect(said).not.toContain("2m");
+    expect(said).not.toContain("short of memory");
+    expect(said).toContain("resumes where it left off");
+  });
+
+  test("and the detail says set aside where it would say a span", () => {
+    const said = restDetail(
+      [
+        { name: "old", quiet: 11 * HOUR },
+        { name: "parked", quiet: 120, aside: true },
+      ],
+      3 * HOUR,
+      3 * HOUR,
+    );
+    expect(said).toContain("old (11h)");
+    expect(said).toContain("parked (set aside)");
+    expect(restDetail([{ name: "parked", quiet: 120, aside: true }], 20 * 60, 3 * HOUR)).not.toContain(
+      "short of memory",
+    );
   });
 
   test("one card is named, several are counted", () => {
