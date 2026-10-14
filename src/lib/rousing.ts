@@ -31,10 +31,30 @@
  * the cards that fall outside it. `needsRousing` is that gate, named and shared
  * so the spawn and the prompt cannot drift apart.
  *
+ * And then a third set, which is not a widening of the second: the cards that
+ * **had a process when the wall last closed** come back with one (`comesBack`),
+ * because Lyss asked for exactly that and because the two things that made the
+ * first answer a disaster are both gone. That set is bounded now — `reaping.ts`
+ * stands a card down after three hours of quiet by default, sooner under
+ * pressure and almost at once when set aside, so "awake at close" means the
+ * cards you were actually working with rather than everything you ever opened.
+ * And it is a set the queue **speaks to never**: a process at rest costs memory
+ * and nothing else (no tokens either — `processes.md` measured a resumed process
+ * reading its whole conversation back out of the prompt cache), and a prompt is
+ * still reserved for a card that can prove it lost something. So the line this
+ * module draws moves from *the cards it spawns are the cards it speaks to* to
+ * *the cards it speaks to are the cards that lost something*, and the first half
+ * of the old sentence is what this set gives up. What it must not give up is the
+ * second, and `holding_post` is the guard: a card whose spawn would hand it a
+ * queued message or an overdue `wake_me` is a card whose process cannot be had
+ * for nothing, so it is left at rest exactly as before.
+ *
  * The queue still runs *behind* the painted wall, exactly as the transcript
  * reads do: nothing is awaited before the wall is on screen, and a card that has
  * already been spoken to by the time it is reached is simply skipped. This
  * module is the pure half — the gate, the order, the pacing, and the words. */
+
+import { AMPLE_BYTES } from "./reaping";
 
 /** How long to leave between spawns.
  *
@@ -46,7 +66,14 @@
 export const ROUSE_GAP_MS = 400;
 
 /** The little of a card this module needs. */
-export type Rousable = { dormant: boolean; interrupted: boolean; aside?: boolean };
+export type Rousable = {
+  dormant: boolean;
+  interrupted: boolean;
+  aside?: boolean;
+  /** It had a process when the wall last closed — the row's `awake` mark,
+   *  read once at restore (`store::migrate_v51`). */
+  leftAwake?: boolean;
+};
 
 /** Which cards the queue *considers*, in the order it reaches them.
  *
@@ -104,6 +131,143 @@ export function rouseOrder<T extends Rousable>(cards: T[]): T[] {
  *  rule and not about `LostJob`'s shape. */
 export function needsRousing(card: Rousable, jobs: number): boolean {
   return card.interrupted || jobs > 0;
+}
+
+/* ── cards that were awake come back awake ─────────────────────────────────── */
+
+/** Whether the wall gives a process back to the cards that had one when it
+ *  last closed. On unless you turned it off — it is what was asked for, and
+ *  what it spends is memory you were already spending when the wall went down.
+ *
+ *  A per-machine judgement, so `localStorage` beside `REST_KEY` rather than the
+ *  store, for that key's reason: how many cards this machine can hold at rest
+ *  is a fact about this machine. */
+export const REAWAKEN_KEY = "skein.reawaken";
+
+/** A stored value, made into the setting. Anything but `"off"` is on, so a
+ *  machine that has never been asked gets what was asked for, and a value
+ *  written by hand or by a newer build degrades to the default rather than to
+ *  no policy at all — the bargain `restFor` strikes next door. */
+export function reawakenFor(stored: unknown): boolean {
+  return stored !== "off";
+}
+
+/** The ground-menu line. It says what it does rather than naming a knob, and
+ *  it sits under the rest settings because it is the other end of the same
+ *  question: those decide when a card puts its process down, this decides
+ *  whether it picks it back up when the wall opens. */
+export const REAWAKEN_LABEL = "cards left awake come back awake";
+
+/** What the chord says it has just made true (`<space> m a`), in `reopenSaid`'s
+ *  register: the state, and what it means at the next launch, since nothing
+ *  visible happens at the moment of the flip. */
+export function reawakenSaid(on: boolean): string {
+  return on
+    ? "cards awake when the wall closes will wake with it — nothing is sent to them"
+    : "the wall will open with its cards at rest, but for any that lost a turn";
+}
+
+/** Is this card owed its process back because it had one when the wall closed?
+ *
+ *  A *wake*, never a prompt — the arm `needsRousing` does not cover and must
+ *  not grow to. `aside` is not asked for that function's reason: `rouseOrder`
+ *  has already dropped those, and setting a card aside stands its process down
+ *  within minutes anyway, so an aside card is rarely left awake at all. The
+ *  pair is asserted together in `rousing.test.ts` rather than decided twice. */
+export function comesBack(card: Rousable, on: boolean): boolean {
+  return on && !!card.leftAwake;
+}
+
+/** What one card is reckoned to cost at rest, for the budget below.
+ *
+ *  A gigabyte, which is the top of the range rather than the middle of it:
+ *  `processes.md` measured 710–880 MB of private commit per card at rest on
+ *  2026-10-14, and a session's heap grows a few dozen MB over its turns. The
+ *  budget is a ceiling, so over-reckoning is the direction that cannot hurt. */
+export const CARD_BYTES = 1024 * 1024 * 1024;
+
+/** How many cards the pass may wake before the machine is short of memory.
+ *
+ *  **The reaper is the bound on *which* cards; this is the bound on *how
+ *  many*.** Without the reaper, "awake at close" would be every card opened all
+ *  day, which is the measured disaster; with it, the set is the last few hours'
+ *  work. But a wall set to "idle cards keep their process" has no reaper, and a
+ *  machine that is short at launch has less room than it had at close. So the
+ *  pass stops where `reaping.ts` starts shortening its waits: below
+ *  `AMPLE_BYTES` available, a card woken now is a card the reaper would be
+ *  standing down early — spawned at a cost of five seconds and ~0.8 GB, to be
+ *  reaped a quarter of an hour later. That is churn rather than a decision.
+ *
+ *  One reading, at the start of the pass, rather than one per card: a process
+ *  takes seconds to reach its resting size and the pass spaces spawns 400ms
+ *  apart, so a reading taken after each spawn would see memory that had not
+ *  been spent yet. Every spawn in the pass counts against it, prompted ones
+ *  too, since they hold the same memory — but only the wakes owed nothing stop
+ *  when it runs out. A card that lost a turn is woken whatever is left, as it
+ *  always was.
+ *
+ *  `null` is no reading, and ignorance limits nothing — `waitFor`'s rule, with
+ *  the reaper still standing behind it. */
+export function returnBudget(available: number | null): number {
+  if (available === null) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.floor((available - AMPLE_BYTES) / CARD_BYTES));
+}
+
+/** Said on a card the pass gave its process back. `meta`, like `restNote` —
+ *  the counterpart of that line, and for the same reason: a card holding a
+ *  gigabyte that nobody has spoken to since launch owes you a sentence saying
+ *  why, and that nothing was sent to it. */
+export const CAME_BACK_NOTE =
+  "skein gave this card its process back — it had one when the wall last " +
+  "closed. nothing was sent to it; it is waiting for you, as it was.";
+
+/** Said instead, on a card that had a process and is left at rest because
+ *  waking it would hand it post (`store::holds_post`). Said rather than done
+ *  silently, `ALREADY_ROUSED_NOTE`'s reason: a card the queue left alone on
+ *  purpose must not read as one it forgot. */
+export const POST_WAITING_NOTE =
+  "left at rest by skein — it had a process when the wall last closed, but " +
+  "post is waiting for it, and handing that over would spend a turn. it goes " +
+  "out the moment you speak to this card.";
+
+/** And on one left at rest because `returnBudget` ran out. */
+export const SHORT_OF_MEMORY_NOTE =
+  "left at rest by skein — it had a process when the wall last closed, but " +
+  "the machine was short of memory. it wakes when you speak to it.";
+
+/** The chronicle's line for one pass, `restMark`'s counterpart: one row for
+ *  the pass rather than one per card, in Volery's own voice, because this is
+ *  the wall changing a card's state with no gesture of yours behind it. A pass
+ *  that woke nothing and left something is still a row — a card you expected
+ *  back and did not get is the one most worth a line. */
+export function returnMark(woke: readonly string[], left: number): string {
+  if (woke.length === 0) {
+    return left === 1
+      ? "left a card at rest that was awake when the wall last closed"
+      : `left ${left} cards at rest that were awake when the wall last closed`;
+  }
+  return woke.length === 1
+    ? `woke “${woke[0]}”, awake when the wall last closed`
+    : `woke ${woke.length} cards that were awake when the wall last closed`;
+}
+
+/** Past this many, `returnDetail` counts rather than names. */
+const NAMED = 4;
+
+/** And the detail under it: who came back, and who was left and why — named
+ *  while there is room and counted past it, as `restDetail` does. */
+export function returnDetail(
+  woke: readonly string[],
+  short: number,
+  holding: number,
+): string {
+  const shown = woke.slice(0, NAMED).join(", ");
+  const more = woke.length > NAMED ? ` and ${woke.length - NAMED} more` : "";
+  const left = [
+    short ? `${short} left at rest, the machine being short of memory` : "",
+    holding ? `${holding} left at rest with post waiting` : "",
+  ];
+  return [`${shown}${more}`, ...left].filter(Boolean).join("; ");
 }
 
 /** Which prompt a card the gate let through is owed, or none at all.

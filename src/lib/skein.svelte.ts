@@ -97,7 +97,16 @@ import {
   unansweredRousePrompt,
   ALREADY_ROUSED_NOTE,
   NOTHING_TO_RESUME_NOTE,
+  CAME_BACK_NOTE,
+  POST_WAITING_NOTE,
+  REAWAKEN_KEY,
+  SHORT_OF_MEMORY_NOTE,
+  comesBack,
   needsRousing,
+  reawakenFor,
+  returnBudget,
+  returnDetail,
+  returnMark,
   rousePromptFor,
   rouseOrder,
 } from "./rousing";
@@ -145,6 +154,9 @@ export type Grouping = {
  *  row and then writes every drag to a territory id that is really a project
  *  id, which matches no row. */
 export type Ensured = { project: Project; territories: Grouping[] };
+
+/** One armed `wake_me` as `later.rs` sends it — `wakes_armed` and `wake:armed`. */
+type ArmedWake = { conversation_id: string; id: string; due_at: number; note: string };
 
 export type Project = {
   id: string;
@@ -474,6 +486,12 @@ export class Skein {
   wakeQuiet = $state(false);
   /** The rousing queue is working its way along the wall. */
   rousing = $state(false);
+  /** Whether the cards that had a process when the wall last closed get one
+   *  back at launch — the ground menu's `REAWAKEN_LABEL`. Per-machine, in
+   *  `localStorage` beside `resting`, and read in the constructor for the same
+   *  reason: the pass it governs starts off `load`, and a setting read a beat
+   *  late is a launch that did the other thing. */
+  reawaken = $state(true);
 
   /** Where chat cards stand (`store::chat_home`), once Rust has said.
    *
@@ -596,6 +614,7 @@ export class Skein {
        three hours read late on a machine set to `never` would be worse. */
     try {
       this.resting = restFor(localStorage.getItem(REST_KEY));
+      this.reawaken = reawakenFor(localStorage.getItem(REAWAKEN_KEY));
     } catch {
       /* A browser refusing storage leaves the default standing, which is the
          same answer a machine that has never been asked gives. */
@@ -852,6 +871,21 @@ export class Skein {
       listen("notice:changed", () => void this.#loadNotices()),
     );
     void this.#loadNotices();
+
+    keep(
+      /* A card armed a `wake_me`, or took one back, or went and took its wakes
+         with it. Patched rather than re-read, because the one change left out
+         on purpose is a serve: see `later.rs`'s note on what the face reads. */
+      listen<ArmedWake>("wake:armed", (e) => this.#armWake(e.payload)),
+    );
+    keep(
+      listen<{ conversation_id: string; ids: string[] | null }>("wake:disarmed", (e) => {
+        const c = this.#byId.get(e.payload.conversation_id);
+        if (!c) return;
+        const ids = e.payload.ids;
+        c.wakes = ids === null ? [] : c.wakes.filter((w) => !ids.includes(w.id));
+      }),
+    );
 
     keep(
       /* One event per recipient, so a broadcast is a strand each rather than
@@ -1169,6 +1203,12 @@ export class Skein {
   }
 
   /** Paint the wall from disk, then start the servers. No agent is spawned. */
+  #armWake(r: ArmedWake) {
+    const c = this.#byId.get(r.conversation_id);
+    if (!c) return;
+    c.wakes = [...c.wakes.filter((w) => w.id !== r.id), { id: r.id, at: r.due_at, note: r.note, from: "wall" }];
+  }
+
   async load() {
     /* What today has cost so far, before anything is painted — the figure and
        the ground's warmth are about the day rather than about this run of the
@@ -1293,6 +1333,16 @@ export class Skein {
          is worth having and is worth nothing on the first frame. */
       void invoke<Record<string, number>>("relay_inboxes")
         .then((counts) => this.flights.seed(counts ?? {}))
+        .catch(() => {});
+
+      /* And what each card has armed to be woken by — a card waiting on a wake
+         is not a card at rest (`waiting.ts`). Behind the wall like the inbox,
+         and merged rather than assigned, so a wake armed in the beat between
+         the paint and this answer is not dropped by an answer older than it. */
+      void invoke<ArmedWake[]>("wakes_armed")
+        .then((rows) => {
+          for (const r of rows ?? []) this.#armWake(r);
+        })
         .catch(() => {});
 
       /* And who opened whom. Behind the wall for the same reason, with one
@@ -2108,6 +2158,10 @@ export class Skein {
         accountLabel: conv.accountLabel,
       });
       conv.dormant = false;
+      /* Whatever the last wall knew about this card is spent: it has a process
+         from this one now, and if it loses it again that is today's rest, not
+         a reason for a second rousing pass to bring it back. */
+      conv.leftAwake = false;
       return "spawned";
     } catch (err) {
       /* Belt and braces: if the supervisor says it is already running, then it
@@ -2159,6 +2213,16 @@ export class Skein {
    *  is why this reads as a simplification rather than a new rule: the cards
    *  that are spawned are exactly the cards that are then spoken to.
    *
+   *  **Then one more set is spawned and never spoken to**: the cards that had a
+   *  process when the wall last closed (`comesBack`, the row's `awake` mark).
+   *  They get the process and *silence* — no resume prompt, no jobs prompt,
+   *  nothing — because a process costs memory and a prompt costs a turn, and
+   *  only a card that lost something is owed the second. Two things keep that
+   *  silence honest: a card whose spawn would hand it post is left at rest
+   *  (`holding_post`, since the spawn drains its inbox), and the pass stops
+   *  waking these once the machine is short (`returnBudget`). `rousing.ts` has
+   *  the argument for why the reaper makes this set small enough to afford.
+   *
    *  Five things keep it from being reckless:
    *
    *  - **Nothing here is awaited by `load`.** The wall is on screen and correct
@@ -2185,7 +2249,21 @@ export class Skein {
     if (this.rousing) return 0;
     this.rousing = true;
     let woken = 0;
+    /* What came back with nothing sent, and what was left and why — one
+       chronicle row for the pass, `letRest`'s shape. */
+    const cameBack: string[] = [];
+    let leftShort = 0;
+    let leftHolding = 0;
     try {
+      /* How many cards this pass may wake on memory alone — one reading of the
+         machine, taken only if some card is owed a wake for having been awake,
+         so a launch with nothing to bring back asks nothing. See `returnBudget`
+         on why once rather than per card. */
+      let budget = 0;
+      if (this.convs.some((c) => c.dormant && !c.aside && comesBack(c, this.reawaken))) {
+        const survey = await invoke<Survey>("reap_survey", { ids: [] }).catch(() => null);
+        budget = returnBudget(survey?.available ?? null);
+      }
       /* There was a `browser_await_start` here, and the queue no longer waits
          on anything.
          It held the first spawn until a browser restored at launch had answered,
@@ -2246,57 +2324,100 @@ export class Skein {
            `#deliver` on the send — rather than at launch, where a dozen
            processes and ~1.1 GB apiece bought nothing but the ability to wait.
            See the module note in `rousing.ts` for the measurement. */
-        if (!needsRousing(conv, jobs.length)) continue;
-        /* What the session is already holding, asked ahead of the spawn because
-           it can be — this is a file on disk, and reading it needs no process.
-           That ordering is now load-bearing rather than incidental: a card
-           already holding an unanswered copy is one this queue will say nothing
-           to, and the spawn exists only to carry what it says.
+        const prompted = needsRousing(conv, jobs.length);
+        /* The third reason, and the one that is owed a process and nothing
+           else. Asked of the same card in the same turn of the loop rather than
+           in a pass of its own, so the two can never disagree about a card that
+           is both — that card is prompted exactly as it would have been, and
+           its process is the one the prompt needed anyway. */
+        const returning = comesBack(conv, this.reawaken);
+        if (!prompted && !returning) continue;
+        /* What it will be sent: one of the two prompts, or nothing at all. Every
+           arm below that withholds a prompt lands here rather than at a
+           `continue`, so that a card that was awake still comes back — silently
+           — when the prompt it might have been owed turns out not to be. */
+        let owed: "resume" | "jobs" | "nothing" = "nothing";
+        if (prompted) {
+          /* What the session is already holding, asked ahead of the spawn because
+             it can be — this is a file on disk, and reading it needs no process.
+             That ordering is now load-bearing rather than incidental: a card
+             already holding an unanswered copy is one this queue will say nothing
+             to, and the spawn exists only to carry what it says — unless the card
+             was awake when the wall closed, when it carries nothing at all.
 
-           `--resume` puts the whole transcript back in front of the model, and
-           a rouse prompt is *in* that transcript: it went down stdin like
-           anything else and the CLI recorded it as an ordinary `user` message.
-           So a card that was sent one and died before answering comes back
-           already holding it, and composing a second is a real send against a
-           real allowance for an agent that then reads the same instructions
-           twice, byte for byte, with nothing to say why. See
-           `unansweredRousePrompt`, and sink `01e00f30`.
+             `--resume` puts the whole transcript back in front of the model, and
+             a rouse prompt is *in* that transcript: it went down stdin like
+             anything else and the CLI recorded it as an ordinary `user` message.
+             So a card that was sent one and died before answering comes back
+             already holding it, and composing a second is a real send against a
+             real allowance for an agent that then reads the same instructions
+             twice, byte for byte, with nothing to say why. See
+             `unansweredRousePrompt`, and sink `01e00f30`.
 
-           Awaited here rather than left to `#fillHistory`, which is running
-           beside this queue: what is being asked of the transcript is not the
-           scrollback but whether to spend money, and that cannot be answered
-           off a file that has not arrived. `loadHistory` shares its in-flight
-           read, so this is the same one read either way. */
-        await this.loadHistory(conv);
-        /* `"none"` is the file not being there, or holding nothing a fold
-           keeps; `"error"` is not knowing, and keeps the old behaviour rather
-           than withholding a resume on a read that merely failed. */
-        const owed = rousePromptFor(lost, conv.historyState !== "none", jobs.length);
-        if (owed === "nothing") {
-          /* Interrupted, with no session to resume. Left dormant, said once,
-             and the flag put down — there is no process here for `set_mid_turn`
-             to race, and left standing it would say this at every launch. */
-          conv.note(NOTHING_TO_RESUME_NOTE);
-          conv.interrupted = false;
-          void invoke("update_conversation", { id: conv.id, interrupted: false }).catch(
-            () => {},
-          );
-          continue;
+             Awaited here rather than left to `#fillHistory`, which is running
+             beside this queue: what is being asked of the transcript is not the
+             scrollback but whether to spend money, and that cannot be answered
+             off a file that has not arrived. `loadHistory` shares its in-flight
+             read, so this is the same one read either way. */
+          await this.loadHistory(conv);
+          /* `"none"` is the file not being there, or holding nothing a fold
+             keeps; `"error"` is not knowing, and keeps the old behaviour rather
+             than withholding a resume on a read that merely failed. */
+          owed = rousePromptFor(lost, conv.historyState !== "none", jobs.length);
+          if (owed === "nothing") {
+            /* Interrupted, with no session to resume. Not prompted, said once,
+               and the flag put down — there is no process here for `set_mid_turn`
+               to race, and left standing it would say this at every launch. Left
+               dormant too, unless it was awake, which the arm below decides. */
+            conv.note(NOTHING_TO_RESUME_NOTE);
+            conv.interrupted = false;
+            void invoke("update_conversation", { id: conv.id, interrupted: false }).catch(
+              () => {},
+            );
+          } else if (unansweredRousePrompt(conv.history) !== null) {
+            /* Said rather than done silently, for the reason every other thing
+               Skein does on its own behalf is said: a card left deliberately
+               alone must not read as one the queue forgot. The jobs are still
+               marked told — the row is about this card having been given the
+               news, and it has been.
+
+               No `activity` write here any more. There used to be one, because
+               the card had been spawned and was standing there saying `waking…`
+               about a wake nothing followed; this card is woken now only if it was
+               awake when the wall closed, and the quiet arm below draws that one. */
+            conv.note(ALREADY_ROUSED_NOTE);
+            await this.#toldAboutJobs(conv, jobs);
+            owed = "nothing";
+          }
         }
-        if (unansweredRousePrompt(conv.history) !== null) {
-          /* Said rather than done silently, for the reason every other thing
-             Skein does on its own behalf is said: a card left deliberately
-             alone must not read as one the queue forgot. The jobs are still
-             marked told — the row is about this card having been given the
-             news, and it has been.
-
-             No `activity` write any more. There used to be one, because the
-             card had been spawned and was standing there saying `waking…` about
-             a wake nothing followed; this card is never woken now, so what it is
-             drawn as is what a dormant card is drawn as, and that is correct. */
-          conv.note(ALREADY_ROUSED_NOTE);
-          await this.#toldAboutJobs(conv, jobs);
-          continue;
+        if (owed === "nothing") {
+          /* Nothing to say, so the only reason left to spawn is having been
+             awake — and that reason spends nothing, which is the whole of what
+             it is allowed to do. The two checks below are what hold it to that,
+             cheapest first. */
+          if (!returning) continue;
+          if (budget <= 0) {
+            conv.note(SHORT_OF_MEMORY_NOTE);
+            leftShort += 1;
+            continue;
+          }
+          /* The spawn drains the inbox (`relay::drain_inbox`), and `serve_due`
+             delivers an overdue `wake_me` to a card the moment it is live — so a
+             card with either waiting is a card whose process is a turn. Left
+             exactly as it would have been: the post goes out when you turn to
+             it. Asked last, since it is the one IPC hop in this arm. */
+          const holding = await invoke<boolean>("holding_post", {
+            conversationId: conv.id,
+          }).catch(() => true);
+          if (holding) {
+            conv.note(POST_WAITING_NOTE);
+            leftHolding += 1;
+            continue;
+          }
+          /* Re-asked after the await, for the reason the head of the loop asks
+             it: a second is long enough for you to have got there first. */
+          if (this.#gone) break;
+          if (!conv.dormant || !this.#byId.has(conv.id)) continue;
         }
         /* `#spawn`, not `wake`, because the answer this queue needs is *did we
            start it* rather than *does it have a process*. They differ in one
@@ -2311,7 +2432,23 @@ export class Skein {
         const started = await this.#spawn(conv);
         if (started !== "spawned") continue;
         woken += 1;
-        if (conv.working) {
+        budget -= 1;
+        if (owed === "nothing") {
+          /* Given its process back and sent nothing. `ready` rather than the
+             `waking…` the spawn left, which nothing would otherwise clear: a
+             process at rest emits no event until something is written to it.
+             And not over `interrupted` — a card that lost a turn and was owed
+             nothing for it keeps saying so, since a process changes nothing
+             about what was lost.
+             Unless you got there first and shared the flight, as the arm below
+             has it: then the turn owns the line, and a note claiming nothing
+             was sent would sit on top of what you just said. */
+          if (!conv.working) {
+            conv.activity = conv.interrupted ? "interrupted" : "ready";
+            conv.note(CAME_BACK_NOTE);
+            cameBack.push(conv.title || conv.project || "a card");
+          }
+        } else if (conv.working) {
           /* You got here first, in the window between the job query and the
              spawn — which `#spawn` reports as `"spawned"` when your send and
              this queue shared one flight. Your words are on the wire and a
@@ -2349,6 +2486,14 @@ export class Skein {
     } finally {
       this.rousing = false;
     }
+    if (cameBack.length || leftShort || leftHolding) {
+      this.#record(
+        null,
+        "note",
+        returnMark(cameBack, leftShort + leftHolding),
+        returnDetail(cameBack, leftShort, leftHolding),
+      );
+    }
     return woken;
   }
 
@@ -2378,6 +2523,16 @@ export class Skein {
    *  card already being closed is at best wasted and at worst a second kill
    *  landing on the process the *next* wake spawned. */
   #resting = false;
+
+  setReawaken(on: boolean) {
+    this.reawaken = on;
+    try {
+      localStorage.setItem(REAWAKEN_KEY, on ? "on" : "off");
+    } catch {
+      /* As `setResting`: this machine forgets the choice, and the default
+         stands. */
+    }
+  }
 
   setResting(id: unknown) {
     this.resting = restFor(id);

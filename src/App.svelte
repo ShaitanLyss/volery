@@ -76,6 +76,7 @@
   import { Ambience } from "./lib/ambience.svelte";
   import { MOTIONS } from "./lib/motion";
   import { RESTS } from "./lib/reaping";
+  import { REAWAKEN_LABEL, reawakenSaid } from "./lib/rousing";
   import { Motion } from "./lib/motion.svelte";
   import { Machine } from "./lib/machine.svelte";
   import { awakeLine, awakeSaid, reopenLine, reopenSaid } from "./lib/machine";
@@ -490,7 +491,15 @@
       else berths.cycleDock();
     }
     else if (verb.kind === "presence") void togglePresence();
-    else if (verb.kind === "machine") void flipMachine(verb.act);
+    else if (verb.kind === "machine") {
+      /* Not the machine's own setting but the wall's, and it lives on `Skein`
+         rather than `machine` — the same toggle the ground menu offers, said
+         back the way the other two are. */
+      if (verb.act === "reawaken") {
+        skein.setReawaken(!skein.reawaken);
+        leader.say(reawakenSaid(skein.reawaken));
+      } else void flipMachine(verb.act);
+    }
     else if (verb.kind === "grouping") groupingChord(verb.act);
     else if (verb.kind === "elsewhere") {
       if (verb.act === "new") sectionMenuFocused();
@@ -2125,6 +2134,11 @@
             label: r.label,
             on: skein.resting === r.id,
           })),
+          /* And the other end of the same question: whether a card that still
+             had its process when the wall closed gets it back when the wall
+             opens — with nothing sent to it. A knob of its own under the rests,
+             per `menu.ts`, since it answers yes or no where they pick a wait. */
+          [{ id: "reawaken", label: REAWAKEN_LABEL, on: skein.reawaken }],
           /* And what the wall asks of the machine under it. Each line says
              what is true now — including a closed lid or a policy that defeats
              it — rather than naming the knob; see `machine.ts`. */
@@ -2160,6 +2174,7 @@
         else if (id === "ambience") showEffects = true;
         else if (id.startsWith("motion:")) motion.set(id.slice(7));
         else if (id.startsWith("rest:")) skein.setResting(id.slice(5));
+        else if (id === "reawaken") skein.setReawaken(!skein.reawaken);
         else if (id === "machine:awake" || id === "machine:reopen")
           void machine.toggle(id.slice(8) as "awake" | "reopen").catch((e) => (skein.fault = String(e)));
         /* And what the wall tells every card standing on it, one scope out from

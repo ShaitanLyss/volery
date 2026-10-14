@@ -67,6 +67,7 @@ function source(over: Partial<DigestSource> = {}): DigestSource {
       { kind: "text", text: "done — the ring no longer pegs" },
     ],
     jobs: [],
+    pendingWakes: [],
     asks: [],
     ...over,
   };
@@ -96,6 +97,7 @@ describe("making a digest", () => {
       ctx: 0.412,
       said: "done — the ring no longer pegs",
       jobs: 0,
+      wakes: [],
       asks: [],
       removals: [],
       closings: [],
@@ -103,6 +105,24 @@ describe("making a digest", () => {
       notices: [],
       parent: null,
     });
+  });
+
+  /* A card waiting on a wake reads as waiting on the far wall too, and what
+     crosses is the moment — never a countdown, which would change the digest
+     every second and have it shipped every second. */
+  test("carries the moment a card is waiting for, and an older wall's carries none", () => {
+    const d = digestOf(source({ pendingWakes: [{ at: 9_000, note: "x".repeat(900), from: "wall" }] }));
+    expect(d.wakes).toHaveLength(1);
+    expect(d.wakes[0]).toMatchObject({ at: 9_000, from: "wall" });
+    expect(d.wakes[0].note.length).toBeLessThanOrEqual(300);
+    const back = readDigest(JSON.parse(JSON.stringify(d)))!;
+    expect(back.wakes[0].at).toBe(9_000);
+    const old = JSON.parse(JSON.stringify(d));
+    delete old.wakes;
+    expect(readDigest(old)?.wakes).toEqual([]);
+    expect(readDigest({ ...old, wakes: [{ at: "soon" }, { at: null, from: "elsewhere" }] })?.wakes).toEqual([
+      { at: null, note: "", from: "wall" },
+    ]);
   });
 
   /* What a shadow's panel states in its footer the way a local card's does. An

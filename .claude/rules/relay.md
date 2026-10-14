@@ -292,6 +292,57 @@ second mechanism beside it would be a second thing for `relay.ts` to learn to dr
   `mcp__skein__cancel_wake` beside the id — `servers`' argument for its siblings. The same
   receipt used to promise a note "in 10 minutes ago"; `within` is the forward half of `said`.
 
+### A card waiting on a wake says so (2026-10-15)
+
+`at rest` covered two states that want opposite things from you — **finished, nothing will
+happen** and **waiting, something will happen at a known time** — and the wall knew which was
+which the whole time: every armed wake is a row here with its `due_at` and the note saying why,
+and nothing in `src/` drew any of it. Lyss's report, from a card on another wall that armed a
+thirty-minute wake and stopped: it read `at rest`, grey at first (right), then its status disc
+and outline warmed amber on the neglect clock (wrong). So this was surfacing a fact rather than
+building a mechanism, and **nothing new is stored**: `wakes_armed` reads the table once when the
+wall is painted, `wake:armed` / `wake:disarmed` patch it, and the reading is `waiting.ts`'s.
+
+- **Patched, not re-read, because a serve says nothing.** The DELETE is the claim, so a
+  re-read after a serve forgets the wake the moment it fires — right when the note opens a turn
+  on a live card, and wrong when it went to a dormant card's inbox, where nothing happens at
+  all and the face would quietly go back to `at rest`. A wake is **spent when a turn has ended
+  past its time** (`Conversation.turnEndedAt` — not `restingSince`, which a job landing also
+  moves), and pruned when the next one opens. One due *during* a turn was taken into it or is
+  queued behind it.
+- **Two clocks, one reading.** The CLI's `CronCreate` / `ScheduleWakeup` (`foldTimers`) now
+  keep `at` — the moment, no slack, which `until` has on purpose for the reaper — and the note
+  (`reason`, else `prompt`). `waiting.ts::sessionWakes` makes them `Wake`s beside this table's,
+  and they read identically on the face. The tooltip says which one is held by the process and
+  lost with it. A **recurring** cron is the one that cannot fully join: it names no single
+  moment, so it says `on a schedule` and is never late.
+- **It goes through `urgencyFor`, as `aside` and `seen` do** — the cycle, the dock's count,
+  the peek and the card's colour are four readings of one question, and her report named two
+  of them. A pending wake reads `rest` for the whole wait; the first five minutes already did,
+  so the change stops a clock rather than repainting a state.
+- **But it is `aside`'s inverse, and the late arm is why it is a parameter.** `aside` silences
+  the clock for as long as you like; a wake has a deadline. **Late is a minute past the time**
+  (`LATE_AFTER_S`): the waker ticks every five seconds and a live card echoes within one, the
+  CLI fires a wakeup on time and a one-shot on time or early, so nothing that is coming arrives
+  later than seconds past it — twelve ticks of margin, short enough to have said so by the time
+  anybody looks. Late is news, read like a question left hanging: `soft` at once, `ask` after
+  `QUESTION_BLOOM_S`. Not the neglect clock, which counts from the rest and would bloom the
+  instant a long wake lapsed. Below `aside`, which keeps the last word; above `seen`, since a
+  lapsed wake is news after whatever notice you acknowledged.
+- **The face says when, and then that it has not.** `waiting — wakes at 14:32`, or `wakes in
+  4m` inside fifteen minutes; `waiting — waking now` for the minute after the time, so passing
+  zero is visible rather than merely recorded; then `should have woken at 14:32 · 4m ago`. The
+  note is the tooltip on the activity line. Every density that draws that line; `field` draws
+  none, and its corners are all spoken for — there the colour staying grey is the reading.
+- **Across the flyway the moment travels, never the countdown.** The digest carries
+  `pendingWakes` — chosen off no clock, so it changes on an event — with `at` on the owner's
+  clock, and `waiting.ts::hereAt` moves it onto this one by `askedAt`'s arithmetic. The colour
+  is the owner's tier, so the far side only *words* lateness. Nothing is claimed while the wall
+  is unheard.
+- **The edge it does not cover**: a wake served to a dormant card's inbox, then Volery restarted
+  before the card stirred. The row is gone and this wall never held it, so the card reads at
+  rest; its inbox mark is what still says something is waiting for it.
+
 ### Chat cards may do neither, and this is the one gate worth arguing for
 
 A chat card spawns `--tools WebSearch,WebFetch` with no bypass, precisely so that what it

@@ -962,7 +962,12 @@ pub struct Conv {
 
 /// Stamps each spawn, so a reader thread can tell its own child from its
 /// successor. See `Conv::generation`.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+///
+/// From one rather than zero, because the number is also written to the card's
+/// row as the mark that it has a process (`store::migrate_v51`), where zero
+/// means it has none. Equality is the only thing ever asked of it otherwise, so
+/// where it starts changes nothing else.
+static GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// `.0` is the live children; `.1` says the app is on its way out; `.2` is the
 /// ids a spawn is part-way through starting.
@@ -1632,6 +1637,12 @@ fn spawn_now(
     /* Minted before the reader thread is given it, so the thread and the map
        entry below are stamped with the same number. */
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+    /* The card has a process, so its row says so — now, and not at any exit,
+       which is the whole of what lets a crash leave the record true
+       (`store::migrate_v51`). Before the reader thread exists, so the clear that
+       thread writes as its stream ends can only ever come after this: a child
+       that dies on its first breath still takes its mark down with it. */
+    persist_awake(app, &id, generation, true);
 
     // stdout: one JSON object per line. Anything unparseable is surfaced rather
     // than swallowed — a silent drop here would be very hard to debug later.
@@ -1713,6 +1724,12 @@ fn spawn_now(
             forget_browser(&id);
             if !app.state::<Supervisor>().going_away() {
                 persist_turn(&app, &id, false);
+                /* And it no longer has a process — rested, closed, cleared,
+                   moved, or dead on its own. The same exception for the same
+                   reason: quitting ends every stream by killing it, and the
+                   cards it kills are exactly the ones whose mark the next
+                   launch reads to give them a process back. */
+                persist_awake(&app, &id, generation, false);
             }
             /* By generation as well as by id: if this stream ended because
                `close_conversation` killed it and the card has since been given
@@ -1969,6 +1986,23 @@ fn turn_mark(kind: &str) -> Option<bool> {
         "result" => Some(false),
         "assistant" | "user" | "stream_event" => Some(true),
         _ => None,
+    }
+}
+
+/// Write through to the card's row that it has a process, or that the one
+/// numbered `generation` has gone. Best-effort for `persist_turn`'s reason: a
+/// mark that did not land costs a card its wake at the next launch, which is
+/// what every card got before there was a mark. See `store::migrate_v51`, and
+/// `rousing.ts::comesBack` for what reads it.
+fn persist_awake(app: &AppHandle, id: &str, generation: u64, awake: bool) {
+    if let Some(store) = app.try_state::<crate::store::Store>() {
+        if let Ok(conn) = store.0.lock() {
+            if awake {
+                crate::store::set_awake(&conn, id, generation);
+            } else {
+                crate::store::clear_awake(&conn, id, generation);
+            }
+        }
     }
 }
 

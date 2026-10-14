@@ -2803,12 +2803,23 @@ describe("schedules the CLI keeps in the card's process", () => {
 
   test("a wakeup is spent once its time has passed, and a second one replaces the first", () => {
     let t = foldTimers([], "ScheduleWakeup", { delaySeconds: 90 }, WAKE, false, now);
-    expect(t).toEqual([{ id: WAKEUP, until: now + 100_000 + 15 * MIN }]);
+    expect(t).toEqual([{ id: WAKEUP, until: now + 100_000 + 15 * MIN, at: now + 100_000, note: "" }]);
     expect(timersArmed(t, now + 10 * MIN)).toBe(true);
     expect(timersArmed(t, now + 20 * MIN)).toBe(false);
     t = foldTimers(t, "ScheduleWakeup", { delaySeconds: 1800 }, WAKE.replace("(in 100s)", "(in 1800s)"), false, now);
     expect(t.length).toBe(1);
     expect(t[0].until).toBe(now + 1_800_000 + 15 * MIN);
+  });
+
+  test("each keeps the moment it is meant for and why, with no slack in it", () => {
+    /* `until` errs late for the reaper; `at` is what the face says and what
+       lateness counts from, so it must not (`waiting.ts`). */
+    const w = foldTimers([], "ScheduleWakeup", { delaySeconds: 90, reason: "checking the deploy", prompt: "look" }, WAKE, false, now);
+    expect(w[0]).toMatchObject({ at: now + 100_000, note: "checking the deploy" });
+    const one = foldTimers([], "CronCreate", { cron: "50 22 14 10 *", prompt: "  run the gate  " }, ONE_SHOT, false, now);
+    expect(one[0]).toMatchObject({ at: new Date(2026, 9, 14, 22, 50).getTime(), note: "run the gate" });
+    /* A recurring job names no single moment, so it claims none. */
+    expect(foldTimers([], "CronCreate", { cron: "7 * * * *" }, RECURRING, false, now)[0].at).toBe(null);
   });
 
   test("stopping the loop clears the wakeup", () => {
@@ -2817,7 +2828,7 @@ describe("schedules the CLI keeps in the card's process", () => {
   });
 
   test("a refused call arms nothing and deletes nothing", () => {
-    const armed: SessionTimer[] = [{ id: "fb128532", until: null }];
+    const armed: SessionTimer[] = [{ id: "fb128532", until: null, at: null, note: "" }];
     expect(foldTimers([], "CronCreate", { cron: "50 22 14 10 *" }, ONE_SHOT, true, now)).toEqual([]);
     expect(foldTimers(armed, "CronDelete", { id: "fb128532" }, "no such job", true, now)).toEqual(armed);
   });

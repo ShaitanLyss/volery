@@ -36,6 +36,7 @@ import { blankAnswers, composeAnswer, normalizeAsk, type AskQuestion } from "./a
 import type { Skein } from "./skein.svelte";
 import { spanOf, type Tier } from "./classify";
 import { Listeners } from "./listeners";
+import { hereAt, readWaiting, type Waiting } from "./waiting";
 import {
   advance,
   asLines,
@@ -268,6 +269,24 @@ export class Shadow {
   get idleSeconds() {
     return this.face.idleSeconds;
   }
+  /** What it is waiting on, its moments moved onto this wall's clock. **Nothing
+   *  while its wall is unheard or it is working**: a wake that may have fired
+   *  over there cannot be claimed as pending here, `open`'s honesty again. The
+   *  colour is never decided here — late or not, the tier is the owner's. */
+  get waiting(): Waiting | null {
+    return this.#waiting;
+  }
+  #waiting = $derived.by((): Waiting | null => {
+    if (this.face.unheard || this.face.working || this.busy) return null;
+    const w = this.#walls.walls[this.host];
+    const wakes = this.digest.wakes.map((x, i) => ({
+      id: String(i),
+      at: x.at === null ? null : w ? hereAt(x.at, w.at, w.madeAt) : x.at,
+      note: x.note,
+      from: x.from,
+    }));
+    return readWaiting(wakes, clock.t);
+  });
   get ctx() {
     return this.digest.ctx;
   }
@@ -702,6 +721,7 @@ export class Elsewhere {
       ctx: c.ctx,
       lines: c.lines,
       jobs: c.jobs,
+      pendingWakes: c.pendingWakes,
       asks: c.asks,
       notices: this.#skein.notices,
       parent: this.#parentOf(c.id),

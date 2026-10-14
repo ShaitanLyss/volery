@@ -77,6 +77,12 @@ export const DIGEST_V = 1;
 export const TITLE_CAP = 80;
 export const DOING_CAP = 120;
 export const SAID_CAP = 200;
+/** `later.rs`'s `MAX_ARMED` and one of the CLI's beside it. */
+export const WAKES_CAP = 4;
+/** A wake's note is a tooltip, and `waiting.ts` cuts it shorter still. */
+export const WAKE_NOTE_CAP = 300;
+
+export type DigestWake = { at: number | null; note: string; from: "wall" | "session" };
 /** A wall with more open cards than this is drawn with the first this many. */
 export const CARDS_CAP = 400;
 
@@ -130,6 +136,14 @@ export type CardDigest = {
   said: string;
   /** Background jobs still running. */
   jobs: number;
+  /** The wakes the card is waiting on, soonest first — `Conversation.pendingWakes`,
+   *  at most `WAKES_CAP`. `at` is **on the owning wall's clock**, the moment and
+   *  never the countdown: constant for as long as the wake is armed, so the
+   *  digest does not change every second, and moved onto the far side's clock
+   *  by `waiting.ts::hereAt` so no two clocks are compared. Empty from a wall
+   *  before 2026-10-15, which reads as waiting on nothing — `at rest`, as that
+   *  wall would have drawn it itself. */
+  wakes: DigestWake[];
   /** Questions the card is parked on, oldest first — what lets a card asking
    *  on one machine be answered from another. See `DigestAsk`. */
   asks: DigestAsk[];
@@ -272,6 +286,9 @@ export type DigestSource = {
   ctx: number;
   lines: readonly { kind: string; text: string }[];
   jobs: readonly unknown[];
+  /** `Conversation.pendingWakes` — off no clock, which is why it rather than
+   *  `waiting`. */
+  pendingWakes: readonly DigestWake[];
   /** `Conversation.asks`. Volery's own questions (`ours`) never travel as
    *  asks — their prose is written from the owning machine's point of view —
    *  but in fields of their own carrying their evidence, composed again on the
@@ -345,6 +362,9 @@ export function digestOf(c: DigestSource): CardDigest {
     ctx: Math.round(clamp01(c.ctx) * 1000) / 1000,
     said: capText(lastSaid(c.lines), SAID_CAP),
     jobs: c.jobs.length,
+    wakes: c.pendingWakes
+      .slice(0, WAKES_CAP)
+      .map((w) => ({ at: w.at, note: capText(w.note, WAKE_NOTE_CAP), from: w.from })),
     asks: c.asks
       .filter((a) => !a.ours)
       .slice(0, ASKS_CAP)
@@ -428,6 +448,21 @@ function stamp(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+function readWakes(v: unknown): DigestWake[] {
+  if (!Array.isArray(v)) return [];
+  const out: DigestWake[] = [];
+  for (const w of v.slice(0, WAKES_CAP)) {
+    if (!w || typeof w !== "object") continue;
+    const r = w as Record<string, unknown>;
+    /* Null is a schedule naming no moment; anything else that is not a number
+       is not evidence of one, and reading it as "on a schedule" would be a
+       claim the other wall never made. */
+    if (r.at !== null && stamp(r.at) === null) continue;
+    out.push({ at: stamp(r.at), note: str(r.note, WAKE_NOTE_CAP), from: r.from === "session" ? "session" : "wall" });
+  }
+  return out;
+}
+
 /** One digest off the wire, or null if it cannot be drawn at all.
  *
  *  Only a missing id refuses: a card with no id is nothing a prompt could be
@@ -463,6 +498,7 @@ export function readDigest(raw: unknown): CardDigest | null {
     ctx: clamp01(typeof r.ctx === "number" ? r.ctx : 0),
     said: str(r.said, SAID_CAP),
     jobs: Math.min(99, Math.max(0, Math.floor(jobs))),
+    wakes: readWakes(r.wakes),
     asks: readAsks(r.asks),
     removals: readRemovals(r.removals),
     closings: readClosings(r.closings),

@@ -79,6 +79,7 @@ function source(over: Partial<DigestSource> = {}): DigestSource {
     ctx: 0.2,
     lines: [],
     jobs: [],
+    pendingWakes: [],
     asks: [],
     ...over,
   };

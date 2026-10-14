@@ -675,6 +675,10 @@ export class Control {
          to". */
       wakeQuiet: h.skein.wakeQuiet,
       rousing: h.skein.rousing,
+      /* Whether the pass gives the cards that were awake at close their process
+         back. Off and on draw the same wall until the next launch, so a test
+         that finds them dormant needs this to know which it was asking. */
+      reawaken: h.skein.reawaken,
       /* The day's spend, and the local midnight it is measured from. Reported
          apart for the reason `panel.reading` and `panel.linePx` are: a session
          total and a day's are the same lone number from out here, and only the
@@ -886,6 +890,11 @@ export class Control {
         ending: c.ending,
         everSpoke: c.everSpoke,
         interrupted: c.interrupted,
+        /* It had a process when the last wall closed and this one has not given
+           it one yet. Beside `interrupted` for the reason that one is here: a
+           card left awake and a card left at rest are both `dormant` at restore,
+           and only one of them is a card the launch pass will wake. */
+        leftAwake: c.leftAwake,
         /* Reported beside `tier` rather than inferred from it: a card that is
            set aside and one that is merely resting both read `rest`, which is
            the intended effect and therefore the thing a test cannot see. */
@@ -893,6 +902,9 @@ export class Control {
         /* And for the same reason: a rest whose notice you acknowledged reads
            `rest` too, and so does one that simply has not warmed yet. */
         restSeen: c.restSeen,
+        /* And a card waiting on a wake reads `rest` too, until it is late — so
+           the reading is reported rather than left for a test to infer. */
+        waiting: c.waiting ? { at: c.waiting.at, lateS: c.waiting.lateS, count: c.waiting.count } : null,
         /* The wall that asked for this card, if one did — what its face says. */
         bornFor: c.bornFor,
         /* The gear, for exactly the reason `kind` is reported: from out here a
@@ -1282,6 +1294,10 @@ export class Control {
             id: n.dataset.conv!,
             tier: card?.dataset.st ?? null,
             dormant: card?.hasAttribute("data-dormant") ?? null,
+            /* The activity line as painted, and its tooltip — what a card
+               waiting on a wake says, which the state alone cannot show. */
+            act: card?.querySelector<HTMLElement>(".act")?.textContent?.trim() ?? null,
+            actTitle: card?.querySelector<HTMLElement>(".act")?.title || null,
             x: Math.round(r.x),
             y: Math.round(r.y),
             w: Math.round(r.width),
@@ -1601,9 +1617,11 @@ export class Control {
        *  alone. A card left dormant afterwards is the ordinary case rather than
        *  a wake that failed, which is why `dormant` is reported beside it.
        *
-       *  Note this one *can* spend money: a card it wakes is a card it sends a
-       *  prompt to. `wall.test.ts` only ever has `.scratch/` cards, and none of
-       *  them is interrupted or holds a job row. */
+       *  Note this one *can* spend money: a card it wakes for a lost turn or a
+       *  lost job is a card it sends a prompt to. `wall.test.ts` only ever has
+       *  `.scratch/` cards, and none of them is interrupted or holds a job row.
+       *  A card it wakes for having been awake at close (`leftAwake`) is sent
+       *  nothing, and is counted in `woken` all the same. */
       rouse: async () => {
         const woken = await h.skein.rouse();
         return {

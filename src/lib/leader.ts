@@ -77,7 +77,7 @@ export type Verb =
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
   | { kind: "dock"; act: DockChord }
-  | { kind: "machine"; act: "awake" | "reopen" };
+  | { kind: "machine"; act: "awake" | "reopen" | "reawaken" };
 
 /** One sequence the leader opens onto.
  *
@@ -241,10 +241,17 @@ export const CHORDS: readonly Chord[] = [
   { keys: "cm", label: "its menu — everything the right-click offers", verb: { kind: "card", act: "menu" } },
   /* `m` is the machine the wall runs on, rather than anything on the wall or
      the window: whether it is held awake on mains and whether a wall Windows
-     took down comes back. Both are toggles nobody can see happen, so the chord
-     says what is now true rather than only flipping it — see `Leader.say`. */
+     took down comes back — and then whether the cards that were awake when it
+     went down come back awake with it, which is the other half of that same
+     restart. All three are toggles nobody can see happen, so the chord says
+     what is now true rather than only flipping it — see `Leader.say`. */
   { keys: "mw", label: "keep awake on mains: on / off", verb: { kind: "machine", act: "awake" } },
   { keys: "mr", label: "reopen after a restart: on / off", verb: { kind: "machine", act: "reopen" } },
+  {
+    keys: "ma",
+    label: "cards left awake come back awake: on / off",
+    verb: { kind: "machine", act: "reawaken" },
+  },
   { keys: "z", label: "away / back", verb: { kind: "presence", act: "toggle" } },
   { keys: "ia", label: "I'm away / back", verb: { kind: "presence", act: "toggle" } },
 ];

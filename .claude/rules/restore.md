@@ -67,9 +67,10 @@ Because of this, anything a dormant card must display has to be persisted in
 **Laziness is about the paint, not about the processes.** Behind the painted wall two passes
 run and neither is awaited: `#fillHistory` reads the transcripts, and `#rouse`
 (`rousing.ts`, pure: the gate, the order, the pacing, the words) gives a process back to the
-cards that **lost something** and asks each of them to pick it up. Waiting for a click bought
-nothing where a card was left half-way through editing a repo — it sat there saying
-`interrupted` until somebody noticed.
+cards that **lost something** and asks each of them to pick it up — and, since 2026-10-15, to
+the cards that **had one when the wall closed**, which it asks nothing at all (below). Waiting
+for a click bought nothing where a card was left half-way through editing a repo — it sat
+there saying `interrupted` until somebody noticed.
 
 ### The pass wakes only what it will speak to
 
@@ -91,7 +92,9 @@ the gate, and it is deliberately **the bar the prompt already had to clear** rat
 new rule: `interrupted`, or a row in `job`. Everything else stays dormant.
 
 That makes the pass read as a simplification rather than an addition — *the cards it spawns
-are exactly the cards it speaks to* — and `rouse` leans on that in two places. Both reasons
+are exactly the cards it speaks to* — and `rouse` leans on that in two places. (Since
+2026-10-15 the spawned set is wider than the spoken-to set by exactly the cards that were awake
+when the wall closed, which are spoken to never; "Cards that were awake come back awake" below.) Both reasons
 to withhold a prompt are settled **before** the spawn now, because a process handed to a card
 the queue then says nothing to is the whole of the waste being removed: `pending_jobs` moved
 ahead of the wake (the thing that ordering used to protect — never telling a card about work
@@ -155,6 +158,110 @@ keypress and rewrite `fault` under your hands. `#stirred` remembers those ids an
 send to be what surfaces the failure, once, where you can act on it. `aside` is deliberately
 not consulted: the flag is about the wall acting on its own, typing at the card is you turning
 back to it, and `#deliver` takes it out of `aside` on the send regardless.
+
+### Cards that were awake come back awake
+
+Lyss, 2026-10-15: *"I want the cards that were awake when volery closed to automatically be
+woken up when volery is open again."* That reads like the first answer to *which cards get a
+process at launch* — all of them — come back, and it is not, and the difference is the whole
+design. Two separations, both already drawn above, make it safe:
+
+- **Laziness is about the paint.** The wall still paints from SQLite with zero children. This
+  is only about which cards are handed a process *behind* the paint.
+- **A process is not a prompt.** Spawning costs memory. Prompting costs a turn, an agent and an
+  allowance. This spends the first and none of the second. `comesBack` is a third reason to
+  spawn, and `needsRousing` does not learn about it: a card woken for having been awake gets a
+  process and **silence**. A card that is *also* interrupted or holding a job row gets exactly
+  the prompt it would have got anyway — its process is the one that prompt needed. So the
+  sentence the section above is built on changes shape rather than breaking: the cards the pass
+  **speaks to** are still exactly the cards that lost something; the cards it **spawns** are
+  those plus the ones you left awake.
+
+**What makes this affordable now, and was not before, is the reaper.** The old pass woke every
+dormant card — everything ever opened, at ~1.1 GB apiece, eleven of them being the whole
+machine. `reaping.ts` now stands a card down after three hours of quiet by default, sooner
+under memory pressure and almost at once when it is set aside, so *awake when the wall closed*
+means the cards you were working with in the last few hours. The same shape was ruinous when
+nothing bounded the set and is reasonable now that something does. A card at rest is ~710–880
+MB in 7 processes and a resume costs **no tokens** (both measured 2026-10-14, `processes.md`),
+so the cost of the feature is memory and nothing else.
+
+**It has a bound of its own, because the reaper is not always there.** A wall set to "idle cards
+keep their process" has no reaper, and a machine can be shorter at launch than it was at close.
+`returnBudget` reads available memory **once**, at the start of the pass, and allows a card per
+gigabyte above `AMPLE_BYTES`:
+
+- **Why that anchor.** Below it, `waitFor` starts shortening every card's wait, so a card woken
+  into that machine is one the reaper would stand down early — five seconds and ~0.8 GB spent to
+  be reaped a quarter of an hour later. That is churn, not a decision. On a 31.6 GB machine
+  opening with 20 GB free the budget is 16, against the brief's "ten cards is ~8 GB, which is
+  affordable; thirty is not".
+- **Why memory and not a count.** A count is a second knob nobody can hold an opinion about
+  until it has been wrong once — `reaping.ts`'s argument for having one setting — and memory is
+  the constraint a count would only stand in for.
+- **Why once.** A process takes seconds to reach its resting size and spawns are 400ms apart,
+  so a reading after each spawn sees memory not yet spent. Every spawn in the pass counts
+  against the budget, prompted ones included, but only the silent wakes stop when it runs out —
+  a card that lost a turn is woken whatever is left, as it always was.
+
+**The mark is written as the state changes, never at exit** — the scar this file already
+carries twice. `conversation.awake` (schema v51) is set in `spawn_now` the moment the child
+exists, before its reader thread starts, and cleared by that reader thread when stdout closes —
+unless `going_away`. That is `persist_turn`'s exact shape and for its exact reason: the clean
+close is the one exit that raises `going_away` before it kills, so it leaves the marks of every
+card it killed standing; a crash, a forced Windows restart or an installer taking the wall down
+runs nothing at all and leaves rows that were already true. **There is no pass at shutdown that
+marks what was running**, and there must not be one — that is the `interrupted` bug, which
+under-fired on exactly the exits that lose the most.
+
+It is in the reader thread rather than in `markExited` or `rest_conversation` because the
+reader thread is the one place every lost process converges — a rest, a close, a clear, an
+account swap, a move, a child dying on its own — and it is where `going_away` can be read. A
+front-end clear in `markExited` would race the clean quit, whose kills arrive there as ordinary
+exits.
+
+**The column holds a generation, not a boolean.** Zero is "no process"; anything else is the
+`supervisor::GENERATION` of the process holding it. An account swap or a `clear` kills a child
+and spawns its successor while the old reader thread is still on its way out, so a clear and the
+successor's set can land in either order. `clear_awake` only clears the generation it names,
+so the successor wins both orders; a bare `= 0` would leave a card with a process reading as
+one without. `GENERATION` starts at 1 for this, since zero has to mean none.
+
+**Post is the one way a silent wake could speak.** `spawn_now` drains the inbox
+(`relay::drain_inbox`), and `later::serve_due` hands an overdue `wake_me` to a card the moment it
+is live. So a card with an undelivered relay row — a board expiry note, a deferred answer, a
+broadcast queued at launch — or a wake that came due while the wall was down is a card whose
+process *is* a turn. `holding_post` asks (last, being the one IPC hop in that arm) and such a
+card is left at rest with `POST_WAITING_NOTE`; its post goes out when you turn to it, exactly
+as it would have before. What this does **not** hold back is what arrives after: a wake still
+in the future fires at its time, and a broadcast reaches the card live — an awake card's alarms
+and mail arriving as they did before the wall closed is the card being reachable, not the wall
+speaking. A query that fails says "holding", since a card left at rest costs a keystroke and one
+woken onto its post costs a turn.
+
+The rest of it:
+
+- **A card set aside is not woken**, and `rouseOrder` is what drops it, before `comesBack` is
+  asked. Setting aside stands a process down within minutes, so an aside card is rarely left
+  awake — but a wall closed inside those minutes has one, and `rousing.test.ts` asserts the pair
+  rather than leaning on the timing.
+- **`SKEIN_NO_WAKE=1` turns it off with the rest of the pass.** The second of that variable's
+  two reasons — looking at the wall without spending money — is weaker for this arm, which
+  spends none; the first, a second wall on one store, is untouched.
+- **`ROUSE_GAP_MS` paces it**, because thirty silent spawns in a tick are the same herd as
+  thirty prompted ones.
+- **The switch** is the ground menu's `cards left awake come back awake`, a knob of its own
+  under the rest settings, and `<space> m a` beside `m r` (reopen after a restart), which is the
+  other half of the same restart. Per-machine in `localStorage` (`skein.reawaken`) for
+  `REST_KEY`'s reason, and on unless turned off.
+- **It does not look interrupted.** A spawn touches no turn mark, so nothing is written to
+  `interrupted` and nothing earns a resume prompt next time. `activity` is set to `ready` over
+  the `waking…` the spawn left, since a resumed process emits no event until spoken to, and
+  `CAME_BACK_NOTE` says in `meta` that nothing was sent — `restNote`'s counterpart. One
+  chronicle row per pass names who came back and counts who was left, and why.
+- **`leftAwake` is spent on the card's first spawn this launch**, so a card woken and then
+  rested today is not brought back by a second run of the pass (the control surface's `rouse`
+  op is one).
 
 ### The rest of the pass
 

@@ -43,6 +43,10 @@ export const QUESTION_BLOOM_S = 120; // an unanswered question: loud after 2m
 export const CLEAN_WARM_S = 300; // a clean finish: warms after 5m
 export const CLEAN_BLOOM_S = 900; // ...and is loud after 15m
 
+/** A wake a resting card is waiting on, as `urgencyFor` reads it — see there,
+ *  and `waiting.ts` for how one is found. */
+export type WakeHold = { lateS: number | null } | null;
+
 /** @param aside this card has been set aside — see `Conversation.aside`.
  *
  *  Urgency here *is* the clock: what warms a card is nothing but how long you
@@ -74,16 +78,46 @@ export const CLEAN_BLOOM_S = 900; // ...and is loud after 15m
  *  answer. `error` is not a clock at all: rust does not warm, it says the card
  *  broke and is still broken, and having read that changes nothing about it —
  *  the next thing you send is what does. Quieting it would be the wall saying
- *  a card is fine because you looked at it. */
+ *  a card is fine because you looked at it.
+ *
+ *  @param wake the card is waiting on a wake it armed — see `waiting.ts`.
+ *  `lateS` null while the moment is still ahead; otherwise the seconds since
+ *  the wake *became* late, which is past its time and past the grace.
+ *
+ *  The same silence as `aside` while the wake is ahead, and for the argument
+ *  this whole function rests on: what warms a card is how long you have left
+ *  it, and a card that will wake itself at ten past has not been left. It is
+ *  doing what it said it would — and before this arm it warmed to amber after
+ *  five minutes of doing it, on the status disc and the outline alike, which is
+ *  how the difference was noticed (2026-10-15).
+ *
+ *  **But this is the inverse of `aside`, and the late arm is the reason it is
+ *  a parameter rather than a filter.** `aside` silences the clock for as long
+ *  as you like, because you said you are not coming back; a wake has a
+ *  deadline, and once that deadline has gone with nothing happening, the
+ *  silence was a promise that lapsed. A card quietly not waking — its note
+ *  gone to the inbox of a process that is not there, or the CLI's own
+ *  schedule gone with it — is the failure the reading exists to show. So late
+ *  is news, and it is read the way a question left hanging is: warm at once,
+ *  loud after `QUESTION_BLOOM_S`. Not the neglect clock, which would count
+ *  from when the card came to rest and so bloom the instant a long wake went
+ *  late, for a wait nobody was subject to.
+ *
+ *  Below `aside`, which has the last word over a card you put by. Above
+ *  `seen`, because a late wake is news that came *after* whatever you
+ *  acknowledged. */
 export function urgencyFor(
   ending: Ending,
   idleSeconds: number,
   aside = false,
   seen = false,
+  wake: WakeHold = null,
 ): Tier {
   if (ending === "error") return "fail";
   if (ending === "asked") return "ask";
-  if (aside || seen) return "rest";
+  if (aside) return "rest";
+  if (wake && wake.lateS !== null) return wake.lateS >= QUESTION_BLOOM_S ? "ask" : "soft";
+  if (seen || wake) return "rest";
   if (ending === "question") {
     return idleSeconds >= QUESTION_BLOOM_S ? "ask" : "soft";
   }
@@ -1213,6 +1247,15 @@ export type SessionTimer = {
   /** Epoch ms after which it has certainly fired or expired; null while only
    *  a delete or the process ending can retire it. */
   until: number | null;
+  /** When it is meant to fire, with no slack — what the face says and what
+   *  lateness is measured from (`waiting.ts`). Null for a recurring job, which
+   *  names no single moment, and for a one-shot whose expression did not pin
+   *  one. `until` is the reaper's question and errs late on purpose; this is
+   *  the card's, and must not. */
+  at: number | null;
+  /** Why, in the card's own words: `ScheduleWakeup`'s `reason`, or the prompt
+   *  either tool will hand back. Drawn in a tooltip, never sent anywhere. */
+  note: string;
 };
 
 /** `ScheduleWakeup` keeps one wakeup per session — a second call replaces it. */
@@ -1270,7 +1313,7 @@ export function foldTimers(
     if (!m) return [...timers];
     const due = m[1] === "one-shot" ? oneShotDue(String(input?.cron ?? ""), now) : null;
     const until = m[1] === "recurring" ? now + CRON_LIFE_MS + TIMER_SLACK_MS : due === null ? null : due + TIMER_SLACK_MS;
-    return [...timers.filter((t) => t.id !== m[2]), { id: m[2], until }];
+    return [...timers.filter((t) => t.id !== m[2]), { id: m[2], until, at: due, note: timerNote(input) }];
   }
   if (name === "CronDelete") {
     const id = String(input?.id ?? input?.jobId ?? "");
@@ -1281,9 +1324,21 @@ export function foldTimers(
     if (input?.stop === true) return rest;
     const m = /\bNext wakeup scheduled\b[^(]*\(in (\d+)s\)/.exec(resultText);
     if (!m) return rest;
-    return [...rest, { id: WAKEUP, until: now + Number(m[1]) * 1000 + TIMER_SLACK_MS }];
+    const at = now + Number(m[1]) * 1000;
+    return [...rest, { id: WAKEUP, until: at + TIMER_SLACK_MS, at, note: timerNote(input) }];
   }
   return [...timers];
+}
+
+/** What a schedule says it is for. `ScheduleWakeup` asks for a `reason` — one
+ *  sentence written for the user — and both tools carry the `prompt` they will
+ *  hand back, which is the next-best account and may be a whole page. */
+function timerNote(input: any): string {
+  for (const k of ["reason", "prompt"]) {
+    const v = input?.[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
 }
 
 /** Is anything still armed at `now`? */

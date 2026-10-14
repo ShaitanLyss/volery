@@ -8,6 +8,17 @@ import {
   isResumePrompt,
   unansweredRousePrompt,
   ALREADY_ROUSED_NOTE,
+  CAME_BACK_NOTE,
+  CARD_BYTES,
+  POST_WAITING_NOTE,
+  REAWAKEN_LABEL,
+  SHORT_OF_MEMORY_NOTE,
+  comesBack,
+  reawakenFor,
+  reawakenSaid,
+  returnBudget,
+  returnDetail,
+  returnMark,
   jobsLines,
   jobsPrompt,
   needsRousing,
@@ -16,6 +27,7 @@ import {
   rousePromptFor,
 } from "../src/lib/rousing";
 import { withResendMark } from "../src/lib/classify";
+import { AMPLE_BYTES } from "../src/lib/reaping";
 
 /** A card, as much of one as the ordering reads. */
 const card = (id: string, dormant: boolean, interrupted = false) => ({
@@ -140,6 +152,123 @@ describe("needsRousing", () => {
         expect(admitted).toBe(interrupted || jobs > 0);
       }
     }
+  });
+});
+
+describe("comesBack", () => {
+  /* The third set, and the one owed a process and nothing else. These tests are
+     the brief's two separations stated as code: the gate that admits a card for
+     having been awake is not the gate that sends it anything. */
+  const left = (id: string, extra: object = {}) => ({ ...card(id, true), leftAwake: true, ...extra });
+
+  test("a card that had a process when the wall closed comes back", () => {
+    expect(comesBack(left("was-awake"), true)).toBe(true);
+  });
+
+  test("a card that was already at rest stays at rest", () => {
+    expect(comesBack(card("was-dormant", true), true)).toBe(false);
+  });
+
+  test("and nothing comes back with the switch off", () => {
+    expect(comesBack(left("was-awake"), false)).toBe(false);
+  });
+
+  test("having been awake is never a reason to be spoken to", () => {
+    /* `needsRousing` is the gate the *prompt* stands behind, and it must not
+       learn about this flag: a card woken for being awake that was also owed a
+       prompt gets that prompt because it lost something, and only then. */
+    expect(needsRousing(left("was-awake"), 0)).toBe(false);
+    expect(needsRousing(left("was-awake", { interrupted: true }), 0)).toBe(true);
+  });
+
+  test("a card set aside is not brought back, awake or not", () => {
+    /* Asserted rather than relied on. Setting aside stands a process down
+       within minutes, so an aside card is rarely left awake — but a wall that
+       closed inside those minutes has one, and `rouseOrder` is what drops it
+       before `comesBack` is ever asked. */
+    const order = rouseOrder([left("put-by", { aside: true }), left("kept")]);
+    expect(order.map((c) => c.id)).toEqual(["kept"]);
+    expect(order.filter((c) => comesBack(c, true)).map((c) => c.id)).toEqual(["kept"]);
+  });
+
+  test("a card already given a process this launch is not woken again", () => {
+    const order = rouseOrder([{ ...left("woken"), dormant: false }, left("still")]);
+    expect(order.map((c) => c.id)).toEqual(["still"]);
+  });
+});
+
+describe("the reawaken switch", () => {
+  test("on unless it was turned off, whatever else is stored", () => {
+    expect(reawakenFor(null)).toBe(true);
+    expect(reawakenFor("on")).toBe(true);
+    expect(reawakenFor("off")).toBe(false);
+    expect(reawakenFor("sometimes")).toBe(true);
+  });
+
+  test("it says what it does, lowercase, in the menu", () => {
+    expect(REAWAKEN_LABEL).toBe(REAWAKEN_LABEL.toLowerCase());
+    expect(REAWAKEN_LABEL).toContain("awake");
+  });
+
+  test("the chord says what is now true, and that nothing is sent", () => {
+    expect(reawakenSaid(true)).toContain("nothing is sent");
+    expect(reawakenSaid(false)).toContain("at rest");
+  });
+});
+
+describe("returnBudget", () => {
+  test("no reading limits nothing", () => {
+    expect(returnBudget(null)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  test("nothing comes back below where the reaper starts shortening", () => {
+    expect(returnBudget(0)).toBe(0);
+    expect(returnBudget(AMPLE_BYTES)).toBe(0);
+    expect(returnBudget(AMPLE_BYTES + CARD_BYTES - 1)).toBe(0);
+  });
+
+  test("a card per gigabyte above it", () => {
+    expect(returnBudget(AMPLE_BYTES + CARD_BYTES)).toBe(1);
+    expect(returnBudget(AMPLE_BYTES + 10 * CARD_BYTES + 5)).toBe(10);
+  });
+
+  test("a large machine at launch has room for what the reaper left awake", () => {
+    /* The brief's arithmetic: on a 31.6 GB machine ten cards is ~8 GB. A wall
+       opening with twenty gigabytes free must be able to bring back ten. */
+    expect(returnBudget(20 * 1024 ** 3)).toBeGreaterThanOrEqual(10);
+  });
+});
+
+describe("what the pass says", () => {
+  test("a card brought back is told nothing was sent", () => {
+    expect(CAME_BACK_NOTE).toContain("nothing was sent");
+  });
+
+  test("a card left at rest says why, and how it wakes", () => {
+    for (const note of [POST_WAITING_NOTE, SHORT_OF_MEMORY_NOTE]) {
+      expect(note.startsWith("left at rest by skein")).toBe(true);
+      expect(note).toMatch(/speak to/);
+    }
+    expect(POST_WAITING_NOTE).toContain("would spend a turn");
+  });
+
+  test("one chronicle line for the pass, naming one card or counting several", () => {
+    expect(returnMark(["fix the parser"], 0)).toBe("woke “fix the parser”, awake when the wall last closed");
+    expect(returnMark(["a", "b", "c"], 0)).toBe("woke 3 cards that were awake when the wall last closed");
+  });
+
+  test("a pass that woke nothing and left something still says so", () => {
+    expect(returnMark([], 1)).toBe("left a card at rest that was awake when the wall last closed");
+    expect(returnMark([], 2)).toBe("left 2 cards at rest that were awake when the wall last closed");
+  });
+
+  test("the detail names who came back and counts who did not, and why", () => {
+    expect(returnDetail(["a", "b"], 0, 0)).toBe("a, b");
+    expect(returnDetail(["a", "b", "c", "d", "e", "f"], 0, 0)).toBe("a, b, c, d and 2 more");
+    expect(returnDetail(["a"], 2, 1)).toBe(
+      "a; 2 left at rest, the machine being short of memory; 1 left at rest with post waiting",
+    );
+    expect(returnDetail([], 0, 1)).toBe("1 left at rest with post waiting");
   });
 });
 

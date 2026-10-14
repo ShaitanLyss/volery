@@ -191,6 +191,7 @@ describe("the which-key hint", () => {
       { keys: "gr", label: "rename this grouping" },
       { keys: "ia", label: "I'm away / back" },
       { keys: "k", label: "flyway key" },
+      { keys: "ma", label: "cards left awake come back awake: on / off" },
       { keys: "mr", label: "reopen after a restart: on / off" },
       { keys: "mw", label: "keep awake on mains: on / off" },
       { keys: "p", label: "questions that piled up" },
@@ -259,11 +260,14 @@ describe("the which-key hint", () => {
 
   test("so is the machine the wall runs on", () => {
     expect(offers("m")).toEqual([
+      { keys: "a", label: "cards left awake come back awake: on / off" },
       { keys: "r", label: "reopen after a restart: on / off" },
       { keys: "w", label: "keep awake on mains: on / off" },
     ]);
     expect(chord("m", "w")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "awake" } });
     expect(chord("m", "r")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "reopen" } });
+    /* The other half of the same restart: whether the cards come back with it. */
+    expect(chord("m", "a")).toMatchObject({ kind: "fire", verb: { kind: "machine", act: "reawaken" } });
   });
 
   test("a completed chord offers nothing — there is nothing left to press", () => {

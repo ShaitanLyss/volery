@@ -72,7 +72,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # browser,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
                          # shell, finding, leader, synth, voice, steward, office, styles, zoom,
-                         # timeline, span, notice, shadow, machine, handle
+                         # timeline, span, notice, shadow, machine, handle, waiting
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -397,7 +397,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `unreallog.ts`,
 `gears.ts`, `handoff.ts`,
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
-`timeline.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`) are pure
+`timeline.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

@@ -36,7 +36,7 @@
 //! honest cadence for anything a human would also be watching.
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::store::Store;
 
@@ -253,6 +253,9 @@ fn do_wake(app: &AppHandle, caller: &str, args: &Value) -> String {
     let due = now + secs * 1_000;
     let armed = crate::store::arm_wake(&conn, &id, caller, due, &note);
     drop(conn);
+    if armed.is_ok() {
+        armed_now(app, caller, &id, due, &note);
+    }
 
     match armed {
         Err(e) => format!("could not arm that: {e}"),
@@ -431,13 +434,16 @@ fn do_cancel(app: &AppHandle, caller: &str, args: &Value) -> String {
         Ok(ids) => ids,
         Err(say) => return say,
     };
-    let gone: Vec<String> = ids
-        .iter()
+    let taken: Vec<String> = ids
+        .into_iter()
         .filter(|id| crate::store::disarm_wake(&conn, caller, id))
-        .map(|id| format!("`{}`", short(id)))
         .collect();
     let left = crate::store::wakes_armed_by(&conn, caller);
     drop(conn);
+    let gone: Vec<String> = taken.iter().map(|id| format!("`{}`", short(id))).collect();
+    if !taken.is_empty() {
+        disarmed(app, caller, Some(taken));
+    }
     /* Zero only if the tick took it between the read and the delete — the note
        is already on its way, and saying "cancelled" would be the lie. */
     if gone.is_empty() {
@@ -559,6 +565,96 @@ pub fn clear_for(app: &AppHandle, conversation_id: &str) {
     let Some(store) = app.try_state::<Store>() else { return };
     let Ok(conn) = store.0.lock() else { return };
     crate::store::drop_wakes_of(&conn, conversation_id);
+    drop(conn);
+    disarmed(app, conversation_id, None);
+}
+
+/* ── what the face reads ──────────────────────────────────────────────────
+ *
+ * Every armed wake was in this table, with its time and the note saying why,
+ * and nothing in `src/` drew any of it — so a card that had armed one and
+ * stopped read `at rest`, exactly like a card that was finished, and then
+ * warmed amber for the neglect it was not suffering (2026-10-15, from a card
+ * on another wall). The front end now reads the table once at load and is told
+ * of each change, and **this file still stores nothing new**: the reading is
+ * `waiting.ts`'s, over rows that were already here.
+ *
+ * Patched rather than re-read, and the reason is the one event deliberately
+ * left out. Serving a wake deletes its row — the DELETE *is* the claim — so a
+ * front end re-reading the table after a serve would forget a wake the moment
+ * it fired. That is the right answer when the card is live and the note opens
+ * a turn; it is the wrong one when the card was dormant and the note went to
+ * its inbox, because then nothing happens at all and the face would quietly go
+ * back to `at rest`. A wake that did not wake anything is the failure the face
+ * exists to show, so a serve says nothing here: the front end keeps the wake
+ * until a turn has run past its time (`waiting.ts::pending`), and a wake that
+ * never got one reads as late. Only a cancel or a card going takes one away. */
+
+/// One armed wake as the front end holds it. `due_at` on this machine's clock,
+/// which is the clock `Date.now()` reads on the same machine.
+#[derive(Clone, serde::Serialize)]
+pub struct Armed {
+    conversation_id: String,
+    id: String,
+    due_at: i64,
+    note: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct Disarmed {
+    conversation_id: String,
+    /// The wakes taken back, or `None` for all of this card's — it went, or was
+    /// cleared.
+    ids: Option<Vec<String>>,
+}
+
+fn armed_now(app: &AppHandle, conversation_id: &str, id: &str, due_at: i64, note: &str) {
+    let _ = app.emit(
+        "wake:armed",
+        Armed {
+            conversation_id: conversation_id.to_string(),
+            id: id.to_string(),
+            due_at,
+            note: note.to_string(),
+        },
+    );
+}
+
+fn disarmed(app: &AppHandle, conversation_id: &str, ids: Option<Vec<String>>) {
+    let _ = app.emit(
+        "wake:disarmed",
+        Disarmed { conversation_id: conversation_id.to_string(), ids },
+    );
+}
+
+/// Every wake armed on this wall, read once when the wall is painted.
+///
+/// Off the main thread for CLAUDE.md's reason about any command sharing the
+/// store's mutex: it is quick, and the lock is not always.
+#[tauri::command]
+pub async fn wakes_armed(app: AppHandle) -> Result<Vec<Armed>, String> {
+    crate::off_main(move || {
+        let Some(store) = app.try_state::<Store>() else { return Vec::new() };
+        let Ok(conn) = store.0.lock() else { return Vec::new() };
+        all_armed(&conn)
+    })
+    .await
+}
+
+/// The query, here rather than in `store.rs` beside its siblings only because
+/// it is one SELECT that nothing else wants, over a table this file owns.
+fn all_armed(conn: &rusqlite::Connection) -> Vec<Armed> {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT conversation_id, id, due_at, note FROM wake ORDER BY due_at")
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |r| {
+        Ok(Armed { conversation_id: r.get(0)?, id: r.get(1)?, due_at: r.get(2)?, note: r.get(3)? })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@
     | "compactFrac"
     | "holding"
     | "planDoc"
+    | "waiting"
   > & {
     gear: string;
     lines: readonly { kind: string; text: string }[];
@@ -49,6 +50,8 @@
   import { waterfall } from "./waterfall.svelte";
   import { cardName } from "./naming";
   import { planTitle } from "./gears";
+  import { waitLine, waitTitle } from "./waiting";
+  import { clock } from "./conversation.svelte";
 
   import type { Lod } from "./studio.svelte";
 
@@ -158,6 +161,13 @@
        for a fortnight is not four hundred hours overdue. `working` still wins,
        since a card set aside mid-turn is genuinely still working. */
     if (conv.aside && !conv.working) return "set aside";
+    /* A card waiting on a wake it armed is not at rest, and the age suffix is
+       the wrong reading of it for `aside`'s reason: it counts how long you have
+       left the card, and you have not — it is doing what it said it would. What
+       it says instead is *when*, and once that has passed with nothing
+       happening, that it has not. `conv.waiting` is null whenever the card is
+       working, so nothing below is overridden by it. See `waiting.ts`. */
+    if (conv.waiting) return waitLine(conv.waiting, clock.t);
     /* The same withdrawal for a rest whose notice you acknowledged: the clock
        stopped, so the age that counts it goes too. The words stay — `ending`
        is what the turn was, and "ended on a question" is still true of it —
@@ -253,7 +263,9 @@
     </svg>
     </span>
 
-    <span class="act"><span class="dot"></span>{label}</span>
+    <span class="act" title={conv.waiting ? waitTitle(conv.waiting, clock.t) : undefined}
+      ><span class="dot"></span>{label}</span
+    >
 
     {#if lod === "open"}
       <span class="said">

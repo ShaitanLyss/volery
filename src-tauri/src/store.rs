@@ -175,6 +175,12 @@ pub struct StoredConversation {
     pub last_ending: Option<String>,
     /// Put by on purpose: on the wall, out of what is waiting, and not roused.
     pub aside: bool,
+    /// This card had a process when the wall last went away — see
+    /// `migrate_v51`. The row holds a generation; this is only whether it is
+    /// set, which is the whole of what the front end asks of it. Defaulted for
+    /// `rest_seen`'s reason.
+    #[serde(default)]
+    pub awake: bool,
     /// You acknowledged the notice about the rest this card is in, so its
     /// neglect clock has stopped until it next takes a turn — see
     /// `migrate_v50`. Defaulted so a layout written before the column still
@@ -355,7 +361,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 50;
+const SCHEMA_VERSION: i64 = 51;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -411,6 +417,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (48, migrate_v48),
     (49, migrate_v49),
     (50, migrate_v50),
+    (51, migrate_v51),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2884,6 +2891,32 @@ fn migrate_v50(conn: &Connection) -> Result<(), String> {
     add_column(conn, "conversation", "rest_seen", "INTEGER NOT NULL DEFAULT 0")
 }
 
+/// Whether this card had a process when the wall last went away — so that the
+/// next launch can give one back to the cards that had one, and to no others
+/// (`rousing.ts::comesBack`, `.claude/rules/restore.md`).
+///
+/// **Not a boolean, and that is the half that makes it exact.** Zero is "no
+/// process"; anything else is the `supervisor::GENERATION` of the process that
+/// holds it. It is written where a process is made and cleared where its
+/// stream ends, and those two can arrive out of order for one card: an account
+/// swap or a `clear` kills a child and spawns its successor while the old
+/// reader thread is still on its way out. A clear that names the generation it
+/// is clearing (`clear_awake`) cannot take the successor's mark with it, where
+/// a bare `= 0` would leave a card with a process reading as one without.
+///
+/// Written **as it changes, never at exit** — the lesson `set_mid_turn` paid
+/// for twice. Nothing marks the cards that were running when the app closes;
+/// the rows already say so, because the close is the one exit that leaves the
+/// mark alone (`Supervisor::going_away`) and a crash, a forced restart or an
+/// installer taking the wall down runs nothing at all.
+///
+/// Every existing row starts at zero, which is the honest reading: the build
+/// that wrote them kept no such record, so the first launch after this one
+/// wakes nobody it would not have woken anyway.
+fn migrate_v51(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "conversation", "awake", "INTEGER NOT NULL DEFAULT 0")
+}
+
 /// How the browser stood when this wall was last looked at: `(mode,
 /// was_running)`, or `None` if nothing has ever been recorded.
 ///
@@ -5141,6 +5174,71 @@ pub fn set_mid_turn(conn: &Connection, id: &str, open: bool) {
     );
 }
 
+/// This card has a process now, the `generation`th one this app has made — see
+/// `migrate_v51`. Called by `supervisor::spawn_now` the moment the child exists,
+/// before its reader thread can end and ask for the mark to come down again.
+///
+/// `closed_at IS NULL` for `set_mid_turn`'s reason. Best-effort, per
+/// `persist_turn`: a mark that did not land is a card that comes back dormant at
+/// the next launch, which is the behaviour the wall had before there was a mark.
+pub fn set_awake(conn: &Connection, id: &str, generation: u64) {
+    let _ = conn.execute(
+        "UPDATE conversation SET awake = ?2 WHERE id = ?1 AND closed_at IS NULL",
+        params![id, generation as i64],
+    );
+}
+
+/// The process `generation` is gone, so this card no longer has one — unless a
+/// successor has already written its own mark, which this leaves alone. See
+/// `migrate_v51` on why the comparison is the point.
+pub fn clear_awake(conn: &Connection, id: &str, generation: u64) {
+    let _ = conn.execute(
+        "UPDATE conversation SET awake = 0 WHERE id = ?1 AND awake = ?2",
+        params![id, generation as i64],
+    );
+}
+
+/// Is something waiting to be handed to this card the moment it has a process?
+///
+/// Two things are: an undelivered row in its inbox, which `relay::drain_inbox`
+/// delivers inside the spawn, and a `wake_me` already past its time, which
+/// `later::serve_due` delivers within five seconds of the card being live —
+/// or queues for that same drain if it is not. Either way, giving the card a
+/// process is giving it a turn. The rousing pass asks this before a wake it
+/// owes nobody (`rousing.ts::comesBack`), because that wake must spend nothing,
+/// and a card holding post is one whose process cannot be had for nothing.
+///
+/// A wake that is still in the future is not counted: when it comes due the
+/// card is live and it arrives at its time, which is what an awake card's
+/// alarms do. It is the backlog from while the wall was down that would be
+/// cashed in at launch.
+pub fn holds_post(conn: &Connection, id: &str, now_ms: i64) -> bool {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM relay WHERE to_id = ?1 AND delivered_at IS NULL)
+             OR EXISTS (SELECT 1 FROM wake WHERE conversation_id = ?1 AND due_at <= ?2)",
+        params![id, now_ms],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n != 0)
+    /* A query that failed says "holding", because the two wrong answers are not
+       alike: a card left dormant that could have woken costs a keystroke, and
+       one woken onto its post costs a turn nobody asked for. */
+    .unwrap_or(true)
+}
+
+/// `holds_post`, for the front end. `async` on `off_main` for `pending_jobs`'
+/// reason, which is the same caller at the same moment: the rousing pass,
+/// at launch, beside the paint.
+#[tauri::command]
+pub async fn holding_post(app: tauri::AppHandle, conversation_id: String) -> Result<bool, String> {
+    crate::off_main(move || {
+        let store = tauri::Manager::state::<Store>(&app);
+        let conn = store.0.lock().map_err(|_| "the store is wedged".to_string())?;
+        Ok(holds_post(&conn, &conversation_id, now()))
+    })
+    .await?
+}
+
 /// Marks the conversations that lost a turn when the app went down. An in-flight
 /// turn does not survive, and the card should say so rather than pretend it
 /// finished cleanly.
@@ -5287,7 +5385,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                     c.kind, c.named_by_hand, c.account_label, c.bypass_caps,
                     p.x, p.y, p.pinned, p.glass_x, p.glass_y, c.effort,
                     c.permission_mode, c.held_text, c.held_why, c.held_until,
-                    c.rest_seen
+                    c.rest_seen, c.awake
                FROM conversation c
                LEFT JOIN placement p ON p.conversation_id = c.id
               WHERE c.closed_at IS NULL
@@ -5324,6 +5422,7 @@ pub fn load_studio(store: tauri::State<'_, Store>) -> Result<Studio, String> {
                 held_why: r.get(24)?,
                 held_until: r.get(25)?,
                 rest_seen: r.get::<_, i64>(26)? != 0,
+                awake: r.get::<_, i64>(27)? != 0,
             })
         })
         .map_err(|e| e.to_string())?
@@ -9494,6 +9593,94 @@ mod tests {
         assert!(seen(&conn));
         clear_row(&conn, "c1", "s2").unwrap();
         assert!(!seen(&conn), "a cleared card kept a mark about a session it no longer has");
+    }
+
+    /// The awake mark is cleared only by the process that wrote it. An account
+    /// swap or a `clear` kills a child and spawns its successor while the old
+    /// reader thread is still on its way out, so the two writes can land in
+    /// either order — and the successor must win in both.
+    #[test]
+    fn the_awake_mark_is_taken_down_only_by_the_process_that_put_it_up() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate(&conn).unwrap();
+        seed_project(&conn, "p1", "C:/x");
+        conn.execute(
+            "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES ('c1','p1','C:/x',0)",
+            [],
+        )
+        .unwrap();
+        let awake = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT awake FROM conversation WHERE id = 'c1'", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(awake(&conn), 0, "a card nobody has spawned reads as awake");
+
+        set_awake(&conn, "c1", 7);
+        assert_eq!(awake(&conn), 7);
+        clear_awake(&conn, "c1", 7);
+        assert_eq!(awake(&conn), 0, "its own process going did not take the mark down");
+
+        /* Old clear first, then the successor's set: the successor's stands. */
+        set_awake(&conn, "c1", 8);
+        clear_awake(&conn, "c1", 8);
+        set_awake(&conn, "c1", 9);
+        assert_eq!(awake(&conn), 9);
+
+        /* Successor's set first, then the old reader's clear: still the
+           successor's — the race a bare `= 0` would lose. */
+        set_awake(&conn, "c1", 10);
+        clear_awake(&conn, "c1", 9);
+        assert_eq!(awake(&conn), 10, "a superseded reader took its successor's mark");
+
+        /* And the restore reads it as the flag it is. */
+        let read = |conn: &Connection| -> bool {
+            conn.query_row("SELECT awake FROM conversation WHERE id = 'c1'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                != 0
+        };
+        assert!(read(&conn));
+
+        /* A card on its way off the wall is never marked as having a process. */
+        clear_awake(&conn, "c1", 10);
+        conn.execute("UPDATE conversation SET closed_at = 1 WHERE id = 'c1'", [])
+            .unwrap();
+        set_awake(&conn, "c1", 11);
+        assert_eq!(awake(&conn), 0, "a closed card was marked awake");
+    }
+
+    /// What a spawn would hand over the moment the card is live: an undelivered
+    /// relay, or a wake already past its time. A wake still in the future is
+    /// not post — it arrives at its time, which is what an awake card's alarms
+    /// do.
+    #[test]
+    fn post_is_the_inbox_and_the_overdue_wakes_and_nothing_else() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        migrate(&conn).unwrap();
+        seed_project(&conn, "p1", "C:/x");
+        for id in ["c1", "c2"] {
+            conn.execute(
+                "INSERT INTO conversation (id, project_id, cwd, born_at) VALUES (?1,'p1','C:/x',0)",
+                params![id],
+            )
+            .unwrap();
+        }
+        let now = 1_000_000;
+        assert!(!holds_post(&conn, "c1", now), "an empty inbox is post");
+
+        arm_wake(&conn, "w1", "c1", now + 60_000, "later").unwrap();
+        assert!(!holds_post(&conn, "c1", now), "a wake still to come counted as post");
+        assert!(holds_post(&conn, "c1", now + 60_000), "a wake at its time is not post");
+        take_wake(&conn, "w1");
+
+        record_relay(&conn, "r1", "c2", "c1", "hello", "chain", 1, false).unwrap();
+        assert!(holds_post(&conn, "c1", now), "an undelivered relay is not post");
+        assert!(!holds_post(&conn, "c2", now), "the sender's outbox counted as its post");
+        mark_delivered(&conn, "r1");
+        assert!(!holds_post(&conn, "c1", now), "a delivered relay is still post");
     }
 
     /// The v2 repair: a card that has turns behind it must come back resumable.

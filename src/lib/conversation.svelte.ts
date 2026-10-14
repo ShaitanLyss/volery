@@ -71,6 +71,7 @@ import {
   type TaskNote,
   type Tier,
 } from "./classify";
+import { holdOf, pending, readWaiting, sessionWakes, type Wake } from "./waiting";
 import { backupSettled } from "./repair";
 import {
   compactEstimate,
@@ -559,6 +560,14 @@ export class Conversation {
   /** The app quit or crashed while this was mid-turn. That turn did not
    *  survive, and the card says so rather than pretending it finished. */
   interrupted = $state(false);
+  /** This card had a process when the wall last closed — the row's `awake`
+   *  mark, read at restore and asked once, by the rousing pass, which gives it
+   *  its process back with nothing sent (`rousing.ts::comesBack`). A fact about
+   *  the last wall rather than this one, so it is put down the moment this wall
+   *  gives the card a process of its own (`Skein.#spawnNow`): a card woken and
+   *  then rested today is not one to bring back on a second pass. Plain rather
+   *  than `$state`, since nothing draws it. */
+  leftAwake = false;
 
   title = $state(UNNAMED);
   /** You named this one yourself, so nothing else may rename it.
@@ -830,6 +839,22 @@ export class Conversation {
    *  once its time has passed, with nothing on the wire to say so. */
   scheduled = $derived(timersArmed(this.timers, clock.t));
 
+  /** The `wake_me`s this card has armed on the wall, as `later.rs` holds them —
+   *  read at load and patched by `wake:armed` / `wake:disarmed` (`Skein`).
+   *
+   *  **A serve does not take one away**, deliberately: a wake that went to the
+   *  inbox of a card with no process woke nothing, and dropping it at the serve
+   *  would put the face quietly back to `at rest`. It is spent when a turn has
+   *  ended past its time (`waiting.ts::pending`), and pruned when the next one
+   *  opens. */
+  wakes = $state<Wake[]>([]);
+
+  /** When the last turn on this wall ended, or 0 before one has. What says a
+   *  wake was taken: due at or before it, it fired into a turn or opened one.
+   *  Not `restingSince`, which a background job landing also moves. */
+  turnEndedAt = $state(0);
+
+
   /** Schedule calls gone out and not yet come back, by `tool_use` id — the
    *  receipt is what says whether one was armed, and it names no tool. */
   #timerCalls = new Map<string, { name: string; input: unknown }>();
@@ -847,6 +872,18 @@ export class Conversation {
    *  commit once the suite is green" has ended its turn and has not finished
    *  its work, and it will be woken by the notification rather than by you. */
   busy = $derived(this.jobs.length > 0);
+
+  /** The wakes still being waited on, soonest first, off no clock — so the
+   *  digest another wall reads can carry the moment without being republished
+   *  every second (`shadow.ts`, `elsewhere.md`'s rule). */
+  pendingWakes = $derived(
+    this.working || this.busy ? [] : pending([...this.wakes, ...sessionWakes(this.timers)], this.turnEndedAt),
+  );
+
+  /** The wake this card is waiting on, if it is — from either clock, read the
+   *  same way. Null while it is working or running background work: what it has
+   *  armed for later is not what it is doing now. See `waiting.ts`. */
+  waiting = $derived(readWaiting(this.pendingWakes, clock.t));
 
   /** A job reported in, and no turn followed.
    *
@@ -1413,6 +1450,8 @@ export class Conversation {
     aside?: boolean;
     /** Optional because a row written before schema v50 has none. */
     rest_seen?: boolean;
+    /** Optional because a row written before schema v51 has none. */
+    awake?: boolean;
     kind?: string | null;
     named_by_hand?: boolean;
     territoryId?: string | null;
@@ -1469,6 +1508,9 @@ export class Conversation {
     }
     c.ctxTokens = Math.round(row.last_ctx_frac * c.contextWindow);
     c.interrupted = row.interrupted;
+    /* A row from before the column existed reads false, which is the truth
+       about it: the build that wrote it kept no such record. */
+    c.leftAwake = row.awake ?? false;
     c.dormant = true;
     c.everSpoke = row.last_ending !== null;
     c.ending = (row.last_ending as Ending | null) ?? "ok";
@@ -1629,7 +1671,7 @@ export class Conversation {
                 this.held
                 ? "rest"
                 : this.ending
-                ? urgencyFor(this.ending, this.idleSeconds, this.aside, this.restSeen)
+                ? urgencyFor(this.ending, this.idleSeconds, this.aside, this.restSeen, holdOf(this.waiting))
                 : "rest",
   );
 
@@ -2247,6 +2289,12 @@ export class Conversation {
   }
 
   #beginTurn() {
+    /* A wake whose time has come is spent once a turn is under way — kept
+       until now only so that one which woke nothing could say so. */
+    if (this.wakes.length) {
+      const t = Date.now();
+      this.wakes = this.wakes.filter((w) => w.at === null || w.at > t);
+    }
     this.#turnText = [];
     this.#closingText = [];
     this.#sawAskTool = false;
@@ -2715,6 +2763,7 @@ export class Conversation {
           this.seats = [];
         }
         this.restingSince = Date.now();
+        this.turnEndedAt = this.restingSince;
         /* A turn has ended and a prompt of yours is still unechoed — which,
            after `#settleEchoes` just ran, is the *only* record that anything is
            outstanding. Scheduled here rather than at the grace boundary because
