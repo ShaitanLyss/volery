@@ -592,11 +592,9 @@ only in a menu is a panel nobody finds at the moment it would help.
   whose stored token is *one rung of a ladder* rather than the whole credential, so the
   widget's fault says something no probe can — which rung was refused. Anything else that ever
   grows a ladder gets the same treatment; nothing else has one.
-- **And what `check it` asks is builds, not `profiles/me`.** The tidy org-less endpoint needs
-  `vso.profile`, which a PAT scoped to Build (read) alone does not have — so the obvious probe
-  would refuse exactly the token this row exists to take, and report it as a bad credential.
-  It asks `builds?$top=1` against an organisation on this wall instead, and where the wall has
-  no Azure DevOps organisation on it, it says so rather than guessing. See `creds.rs`.
+- **And `check it` asks `connectionData`, not builds and not `profiles/me`.** Org-level, so it needs no
+  project (a project-less `builds` call is a 400 that once read as a bad token) and no `vso.profile`.
+  See `creds.rs::judge_azdo` and `integrations.md`.
 
 ### The forge a card can reach — `smith.rs`
 

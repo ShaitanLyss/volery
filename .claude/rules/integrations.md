@@ -108,15 +108,17 @@ beside the row.
   bounded by somebody watching, and the bound here is that there is no poller. A token you have
   not touched cannot have changed, and the one thing that *can* change it (revoked at the far
   end) is not something to discover on a timer against somebody else's server.
-- **The probe is the scope that matters, not merely a live token**, and for Azure DevOps that
-  decides the endpoint. `profiles/me` is the tidy org-less check and is the wrong one: it needs
-  `vso.profile`, which a PAT scoped to **Build (read)** alone does not carry — so it would
-  refuse exactly the token the row exists to take and report it as a bad credential. It asks
-  `builds?$top=1` against an organisation on this wall instead. Where the wall has no Azure
-  DevOps organisation on it, the row says so rather than guessing, which is the honest answer
-  and not a fault. **A check that can be wrong in the reassuring direction is worse than no
-  check; a check that is wrong in the alarming direction sends people to re-mint a token that
-  was fine.**
+- **The probe must need no project, and only a 401 or 203 blames the token.** The first cut asked
+  `_apis/build/builds?$top=1` against an organisation, on the argument that a Build-only PAT has no
+  `vso.profile` for `profiles/me`. But `builds` is a *project-scoped* route: with no project in the
+  path Azure DevOps answers 400 `VS800075 ... 'No project was specified.'`, and the first live use
+  of `credential azdo` refused a perfectly good PAT (sink `ecf5f9c2`). It asks `connectionData`
+  now: org-level, the call `azdo::me_in` already makes. A revoked PAT answers 401, or **203** with
+  a sign-in page (`ureq` returns that as `Ok`, so the status is read, not assumed). Any other
+  non-2xx is worded as *the check itself failed* (`judge_azdo`), so a checker bug is never blamed
+  on the token again. Where the wall has no Azure DevOps organisation, the row says so.
+  **A check that can be wrong in the reassuring direction is worse than no check; a check that is
+  wrong in the alarming direction sends people to re-mint a token that was fine.**
 - **It names the identity.** `GET /users/me` answers with the account, and that is both halves
   of the check at once: a token minted as the wrong person is *accepted* and then sees none of
   your projects, which reads as an empty widget rather than as an error. The panel has warned
