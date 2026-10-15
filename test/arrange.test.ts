@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   NO_ARRANGEMENT,
+  ONE_LANDSCAPE,
+  ONE_PORTRAIT,
   fingerprint,
   nearest,
   normalise,
+  roomKey,
   similarity,
   type Screen,
 } from "../src/lib/arrange";
@@ -168,5 +171,100 @@ describe("which known arrangement a new one is copied from", () => {
     ];
     const two = [DESK[1], DESK[2]];
     expect(nearest(two, rows)?.key).toBe(nearest(two, [...rows].reverse())?.key);
+  });
+});
+
+/* Lyss's two reports (2026-10-15), each one invariant. Both are about the key
+   depending on something the rule says it may not: which monitor, how many,
+   which is primary, which one is home. */
+
+/* Her laptop panel, as this machine reports it. */
+const PANEL: Screen = { x: 0, y: 0, w: 2560, h: 1440, scale: 1.5 };
+
+/* An inverted L: two monitors along the top at 100%, the laptop under the left
+   one at 150% — mixed scale, which is what made the home screen matter. Written
+   with the left monitor as the Windows primary, at the desktop's origin. */
+const INVERTED_L: Screen[] = [
+  { x: 0, y: 0, w: 2560, h: 1440, scale: 1 },
+  { x: 2560, y: 0, w: 2560, h: 1440, scale: 1 },
+  { x: 0, y: 1440, w: 2560, h: 1440, scale: 1.5 },
+];
+
+/** The same physical desk with screen `i` made the Windows primary: Windows
+ *  puts the primary at (0, 0) and moves every other screen with it. */
+function primary(screens: Screen[], i: number): Screen[] {
+  const p = screens[i];
+  return screens.map((s) => ({ ...s, x: s.x - p.x, y: s.y - p.y }));
+}
+
+describe("unspread, the room is one screen's worth of window, whichever screen", () => {
+  test("the laptop alone and the laptop among three are the same room", () => {
+    // Unspread, `look` hands over the window's own screen and nothing else;
+    // with three attached the panel just sits somewhere else on the desktop.
+    const amongThree = { ...PANEL, x: 0, y: 1440 };
+    expect(roomKey([amongThree], false)).toBe(roomKey([PANEL], false));
+  });
+
+  test("which landscape screen the window is on does not matter", () => {
+    /* Her words: "the number of connected screens or which screen shouldn't
+       matter". The monitor beside the panel is another size and another
+       scale, and it is still one landscape screen's worth of window. */
+    const external: Screen = { x: 2560, y: 0, w: 1920, h: 1080, scale: 1 };
+    expect(roomKey([external], false)).toBe(roomKey([PANEL], false));
+    expect(roomKey([PANEL], false)).toBe(ONE_LANDSCAPE);
+  });
+
+  test("a portrait screen is a different room", () => {
+    const portrait: Screen = { x: -1080, y: 0, w: 1080, h: 1920, scale: 1 };
+    expect(roomKey([portrait], false)).toBe(ONE_PORTRAIT);
+    expect(roomKey([portrait], false)).not.toBe(roomKey([PANEL], false));
+  });
+
+  test("one screen unspread is not the desk spread", () => {
+    expect(roomKey([PANEL], false)).not.toBe(roomKey(INVERTED_L, true));
+  });
+
+  test("a screen that has not answered yet is not a room", () => {
+    expect(roomKey([], false)).toBe(NO_ARRANGEMENT);
+    expect(roomKey([{ x: 0, y: 0, w: 0, h: 0 }], false)).toBe(NO_ARRANGEMENT);
+  });
+
+  test("the glass a wall stored under the old per-monitor key is what the new key starts from", () => {
+    /* The fix changes the key every unspread room is stored under, so without
+       this it would be the fix that lost her glass. A first sighting of
+       ONE_LANDSCAPE is copied from the nearest known room — and the old key
+       for this very panel scores 1, so it wins over the desk. */
+    const known = [
+      { key: fingerprint([PANEL]), screens: [PANEL], seenAt: 10 },
+      { key: fingerprint(INVERTED_L), screens: INVERTED_L, seenAt: 20 },
+    ];
+    const key = roomKey([PANEL], false);
+    expect(nearest([PANEL], known, key)?.key).toBe(fingerprint([PANEL]));
+  });
+});
+
+describe("spread, which screen is primary or home changes nothing on the glass", () => {
+  test("making any screen of the inverted L the primary is the same arrangement", () => {
+    const keys = INVERTED_L.map((_, i) => roomKey(primary(INVERTED_L, i), true));
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).not.toBe(NO_ARRANGEMENT);
+  });
+
+  test("and the same for the mirrored desk with its portrait screen", () => {
+    const keys = DESK.map((_, i) => roomKey(primary(DESK, i), true));
+    expect(new Set(keys).size).toBe(1);
+  });
+
+  test("whatever order the monitors come back in after the primary moved", () => {
+    const moved = primary(INVERTED_L, 2);
+    expect(roomKey([moved[2], moved[0], moved[1]], true)).toBe(roomKey(INVERTED_L, true));
+  });
+
+  test("two screens on one rect differing only in scale have one order", () => {
+    /* A duplicated display. The sort used to stop at the rect, so the
+       fingerprint followed whichever the system listed first. */
+    const a: Screen = { x: 0, y: 0, w: 1920, h: 1080, scale: 1 };
+    const b: Screen = { ...a, scale: 1.5 };
+    expect(fingerprint([a, b])).toBe(fingerprint([b, a]));
   });
 });

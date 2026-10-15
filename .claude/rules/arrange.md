@@ -41,9 +41,66 @@ same two with the left one turned portrait are not.
   and at 150% is the same *shape*, so one should be seeded from the other; and it is still its
   own arrangement, because every spot on the glass is in CSS pixels and those two rooms are
   different sizes.
+- **The sort is total, down to the scale**, so two monitors on one rect (a duplicated display)
+  cannot leave the fingerprint following the order the system listed them in.
 - **A monitor reporting 0×0 is dropped.** Mid-handshake a monitor can answer nothing, and
   letting one into the fingerprint would give a transient state its own arrangement — with its
   own copy of the whole glass, left behind for ever once the real answer arrived.
+
+### Which monitor, how many, which is primary, which is home: none of it is the room
+
+Lyss, 2026-10-15, twice in one day — and both were the key, or the spots under it, depending
+on a thing this file already said they must not.
+
+**Unspread, the room is one screen's worth of window, keyed on its orientation alone**
+(`roomKey`: `one landscape screen`, `one portrait screen`). It was `fingerprint` of the window's
+own screen — `currentMonitor()` and nothing else, so the *count* of attached monitors never
+reached it — but that fingerprint is the screen's exact size and scale. So the laptop panel
+and the external monitor beside it were two rooms with two glasses, each going stale while she
+worked in the other, and what she saw was "my glass did not carry from the laptop to three
+screens with Volery on one". Her own words are the rule: *both have Volery on one landscape
+screen; the number of connected screens or which screen shouldn't matter.* Orientation is the
+one fact kept, because a portrait pane is a genuinely different shape to arrange in; a
+different size is absorbed where it always was, by `glassAt` clamping a spot onto the pane it
+lands on. **Scale in the fingerprint still holds for a spread desk**, which is a shape; it
+stopped applying to one screen, which is not. (A glass that is *proportional* across
+landscape screens of different sizes — fractions rather than pixels — is a separate change
+and not this one.)
+
+The key changing is itself a way to lose a glass, so the fix leans on the path that already
+existed: a first sighting of `one landscape screen` is copied from `nearest`, and the room this
+very screen was stored under by the old key scores 1 against it. `nearest` takes the room's
+key rather than computing a `fingerprint` of its own, because unspread those two differ and
+the old per-monitor key is exactly the row it must *not* skip. The old rows are left where
+they are — dead weight, still candidates — rather than rewritten, since a wall cannot tell
+from a stored one-screen key which screen it is now looking at.
+
+**Spread, the key was already right and the *unit* was not.** Changing the Windows primary is
+a translation of the whole desktop, which `normalise` takes out; which screen the window was
+spread *from* (the home, where the chrome goes) reaches `availableMonitors()` not at all. Both
+are tested, primary by primary, on the inverted L. What leaked is that a glass spot is CSS
+pixels and the spread page is zoomed to the *home* screen's scale (`window.rs::rezoom`) — so on
+a desk with the laptop at 150% and monitors at 100%, the same stored spot is 1.5× further
+from the window's origin, physically, when spread from the laptop. Same key, same numbers,
+different glass. So `arrangement.unit` (schema v52) records the CSS-per-physical ratio each
+room's spots were written in, and `adopt_in` multiplies a known room's spots by `was / now`
+(`arrange::rescale`) when it comes back under another — about the window's top-left, which is
+the union's top-left whichever screen is home. **Which screen is home moves the chrome and
+nothing on the glass.**
+
+- **Unspread rooms carry no unit**, and are never rescaled: one screen's worth of window has no
+  home to differ, and a CSS pixel there is what the glass is measured in on purpose.
+- **A room with no unit recorded is read as it stands** and the unit recorded from then on —
+  every room stored before v52. That is right whenever its home has not changed since, and is
+  the most anything can honestly say when it has.
+- **A clone is not rescaled.** Copying into a fresh room is "arrive looking like the one you
+  came from" on the home screen, and the home screen is drawn at its own scale in both.
+- **`settle`'s early return is on the key *and* the unit.** A re-spread from another home that
+  lands while a settle is in flight never passes through the unspread room, and the key alone
+  would call it unchanged.
+- **The timeline stack still hangs off the home screen**, by design (`glass.md`): it is the
+  default for a timeline nobody has placed, and centring a default across the spread puts it on
+  a seam. Anything you *put* on the glass stays put.
 
 ### Similarity is an alignment search, and trusting the normalisation was the bug
 
@@ -111,7 +168,7 @@ Off `attention.focused`, which is the shape the architecture note prefers: nothi
 event when a monitor is plugged in or the window is dragged onto another screen, but coming
 back to the window is both when the answer can have changed and when it is worth having. The
 spread is the other trigger and that one genuinely *is* an event. Everything past the first
-question is bounded by `settle`, which returns nothing at all unless the fingerprint moved —
+question is bounded by `settle`, which returns nothing at all unless the room's key or its unit moved —
 so the residue of a focus is one `currentMonitor` call.
 
 ### The one kind with no columns

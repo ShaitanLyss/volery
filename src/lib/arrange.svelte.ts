@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { availableMonitors, currentMonitor } from "@tauri-apps/api/window";
-import { NO_ARRANGEMENT, fingerprint, nearest, type Known, type Screen } from "./arrange";
+import { NO_ARRANGEMENT, nearest, roomKey, type Known, type Screen } from "./arrange";
+import { span } from "./span.svelte";
 
 /* Which screen arrangement the glass is currently being arranged in.
  *
@@ -36,6 +37,11 @@ class Arrangements {
   key = $state(NO_ARRANGEMENT);
   /** Its shape, for anybody who wants to say something about it. */
   screens = $state<Screen[]>([]);
+  /** CSS pixels per physical pixel on the glass while spread — the home
+   *  screen's scale, which `window.rs::rezoom` zooms the page to — or null
+   *  unspread, where nothing is ever rescaled. Part of "has anything changed",
+   *  since the same room under a new unit still has to be told. */
+  unit = $state<number | null>(null);
   /** The last thing that went wrong looking, so a failure is visible rather
    *  than a glass that quietly stopped following the screens. */
   fault = $state<string | null>(null);
@@ -62,7 +68,9 @@ class Arrangements {
    *  Spread, that is every monitor; unspread, it is the one the window is on
    *  and only that one — which is the whole distinction being drawn. Plugging
    *  a second screen in therefore changes nothing while the window sits on the
-   *  first, and that is right: the room the glass is in did not change.
+   *  first, and that is right: the room the glass is in did not change. Nor
+   *  does moving the window to another landscape screen, which `roomKey`
+   *  reduces to its orientation.
    *
    *  An empty answer rather than a throw: a monitor enumeration that fails is
    *  a reason to leave the arrangement alone, not a reason for anything to
@@ -111,11 +119,23 @@ class Arrangements {
     this.#busy = true;
     try {
       const screens = await this.look(spread);
-      const key = fingerprint(screens);
+      const key = roomKey(screens, spread);
+      /* Spread over a desk whose screens are at different scales, the page is
+         zoomed to the home screen's, so a glass spot in CSS pixels lands in a
+         different *physical* place depending on which screen the window was
+         spread from. The store keeps the unit each room's spots were written in
+         and rescales them when it changes, so moving the chrome to another
+         screen moves the chrome and nothing on the glass. Read live here, like
+         `spread`, because the second pass of `#again` exists to catch exactly
+         the spread that changed under the first. */
+      const unit = spread ? (span.view?.scale ?? null) : null;
       /* Nothing usable, or the same room as last time. The early return is on
          the *key* rather than on the monitor list, so a screen that reports a
-         pixel differently between two calls does not fork an arrangement. */
-      if (key === NO_ARRANGEMENT || key === this.key) return null;
+         pixel differently between two calls does not fork an arrangement — and
+         on the unit beside it, so a re-spread from another home that arrives
+         while this was busy (and so never passes through the unspread room)
+         still has its spots put back where they physically were. */
+      if (key === NO_ARRANGEMENT || (key === this.key && unit === this.unit)) return null;
 
       let known: Known[] = [];
       try {
@@ -136,10 +156,12 @@ class Arrangements {
         key,
         screens: JSON.stringify(screens),
         origin,
-        cloneFrom: nearest(screens, known)?.key ?? null,
+        unit,
+        cloneFrom: nearest(screens, known, key)?.key ?? null,
       });
       this.key = key;
       this.screens = screens;
+      this.unit = unit;
       this.fault = null;
       return spots;
     } catch (err) {

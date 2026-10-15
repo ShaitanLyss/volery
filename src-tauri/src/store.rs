@@ -361,7 +361,7 @@ fn may_migrate(at: i64, installed_wall: bool, dev_build: bool) -> Result<(), Str
 /// when the table already exists, so a renamed or added column never lands and
 /// the next query fails against a schema that looks superficially fine. This
 /// caught us once already. Every future change gets a numbered step.
-const SCHEMA_VERSION: i64 = 51;
+const SCHEMA_VERSION: i64 = 52;
 
 /// The ladder, one rung per version. Ordered, and the number is the version the
 /// database is at *once that step has run* — see `migrate`, which stamps it in
@@ -418,6 +418,7 @@ const STEPS: &[(i64, fn(&Connection) -> Result<(), String>)] = &[
     (49, migrate_v49),
     (50, migrate_v50),
     (51, migrate_v51),
+    (52, migrate_v52),
     // Future changes go here as another `(N, migrate_vN)`, each one an ALTER
     // rather than a CREATE, so existing databases actually move forward.
 ];
@@ -2915,6 +2916,22 @@ fn migrate_v50(conn: &Connection) -> Result<(), String> {
 /// wakes nobody it would not have woken anyway.
 fn migrate_v51(conn: &Connection) -> Result<(), String> {
     add_column(conn, "conversation", "awake", "INTEGER NOT NULL DEFAULT 0")
+}
+
+/// The unit each screen arrangement's glass spots were written in: CSS pixels
+/// per physical pixel, which while spread is the *home* screen's scale.
+///
+/// Without it a spread desk whose screens are at different scales drew the same
+/// spots in different physical places depending on which screen the window was
+/// spread from — moving the chrome moved the glass (`arrange::rescale`).
+///
+/// Nullable, and every existing row starts null, which is the honest reading:
+/// nothing recorded which home those spots were laid out under, so the first
+/// adopt after this assumes the one it is read in and records it from there.
+/// An unspread room stays null for ever, since one screen's worth of window
+/// has no home to differ.
+fn migrate_v52(conn: &Connection) -> Result<(), String> {
+    add_column(conn, "arrangement", "unit", "REAL")
 }
 
 /// How the browser stood when this wall was last looked at: `(mode,
@@ -10722,15 +10739,15 @@ mod tests {
             .unwrap()
         };
 
-        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None, None).unwrap();
         stick_row(&conn, &t, Some(40.0), Some(90.0)).unwrap();
-        adopt_in(&conn, "laptop", "[]", [0.0, 0.0], Some("desk")).unwrap();
-        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "laptop", "[]", [0.0, 0.0], None, Some("desk")).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(glass(), (Some(40.0), Some(90.0)), "a stuck territory survives a room change");
 
         stick_row(&conn, &t, None, None).unwrap();
-        adopt_in(&conn, "laptop", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "laptop", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(glass(), (None, None), "and one taken off is not put back by coming home");
     }
 

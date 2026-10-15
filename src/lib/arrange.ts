@@ -67,7 +67,13 @@ export function normalise(screens: Screen[]): Screen[] {
   const oy = Math.min(...live.map((s) => s.y));
   return live
     .map((s) => ({ ...s, x: s.x - ox, y: s.y - oy }))
-    .sort((a, b) => a.y - b.y || a.x - b.x || a.w - b.w || a.h - b.h);
+    /* Total, down to the scale: two monitors on the same rect (a duplicated
+       display) differing only in scale would otherwise keep whatever order
+       they were enumerated in, and the fingerprint would follow it. */
+    .sort(
+      (a, b) =>
+        a.y - b.y || a.x - b.x || a.w - b.w || a.h - b.h || Number(scaleOf(a)) - Number(scaleOf(b)),
+    );
 }
 
 /** Two decimals, as a string, with no exponent and no negative zero. Scale
@@ -89,6 +95,48 @@ export function fingerprint(screens: Screen[]): string {
   const ns = normalise(screens);
   if (!ns.length) return NO_ARRANGEMENT;
   return ns.map((s) => `${s.w}x${s.h}+${s.x}+${s.y}@${scaleOf(s)}`).join(" ");
+}
+
+/** The room one screen's worth of window is in, whichever screen that is.
+ *
+ *  Unspread, the glass is the window and the window is on one screen. Which
+ *  one, how big it is, its scale, and how many others are plugged in beside it
+ *  are all facts about the *desk*, and none of them is a fact about the room:
+ *  Volery on the laptop panel alone and Volery on the same panel with two more
+ *  monitors attached is the same window in front of the same person. It was
+ *  keyed on `fingerprint` of that one screen — its exact size and scale — so
+ *  the laptop panel and the external one beside it were two rooms with two
+ *  glasses, each going stale while you worked in the other, and "my glass did
+ *  not carry" was the whole of what anybody could see of it.
+ *
+ *  Orientation is the one thing kept, because it is the one thing that makes a
+ *  different room: a portrait pane is tall where a landscape one is wide, and
+ *  an arrangement made for one is a column squeezed against the edge of the
+ *  other. Everything else is absorbed where the glass is drawn — `glassAt`
+ *  clamps a spot onto whatever pane it lands on, which is the same bargain a
+ *  narrower window already strikes.
+ *
+ *  Readable, and unable to collide with a `fingerprint`, which always starts
+ *  with a size. */
+export const ONE_LANDSCAPE = "one landscape screen";
+export const ONE_PORTRAIT = "one portrait screen";
+
+/** Which room the glass is in: every screen's shape while spread, and only the
+ *  window's own screen's orientation otherwise.
+ *
+ *  **Spread, nothing about which monitor is which may reach the key** — not
+ *  which is the Windows primary (that only moves the desktop's origin, which
+ *  `normalise` takes out), and not which one the window was spread from (that
+ *  is where the chrome goes, and nothing the monitors report). `NO_ARRANGEMENT`
+ *  for a set with nothing usable in it, as `fingerprint` answers. */
+export function roomKey(screens: Screen[], spread: boolean): string {
+  if (spread) return fingerprint(screens);
+  /* One screen is all `look` hands over unspread; the first of a canonical
+     order if somebody hands over more, so the answer still cannot depend on
+     the order they arrived in. */
+  const [one] = normalise(screens);
+  if (!one) return NO_ARRANGEMENT;
+  return one.h > one.w ? ONE_PORTRAIT : ONE_LANDSCAPE;
 }
 
 /** How much of the two rects is in both of them — intersection over union.
@@ -182,9 +230,15 @@ export function similarity(a: Screen[], b: Screen[]): number {
  *  the answer is stable across calls rather than depending on the order the
  *  rows came back in. A score of zero is still an answer: two arrangements that
  *  share no geometry at all are still more use as a starting point than a blank
- *  pane, and every spot gets clamped onto the pane it lands on anyway. */
-export function nearest(to: Screen[], among: Known[]): Known | null {
-  const key = fingerprint(to);
+ *  pane, and every spot gets clamped onto the pane it lands on anyway.
+ *
+ *  `key` is the room being furnished, which is never its own ancestor. It is
+ *  `roomKey`'s answer rather than `fingerprint`'s: unspread they differ, and
+ *  the one-screen rooms a wall stored under the old per-monitor keys are
+ *  exactly what a first sighting of `ONE_LANDSCAPE` should be copied from — the
+ *  one whose screen *is* this one scores 1, so the glass you had survives the
+ *  key it was stored under changing. */
+export function nearest(to: Screen[], among: Known[], key: string = fingerprint(to)): Known | null {
   let best: Known | null = null;
   let bestScore = -1;
   for (const k of among) {

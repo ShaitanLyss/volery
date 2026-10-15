@@ -314,12 +314,17 @@ fn known_in(conn: &Connection) -> Result<Vec<KnownArrangement>, String> {
 ///    rather than keeping the last arrangement's spot.
 /// 3. **The arrangement becomes the current one**, which is what `remember`
 ///    then writes against.
+///
+/// And before any of that, a room already known is **put back into the unit it
+/// is being drawn in** (`unit`, see `rescale`), so the spots it hands back are
+/// in the same physical places they were left in.
 #[tauri::command]
 pub async fn adopt_arrangement(
     app: tauri::AppHandle,
     key: String,
     screens: String,
     origin: [f64; 2],
+    unit: Option<f64>,
     clone_from: Option<String>,
 ) -> Result<Option<GlassSpots>, String> {
     /* The empty key is "the monitors have not answered yet" and is not an
@@ -336,7 +341,7 @@ pub async fn adopt_arrangement(
         let store = app.state::<Store>();
         let mut conn = store.0.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        adopt_in(&tx, &key, &screens, origin, clone_from.as_deref())?;
+        adopt_in(&tx, &key, &screens, origin, unit, clone_from.as_deref())?;
         let spots = spots_in(&tx, &key)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(Some(spots))
@@ -351,6 +356,7 @@ pub(crate) fn adopt_in(
     key: &str,
     screens: &str,
     origin: [f64; 2],
+    unit: Option<f64>,
     clone_from: Option<&str>,
 ) -> Result<(), String> {
     /* **"No row" and "could not tell" are not the same answer**, and `is_err()`
@@ -375,15 +381,32 @@ pub(crate) fn adopt_in(
     let ancestor = clone_from
         .filter(|from| !from.is_empty() && *from != key)
         .map(|from| (from.to_string(), origin_of(conn, from)));
+    /* Likewise the unit this room's spots were last written in, before the
+       upsert records the new one over it. */
+    let was = if fresh { None } else { unit_of(conn, key) };
 
     conn.execute(
-        "INSERT INTO arrangement (key, screens_json, seen_at, current, origin_x, origin_y)
-         VALUES (?1, ?2, ?3, 0, ?4, ?5)
+        "INSERT INTO arrangement (key, screens_json, seen_at, current, origin_x, origin_y, unit)
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)
          ON CONFLICT(key) DO UPDATE SET
-           screens_json = ?2, seen_at = ?3, origin_x = ?4, origin_y = ?5",
-        params![key, screens, crate::store::now(), origin[0], origin[1]],
+           screens_json = ?2, seen_at = ?3, origin_x = ?4, origin_y = ?5, unit = ?6",
+        params![key, screens, crate::store::now(), origin[0], origin[1], unit],
     )
     .map_err(|e| e.to_string())?;
+
+    if let Some(k) = rescale(was, unit) {
+        /* The same room, drawn at another scale: spread from a screen whose
+           scale differs from the one it was last spread from. Every spot is
+           multiplied about the pane's origin — the window's top-left, which is
+           the union's top-left whichever screen is home — so each lands on the
+           physical pixel it was left on. Shadows included, which is why this is
+           over the table rather than over `KINDS`. */
+        conn.execute(
+            "UPDATE glass_spot SET x = x * ?2, y = y * ?2 WHERE arrangement = ?1",
+            params![key, k],
+        )
+        .map_err(|e| e.to_string())?;
+    }
 
     if fresh {
         match ancestor {
@@ -435,6 +458,47 @@ fn origin_of(conn: &Connection, key: &str) -> [f64; 2] {
         |r| Ok([r.get::<_, f64>(0)?, r.get::<_, f64>(1)?]),
     )
     .unwrap_or([0.0, 0.0])
+}
+
+/// The unit an arrangement's spots were last written in, or `None` for one that
+/// was never told — every unspread room, and every room stored before the
+/// column existed.
+fn unit_of(conn: &Connection, key: &str) -> Option<f64> {
+    conn.query_row(
+        "SELECT unit FROM arrangement WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, Option<f64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+/// How much to multiply a known room's spots by when it comes back under
+/// another unit — `None` when there is nothing to do.
+///
+/// A glass spot is in CSS pixels, and while spread the page is zoomed to the
+/// *home* screen's scale (`window.rs::rezoom`), so on a desk whose screens are
+/// at different scales one CSS pixel is a different number of physical pixels
+/// depending on which screen the window was spread from. Stored as they were,
+/// the same spots then drew somewhere else — the laptop at 150% as home put the
+/// whole glass two-thirds of the way to where it had been left from a monitor
+/// at 100%. Which screen is home moves the chrome; it must not move the glass.
+///
+/// `was / now`: a spot `x` CSS pixels from the origin at `was` physical pixels
+/// each is `x * was` physical pixels out, which at `now` each is
+/// `x * was / now`. Nothing when either side is unknown — a room written before
+/// the unit was recorded is assumed to be in the unit it is being read in,
+/// which is right whenever its home has not changed and is the most that can
+/// honestly be said when it has — and nothing for a difference no screen can
+/// show, so a float that came back a hair different does not creep every spot
+/// a hair each time.
+pub(crate) fn rescale(was: Option<f64>, now: Option<f64>) -> Option<f64> {
+    let (was, now) = (was?, now?);
+    if !(was.is_finite() && now.is_finite() && was > 0.0 && now > 0.0) {
+        return None;
+    }
+    let k = was / now;
+    ((k - 1.0).abs() > 1e-6).then_some(k)
 }
 
 /// The first arrangement ever identified inherits the glass as it stands.
@@ -526,7 +590,8 @@ mod tests {
                 seen_at      INTEGER NOT NULL,
                 current      INTEGER NOT NULL DEFAULT 0,
                 origin_x     REAL NOT NULL DEFAULT 0,
-                origin_y     REAL NOT NULL DEFAULT 0
+                origin_y     REAL NOT NULL DEFAULT 0,
+                unit         REAL
             );
             CREATE TABLE glass_spot (
                 arrangement TEXT NOT NULL,
@@ -586,7 +651,7 @@ mod tests {
         .unwrap();
         conn.execute("INSERT INTO placement VALUES ('c2', NULL, NULL)", [])
             .unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((10.0, 20.0)));
         assert_eq!(card_spot(&conn, "c2"), None);
         assert_eq!(spots_in(&conn, "one").unwrap().cards.len(), 1);
@@ -597,14 +662,14 @@ mod tests {
         let conn = db();
         conn.execute("INSERT INTO placement VALUES ('c1', 10.0, 20.0)", [])
             .unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, Some("one")).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((10.0, 20.0)));
         // And the two are now separate rooms.
         stick(&conn, "c1", Some(99.0), Some(98.0));
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((10.0, 20.0)));
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((99.0, 98.0)));
     }
 
@@ -616,11 +681,11 @@ mod tests {
         let conn = db();
         conn.execute("INSERT INTO placement VALUES ('c1', 10.0, 20.0)", [])
             .unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, Some("one")).unwrap();
         stick(&conn, "c1", None, None);
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, Some("one")).unwrap();
         assert_eq!(card_spot(&conn, "c1"), None);
     }
 
@@ -632,11 +697,11 @@ mod tests {
         let conn = db();
         conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", [])
             .unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, Some("one")).unwrap();
         stick(&conn, "c1", Some(5.0), Some(6.0));
         assert_eq!(card_spot(&conn, "c1"), Some((5.0, 6.0)));
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), None);
     }
 
@@ -650,7 +715,7 @@ mod tests {
         conn.execute("INSERT INTO reference_image VALUES ('i', 5.0, 6.0)", []).unwrap();
         conn.execute("INSERT INTO widget VALUES ('w', 7.0, 8.0)", []).unwrap();
         conn.execute("INSERT INTO timeline VALUES ('t', 9.0, 10.0)", []).unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         let s = spots_in(&conn, "one").unwrap();
         assert_eq!(s.cards.get("c"), Some(&[1.0, 2.0]));
         assert_eq!(s.territories.get("t1"), Some(&[3.0, 4.0]));
@@ -673,7 +738,7 @@ mod tests {
     fn an_arrangement_is_never_cloned_from_itself() {
         let conn = db();
         conn.execute("INSERT INTO placement VALUES ('c1', 1.0, 2.0)", []).unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], Some("one")).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, Some("one")).unwrap();
         // Fell back to the columns rather than copying nothing over nothing.
         assert_eq!(card_spot(&conn, "c1"), Some((1.0, 2.0)));
     }
@@ -687,40 +752,40 @@ mod tests {
            top-left. */
         let conn = db();
         conn.execute("INSERT INTO placement VALUES ('c1', 100.0, 50.0)", []).unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         // Spreading: the home screen now starts 1080 across and 60 down.
-        adopt_in(&conn, "wide", "[]", [1080.0, 60.0], Some("one")).unwrap();
+        adopt_in(&conn, "wide", "[]", [1080.0, 60.0], None, Some("one")).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((1180.0, 110.0)));
         // And back: the same place on the home screen again.
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(card_spot(&conn, "c1"), Some((100.0, 50.0)));
     }
 
     #[test]
     fn a_card_on_another_wall_is_remembered_per_room_and_copied_shifted() {
         let conn = db();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         remember(&conn, SHADOW, "elsewhere:lab:1", Some(100.0), Some(100.0)).unwrap();
         // A room never seen copies the one just left, shifted by the origins.
-        adopt_in(&conn, "spread", "[]", [1920.0, 40.0], Some("one")).unwrap();
+        adopt_in(&conn, "spread", "[]", [1920.0, 40.0], None, Some("one")).unwrap();
         let s = spots_in(&conn, "spread").unwrap();
         assert_eq!(s.shadows.get("elsewhere:lab:1"), Some(&[2020.0, 140.0]));
         // It is its own kind: it never lands among the timelines.
         assert!(s.timelines.is_empty());
         // And it is the room's own from here on.
         remember(&conn, SHADOW, "elsewhere:lab:1", Some(3000.0), Some(500.0)).unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         assert_eq!(spots_in(&conn, "one").unwrap().shadows.get("elsewhere:lab:1"), Some(&[100.0, 100.0]));
     }
 
     #[test]
     fn a_wall_prunes_only_its_own_closed_cards_in_every_room() {
         let conn = db();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         remember(&conn, SHADOW, "elsewhere:lab:1", Some(1.0), Some(1.0)).unwrap();
         remember(&conn, SHADOW, "elsewhere:lab:2", Some(2.0), Some(2.0)).unwrap();
         remember(&conn, SHADOW, "elsewhere:lab_x:9", Some(3.0), Some(3.0)).unwrap();
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, Some("one")).unwrap();
         // lab says card 2 is all it has. `_` in a host is not a wildcard.
         assert_eq!(keep_shadows(&conn, "lab", &["elsewhere:lab:2".to_string()]).unwrap(), 1);
         for room in ["one", "two"] {
@@ -741,15 +806,15 @@ mod tests {
            its `root_path`. */
         let conn = db();
         conn.execute("INSERT INTO territory VALUES ('t1', 3.0, 4.0)", []).unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], Some("one")).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, Some("one")).unwrap();
         forget(&conn, TERRITORY, "t1");
         // Gone from the room it was deleted in, and from the other one too.
         assert!(spots_in(&conn, "two").unwrap().territories.is_empty());
         assert!(spots_in(&conn, "one").unwrap().territories.is_empty());
         // And the folder added back is on the wall, not where the old one was.
         conn.execute("UPDATE territory SET glass_x = NULL, glass_y = NULL", []).unwrap();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
         let back: Option<f64> = conn
             .query_row("SELECT glass_x FROM territory WHERE id = 't1'", [], |r| r.get(0))
             .unwrap();
@@ -762,19 +827,80 @@ mod tests {
            guards clones over a room's real spots. */
         let conn = db();
         conn.execute("DROP TABLE arrangement", []).unwrap();
-        assert!(adopt_in(&conn, "one", "[]", [0.0, 0.0], None).is_err());
+        assert!(adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).is_err());
     }
 
     #[test]
     fn only_one_arrangement_is_ever_current() {
         let conn = db();
-        adopt_in(&conn, "one", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "two", "[]", [0.0, 0.0], None).unwrap();
-        adopt_in(&conn, "three", "[]", [0.0, 0.0], None).unwrap();
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "two", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "three", "[]", [0.0, 0.0], None, None).unwrap();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM arrangement WHERE current = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1);
         assert_eq!(current(&conn).as_deref(), Some("three"));
+    }
+
+    #[test]
+    fn which_screen_is_home_moves_the_chrome_and_nothing_on_the_glass() {
+        /* Lyss's inverted-L: the laptop at 150% beside monitors at 100%. Spread
+           from the laptop, the page is zoomed to 1.5; spread from a monitor, to
+           1.0. The arrangement is the same desk either way — same key — and a
+           spot left 100 CSS pixels in from home 1.5 is 150 physical pixels
+           from the window's origin, which from home 1.0 is 150 CSS pixels. */
+        let conn = db();
+        conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", []).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.5), None).unwrap();
+        stick(&conn, "c1", Some(100.0), Some(200.0));
+        // Unspread, then spread again from the other screen.
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, Some("desk")).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.0), None).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((150.0, 300.0)));
+        // And from the laptop again: exactly where it was left.
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.5), None).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((100.0, 200.0)));
+    }
+
+    #[test]
+    fn a_room_spread_from_a_screen_at_the_same_scale_is_untouched() {
+        let conn = db();
+        conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", []).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.0), None).unwrap();
+        stick(&conn, "c1", Some(333.0), Some(17.0));
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, Some("desk")).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.0), None).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((333.0, 17.0)));
+    }
+
+    #[test]
+    fn a_room_with_no_unit_recorded_is_read_as_it_stands() {
+        /* Every room stored before v52, and every unspread room. Nothing knows
+           what home those spots were laid out under, so they are taken to be in
+           the unit they are read in — and that unit is recorded from then on. */
+        let conn = db();
+        conn.execute("INSERT INTO placement VALUES ('c1', NULL, NULL)", []).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], None, None).unwrap();
+        stick(&conn, "c1", Some(40.0), Some(80.0));
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, Some("desk")).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.25), None).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((40.0, 80.0)));
+        adopt_in(&conn, "one", "[]", [0.0, 0.0], None, None).unwrap();
+        adopt_in(&conn, "desk", "[]", [0.0, 0.0], Some(1.0), None).unwrap();
+        assert_eq!(card_spot(&conn, "c1"), Some((50.0, 100.0)));
+    }
+
+    #[test]
+    fn rescale_says_nothing_it_cannot_stand_behind() {
+        assert_eq!(rescale(Some(1.5), Some(1.0)), Some(1.5));
+        assert_eq!(rescale(Some(1.0), Some(2.0)), Some(0.5));
+        assert_eq!(rescale(None, Some(1.0)), None);
+        assert_eq!(rescale(Some(1.0), None), None);
+        assert_eq!(rescale(Some(1.5), Some(1.5)), None);
+        // A float that came back a hair different must not creep every spot.
+        assert_eq!(rescale(Some(1.5), Some(1.5 + 1e-9)), None);
+        assert_eq!(rescale(Some(0.0), Some(1.0)), None);
+        assert_eq!(rescale(Some(f64::NAN), Some(1.0)), None);
     }
 }
