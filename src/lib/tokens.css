@@ -156,6 +156,14 @@
   --ch-pop-ms: 260ms;
   --ch-ease: cubic-bezier(0.2, 0.8, 0.3, 1);
   --ch-glow: 34px;
+  /* How much of the status light reaches the ground (`Card.svelte`), as a
+     multiplier on the strengths this wall was tuned to, and how much of a
+     card's status colour tints its own fill. Light reads as light only on a
+     dark ground: on paper a blurred halo is a stain, so a light skin turns
+     `--ch-bloom` down and says "alive" with `--ch-wash` instead. 1 and 0%
+     here, which is exactly what the wall drew before either existed. */
+  --ch-bloom: 1;
+  --ch-wash: 0%;
   /* `none`, because the dark wall does not need one: against `#151210` a 1px
      `--edge` is already a visible seam. A light skin has no such luck and
      turns this on — see `palette.ts`. Static either way, so it is rastered

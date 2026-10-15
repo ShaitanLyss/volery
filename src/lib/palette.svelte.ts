@@ -34,6 +34,7 @@ import {
   exportSkins,
   importSkins,
   mergeSkins,
+  luminance,
   type Skin,
   type SkinOverrides,
   type Derivation,
@@ -76,13 +77,66 @@ function writeCustoms(list: Skin[]) {
  *  is what makes reverting to `studio` exact rather than approximate, and it
  *  is the reason a light skin followed by a dark one cannot leave a stray
  *  cream `--edge` behind on a violet wall. */
-function paint(over: SkinOverrides) {
+function paint(over: SkinOverrides): boolean {
   const root = document.documentElement;
   for (const k of SKIN_KNOBS) {
     const v = over[k];
     if (v === undefined) root.style.removeProperty(k);
     else root.style.setProperty(k, v);
   }
+  /* `data-ground="light"` is for what one token cannot say. A table of sixteen
+     terminal colours, say, has a dark-ground set and a light-ground set and no
+     single knob to choose between them. Absent on a dark ground, so studio's
+     root element carries nothing it did not carry before. */
+  const light = groundIsLight();
+  if (light) root.setAttribute("data-ground", "light");
+  else root.removeAttribute("data-ground");
+  return light;
+}
+
+/** Whether the panel's ground, which is what everything is measured against,
+ *  is light.
+ *
+ *  Read off the document rather than off the override map, so a custom skin
+ *  extending a light one, or a skin that only moved `--well`, answers the same
+ *  as a built-in. The computed value of an unregistered custom property is the
+ *  token stream with `var()` substituted, which is a hex for every built-in.
+ *  For anything else, a `color-mix(…)` say, the engine is asked through a
+ *  probe's `color`. A ground nobody can measure counts as dark, which is what
+ *  the wall was before any of this. */
+function groundIsLight(): boolean {
+  const root = document.documentElement;
+  const declared = getComputedStyle(root).getPropertyValue("--well").trim();
+  const y = luminance(declared);
+  if (y !== null) return y > LIGHT_ABOVE;
+  try {
+    const probe = document.createElement("i");
+    probe.style.cssText = "position:absolute;visibility:hidden;color:var(--well)";
+    root.appendChild(probe);
+    const said = getComputedStyle(probe).color;
+    probe.remove();
+    const rgb = channels(said);
+    if (!rgb) return false;
+    const lin = rgb.map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2] > LIGHT_ABOVE;
+  } catch {
+    return false;
+  }
+}
+
+/** WCAG luminance above which a ground is light. Mid-grey is about 0.2; every
+ *  dark skin's well sits under 0.02 and every light one's over 0.6, so the
+ *  threshold has room on both sides and is not a judgement about any skin. */
+const LIGHT_ABOVE = 0.3;
+
+/** `rgb(…)` or `color(srgb …)`, as the engine serialises a computed colour,
+ *  into 0–1 channels. */
+function channels(css: string): [number, number, number] | null {
+  let m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/.exec(css);
+  if (m) return [Number(m[1]) / 255, Number(m[2]) / 255, Number(m[3]) / 255];
+  m = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(css);
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+  return null;
 }
 
 /** The wall's skin, and the ones you wrote.
@@ -100,6 +154,15 @@ function paint(over: SkinOverrides) {
 class Skins {
   customs = $state<Skin[]>([]);
   id = $state(STUDIO);
+  /** Whether the skin on paints a light ground. See `paint`. */
+  light = $state(false);
+  /** Bumped every time the root element is repainted, so anything drawing on
+   *  a canvas can re-read its colours. A canvas cannot see a custom property
+   *  change. It reads the tokens once with `getComputedStyle`, and without
+   *  something to depend on it keeps drawing whatever ground it was mounted
+   *  on. Reading `skin.painted` inside the effect that reads the tokens is the
+   *  whole of what it takes. */
+  painted = $state(0);
 
   constructor() {
     this.customs = readCustoms();
@@ -110,7 +173,12 @@ class Skins {
       /* a browser refusing storage is not a reason to start unskinned */
     }
     this.id = skinFor(stored, this.customs);
-    paint(resolveSkin(this.id, this.customs));
+    this.#paint();
+  }
+
+  #paint() {
+    this.light = paint(resolveSkin(this.id, this.customs));
+    this.painted++;
   }
 
   /** The ring, in the order it cycles: built-ins first, then yours. */
@@ -139,7 +207,7 @@ class Skins {
 
   set(id: string) {
     this.id = skinFor(id, this.customs);
-    paint(resolveSkin(this.id, this.customs));
+    this.#paint();
     /* Per-machine and disposable, like the panel's width and the reading
        scale: which skin is on is about this screen and this pair of eyes.
        Written on the switch rather than deferred — this is one discrete
@@ -165,7 +233,7 @@ class Skins {
        the chain being drawn, and `skinFor` catches the case where the skin
        itself has gone. */
     this.id = skinFor(this.id, list);
-    paint(resolveSkin(this.id, list));
+    this.#paint();
   }
 
   /** A new skin from the current one, and switch to it. Returns its id. */

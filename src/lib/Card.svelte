@@ -1011,8 +1011,15 @@
   .card[data-st="work"] {
     --st: var(--st-work);
   }
+  /* `--ch-bloom` scales how much of the light reaches the ground, and at 1 it
+     is exactly the strength this was tuned to on the dark wall. It is a knob
+     because light only reads as light where the ground is dark. On paper the
+     same blurred halo at 85% is an orange or green stain spreading under the
+     card, so a light skin turns it down and lets `--ch-wash` and the ask's
+     ring carry the status instead. See `palette.ts`. */
   .card[data-st="work"]::after {
-    box-shadow: 0 6px var(--ch-glow, 34px) -14px color-mix(in srgb, var(--st) 85%, transparent);
+    box-shadow: 0 6px var(--ch-glow, 34px) -14px
+      color-mix(in srgb, var(--st) calc(85% * var(--ch-bloom, 1)), transparent);
     animation: breathe var(--ch-lift-ms, 4200ms) ease-in-out infinite;
   }
   .card[data-st="ask"] {
@@ -1022,7 +1029,8 @@
   .card[data-st="ask"]::after {
     box-shadow:
       0 0 0 3px color-mix(in srgb, var(--st) 22%, transparent),
-      0 8px calc(var(--ch-glow, 34px) + 4px) -10px color-mix(in srgb, var(--st) 95%, transparent);
+      0 8px calc(var(--ch-glow, 34px) + 4px) -10px
+        color-mix(in srgb, var(--st) calc(95% * var(--ch-bloom, 1)), transparent);
     animation: bloom 2.4s ease-in-out infinite;
   }
 
@@ -1052,6 +1060,28 @@
   .card[data-st="fail"] {
     --st: var(--st-fail);
     border-color: color-mix(in srgb, var(--st-fail) 48%, var(--edge));
+  }
+
+  /* A status tint in the card's own fill: the light-ground answer to the glow.
+     On a dark wall a live card is *lit*. On paper nothing is lit, and the way a
+     card says "this one is alive" is by taking on a little of its colour, the
+     way a highlighted line does on a page. `--ch-wash` is 0% by default, so the
+     layer is a fully transparent gradient over the surface and this wall draws
+     exactly what it drew before.
+
+     A `background-image` layer rather than a mixed `background-color`, for
+     that reason: mixing at 0% would round-trip the surface through another
+     colour space and could land a unit off. Rest is left out because it has
+     its own fill. Dormant is left out by construction, since its `background`
+     shorthand resets the image: a spent card takes on no colour. */
+  .card[data-st="work"],
+  .card[data-st="ask"],
+  .card[data-st="soft"],
+  .card[data-st="fail"] {
+    background-image: linear-gradient(
+      color-mix(in srgb, var(--st) var(--ch-wash, 0%), transparent),
+      color-mix(in srgb, var(--st) var(--ch-wash, 0%), transparent)
+    );
   }
 
   /* Dormant is a fill, not a fifth colour: the card keeps whatever tier it

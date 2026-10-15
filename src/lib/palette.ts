@@ -117,6 +117,8 @@ export const SKIN_KNOBS = [
   "--ch-pop-ms",
   "--ch-ease",
   "--ch-glow",
+  "--ch-bloom",
+  "--ch-wash",
   "--ch-shadow",
 ] as const;
 
@@ -155,6 +157,8 @@ export const SKIN_KNOB_INFO: Record<SkinKnob, { label: string; takes: string; no
   "--ch-pop-ms": { label: "pop time", takes: "260ms", note: "how long that takes. Fires once, so it costs nothing at rest" },
   "--ch-ease": { label: "the curve", takes: "cubic-bezier(0.2, 0.8, 0.3, 1)", note: "how a pop moves; a springy one overshoots" },
   "--ch-glow": { label: "glow reach", takes: "34px", note: "how far the working card's light spreads" },
+  "--ch-bloom": { label: "glow strength", takes: "1", note: "how much of a live card's light reaches the ground. A light skin wants about a third, since a halo on paper is a stain" },
+  "--ch-wash": { label: "status tint", takes: "0%", note: "how much of its status colour a live card takes into its fill. The light ground's answer to a glow" },
   "--ch-shadow": { label: "card shadow", takes: "none", note: "a card's drop shadow. Rastered once, so it costs nothing at rest" },
 };
 
@@ -177,6 +181,8 @@ export const SKIN_GROUPS: { title: string; knobs: SkinKnob[] }[] = [
       "--ch-radius",
       "--ch-shadow",
       "--ch-glow",
+      "--ch-bloom",
+      "--ch-wash",
       "--ch-lift",
       "--ch-lift-ms",
       "--ch-pop",
