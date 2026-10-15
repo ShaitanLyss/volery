@@ -146,7 +146,7 @@
     /* Opaque: it stands over the wall, and the backdrop draws behind
        everything (ambience.md). */
     background: var(--surface);
-    box-shadow: 0 10px 28px rgb(0 0 0 / 0.35);
+    box-shadow: 0 10px 28px color-mix(in srgb, var(--shade) 35%, transparent);
     visibility: hidden;
   }
   /* Drawn once it has been measured, so it never shows a frame at the spot

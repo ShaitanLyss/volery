@@ -1798,7 +1798,7 @@
     color: var(--paper-mute);
     cursor: pointer;
     user-select: none;
-    box-shadow: 0 2px 10px #0009;
+    box-shadow: 0 2px 10px color-mix(in srgb, var(--shade) 60%, transparent);
     animation: surface 110ms ease-out;
   }
   .to-end:hover {
@@ -1837,7 +1837,7 @@
     font-variant-numeric: tabular-nums;
     user-select: none;
     pointer-events: none;
-    box-shadow: 0 2px 10px #0009;
+    box-shadow: 0 2px 10px color-mix(in srgb, var(--shade) 60%, transparent);
     animation: surface 110ms ease-out;
   }
   @media (prefers-reduced-motion: reduce) {

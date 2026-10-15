@@ -92,6 +92,7 @@ export const SKIN_KNOBS = [
   "--raised",
   "--edge",
   "--rule",
+  "--shade",
   /* the ink ramp */
   "--paper",
   "--paper-dim",
@@ -133,6 +134,7 @@ export const SKIN_KNOB_INFO: Record<SkinKnob, { label: string; takes: string; no
   "--raised": { label: "raised", takes: "#272220", note: "a fence, a chip, a control that sits above a card" },
   "--edge": { label: "edges", takes: "#332c29", note: "the hairline round a card, a seam, the meta-bar rule" },
   "--rule": { label: "rules", takes: "#3d3532", note: "the stronger line — a prompt's left rule, a hover border" },
+  "--shade": { label: "shadow", takes: "#000", note: "what every drop shadow is made of. A light ground wants its own hue at an alpha, e.g. rgb(60 40 30 / 0.2)" },
   "--paper": { label: "brightest ink", takes: "#ede4d8", note: "prompts, headings, bold. Warm bone, never pure white" },
   "--paper-dim": { label: "prose ink", takes: "#b4a89c", note: "an answer at length — the second rung of the ramp" },
   "--paper-mute": { label: "muted ink", takes: "#8a7e74", note: "tool lines and fold caps; keep it above 4.5:1" },
@@ -161,7 +163,7 @@ export const SKIN_KNOB_INFO: Record<SkinKnob, { label: string; takes: string; no
 export const SKIN_GROUPS: { title: string; knobs: SkinKnob[] }[] = [
   {
     title: "ground",
-    knobs: ["--ink", "--well", "--surface", "--hollow", "--raised", "--edge", "--rule"],
+    knobs: ["--ink", "--well", "--surface", "--hollow", "--raised", "--edge", "--rule", "--shade"],
   },
   { title: "ink", knobs: ["--paper", "--paper-dim", "--paper-mute", "--paper-faint"] },
   {

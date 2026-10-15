@@ -83,7 +83,7 @@
     background: var(--surface);
     border: 1px solid var(--edge);
     border-radius: 6px;
-    box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 30px 60px -20px color-mix(in srgb, var(--shade) 90%, transparent);
   }
   h1 {
     margin: 0;

@@ -523,7 +523,7 @@
     overflow: visible;
     background: var(--surface);
     border-radius: var(--ch-radius, 4px);
-    box-shadow: 0 18px 34px -16px rgba(0, 0, 0, 0.85);
+    box-shadow: 0 18px 34px -16px color-mix(in srgb, var(--shade) 85%, transparent);
     transition:
       border-color 0.15s ease,
       opacity 0.6s ease;

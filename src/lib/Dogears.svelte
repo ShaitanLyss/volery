@@ -227,7 +227,7 @@
        behind everything and a leaf through the middle of a filename is the bug
        a dormant card once had. */
     background: var(--raised);
-    box-shadow: 0 14px 40px -18px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 14px 40px -18px color-mix(in srgb, var(--shade) 90%, transparent);
     overflow: hidden;
     pointer-events: auto;
   }
@@ -315,7 +315,7 @@
     font-size: 0.72rem;
     line-height: 1;
     padding: 0.24rem 0.5rem 0.3rem;
-    box-shadow: 0 14px 40px -18px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 14px 40px -18px color-mix(in srgb, var(--shade) 90%, transparent);
   }
   .more:hover,
   .more.on {
@@ -334,7 +334,7 @@
     border: 1px solid var(--rule);
     border-radius: 5px;
     background: var(--surface);
-    box-shadow: 0 26px 70px -26px rgba(0, 0, 0, 0.95);
+    box-shadow: 0 26px 70px -26px color-mix(in srgb, var(--shade) 95%, transparent);
     padding: 0.5rem 0.7rem 0.6rem;
   }
   .title {

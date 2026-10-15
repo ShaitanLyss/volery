@@ -992,7 +992,7 @@
     border-radius: var(--ch-radius, 4px);
     /* Opaque, for the reason nothing standing on the wall may be transparent. */
     background: var(--ink);
-    box-shadow: 0 24px 48px -18px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 24px 48px -18px color-mix(in srgb, var(--shade) 90%, transparent);
   }
   /* The mooring handle: a pill centred on the dock's top edge, inside its own
      padding so it is never over anything you are reading, and faint until the

@@ -355,7 +355,7 @@
     border: 1px solid var(--edge);
     border-radius: 5px;
     background: var(--surface);
-    box-shadow: 0 24px 70px -30px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 24px 70px -30px color-mix(in srgb, var(--shade) 90%, transparent);
     display: flex;
     flex-direction: column;
     gap: 0.7rem;

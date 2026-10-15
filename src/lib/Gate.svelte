@@ -640,7 +640,7 @@
     /* A reference is drawn from across the room, and a border around it reads
        as a frame — which is a thing to copy rather than a thing to look
        through. Nothing but the picture. */
-    box-shadow: 0 18px 50px -24px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 18px 50px -24px color-mix(in srgb, var(--shade) 90%, transparent);
   }
 
   /* the casse-tête */

@@ -1112,7 +1112,7 @@
     border: 1px solid var(--rule);
     border-radius: 6px;
     background: var(--surface);
-    box-shadow: 0 20px 56px rgb(0 0 0 / 0.5);
+    box-shadow: 0 20px 56px color-mix(in srgb, var(--shade) 50%, transparent);
   }
 
   .zoom {

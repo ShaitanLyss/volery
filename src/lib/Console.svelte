@@ -162,7 +162,7 @@
        behind the whole app, and a leaf drifting through a console would be the
        same bug a dormant card once had. */
     background: var(--surface);
-    box-shadow: 0 30px 90px -28px rgba(0, 0, 0, 0.95);
+    box-shadow: 0 30px 90px -28px color-mix(in srgb, var(--shade) 95%, transparent);
     overflow: hidden;
   }
 

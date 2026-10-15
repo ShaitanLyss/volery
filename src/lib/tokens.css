@@ -35,6 +35,24 @@
      dark-wall idiom that does not carry. */
   --hollow: var(--ink);
 
+  /* What a shadow is made of. Every drop shadow on the wall is
+     `color-mix(in srgb, var(--shade) N%, transparent)`, where N is the strength
+     that site was tuned to — 90% under a dialog, 35% under a chip. Pure black
+     here, so on this wall each one is exactly the `rgba(0, 0, 0, N)` it
+     replaced.
+
+     A knob because those strengths are dark-wall numbers. Against `#151210` a
+     90% black shadow is barely there: it deepens a ground that is nearly black
+     already. On paper the same shadow is a grey smear under every plate and
+     menu, which is most of what made the first light skins look dirty. So a
+     light skin sets `--shade` to a ground-hued colour *with its own alpha*,
+     such as a warm brown at 0.2. Mixing that with transparent at N% multiplies
+     the two, so every site keeps its weight relative to the others and the
+     whole set lands about five times lighter, in the ground's own hue rather
+     than in black. One token and no per-site numbers, which is the only way
+     forty shadows stay in step. */
+  --shade: #000;
+
   /* semantic status — the only colour in the product */
   --st-work: #7fb8a4; /* celadon — streaming, alive           */
   --st-ask: #e9a13b;  /* amber   — structured ask, full bloom  */

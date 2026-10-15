@@ -95,8 +95,8 @@
     overflow: hidden;
     /* The bloom that means "waiting on you", carried onto the desktop. */
     box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.4),
-      0 18px 50px -18px rgba(0, 0, 0, 0.85),
+      0 0 0 1px color-mix(in srgb, var(--shade) 40%, transparent),
+      0 18px 50px -18px color-mix(in srgb, var(--shade) 85%, transparent),
       0 6px 40px -20px rgba(233, 161, 59, 0.9);
 
     opacity: 0;

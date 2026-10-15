@@ -334,7 +334,7 @@
     border: 1px solid var(--edge);
     border-radius: 4px;
     background: var(--surface);
-    box-shadow: 0 18px 44px -22px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 18px 44px -22px color-mix(in srgb, var(--shade) 90%, transparent);
   }
 
   .row {

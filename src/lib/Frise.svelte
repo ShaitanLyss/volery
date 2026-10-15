@@ -825,7 +825,7 @@
     background: var(--raised);
     border: 1px solid var(--rule);
     border-radius: var(--ch-radius, 4px);
-    box-shadow: 0 18px 34px -12px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 18px 34px -12px color-mix(in srgb, var(--shade) 90%, transparent);
     cursor: default;
     animation: open 0.14s ease-out both;
   }

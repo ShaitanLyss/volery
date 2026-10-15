@@ -581,7 +581,7 @@
     border-radius: 5px;
     /* Opaque, like everything else standing on this wall. */
     background: var(--surface);
-    box-shadow: 0 30px 90px -28px rgba(0, 0, 0, 0.95);
+    box-shadow: 0 30px 90px -28px color-mix(in srgb, var(--shade) 95%, transparent);
     overflow: hidden;
   }
 

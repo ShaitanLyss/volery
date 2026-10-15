@@ -179,6 +179,6 @@
        Nothing here floats over the wall — the wall is what the backdrop draws
        and this is chrome standing in front of it. */
     background: var(--surface);
-    box-shadow: 0 18px 44px -22px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 18px 44px -22px color-mix(in srgb, var(--shade) 90%, transparent);
   }
 </style>

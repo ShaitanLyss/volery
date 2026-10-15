@@ -249,7 +249,7 @@
        measurement says never to put in an animation. */
     box-shadow:
       inset 2px 0 0 var(--st),
-      0 12px 26px -8px rgba(0, 0, 0, 0.8);
+      0 12px 26px -8px color-mix(in srgb, var(--shade) 80%, transparent);
     /* Drawn from the card's top edge, centred on it, and rising out of it. */
     transform: translate(-50%, -100%);
     animation: rise var(--wisp-life, 6000ms) cubic-bezier(0.22, 0.61, 0.36, 1) forwards;

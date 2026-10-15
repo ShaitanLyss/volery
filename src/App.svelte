@@ -5757,7 +5757,7 @@
        the backdrop draws behind all of it. */
     background: var(--ink);
     /* Static, rastered once — not the animated `box-shadow` motion.md prices. */
-    box-shadow: 0 24px 48px -18px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 24px 48px -18px color-mix(in srgb, var(--shade) 90%, transparent);
   }
   /* Floating, the panel is anchored by its top-left, so the edge that widens
      it is the right one — a grip on the left that grew the right edge would

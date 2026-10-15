@@ -218,7 +218,7 @@
     border-radius: 5px;
     background: var(--surface);
     padding: 0.8rem 0.9rem 0.6rem;
-    box-shadow: 0 24px 70px -30px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 24px 70px -30px color-mix(in srgb, var(--shade) 90%, transparent);
   }
 
   .head {

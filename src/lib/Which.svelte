@@ -50,7 +50,7 @@
     border: 1px solid var(--edge);
     border-radius: 4px;
     background: var(--raised);
-    box-shadow: 0 14px 40px -18px rgba(0, 0, 0, 0.9);
+    box-shadow: 0 14px 40px -18px color-mix(in srgb, var(--shade) 90%, transparent);
     /* A caption, not a control — see the note in the markup. */
     pointer-events: none;
     font-family: var(--util);

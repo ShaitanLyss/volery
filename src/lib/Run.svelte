@@ -235,7 +235,7 @@
        behind everything and a panel you can see leaves through is a panel with
        drifting leaves in the middle of a job list. */
     background: var(--surface);
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 10px 40px color-mix(in srgb, var(--shade) 35%, transparent);
     font-family: var(--util);
   }
 
