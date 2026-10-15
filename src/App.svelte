@@ -54,11 +54,13 @@
     optionGroupsOf,
     runIn,
     textOf,
+    variantOf,
     variantsOf,
     VARIANT,
     type WidgetKind,
   } from "./lib/widgets";
   import { pinOfGone, strayed, wentFrom } from "./lib/tether";
+  import { archiveAfter, hangOf, keptOf, planOf, plateOfGone, type Hang } from "./lib/plates";
   import {
     CADENCES,
     PERS,
@@ -287,6 +289,19 @@
     widgets.untether(id);
     undo.dropWhere((e) => pinOfGone(e, (c) => c === id));
   };
+  /* A timeline's plate is a widget too (`plates.ts`), and asks the wall two
+     things a widget never had to: whether its plan is still on the glass, and
+     what taking it down means — archiving the plan, the only way a plan leaves
+     the glass. The plan's own gestures go where a step, a handle and the
+     archive button have always gone. */
+  widgets.shows = (id) => !!skein.timelines.byId(id);
+  widgets.retire = (id) => void skein.timelines.archive(id);
+  skein.timelines.ownerOf = (id) => timelineOwner(id);
+  skein.timelines.jumpTo = (owner, id, rev) => void jumpToWrite(owner, id, rev);
+  skein.timelines.pick = (id) => {
+    const c = cards.find(id);
+    if (c) focusCard(c);
+  };
   /* And for a card on another wall: when its wall is heard and no longer
      carries it. Never when it merely goes quiet — see `tether.ts::goneFrom`. */
   elsewhere.onHeard = (host, alive) => {
@@ -504,6 +519,33 @@
     });
   }
 
+  /** `<space>l…`: a plan's plate — the selected plates, or else the focused
+   *  card's. The selection first because it is what you are holding; the
+   *  focused card second because it is the one thing the wall always knows you
+   *  mean, the target the `g` family takes. Its live plan if it has one, or the
+   *  newest of its plans still on the glass. Said rather than guessed when
+   *  there is none, `groupingChord`'s rule. */
+  function planChord(act: "variant" | "glass" | "stack" | "archive") {
+    let plates = widgets.items.filter(
+      (w) => planOf(w) !== null && studio.isPicked("widget", w.id),
+    );
+    if (!plates.length && focused) {
+      const mine = skein.timelines.shown.filter((t) => t.ownerId === focused!.id);
+      const t = mine.find((t) => t.state === "live") ?? mine[mine.length - 1];
+      plates = t ? widgets.items.filter((w) => planOf(w) === t.id) : [];
+    }
+    if (!plates.length) {
+      skein.fault = "select a plan's plate, or focus a card that has drawn one";
+      return;
+    }
+    for (const w of plates) {
+      if (act === "variant") widgets.set(w.id, VARIANT, variantOf(w) === "wide" ? "compact" : "wide");
+      else if (act === "glass") canvas?.toggleGlass("widget", w.id);
+      else if (act === "stack") canvas?.hangPlate(w.id, "stack");
+      else void widgets.remove(w.id);
+    }
+  }
+
   const leader = new Leader((verb) => {
     if (verb.kind === "find") void finder.show(verb.mode, shellCwd());
     else if (verb.kind === "open") {
@@ -527,6 +569,7 @@
       } else void flipMachine(verb.act);
     }
     else if (verb.kind === "grouping") groupingChord(verb.act);
+    else if (verb.kind === "plan") planChord(verb.act);
     else if (verb.kind === "elsewhere") {
       if (verb.act === "new") sectionMenuFocused();
       else focusElsewhere();
@@ -1108,6 +1151,32 @@
     });
   });
 
+  /* A plate for every plan on the glass, and none for a plan that has left it.
+     The wall does both, unrecorded — an agent drew the plan and nobody hung it,
+     and a plan going to the archive is not somebody taking a widget down — and
+     only once both reads have *succeeded*, so a store that could not be read
+     is never read as a glass with no plans on it (`plates.ts`). Woken by the
+     plans alone: `house` and `evict` write the widgets, and an effect that
+     depended on what it writes would run again on its own answer. */
+  $effect(() => {
+    if (!widgets.loaded) return;
+    const shown = skein.timelines.shown;
+    const read = skein.timelines.loaded;
+    untrack(() => {
+      /* Putting plates up needs only the widgets read — it asks what is
+         already housed — so a plan drawn after a failed read of the plans is
+         still drawn. Taking them down needs both: a failed read is not an
+         empty glass (found in review). */
+      widgets.house(shown);
+      if (!read) return;
+      const gone = widgets.evict(new Set(shown.map((t) => t.id)));
+      if (gone.length) {
+        const ids = new Set(gone);
+        undo.dropWhere((e) => plateOfGone(e, ids));
+      }
+    });
+  });
+
   /* The wall is read off SQLite once, at launch, and `untrack` is the whole of
      what makes that true.
      **In a reactive effect, a read is a subscription.** Each of these five
@@ -1154,6 +1223,25 @@
       pomodoro.tick(t);
       widgets.beat(t);
       skein.dayTick(t);
+      /* A finished plan in the stack going to the archive by itself, counted
+         from the last moment it had attention — selected here — and held for
+         as long as you are away, so nothing goes while nobody could see it. */
+      skein.timelines.sweep(
+        t,
+        widgets.items.flatMap((w) => {
+          const plan = planOf(w);
+          if (plan === null) return [];
+          return [
+            {
+              timeline: plan,
+              hang: hangOf(w),
+              kept: keptOf(w),
+              after: archiveAfter(w.config),
+              attended: studio.isPicked("widget", w.id) || presence.away,
+            },
+          ];
+        }),
+      );
     });
   });
 
@@ -1529,8 +1617,10 @@
     for (const id of studio.adoptGlass(spots.cards)) undo.drop("placement", id);
     for (const id of skein.adoptTerritoryGlass(spots.territories)) undo.drop("territory", id);
     for (const id of board.adoptGlass(spots.images)) undo.drop("image", id);
+    /* A timeline's plate is among the widgets now (`plates.ts`), so its spot in
+       this room arrives with theirs — and a plate with no spot here goes back
+       to the stack it came from, as a timeline always has. */
     for (const id of widgets.adoptGlass(spots.widgets)) undo.drop("widget", id);
-    skein.timelines.adoptGlass(spots.timelines);
   }
 
   const panelPx = $derived(panelWidth(studio.panelW, roomW));
@@ -1978,6 +2068,9 @@
         target = {
           kind: "widget",
           glass: !!spotOf(w),
+          /* A plate stands in one of three places, so its menu offers moves
+             rather than the glass toggle — see `menu.ts`. */
+          hang: planOf(w) !== null ? hangOf(w) : undefined,
           picks: variantsOf(w.kind).map((v) => ({
             id: v.value,
             label: v.label,
@@ -2018,6 +2111,7 @@
             }
           } else if (which === "front") widgets.bringToFront(id);
           else if (which === "glass") canvas?.toggleGlass("widget", id);
+          else if (which.startsWith("hang:")) canvas?.hangPlate(id, which.slice(5) as Hang);
           else if (which === "remove") void widgets.remove(id);
         };
       }
@@ -3811,7 +3905,25 @@
          forgetting a project refuses while anything is open there, so both stay
          gestures you have to name. */
       for (const id of studio.pickedOf("image")) void board.remove(id);
-      for (const id of studio.pickedOf("widget")) void widgets.remove(id);
+      /* Except a plan still being drawn. Taking a plate down archives its plan,
+         and a live one archived is an agent whose next mark fails, which then
+         draws a new plan and cannot have this one picked back up. A key that
+         reaches whatever happens to be selected — a plate clicked to read it is
+         selected — must not be that easy a way to do it (found in review). The
+         plate's own `archive` word, its menu and `<space>la` are the gestures
+         that name it, and they still do. */
+      let live = 0;
+      for (const id of studio.pickedOf("widget")) {
+        const w = widgets.items.find((w) => w.id === id);
+        if (w && skein.timelines.byId(planOf(w))?.state === "live") {
+          live++;
+          continue;
+        }
+        void widgets.remove(id);
+      }
+      if (live) {
+        skein.fault = `a plan still being drawn is archived from its own plate or its menu, not by ${e.key} — ${live === 1 ? "it was" : "they were"} left up`;
+      }
     } else if (
       /* Start typing with a card in hand and the words go to it. The wall has
          no single-letter shortcuts, so a printable key means only one thing —
@@ -4954,6 +5066,7 @@
         void jumpToWrite(owner, id, rev);
       }}
       onresume={(t) => void pickBackUp(t)}
+      onrestore={(t) => void skein.timelines.unarchive(t.id)}
       onclose={() => (showAnnals = false)}
     />
   {/if}
@@ -5104,14 +5217,7 @@
         onfocus={(id) => (focusedId = id)}
         {ondeselect}
         onclose={(id) => void cards.find(id)?.do("close")}
-        timelines={skein.timelines.shown}
-        ontimelinepick={(id) => {
-          const c = cards.find(id);
-          if (c) focusCard(c);
-        }}
-        ontimelinejump={(owner, id, rev) => void jumpToWrite(owner, id, rev)}
-        ontimelinearchive={(id) => void skein.timelines.archive(id)}
-        ontimelineplace={(id, x, y) => void skein.timelines.place(id, x, y)}
+        timelines={skein.timelines}
         onpin={(id) => savePlacement(id)}
         onplace={(id, x, y) => skein.placeTerritory(id, x, y)}
         onsize={(id, cols) => skein.sizeTerritory(id, cols)}

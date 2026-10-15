@@ -288,16 +288,39 @@ export function stickToTail(el: HTMLElement): () => void {
   const onScroll = () => tail.scrolled(el);
   el.addEventListener("scroll", onScroll, { passive: true });
 
-  /* What a hand on this scroller looks like, which is the whole of what
-     `stillFollowing` now needs from the DOM. Capture phase, so a gesture
-     answered by something inside the log — a button in a line, a fold — is still
-     seen; passive, because none of these is being prevented, only witnessed.
+  const unwitness = witness(el, tail);
 
-     `pointerdown` covers the scrollbar, whose track and thumb are part of the
-     element, and the start of a selection dragged past the edge. `pointermove`
-     continues both, and is the one that needs a guard: it fires on every hover,
-     which would hold the window permanently open for a cursor resting over the
-     panel. A held button is what makes a move a drag. */
+  /* Growth and rewrapping both, and neither declared by the component: the
+     viewport growing shortens the column below it, and a log dragged taller
+     while parked at the bottom should still be at the bottom. */
+  const stop = hearGrowth(el, soon);
+
+  el.scrollTop = el.scrollHeight;
+  tail.landed(el.scrollTop);
+
+  return () => {
+    if (frame) cancelAnimationFrame(frame);
+    el.removeEventListener("scroll", onScroll);
+    unwitness();
+    stop();
+    tails.delete(el);
+  };
+}
+
+/** What a hand on a scroller looks like, which is the whole of what
+ *  `stillFollowing` needs from the DOM — fed to `tail.gestured`. Returns the
+ *  teardown. Shared by every follower here, so the list of gestures is one
+ *  list.
+ *
+ *  Capture phase, so a gesture answered by something inside the scroller — a
+ *  button in a line, a fold — is still seen; passive, because none of these is
+ *  being prevented, only witnessed. `pointerdown` covers the scrollbar, whose
+ *  track and thumb are part of the element, and the start of a selection
+ *  dragged past the edge. `pointermove` continues both, and is the one that
+ *  needs a guard: it fires on every hover, which would hold the window
+ *  permanently open for a cursor resting over the panel. A held button is what
+ *  makes a move a drag. */
+export function witness(el: HTMLElement, tail: Tail): () => void {
   const onGesture = (e: Event) => {
     if (e.type === "pointermove" && (e as PointerEvent).buttons === 0) return;
     tail.gestured();
@@ -313,23 +336,80 @@ export function stickToTail(el: HTMLElement): () => void {
   for (const k of GESTURES) {
     el.addEventListener(k, onGesture, { capture: true, passive: true });
   }
-
-  /* Growth and rewrapping both, and neither declared by the component: the
-     viewport growing shortens the column below it, and a log dragged taller
-     while parked at the bottom should still be at the bottom. */
-  const stop = hearGrowth(el, soon);
-
-  el.scrollTop = el.scrollHeight;
-  tail.landed(el.scrollTop);
-
   return () => {
-    if (frame) cancelAnimationFrame(frame);
-    el.removeEventListener("scroll", onScroll);
     for (const k of GESTURES) {
       el.removeEventListener(k, onGesture, { capture: true });
     }
-    stop();
-    tails.delete(el);
+  };
+}
+
+/* ── following a mark rather than a tail ───────────────────────────────── */
+
+/** A sideways scroller read as though the place it should stay on were its
+ *  tail: the same three numbers `stillFollowing` judges, with the distance from
+ *  the aim standing where the distance from the bottom stood.
+ *
+ *  The compact timeline is the case. Its line does not grow at the end — the
+ *  whole plan is drawn from the first write — what moves is *where the work
+ *  is*, somewhere in the middle, and "near it means stuck to it, scrolled away
+ *  means nothing moves" is exactly the judgement every log here already makes
+ *  about its bottom. So the judgement is not written a fourth time; it is asked
+ *  of these numbers instead. The distance is absolute because a mark can be
+ *  passed on either side, where a bottom can only be above you. */
+export function aimed(
+  el: { scrollLeft: number; clientWidth: number },
+  aim: number,
+): View {
+  return {
+    scrollTop: el.scrollLeft,
+    clientHeight: el.clientWidth,
+    scrollHeight: el.scrollLeft + el.clientWidth + Math.abs(aim - el.scrollLeft),
+  };
+}
+
+/** Keep a sideways scroller on a mark that moves: `aim` is where `scrollLeft`
+ *  should be, already clamped by the caller. Everything `stickToTail` does,
+ *  along the other axis — a hand on it lets go and only a hand may, landing
+ *  back on the mark takes it up again — except that the mark moving is not
+ *  something the element can hear, so the component says so with `reaim()`
+ *  when whatever `aim` reads has changed. A resize is heard, as it is for the
+ *  tail: a box dragged narrower has its window recentred on the work. */
+export function stickToMark(
+  el: HTMLElement,
+  aim: () => number,
+): { reaim: () => void; stop: () => void } {
+  const tail = new Tail();
+  let frame = 0;
+
+  const pin = () => {
+    frame = 0;
+    if (!tail.following) return;
+    el.scrollLeft = aim();
+    tail.landed(el.scrollLeft);
+  };
+  const soon = () => {
+    if (!frame && tail.following) frame = requestAnimationFrame(pin);
+  };
+
+  const onScroll = () => tail.scrolled(aimed(el, aim()));
+  el.addEventListener("scroll", onScroll, { passive: true });
+  const unwitness = witness(el, tail);
+  /* The viewport only: what is inside is the plan's own drawing, and the mark
+     moving inside it is what `reaim` is for. */
+  const sized = typeof ResizeObserver === "function" ? new ResizeObserver(soon) : null;
+  sized?.observe(el);
+
+  el.scrollLeft = aim();
+  tail.landed(el.scrollLeft);
+
+  return {
+    reaim: soon,
+    stop: () => {
+      if (frame) cancelAnimationFrame(frame);
+      el.removeEventListener("scroll", onScroll);
+      unwitness();
+      sized?.disconnect();
+    },
   };
 }
 

@@ -316,15 +316,22 @@ export const DRAG_SLOP = 4;
  * everything is what "bring to front" now means, and it means it literally. */
 export const Z_CARD = 1000;
 export const Z_CHIP = 1001;
+/** Where a timeline's plate is hung: over the cards and chips, under the front
+ *  band. A plan is read across the whole pane, and a card stuck at the top
+ *  centre of the glass would otherwise sit on the stack and take its clicks;
+ *  a widget brought forward on purpose still covers a plate that is merely
+ *  standing there. The number the plates' old layer had, now each plate's own. */
+export const Z_PLAN = 1500;
 export const Z_FRONT = 2000;
 /** The ceiling of the front band, and the floor of what rides over it.
  *
  * The front band had no top: `nextFrontZ` returned `max + 1` for ever, so after
  * enough "bring to front"s nothing could name a number above everything
- * standing on the wall. That is not a theoretical gap — `Lintel`'s layer sits
+ * standing on the wall. That was not a theoretical gap — the timelines' old layer sat
  * deliberately *under* the front band (a widget brought forward should cover a
- * plate at rest), and the layer isolates, so a timeline's hover card could not
- * escape it and was drawn behind whichever widget had last been raised. With a
+ * plate at rest), and the layer isolated, so a timeline's hover card could not
+ * escape it and was drawn behind whichever widget had last been raised. A plate
+ * is a widget now and rides at `Z_TOP` itself while its card is read. With a
  * ceiling the question "over everything standing" has an answer that keeps
  * being true. `nextBackZ` already clamps for the same reason one band down, and
  * pays the same price: two things at the ceiling are ordered by the document

@@ -8,6 +8,7 @@
    * these are the same kind of thing: hand-placed, freely sized, belonging to no
    * project. */
 
+  import { untrack } from "svelte";
   import type { Meter } from "./meter.svelte";
   import type { Ledger } from "./ledger.svelte";
   import type { Cycle } from "./cycle.svelte";
@@ -51,7 +52,12 @@
   import BuildLog from "./BuildLog.svelte";
   import UnrealLog from "./UnrealLog.svelte";
   import Saying from "./Saying.svelte";
+  import Plate from "./Plate.svelte";
   import { tetherOf } from "./tether";
+  import { planOf } from "./plates";
+  import { variantOf } from "./widgets";
+  import { Z_TOP } from "./layout";
+  import type { Timelines } from "./timelines.svelte";
   import type { CardHandle } from "./cards.svelte";
 
   let {
@@ -84,6 +90,9 @@
     onopen,
     onkeyring,
     onforgerun,
+    timelines,
+    centred = false,
+    onmeasure,
   }: {
     widget: Widget;
     selected: boolean;
@@ -183,7 +192,46 @@
      *  and plain `onrun` goes *down* to `Pipelines`, where there is only one kind
      *  of run and nothing to spell around. */
     onforgerun?: (run: ForgeRun) => void;
+    /** The plans cards have drawn — what a plate looks its timeline up in, and
+     *  where its gestures go. Handed down for the reason the meter is. */
+    timelines?: Timelines;
+    /** Drawn centred on a point rather than from its corner — a plate in the
+     *  stack — so a resize grows both edges, and the grip has to take twice
+     *  the pointer's travel to stay under it. */
+    centred?: boolean;
+    /** The box this widget was drawn at, for a kind that sizes itself — a
+     *  plate's height is its plan's, and a wide plate's width too — so the wall
+     *  can lay out the stack, keep it on the glass and catch it in a band by
+     *  what is actually there. Never called for a widget whose box is its row. */
+    onmeasure?: (box: { w: number; h: number }) => void;
   } = $props();
+
+  /* ── a plate ───────────────────────────────────────────────────────────── *
+   *
+   * The one widget that is as tall as what it holds: a frise is as tall as its
+   * widest fork and no taller, so the box you drag is only ever its width (the
+   * compact window), and the wide plate is as long as its plan asks. It also
+   * hangs a hover card below itself, so it does not clip, and it rides over
+   * everything while that card is open — the lift the plates' old layer did
+   * for all of them at once, one plate at a time. */
+  const plate = $derived(widget.kind === "timeline");
+  const wide = $derived(plate && variantOf(widget) === "wide");
+  let reading = $state(false);
+  const leaving = $derived(
+    plate && !!timelines && timelines.leaving.includes(planOf(widget) ?? ""),
+  );
+
+  function measured(el: HTMLElement) {
+    if (!plate) return;
+    const say = () => onmeasure?.({ w: el.offsetWidth, h: el.offsetHeight });
+    const ro = new ResizeObserver(say);
+    ro.observe(el);
+    /* Untracked: `say` reads the widget through its props, and an attachment
+       that tracked those would be torn down and rebuilt on every recompute of
+       the list it is drawn from — every frame of any drag (found in review). */
+    untrack(say);
+    return () => ro.disconnect();
+  }
 
   /** A timer's own state rides in its config, so setting a run is an ordinary
    *  widget update and costs no new command — the whole reason `config_json` is
@@ -259,7 +307,7 @@
        stops saying anything and the handles start overlapping each other. */
     const min = spec?.min ?? { w: 60, h: 48 };
     onupdate({
-      w: Math.max(min.w, gesture.w0 + (p.x - gesture.px)),
+      w: Math.max(min.w, gesture.w0 + (p.x - gesture.px) * (centred ? 2 : 1)),
       h: Math.max(min.h, gesture.h0 + (p.y - gesture.py)),
     });
   }
@@ -280,10 +328,12 @@
   class:selected
   style:left="{widget.x}px"
   style:top="{widget.y}px"
-  style:width="{widget.w}px"
-  style:height="{widget.h}px"
-  style:z-index={widget.z}
+  class:leaving
+  style:width={wide ? undefined : `${widget.w}px`}
+  style:height={plate ? undefined : `${widget.h}px`}
+  style:z-index={reading ? Z_TOP : widget.z}
   role="presentation"
+  {@attach measured}
 >
   <div class="face">
     {#if widget.kind === "clock"}
@@ -390,6 +440,8 @@
         card={cardOf(tetherOf(widget) ?? "")}
         onreveal={(id) => onreveal?.("conversation", id)}
       />
+    {:else if widget.kind === "timeline" && timelines}
+      <Plate {widget} {timelines} onreading={(open) => (reading = open)} />
     {/if}
   </div>
 
@@ -397,6 +449,7 @@
     <!-- `data-grip`: the resize runs its own gesture, and the wall's drag sits
          on an ancestor in the capture phase, so the marker is what tells
          `Canvas.handleOf` to leave this press alone. -->
+    {#if !wide}
     <button
       data-grip
       class="grip size"
@@ -410,6 +463,7 @@
       onpointercancel={end}
       aria-label="Resize"
     ></button>
+    {/if}
 
     <button
       data-grip
@@ -419,7 +473,7 @@
       style:right="{-hs / 2}px"
       style:top="{-hs / 2}px"
       onclick={onremove}
-      aria-label="Take it down"
+      aria-label={plate ? "Archive it" : "Take it down"}
     ></button>
   {/if}
 </div>
@@ -456,6 +510,38 @@
   }
   .widget[data-frame="bare"] {
     background: transparent;
+  }
+
+  /* A plate wears the frame a timeline always wore — the raised surface, the
+     softer corner and the static shadow (rastered once, not the animated one
+     `motion.md` priced) — and, unlike every other widget, does not clip: its
+     hover card hangs below it. Its height is its plan's (see the script). Read
+     before the retreats below, which take the edge and then the fill and the
+     shadow off exactly as they do for a clock. */
+  .widget[data-kind="timeline"] {
+    container-type: normal;
+    overflow: visible;
+    background: var(--surface);
+    border-radius: var(--ch-radius, 4px);
+    box-shadow: 0 18px 34px -16px rgba(0, 0, 0, 0.85);
+    transition:
+      border-color 0.15s ease,
+      opacity 0.6s ease;
+  }
+  /* The edge comes off through the ordinary rule above, which selection still
+     outranks; only the fill and the shadow need saying again at this
+     specificity, or the plate's own surface would win over `bare`. */
+  .widget[data-kind="timeline"][data-frame="bare"] {
+    background: transparent;
+    box-shadow: none;
+  }
+  /* On its way to the archive by itself — the second of a finished plan's two
+     moments, and a quiet one (`timelines.svelte.ts::FADE_MS`). */
+  .widget.leaving {
+    opacity: 0;
+  }
+  :global(html[data-motion="still"]) .widget.leaving {
+    transition: none;
   }
 
   /* Selection puts the edge back and nothing else does. Hover used to as well,

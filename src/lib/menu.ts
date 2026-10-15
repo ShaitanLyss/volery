@@ -129,6 +129,11 @@ export type MenuTarget = {
      `options` is now one entry per knob and this file puts the rules in. */
   picks?: Pick[];
   options?: Pick[][];
+  /** widget: where a timeline's plate stands, which makes it a plate — its
+   *  menu then moves it between the stack, the glass and the wall rather than
+   *  toggling the glass, and taking it down archives its plan. Absent for every
+   *  other widget. */
+  hang?: "stack" | "glass" | "wall";
   /* ground / region: the kinds of instrument that can be hung up — a row each,
      or a family of them behind one row.
 
@@ -295,6 +300,18 @@ function offerItems(offers: Offer[]): MenuItem[] {
  *  answer ("let it flow again"). */
 const glassItem = (on = false): MenuItem =>
   item("glass", on ? "put it back on the wall" : "stick it to the glass");
+
+/** A timeline's plate: the moves to the two places it is not. Three places
+ *  rather than the glass toggle's two, because the stack is a third — the
+ *  default, on the glass with no spot — and "put it back on the wall" said of a
+ *  plate that has only ever hung there would be a promise about a place it
+ *  never stood (`plates.ts`). */
+function hangItems(hang: "stack" | "glass" | "wall"): MenuItem[] {
+  return [
+    hang === "wall" ? item("hang:glass", "stick it to the glass") : item("hang:wall", "put it on the wall"),
+    ...(hang === "stack" ? [] : [item("hang:stack", "put it back in the stack")]),
+  ];
+}
 
 /** The presets as rows that open a card, with the default dotted where
  *  somebody has said what it is — the `+`'s menu and a section of another
@@ -514,9 +531,10 @@ export function menuFor(t: MenuTarget): MenuItem[] {
           sep,
         ]),
         item("front", "bring to front"),
-        glassItem(t.glass),
+        ...(t.hang ? hangItems(t.hang) : [glassItem(t.glass)]),
         sep,
-        item("remove", "take it down", true),
+        /* A plate is taken down by archiving its plan, which is what it says. */
+        item("remove", t.hang ? "archive it" : "take it down", true),
       ]);
 
     /* The `+` on a territory, right-clicked. Left-clicked it opens a card on

@@ -20,6 +20,7 @@ import {
   variantOf,
   variantsOf,
   offersOf,
+  isView,
   FAMILIES,
   runs,
 } from "../src/lib/widgets";
@@ -972,9 +973,10 @@ describe("what a right-click offers to hang up", () => {
 
   test("every widget in the catalogue is reachable, exactly once", () => {
     /* Every widget that is furniture. A view of one card is reached from that
-       card instead — see the next test, and `menu.test.ts` for the card's half. */
+       card instead — see the next test, and `menu.test.ts` for the card's half —
+       and a card's plan is put up by the wall when it is drawn (`plates.ts`). */
     const got = leaves(offersOf()).sort();
-    expect(got).toEqual(WIDGETS.filter((w) => !w.tether).map((w) => w.kind).sort());
+    expect(got).toEqual(WIDGETS.filter((w) => !isView(w.kind)).map((w) => w.kind).sort());
   });
 
   test("a view of one card is never offered from the ground", () => {
@@ -984,6 +986,12 @@ describe("what a right-click offers to hang up", () => {
     const tethered = WIDGETS.filter((w) => w.tether).map((w) => w.kind);
     expect(tethered).toEqual(["said"]);
     for (const k of tethered) expect(leaves(offersOf())).not.toContain(k);
+  });
+
+  test("a card's plan is never offered from the ground either", () => {
+    const plans = WIDGETS.filter((w) => w.plan).map((w) => w.kind);
+    expect(plans).toEqual(["timeline"]);
+    for (const k of plans) expect(leaves(offersOf())).not.toContain(k);
   });
 
   test("the menu is shorter than the catalogue, which is the whole point", () => {

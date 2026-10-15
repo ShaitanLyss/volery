@@ -39,6 +39,10 @@ import { DEFAULT_SPAN, SPANS } from "./cores";
 /* The key a widget that is a view of one card keeps that card in — see
    `tether.ts`, which owns what that means and when one comes down. */
 import { TETHER } from "./tether";
+/* And the keys a timeline's plate keeps — its timeline, whether it stands on
+   the wall, and when a finished one goes to the archive. `plates.ts` owns what
+   they mean; this file only has to know they exist. */
+import { ARCHIVE, ARCHIVE_DEFAULT, KEPT, PLAN, WALL } from "./plates";
 
 export type WidgetKind =
   | "clock"
@@ -64,7 +68,8 @@ export type WidgetKind =
   | "applog"
   | "unreallog"
   | "browser"
-  | "said";
+  | "said"
+  | "timeline";
 
 export type Choice = { value: string; label: string };
 
@@ -232,6 +237,11 @@ export type WidgetSpec = {
    *  from the ground's menu — hung up from nothing it would be a view of
    *  nothing — and it comes down when the card closes. See `tether.ts`. */
   tether?: true;
+  /** A card's plan, drawn: it carries a timeline's id in its config
+   *  (`plates.ts::PLAN`), and the *wall* hangs it up — when a card draws a
+   *  plan — and takes it down when the plan leaves the glass. Never offered
+   *  from a menu, never carried in a layout. See `plates.ts`. */
+  plan?: true;
 };
 
 export type WidgetConfig = Record<string, string | number | boolean>;
@@ -1630,7 +1640,79 @@ export const WIDGETS: WidgetSpec[] = [
       ),
     ],
   },
+  {
+    /* A card's plan for a long piece of work, drawn as a frise — the plate
+       `Frise.svelte` has always drawn, housed as a widget rather than on a
+       layer of its own (sink b2b0546d). What becoming a widget bought is
+       everything a widget already had: the one selection and the band that
+       draws it, a spot on the glass or a place on the wall, a row that
+       survives a relaunch, undo for the moves you make, and knobs.
+
+       **Put up by the wall, never by a menu** (`plan`). An agent draws a plan;
+       nobody hangs one. The housing arrives in the stack at the top of the home
+       screen the moment its timeline is written, and comes down when the plan
+       leaves the glass — `plates.ts` is both halves. Not carried in a layout
+       either: the plan is this wall's record, and the plate a view of it.
+
+       **The variants are how much of the line you see.** `compact` is the
+       default and is a window you scroll along, kept on wherever the work is;
+       `wide` is the plate as it always was, as long as its plan asks for —
+       about half a screen, which is why it is no longer what you get by
+       default (Lyss, 2026-10-15). Both draw the same frise at the same pitch,
+       so a step reads the same in either.
+
+       **The width is the box you drag; the height is the plan's.** A frise is
+       as tall as its widest fork and no taller, so a plate measures its own
+       height and the resize only ever changes how much of the line the window
+       shows. */
+    kind: "timeline",
+    label: "timeline",
+    note: "a card's plan for a long piece of work",
+    plan: true,
+    box: { w: 400, h: 120 },
+    min: { w: 260, h: 80 },
+    params: [
+      choice(
+        VARIANT,
+        "line",
+        [
+          { value: "compact", label: "a window you scroll along" },
+          { value: "wide", label: "the whole line" },
+        ],
+        "compact",
+      ),
+      /* Only a plate still in the stack goes by itself — one you moved is one
+         you kept (`plates.ts::archiveDue`) — and the archive keeps every plate,
+         so "too soon" is one press in the Annals rather than lost work. */
+      choice(
+        ARCHIVE,
+        "once finished",
+        [
+          { value: "never", label: "keep it in the stack" },
+          { value: "5", label: "archive it after five minutes" },
+          { value: "10", label: "archive it after ten minutes" },
+          { value: "15", label: "archive it after fifteen minutes" },
+        ],
+        ARCHIVE_DEFAULT,
+      ),
+    ],
+    /* Where it stands — see `plates.ts::WALL`. State rather than a knob: it is
+       written by the move that put it there, never set from a list. */
+    state: [
+      { key: WALL, def: 0 },
+      { key: KEPT, def: 0 },
+    ],
+  },
 ];
+
+/** Is this a view of something else on the wall rather than furniture — a card's
+ *  last message, a card's plan? Such a widget is never offered from a menu,
+ *  never added by the control surface's hand and never carried in a layout:
+ *  hung up from nothing, it would be a view of nothing. */
+export function isView(kind: string): boolean {
+  const spec = specFor(kind);
+  return !!(spec?.tether || spec?.plan);
+}
 
 /* How many lines a meter of this height has room for.
  *
@@ -1720,9 +1802,10 @@ export function offersOf(specs: WidgetSpec[] = WIDGETS): Offer[] {
      row that has already been emitted. */
   const at = new Map<WidgetFamily, number>();
   for (const w of specs) {
-    /* A view of one card is hung up from that card, never from here: there is
-       no card to read from the ground. See `tether`. */
-    if (w.tether) continue;
+    /* A view of one card is hung up from that card, and a plan by the wall when
+       a card draws one — never from here: there is nothing to read from the
+       ground. See `isView`. */
+    if (w.tether || w.plan) continue;
     const member = { id: w.kind, label: w.short ?? w.label };
     if (!w.family) {
       out.push({ id: w.kind, label: offerLabel(w) });
@@ -1932,6 +2015,13 @@ export function normalizeWidget(raw: unknown): Widget | null {
     if (typeof card !== "string" || !card) return null;
     config[TETHER] = card;
   }
+  /* The same for a plate: a plan of no timeline draws nothing, and the next
+     timeline along would be somebody else's plan under this one's frame. */
+  if (spec.plan) {
+    const plan = cfg[PLAN];
+    if (typeof plan !== "string" || !plan) return null;
+    config[PLAN] = plan;
+  }
 
   return {
     id: typeof r.id === "string" && r.id ? r.id : uid(),
@@ -1959,14 +2049,15 @@ export function normalizeWidget(raw: unknown): Widget | null {
 }
 
 /** A fresh widget of a kind, centred on a point — you aimed at a spot on the
- *  wall, not at a corner. `card` is the card a tethered kind is a view of, and
- *  is ignored by every other kind. */
+ *  wall, not at a corner. `of` is what a view is a view of — the card a
+ *  tethered kind reads, the timeline a plate draws — and is ignored by every
+ *  other kind. */
 export function newWidget(
   kind: WidgetKind,
   atX: number,
   atY: number,
   z = 0,
-  card?: string,
+  of?: string,
 ): Widget {
   const spec = specFor(kind);
   const box = spec?.box ?? { w: 190, h: 190 };
@@ -1982,7 +2073,12 @@ export function newWidget(
        you put a thing on purpose, never somewhere a thing lands. */
     glassX: null,
     glassY: null,
-    config: spec?.tether && card ? { ...defaultConfig(kind), [TETHER]: card } : defaultConfig(kind),
+    config:
+      spec?.tether && of
+        ? { ...defaultConfig(kind), [TETHER]: of }
+        : spec?.plan && of
+          ? { ...defaultConfig(kind), [PLAN]: of }
+          : defaultConfig(kind),
   };
 }
 

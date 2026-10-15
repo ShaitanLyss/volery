@@ -28,6 +28,8 @@ paths:
   - "src-tauri/src/status.rs"
   - "src/lib/tether.ts"
   - "src/lib/Saying.svelte"
+  - "src/lib/plates.ts"
+  - "src/lib/Plate.svelte"
 ---
 
 # Widgets, the clock, and the performance meter
@@ -896,6 +898,38 @@ re-read off its wall within the second, kept and marked while that wall was down
 minutes, back on the glass after each wall's restart, gone with its card in ~1.2s on the other
 wall and at once on its own, the undo stack holding nothing for it afterwards, and a planted
 stray row swept at launch from the wall and the disk.
+
+#### A card's plan, as a widget
+
+Kind `timeline`, face `Plate.svelte` over `Frise.svelte`, housing `plates.ts`. The second widget
+that is a view of something else on the wall, one day after the first, and the comparison with
+`said` is the whole of its design — `.claude/rules/timeline.md`, "A plate is a widget", has the
+long form.
+
+- **Same shape, opposite owner.** A pin carries a card id in `config_json` and the front end owns
+  the card; a plate carries a timeline id there (`plates.ts::PLAN`) and *Rust* owns the plan —
+  the tools write it on every mark. So the plan stays in its own table and the widget is only the
+  housing. Folding it into the config would have put a document Rust writes into the one column
+  Rust never reads.
+- **The wall hangs it, not you** (`WidgetSpec.plan`). A pin is hung from its card by hand; a plate
+  arrives when a card draws a plan and goes when the plan leaves the glass, both unrecorded
+  (`Widgets.house`, `Widgets.evict`). `isView` is the one question both kinds answer yes to: never
+  offered, refused by `widget.add`, never carried in a layout.
+- **Taking it down archives the plan** (`Widgets.retire`), whichever route asked — so a plate has
+  no undo record for its going, and its moves are dropped from the stack when it goes.
+- **The first widget that sizes itself.** Height is the plan's (`container-type` comes off, it does
+  not clip, so its hover card can hang below), and the wide variant's width too. `WidgetNode`
+  reports the drawn box (`onmeasure`) and `Canvas.drawnSize` is what the rest of the wall reasons
+  with. Anything that ever sizes itself again should go through the same two.
+- **Three places, not two** — the stack is a third (`hangOf`, the `wall` state key), so its menu
+  offers moves rather than the glass toggle (`menu.ts::hangItems`), and `<space>l…` reaches them.
+- **The frame knob reaches it** because the plate stopped painting its own surface: the raised
+  fill, the softer corner and the static shadow are `WidgetNode`'s `[data-kind="timeline"]` rule,
+  and `bare` takes them off as it takes a clock's off.
+- **Its two knobs are a variant and a delay** — `compact` (default) or `wide`, and when a finished
+  one in the stack goes to the archive. The delay is a choice of four words rather than a number,
+  per "no numbers among the knobs": it is a reading of how long you want finished work to stand,
+  not a slider.
 
 #### The sweep
 

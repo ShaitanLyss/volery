@@ -953,7 +953,7 @@ pub fn run() {
             timeline::read_timelines,
             timeline::archived_timelines,
             timeline::archive_timeline,
-            timeline::place_timeline,
+            timeline::unarchive_timeline,
             timeline::resume_timeline,
             chronicle::read_chronicle,
             chronicle::chronicle_note,

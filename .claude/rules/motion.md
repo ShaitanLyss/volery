@@ -102,3 +102,15 @@ regression against the live wall (+7.98%/card) is what ties the mechanism to thi
 app; the table is what ties the fix to the mechanism. Anyone wanting the last
 link should install a gnu build and watch whether GPU still scales with the
 number of working cards.
+
+### What this does not forbid
+
+A thing that moves *once and then stops* is not what any of the above priced. The cost was
+the present rate held up for ever by an animation with no end; an animation that ends hands
+the compositor back its idle frame the moment it does. So the timeline's completion flourish
+(`timeline.md`, "Finishing") is allowed its ~650 ms pulse — and it is built to stay on the
+right side of the line: it is **removed from the document** a second after it starts rather
+than left at `animation-fill-mode: forwards`, it animates `stroke-dashoffset` and `opacity`
+and never `box-shadow`, `still` drops it entirely, and reduced motion keeps only the colour
+draining. The rule for anything else that wants to celebrate is the same three: it ends, it
+leaves the DOM, and `still` can take it away.

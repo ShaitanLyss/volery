@@ -5,9 +5,11 @@
    *
    * A timeline left unfinished, because its card was closed, keeps a muted
    * marker where it stopped and offers to be picked back up — which adopts the
-   * session that drew it as a new card and hands it the timeline. That offer is
-   * on the plate's hover only, so a long archive does not read as a list of
-   * buttons. */
+   * session that drew it as a new card and hands it the timeline. A finished
+   * one offers to be hung back up, which puts it back in the stack — the way
+   * back for a plate that went here by itself sooner than you wanted. Both
+   * offers are on the plate's hover only, so a long archive does not read as a
+   * list of buttons. */
 
   import type { Tier } from "./classify";
   import Frise from "./Frise.svelte";
@@ -18,12 +20,16 @@
     ownerOf,
     onjump,
     onresume,
+    onrestore,
     onclose,
   }: {
     timelines: Timeline[];
     ownerOf: (id: string) => { tier: Tier; handle: string } | null;
     onjump: (ownerId: string, timelineId: string, rev: number) => void;
     onresume: (t: Timeline) => void;
+    /** Hang a finished one back up — the press that makes a plate going here
+     *  by itself safe at ten minutes (`plates.ts::archiveDue`). */
+    onrestore: (t: Timeline) => void;
     onclose: () => void;
   } = $props();
 
@@ -73,6 +79,7 @@
             canJump={!!owner}
             onjump={(rev) => onjump(t.ownerId, t.id, rev)}
             onresume={() => onresume(t)}
+            onrestore={() => onrestore(t)}
           />
         </div>
       {:else}

@@ -29,7 +29,7 @@ import type { Widgets } from "./widgets.svelte";
 import type { Ambience } from "./ambience.svelte";
 import type { ink } from "./theme.svelte";
 import { changed } from "./guidance";
-import { specFor } from "./widgets";
+import { isView, specFor } from "./widgets";
 import { EXPORT_VERSION as THEME_VERSION } from "./theme";
 import {
   baseName,
@@ -174,10 +174,11 @@ export class Portage {
 
     return {
       projects,
-      /* Not a view of one card: the card stays behind, so its pin does too —
-         carried, it would arrive pointing at an id nothing on that wall has
-         (`tether.ts`). */
-      widgets: widgets.items.filter((w) => !specFor(w.kind)?.tether).map((w) => ({
+      /* Not a view of something on this wall: the card stays behind, so its
+         pin does too, and a plan is this wall's record, so its plate does —
+         carried, either would arrive pointing at an id nothing on that wall has
+         (`tether.ts`, `plates.ts`). */
+      widgets: widgets.items.filter((w) => !isView(w.kind)).map((w) => ({
         kind: w.kind,
         x: w.x,
         y: w.y,

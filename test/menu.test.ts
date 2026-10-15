@@ -464,6 +464,27 @@ describe("the list is shaped like something a person meant", () => {
     });
   });
 
+  /* A timeline's plate stands in one of three places, so it is offered the two
+     it is not in — and taking it down archives its plan, which is what it says. */
+  test("a plate is moved between the stack, the glass and the wall", () => {
+    const label = (items: MenuItem[], id: string) =>
+      (items.find((i) => i.kind === "item" && i.id === id) as { label: string } | undefined)?.label;
+    const stack = menuFor({ kind: "widget", hang: "stack" });
+    expect(ids(stack)).toEqual(["front", "hang:wall", "remove"]);
+    expect(label(stack, "remove")).toBe("archive it");
+    expect(ids(menuFor({ kind: "widget", hang: "glass" }))).toEqual([
+      "front",
+      "hang:wall",
+      "hang:stack",
+      "remove",
+    ]);
+    const wall = menuFor({ kind: "widget", hang: "wall" });
+    expect(ids(wall)).toEqual(["front", "hang:glass", "hang:stack", "remove"]);
+    expect(label(wall, "hang:glass")).toBe("stick it to the glass");
+    /* Every other widget keeps the glass toggle and is taken down. */
+    expect(ids(menuFor({ kind: "widget" }))).toEqual(["front", "glass", "remove"]);
+  });
+
   /* And the same argument one level down. `options` used to be a single flat
      list, so every knob below the variant was still run together — invisible
      while each label was a self-describing sentence, and not invisible at all
@@ -706,8 +727,8 @@ describe("families in the menu that hangs things up", () => {
       .map((it) => (it.kind === "item" ? it.id.slice(7) : ""));
     expect(new Set(hung).size).toBe(hung.length);
     /* Every widget that is furniture; a view of one card is hung up from the
-       card's own menu, below. */
-    expect(hung.length).toBe(WIDGETS.filter((w) => !w.tether).length);
+       card's own menu, below, and a card's plan by the wall when it is drawn. */
+    expect(hung.length).toBe(WIDGETS.filter((w) => !w.tether && !w.plan).length);
   });
 
   test("and a view of one card is reached from that card, on this wall or another", () => {

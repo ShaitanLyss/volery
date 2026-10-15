@@ -76,6 +76,7 @@ export type Verb =
   | { kind: "window"; act: "span" | "panel" | "dock" }
   | { kind: "presence"; act: "toggle" }
   | { kind: "grouping"; act: "new" | "rename" | "glass" }
+  | { kind: "plan"; act: "variant" | "glass" | "stack" | "archive" }
   | { kind: "sink"; act: "open" | "drop" }
   | { kind: "elsewhere"; act: "next" | "new" }
   | { kind: "card"; act: CardChord }
@@ -192,6 +193,17 @@ export const CHORDS: readonly Chord[] = [
      whole of the way back. Doubled, as `ff`/`ss`/`ee` are, because it is the
      grouping verb you reach for most once one is up there. */
   { keys: "gg", label: "this grouping on the glass / back", verb: { kind: "grouping", act: "glass" } },
+  /* `l` is the line — a card's plan, drawn on the wall as a frise. A family on
+     `g`'s argument: four verbs about one noun, and they want to sit together
+     in the hint. They act on the plates you have selected, or else on the
+     focused card's plan, which is the plate the wall always knows you mean.
+     `ll` is the one reached for most and is doubled as `ff` and `gg` are:
+     the whole line or a window of it. A plate's moves were a right-click and
+     nothing else, which is the gap the house rule about keys exists to close. */
+  { keys: "ll", label: "plan: the whole line / a window", verb: { kind: "plan", act: "variant" } },
+  { keys: "lg", label: "plan on the glass / on the wall", verb: { kind: "plan", act: "glass" } },
+  { keys: "ls", label: "plan back in the stack", verb: { kind: "plan", act: "stack" } },
+  { keys: "la", label: "archive the plan", verb: { kind: "plan", act: "archive" } },
   { keys: "wp", label: "panel: right / left / floating", verb: { kind: "window", act: "panel" } },
   { keys: "wd", label: "dock: bottom / top / floating", verb: { kind: "window", act: "dock" } },
   /* Away mode, and it has two chords on purpose. `z` is the one you reach for

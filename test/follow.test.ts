@@ -7,6 +7,7 @@ import {
   slack,
   stillFollowing,
   STICK_PX,
+  aimed,
 } from "../src/lib/follow";
 
 describe("holding the tail through a scroll event", () => {
@@ -349,5 +350,42 @@ describe("hearing a column change shape", () => {
     } finally {
       s.restore();
     }
+  });
+});
+
+describe("following a mark along a sideways strip", () => {
+  /* The compact timeline: what moves is where the work is, in the middle of
+     the line, and the judgement is the tail's asked of different numbers. */
+  const at = (left: number, aim: number, over: Partial<Parameters<typeof stillFollowing>[0]> = {}) => ({
+    ...aimed({ scrollLeft: left, clientWidth: 300 }, aim),
+    pinned: -1,
+    following: true,
+    gestured: true,
+    ...over,
+  });
+
+  test("on the mark is on the tail, from either side", () => {
+    expect(slack(aimed({ scrollLeft: 200, clientWidth: 300 }, 200))).toBe(0);
+    expect(slack(aimed({ scrollLeft: 200, clientWidth: 300 }, 230))).toBe(30);
+    expect(slack(aimed({ scrollLeft: 230, clientWidth: 300 }, 200))).toBe(30);
+  });
+
+  test("a hand that carried the window off the mark lets go, either way", () => {
+    expect(stillFollowing(at(500, 200))).toBe(false);
+    expect(stillFollowing(at(0, 200))).toBe(false);
+  });
+
+  test("near the mark is still following", () => {
+    expect(stillFollowing(at(200 + STICK_PX, 200))).toBe(true);
+  });
+
+  /* The mark moved and nobody touched the strip: the window is off it, and that
+     is the work moving, not you. */
+  test("the mark moving away is not a hand letting go", () => {
+    expect(stillFollowing(at(200, 700, { gestured: false }))).toBe(true);
+  });
+
+  test("its own write, reported late, keeps it", () => {
+    expect(stillFollowing(at(200, 700, { pinned: 200 }))).toBe(true);
   });
 });

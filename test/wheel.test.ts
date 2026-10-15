@@ -4,6 +4,7 @@ import {
   BEYOND_PX,
   overflowScrolls,
   scrolls,
+  stride,
   wheelMeaning,
   type Box,
   type Turn,
@@ -157,5 +158,34 @@ describe("which overflow values the browser scrolls", () => {
     expect(overflowScrolls("visible")).toBe(false);
     expect(overflowScrolls("clip")).toBe(false);
     expect(overflowScrolls("")).toBe(false);
+  });
+});
+
+describe("a strip carries a bare wheel sideways", () => {
+  /* The compact timeline: a window of a line too long for it. A mouse wheel
+     reports only deltaY, and shift is the wall's pan, so over a strip the bare
+     vertical wheel is travel along it. */
+  test("a bare vertical wheel over a strip moves it by the wheel's own delta", () => {
+    expect(stride(turn({ deltaY: 100 }), box({ x: true }))).toBe(100);
+    expect(stride(turn({ deltaY: -40 }), box({ x: true }))).toBe(-40);
+  });
+
+  test("the modifiers stay the wall's", () => {
+    expect(stride(turn({ deltaY: 100, ctrlKey: true }), box({ x: true }))).toBeNull();
+    expect(stride(turn({ deltaY: 100, metaKey: true }), box({ x: true }))).toBeNull();
+    expect(stride(turn({ deltaY: 100, shiftKey: true }), box({ x: true }))).toBeNull();
+  });
+
+  test("a sideways turn is the box's own, natively", () => {
+    expect(stride(turn({ deltaX: 100 }), box({ x: true }))).toBeNull();
+  });
+
+  test("a box that scrolls down as well is not a strip", () => {
+    expect(stride(turn({ deltaY: 100 }), box({ x: true, y: true }))).toBeNull();
+  });
+
+  test("a strip with nothing beyond it is not a strip, and the wheel is the wall's", () => {
+    expect(stride(turn({ deltaY: 100 }), FITS)).toBeNull();
+    expect(stride(turn({ deltaY: 100 }), box())).toBeNull();
   });
 });

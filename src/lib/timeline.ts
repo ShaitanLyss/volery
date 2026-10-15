@@ -250,6 +250,10 @@ export type Frise = {
   base: number;
   /** The whole line, unfilled — path data, one per segment or strand. */
   track: string[];
+  /** Which step each path of `track` belongs to, by index — what lets the
+   *  completion pulse travel the line a step at a time, through every strand of
+   *  a fork together, rather than all at once or straight across a fork. */
+  trackStep: number[];
   /** The part already walked. */
   fill: string[];
   ticks: Tick[];
@@ -292,6 +296,7 @@ export function frise(plan: Plan, width: number): Frise {
     height: base * 2,
     base,
     track: [],
+    trackStep: [],
     fill: [],
     ticks: [],
     nodes: [],
@@ -311,6 +316,7 @@ export function frise(plan: Plan, width: number): Frise {
     const strands = step.strands;
     if (strands.length <= 1) {
       out.track.push(`M${f(x0)},${f(base)} H${f(x1)}`);
+      out.trackStep.push(i);
       const subs = strands[0]?.subs ?? [];
       if (subs.length === 0) {
         const r = WORTH[step.state];
@@ -334,6 +340,7 @@ export function frise(plan: Plan, width: number): Frise {
       const into = `M${f(x0)},${f(base)} C${f(x0 + c * 0.43)},${f(base)} ${f(x0 + c * 0.5)},${f(y)} ${f(a)},${f(y)}`;
       const out_ = `C${f(x1 - c * 0.5)},${f(y)} ${f(x1 - c * 0.43)},${f(base)} ${f(x1)},${f(base)}`;
       out.track.push(`${into} H${f(b)} ${out_}`);
+      out.trackStep.push(i);
       lay(strand.subs, a, b, y);
       const r = reach(strand.subs);
       if (r > 0) {
@@ -363,10 +370,45 @@ export function frise(plan: Plan, width: number): Frise {
   }
 }
 
+/** The span a step is given when the plan decides the width: the wide plate's
+ *  pitch, and the compact plate's too, so a step reads the same in both
+ *  variants and a label has the room it always had. */
+export const STEP_PITCH = 128;
+
 /** How wide the line is for a plan: a span of 128 a step, kept between the
  *  narrowest a plate reads at and the widest a pane can give one. */
 export function railWidth(steps: number): number {
-  return Math.max(448, Math.min(768, steps * 128));
+  return Math.max(448, Math.min(768, steps * STEP_PITCH));
+}
+
+/** How long the line is in the compact plate, which shows a window of it and
+ *  scrolls: every step at the wide plate's pitch, and never shorter than the
+ *  window — a two-step plan in a box that fits three fills the box rather than
+ *  stopping two thirds of the way along it. */
+export function compactRail(steps: number, view: number): number {
+  return Math.max(Math.round(view), steps * STEP_PITCH);
+}
+
+/** Where on the line the work is: what the compact plate keeps in view.
+ *
+ *  The first live marker if anything is moving; otherwise the first milestone
+ *  not yet reached, which is where the next mark will land; and the end of the
+ *  line once every step is done, since the end is then the whole news. The
+ *  *first* live marker because a fork can have one per strand and the window
+ *  has to choose one: the earliest is the one nearest what is already done. */
+export function workAt(plan: Plan, fr: Frise): number {
+  if (fr.lives.length) return Math.min(...fr.lives.map((m) => m.x));
+  const at = current(plan);
+  if (at === -1) return fr.width;
+  return fr.spans[at]?.x0 ?? 0;
+}
+
+/** Where the window should sit so the work is in it: the work a third of the
+ *  way in, so what comes next has the larger share of the view, and clamped to
+ *  the line — at either end the window simply rests against it. */
+export function windowAt(work: number, view: number, rail: number, pad = 0): number {
+  const want = work + pad - view / 3;
+  return Math.max(0, Math.min(want, rail + pad * 2 - view));
 }
 
 /* ── finding where a step was written ────────────────────────────────────── */

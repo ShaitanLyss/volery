@@ -10,10 +10,11 @@
  * copies on the wall and the round trip to SQLite. */
 
 import { invoke } from "@tauri-apps/api/core";
-import { nextBackZ, nextFrontZ } from "./layout";
+import { Z_PLAN, nextBackZ, nextFrontZ } from "./layout";
 import {
   duoIn,
   duoPatch,
+  isView,
   newWidget,
   normalizeWidget,
   runs,
@@ -25,6 +26,19 @@ import { bank, isRunning, settle, type Duo } from "./timing";
 import { NO_SCRIBE, type Scribe } from "./undo";
 import { NO_PICKS, type Picker } from "./pick";
 import { TETHER, goneFrom, strays, tetherOf, tetheredTo } from "./tether";
+import {
+  KEPT,
+  PLAN,
+  evicted,
+  keepOnSpot,
+  planOf,
+  seedOf,
+  toGlass,
+  toStack,
+  toWall,
+  unhoused,
+  type Hang,
+} from "./plates";
 
 /** How often a running timer's earned seconds are written down. Nothing writes
  *  to a widget's row while it merely runs — the reading is derived from an epoch
@@ -72,6 +86,17 @@ export class Widgets {
    *  until somebody says otherwise, so a registry with no wall behind it (a
    *  test, the first frames of a launch) never refuses a pin. */
   stands: (card: string) => boolean = () => true;
+
+  /** Whether a timeline is on the glass — the question a plate asks of the
+   *  wall, injected for `stands`' reason. Yes until somebody says otherwise. */
+  shows: (timeline: string) => boolean = () => true;
+
+  /** What taking a plate down *means*: archiving its plan. A plate is a view of
+   *  a timeline, and a timeline leaves the glass by going to the archive — so
+   *  the grip, Delete, the menu and the control surface's `widget.remove` all
+   *  archive the plan, and the plate comes down with the event that follows
+   *  (`evict`). Injected, because the plans are not this registry's. */
+  retire: (timeline: string) => void = () => {};
 
   #saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** When the running timers were last banked — see `beat`. */
@@ -146,9 +171,12 @@ export class Widgets {
     }
     /* Not offered from any menu, and refused here for the one route that does
        not go through a menu (the control surface): a view of a card is hung
-       up from the card, through `tether`. */
-    if (specFor(kind)?.tether) {
-      this.fault = `a ${specFor(kind)?.label} is hung up from the card it reads`;
+       up from the card, through `tether`, and a plan by the wall, through
+       `house`. */
+    if (isView(kind)) {
+      this.fault = specFor(kind)?.plan
+        ? `a ${specFor(kind)?.label} is put up by the card that draws it`
+        : `a ${specFor(kind)?.label} is hung up from the card it reads`;
       return null;
     }
     /* Behind the cards, for the reason a reference image is: the wall is a
@@ -186,6 +214,10 @@ export class Widgets {
     const i = this.items.findIndex((w) => w.id === id);
     if (i < 0) return null;
     const next = { ...this.items[i], ...patch };
+    /* A spot written onto a plate is a keep, whichever gesture wrote it — a
+       drag out of the stack is a carry, not a `hangAt`, and must count the
+       same (`plates.ts::KEPT`). Nothing for any other widget. */
+    next.config = keepOnSpot(next.config, patch);
     this.items[i] = next;
     this.#saveSoon(next);
     return $state.snapshot(next) as Widget;
@@ -268,6 +300,57 @@ export class Widgets {
     return this.#takeDown(strays(this.items, alive));
   }
 
+  /** Put a plate up for every timeline on the glass that nothing draws yet.
+   *
+   *  **Unrecorded.** An agent drew the plan; nobody hung it — so there is
+   *  nothing for undo to take back, and a plate the stack could take down
+   *  would be a plan with no plate while its card is still writing it. Each
+   *  arrives in the stack at the plates' own height, unless its timeline
+   *  carries a spot of its own from before plates were widgets (`seedOf`), in
+   *  which case it is still where it was dragged to. Answers the ids put up. */
+  house(shown: readonly { id: string; glassX: number | null; glassY: number | null }[]): string[] {
+    const lacking = unhoused(
+      shown.map((t) => t.id),
+      this.items,
+    );
+    if (!lacking.length) return [];
+    const made = lacking.map((id) => {
+      const t = shown.find((s) => s.id === id)!;
+      const w = { ...newWidget("timeline", 0, 0, Z_PLAN, id), ...seedOf(t) };
+      /* A plan the old layer had at a spot was dragged there by hand. */
+      return w.glassX !== null ? { ...w, config: { ...w.config, [KEPT]: 1 } } : w;
+    });
+    this.items = [...this.items, ...made];
+    for (const w of made) void this.#save(w);
+    return made.map((w) => w.id);
+  }
+
+  /** Take down every plate whose timeline is no longer on the glass — archived
+   *  by hand or by itself, left by a closing card, gone from the store — and
+   *  any second plate of one timeline. Unrecorded, for `untether`'s reason: the
+   *  plan going is not somebody taking its plate down. Answers the ids, so the
+   *  undo stack can let go of what it knew about them. Asked only after the
+   *  timelines have been read whole — see `plates.ts::evicted`. */
+  evict(shown: ReadonlySet<string>): string[] {
+    return this.#takeDown(evicted(this.items, shown));
+  }
+
+  /** Move a plate to the stack, onto the wall at `at`, or onto the glass at
+   *  `at`. Recorded, like any move you make: these are the menu's three
+   *  verbs, and taking one back puts the plate where it stood. */
+  hangAt(id: string, to: Hang, at?: { x: number; y: number }) {
+    const w = this.items.find((w) => w.id === id);
+    if (!w || planOf(w) === null) return;
+    if (to !== "stack" && !at) return;
+    const move = to === "stack" ? toStack(w) : to === "wall" ? toWall(w, at!) : toGlass(w, at!);
+    /* On the wall it goes behind the cards like every widget hung there — the
+       plan band is for the glass, where a card stuck at the top must not hide
+       the stack — and back on the glass it rides at the plan band again,
+       unless it had been brought to the front. */
+    const z = to === "wall" ? nextBackZ(this.#stack()) : Math.max(w.z, Z_PLAN);
+    this.update(id, { ...move, z } as Partial<Widget>);
+  }
+
   /** The removal a tether's lifecycle shares: synchronous on the wall, the
    *  row after. Not `remove`, which records — see `untether`. */
   #takeDown(gone: readonly Widget[]): string[] {
@@ -300,6 +383,12 @@ export class Widgets {
        hand after another was hung up for the same card, and one per card is
        `tether`'s rule whichever way a pin arrives. */
     if (card !== null && this.items.some((x) => x.id !== w.id && tetherOf(x) === card)) return;
+    /* The same two refusals for a plate: none for a plan that has left the
+       glass, and never a second one of a plan. `evict` drops what the stack
+       knew about a plate it took down; this is the backstop behind it. */
+    const plan = planOf(w);
+    if (plan !== null && !this.shows(plan)) return;
+    if (plan !== null && this.items.some((x) => x.id !== w.id && planOf(x) === plan)) return;
     const i = this.items.findIndex((x) => x.id === w.id);
     if (i < 0) this.items = [...this.items, { ...w }];
     else this.items[i] = { ...w };
@@ -312,8 +401,10 @@ export class Widgets {
     const w = this.items.find((w) => w.id === id);
     if (!w) return;
     /* Which card a pin reads is what it *is*, not a knob — re-pointed, it
-       would be one card's view wearing another's lifecycle. */
+       would be one card's view wearing another's lifecycle. A plate's plan
+       the same. */
     if (key === TETHER && tetherOf(w) !== null) return;
+    if (key === PLAN && planOf(w) !== null) return;
     this.update(id, { config: { ...w.config, [key]: value } });
   }
 
@@ -348,13 +439,23 @@ export class Widgets {
   }
 
   async remove(id: string) {
+    const was = this.items.find((w) => w.id === id);
+    /* A plate is taken down by archiving its plan, and nothing else — see
+       `retire`. Not recorded: the archive is where a plan goes back from
+       (`Timelines.unarchive`, `resume`), not the undo stack, which never held
+       a timeline. */
+    const plan = was ? planOf(was) : null;
+    if (plan !== null) {
+      this.retire(plan);
+      return;
+    }
+
     /* Drop any queued save first, or it lands *after* the delete and puts the
        row straight back — the bug reference images shipped with, where taking
        one down brought it back on the next launch. */
     clearTimeout(this.#saveTimers.get(id));
     this.#saveTimers.delete(id);
 
-    const was = this.items.find((w) => w.id === id);
     if (was) {
       this.scribe.did(`taking down a ${specFor(was.kind)?.label ?? was.kind}`, [
         { at: "widget", id, was: $state.snapshot(was), now: null },

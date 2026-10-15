@@ -149,3 +149,27 @@ export function wheelMeaning(turn: Turn, chain: readonly Box[]): Meaning {
 export function overflowScrolls(computed: string): boolean {
   return computed === "auto" || computed === "scroll" || computed === "overlay";
 }
+
+/** How far a bare wheel should carry a strip sideways, or null when it should
+ *  not — the one place on the wall a vertical wheel moves something across.
+ *
+ *  A strip is a box that scrolls on `x` and not on `y`: the compact timeline,
+ *  which shows a window of a line too long for it. A mouse wheel only ever
+ *  reports `deltaY`, so by the rule above it would find nothing that moves on
+ *  its axis and zoom the wall — and shift, the way every other app scrolls a
+ *  thing sideways, is the wall's pan here and must stay so. So over a strip the
+ *  bare vertical wheel is read as travel along it, which is what a person
+ *  turning the wheel over a strip is plainly asking for, and what galleries and
+ *  tab bars elsewhere do. A trackpad's own sideways swipe needs none of this —
+ *  it is `deltaX`, and the box scrolls natively.
+ *
+ *  It keeps the wheel at its ends, for the reason every scroller here does: a
+ *  flick that runs off the end of the line must not turn into a zoom under the
+ *  hand. A strip with nothing beyond it is not a strip, and the wheel is the
+ *  wall's again. */
+export function stride(turn: Turn, box: Box): number | null {
+  if (turn.ctrlKey || turn.metaKey || turn.shiftKey) return null;
+  if (axisOf(turn) !== "y") return null;
+  if (!scrolls(box.x) || scrolls(box.y)) return null;
+  return turn.deltaY;
+}

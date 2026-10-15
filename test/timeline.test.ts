@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  STEP_PITCH,
   STRAND_GAP,
+  compactRail,
   current,
   effective,
   fraction,
@@ -17,6 +19,8 @@ import {
   timelineOf,
   took,
   whereabouts,
+  windowAt,
+  workAt,
   type Plan,
   type Timeline,
 } from "../src/lib/timeline";
@@ -270,5 +274,55 @@ describe("the words", () => {
     ]);
     const left = whereabouts(row({ state: "left", endedAt: Date.UTC(2026, 8, 28, 12) }));
     expect(left[0]).toMatch(/^left at step iii, \d+ sep$/);
+  });
+});
+
+/* ── the compact plate ─────────────────────────────────────────────────── */
+
+describe("the compact plate shows a window of the line", () => {
+  test("every track path knows its step, the fork's strands one step together", () => {
+    const fr = frise(plan(), 640);
+    expect(fr.trackStep).toHaveLength(fr.track.length);
+    /* Five steps, the third forking two ways: one path a step, two for the fork. */
+    expect(fr.trackStep).toEqual([0, 1, 2, 2, 3, 4]);
+  });
+
+  test("the line is every step at the wide pitch, never shorter than the window", () => {
+    expect(compactRail(5, 300)).toBe(5 * STEP_PITCH);
+    expect(compactRail(2, 400)).toBe(400);
+    expect(railWidth(5)).toBe(5 * STEP_PITCH);
+  });
+
+  test("the work is the first live marker", () => {
+    const p = plan();
+    const fr = frise(p, 640);
+    /* The fork has two live markers, one per strand; the window follows the
+       earlier of the two. */
+    expect(fr.lives.length).toBe(2);
+    expect(workAt(p, fr)).toBe(Math.min(...fr.lives.map((m) => m.x)));
+  });
+
+  test("with nothing moving, the work is the next milestone; with everything done, the end", () => {
+    const p = plan();
+    for (const s of p.steps[2].strands) for (const sub of s.subs) sub.state = "todo";
+    const fr = frise(p, 640);
+    expect(fr.lives).toHaveLength(0);
+    expect(workAt(p, fr)).toBe(fr.spans[2].x0);
+    const all = plan();
+    for (const step of all.steps) {
+      step.state = "done";
+      for (const s of step.strands) for (const sub of s.subs) sub.state = "done";
+    }
+    const done = frise(all, 640);
+    expect(workAt(all, done)).toBe(640);
+  });
+
+  test("the window puts the work a third of the way in, and rests against either end", () => {
+    expect(windowAt(400, 300, 1000)).toBe(300);
+    expect(windowAt(40, 300, 1000)).toBe(0);
+    expect(windowAt(990, 300, 1000)).toBe(700);
+    /* Inner padding moves the work and lengthens the line by both sides. */
+    expect(windowAt(400, 300, 1000, 12)).toBe(312);
+    expect(windowAt(1000, 300, 1000, 12)).toBe(724);
   });
 });

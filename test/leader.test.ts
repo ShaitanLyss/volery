@@ -195,6 +195,10 @@ describe("the which-key hint", () => {
       { keys: "gr", label: "rename this grouping" },
       { keys: "ia", label: "I'm away / back" },
       { keys: "k", label: "flyway key" },
+      { keys: "la", label: "archive the plan" },
+      { keys: "lg", label: "plan on the glass / on the wall" },
+      { keys: "ll", label: "plan: the whole line / a window" },
+      { keys: "ls", label: "plan back in the stack" },
       { keys: "ma", label: "cards left awake come back awake: on / off" },
       { keys: "mr", label: "reopen after a restart: on / off" },
       { keys: "mw", label: "keep awake on mains: on / off" },
@@ -210,6 +214,15 @@ describe("the which-key hint", () => {
       { keys: "wp", label: "panel: right / left / floating" },
       { keys: "ws", label: "every screen / one screen" },
       { keys: "z", label: "away / back" },
+    ]);
+  });
+
+  test("the line family is a plan's four moves", () => {
+    expect(offers("l")).toEqual([
+      { keys: "a", label: "archive the plan" },
+      { keys: "g", label: "plan on the glass / on the wall" },
+      { keys: "l", label: "plan: the whole line / a window" },
+      { keys: "s", label: "plan back in the stack" },
     ]);
   });
 

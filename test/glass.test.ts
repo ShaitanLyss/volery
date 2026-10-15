@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { glassAt, offsetBy, spotOf, stickTo } from "../src/lib/glass";
+import { glassAt, offsetBy, spotOf, stickTo, unstickFrom } from "../src/lib/glass";
 import { CARD_BOX, layout, REGION_HEAD, REGION_PAD, SLOT_W } from "../src/lib/layout";
 
 /* A territory keyed on its folder, so these cases go on reading as "the region
@@ -293,5 +293,24 @@ describe("out from under the chrome", () => {
     const at = glassAt({ x: 0, y: 0 }, tall, PANE, [{ x: 0, y: 0, w: 4000, h: 1600 }]);
     expect(at.y).toBeGreaterThanOrEqual(0);
     expect(at.y).toBeLessThanOrEqual(PANE.h - tall.h);
+  });
+});
+
+describe("unstickFrom", () => {
+  /* A plate that has only ever hung in the stack has no place on the wall to
+     go back to, so "put it on the wall" stands it where it is being looked at. */
+  test("it is stickTo backwards, centre for centre", () => {
+    const view = { x: 120, y: -40, scale: 0.5 };
+    const box = { x: 300, y: 80, w: 400, h: 120 };
+    const glass = stickTo(box, view, { w: 400, h: 120 });
+    expect(unstickFrom({ ...glass, w: 400, h: 120 }, view)).toEqual({ x: 300, y: 80 });
+  });
+
+  test("a pane offset is put back before the wall is asked", () => {
+    const view = { x: 0, y: 0, scale: 1 };
+    expect(unstickFrom({ x: 10, y: 20, w: 100, h: 50 }, view, { x: 5, y: 7, w: 900, h: 600 })).toEqual({
+      x: 15,
+      y: 27,
+    });
   });
 });

@@ -614,6 +614,15 @@ in `wheel.ts`, and there are four decisions in it worth keeping:
   like the cheap half and is not: that governs the *browser's* chaining and does nothing about
   an ancestor's JS listener, which is the entire mechanism.
 
+**A strip takes the bare wheel sideways** (`wheel.ts::stride`), and it is the one exception to
+"the axis of the delta". A box that scrolls on `x` and not on `y` — the compact timeline plate,
+a window onto a line too long for it — would otherwise be unreachable with a mouse: the wheel
+reports only `deltaY`, which finds nothing that moves on its axis and zooms the wall, and shift,
+the usual way sideways, is the wall's pan here and stays so. The strip itself listens (it has to
+work on the glass too, where there is no wall listener) and stops the turn from reaching the
+zoom; it keeps the wheel at its ends like every scroller here, and a strip with nothing beyond it
+is not a strip. A trackpad's own sideways swipe is `deltaX` and scrolls natively.
+
 **`data-scroll` is the fourth marker, and it joins `data-grip`/`data-text`/`data-live` for a
 different reason than they did.** Those three are `handleOf` asking what a press is *not*
 aimed at, because the press is read in the capture phase and nothing inside can stop it. This

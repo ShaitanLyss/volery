@@ -42,7 +42,7 @@
     type Standing,
     type World,
   } from "./pick";
-  import { specFor, type Widget } from "./widgets";
+  import { specFor, variantOf, type Widget } from "./widgets";
   import type { CardHandle } from "./cards.svelte";
   import type { Meter } from "./meter.svelte";
   import type { Ledger } from "./ledger.svelte";
@@ -50,7 +50,7 @@
   import type { Asana } from "./asana.svelte";
   import type { Cycle } from "./cycle.svelte";
   import type { Profile } from "./ambience";
-  import { glassAt, spotOf, stickTo, type Spot } from "./glass";
+  import { glassAt, spotOf, stickTo, unstickFrom, type Spot } from "./glass";
   import Wisps from "./Wisps.svelte";
   import { overflowScrolls, wheelMeaning, type Box as Reachable } from "./wheel";
   import { adrift } from "./portage.svelte";
@@ -78,8 +78,9 @@
   import Seats from "./Seats.svelte";
   import ImageNode from "./ImageNode.svelte";
   import WidgetNode from "./WidgetNode.svelte";
-  import Lintel from "./Lintel.svelte";
-  import type { Timeline } from "./timeline";
+  import type { Timelines } from "./timelines.svelte";
+  import { WALL, hangOf, planOf, stackAt, type Hang } from "./plates";
+  import { railWidth } from "./timeline";
   import { handleOf as cardHandle } from "./relay";
 
   let {
@@ -138,11 +139,7 @@
     onbuildrun,
     editors,
     oneditoropen,
-    timelines = [],
-    ontimelinepick,
-    ontimelinejump,
-    ontimelinearchive,
-    ontimelineplace,
+    timelines,
     onadd,
     onnameterritory,
   }: {
@@ -318,17 +315,12 @@
     editors?: Editor[];
     /** Open a project's editor, MCP server and all. */
     oneditoropen?: (root: string) => void;
-    /** What cards have drawn on the glass. Laid out by `Lintel` and read by
-     *  nothing else here — the canvas only knows which pane they go on and
-     *  which card each belongs to. */
-    timelines?: Timeline[];
-    /** A plate was clicked: land on the card that drew it. */
-    ontimelinepick?: (ownerId: string) => void;
-    /** A step was clicked: land on the card and find the write in its
-     *  transcript. */
-    ontimelinejump?: (ownerId: string, timelineId: string, rev: number) => void;
-    ontimelinearchive?: (id: string) => void;
-    ontimelineplace?: (id: string, x: number | null, y: number | null) => void;
+    /** The plans cards have drawn. Their plates are widgets (`plates.ts`) and
+     *  are drawn with the rest of them; what the canvas asks of the plans
+     *  themselves is only the order the stack reads in and a plan's length, for
+     *  a wide plate it has not measured yet. Handed on to `WidgetNode`, which
+     *  is where a plate looks its plan up. */
+    timelines: Timelines;
     /** New conversation in an existing project. `worktree` branches it. */
     onadd?: (cwd: string, worktree?: string) => void;
     /** A grouping has been given a new name. */
@@ -704,7 +696,66 @@
       .filter((i) => spotOf(i))
       .map((i) => ({ ...i, ...glassAt(spotOf(i)!, { w: i.w, h: i.h }, paneBox, keepout) })),
   );
-  const wallWidgets = $derived(widgets.items.filter((w) => !spotOf(w)));
+  /* ── a timeline's plate ─────────────────────────────────────────────────
+   *
+   * A widget (`plates.ts`) with two things no other widget has: it sizes
+   * itself — a frise is as tall as its plan, and a wide plate as long as one —
+   * so the box everything below reasons with is the one it was drawn at; and
+   * one of its three places to stand is the stack, which is on the glass and
+   * has no spot of its own. Both are answered here and nowhere else, so the
+   * rest of the wall — the band, the carry, the clamp — meets a plate as an
+   * ordinary widget at an ordinary position. */
+
+  /** What each plate measured itself at, by widget id. */
+  let plateBox = $state<Record<string, { w: number; h: number }>>({});
+  function measurePlate(id: string, box: { w: number; h: number }) {
+    const was = plateBox[id];
+    if (was && Math.abs(was.w - box.w) < 0.5 && Math.abs(was.h - box.h) < 0.5) return;
+    plateBox[id] = box;
+  }
+  /** A widget at the size it is drawn: its row for everything but a plate. A
+   *  plate not measured yet is its row's width — or, wide, its plan's length —
+   *  and lands where it belongs on the next frame. */
+  function drawnSize(w: Widget): Widget {
+    if (planOf(w) === null) return w;
+    const b = plateBox[w.id];
+    /* A compact plate's width is its row's, and must stay so: this object is
+       what `WidgetNode` draws, so a measured width handed back here would be
+       the measurement deciding the box it measures — a plate switched back
+       from wide kept the wide width for good, which is how that was found. */
+    if (variantOf(w) !== "wide") return b ? { ...w, h: b.h } : w;
+    if (b) return { ...w, w: b.w, h: b.h };
+    const steps = timelines.byId(planOf(w))?.plan.steps.length ?? 0;
+    return { ...w, w: railWidth(steps) + 62 };
+  }
+  /** Whether a widget is drawn at all: every widget but a plate whose plan is
+   *  not on the glass — which has nothing to draw, and would otherwise stand as
+   *  a two-pixel sliver that can be selected and taken down. Only reachable
+   *  for the frame between a plan leaving and its plate coming down, or after a
+   *  read of the plans that failed. */
+  function drawn(w: Widget): boolean {
+    const plan = planOf(w);
+    return plan === null || !!timelines.byId(plan);
+  }
+  function isStacked(w: Widget): boolean {
+    return planOf(w) !== null && hangOf(w) === "stack";
+  }
+  /** The plates hanging in the stack, in the order their plans were drawn. */
+  const stacked = $derived.by(() => {
+    const order = new Map(timelines.shown.map((t, i) => [t.id, i]));
+    const rank = (w: Widget) => order.get(planOf(w) ?? "") ?? Number.MAX_SAFE_INTEGER;
+    return widgets.items
+      .filter((w) => isStacked(w) && drawn(w))
+      .sort((a, b) => rank(a) - rank(b))
+      .map(drawnSize);
+  });
+  /** Where each of them is drawn: a column at the top of the *home* screen —
+   *  centred across every screen it would hang on the seam between two. */
+  const stackSpots = $derived(stackAt(homeBox, stacked));
+
+  const wallWidgets = $derived(
+    widgets.items.filter((w) => !spotOf(w) && !isStacked(w) && drawn(w)).map(drawnSize),
+  );
 
   /* Other walls' cards, in the left margin of everything standing on this one.
      Measured against the wall's own regions, images and widgets — the same set
@@ -768,7 +819,7 @@
   /* ── carrying a shadow about the glass ──────────────────────────────────
    *
    * Its own gesture rather than the wall's carry, the way a timeline plate's
-   * is (`Lintel.svelte`). The carry hauls a *selection*, and a shadow is not in
+   * was before plates became widgets. The carry hauls a *selection*, and a shadow is not in
    * the selection: `pick.ts`'s kinds each write their move to a row, and a
    * shadow has none. So a left press on one answers for itself — it travels and
    * drags, or it does not and is the click that focuses it — and `groundDown`
@@ -900,10 +951,23 @@
     window.removeEventListener("pointerup", shadowUp);
     window.removeEventListener("pointercancel", shadowUp);
   });
+  /* The stack is on the glass and is laid out rather than placed — so a drag
+     out of it starts from where the plate was drawn, which is all the carry
+     asks (`worldNow`), and writes the spot that takes it out of the stack.
+
+     One list in the registry's own order, stacked and placed alike, rather
+     than the placed ones followed by the stack: a plate leaving the stack
+     would otherwise move to another place in the keyed block, and a moved
+     node loses its strip's scroll position with no event to say so. */
   const glassWidgets = $derived(
     widgets.items
-      .filter((w) => spotOf(w))
-      .map((w) => ({ ...w, ...glassAt(spotOf(w)!, { w: w.w, h: w.h }, paneBox, keepout) })),
+      .filter((w) => (spotOf(w) || isStacked(w)) && drawn(w))
+      .map(drawnSize)
+      .map((w) =>
+        spotOf(w)
+          ? { ...w, ...glassAt(spotOf(w)!, { w: w.w, h: w.h }, paneBox, keepout) }
+          : { ...w, ...(stackSpots[w.id] ?? { x: 0, y: 0 }) },
+      ),
   );
   /** A patch aimed at a thing on the pane. `ImageNode` and `WidgetNode` know
    *  one pair of coordinates and are handed the glass ones, so what comes back
@@ -1022,9 +1086,45 @@
     } else {
       const w = widgets.items.find((w) => w.id === id);
       if (!w) return;
+      /* A plate has three places to stand, not two — see `hangPlate`. From
+         the wall this is the glass; from either place on the glass, the wall. */
+      if (planOf(w) !== null) {
+        hangPlate(id, hangOf(w) === "wall" ? "glass" : "wall");
+        return;
+      }
       const at = spotOf(w) ? null : stickTo(w, view, { w: w.w, h: w.h }, paneBox);
       widgets.update(id, { glassX: at?.x ?? null, glassY: at?.y ?? null });
     }
+  }
+
+  /** Move a timeline's plate to the stack, onto the wall, or onto the glass.
+   *
+   *  The glass toggle's third side. Everything lands where it already looked
+   *  to be, the rule `toggleGlass` keeps for everything: stuck from the wall it
+   *  goes where it was drawn, at 1:1; put on the wall it goes back to its place
+   *  there if it came from one, and otherwise stands where it is being looked
+   *  at — a plate out of the stack has no place on the wall to go back to.
+   *  Recorded through the widget's own update, so it is one undo. */
+  export function hangPlate(id: string, to: Hang) {
+    const w = widgets.items.find((w) => w.id === id);
+    if (!w || planOf(w) === null || hangOf(w) === to) return;
+    if (to === "stack") {
+      widgets.hangAt(id, "stack");
+      return;
+    }
+    const size = drawnSize(w);
+    const box = { w: size.w, h: size.h };
+    if (to === "glass") {
+      widgets.hangAt(id, "glass", stickTo({ x: w.x, y: w.y, ...box }, view, box, paneBox));
+      return;
+    }
+    if (w.config[WALL] === 1) {
+      widgets.hangAt(id, "wall", { x: w.x, y: w.y });
+      return;
+    }
+    const drawn = glassWidgets.find((g) => g.id === id);
+    if (!drawn) return;
+    widgets.hangAt(id, "wall", unstickFrom({ x: drawn.x, y: drawn.y, ...box }, view));
   }
 
   /** Who is wandering about, for the footprints effect: the cards on the wall,
@@ -1310,17 +1410,18 @@
   $effect(() => () => unwatch?.());
 
   function groundDown(e: PointerEvent) {
-    /* A timeline plate answers its own left press — it drags, and a press
-       that does not travel lands on its card — so the wall must not also read
-       it as a press on bare glass and let go of everything on the release.
-       The two buttons that pan still reach past it, as they reach past
-       everything.
+    /* A card on another wall answers its own left press. It is nothing the
+       wall can pick or carry, so to `nodeOf` it is bare ground — and a plain
+       click on it would release as "let go of everything", closing the panel
+       before its own click opened it again, and a modified click would drop
+       the whole selection and focus nothing. The two buttons that pan still
+       reach past it, as they reach past everything.
 
-       A card on another wall is the same case. It is nothing the wall can pick
-       or carry, so to `nodeOf` it is bare ground — and a plain click on it would
-       release as "let go of everything", closing the panel before its own click
-       opened it again, and a modified click would drop the whole selection and
-       focus nothing. Its left press is its own.
+       A timeline's plate used to be the first case here: it was drawn on a
+       layer of its own and dragged itself. It is a widget now (`plates.ts`), so
+       its press is the wall's like any widget's — selected, carried, gathered
+       in a band — and it must *not* be listed: a `[data-timeline]` here would
+       make every press on a plate do nothing at all.
 
        A card's glance button is the third: reading what a card said is the
        one gesture on it that must leave the selection exactly as it was
@@ -1328,7 +1429,7 @@
        settles the selection on its release. */
     if (
       e.button === 0 &&
-      (e.target as HTMLElement | null)?.closest?.("[data-timeline], [data-shadow], [data-glance]")
+      (e.target as HTMLElement | null)?.closest?.("[data-shadow], [data-glance]")
     ) {
       return;
     }
@@ -2771,6 +2872,9 @@
     {onopen}
     {onkeyring}
     {onforgerun}
+    {timelines}
+    centred={glass && isStacked(w)}
+    onmeasure={(box) => measurePlate(w.id, box)}
     onupdate={(patch) => widgets.update(w.id, glass ? glassPatch(patch) : patch)}
     onremove={() => void widgets.remove(w.id)}
   />
@@ -2966,25 +3070,6 @@
       {@render cardBody(n, "wall", 1)}
     </div>
   {/each}
-  <!-- The timelines cards have drawn. Over the cards stuck here, because a plan
-       is read across the whole pane and a card stuck at the top centre should
-       not hide one; under the wisps, which are traffic and pass over
-       everything. -->
-  {#if timelines.length}
-    <Lintel
-      {timelines}
-      pane={paneBox}
-      home={homeBox}
-      ownerOf={(id) => {
-        const c = convs.find((c) => c.id === id);
-        return c ? { tier: c.tier, handle: cardHandle(c.id) } : null;
-      }}
-      onpick={(id) => ontimelinepick?.(id)}
-      onjump={(t, rev) => ontimelinejump?.(t.ownerId, t.id, rev)}
-      onarchive={(id) => ontimelinearchive?.(id)}
-      onplace={(id, x, y) => ontimelineplace?.(id, x, y)}
-    />
-  {/if}
   <!-- Over everything standing on the wall, and last in the DOM for exactly
        that reason. `Lineage` is under the cards because a root is structure;
        this is over them because a wisp is traffic — the same layering argument
@@ -3128,13 +3213,6 @@
    * cause is this rule reaching across a component boundary and the exception
    * belongs beside it. `test/styles.test.ts` holds the pair together. */
   .glass > :global(.wisps) {
-    pointer-events: none;
-  }
-  /* And the timelines' layer, for exactly the same reason one component over:
-     `Lintel.svelte` is inert across the whole pane and only its plates take
-     events back, so the rule above claiming the layer would lay a transparent
-     sheet over the wall that ate every press — the 0.29.0 bug again. */
-  .glass > :global(.timelines) {
     pointer-events: none;
   }
   /* Except a territory's own boundary, which is mostly empty space. On the wall

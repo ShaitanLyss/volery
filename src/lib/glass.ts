@@ -58,7 +58,7 @@ export type View = { x: number; y: number; scale: number };
  *
  *  What still hangs off the home screen is anything with no position of its own
  *  — the timeline stack — because centring a default across every screen puts
- *  it on a seam between two monitors. See `Lintel.svelte`'s `home`. */
+ *  it on a seam between two monitors. See `plates.ts::stackAt`. */
 export type Pane = Size & { x?: number; y?: number };
 
 /** Where a wall box lands on the glass, in glass pixels.
@@ -72,6 +72,17 @@ export function stickTo(box: Spot & Size, view: View, size: Size, pane?: Pane): 
   const cx = view.x + (box.x + box.w / 2) * view.scale;
   const cy = view.y + (box.y + box.h / 2) * view.scale;
   return { x: cx - size.w / 2 - (pane?.x ?? 0), y: cy - size.h / 2 - (pane?.y ?? 0) };
+}
+
+/** `stickTo` the other way round: where on the wall a thing drawn on the glass
+ *  would stand to be drawn where it is now — centred on where its middle was,
+ *  at the wall's zoom. For a thing that has no place on the wall to go back to
+ *  (a timeline's plate that has only ever hung in the stack), so "put it on the
+ *  wall" leaves it where you were looking at it rather than at the origin. */
+export function unstickFrom(box: Spot & Size, view: View, pane?: Pane): Spot {
+  const cx = (box.x + (pane?.x ?? 0) + box.w / 2 - view.x) / view.scale;
+  const cy = (box.y + (pane?.y ?? 0) + box.h / 2 - view.y) / view.scale;
+  return { x: cx - box.w / 2, y: cy - box.h / 2 };
 }
 
 /** Keep something stuck to the glass reachable in a window this size.

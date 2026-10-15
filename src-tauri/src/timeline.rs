@@ -1213,25 +1213,41 @@ pub fn archive_timeline(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Where the user put it on the glass, or back into the stack with `None`.
+/// Hang a finished timeline back up out of the archive.
+///
+/// The other half of a plate going to the archive by itself (`plates.ts`): that
+/// is safe at ten minutes only because it is undone in one press, and this is
+/// the press. It comes back to the glass as it left — complete — and the wall
+/// puts a fresh plate up for it in the stack. A left one is not hung back up
+/// this way: it is unfinished work, and picking it up means adopting the
+/// session that drew it (`resume_timeline`), which is what the archive offers.
 #[tauri::command]
-pub fn place_timeline(
-    app: AppHandle,
-    id: String,
-    x: Option<f64>,
-    y: Option<f64>,
-) -> Result<(), String> {
+pub fn unarchive_timeline(app: AppHandle, id: String) -> Result<(), String> {
     {
         let store = app.state::<Store>();
         let conn = store.0.lock().map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE timeline SET glass_x = ?2, glass_y = ?3 WHERE id = ?1",
-            params![id, x, y],
-        )
-        .map_err(|e| e.to_string())?;
-        crate::arrange::note(&conn, crate::arrange::TIMELINE, &id, x, y);
+        unarchive(&conn, &id)?;
     }
     changed(&app, &id);
+    Ok(())
+}
+
+/// The spot is cleared as well: it is the one the old glass layer wrote, and
+/// the front end seeds a new plate from it (`plates.ts::seedOf`) so that a plan
+/// dragged off the old stack kept its place across the move to widgets. Left
+/// standing here it would put a plan the archive promised to hang "in the
+/// stack" back at a spot it was dragged to weeks ago (found in review).
+fn unarchive(conn: &Connection, id: &str) -> Result<(), String> {
+    let n = conn
+        .execute(
+            "UPDATE timeline SET archived_at = NULL, glass_x = NULL, glass_y = NULL
+              WHERE id = ?1 AND state = 'complete' AND archived_at IS NOT NULL",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err("only a finished timeline in the archive can be hung back up".into());
+    }
     Ok(())
 }
 
@@ -1254,7 +1270,7 @@ pub fn resume_timeline(app: AppHandle, id: String, owner_id: String) -> Result<(
             .execute(
                 "UPDATE timeline
                     SET owner_id = ?2, state = 'live', archived_at = NULL, ended_at = NULL,
-                        updated_at = ?3
+                        updated_at = ?3, glass_x = NULL, glass_y = NULL
                   WHERE id = ?1 AND state = 'left'",
                 params![id, owner_id, crate::store::now()],
             )
@@ -1456,6 +1472,31 @@ mod tests {
             assert!(r.contains(path), "{path} missing from:\n{r}");
         }
         assert!(r.contains("background"));
+    }
+
+    #[test]
+    fn only_a_finished_timeline_in_the_archive_is_hung_back_up() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::store::migrate(&conn).unwrap();
+        let put = |id: &str, state: &str, archived: Option<i64>| {
+            conn.execute(
+                "INSERT INTO timeline (id, owner_id, title, plan_json, state, archived_at, born_at, updated_at)
+                 VALUES (?1, 'c', 't', '{\"steps\":[]}', ?2, ?3, 0, 0)",
+                params![id, state, archived],
+            )
+            .unwrap();
+        };
+        put("done", "complete", Some(5));
+        conn.execute("UPDATE timeline SET glass_x = 30, glass_y = 40 WHERE id = 'done'", []).unwrap();
+        put("left", "left", Some(5));
+        put("shown", "complete", None);
+        unarchive(&conn, "done").unwrap();
+        assert_eq!(one(&conn, "done").unwrap().archived_at, None);
+        assert_eq!(one(&conn, "done").unwrap().state, "complete");
+        assert_eq!(one(&conn, "done").unwrap().glass_x, None, "back in the stack, not at an old spot");
+        assert!(unarchive(&conn, "left").is_err(), "a left one is picked up, not hung up");
+        assert!(unarchive(&conn, "shown").is_err(), "already on the glass");
+        assert!(unarchive(&conn, "nothing").is_err());
     }
 
     #[test]
