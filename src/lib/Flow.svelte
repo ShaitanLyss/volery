@@ -53,6 +53,7 @@
     type Palette,
     type Pt,
   } from "./flow";
+  import { skin } from "./palette.svelte";
   import type { Flights } from "./relay.svelte";
 
   let {
@@ -102,13 +103,23 @@
     const parent = el?.parentElement;
     if (!parent) return;
     measure();
-    readTokens();
     still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     /* The parent, never the canvas: observing a box you resize is the feedback
        loop `Backdrop.svelte` records reaching twenty-two million pixels. */
     const ro = new ResizeObserver(() => measure());
     ro.observe(parent);
     return () => ro.disconnect();
+  });
+
+  /* The tone and the ground are re-read whenever the skin repaints the root, so a
+     strand flying after a skin change is drawn in that skin's celadon and
+     composited for its ground. A canvas cannot see a custom property change.
+     Nothing is owed a redraw: the frame reads `palette` every frame, and a strand
+     already in the air simply changes colour for its last second. */
+  $effect(() => {
+    void skin.painted;
+    if (!el) return;
+    readTokens();
   });
 
   /* ── the loop ─────────────────────────────────────────────────────────── */

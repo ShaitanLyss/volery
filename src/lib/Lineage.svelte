@@ -36,6 +36,7 @@
    *   honest way to have it.
    */
 
+  import { untrack } from "svelte";
   import { hexRgb, rgba, type Rgb } from "./ambience";
   import { centreOf, type Box, type Pt } from "./flow";
   import {
@@ -59,6 +60,7 @@
     type Kin,
     type Limb,
   } from "./lineage";
+  import { skin } from "./palette.svelte";
 
   let {
     kin,
@@ -296,13 +298,26 @@
     if (!parent) return;
     still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     measure();
-    readTheme();
     const ro = new ResizeObserver(() => {
       measure();
       paint(Date.now());
     });
     ro.observe(parent);
     return () => ro.disconnect();
+  });
+
+  /* The theme is re-read, and the roots repainted, whenever the skin repaints the
+     root element. Roots are static — nothing redraws them until the wall moves —
+     so without the paint a still wall would keep studio's brown `--edge` under a
+     light skin until somebody panned. Untracked: the paint reads `kin`, `boxes`
+     and `scale`, and the effect below already owns those. */
+  $effect(() => {
+    void skin.painted;
+    if (!el) return;
+    untrack(() => {
+      readTheme();
+      paint(Date.now());
+    });
   });
 
   function paint(now: number) {

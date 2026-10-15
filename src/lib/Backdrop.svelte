@@ -54,6 +54,7 @@
     type StrokePoint,
     type Walk,
   } from "./ambience";
+  import { skin } from "./palette.svelte";
 
   let {
     profile,
@@ -175,13 +176,24 @@
   $effect(() => {
     const parent = box();
     if (!el || !parent) return;
-    readTokens();
     measure();
     /* The parent, not the canvas — observing the canvas while resizing it is the
        feedback loop described above. */
     const ro = new ResizeObserver(() => measure());
     ro.observe(parent);
     return () => ro.disconnect();
+  });
+
+  /* The tokens are re-read whenever the skin repaints the root, not only at
+     mount: a canvas cannot see a custom property change, and a wall switched to
+     a light skin kept drawing its leaves in studio's bone on cream. A separate
+     effect from the one above, so a skin change does not rebuild the observer.
+     No redraw is owed: the frame loop reads `dark` and `paper` every frame, and
+     a bare profile draws nothing to be stale. */
+  $effect(() => {
+    void skin.painted;
+    if (!el) return;
+    readTokens();
   });
 
   /* ── the loop ───────────────────────────────────────────────────────────── */

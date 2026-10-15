@@ -1588,6 +1588,21 @@ export class Control {
 
       /** Open a conversation in a folder — the same call the folder picker and
        *  a dropped directory both land on. */
+      /** A root between two cards already on the wall, with no spawn behind it.
+       *  `spawn:asked` is how a real one arrives, and it opens a card — a process
+       *  and, once that card's turn ends, a relay that wakes its parent for a paid
+       *  turn. A lab that only wants to *look* at Lineage (a skin's tether, a
+       *  retreat) writes the pair `kin` holds and nothing else. No `born`, so it is
+       *  simply there rather than growing, as a restored one is. */
+      kin: (op) => {
+        const child = String(op.child ?? "");
+        const parent = String(op.parent ?? "");
+        const ids = new Set(h.skein.convs.map((c) => c.id));
+        if (!ids.has(child) || !ids.has(parent)) throw new Error("kin needs the full `child` and `parent` ids of cards on the wall");
+        h.skein.kin = [...h.skein.kin, { child, parent }];
+        return { kin: h.skein.kin.length };
+      },
+
       open: async (op) => {
         const dir = String(op.dir ?? op.cwd ?? "");
         if (!dir) throw new Error("open needs a dir");
@@ -2029,6 +2044,13 @@ export class Control {
             ask_id: askId,
             ask: { notice: { text: op.notice } },
           });
+          return { id: c.id, askId, tier: c.tier, asks: c.asks.length };
+        }
+        /* `ask: { questions: [...] }` is the whole payload as `ask.rs` sends it, for
+           what the flat `question`/`options` below cannot carry — a preview, a
+           file, several questions. */
+        if (op.ask && typeof op.ask === "object") {
+          await asRust("ask:opened", { conversation_id: c.id, ask_id: askId, ask: op.ask });
           return { id: c.id, askId, tier: c.tier, asks: c.asks.length };
         }
         await asRust("ask:opened", {
