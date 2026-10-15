@@ -108,11 +108,17 @@
   /** Skein's own custom properties, so a mockup is judged on the decision
    *  rather than on whether the agent guessed the greys.
    *
-   *  Read off the live `:root` rules rather than listed here: a token added to
-   *  `tokens.css` tomorrow reaches previews without anybody remembering this
-   *  file. Wrapped, because `cssRules` throws on a stylesheet the document does
-   *  not own, and a preview with no palette is a smaller loss than a gallery
-   *  that fails to open. */
+   *  The *names* come off the live `:root` rules rather than a list here, so a
+   *  token added to `tokens.css` tomorrow reaches previews without anybody
+   *  remembering this file. The *values* do not: a skin and a reading are inline
+   *  style on the root element (`paint` in `palette.svelte.ts`), which no
+   *  stylesheet walk can see, so a preview built from the rules alone was always
+   *  studio's wall under whatever skin was on. The computed value is the one the
+   *  wall is actually drawn with — `var()` already substituted, the light ground's
+   *  `--ansi-*` already chosen — and it is what the sandboxed frame, which has no
+   *  `data-ground` and no cascade of ours, needs. Wrapped, because `cssRules`
+   *  throws on a stylesheet the document does not own, and a preview with no
+   *  palette is a smaller loss than a gallery that fails to open. */
   let tokens = $state("");
   /** Nothing is framed until the palette has been collected. One tick, and it
    *  buys every preview a single load rather than one without the tokens and a
@@ -120,7 +126,7 @@
    *  watch play twice before you can read it. */
   let ready = $state(false);
   onMount(() => {
-    const decls: string[] = [];
+    const names = new Set<string>();
     for (const sheet of Array.from(document.styleSheets)) {
       let rules: CSSRuleList;
       try {
@@ -129,15 +135,25 @@
         continue;
       }
       for (const rule of Array.from(rules)) {
-        if (!(rule instanceof CSSStyleRule) || rule.selectorText !== ":root") {
+        /* `:root[data-ground="light"]` too: it declares nothing the plain rule
+           does not, but a name only a light ground sets should not go missing. */
+        if (!(rule instanceof CSSStyleRule) || !rule.selectorText.startsWith(":root")) {
           continue;
         }
         for (const name of Array.from(rule.style)) {
-          if (name.startsWith("--")) {
-            decls.push(`${name}:${rule.style.getPropertyValue(name)}`);
-          }
+          if (name.startsWith("--")) names.add(name);
         }
       }
+    }
+    const root = document.documentElement;
+    for (const name of Array.from(root.style)) {
+      if (name.startsWith("--")) names.add(name);
+    }
+    const cs = getComputedStyle(root);
+    const decls: string[] = [];
+    for (const name of names) {
+      const value = cs.getPropertyValue(name).trim();
+      if (value) decls.push(`${name}:${value}`);
     }
     tokens = decls.length ? `:root{${decls.join(";")}}` : "";
     ready = true;
