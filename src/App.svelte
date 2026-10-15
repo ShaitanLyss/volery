@@ -58,6 +58,7 @@
     VARIANT,
     type WidgetKind,
   } from "./lib/widgets";
+  import { pinOfGone, strayed, wentFrom } from "./lib/tether";
   import {
     CADENCES,
     PERS,
@@ -230,6 +231,12 @@
   const cards = new Cards(skein, elsewhere, {
     copy: (text) => copyText(text),
     glass: (kind, id) => canvas?.toggleGlass(kind, id),
+    /* A refusal is said on the wall's own fault line: the widgets have none
+       drawn of their own. */
+    keep: (id, glass) =>
+      void canvas?.keep(id, glass).then((why) => {
+        if (why) skein.fault = why;
+      }),
     heldByGlass: (conv) => heldByGlassTerritory(conv),
     confirmClose: (card, warnings, t) => (unfinished = { card, t, warnings }),
     close: (conv) => closeConv(conv),
@@ -269,6 +276,23 @@
      copy of the same picture, which is the pile `pin.rs` exists to stop. */
   skein.onRepin = (id, change) => void board.repinned(id, change);
   widgets.scribe = undo;
+  /* A widget that is a view of one card — its last message, kept on the wall —
+     goes when the card does, on the same run that takes the card off the wall
+     (`tether.ts`). Unrecorded, and the stack lets go of what it knew about it:
+     closing a card is not taking its pin down, and an undo must never put one
+     back onto a card that is gone. `stands` is the backstop for a redo of a pin
+     that was not up when its card closed. */
+  widgets.stands = (id) => cards.stands(id);
+  skein.onClosed = (id) => {
+    widgets.untether(id);
+    undo.dropWhere((e) => pinOfGone(e, (c) => c === id));
+  };
+  /* And for a card on another wall: when its wall is heard and no longer
+     carries it. Never when it merely goes quiet — see `tether.ts::goneFrom`. */
+  elsewhere.onHeard = (host, alive) => {
+    widgets.keepHost(host, alive);
+    undo.dropWhere((e) => pinOfGone(e, (c) => wentFrom(c, host, alive)));
+  };
   /* And how a step is put back. One function per realm, because this is the only
      place that holds all four of the things a step writes to. */
   undo.hand = {
@@ -510,6 +534,13 @@
     else if (verb.kind === "card") {
       if (verb.act === "menu") menuFocused();
       else if (verb.act === "glance") glanceFocused();
+      /* Its last message kept beside it — on the wall, or on the glass. One
+         verb with an argument, so the two chords are one row of the table. */
+      else if (verb.act === "keep") verbFocused("keep");
+      else if (verb.act === "keep-glass") {
+        if (card) void card.do("keep", { glass: true });
+        else skein.fault = "no card has the focus";
+      }
       else verbFocused(verb.act);
     }
     else if (verb.kind === "sink") {
@@ -1058,6 +1089,23 @@
     if (pruned || !skein.convs.length) return;
     pruned = true;
     drafts.prune(new Set(skein.convs.map((c) => c.id)));
+  });
+
+  /* And a pin of a card's last message whose card did not come back — closed
+     in a session that ended before the pin's row could be deleted. Once both
+     reads have *succeeded*, not when `convs` is merely non-empty: a wall whose
+     last card closed is a wall where every pin is a stray, and that is the one
+     case the drafts' guard above would never reach. Cards on other walls are
+     not asked here (`tether.ts::strays`). Untracked, once — the drafts' shape. */
+  let swept = false;
+  $effect(() => {
+    if (swept || !skein.loaded || !widgets.loaded) return;
+    swept = true;
+    untrack(() => {
+      const alive = new Set(skein.convs.map((c) => c.id));
+      widgets.keepCards(alive);
+      undo.dropWhere((e) => pinOfGone(e, (c) => strayed(c, alive)));
+    });
   });
 
   /* The wall is read off SQLite once, at launch, and `untrack` is the whole of
@@ -2420,11 +2468,10 @@
    *  card is eating a core, and then makes you find it, has done half a job. */
   function revealRow(role: string, reference: string) {
     if (role !== "conversation") return;
-    const conv = skein.convs.find((c) => c.id === reference);
-    if (!conv) return;
-    focusedId = conv.id;
-    studio.selectOnly(conv.id);
-    canvas?.reveal(conv.id);
+    /* Through the card's handle, so a row naming a card on another wall — a
+       pinned last message of one — reaches it as a row naming one here does. */
+    const c = cards.find(reference);
+    if (c) focusCard(c);
   }
 
   /** Pin up an image from a file, at a point on the wall.
@@ -4987,6 +5034,7 @@
         {devops}
         naming={nameFor}
         onreveal={revealRow}
+        cardOf={(id) => cards.find(id)}
         onopen={(url) => void skein.openLink(url)}
         onkeyring={() => (showKeyring = true)}
         onforgerun={(run) => (openRun = run)}

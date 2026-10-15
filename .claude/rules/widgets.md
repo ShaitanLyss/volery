@@ -26,6 +26,8 @@ paths:
   - "src/lib/Status.svelte"
   - "src/lib/beacon.svelte.ts"
   - "src-tauri/src/status.rs"
+  - "src/lib/tether.ts"
+  - "src/lib/Saying.svelte"
 ---
 
 # Widgets, the clock, and the performance meter
@@ -809,6 +811,91 @@ the same: write as you go, to a rolling file under `%APPDATA%\dev.skein.studio`.
 built because the ring answers the question that prompted it and a file is a second set of
 decisions (rotation, size, what happens when the disk is full) that deserve their own
 afternoon. Whoever takes it should know the in-memory half is not the argument against it.
+
+#### A card's last message, kept on the wall
+
+Lyss, 2026-10-15: *"pin it to the wall or the glass, and it updates when the last message of
+the card changes, and it also goes away automatically when the card associated with it is
+closed."* The glance (`notice.md`, "The reader is one component") left standing. Kind `said`,
+face `Saying.svelte`, lifecycle `tether.ts`.
+
+**A widget, not a sixth kind of thing on the wall**, and the comparison is worth having because
+`elsewhere.md` went the other way for shadows. A pinned reading needs a position, a glass spot,
+a row that survives a relaunch, the one selection, undo for the moves you make and the frame
+knob — and a widget has every one of those already. A shadow had to be its own kind because it
+has no row and no ordinary glass; this has both. The only thing no widget had was a lifecycle
+tied to something else on the wall, and `tether.ts` is the whole of that.
+
+- **One reader, one reading.** It draws through `Said.svelte` over `glance.ts::lastMessage`, so
+  a pin, a glance and a notice about one card cannot disagree about what it said. The reader's
+  dock frame — its ceiling, outline and fill — is lifted from outside (`--said-ceiling: none`
+  and a `:global` rule in `Saying.svelte`); the fill stays on `WidgetNode`, so `bare` still
+  means the wall shows through. Two readings: `whole`, and `close` — the last paragraph
+  (`closingOf`, which will not split a fence) larger, for a pin dropped to card size.
+- **A fold, not a poll.** The text is a `$derived` over the card's own lines, and `Said` parses
+  only when the string changes. What is *asked for* is the card's conversation when nobody has
+  read it — a restored card keeps its scrollback in `history` — and, for a card on another wall,
+  again whenever `Shadow.saidMark` changes. That is the panel's `historyMark` without the
+  activity: a pin is up all day, and re-pulling a whole conversation over the flyway on every
+  far tool call would be the pin costing more than the card.
+- **It comes down on the run that takes the card down.** `Skein.close` calls `onClosed` beside
+  `Studio.forget`, before any `await`, and `Widgets.untether` removes the widget there and its
+  row after — `restore.md`'s close argument, one object over: a pin that outlived its card by a
+  frame would be a widget reading an id `#byId` no longer has. An agent's close fades the card
+  and not the pin; the pin is not the subject.
+- **Unrecorded, and the stack lets go of it.** Closing a card is not taking its pin down — it
+  ends the thing the pin was a view of — so nothing is put on the undo stack, and every record
+  of a pin of that card is forgotten (`Undo.dropWhere` over `tether.ts::pinOfGone`). By the
+  *card*, not by the ids of the pins that were up: a pin taken down by hand an hour earlier
+  still has its take-down on the stack, and undoing it would be a press spent on nothing.
+  `Widgets.put` is the backstop — it refuses a pin whose card no longer `stands`, and a second
+  pin of one card, which an undo reaching past a screen change could otherwise hang up. Which
+  card a pin reads is not a knob: `Widgets.set` will not re-point one.
+- **The close is guarded and still synchronous.** `onClosed` sits above the kill in
+  `Skein.close`, so a throw in a view's bookkeeping is caught there and said; uncaught, it
+  would have stopped the close before the process was killed, leaving an agent running with no
+  card on the wall to stop it from.
+- **Quiet is not closed** — `elsewhere.md`'s line, and the exact one. A far card's pin comes
+  down only when its wall has just been *heard* and no longer carries it (`goneFrom`, called
+  from `Elsewhere.#reconcile` beside `keep_shadow_glass`, the same rule a shadow's glass spot
+  follows). A wall that goes quiet keeps its pins; the header says *not heard from for 1m 32s ·
+  was at rest* and the last words stay under it.
+- **A launch backstop, because the row is deleted after an `await`.** A crash between the two
+  leaves a row for a card `load_studio` no longer answers. `keepCards` sweeps them once both
+  `skein.loaded` and `widgets.loaded` are true — never off an empty `convs`, which is also what a
+  wall whose last card closed looks like — and only for cards here: whether a far card stands is
+  its wall's to say, and it has not been heard yet at launch.
+- **One per card.** Asking again finds the one already up and moves it where you asked
+  (`Canvas.keep`), the argument `pin.rs` makes against a second copy of one picture.
+- **Where it lands was got wrong three ways first** (found in review, before it shipped). Hung
+  beside its card, a pin in a grouping's first column lay over the card in the second, and drawn
+  in front of the cards it stopped that card being clicked; it now goes **beside the grouping**,
+  top level with its card, and **behind the cards** like every widget. A far card's pin hung
+  beside it landed inside the other wall's column — and the column stands left of everything
+  on the wall, widgets included, so it stepped left of the pin and the pin was no longer beside
+  anything. It now hangs in the margin left of that column, and the column does not count a
+  pin of its own walls' cards as standing in its way. On the glass it was placed in *wall*
+  units and drawn at 1:1, so below about 90% zoom it covered its own card; it is placed off the
+  card's **drawn** box now, right of it, left where the pane has no room.
+- **A path in it is a link**, from the card's own directory (`scopeFiles`), as in the glance
+  and the transcript. A far card has no directory here and draws plain text.
+- **Never offered from the ground** (`WidgetSpec.tether`; `offersOf` skips it and
+  `Widgets.add` refuses it for the control surface). It is hung up from its card: two rows on
+  the card's right-click beside the glass, and `space c k` / `space c l`. A card on another wall
+  offers both, quiet or not — it is `here` in `handle.ts`'s cost table, read off what that wall
+  already sends. It is also **not carried** in a layout (`portage.md`): a view of a card stays
+  where the card does.
+- **No schema rung.** The card rides in `config_json`, so Rust never learns the kind exists.
+- **`data-scroll` reached `Markdown.svelte`.** `Said` brings the transcript's renderer onto the
+  wall, and its fences and tables scroll sideways, so both carry the marker (`layout.md`, the
+  fourth marker). Inert in the panel; `test/styles.test.ts` is what found it.
+
+Proved on two labs on a private flyway (`bun run lab a --frozen`, `b --peer a`): a pin made
+from the menu and from the chords, redrawn by a fed turn and by one real turn, a far card's pin
+re-read off its wall within the second, kept and marked while that wall was down for two
+minutes, back on the glass after each wall's restart, gone with its card in ~1.2s on the other
+wall and at once on its own, the undo stack holding nothing for it afterwards, and a planted
+stray row swept at launch from the wall and the disk.
 
 #### The sweep
 

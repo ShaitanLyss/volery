@@ -1,6 +1,7 @@
 import { expect, test, describe } from "bun:test";
 import { menuFor, type MenuItem } from "../src/lib/menu";
 import { WIDGETS, offersOf } from "../src/lib/widgets";
+import { rowVerb, verbsFor } from "../src/lib/handle";
 
 const ids = (items: MenuItem[]) =>
   items.filter((i) => i.kind === "item").map((i) => (i as { id: string }).id);
@@ -704,7 +705,23 @@ describe("families in the menu that hangs things up", () => {
       .filter((it) => it.kind === "item" && it.id.startsWith("widget:"))
       .map((it) => (it.kind === "item" ? it.id.slice(7) : ""));
     expect(new Set(hung).size).toBe(hung.length);
-    expect(hung.length).toBe(WIDGETS.length);
+    /* Every widget that is furniture; a view of one card is hung up from the
+       card's own menu, below. */
+    expect(hung.length).toBe(WIDGETS.filter((w) => !w.tether).length);
+  });
+
+  test("and a view of one card is reached from that card, on this wall or another", () => {
+    /* The other half of the count above: what the ground does not offer, the
+       card does — both places, the wall and the glass. A card on another wall
+       offers it too, quiet or not: it is this wall's furniture, read off what
+       that wall already sends. */
+    for (const verbs of [null, verbsFor({ host: "lab", unheard: true, acts: new Set(), closes: false })]) {
+      const got = ids(menuFor({ kind: "card", verbs }));
+      expect(got).toContain("keep:wall");
+      expect(got).toContain("keep:glass");
+    }
+    expect(rowVerb("keep:glass")).toEqual({ verb: "keep", args: { glass: true } });
+    expect(rowVerb("keep:wall")).toEqual({ verb: "keep", args: { glass: false } });
   });
 });
 

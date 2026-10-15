@@ -264,12 +264,22 @@ export function describe(past: Past): { back: string | null; forward: string | n
  *  they are presses that appear to do nothing, which is worse than a shorter
  *  history. An act emptied this way goes with them. */
 export function forget(past: Past, at: Realm, id: string): Past {
+  return forgetWhere(past, (e) => e.at === at && e.id === id);
+}
+
+/** `forget` by what a record *is* rather than by its id — for records that
+ *  went for good because of something they point at, some of which may not be
+ *  on the wall to be named. A card's last message kept on the wall is the case:
+ *  closing the card ends every pin of it, including one taken down by hand an
+ *  hour ago whose take-down is still on the stack (`tether.ts`). */
+export function forgetWhere(past: Past, gone: (e: Edit) => boolean): Past {
+  /* The same object when nothing matched, so a caller asking on every snapshot
+     of another wall writes nothing and wakes nothing. */
+  const any = (acts: Act[]) => acts.some((a) => a.edits.some(gone));
+  if (!any(past.done) && !any(past.undone)) return past;
   const prune = (acts: Act[]) =>
     acts
-      .map((a) => ({
-        ...a,
-        edits: a.edits.filter((e) => !(e.at === at && e.id === id)),
-      }))
+      .map((a) => ({ ...a, edits: a.edits.filter((e) => !gone(e)) }))
       .filter((a) => a.edits.length > 0);
   return { ...past, done: prune(past.done), undone: prune(past.undone) };
 }

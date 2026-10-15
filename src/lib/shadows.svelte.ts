@@ -451,6 +451,14 @@ export class Shadow {
     const d = this.digest;
     return [this.id, d.said, d.doing, d.restingSince, this.working, this.face.unheard].join("\u0000");
   }
+  /** `historyMark` without the activity: what a pin of this card's last
+   *  message re-reads its conversation on (`Saying.svelte`). A derived for
+   *  `historyMark`'s reason — a reader wakes when the value changes, not when
+   *  the snapshot under it is replaced. */
+  saidMark = $derived(this.#saidMark());
+  #saidMark(): string {
+    return [this.id, this.digest.said, this.working, this.face.unheard].join("\u0000");
+  }
   /** What its panel says above the conversation — what this wall knows that
    *  the conversation cannot say for itself (`handle.ts::panelNotes`). */
   get notes(): Said[] {
@@ -545,6 +553,12 @@ export class Elsewhere {
    *  store holds every room's (`arrange.rs`, kind `shadow`); this is the one
    *  `adopt_arrangement` last answered, written through on every change. */
   glass = $state.raw<Spots>(NO_SPOTS);
+
+  /** One wall has just been heard, and these are the cards it still holds — for
+   *  whatever on this wall is a view of a card over there and has to come down
+   *  when its card does (`Widgets.keepHost`). Set by the app; the same moment,
+   *  and the same rule, that lets go of a closed card's glass spot. */
+  onHeard: (host: string, alive: ReadonlySet<string>) => void = () => {};
 
   #skein: Skein;
   #byId = new Map<string, Shadow>();
@@ -861,6 +875,7 @@ export class Elsewhere {
       const kept = keepHost(this.glass, heard, alive);
       if (kept !== this.glass) this.glass = kept;
       void invoke("keep_shadow_glass", { host: heard, alive: [...alive] }).catch(() => {});
+      this.onHeard(heard, alive);
     }
   }
 

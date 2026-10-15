@@ -50,6 +50,9 @@
   import Browser from "./Browser.svelte";
   import BuildLog from "./BuildLog.svelte";
   import UnrealLog from "./UnrealLog.svelte";
+  import Saying from "./Saying.svelte";
+  import { tetherOf } from "./tether";
+  import type { CardHandle } from "./cards.svelte";
 
   let {
     widget,
@@ -77,6 +80,7 @@
     onupdate,
     onremove,
     onreveal,
+    cardOf = () => null,
     onopen,
     onkeyring,
     onforgerun,
@@ -154,6 +158,10 @@
     onupdate: (patch: Partial<Widget>) => void;
     onremove: () => void;
     onreveal?: (role: string, reference: string) => void;
+    /** The card with this id, here or on another wall — what a widget that is
+     *  a view of one card reads. A function rather than the cards, so the
+     *  arm that needs it asks for exactly the one it names. */
+    cardOf?: (id: string) => CardHandle | null;
     /** Out of the app entirely, for the one thing on this wall that points
      *  somewhere else. Routed up rather than invoked in the face, the way every
      *  link in the transcript is — see `open.rs` for why an `<a href>` here
@@ -372,6 +380,16 @@
       <AppLog {widget} />
     {:else if widget.kind === "browser"}
       <Browser {widget} {pane} />
+    {:else if widget.kind === "said"}
+      <!-- The card, asked for by the id the widget carries. Null while it is
+           not on the wall yet — a launch, or a wall not heard from — and the
+           face says which; never for a card that closed, which took this
+           widget down with it. -->
+      <Saying
+        {widget}
+        card={cardOf(tetherOf(widget) ?? "")}
+        onreveal={(id) => onreveal?.("conversation", id)}
+      />
     {/if}
   </div>
 

@@ -85,6 +85,12 @@ export type Readable = {
   /** The panel reads the history when it opens on a card, and again whenever
    *  this changes. Absent for a card whose history is read once. */
   historyMark?: string;
+  /** The same, keyed narrower: what a pinned last message re-reads on
+   *  (`Saying.svelte`). Only what can change the last thing said — a new line
+   *  settled, a turn opening or closing, the wall heard again — and not the
+   *  card's activity, which moves on every tool call. Absent for a card whose
+   *  history is read once. */
+  saidMark?: string;
   /** Lines the panel says above the conversation — what this wall knows that
    *  the conversation cannot say for itself (`handle.ts::panelNotes`). */
   notes?: readonly { text: string; tone?: "warn" | "ask" }[];

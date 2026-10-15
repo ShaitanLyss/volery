@@ -174,7 +174,10 @@ export class Portage {
 
     return {
       projects,
-      widgets: widgets.items.map((w) => ({
+      /* Not a view of one card: the card stays behind, so its pin does too —
+         carried, it would arrive pointing at an id nothing on that wall has
+         (`tether.ts`). */
+      widgets: widgets.items.filter((w) => !specFor(w.kind)?.tether).map((w) => ({
         kind: w.kind,
         x: w.x,
         y: w.y,

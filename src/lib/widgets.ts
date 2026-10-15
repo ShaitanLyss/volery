@@ -36,6 +36,9 @@ import { FOLLOW } from "./logface";
    durations — a knob whose label says "the last minute" against a window that is
    something else would be an instrument lying about its own axis. */
 import { DEFAULT_SPAN, SPANS } from "./cores";
+/* The key a widget that is a view of one card keeps that card in — see
+   `tether.ts`, which owns what that means and when one comes down. */
+import { TETHER } from "./tether";
 
 export type WidgetKind =
   | "clock"
@@ -60,7 +63,8 @@ export type WidgetKind =
   | "buildlog"
   | "applog"
   | "unreallog"
-  | "browser";
+  | "browser"
+  | "said";
 
 export type Choice = { value: string; label: string };
 
@@ -223,6 +227,11 @@ export type WidgetSpec = {
    *  renaming the widget, since `label` is what the thing is called everywhere
    *  else. */
   offer?: string;
+  /** A view of one card rather than furniture: it carries the card in its
+   *  config (`tether.ts::TETHER`), it is hung up *from* that card and never
+   *  from the ground's menu — hung up from nothing it would be a view of
+   *  nothing — and it comes down when the card closes. See `tether.ts`. */
+  tether?: true;
 };
 
 export type WidgetConfig = Record<string, string | number | boolean>;
@@ -1571,6 +1580,56 @@ export const WIDGETS: WidgetSpec[] = [
       toggle("interactive", "clicks and keys reach the page", true),
     ],
   },
+  {
+    /* A card's last message, kept where you can see it — the glance
+       (`Glance.svelte`) pinned to the wall or the glass and left there. Lyss,
+       2026-10-15: *"pin it to the wall or the glass, and it updates when the
+       last message of the card changes, and it also goes away automatically
+       when the card associated with it is closed."*
+
+       **A widget rather than a sixth kind of thing on the wall**, because
+       everything a pinned reading needs a widget already has: a position on
+       the wall and a spot on the glass (`glass.ts`), a row that survives a
+       relaunch, the one selection, undo for the moves you make, the frame
+       knob, and a right-click built off this catalogue. A shadow had to be a
+       kind of its own (`elsewhere.md`) because it has no row and no glass of
+       the ordinary sort; this has both. The one thing a widget did not have is
+       a lifecycle tied to something else on the wall, and that is all
+       `tether.ts` adds.
+
+       **Never offered from the ground's menu** (`tether`). It is hung up from
+       the card it reads — its right-click, or `space c k` / `space c l` — and
+       one hung up from nothing would be a view of nothing.
+
+       **Nothing behind it goes and looks.** The reading is
+       `glance.ts::lastMessage` over the card's own lines, which the event fold
+       already keeps, so it redraws when the card speaks and at no other time;
+       a card on another wall is re-read off its wall when its digest says it
+       has said something new, which is the panel's own arrangement. */
+    kind: "said",
+    label: "last message",
+    note: "what a card last said, kept where you can see it",
+    tether: true,
+    box: { w: 340, h: 220 },
+    min: { w: 200, h: 96 },
+    params: [
+      /* Two readings of one fact — what the card last said. `whole` is the
+         message as the transcript draws it, and it is the one you hang where
+         you are working. `close` is only its last paragraph, larger: the
+         reading for one dropped to the size of a card, where the first four
+         lines of a report say nothing and the question at the bottom of it
+         says everything — `serverlog`'s `latest`, one subject over. */
+      choice(
+        VARIANT,
+        "reading",
+        [
+          { value: "whole", label: "the whole message" },
+          { value: "close", label: "only how it ended" },
+        ],
+        "whole",
+      ),
+    ],
+  },
 ];
 
 /* How many lines a meter of this height has room for.
@@ -1661,6 +1720,9 @@ export function offersOf(specs: WidgetSpec[] = WIDGETS): Offer[] {
      row that has already been emitted. */
   const at = new Map<WidgetFamily, number>();
   for (const w of specs) {
+    /* A view of one card is hung up from that card, never from here: there is
+       no card to read from the ground. See `tether`. */
+    if (w.tether) continue;
     const member = { id: w.kind, label: w.short ?? w.label };
     if (!w.family) {
       out.push({ id: w.kind, label: offerLabel(w) });
@@ -1861,6 +1923,15 @@ export function normalizeWidget(raw: unknown): Widget | null {
     config[s.key] =
       typeof raw === "number" && Number.isFinite(raw) ? Math.max(0, raw) : s.def;
   }
+  /* A view of one card with no card named is a view of nothing, and there is
+     no default that could stand in for it — the next card along would be
+     somebody else's words under this one's frame. Left off the wall, the way a
+     kind nothing can draw is. */
+  if (spec.tether) {
+    const card = cfg[TETHER];
+    if (typeof card !== "string" || !card) return null;
+    config[TETHER] = card;
+  }
 
   return {
     id: typeof r.id === "string" && r.id ? r.id : uid(),
@@ -1888,8 +1959,15 @@ export function normalizeWidget(raw: unknown): Widget | null {
 }
 
 /** A fresh widget of a kind, centred on a point — you aimed at a spot on the
- *  wall, not at a corner. */
-export function newWidget(kind: WidgetKind, atX: number, atY: number, z = 0): Widget {
+ *  wall, not at a corner. `card` is the card a tethered kind is a view of, and
+ *  is ignored by every other kind. */
+export function newWidget(
+  kind: WidgetKind,
+  atX: number,
+  atY: number,
+  z = 0,
+  card?: string,
+): Widget {
   const spec = specFor(kind);
   const box = spec?.box ?? { w: 190, h: 190 };
   return {
@@ -1904,7 +1982,7 @@ export function newWidget(kind: WidgetKind, atX: number, atY: number, z = 0): Wi
        you put a thing on purpose, never somewhere a thing lands. */
     glassX: null,
     glassY: null,
-    config: defaultConfig(kind),
+    config: spec?.tether && card ? { ...defaultConfig(kind), [TETHER]: card } : defaultConfig(kind),
   };
 }
 

@@ -81,7 +81,7 @@
          stays in the corner when a wide fence is scrolled sideways. The perch
          is what lets it also ride the top of the *visible* part — see below. -->
     <div class="fence">
-      <pre class="code" class:open={b.open}>{#if b.lang}<span class="lang"
+      <pre class="code" class:open={b.open} data-scroll>{#if b.lang}<span class="lang"
             >{b.lang}</span
           >{/if}<code>{b.text}{#if tip}<span class="caret"></span
           >{/if}</code></pre>
@@ -127,8 +127,11 @@
     {/if}
   {:else if b.t === "table"}
     <!-- Its own scroller: a wide table must not widen the panel, which would
-         push the transcript's own column out of shape. -->
-    <div class="table-scroll">
+         push the transcript's own column out of shape. `data-scroll`, here and
+         on the fence, is inert in the panel and is what lets the wall's wheel
+         reach either when this is drawn on the wall — a card's last message
+         kept there (`Saying.svelte`). See layout.md, "the fourth marker". -->
+    <div class="table-scroll" data-scroll>
       <table>
         <thead>
           <tr>

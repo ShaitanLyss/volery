@@ -6,6 +6,7 @@ import {
   describe as describePast,
   equal,
   forget,
+  forgetWhere,
   fusable,
   fuse,
   invert,
@@ -313,6 +314,27 @@ describe("forget", () => {
   test("only that realm's id, not the same string elsewhere", () => {
     const past = wall(act({ edits: [edit({ at: "widget", id: "x" })] }));
     expect(forget(past, "image", "x").done).toHaveLength(1);
+  });
+
+  /* By what a record is rather than by its id: every pin of a closed card,
+     including one taken down by hand whose take-down is still on the stack. */
+  test("a predicate reaches records that are not on the wall to be named", () => {
+    const pin = (id: string, card: string) => ({ id, config: { card } });
+    const past = wall(
+      act({ edits: [edit({ id: "p1", was: pin("p1", "c1"), now: null })] }),
+      act({ t: 5000, edits: [edit({ id: "p2", was: null, now: pin("p2", "c2") })] }),
+    );
+    const card = (e: Edit) =>
+      [e.was, e.now].some((r) => (r as { config?: { card?: string } } | null)?.config?.card === "c1");
+    const after = forgetWhere(past, card);
+    expect(after.done.map((a) => a.edits[0].id)).toEqual(["p2"]);
+  });
+
+  /* Asked on every snapshot another wall sends, so nothing matched must write
+     nothing — the same object back, which a rune does not count as a change. */
+  test("nothing matched is the same past, not a copy of it", () => {
+    const past = wall(act({ edits: [edit()] }));
+    expect(forgetWhere(past, () => false)).toBe(past);
   });
 });
 

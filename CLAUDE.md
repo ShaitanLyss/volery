@@ -73,7 +73,7 @@ bun run test             # the pure suites: ansi, classify, adopt, layout, pick,
                          # repair, limits, accounts, signin, azdo, integrations, asana,
                          # shell, finding, leader, synth, voice, steward, office, styles, zoom,
                          # timeline, span, notice, shadow, machine, handle, waiting,
-                         # glance
+                         # glance, tether
 bun test test/classify.test.ts                                        # one file
 bun test test/classify.test.ts -t "urgency"                            # one describe/test
 bun run test:live        # spawns the real `claude` binary, real API turns, minutes
@@ -251,7 +251,7 @@ prose there is why the code is shaped as it is, and most of it records a bug tha
 | `arrange.md` | one glass per room: what a screen arrangement is and why it is a shape rather than a set of monitors, the alignment search that replaced trusting the normalisation, the columns as a cache of the room you are in, and why a copy is shifted by the pane's origin | `arrange.ts`, `arrange.svelte.ts`, `arrange.rs` |
 | `layout.md` | territories, the flow, pinning, the two-box viewport, `CARD_BOX`, the three pointer gestures, one selection over four kinds and the band that draws it, and an agent putting an image on the wall beside its card | `layout.ts`, `pick.ts`, `Canvas.svelte`, `studio.svelte.ts`, `images.svelte.ts`, `pin.rs` |
 | `undo.md` | taking it back: one shape for four realms, the boundary that keeps prompts and the viewport off the stack, why a drag is one press, and the image file that is no longer deleted with its row | `undo.ts`, `undo.svelte.ts` |
-| `widgets.md` | the widget catalogue and its knobs, the clock, the performance meter, and the four logs over one substrate — including the app's own, and why it had none until 2026-08-28 | `widgets.ts`, `WidgetNode.svelte`, `Clock.svelte`, `perf.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`, `unreallog.ts`, `applog.ts`, `applog.rs` |
+| `widgets.md` | the widget catalogue and its knobs, the clock, the performance meter, and the four logs over one substrate — including the app's own, and why it had none until 2026-08-28 — and a card's last message kept on the wall, the one widget whose life is tied to something else on it | `widgets.ts`, `WidgetNode.svelte`, `Clock.svelte`, `perf.ts`, `logface.ts`, `serverlog.ts`, `buildlog.ts`, `unreallog.ts`, `applog.ts`, `applog.rs`, `tether.ts`, `Saying.svelte` |
 | `usage.md` | what is left of the allowance and what it has cost — the account's own windows and their resets, then reading transcripts, the dedup, the five prices, and the day's figure the title bar and the horizon carry | `limits.ts`, `usage.ts`, `ledger.svelte.ts`, `limits.rs`, `usage.rs` |
 | `timers.md` | timers, the pomodoro cycle, and why breaks are taken rather than offered | `timing.ts`, `cycle.svelte.ts`, `Rest.svelte` |
 | `azdo.md` | pipelines and reviews over **two** forges: the four-rung Azure DevOps ladder and the rung that could not spawn, why GitHub needs no ladder at all, the test a cross-forge projection has to pass, a 400 that means "not your project", one run opened in-app, where the one stored secret lives, and the TLS interception this network does | `azdo.ts`, `devops.svelte.ts`, `azdo.rs`, `forge.rs`, `github.rs`, `Run.svelte`, `vault.rs`, `Keyring.svelte` |
@@ -399,7 +399,7 @@ Files named `*.svelte.ts` contain runes and only run in the app. Plain `.ts` fil
 `gears.ts`, `handoff.ts`,
 `repair.ts`, `toolcall.ts`, `gates.ts`, `follow.ts`, `browser.ts`, `voice.ts`, `steward.ts`,
 `timeline.ts`, `arrange.ts`, `berth.ts`, `notice.ts`, `shadow.ts`, `handle.ts`, `queue.ts`, `replies.ts`, `waiting.ts`,
-`glance.ts`) are pure
+`glance.ts`, `tether.ts`) are pure
 and have direct Bun tests — keep them that way, and put new testable logic there rather than
 inside a component.
 Adding a test file means adding it to the `test` script, which names its files explicitly.

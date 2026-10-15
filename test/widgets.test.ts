@@ -971,8 +971,19 @@ describe("what a right-click offers to hang up", () => {
     offers.flatMap((o) => ("items" in o ? o.items.map((i) => i.id) : [o.id]));
 
   test("every widget in the catalogue is reachable, exactly once", () => {
+    /* Every widget that is furniture. A view of one card is reached from that
+       card instead — see the next test, and `menu.test.ts` for the card's half. */
     const got = leaves(offersOf()).sort();
-    expect(got).toEqual(WIDGETS.map((w) => w.kind).sort());
+    expect(got).toEqual(WIDGETS.filter((w) => !w.tether).map((w) => w.kind).sort());
+  });
+
+  test("a view of one card is never offered from the ground", () => {
+    /* Hung up from nothing it would be a view of nothing: there is no card to
+       read from a patch of empty wall. The catalogue has one, so this checks
+       something rather than nothing. */
+    const tethered = WIDGETS.filter((w) => w.tether).map((w) => w.kind);
+    expect(tethered).toEqual(["said"]);
+    for (const k of tethered) expect(leaves(offersOf())).not.toContain(k);
   });
 
   test("the menu is shorter than the catalogue, which is the whole point", () => {

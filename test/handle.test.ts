@@ -34,9 +34,10 @@ describe("which verbs a card can be asked", () => {
     expect(refusal(null, "clear")).toBeNull();
   });
 
-  /* Today's shadow: nothing announced, so the two it has always had. */
-  test("a wall announcing no verbs gets the glass and the close", () => {
-    expect([...verbsFor(lab())!].sort()).toEqual(["close", "glass"]);
+  /* Today's shadow: nothing announced, so what it has always had — and its
+     last message kept on this wall, which is this wall's furniture too. */
+  test("a wall announcing no verbs gets the glass, the close and the keep", () => {
+    expect([...verbsFor(lab())!].sort()).toEqual(["close", "glass", "keep"]);
   });
 
   test("an announced verb is offered, an unannounced one is not", () => {
@@ -57,7 +58,8 @@ describe("which verbs a card can be asked", () => {
      whatever it once announced — never queued for a lid to lift. */
   test("an unheard wall offers nothing that has to reach it", () => {
     const v = verbsFor(lab({ unheard: true, acts: new Set(VERBS) }))!;
-    expect([...v].sort()).toEqual(["close", "glass"]);
+    /* The keep reaches nothing: a pin of a quiet wall's card says it is quiet. */
+    expect([...v].sort()).toEqual(["close", "glass", "keep"]);
     expect(refusal(lab({ unheard: true }), "aside")).toBe("lab has not been heard from");
   });
 
@@ -81,8 +83,13 @@ describe("which verbs a card can be asked", () => {
 });
 
 describe("the menu a shadow gets is the card's, filtered", () => {
-  test("unannounced: glass and close, as before", () => {
-    expect(ids({ kind: "card", host: "lab", verbs: verbsFor(lab()) })).toEqual(["glass", "close"]);
+  test("unannounced: glass, the keep and close, as before", () => {
+    expect(ids({ kind: "card", host: "lab", verbs: verbsFor(lab()) })).toEqual([
+      "glass",
+      "keep:wall",
+      "keep:glass",
+      "close",
+    ]);
   });
 
   test("announced verbs reach the same rows a local card has", () => {
@@ -99,7 +106,7 @@ describe("the menu a shadow gets is the card's, filtered", () => {
         { id: "b", label: "b", on: false },
       ],
     });
-    expect(got).toEqual(["wake", "aside", "bypass", "account", "glass", "clear", "close"]);
+    expect(got).toEqual(["wake", "aside", "bypass", "account", "glass", "keep:wall", "keep:glass", "clear", "close"]);
   });
 
   test("a local card is untouched by any of it", () => {

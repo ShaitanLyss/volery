@@ -24,6 +24,7 @@ import {
 import { bank, isRunning, settle, type Duo } from "./timing";
 import { NO_SCRIBE, type Scribe } from "./undo";
 import { NO_PICKS, type Picker } from "./pick";
+import { TETHER, goneFrom, strays, tetherOf, tetheredTo } from "./tether";
 
 /** How often a running timer's earned seconds are written down. Nothing writes
  *  to a widget's row while it merely runs — the reading is derived from an epoch
@@ -39,6 +40,11 @@ export type Spots = Record<string, [number, number]>;
 export class Widgets {
   items = $state<Widget[]>([]);
   fault = $state<string | null>(null);
+  /** The rows have been read, and read whole. What the launch's sweep of pins
+   *  whose card did not come back waits for (`keepCards`) — never true after a
+   *  read that failed, so a store that could not be read is not read as a wall
+   *  with no pins on it. */
+  loaded = $state(false);
 
   /** What is picked on the wall. Injected for the reason `scribe` is: a widget
    *  you have just hung up is the thing you are holding, and there is one
@@ -60,6 +66,13 @@ export class Widgets {
    *  no second path that quietly is not. See `undo.svelte.ts`. */
   scribe: Scribe = NO_SCRIBE;
 
+  /** Whether a card — here or on another wall — is still standing. The one
+   *  question a widget that is a view of a card asks of the wall, injected for
+   *  `others`' reason: the cards are not this registry's to hold. Answers yes
+   *  until somebody says otherwise, so a registry with no wall behind it (a
+   *  test, the first frames of a launch) never refuses a pin. */
+  stands: (card: string) => boolean = () => true;
+
   #saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** When the running timers were last banked — see `beat`. */
   #beat = 0;
@@ -74,6 +87,7 @@ export class Widgets {
         .map(normalizeWidget)
         .filter((w): w is Widget => !!w)
         .map((w) => (runs(w.kind) ? this.#held(w) : w));
+      this.loaded = true;
     } catch (err) {
       this.fault = String(err);
     }
@@ -130,6 +144,13 @@ export class Widgets {
       this.fault = `no such widget: ${kind}`;
       return null;
     }
+    /* Not offered from any menu, and refused here for the one route that does
+       not go through a menu (the control surface): a view of a card is hung
+       up from the card, through `tether`. */
+    if (specFor(kind)?.tether) {
+      this.fault = `a ${specFor(kind)?.label} is hung up from the card it reads`;
+      return null;
+    }
     /* Behind the cards, for the reason a reference image is: the wall is a
        working surface first, and nothing hung on it should cover live work.
        The menu's "bring to front" is there for when you mean the opposite. */
@@ -170,10 +191,115 @@ export class Widgets {
     return $state.snapshot(next) as Widget;
   }
 
+  /** Hang a card's last message up beside it — or, if it already has one, hand
+   *  that one back.
+   *
+   *  One per card, for the reason `pin.rs` refuses a second copy of the same
+   *  picture: two views of one card are two rectangles saying the same words,
+   *  and the second is never the one you meant to look at. Asking again finds
+   *  the one already up, and the caller moves it to where it was asked for.
+   *
+   *  Recorded, like any widget hung up by hand: taking it back is taking down
+   *  something you put up. What is *not* recorded is the card closing under it
+   *  — see `untether`. Answers the widget, or why not in words: there is no
+   *  fault line drawn for this registry, so the caller says it where it will be
+   *  seen. */
+  async tether(
+    kind: WidgetKind,
+    card: string,
+    atX: number,
+    atY: number,
+    /** Where on the glass, for one hung up straight onto it — written in the
+     *  same record as the widget, so the gesture is one undo. */
+    glass: { x: number; y: number } | null = null,
+  ): Promise<Widget | string> {
+    const spec = specFor(kind);
+    if (!spec?.tether) return `a ${kind} is not a view of a card`;
+    const had = this.items.find((w) => w.kind === kind && tetherOf(w) === card);
+    if (had) {
+      this.picks.only("widget", had.id);
+      return had;
+    }
+    if (!this.stands(card)) return "that card is no longer on the wall";
+    /* Behind the cards, as every widget is hung: it is placed clear of its
+       card's grouping, and where it lands over somebody else's, the card is
+       the live work and the pin is only reading it. */
+    const w = {
+      ...newWidget(kind, atX, atY, nextBackZ(this.#stack()), card),
+      glassX: glass?.x ?? null,
+      glassY: glass?.y ?? null,
+    };
+    this.items = [...this.items, w];
+    this.picks.only("widget", w.id);
+    this.scribe.did(`hanging up a ${spec.label}`, [
+      { at: "widget", id: w.id, was: null, now: { ...w, config: { ...w.config } } },
+    ]);
+    await this.#save(w);
+    return w;
+  }
+
+  /** Take down every view of a card that has just left the wall.
+   *
+   *  Called from `Skein.close`, on the same synchronous run that takes the card
+   *  out of `convs` — not after an `await`, and not by an effect noticing a
+   *  frame later. A pin that outlived its card by even a frame would be a
+   *  widget pointing at an id the wall no longer has, which is
+   *  `restore.md`'s close-fade argument one object over.
+   *
+   *  **Unrecorded.** Closing a card is not taking down its pin; it is ending
+   *  the thing the pin was a view of. Answers the ids it took down so the undo
+   *  stack can let go of them too (`Undo.drop`), or an undo of the move you
+   *  made an hour ago would put a pin back onto a card that is gone. */
+  untether(card: string): string[] {
+    return this.#takeDown(tetheredTo(this.items, card));
+  }
+
+  /** One wall has just been heard, and these are the cards it still holds:
+   *  take down the views of its cards that are not among them. Never asked of
+   *  a wall that is quiet — see `tether.ts::goneFrom`. */
+  keepHost(host: string, alive: ReadonlySet<string>): string[] {
+    return this.#takeDown(goneFrom(this.items, host, alive));
+  }
+
+  /** At launch, once the wall has been read: take down the views of cards here
+   *  that did not come back — a pin whose card closed in a session that ended
+   *  before its row could be deleted. See `tether.ts::strays`. */
+  keepCards(alive: ReadonlySet<string>): string[] {
+    return this.#takeDown(strays(this.items, alive));
+  }
+
+  /** The removal a tether's lifecycle shares: synchronous on the wall, the
+   *  row after. Not `remove`, which records — see `untether`. */
+  #takeDown(gone: readonly Widget[]): string[] {
+    if (!gone.length) return [];
+    const ids = new Set(gone.map((w) => w.id));
+    for (const id of ids) {
+      clearTimeout(this.#saveTimers.get(id));
+      this.#saveTimers.delete(id);
+      this.picks.drop("widget", id);
+    }
+    this.items = this.items.filter((w) => !ids.has(w.id));
+    for (const id of ids) {
+      invoke("delete_widget", { id }).catch((err) => (this.fault = String(err)));
+    }
+    return [...ids];
+  }
+
   /** Put one back exactly as it was — what undo needs, and the one write that
    *  has to cope with the widget not being there any more (an undone removal).
-   *  Never recorded: this *is* the recording being played. */
+   *  Never recorded: this *is* the recording being played.
+   *
+   *  The one thing it refuses is a view of a card that has gone: a redo of
+   *  hanging one up, after its card closed, would otherwise put a pin on the
+   *  wall pointing at nothing. `untether` drops what the stack knew about the
+   *  pins it took down; this is the backstop for one that was not up then. */
   put(w: Widget) {
+    const card = tetherOf(w);
+    if (card !== null && !this.stands(card)) return;
+    /* Nor a second view of one card: an undo can reach a pin taken down by
+       hand after another was hung up for the same card, and one per card is
+       `tether`'s rule whichever way a pin arrives. */
+    if (card !== null && this.items.some((x) => x.id !== w.id && tetherOf(x) === card)) return;
     const i = this.items.findIndex((x) => x.id === w.id);
     if (i < 0) this.items = [...this.items, { ...w }];
     else this.items[i] = { ...w };
@@ -185,6 +311,9 @@ export class Widgets {
   set(id: string, key: string, value: string | number | boolean) {
     const w = this.items.find((w) => w.id === id);
     if (!w) return;
+    /* Which card a pin reads is what it *is*, not a knob — re-pointed, it
+       would be one card's view wearing another's lifecycle. */
+    if (key === TETHER && tetherOf(w) !== null) return;
     this.update(id, { config: { ...w.config, [key]: value } });
   }
 

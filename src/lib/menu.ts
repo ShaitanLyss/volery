@@ -457,6 +457,15 @@ function cardRows(t: MenuTarget): (MenuItem | null)[] {
            conversation inside it. Nothing stops and nothing is lost — the wall
            still holds its slot — so it is not marked danger. */
         t.held || !has("glass") ? null : glassItem(t.glass),
+        /* Its last message, hung up beside it and kept there (`tether.ts`).
+           Beside the glass because it is the same kind of decision — where on
+           this wall you want something kept in view — and a pair of rows
+           rather than a submenu for the glass's reason: two places, one word
+           apart, and a list you open to find two rows costs a gesture to tell
+           you what this already says. Offered on a card that has said nothing
+           yet: a pin is a live view, and its first words arrive in it. */
+        has("keep") ? item("keep:wall", "keep what it last said on the wall") : null,
+        has("keep") ? item("keep:glass", "keep what it last said on the glass") : null,
         sep,
         /* Beside `close`, because both end the conversation — but not marked
            danger, and the difference is real: closing takes the card off the

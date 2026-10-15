@@ -36,6 +36,7 @@ import {
   NOTHING,
   describe,
   forget,
+  forgetWhere,
   nameEdit,
   remember,
   replay,
@@ -133,6 +134,11 @@ export class Undo {
    *  `forget` in ./undo.ts. */
   drop(at: Realm, id: string) {
     this.past = forget(this.past, at, id);
+  }
+
+  /** The same, for every record matching — see `forgetWhere` in ./undo.ts. */
+  dropWhere(gone: (e: Edit) => boolean) {
+    this.past = forgetWhere(this.past, gone);
   }
 
   /** One step back. Answers what it undid, or null if there was nothing. */

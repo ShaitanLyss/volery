@@ -586,6 +586,12 @@ export class Skein {
       ) => void)
     | null = null;
 
+  /** A card has just left the wall for good — called from `close`, on the run
+   *  that takes it out of `convs`, for whatever is a view of it and must go in
+   *  the same moment (`Widgets.untether`). A hook for `onPin`'s reason: the
+   *  widgets live in `App.svelte`, and this class may not reach for them. */
+  onClosed: (id: string) => void = () => {};
+
   /** And an agent changing one it already pinned. Separate from `onPin` because
    *  the two do different things to the same list: one adds a row, the other
    *  edits, moves or removes one that is already there. */
@@ -4472,6 +4478,18 @@ export class Skein {
     this.#byId.delete(conv.id);
     this.convs = this.convs.filter((c) => c.id !== conv.id);
     this.#studio.forget(conv.id);
+    /* And whatever on the wall is a view of this card goes with it, on the
+       same run — a pin of its last message (`Widgets.untether`). Not by an
+       effect noticing the card is gone a frame later: for that frame it would
+       be a widget reading an id `#byId` no longer has. Guarded, and still
+       synchronous: a throw in a view's bookkeeping must not stop the kill
+       below it, which would leave an agent running with no card on the wall
+       to stop it from. */
+    try {
+      this.onClosed(conv.id);
+    } catch (err) {
+      this.fault = String(err);
+    }
 
     try {
       await invoke("close_conversation", { id: conv.id });

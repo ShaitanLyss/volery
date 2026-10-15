@@ -42,7 +42,8 @@
     type Standing,
     type World,
   } from "./pick";
-  import type { Widget } from "./widgets";
+  import { specFor, type Widget } from "./widgets";
+  import type { CardHandle } from "./cards.svelte";
   import type { Meter } from "./meter.svelte";
   import type { Ledger } from "./ledger.svelte";
   import type { DevOps } from "./devops.svelte";
@@ -72,7 +73,8 @@
   import Bump from "./Bump.svelte";
   import Card from "./Card.svelte";
   import type { Shadow } from "./shadows.svelte";
-  import { standElsewhere, type Placed } from "./shadow";
+  import { isShadowKey, standElsewhere, type Placed } from "./shadow";
+  import { tetherOf } from "./tether";
   import Seats from "./Seats.svelte";
   import ImageNode from "./ImageNode.svelte";
   import WidgetNode from "./WidgetNode.svelte";
@@ -99,6 +101,7 @@
     asana,
     naming,
     onreveal,
+    cardOf = () => null,
     onopen,
     onkeyring,
     onforgerun,
@@ -228,6 +231,10 @@
     naming: (role: string, reference: string | null) => string | null;
     /** Go and look at whatever a widget row points at. */
     onreveal?: (role: string, reference: string) => void;
+    /** The card with this id, here or on another wall, or null — what a widget
+     *  that is a view of one card reads (`Saying.svelte`). The canvas carries
+     *  it and does not read it. */
+    cardOf?: (id: string) => CardHandle | null;
     /** Leave the app entirely — a pipeline or a pull request in the browser. */
     onopen?: (url: string) => void;
     /** Ask for the Azure DevOps token panel, from the pipelines face's fault. */
@@ -706,7 +713,17 @@
   const elsewhere = $derived(
     standElsewhere(shadows, [
       ...wallRegions,
-      ...[...wallImages, ...wallWidgets].map((n) => ({ x: n.x, y: n.y, w: n.w, h: n.h })),
+      /* Less the pins of those walls' own cards (`tether.ts`): one hangs in the
+         margin beside the column it reads, and counted here it would be the
+         leftmost thing on the wall — so the column would step left of it, the
+         pin would no longer be beside its card, and every pin or drag after it
+         would shove the column again. */
+      ...[...wallImages, ...wallWidgets.filter((w) => !isShadowKey(tetherOf(w) ?? ""))].map((n) => ({
+        x: n.x,
+        y: n.y,
+        w: n.w,
+        h: n.h,
+      })),
     ], sections),
   );
   /** Whether a wall has gone quiet, read off its cards — every card on one wall
@@ -2184,6 +2201,84 @@
     revealBox(n.x, n.y, box.w, box.h);
   }
 
+  /** Hang a card's last message up beside it, on the wall or the glass — or,
+   *  if it has one up already, move that one to where it was asked for. Answers
+   *  why not, in words, or null.
+   *
+   *  Here rather than in App for `toggleGlass`'s reason: only the canvas knows
+   *  where the card is drawn.
+   *
+   *  **On the wall it goes beside the card's grouping, never inside it.** A pin
+   *  is the width of a card and a half, so hung beside a card in a grouping's
+   *  first column it lay over the card in the second — and behind the cards,
+   *  where every widget goes, it is never the thing that stops a card being
+   *  clicked. Top edge level with the card. A card on another wall hangs its pin
+   *  in the margin to the left of that wall's column, which the column does not
+   *  count as standing in its way (see `elsewhere` above).
+   *
+   *  **On the glass it is placed where you see the card**, in screen pixels:
+   *  right of the card as drawn, left of it where the pane has no room on the
+   *  right, and inside the pane either way. Measured off the card's drawn box —
+   *  at any zoom but 100% its place on the wall and its size on screen differ,
+   *  and a pin carried over from wall units landed on top of its own card.
+   *
+   *  One record for one gesture: the glass spot goes into the same write as the
+   *  widget, so taking it back is one undo and not an unstick and then a
+   *  removal. */
+  export async function keep(card: string, glass: boolean): Promise<string | null> {
+    const size = specFor("said")?.box ?? { w: 340, h: 220 };
+    const gap = 16;
+    const local = model.laid.find((l) => l.conv.id === card);
+    const far = local ? null : elsewhere.laid.find((l) => l.conv.id === card);
+    const n = local ?? far;
+    const box = CARD_BOX[studio.lod];
+
+    const home = local
+      ? model.regions.find((r) => r.id === local.home)
+      : far
+        ? elsewhere.regions.find((r) => r.id === far.home)
+        : undefined;
+    let wall: { x: number; y: number };
+    if (!n) {
+      const c = center();
+      wall = { x: c.x - size.w / 2, y: c.y - size.h / 2 };
+    } else if (far) {
+      wall = { x: (home?.x ?? n.x) - gap - size.w, y: n.y };
+    } else {
+      wall = { x: home ? home.x + home.w + gap : n.x + box.w + gap, y: n.y };
+    }
+
+    let spot: { x: number; y: number } | null = null;
+    if (glass) {
+      const pane = { x: 0, y: 0, w: paneBox.w, h: paneBox.h };
+      const stuck = local ? local.glass : (far?.conv.glass ?? null);
+      /* The card's box as drawn, in pane pixels. */
+      let drawn: { x: number; y: number; w: number; h: number } | null = null;
+      if (stuck) {
+        const d = glassAt(stuck, CARD_BOX.wall, paneBox, keepout);
+        drawn = { x: d.x - paneBox.x, y: d.y - paneBox.y, ...CARD_BOX.wall };
+      } else if (n) {
+        drawn = {
+          x: view.x + n.x * view.scale - paneBox.x,
+          y: view.y + n.y * view.scale - paneBox.y,
+          w: box.w * view.scale,
+          h: box.h * view.scale,
+        };
+      }
+      const right = drawn ? drawn.x + drawn.w + gap : (pane.w - size.w) / 2;
+      const left = drawn ? drawn.x - gap - size.w : right;
+      const x = right + size.w <= pane.w || left < 0 ? right : left;
+      spot = glassAt({ x, y: drawn ? drawn.y : (pane.h - size.h) / 2 }, size, pane);
+    }
+
+    const made = await widgets.tether("said", card, wall.x + size.w / 2, wall.y + size.h / 2, spot);
+    if (typeof made === "string") return made;
+    /* Already up: asked again, it goes where it was asked for this time. */
+    if (!!spotOf(made) !== glass) toggleGlass("widget", made.id);
+    if (!glass) revealWidget(made.id);
+    return null;
+  }
+
   /** The same pan, aimed at an instrument rather than a card. What the peek
    *  calls when a countdown that has rung is clicked — a widget is not in
    *  `model.laid`, since nothing on this wall lays it out. */
@@ -2672,6 +2767,7 @@
     {naming}
     toCanvas={glass ? toGlass : toCanvas}
     {onreveal}
+    {cardOf}
     {onopen}
     {onkeyring}
     {onforgerun}

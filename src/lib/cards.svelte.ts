@@ -113,6 +113,9 @@ export type Hands = {
   /** Stick it to the glass or take it back; the canvas keeps each kind's
    *  spots apart. */
   glass(kind: "card" | "shadow", id: string): void;
+  /** Hang its last message up beside it, on the wall or the glass — this
+   *  wall's furniture, so a card here and one elsewhere ask it alike. */
+  keep(id: string, glass: boolean): void;
   /** A card here drawn on the glass only because its grouping is stuck. */
   heldByGlass(conv: Conversation): boolean;
   /** Ask before a close that would end something — one plate for both kinds,
@@ -205,6 +208,9 @@ export class LocalCard implements CardHandle {
     switch (verb) {
       case "glass":
         this.#hands.glass("card", c.id);
+        break;
+      case "keep":
+        this.#hands.keep(c.id, args.glass === true);
         break;
       case "close": {
         /* A card with a timeline in flight asks first — closing ends a plan
@@ -377,6 +383,10 @@ export class RemoteCard implements CardHandle {
     const s = this.shadow;
     if (verb === "glass") {
       this.#hands.glass("shadow", s.id);
+      return "yes";
+    }
+    if (verb === "keep") {
+      this.#hands.keep(s.id, args.glass === true);
       return "yes";
     }
     if (verb === "close") {

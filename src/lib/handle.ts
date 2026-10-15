@@ -15,6 +15,7 @@ import { CARRY_MOST, carriedCost, looksLike, type Turn } from "./attach";
 
 export type Verb =
   | "glass"
+  | "keep"
   | "close"
   | "stop"
   | "wake"
@@ -47,6 +48,10 @@ export type Cost = "work" | "person" | "cosmetic" | "read" | "here" | "local";
 
 export const COST: Record<Verb, Cost> = {
   glass: "here",
+  /* Its last message hung up on this wall (`tether.ts`): this wall's furniture,
+     read off what its wall already sends, so the other machine is not asked
+     and a quiet wall is no reason to refuse — the pin says it is quiet. */
+  keep: "here",
   // Where a card stands on *this* wall and what it is handed to are this
   // wall's business until a remote card has a row here — see elsewhere.md.
   pin: "local",
@@ -201,6 +206,7 @@ export function rowVerb(id: string): { verb: Verb; args: Record<string, unknown>
   if (id.startsWith("regroup:")) return { verb: "regroup", args: { territory: after("regroup:") } };
   if (id.startsWith("move:")) return { verb: "move", args: { host: after("move:") } };
   if (id.startsWith("account:")) return { verb: "account", args: { account: after("account:") } };
+  if (id.startsWith("keep:")) return { verb: "keep", args: { glass: after("keep:") === "glass" } };
   if (id === "unpin") return { verb: "pin", args: { on: false } };
   return (VERBS as readonly string[]).includes(id) ? { verb: id as Verb, args: {} } : null;
 }

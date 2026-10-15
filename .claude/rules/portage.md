@@ -17,7 +17,7 @@ changing something here, check it against that line first.
 |---|---|
 | territories, and where they sit | cards, turns, transcripts |
 | the server groups a territory runs | the sink, the billboard, relays, wakes, spawned |
-| widgets, reference images (bytes included) | `window_frame` |
+| widgets, reference images (bytes included) | `window_frame`, and a card's last message kept on the wall — a view of a card stays with it |
 | ambiences, including which was showing | which *theme* is on |
 | the custom themes you wrote | accounts |
 | standing instructions, both scopes | |

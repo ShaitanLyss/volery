@@ -61,7 +61,9 @@ export type CardChord =
   | "copy-cwd"
   | "processes"
   | "menu"
-  | "glance";
+  | "glance"
+  | "keep"
+  | "keep-glass";
 
 /** What a `d` chord does in the dock's queue: step to the next thing waiting,
  *  or deal with a reply whose item went before it was sent (`Dock.svelte`). */
@@ -247,6 +249,13 @@ export const CHORDS: readonly Chord[] = [
      (`Glance.svelte`). Like `cm`, not a `handle.ts` verb — it does nothing to
      the card, it only shows you a thing the card already holds. */
   { keys: "cr", label: "read what it last said", verb: { kind: "card", act: "glance" } },
+  /* `ck` / `cl`: what it last said *kept* — the glance left standing, beside
+     the card on the wall or on the glass, redrawn as it speaks and taken down
+     when it closes (`tether.ts`). Two chords for one verb because they are the
+     right-click's two rows; k and l because they sit beside each other, which
+     is what makes them read as one decision with two answers. */
+  { keys: "ck", label: "keep what it last said on the wall", verb: { kind: "card", act: "keep" } },
+  { keys: "cl", label: "keep what it last said on the glass", verb: { kind: "card", act: "keep-glass" } },
   /* `m` is the machine the wall runs on, rather than anything on the wall or
      the window: whether it is held awake on mains and whether a wall Windows
      took down comes back — and then whether the cards that were awake when it
